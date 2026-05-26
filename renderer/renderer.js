@@ -21,7 +21,7 @@ import { markdown } from '@codemirror/lang-markdown';
 import { html } from '@codemirror/lang-html';
 import { css } from '@codemirror/lang-css';
 
-const APP_VERSION = 'alpha v1.0.15';
+const APP_VERSION = 'alpha v1.0.16';
 const GUTTER = 5;
 
 const lite = window.lite;
@@ -503,9 +503,31 @@ async function showGit(p) {
       return;
     }
     const head = el('div', 'gm-branch');
-    head.appendChild(el('span', 'gm-branchname', '⎇ ' + info.branch));
+    const sel = el('select', 'gm-branchsel');
+    const brs = info.branches && info.branches.length ? info.branches : [info.branch];
+    for (const b of brs) { const o = document.createElement('option'); o.value = b; o.textContent = '⎇ ' + b; if (b === info.branch) o.selected = true; sel.appendChild(o); }
+    sel.onchange = async () => {
+      const r = await lite.git.checkout(p.path, sel.value);
+      if (r.ok) toast('Ветка: ' + sel.value); else toast(r.error || 'не удалось переключить', { kind: 'err', ttl: 8000 });
+      refresh(); renderProjects();
+    };
+    head.appendChild(sel);
+    const newBr = el('button', 'gm-mini', '＋'); newBr.title = 'Новая ветка';
+    newBr.onclick = () => showPrompt('Новая ветка', 'Имя ветки', '', async (name) => {
+      const r = await lite.git.createBranch(p.path, name);
+      if (r.ok) { refresh(); renderProjects(); } return r;
+    });
+    head.appendChild(newBr);
     if (info.upstream && (info.ahead || info.behind)) head.appendChild(el('span', 'gm-track', `↑${info.ahead} ↓${info.behind}`));
     body.appendChild(head);
+
+    if (info.lastCommit) {
+      const lc = el('div', 'gm-last');
+      lc.appendChild(el('span', 'gm-hash', info.lastCommit.hash));
+      lc.appendChild(el('span', 'gm-subject', info.lastCommit.subject));
+      lc.appendChild(el('span', 'gm-meta', `${info.lastCommit.when} · ${info.lastCommit.author}`));
+      body.appendChild(lc);
+    }
 
     const st = await lite.git.status(p.path);
     const files = (st && st.files) ? st.files : {};
@@ -516,6 +538,12 @@ async function showGit(p) {
       const r = el('div', 'gm-file'); r.title = f;
       r.appendChild(el('span', 'gm-code ' + gitCodeClass(files[f]), files[f]));
       r.appendChild(el('span', 'gm-fname', baseName(f)));
+      const disc = el('button', 'gm-mini gm-disc', '↩'); disc.title = 'Откатить изменения файла';
+      disc.onclick = () => showConfirm('Откатить файл?', `Изменения в «${baseName(f)}» будут отменены (git checkout --).`, 'Откатить', async () => {
+        const rr = await lite.git.discardFile(p.path, f);
+        if (rr.ok) { refresh(); renderProjects(); } else toast(rr.error || 'не удалось', { kind: 'err' });
+      });
+      r.appendChild(disc);
       changes.appendChild(r);
     }
     body.appendChild(changes);
@@ -525,6 +553,7 @@ async function showGit(p) {
     const row = el('div', 'gm-actions');
     const commit = el('button', 'btn primary', 'Commit');
     const commitPush = el('button', 'btn', 'Commit & Push');
+    const fetchBtn = el('button', 'btn', 'Fetch');
     const pull = el('button', 'btn', 'Pull');
     const push = el('button', 'btn', 'Push');
     commit.disabled = !keys.length; commitPush.disabled = !keys.length;
@@ -537,9 +566,10 @@ async function showGit(p) {
     };
     commit.onclick = () => doCommit(false);
     commitPush.onclick = () => doCommit(true);
+    fetchBtn.onclick = async () => { const r = await lite.git.fetch(p.path); toast(r.ok ? 'Fetch готов' : (r.error || 'fetch не прошёл'), { kind: r.ok ? undefined : 'err', ttl: 8000 }); refresh(); };
     push.onclick = async () => { const r = await lite.git.push(p.path); toast(r.ok ? 'Запушено' : (r.error || 'push не прошёл'), { kind: r.ok ? undefined : 'err', ttl: 8000 }); refresh(); };
     pull.onclick = async () => { const r = await lite.git.pull(p.path); toast(r.ok ? 'Pull готов' : (r.error || 'pull не прошёл'), { kind: r.ok ? undefined : 'err', ttl: 8000 }); refresh(); renderProjects(); };
-    row.append(commit, commitPush, pull, push);
+    row.append(commit, commitPush, fetchBtn, pull, push);
     body.appendChild(row);
   }
   refresh();
