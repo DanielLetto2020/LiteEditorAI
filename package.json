@@ -1,10 +1,11 @@
 {
   "name": "lite-editor",
-  "version": "1.0.10-alpha",
+  "version": "1.0.11-alpha",
   "description": "Terminal-first multi-project workspace with a code viewer",
   "main": "main.js",
-  "author": "Maxim Letto",
+  "author": "Letto <i@m-letto.ru>",
   "license": "MIT",
+  "homepage": "https://m-letto.ru",
   "scripts": {
     "build": "node build.js",
     "start": "node build.js && electron --no-sandbox .",
@@ -12,7 +13,10 @@
     "rebuild": "electron-rebuild -f -w node-pty",
     "postinstall": "electron-rebuild -f -w node-pty || echo 'node-pty rebuild skipped — run: npm run rebuild'",
     "gen-icons": "node scripts/gen-icons.js",
-    "install-desktop": "node scripts/install-desktop.js"
+    "install-desktop": "node scripts/install-desktop.js",
+    "dist:linux": "node build.js && electron-builder --linux deb",
+    "dist:win": "node build.js && electron-builder --win zip",
+    "release": "node scripts/release.js"
   },
   "dependencies": {
     "@codemirror/commands": "^6.7.1",
@@ -35,7 +39,33 @@
   "devDependencies": {
     "@electron/rebuild": "^3.7.1",
     "electron": "^33.2.0",
+    "electron-builder": "^26.8.1",
     "esbuild": "^0.24.0",
     "sharp": "^0.33.5"
+  },
+  "build": {
+    "appId": "com.mletto.liteeditor",
+    "productName": "LiteEditor",
+    "directories": { "output": "dist-release", "buildResources": "assets" },
+    "npmRebuild": false,
+    "asarUnpack": ["**/node_modules/node-pty/**"],
+    "files": [
+      "main.js", "preload.js", "package.json",
+      "renderer/index.html", "renderer/styles.css", "renderer/dist/**",
+      "assets/icon.png", "assets/icon.svg",
+      "!**/*.pdb"
+    ],
+    "linux": {
+      "target": ["deb"],
+      "category": "Development",
+      "icon": "assets/icon.png",
+      "maintainer": "Letto <i@m-letto.ru>",
+      "executableArgs": ["--no-sandbox"]
+    },
+    "win": {
+      "target": ["zip"],
+      "icon": "assets/icon.png",
+      "signAndEditExecutable": false
+    }
   }
 }

@@ -10,3 +10,7 @@ lite-editor
 
 # Personal agent guidance — readable on disk, kept out of the repo
 CLAUDE.md
+
+# Build output / release artifacts (большие бинарники не коммитим)
+dist-release/
+release/
