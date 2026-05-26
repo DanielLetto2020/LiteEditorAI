@@ -21,7 +21,7 @@ import { markdown } from '@codemirror/lang-markdown';
 import { html } from '@codemirror/lang-html';
 import { css } from '@codemirror/lang-css';
 
-const APP_VERSION = 'alpha v1.0.22';
+const APP_VERSION = 'alpha v1.0.23';
 const GUTTER = 5;
 
 const lite = window.lite;
@@ -205,10 +205,8 @@ function makeCard(p) {
     if (activeId === p.id && viewerOpen) setViewerOpen(false);
     else { setActive(p.id); setViewerOpen(true); }
   });
-  const notesBtn = el('button', null);
-  notesBtn.appendChild(document.createTextNode('📝 заметки'));
   const nc = noteCounts[p.id] || 0;
-  if (nc) notesBtn.appendChild(el('span', 'btn-count', String(nc)));
+  const notesBtn = el('button', null, nc ? `заметки · ${nc}` : 'заметки');
   notesBtn.addEventListener('click', (e) => { e.stopPropagation(); showNotes(p); });
   actions.appendChild(openViewer); actions.appendChild(notesBtn);
   card.appendChild(actions);

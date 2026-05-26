@@ -200,7 +200,6 @@ html, body {
 }
 .card-actions button:hover { color: var(--text); border-color: var(--border-strong); }
 .card-actions button.on { color: var(--green-bright); border-color: var(--green); }
-.card-actions .btn-count { margin-left: 5px; padding: 0 5px; border-radius: 8px; background: rgba(120,200,160,0.22); color: var(--green-bright); font-size: 10px; font-weight: 700; }
 
 .card-add { text-align: center; color: var(--green-bright); border-style: dashed; background: transparent; font-weight: 600; }
 .card-add:hover { background: rgba(120,200,160,0.08); }
