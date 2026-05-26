@@ -21,7 +21,7 @@ import { markdown } from '@codemirror/lang-markdown';
 import { html } from '@codemirror/lang-html';
 import { css } from '@codemirror/lang-css';
 
-const APP_VERSION = 'alpha v1.0.20';
+const APP_VERSION = 'alpha v1.0.21';
 const GUTTER = 5;
 
 const lite = window.lite;

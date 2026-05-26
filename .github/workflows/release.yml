@@ -17,7 +17,7 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-            target: --linux deb AppImage
+            target: --linux deb
           - os: windows-latest
             target: --win zip
     runs-on: ${{ matrix.os }}
@@ -36,15 +36,24 @@ jobs:
         run: node build.js
 
       - name: Build installers
-        run: npx --no-install electron-builder ${{ matrix.target }}
+        # --publish never: electron-builder только собирает; релиз публикуем шагом ниже
+        run: npx --no-install electron-builder ${{ matrix.target }} --publish never
 
       - name: Attach to release
         uses: softprops/action-gh-release@v2
         with:
           fail_on_unmatched_files: false
+          prerelease: true
+          body: |
+            **LiteEditorAI — alpha.** Лёгкий редактор для работы с ИИ-агентами в терминале.
+
+            ### Что скачать
+            - 🐧 **`.deb`** — Ubuntu / Debian (x64). Установка: `sudo apt install ./LiteEditorAI_*.deb`, затем иконка **LiteEditorAI** в меню.
+            - 🪟 **`.zip`** — Windows (x64), portable: распакуй и запусти `LiteEditorAI.exe` (установка не нужна).
+
+            Это alpha — терминалы не переживают перезапуск. Баги и идеи → Issues.
           files: |
             dist-release/*.deb
-            dist-release/*.AppImage
             dist-release/*.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
