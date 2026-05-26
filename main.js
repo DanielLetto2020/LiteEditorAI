@@ -13,9 +13,12 @@ app.setName('LiteEditorAI');
 // Chromium SUID sandbox aborts at launch. We load only our own local content,
 // and the renderer already gets a shell via PTY, so the sandbox adds nothing.
 app.commandLine.appendSwitch('no-sandbox');
-// GPU accel is pointless for a terminal/text app and often unavailable on
-// VM/nested/VNC displays (silent launch crash). Software render = opens everywhere.
-app.disableHardwareAcceleration();
+// GPU accel powers the xterm WebGL renderer (smooth scroll) and is fine on real
+// desktops. It only breaks on VM/nested/VNC displays — there set LITE_NO_GPU=1 to
+// fall back to software rendering (xterm then uses the Canvas renderer).
+if (process.env.LITE_NO_GPU === '1' || process.env.LITE_SOFTWARE_RENDER === '1') {
+  app.disableHardwareAcceleration();
+}
 
 let mainWindow = null;
 let tray = null;

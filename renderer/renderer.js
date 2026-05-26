@@ -5,6 +5,8 @@ import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { SearchAddon } from '@xterm/addon-search';
 import { WebLinksAddon } from '@xterm/addon-web-links';
+import { WebglAddon } from '@xterm/addon-webgl';
+import { CanvasAddon } from '@xterm/addon-canvas';
 import '@xterm/xterm/css/xterm.css';
 
 import { EditorView, keymap, lineNumbers, highlightActiveLine, drawSelection } from '@codemirror/view';
@@ -21,7 +23,7 @@ import { markdown } from '@codemirror/lang-markdown';
 import { html } from '@codemirror/lang-html';
 import { css } from '@codemirror/lang-css';
 
-const APP_VERSION = 'alpha v1.0.23';
+const APP_VERSION = 'alpha v1.0.24';
 const GUTTER = 5;
 
 const lite = window.lite;
@@ -775,6 +777,34 @@ async function openFromTerminal(projPath, raw) {
   await openFile(p, line);
 }
 
+// True only for a real GPU — software WebGL (SwiftShader/llvmpipe) is slower than
+// Canvas and stalls, so route those to the Canvas renderer instead.
+function isHardwareWebgl() {
+  try {
+    const gl = document.createElement('canvas').getContext('webgl2') || document.createElement('canvas').getContext('webgl');
+    if (!gl) return false;
+    const dbg = gl.getExtension('WEBGL_debug_renderer_info');
+    const r = dbg ? String(gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL)) : '';
+    return !/swiftshader|llvmpipe|software|mesa offscreen/i.test(r);
+  } catch (_) { return false; }
+}
+// Fast xterm renderer: WebGL on real GPU (smooth scroll), else Canvas. Both beat
+// the default DOM renderer. On WebGL context loss → fall back to Canvas.
+function loadFastRenderer(term) {
+  if (isHardwareWebgl()) {
+    try {
+      const webgl = new WebglAddon();
+      webgl.onContextLoss(() => {
+        try { webgl.dispose(); } catch (_) {}
+        try { term.loadAddon(new CanvasAddon()); } catch (_) {}
+      });
+      term.loadAddon(webgl);
+      return;
+    } catch (_) {}
+  }
+  try { term.loadAddon(new CanvasAddon()); } catch (_) {}
+}
+
 function ensureTerminal(proj) {
   if (terms.has(proj.id)) return terms.get(proj.id);
   const container = el('div', 'term-instance');
@@ -789,6 +819,7 @@ function ensureTerminal(proj) {
   term.loadAddon(search);
   term.loadAddon(new WebLinksAddon((_e, uri) => lite.openExternal(uri)));
   term.open(container);
+  loadFastRenderer(term); // GPU/Canvas renderer → плавный скролл вместо тормозного DOM-рендера
   fit.fit();
   term.registerLinkProvider(fileLinkProvider(term, proj.path)); // src/app.js:42 → viewer
   lite.pty.create({ id: proj.id, cwd: proj.path, cols: term.cols, rows: term.rows });
@@ -829,13 +860,13 @@ async function pasteInto(id) {
 function showActiveTerminal() {
   $('#empty-hint').style.display = activeId ? 'none' : 'flex';
   for (const [id, rec] of terms) rec.container.style.display = id === activeId ? 'block' : 'none';
-  refitActiveTerminal();
+  refitActiveTerminal(true);
 }
-function refitActiveTerminal() {
+function refitActiveTerminal(focusIt) {
   const rec = terms.get(activeId);
   if (!rec) return;
   requestAnimationFrame(() => {
-    try { rec.fit.fit(); lite.pty.resize(activeId, rec.term.cols, rec.term.rows); rec.term.focus(); } catch (_) {}
+    try { rec.fit.fit(); lite.pty.resize(activeId, rec.term.cols, rec.term.rows); if (focusIt) rec.term.focus(); } catch (_) {}
   });
 }
 function clearTerminal(id) { const rec = terms.get(id || activeId); if (rec) { try { rec.term.clear(); } catch (_) {} rec.term.focus(); } }
@@ -1785,7 +1816,8 @@ function init() {
     if (p) openByPath(p, baseName(p));
   });
 
-  new ResizeObserver(() => refitActiveTerminal()).observe($('#terminal-pane'));
+  let rezTimer;
+  new ResizeObserver(() => { clearTimeout(rezTimer); rezTimer = setTimeout(() => refitActiveTerminal(), 80); }).observe($('#terminal-pane'));
 
   applyFontSize();
   projects = loadProjectsFromDisk();
