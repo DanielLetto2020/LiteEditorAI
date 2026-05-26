@@ -270,16 +270,31 @@ function markActivity(id, data) {
   const echoLike = !bell && data && data.length <= 8 && (Date.now() - (rec.lastInputAt || 0)) < 250;
   if (echoLike) return;
   rec.tail = stripAnsi((rec.tail || '') + (data || '')).slice(-400);
+  rec.activitySeq = (rec.activitySeq || 0) + 1; // lets a pending settle detect that new output arrived
   if (projState.get(id) !== 'busy') { rec.busyStart = Date.now(); setProjState(id, 'busy'); }
   clearTimeout(rec.idleTimer);
   rec.idleTimer = setTimeout(() => settleProject(id), settings.idleMs);
 }
-function settleProject(id) {
+// Output stopped — ask the OS whether the foreground process is waiting on input
+// (universal, agent-agnostic) and fall back to text heuristics off Linux.
+async function settleProject(id) {
   const rec = terms.get(id);
   if (!rec) return;
-  const tail = rec.tail || '';
-  const lastLine = tail.split('\n').pop().trim();
-  const waiting = rec.sawBell || PROMPT_RE.test(lastLine);
+  const seq = rec.activitySeq;
+  const kind = await lite.pty.foregroundState(id); // 'shell' | 'running' | 'waiting' | null
+  if (!terms.has(id) || rec.activitySeq !== seq) return; // new output arrived during the await
+
+  if (kind === 'running') { // a foreground program is computing silently → keep spinner, re-poll
+    if (projState.get(id) !== 'busy') setProjState(id, 'busy');
+    clearTimeout(rec.idleTimer);
+    rec.idleTimer = setTimeout(() => settleProject(id), settings.idleMs);
+    return;
+  }
+  let waiting;
+  if (kind === 'waiting') waiting = true;          // agent alive & blocked on your input
+  else if (kind === 'shell') waiting = false;      // back at a bare shell prompt → idle/done
+  else waiting = PROMPT_RE.test((rec.tail || '').split('\n').pop().trim()); // non-Linux fallback
+  if (rec.sawBell) waiting = true;                 // explicit bell always means "look at me"
   const worked = rec.sawBell || (Date.now() - (rec.busyStart || 0)) >= 1500; // skip trivial blips
   rec.sawBell = false;
   setProjState(id, waiting ? 'waiting' : 'quiet');
@@ -382,7 +397,7 @@ function ensureTerminal(proj) {
     showTermMenu(e.clientX, e.clientY, term, proj.id);
   });
 
-  const rec = { term, fit, search, container, idleTimer: null, sawBell: false, tail: '', busyStart: 0, lastInputAt: 0 };
+  const rec = { term, fit, search, container, idleTimer: null, sawBell: false, tail: '', busyStart: 0, lastInputAt: 0, activitySeq: 0 };
   terms.set(proj.id, rec);
   return rec;
 }

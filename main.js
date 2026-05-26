@@ -33,6 +33,44 @@ function resolveShell() {
   return 'bash'; // last resort — let PATH resolve it
 }
 
+// Universal "is the agent waiting for input?" detection via the PTY's foreground
+// process group (Linux). Works for any agent (Claude/Codex/Qwen/Kimi) because it
+// reads process state, not terminal text. Returns:
+//   'shell'   — bare shell at its prompt (idle; nothing is waiting)
+//   'running' — a foreground program is actively computing
+//   'waiting' — a foreground program is alive but sleeping (waiting on your input)
+//   null      — unknown (non-Linux / error) → caller falls back to text heuristics
+const SHELLS = new Set(['bash', 'zsh', 'sh', 'fish', 'dash', 'ash', 'tcsh', 'csh', 'ksh', '-bash', '-zsh', '-sh']);
+function readProcStat(pid) {
+  try {
+    const data = fs.readFileSync(`/proc/${pid}/stat`, 'utf8');
+    const r = data.lastIndexOf(')');
+    const comm = data.slice(data.indexOf('(') + 1, r);
+    const rest = data.slice(r + 2).split(' '); // state ppid pgrp session tty_nr tpgid ...
+    return { comm, state: rest[0], pgrp: +rest[2], tpgid: +rest[5] };
+  } catch (_) { return null; }
+}
+function foregroundKind(shellPid) {
+  if (process.platform !== 'linux' || !shellPid) return null;
+  const sh = readProcStat(shellPid);
+  if (!sh || !(sh.tpgid > 0)) return null;
+  if (sh.tpgid === sh.pgrp) return 'shell';            // shell's own group is foreground
+  const leader = readProcStat(sh.tpgid);
+  if (leader && SHELLS.has(leader.comm)) return 'shell'; // a nested shell sitting at its prompt
+  let alive = false, running = false;
+  try {
+    for (const ent of fs.readdirSync('/proc')) {
+      if (ent.charCodeAt(0) < 49 || ent.charCodeAt(0) > 57) continue; // numeric pids only
+      const st = readProcStat(ent);
+      if (!st || st.pgrp !== sh.tpgid) continue;
+      alive = true;
+      if (st.state === 'R' || st.state === 'D') running = true;
+    }
+  } catch (_) { return null; }
+  if (!alive) return 'shell';
+  return running ? 'running' : 'waiting';
+}
+
 const IGNORE_DIRS = new Set([
   '.git', 'node_modules', '__pycache__', '.venv', 'venv',
   'dist', 'build', '.next', 'target', '.cache', '.idea',
@@ -231,6 +269,11 @@ ipcMain.on('pty:resize', (_e, { id, cols, rows }) => {
 ipcMain.on('pty:kill', (_e, { id }) => {
   const p = ptys.get(id);
   if (p) { try { p.kill(); } catch (_) {} ptys.delete(id); }
+});
+// 'shell' | 'running' | 'waiting' | null — see foregroundKind().
+ipcMain.handle('pty:foregroundState', (_e, { id }) => {
+  const p = ptys.get(id);
+  return p ? foregroundKind(p.pid) : null;
 });
 
 // ---------------------------------------------------------------- filesystem
