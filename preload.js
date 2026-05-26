@@ -1,10 +1,13 @@
 // Bridge between the sandboxed renderer and the main process: window.lite.
-const { contextBridge, ipcRenderer } = require('electron');
+const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
 contextBridge.exposeInMainWorld('lite', {
   openProject: () => ipcRenderer.invoke('dialog:openProject'),
+  // Modern replacement for the deprecated File.path (Electron 32+ / Windows-safe).
+  pathForFile: (file) => { try { return webUtils.getPathForFile(file); } catch (_) { return ''; } },
   pickDir: () => ipcRenderer.invoke('dialog:pickDir'),
   openInFileManager: (target) => ipcRenderer.invoke('shell:openPath', target),
+  openExternal: (url) => ipcRenderer.invoke('shell:openExternal', url),
   copyText: (text) => ipcRenderer.send('clipboard:write', text),
   readClipboard: () => ipcRenderer.invoke('clipboard:read'),
 
@@ -13,6 +16,7 @@ contextBridge.exposeInMainWorld('lite', {
     maximizeToggle: () => ipcRenderer.send('win:maximizeToggle'),
     fullscreen: () => ipcRenderer.send('win:fullscreen'),
     close: () => ipcRenderer.send('win:close'),
+    show: () => ipcRenderer.send('win:show'),
     isMaximized: () => ipcRenderer.invoke('win:isMaximized'),
     growBy: (dx) => ipcRenderer.send('win:growBy', { dx }),
     onMaximizeChange: (cb) => {
@@ -20,6 +24,13 @@ contextBridge.exposeInMainWorld('lite', {
       ipcRenderer.on('win:maximized', h);
       return () => ipcRenderer.removeListener('win:maximized', h);
     },
+  },
+
+  tray: { update: (attention) => ipcRenderer.send('tray:update', { attention }) },
+
+  git: {
+    status: (root) => ipcRenderer.invoke('git:status', root),
+    fileDiff: (root, file) => ipcRenderer.invoke('git:fileDiff', { root, file }),
   },
 
   pty: {
@@ -45,5 +56,12 @@ contextBridge.exposeInMainWorld('lite', {
     writeFile: (file, content) => ipcRenderer.invoke('fs:writeFile', { file, content }),
     mkdir: (parent, name) => ipcRenderer.invoke('fs:mkdir', { parent, name }),
     exists: (p) => ipcRenderer.invoke('fs:exists', p),
+    watch: (root) => ipcRenderer.send('fs:watch', root),
+    unwatch: (root) => ipcRenderer.send('fs:unwatch', root),
+    onChange: (cb) => {
+      const h = (_e, payload) => cb(payload);
+      ipcRenderer.on('fs:changed', h);
+      return () => ipcRenderer.removeListener('fs:changed', h);
+    },
   },
 });

@@ -3,6 +3,8 @@
 
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
+import { SearchAddon } from '@xterm/addon-search';
+import { WebLinksAddon } from '@xterm/addon-web-links';
 import '@xterm/xterm/css/xterm.css';
 
 import { EditorView, keymap, lineNumbers, highlightActiveLine, drawSelection } from '@codemirror/view';
@@ -19,7 +21,6 @@ import { css } from '@codemirror/lang-css';
 
 const APP_VERSION = 'alpha v1.0.0';
 const GUTTER = 5;
-const IDLE_MS = 1200; // quiet for this long after output ⇒ "done/idle"
 
 const lite = window.lite;
 const $ = (sel) => document.querySelector(sel);
@@ -34,17 +35,31 @@ function svgEl(html) {
   t.innerHTML = html.trim();
   return t.content.firstChild;
 }
+// basename that survives both POSIX and Windows separators (for the Windows build).
+function baseName(p) { return String(p).split(/[\\/]/).filter(Boolean).pop() || String(p); }
+
+// ---------------------------------------------------------------- settings (tiny on purpose)
+const DEFAULT_SETTINGS = { notifications: true, sound: false, idleMs: 1200, fontSize: 13 };
+function loadSettings() {
+  try { return { ...DEFAULT_SETTINGS, ...JSON.parse(localStorage.getItem('lite.settings') || '{}') }; }
+  catch { return { ...DEFAULT_SETTINGS }; }
+}
+let settings = loadSettings();
+function saveSettings() { localStorage.setItem('lite.settings', JSON.stringify(settings)); }
 
 // ---------------------------------------------------------------- state
 let projects = [];
 let activeId = null;
 const terms = new Map();
-const projState = new Map(); // id -> 'quiet' | 'busy'
+const projState = new Map(); // id -> 'quiet' | 'busy' | 'waiting'
 const missing = new Set();   // ids of projects whose folder no longer exists on disk
 const projFiles = loadProjFiles(); // id -> last file opened in the viewer
+const expandedDirs = new Set(); // tree dir paths currently expanded (survives live refresh)
+let gitFiles = {};           // active project: abs path -> git short status code
 let viewerOpen = false;
 let currentFile = null;
 let dirty = false;
+let diffMode = false;        // viewer showing a git diff instead of the file
 let editor = null;
 let loadingDoc = false;
 const langComp = new Compartment();
@@ -190,6 +205,8 @@ function closeProject(id) {
   );
 }
 function doCloseProject(id) {
+  const closing = projects.find((p) => p.id === id);
+  if (closing && watchedRoot === closing.path) { lite.fs.unwatch(closing.path); watchedRoot = null; }
   lite.pty.kill(id);
   const rec = terms.get(id);
   if (rec) {
@@ -223,32 +240,110 @@ async function checkProjectsExistence() {
 }
 
 // ---------------------------------------------------------------- activity indicator
+// Three states: busy (output flowing) · waiting (quiet, but looks like it wants
+// input) · quiet (done/idle). Heuristic — the terminal bell and trailing prompt
+// patterns are the tells that an agent is waiting on you.
+const PROMPT_RE = /(\?|\(y\/n\)|\[y\/n\]|\[Y\/n\]|\(yes\/no\)|press\s+enter|continue|proceed|overwrite|password:|passphrase:|❯|›|\$\s|#\s)\s*$/i;
+// eslint-disable-next-line no-control-regex
+const ANSI_RE = /\x1b\][^\x07]*\x07|\x1b\[[0-?]*[ -\/]*[@-~]|\x1b[@-_]|[\x00-\x08\x0b-\x1f\x7f]/g;
+const stripAnsi = (str) => str.replace(ANSI_RE, '');
+
 function setProjState(id, state) {
   projState.set(id, state);
-  // update every indicator for this project (card + mini-rail)
   document.querySelectorAll(`.pind[data-id="${id}"]`).forEach((ind) => { ind.className = 'pind ' + state; });
+  updateAttention();
 }
-function markBusy(id) {
+function markActivity(id, data) {
   const rec = terms.get(id);
   if (!rec) return;
-  if (projState.get(id) !== 'busy') setProjState(id, 'busy');
+  if (data && data.includes('\x07')) rec.sawBell = true; // BEL — common "look at me" signal
+  rec.tail = stripAnsi((rec.tail || '') + (data || '')).slice(-400);
+  if (projState.get(id) !== 'busy') { rec.busyStart = Date.now(); setProjState(id, 'busy'); }
   clearTimeout(rec.idleTimer);
-  rec.idleTimer = setTimeout(() => setProjState(id, 'quiet'), IDLE_MS);
+  rec.idleTimer = setTimeout(() => settleProject(id), settings.idleMs);
+}
+function settleProject(id) {
+  const rec = terms.get(id);
+  if (!rec) return;
+  const tail = rec.tail || '';
+  const lastLine = tail.split('\n').pop().trim();
+  const waiting = rec.sawBell || PROMPT_RE.test(lastLine);
+  const worked = rec.sawBell || (Date.now() - (rec.busyStart || 0)) >= 1500; // skip trivial blips
+  rec.sawBell = false;
+  setProjState(id, waiting ? 'waiting' : 'quiet');
+  if (worked && (id !== activeId || !document.hasFocus())) notifyAgent(id, waiting ? 'waiting' : 'quiet');
+}
+
+let lastNotifyAt = 0;
+function notifyAgent(id, state) {
+  if (!settings.notifications) return;
+  const proj = projects.find((p) => p.id === id);
+  if (!proj || Date.now() - lastNotifyAt < 1200) return;
+  lastNotifyAt = Date.now();
+  const title = state === 'waiting' ? `⏳ ${proj.name} — агент ждёт ответа` : `✓ ${proj.name} — агент закончил`;
+  try {
+    const n = new Notification(title, { body: proj.path, silent: !settings.sound, tag: 'lite-' + id });
+    n.onclick = () => { lite.win.show(); setActive(id); };
+  } catch (_) {}
+}
+// Count of agents waiting on input → titlebar badge + tray tooltip.
+function updateAttention() {
+  const n = [...projState.values()].filter((s) => s === 'waiting').length;
+  const badge = $('#attention-badge');
+  if (badge) { badge.textContent = String(n); badge.classList.toggle('show', n > 0); }
+  lite.tray.update(n);
 }
 
 // ---------------------------------------------------------------- terminals
+// Matches a path with an extension, optionally :line — e.g. src/app.js:42.
+const FILELINK_RE = /(?:[a-zA-Z]:)?(?:\.{0,2}[\\/])?[\w.\-\\/]+\.[A-Za-z][\w]*(?::\d+)?/g;
+function fileLinkProvider(term, projPath) {
+  return {
+    provideLinks(y, cb) {
+      const line = term.buffer.active.getLine(y - 1);
+      if (!line) { cb(undefined); return; }
+      const text = line.translateToString(true);
+      const links = [];
+      let m; FILELINK_RE.lastIndex = 0;
+      while ((m = FILELINK_RE.exec(text))) {
+        const raw = m[0];
+        if (!/[\\/]/.test(raw) && !/^\w+\.\w+(:\d+)?$/.test(raw)) continue;
+        const startX = m.index + 1;
+        links.push({
+          range: { start: { x: startX, y }, end: { x: startX + raw.length - 1, y } },
+          text: raw,
+          activate: () => openFromTerminal(projPath, raw),
+        });
+      }
+      cb(links.length ? links : undefined);
+    },
+  };
+}
+async function openFromTerminal(projPath, raw) {
+  const mm = raw.match(/^(.*?)(?::(\d+))?$/);
+  let p = mm[1]; const line = mm[2] ? parseInt(mm[2], 10) : 0;
+  if (!/^([a-zA-Z]:[\\/]|[\\/])/.test(p)) p = projPath.replace(/[\\/]$/, '') + '/' + p.replace(/^\.[\\/]/, '');
+  if (!(await lite.fs.exists(p))) return;
+  if (!viewerOpen) setViewerOpen(true);
+  await openFile(p, line);
+}
+
 function ensureTerminal(proj) {
   if (terms.has(proj.id)) return terms.get(proj.id);
   const container = el('div', 'term-instance');
   $('#terminals').appendChild(container);
   const term = new Terminal({
     fontFamily: '"JetBrains Mono", "Fira Code", "Cascadia Code", Consolas, monospace',
-    fontSize: 13, cursorBlink: true, allowProposedApi: true, theme: TERM_THEME, scrollback: 5000,
+    fontSize: settings.fontSize, cursorBlink: true, allowProposedApi: true, theme: TERM_THEME, scrollback: 5000,
   });
   const fit = new FitAddon();
+  const search = new SearchAddon();
   term.loadAddon(fit);
+  term.loadAddon(search);
+  term.loadAddon(new WebLinksAddon((_e, uri) => lite.openExternal(uri)));
   term.open(container);
   fit.fit();
+  term.registerLinkProvider(fileLinkProvider(term, proj.path)); // src/app.js:42 → viewer
   lite.pty.create({ id: proj.id, cwd: proj.path, cols: term.cols, rows: term.rows });
   term.onData((data) => lite.pty.write(proj.id, data));
   term.onResize(({ cols, rows }) => lite.pty.resize(proj.id, cols, rows));
@@ -259,6 +354,10 @@ function ensureTerminal(proj) {
       pasteInto(proj.id);
       return false;
     }
+    if (e.type === 'keydown' && e.ctrlKey && !e.altKey && (e.key === 'f' || e.key === 'F')) {
+      openTermSearch();
+      return false;
+    }
     return true;
   });
   // right-click → copy/paste menu
@@ -267,7 +366,7 @@ function ensureTerminal(proj) {
     showTermMenu(e.clientX, e.clientY, term, proj.id);
   });
 
-  const rec = { term, fit, container, idleTimer: null };
+  const rec = { term, fit, search, container, idleTimer: null, sawBell: false, tail: '', busyStart: 0 };
   terms.set(proj.id, rec);
   return rec;
 }
@@ -289,13 +388,69 @@ function refitActiveTerminal() {
   });
 }
 
+// ---------------------------------------------------------------- font size
+let watchedRoot = null; // we live-watch only the active project to limit inotify use
+function applyFontSize() {
+  for (const rec of terms.values()) { rec.term.options.fontSize = settings.fontSize; try { rec.fit.fit(); } catch (_) {} }
+  document.documentElement.style.setProperty('--editor-fs', settings.fontSize + 'px');
+  refitActiveTerminal();
+}
+function bumpFont(delta) {
+  settings.fontSize = Math.max(9, Math.min(24, settings.fontSize + delta));
+  saveSettings(); applyFontSize();
+}
+
+// ---------------------------------------------------------------- terminal search
+function openTermSearch() {
+  const rec = terms.get(activeId);
+  if (!rec) return;
+  const box = $('#term-search');
+  box.classList.add('show');
+  const input = $('#term-search-input');
+  input.focus(); input.select();
+}
+function closeTermSearch() {
+  $('#term-search').classList.remove('show');
+  const rec = terms.get(activeId);
+  if (rec) { try { rec.search.clearDecorations(); } catch (_) {} rec.term.focus(); }
+}
+function runTermSearch(dir) {
+  const rec = terms.get(activeId);
+  const q = $('#term-search-input').value;
+  if (!rec || !q) return;
+  const opts = { decorations: { matchOverviewRuler: '#e0af68', activeMatchColorOverviewRuler: '#3ddc84' } };
+  if (dir < 0) rec.search.findPrevious(q, opts); else rec.search.findNext(q, opts);
+}
+
+// Don't lose unsaved viewer edits when switching away — ask first.
+function guardDirty(proceed) {
+  if (!dirty || !currentFile) { proceed(); return; }
+  showConfirm(
+    'Несохранённые изменения',
+    `Файл «${baseName(currentFile)}» изменён. Сохранить перед переключением?`,
+    'Сохранить',
+    async () => { await saveCurrent(); proceed(); },
+    'Не сохранять',
+    () => { markDirty(false); proceed(); },
+  );
+}
+
 function setActive(id) {
   const proj = projects.find((p) => p.id === id);
   if (!proj) return;
+  if (id === activeId) return;
+  guardDirty(() => doSetActive(id));
+}
+function doSetActive(id) {
+  const proj = projects.find((p) => p.id === id);
+  if (!proj) return;
   activeId = id;
+  if (watchedRoot && watchedRoot !== proj.path) lite.fs.unwatch(watchedRoot);
+  lite.fs.watch(proj.path); watchedRoot = proj.path;
   ensureTerminal(proj);
   renderProjects();
   showActiveTerminal();
+  applyFontSize();
   if (viewerOpen) refreshViewerForActive();
 }
 
@@ -326,9 +481,10 @@ function makeEditor() {
   });
   editor = new EditorView({ state, parent: $('#editor') });
 }
-async function openFile(filePath) {
+async function openFile(filePath, line) {
+  if (diffMode) exitDiff(false);
   const res = await lite.fs.readFile(filePath);
-  $('#viewer-filename').textContent = filePath.split('/').pop();
+  $('#viewer-filename').textContent = baseName(filePath);
   if (res.error) { setEditorText(`// ${res.error}`, []); currentFile = null; return; }
   currentFile = filePath;
   if (activeId) { projFiles.set(activeId, filePath); saveProjFiles(); } // remember per project
@@ -337,6 +493,23 @@ async function openFile(filePath) {
   document.querySelectorAll('.tree-row.open').forEach((r) => r.classList.remove('open'));
   const row = document.querySelector(`.tree-row[data-path="${cssEscape(filePath)}"]`);
   if (row) row.classList.add('open');
+  if (line && line > 0) requestAnimationFrame(() => gotoLine(line));
+}
+function gotoLine(line) {
+  const doc = editor.state.doc;
+  const pos = doc.line(Math.max(1, Math.min(line, doc.lines))).from;
+  editor.dispatch({ selection: { anchor: pos }, scrollIntoView: true });
+  editor.focus();
+}
+// Reload the open file from disk (agent changed it) — keep caret roughly put.
+async function reloadCurrentFile() {
+  if (!currentFile) return;
+  const res = await lite.fs.readFile(currentFile);
+  if (res.error) return;
+  const head = editor.state.selection.main.head;
+  setEditorText(res.content, languageFor(currentFile));
+  markDirty(false);
+  try { editor.dispatch({ selection: { anchor: Math.min(head, editor.state.doc.length) } }); } catch (_) {}
 }
 function setEditorText(text, lang) {
   loadingDoc = true;
@@ -348,6 +521,77 @@ async function saveCurrent() {
   if (!currentFile || !dirty) return;
   const res = await lite.fs.writeFile(currentFile, editor.state.doc.toString());
   if (res.ok) markDirty(false);
+  else toast(`Не удалось сохранить: ${res.error || 'ошибка записи'}`, { kind: 'err', ttl: 6000 });
+}
+
+// ---------------------------------------------------------------- git diff in the viewer
+async function toggleDiff() {
+  if (diffMode) { exitDiff(true); return; }
+  if (!currentFile) return;
+  const p = activeProject(); if (!p) return;
+  const res = await lite.git.fileDiff(p.path, currentFile);
+  showDiff(res && res.diff ? res.diff : '');
+}
+function showDiff(text) {
+  diffMode = true;
+  const view = $('#diff-view');
+  view.innerHTML = '';
+  if (!text.trim()) {
+    view.appendChild(el('div', 'diff-empty', 'Нет изменений относительно HEAD (или это не git-репозиторий).'));
+  } else {
+    for (const ln of text.split('\n')) {
+      let cls = '';
+      if (ln.startsWith('@@')) cls = 'hunk';
+      else if (ln.startsWith('+++') || ln.startsWith('---') || ln.startsWith('diff ') || ln.startsWith('index ')) cls = 'meta';
+      else if (ln.startsWith('+')) cls = 'add';
+      else if (ln.startsWith('-')) cls = 'del';
+      view.appendChild(el('div', 'diff-line ' + cls, ln || ' '));
+    }
+  }
+  $('#editor').style.display = 'none';
+  view.style.display = 'block';
+  $('#viewer-diff').classList.add('on');
+}
+function exitDiff(refocus) {
+  diffMode = false;
+  $('#diff-view').style.display = 'none';
+  $('#editor').style.display = '';
+  $('#viewer-diff').classList.remove('on');
+  if (refocus) editor.focus();
+}
+
+// ---------------------------------------------------------------- git status (tree decorations)
+async function loadGitStatus(proj) {
+  if (!proj) { gitFiles = {}; return; }
+  const res = await lite.git.status(proj.path);
+  gitFiles = res && res.files ? res.files : {};
+}
+function gitClassFor(p) {
+  const c = gitFiles[p];
+  if (!c) return '';
+  if (c === '?' || c.includes('A')) return 'g-add';
+  if (c.includes('D')) return 'g-del';
+  return 'g-mod';
+}
+function dirGitClass(dirPath) {
+  for (const k in gitFiles) {
+    if (k.length > dirPath.length && k.startsWith(dirPath) && (k[dirPath.length] === '/' || k[dirPath.length] === '\\')) return 'g-mod';
+  }
+  return '';
+}
+
+// ---------------------------------------------------------------- toasts
+function toast(msg, opts = {}) {
+  const t = el('div', 'toast' + (opts.kind ? ' ' + opts.kind : ''));
+  t.appendChild(el('span', 'toast-msg', msg));
+  if (opts.actionLabel) {
+    const b = el('button', 'toast-act', opts.actionLabel);
+    b.onclick = () => { t.remove(); opts.action && opts.action(); };
+    t.appendChild(b);
+  }
+  $('#toasts').appendChild(t);
+  requestAnimationFrame(() => t.classList.add('show'));
+  setTimeout(() => { t.classList.remove('show'); setTimeout(() => t.remove(), 250); }, opts.ttl || 4000);
 }
 function clearViewer() {
   currentFile = null;
@@ -411,6 +655,7 @@ function folderSvg(open) {
 
 async function renderTree(proj) {
   $('#tree-title').textContent = proj.name.toUpperCase();
+  await loadGitStatus(proj);
   const root = $('#tree');
   root.innerHTML = '';
   await buildDir(proj.path, root, 0);
@@ -423,29 +668,44 @@ async function buildDir(dir, container, depth) {
     if (ent.dir) {
       const row = el('div', 'tree-row dir');
       row.style.paddingLeft = indent + 'px';
+      row.dataset.path = ent.path;
       const chev = el('span', 'tree-chev', '▸');
       let icon = folderSvg(false);
       const name = el('span', 'tree-name', ent.name);
+      const gc = dirGitClass(ent.path); if (gc) name.classList.add(gc);
       row.appendChild(chev); row.appendChild(icon); row.appendChild(name);
       const childBox = el('div', 'tree-children');
       childBox.style.display = 'none';
-      let expanded = false;
+      const expand = async () => {
+        if (childBox.childElementCount === 0) await buildDir(ent.path, childBox, depth + 1);
+        childBox.style.display = 'block'; chev.textContent = '▾';
+        const nx = folderSvg(true); icon.replaceWith(nx); icon = nx;
+      };
+      const collapse = () => {
+        childBox.style.display = 'none'; chev.textContent = '▸';
+        const nx = folderSvg(false); icon.replaceWith(nx); icon = nx;
+      };
       row.addEventListener('click', async () => {
-        expanded = !expanded;
-        if (expanded && childBox.childElementCount === 0) await buildDir(ent.path, childBox, depth + 1);
-        childBox.style.display = expanded ? 'block' : 'none';
-        chev.textContent = expanded ? '▾' : '▸';
-        const next = folderSvg(expanded); icon.replaceWith(next); icon = next;
+        if (expandedDirs.has(ent.path)) { expandedDirs.delete(ent.path); collapse(); }
+        else { expandedDirs.add(ent.path); await expand(); }
       });
       container.appendChild(row); container.appendChild(childBox);
+      if (expandedDirs.has(ent.path)) await expand(); // restore after a live refresh
     } else {
       const row = el('div', 'tree-row file');
       row.style.paddingLeft = indent + 'px';
       row.dataset.path = ent.path;
       row.appendChild(el('span', 'tree-chev', ''));
       row.appendChild(fileSvg(colorFor(ent.name)));
-      row.appendChild(el('span', 'tree-name', ent.name));
-      row.addEventListener('click', () => { if (!viewerOpen) setViewerOpen(true); openFile(ent.path); });
+      const name = el('span', 'tree-name', ent.name);
+      const gc = gitClassFor(ent.path); if (gc) name.classList.add(gc);
+      row.appendChild(name);
+      if (ent.path === currentFile) row.classList.add('open');
+      row.addEventListener('click', () => {
+        if (ent.path === currentFile && viewerOpen) return;
+        if (!viewerOpen) setViewerOpen(true);
+        guardDirty(() => openFile(ent.path));
+      });
       container.appendChild(row);
     }
   }
@@ -566,7 +826,10 @@ function buildFileMenu(dd) {
   }
 }
 function buildSettingsMenu(dd) {
-  dd.appendChild(el('div', 'menu-row disabled', 'Настройки появятся позже'));
+  dd.appendChild(menuRow('🎚', 'Настройки…', () => { closeMenus(); showSettings(); }));
+  dd.appendChild(menuRow('⌘', 'Палитра команд (Ctrl+K)', () => { closeMenus(); showPalette(); }));
+  dd.appendChild(el('div', 'menu-sep'));
+  dd.appendChild(menuRow('🔍', 'Поиск в терминале (Ctrl+F)', () => { closeMenus(); openTermSearch(); }));
 }
 
 // terminal right-click menu
@@ -597,12 +860,15 @@ function makeModal(innerHtml) {
   m.addEventListener('keydown', (e) => { if (e.key === 'Escape') close(); });
   return { overlay, m, close };
 }
-function showConfirm(title, text, yesLabel, onYes) {
+// Optional middle button (altLabel/onAlt) turns this into a 3-way prompt
+// (e.g. Save / Don't save / Cancel).
+function showConfirm(title, text, yesLabel, onYes, altLabel, onAlt) {
   const { m, close } = makeModal(`
     <h2 class="cm-title"></h2>
     <div class="about-desc cm-text"></div>
     <div class="modal-actions">
       <button class="btn" id="cm-no">Отмена</button>
+      <button class="btn" id="cm-alt" style="display:none"></button>
       <button class="btn primary" id="cm-yes"></button>
     </div>`);
   m.querySelector('.cm-title').textContent = title;
@@ -610,6 +876,11 @@ function showConfirm(title, text, yesLabel, onYes) {
   m.querySelector('#cm-yes').textContent = yesLabel;
   m.querySelector('#cm-no').onclick = close;
   m.querySelector('#cm-yes').onclick = () => { close(); onYes(); };
+  if (altLabel) {
+    const alt = m.querySelector('#cm-alt');
+    alt.style.display = ''; alt.textContent = altLabel;
+    alt.onclick = () => { close(); onAlt && onAlt(); };
+  }
   setTimeout(() => m.querySelector('#cm-yes').focus(), 30);
 }
 function showAbout() {
@@ -666,6 +937,76 @@ function showCreateFolder() {
   m.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); create(); } });
 }
 
+// ---------------------------------------------------------------- settings panel (small on purpose)
+function showSettings() {
+  const { m, close } = makeModal(`
+    <h2>🎚 Настройки</h2>
+    <label class="set-row"><span>Уведомления о завершении агента</span><input type="checkbox" id="st-notif"></label>
+    <label class="set-row"><span>Звук уведомлений</span><input type="checkbox" id="st-sound"></label>
+    <label class="set-row"><span>Тишина до «готов», мс</span><input type="number" id="st-idle" min="300" max="6000" step="100"></label>
+    <label class="set-row"><span>Размер шрифта</span><input type="number" id="st-font" min="9" max="24"></label>
+    <div class="modal-actions"><button class="btn primary" id="st-ok">Готово</button></div>`);
+  const notif = m.querySelector('#st-notif'); notif.checked = settings.notifications;
+  const sound = m.querySelector('#st-sound'); sound.checked = settings.sound;
+  const idle = m.querySelector('#st-idle'); idle.value = settings.idleMs;
+  const font = m.querySelector('#st-font'); font.value = settings.fontSize;
+  m.querySelector('#st-ok').onclick = () => {
+    settings.notifications = notif.checked;
+    settings.sound = sound.checked;
+    settings.idleMs = Math.max(300, Math.min(6000, parseInt(idle.value, 10) || 1200));
+    settings.fontSize = Math.max(9, Math.min(24, parseInt(font.value, 10) || 13));
+    saveSettings(); applyFontSize(); close();
+  };
+}
+
+// ---------------------------------------------------------------- command palette (Ctrl+K)
+function paletteActions() {
+  const acts = [];
+  for (const p of projects) acts.push({ label: `Проект: ${p.name}`, hint: p.path, run: () => setActive(p.id) });
+  acts.push({ label: 'Открыть папку…', run: openProjectDialog });
+  acts.push({ label: 'Создать папку…', run: showCreateFolder });
+  acts.push({ label: viewerOpen ? 'Закрыть вивер' : 'Открыть вивер', run: () => setViewerOpen(!viewerOpen) });
+  acts.push({ label: 'Режим «один терминал»', run: toggleSingle });
+  acts.push({ label: 'Поиск в терминале', run: openTermSearch });
+  acts.push({ label: 'Настройки…', run: showSettings });
+  if (currentFile) acts.push({ label: 'Показать дифф файла', run: toggleDiff });
+  return acts;
+}
+function showPalette() {
+  closeMenus();
+  const all = paletteActions();
+  const { m, close } = makeModal(`
+    <input type="text" id="pal-input" class="pal-input" placeholder="Команда или проект…" autocomplete="off" spellcheck="false">
+    <div class="pal-list" id="pal-list"></div>`);
+  m.classList.add('palette');
+  const input = m.querySelector('#pal-input');
+  const list = m.querySelector('#pal-list');
+  let sel = 0, shown = all;
+  const render = () => {
+    list.innerHTML = '';
+    shown.forEach((a, i) => {
+      const row = el('div', 'pal-row' + (i === sel ? ' sel' : ''));
+      row.appendChild(el('span', 'pal-label', a.label));
+      if (a.hint) row.appendChild(el('span', 'pal-hint', a.hint));
+      row.addEventListener('click', () => { close(); a.run(); });
+      list.appendChild(row);
+    });
+  };
+  const filter = () => {
+    const q = input.value.trim().toLowerCase();
+    shown = q ? all.filter((a) => (a.label + ' ' + (a.hint || '')).toLowerCase().includes(q)) : all;
+    sel = 0; render();
+  };
+  input.addEventListener('input', filter);
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowDown') { e.preventDefault(); sel = Math.min(sel + 1, shown.length - 1); render(); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); sel = Math.max(sel - 1, 0); render(); }
+    else if (e.key === 'Enter') { e.preventDefault(); const a = shown[sel]; if (a) { close(); a.run(); } }
+  });
+  render();
+  setTimeout(() => input.focus(), 30);
+}
+
 // ---------------------------------------------------------------- single-terminal toggle
 function toggleSingle() {
   $('#app').classList.toggle('single');
@@ -684,7 +1025,7 @@ function init() {
     const rec = terms.get(id);
     if (!rec) return;
     rec.term.write(data);
-    markBusy(id);
+    markActivity(id, data);
   });
   lite.pty.onExit(({ id }) => {
     const rec = terms.get(id);
@@ -692,19 +1033,68 @@ function init() {
     setProjState(id, 'quiet');
   });
 
+  // Live disk changes for the active project: refresh tree (keeping expansion)
+  // and reload the open file — or warn if you have unsaved edits.
+  let fsTimer = null;
+  lite.fs.onChange(({ root, files }) => {
+    const p = activeProject();
+    if (!p || p.path !== root) return;
+    clearTimeout(fsTimer);
+    fsTimer = setTimeout(() => {
+      if (viewerOpen) renderTree(p);
+      if (currentFile && files.includes(currentFile) && !diffMode) {
+        if (!dirty) reloadCurrentFile();
+        else toast(`«${baseName(currentFile)}» изменён на диске`, { actionLabel: 'Перечитать', action: reloadCurrentFile, ttl: 8000 });
+      }
+    }, 120);
+  });
+
   $('#open-folder-btn').addEventListener('click', openProjectDialog);
   $('#btn-single').addEventListener('click', toggleSingle);
   $('#viewer-save').addEventListener('click', saveCurrent);
+  $('#viewer-diff').addEventListener('click', toggleDiff);
   $('#viewer-close').addEventListener('click', () => setViewerOpen(false));
   $('#tree-refresh').addEventListener('click', () => { const p = activeProject(); if (p) renderTree(p); });
+  $('#attention-badge').addEventListener('click', () => {
+    const id = [...projState.entries()].find(([, s]) => s === 'waiting');
+    if (id) setActive(id[0]);
+  });
+
+  // terminal search box
+  $('#term-search-input').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); runTermSearch(e.shiftKey ? -1 : 1); }
+    else if (e.key === 'Escape') { e.preventDefault(); closeTermSearch(); }
+  });
+  $('#term-search-next').addEventListener('click', () => runTermSearch(1));
+  $('#term-search-prev').addEventListener('click', () => runTermSearch(-1));
+  $('#term-search-close').addEventListener('click', closeTermSearch);
 
   document.addEventListener('keydown', (e) => {
     if (e.ctrlKey && e.key === '\\') { e.preventDefault(); toggleSingle(); }
     if (e.ctrlKey && (e.key === 's' || e.key === 'S')) { e.preventDefault(); saveCurrent(); }
+    if (e.ctrlKey && (e.key === 'k' || e.key === 'K')) { e.preventDefault(); showPalette(); }
+    if (e.ctrlKey && (e.key === '=' || e.key === '+')) { e.preventDefault(); bumpFont(1); }
+    if (e.ctrlKey && e.key === '-') { e.preventDefault(); bumpFont(-1); }
+    if (e.ctrlKey && e.key === 'Tab') { e.preventDefault(); cycleProject(e.shiftKey ? -1 : 1); }
+    if (e.ctrlKey && /^[1-9]$/.test(e.key)) {
+      const p = projects[parseInt(e.key, 10) - 1];
+      if (p) { e.preventDefault(); setActive(p.id); }
+    }
+  });
+
+  // drag a folder onto the window to open it as a project
+  document.addEventListener('dragover', (e) => { e.preventDefault(); });
+  document.addEventListener('drop', (e) => {
+    e.preventDefault();
+    const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+    if (!f) return;
+    const p = f.path || lite.pathForFile(f);
+    if (p) openByPath(p, baseName(p));
   });
 
   new ResizeObserver(() => refitActiveTerminal()).observe($('#terminal-pane'));
 
+  applyFontSize();
   projects = loadProjectsFromDisk();
   renderProjects();
   if (projects.length) setActive(projects[0].id);
@@ -712,6 +1102,13 @@ function init() {
 
   checkProjectsExistence();
   window.addEventListener('focus', checkProjectsExistence); // re-check when returning to the app
+}
+
+function cycleProject(dir) {
+  if (projects.length < 2) return;
+  const i = projects.findIndex((p) => p.id === activeId);
+  const next = projects[(i + dir + projects.length) % projects.length];
+  if (next) setActive(next.id);
 }
 
 init();

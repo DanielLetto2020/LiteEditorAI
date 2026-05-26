@@ -20,6 +20,7 @@
       </nav>
       <div class="drag-space"></div>
       <div class="win-tools">
+        <button id="attention-badge" class="attention-badge" title="Агентов ждёт ответа">0</button>
         <button id="btn-single" class="icon-btn" title="Один терминал (Ctrl+\)">⛶</button>
         <span class="win-sep"></span>
         <button id="win-min" class="win-btn" title="Свернуть" aria-label="Свернуть"></button>
@@ -42,6 +43,12 @@
 
       <section id="terminal-pane">
         <div id="terminals"></div>
+        <div id="term-search">
+          <input id="term-search-input" type="text" placeholder="Поиск в терминале…" autocomplete="off" spellcheck="false">
+          <button id="term-search-prev" class="ts-btn" title="Назад (Shift+Enter)">▲</button>
+          <button id="term-search-next" class="ts-btn" title="Вперёд (Enter)">▼</button>
+          <button id="term-search-close" class="ts-btn" title="Закрыть (Esc)">✕</button>
+        </div>
         <div id="empty-hint">
           <div class="hint-card">
             <div class="hint-title">Пусто</div>
@@ -56,10 +63,12 @@
           <span id="viewer-filename">—</span>
           <span id="viewer-dirty" class="dirty-dot" title="Несохранённые изменения"></span>
           <div class="drag-space-static"></div>
+          <button id="viewer-diff" class="icon-btn" title="Дифф изменений vs HEAD (git)">±</button>
           <button id="viewer-save" class="icon-btn" title="Сохранить (Ctrl+S)">💾</button>
           <button id="viewer-close" class="icon-btn" title="Закрыть вивер">✕</button>
         </div>
         <div id="editor"></div>
+        <div id="diff-view"></div>
       </section>
 
       <div class="gutter gutter-v hidden" data-resize="tree"></div>
@@ -76,6 +85,7 @@
 
   <div id="menu-layer"></div>
   <div id="modal-root"></div>
+  <div id="toasts"></div>
 
   <script src="dist/bundle.js"></script>
 </body>
