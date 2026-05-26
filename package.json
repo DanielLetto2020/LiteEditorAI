@@ -1,11 +1,12 @@
 {
-  "name": "lite-editor",
-  "version": "1.0.17-alpha",
-  "description": "Terminal-first multi-project workspace with a code viewer",
+  "name": "liteeditor-ai",
+  "version": "1.0.18-alpha",
+  "description": "Lightweight editor for working with AI coding agents in the terminal",
   "main": "main.js",
-  "author": "Letto <i@m-letto.ru>",
-  "license": "MIT",
-  "homepage": "https://m-letto.ru",
+  "author": "Максим Кузьминский <i@m-letto.ru>",
+  "license": "Apache-2.0",
+  "homepage": "https://github.com/DanielLetto2020/LiteEditorAI",
+  "repository": { "type": "git", "url": "https://github.com/DanielLetto2020/LiteEditorAI.git" },
   "scripts": {
     "build": "node build.js",
     "start": "node build.js && electron --no-sandbox .",
@@ -46,8 +47,8 @@
     "sharp": "^0.33.5"
   },
   "build": {
-    "appId": "com.mletto.liteeditor",
-    "productName": "LiteEditor",
+    "appId": "com.mletto.liteeditorai",
+    "productName": "LiteEditorAI",
     "directories": {
       "output": "dist-release",
       "buildResources": "assets"
@@ -73,7 +74,7 @@
       ],
       "category": "Development",
       "icon": "assets/icon.png",
-      "maintainer": "Letto <i@m-letto.ru>",
+      "maintainer": "Максим Кузьминский <i@m-letto.ru>",
       "executableArgs": [
         "--no-sandbox"
       ]

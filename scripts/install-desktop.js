@@ -30,15 +30,15 @@ exec "${electronBin}" --no-sandbox . "$@" > "${logFile}" 2>&1
 
 const desktopBody = `[Desktop Entry]
 Type=Application
-Name=LiteEditor
-GenericName=Code Terminal
-Comment=Терминал-ориентированное окружение с вивером кода
+Name=LiteEditorAI
+GenericName=AI Agent Editor
+Comment=Лёгкий редактор для работы с ИИ-агентами в терминале
 Exec=${launcher} %U
 Icon=${icon}
 Terminal=false
 Categories=Development;Utility;TextEditor;
 StartupNotify=true
-StartupWMClass=LiteEditor
+StartupWMClass=LiteEditorAI
 `;
 
 fs.writeFileSync(launcher, launcherBody, { mode: 0o755 });

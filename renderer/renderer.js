@@ -21,7 +21,7 @@ import { markdown } from '@codemirror/lang-markdown';
 import { html } from '@codemirror/lang-html';
 import { css } from '@codemirror/lang-css';
 
-const APP_VERSION = 'alpha v1.0.17';
+const APP_VERSION = 'alpha v1.0.18';
 const GUTTER = 5;
 
 const lite = window.lite;
@@ -1499,12 +1499,12 @@ function showConfirm(title, text, yesLabel, onYes, altLabel, onAlt) {
 function showAbout() {
   closeMenus();
   const { m, close } = makeModal(`
-    <h2><span style="color:var(--green-bright)">▍</span>LiteEditor</h2>
+    <h2><span style="color:var(--green-bright)">▍</span>LiteEditorAI</h2>
     <div class="about-desc">
-      Лёгкое десктоп-окружение для работы с агентами (Claude&nbsp;Code и&nbsp;т.п.).
-      Главный гражданин — терминал; вивер кода и дерево файлов прячутся одной кнопкой
-      (<b>Ctrl&nbsp;+&nbsp;\\</b>). У каждого открытого проекта свой живой терминал.<br><br>
-      Сделано на Electron · xterm.js · node-pty · CodeMirror&nbsp;6.
+      Лёгкий редактор для работы с ИИ-агентами прямо в терминале.
+      У каждого проекта свой терминал, рядом — просмотр и правка файлов, дерево и git.
+      Открыл папку — сразу работаешь с агентом (Claude&nbsp;Code, Codex, Qwen, Kimi и&nbsp;др.).<br><br>
+      Заметки-промпты, темы, индикатор «агент ждёт ответа». Сделано на Electron.
     </div>
     <div class="about-ver">${APP_VERSION}</div>
     <div class="modal-actions"><button class="btn primary" id="ab-ok">Ок</button></div>`);

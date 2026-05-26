@@ -7,7 +7,7 @@ const os = require('os');
 const { execFile } = require('child_process');
 const pty = require('node-pty');
 
-app.setName('LiteEditor');
+app.setName('LiteEditorAI');
 
 // Electron installed via npm ships no root-owned setuid sandbox helper, so the
 // Chromium SUID sandbox aborts at launch. We load only our own local content,
@@ -81,7 +81,12 @@ const MAX_VIEW_BYTES = 2 * 1024 * 1024;
 // One predictable home-dir folder holds everything (settings, projects, recents,
 // categories, notes) — like .idea, easy to find/back up. main owns the files;
 // the renderer keeps a sync snapshot and writes through.
-const storeDir = path.join(os.homedir(), '.LiteEditor');
+const storeDir = path.join(os.homedir(), '.LiteEditorAI');
+// one-time migration from the pre-rename folder so existing users keep their data
+try {
+  const legacy = path.join(os.homedir(), '.LiteEditor');
+  if (!fs.existsSync(storeDir) && fs.existsSync(legacy)) fs.cpSync(legacy, storeDir, { recursive: true });
+} catch (_) {}
 const STORE_KEYS = ['projects', 'settings', 'layout', 'recents', 'lastParent', 'projFiles', 'categories', 'accordions', 'dismissed'];
 function ensureStoreDir() { try { fs.mkdirSync(storeDir, { recursive: true }); } catch (_) {} }
 function storeFile(key) { return path.join(storeDir, String(key).replace(/[^\w.-]/g, '_') + '.json'); }
@@ -129,7 +134,7 @@ function createWindow() {
     minWidth: 760,
     minHeight: 480,
     backgroundColor: '#0a120d',
-    title: 'LiteEditor',
+    title: 'LiteEditorAI',
     frame: false,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
@@ -177,7 +182,7 @@ function createTray() {
   if (tray || !fs.existsSync(iconPng)) return;
   try {
     tray = new Tray(nativeImage.createFromPath(iconPng).resize({ width: 18, height: 18 }));
-    tray.setToolTip('LiteEditor');
+    tray.setToolTip('LiteEditorAI');
     tray.setContextMenu(Menu.buildFromTemplate([
       { label: 'Показать LiteEditor', click: showWindow },
       { type: 'separator' },
@@ -219,7 +224,7 @@ ipcMain.on('win:show', showWindow);
 // Reflect how many agents need attention on the tray tooltip (and macOS title).
 ipcMain.on('tray:update', (_e, { attention } = {}) => {
   const n = attention || 0;
-  if (tray) tray.setToolTip(n > 0 ? `LiteEditor — ${n} ждут ответа` : 'LiteEditor');
+  if (tray) tray.setToolTip(n > 0 ? `LiteEditorAI — ${n} ждут ответа` : 'LiteEditorAI');
   if (process.platform === 'darwin' && app.dock) app.setBadgeCount(n);
 });
 
