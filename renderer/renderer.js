@@ -1217,7 +1217,7 @@ function showCreateFolder() {
   const nameI = m.querySelector('#cf-name');
   const parentI = m.querySelector('#cf-parent');
   const err = m.querySelector('#cf-err');
-  parentI.value = lastParent || settings.workingDir || '';
+  parentI.value = settings.workingDir || lastParent || ''; // working folder wins when set
   setTimeout(() => nameI.focus(), 30);
   m.querySelector('#cf-cancel').onclick = close;
   m.querySelector('#cf-pick').onclick = async () => {
