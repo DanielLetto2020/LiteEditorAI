@@ -240,10 +240,12 @@ async function checkProjectsExistence() {
 }
 
 // ---------------------------------------------------------------- activity indicator
-// Three states: busy (output flowing) · waiting (quiet, but looks like it wants
-// input) · quiet (done/idle). Heuristic — the terminal bell and trailing prompt
-// patterns are the tells that an agent is waiting on you.
-const PROMPT_RE = /(\?|\(y\/n\)|\[y\/n\]|\[Y\/n\]|\(yes\/no\)|press\s+enter|continue|proceed|overwrite|password:|passphrase:|❯|›|\$\s|#\s)\s*$/i;
+// Three states: busy (output flowing) · waiting (quiet, but wants your input) ·
+// quiet (done/idle). The reliable "wants attention" signal is the terminal BELL
+// (\x07) — agents/CLIs ring it on purpose; a normal shell/Claude prompt does not,
+// so we must NOT treat trailing $, #, ❯ as "waiting" (that's just idle/ready).
+// PROMPT_RE is a narrow backup for plain CLIs (git/ssh/sudo) that don't bell.
+const PROMPT_RE = /(\(y\/n\)|\[y\/n\]|\[Y\/n\]|\(yes\/no\)|overwrite\?|password:|passphrase:|press\s+enter)\s*$/i;
 // eslint-disable-next-line no-control-regex
 const ANSI_RE = /\x1b\][^\x07]*\x07|\x1b\[[0-?]*[ -\/]*[@-~]|\x1b[@-_]|[\x00-\x08\x0b-\x1f\x7f]/g;
 const stripAnsi = (str) => str.replace(ANSI_RE, '');
@@ -256,7 +258,12 @@ function setProjState(id, state) {
 function markActivity(id, data) {
   const rec = terms.get(id);
   if (!rec) return;
-  if (data && data.includes('\x07')) rec.sawBell = true; // BEL — common "look at me" signal
+  const bell = !!(data && data.includes('\x07'));
+  if (bell) rec.sawBell = true;
+  // Local echo of the user's own typing is tiny and arrives right after a keystroke —
+  // that's not the agent working, so don't spin on it.
+  const echoLike = !bell && data && data.length <= 8 && (Date.now() - (rec.lastInputAt || 0)) < 250;
+  if (echoLike) return;
   rec.tail = stripAnsi((rec.tail || '') + (data || '')).slice(-400);
   if (projState.get(id) !== 'busy') { rec.busyStart = Date.now(); setProjState(id, 'busy'); }
   clearTimeout(rec.idleTimer);
@@ -345,7 +352,11 @@ function ensureTerminal(proj) {
   fit.fit();
   term.registerLinkProvider(fileLinkProvider(term, proj.path)); // src/app.js:42 → viewer
   lite.pty.create({ id: proj.id, cwd: proj.path, cols: term.cols, rows: term.rows });
-  term.onData((data) => lite.pty.write(proj.id, data));
+  term.onData((data) => {
+    const r = terms.get(proj.id);
+    if (r) r.lastInputAt = Date.now(); // mark typing so its echo isn't counted as agent activity
+    lite.pty.write(proj.id, data);
+  });
   term.onResize(({ cols, rows }) => lite.pty.resize(proj.id, cols, rows));
 
   // Ctrl+V → paste from OS clipboard (Ctrl+C left alone so it stays SIGINT).
@@ -366,7 +377,7 @@ function ensureTerminal(proj) {
     showTermMenu(e.clientX, e.clientY, term, proj.id);
   });
 
-  const rec = { term, fit, search, container, idleTimer: null, sawBell: false, tail: '', busyStart: 0 };
+  const rec = { term, fit, search, container, idleTimer: null, sawBell: false, tail: '', busyStart: 0, lastInputAt: 0 };
   terms.set(proj.id, rec);
   return rec;
 }
