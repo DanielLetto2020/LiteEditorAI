@@ -1,0 +1,50 @@
+name: Release
+
+# Builds installers on a pushed tag (v*) and attaches them to the GitHub Release.
+# Windows builds on windows-latest, so node-pty compiles natively → working terminal.
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: --linux deb AppImage
+          - os: windows-latest
+            target: --win nsis portable
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install deps (rebuilds node-pty for this OS)
+        run: npm ci
+
+      - name: Bundle renderer
+        run: node build.js
+
+      - name: Build installers
+        run: npx --no-install electron-builder ${{ matrix.target }}
+
+      - name: Attach to release
+        uses: softprops/action-gh-release@v2
+        with:
+          fail_on_unmatched_files: false
+          files: |
+            dist-release/*.deb
+            dist-release/*.AppImage
+            dist-release/*.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
