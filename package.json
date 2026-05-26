@@ -1,6 +1,6 @@
 {
   "name": "lite-editor",
-  "version": "1.0.0-alpha",
+  "version": "1.0.10-alpha",
   "description": "Terminal-first multi-project workspace with a code viewer",
   "main": "main.js",
   "author": "Maxim Letto",
