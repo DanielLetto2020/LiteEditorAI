@@ -28,6 +28,13 @@ contextBridge.exposeInMainWorld('lite', {
 
   tray: { update: (attention) => ipcRenderer.send('tray:update', { attention }) },
 
+  store: {
+    loadAll: () => ipcRenderer.sendSync('store:loadAll'),       // sync snapshot at startup
+    set: (key, value) => ipcRenderer.send('store:set', { key, value }),
+    notesGet: (id) => ipcRenderer.invoke('store:notesGet', id),
+    notesSet: (id, notes) => ipcRenderer.invoke('store:notesSet', { id, notes }),
+  },
+
   git: {
     status: (root) => ipcRenderer.invoke('git:status', root),
     fileDiff: (root, file) => ipcRenderer.invoke('git:fileDiff', { root, file }),

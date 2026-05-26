@@ -38,14 +38,28 @@ function svgEl(html) {
 // basename that survives both POSIX and Windows separators (for the Windows build).
 function baseName(p) { return String(p).split(/[\\/]/).filter(Boolean).pop() || String(p); }
 
+// ---------------------------------------------------------------- global store (~/.LiteEditor)
+// Synchronous snapshot loaded once; reads are in-memory, writes go through to disk.
+const STORE = lite.store.loadAll();
+function persist(key, value) { STORE[key] = value; lite.store.set(key, value); }
+// One-time import from the old localStorage layout (builds before ~/.LiteEditor).
+(function migrateLocalStorage() {
+  if (STORE.projects !== undefined) return;
+  let did = false;
+  for (const k of ['projects', 'layout', 'recents', 'projFiles', 'settings']) {
+    try { const raw = localStorage.getItem('lite.' + k); if (raw != null) { persist(k, JSON.parse(raw)); did = true; } } catch (_) {}
+  }
+  const lp = localStorage.getItem('lite.lastParent'); if (lp) persist('lastParent', lp);
+  if (did) console.log('[LiteEditor] state migrated from localStorage → ~/.LiteEditor');
+})();
+// Stable id derived from the path, so categories/notes/favorites survive a rescan.
+function projId(p) { let h = 5381; for (let i = 0; i < p.length; i++) h = ((h << 5) + h + p.charCodeAt(i)) >>> 0; return 'p' + h.toString(36); }
+
 // ---------------------------------------------------------------- settings (tiny on purpose)
-const DEFAULT_SETTINGS = { notifications: true, sound: false, idleMs: 1200, fontSize: 13 };
-function loadSettings() {
-  try { return { ...DEFAULT_SETTINGS, ...JSON.parse(localStorage.getItem('lite.settings') || '{}') }; }
-  catch { return { ...DEFAULT_SETTINGS }; }
-}
+const DEFAULT_SETTINGS = { notifications: true, sound: false, idleMs: 1200, fontSize: 13, workingDir: '', scanDirs: [] };
+function loadSettings() { return { ...DEFAULT_SETTINGS, ...(STORE.settings || {}) }; }
 let settings = loadSettings();
-function saveSettings() { localStorage.setItem('lite.settings', JSON.stringify(settings)); }
+function saveSettings() { persist('settings', settings); }
 
 // ---------------------------------------------------------------- state
 let projects = [];
@@ -66,7 +80,7 @@ const langComp = new Compartment();
 
 const DEFAULT_LAYOUT = { sidebar: 240, viewer: 520, tree: 240 };
 let layout = loadLayout();
-let lastParent = localStorage.getItem('lite.lastParent') || '';
+let lastParent = STORE.lastParent || '';
 
 const TERM_THEME = {
   background: '#0a120d', foreground: '#cfe6d9', cursor: '#3ddc84',
@@ -78,31 +92,25 @@ const TERM_THEME = {
 const activeProject = () => projects.find((p) => p.id === activeId);
 
 // ---------------------------------------------------------------- persistence
-function saveProjects() { localStorage.setItem('lite.projects', JSON.stringify(projects)); }
-function loadProjectsFromDisk() {
-  try { return JSON.parse(localStorage.getItem('lite.projects') || '[]'); } catch { return []; }
-}
-function loadLayout() {
-  try { return { ...DEFAULT_LAYOUT, ...JSON.parse(localStorage.getItem('lite.layout') || '{}') }; }
-  catch { return { ...DEFAULT_LAYOUT }; }
-}
-function saveLayout() { localStorage.setItem('lite.layout', JSON.stringify(layout)); }
+function saveProjects() { persist('projects', projects); }
+function loadProjectsFromDisk() { return Array.isArray(STORE.projects) ? STORE.projects : []; }
+function loadLayout() { return { ...DEFAULT_LAYOUT, ...(STORE.layout || {}) }; }
+function saveLayout() { persist('layout', layout); }
 function applyLayout() {
   $('#sidebar').style.flexBasis = layout.sidebar + 'px';
   $('#viewer-pane').style.flexBasis = layout.viewer + 'px';
   $('#tree-pane').style.flexBasis = layout.tree + 'px';
 }
-function loadRecents() { try { return JSON.parse(localStorage.getItem('lite.recents') || '[]'); } catch { return []; } }
+function loadRecents() { return Array.isArray(STORE.recents) ? STORE.recents : []; }
 function pushRecent(p) {
   const r = loadRecents().filter((x) => x.path !== p.path);
   r.unshift({ path: p.path, name: p.name });
-  localStorage.setItem('lite.recents', JSON.stringify(r.slice(0, 30)));
+  persist('recents', r.slice(0, 30));
 }
 function loadProjFiles() {
-  try { return new Map(Object.entries(JSON.parse(localStorage.getItem('lite.projFiles') || '{}'))); }
-  catch { return new Map(); }
+  try { return new Map(Object.entries(STORE.projFiles || {})); } catch { return new Map(); }
 }
-function saveProjFiles() { localStorage.setItem('lite.projFiles', JSON.stringify(Object.fromEntries(projFiles))); }
+function saveProjFiles() { persist('projFiles', Object.fromEntries(projFiles)); }
 
 // ---------------------------------------------------------------- projects column
 function renderProjects() {
@@ -187,7 +195,7 @@ async function openProjectDialog() {
 function openByPath(p, name) {
   const existing = projects.find((x) => x.path === p);
   if (existing) { setActive(existing.id); pushRecent({ path: p, name: existing.name }); return; }
-  const proj = { id: 'p' + Math.random().toString(36).slice(2, 9), name: name || p.split('/').filter(Boolean).pop() || p, path: p };
+  const proj = { id: projId(p), name: name || baseName(p), path: p };
   projects.push(proj);
   saveProjects();
   setActive(proj.id);
@@ -853,7 +861,7 @@ function buildFileMenu(dd) {
   dd.appendChild(list);
   if (recents.length) {
     dd.appendChild(el('div', 'menu-sep'));
-    dd.appendChild(menuRow('🗑', 'Очистить список', () => { localStorage.removeItem('lite.recents'); closeMenus(); }));
+    dd.appendChild(menuRow('🗑', 'Очистить список', () => { persist('recents', []); closeMenus(); }));
   }
 }
 function buildSettingsMenu(dd) {
@@ -951,7 +959,7 @@ function showCreateFolder() {
   m.querySelector('#cf-cancel').onclick = close;
   m.querySelector('#cf-pick').onclick = async () => {
     const d = await lite.pickDir();
-    if (d) { parentI.value = d; lastParent = d; localStorage.setItem('lite.lastParent', d); }
+    if (d) { parentI.value = d; lastParent = d; persist('lastParent', d); }
   };
   const create = async () => {
     const name = nameI.value.trim();

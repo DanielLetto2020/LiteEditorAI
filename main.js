@@ -77,8 +77,38 @@ const IGNORE_DIRS = new Set([
 ]);
 const MAX_VIEW_BYTES = 2 * 1024 * 1024;
 
+// ---------------------------------------------------------------- global store (~/.LiteEditor)
+// One predictable home-dir folder holds everything (settings, projects, recents,
+// categories, notes) — like .idea, easy to find/back up. main owns the files;
+// the renderer keeps a sync snapshot and writes through.
+const storeDir = path.join(os.homedir(), '.LiteEditor');
+const STORE_KEYS = ['projects', 'settings', 'layout', 'recents', 'lastParent', 'projFiles', 'categories', 'accordions'];
+function ensureStoreDir() { try { fs.mkdirSync(storeDir, { recursive: true }); } catch (_) {} }
+function storeFile(key) { return path.join(storeDir, String(key).replace(/[^\w.-]/g, '_') + '.json'); }
+function readStoreKey(key) { try { return JSON.parse(fs.readFileSync(storeFile(key), 'utf8')); } catch { return undefined; } }
+function writeStoreKey(key, value) { ensureStoreDir(); try { fs.writeFileSync(storeFile(key), JSON.stringify(value)); } catch (_) {} }
+ensureStoreDir();
+
+ipcMain.on('store:loadAll', (e) => {
+  const o = {};
+  for (const k of STORE_KEYS) { const v = readStoreKey(k); if (v !== undefined) o[k] = v; }
+  e.returnValue = o; // synchronous: renderer loads the snapshot once at startup
+});
+ipcMain.on('store:set', (_e, { key, value }) => { if (STORE_KEYS.includes(key)) writeStoreKey(key, value); });
+ipcMain.handle('store:notesGet', (_e, id) => {
+  try { return JSON.parse(fs.readFileSync(path.join(storeDir, 'notes', String(id).replace(/[^\w.-]/g, '_') + '.json'), 'utf8')); }
+  catch { return []; }
+});
+ipcMain.handle('store:notesSet', (_e, { id, notes }) => {
+  try {
+    fs.mkdirSync(path.join(storeDir, 'notes'), { recursive: true });
+    fs.writeFileSync(path.join(storeDir, 'notes', String(id).replace(/[^\w.-]/g, '_') + '.json'), JSON.stringify(notes));
+    return { ok: true };
+  } catch (e) { return { error: String(e) }; }
+});
+
 // ---------------------------------------------------------------- window state
-const stateFile = path.join(app.getPath('userData'), 'window-state.json');
+const stateFile = path.join(storeDir, 'window-state.json');
 function loadState() {
   try { return JSON.parse(fs.readFileSync(stateFile, 'utf8')); } catch { return {}; }
 }
