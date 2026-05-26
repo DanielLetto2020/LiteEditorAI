@@ -21,7 +21,7 @@ import { markdown } from '@codemirror/lang-markdown';
 import { html } from '@codemirror/lang-html';
 import { css } from '@codemirror/lang-css';
 
-const APP_VERSION = 'alpha v1.0.16';
+const APP_VERSION = 'alpha v1.0.17';
 const GUTTER = 5;
 
 const lite = window.lite;
@@ -989,12 +989,19 @@ async function showPreview(kind, file, content) {
   } else if (kind === 'markdown') {
     const div = el('div', 'prev-md');
     try { div.innerHTML = marked.parse(content || '', { breaks: true }); } catch (_) { div.textContent = content || ''; }
+    const base = dirName(file);
+    div.querySelectorAll('img').forEach((im) => { // resolve relative image paths from the file's folder
+      const s = im.getAttribute('src') || '';
+      if (s && !/^(https?:|data:|file:|\/\/)/i.test(s)) im.src = fileUrl(base + '/' + s.replace(/^\.\//, ''));
+    });
+    div.addEventListener('click', (e) => { const a = e.target.closest('a'); if (a && /^https?:/i.test(a.href)) { e.preventDefault(); lite.openExternal(a.href); } });
     view.appendChild(div);
   } else if (kind === 'html') {
     const frame = document.createElement('iframe');
     frame.className = 'prev-frame';
-    frame.setAttribute('sandbox', ''); // render, but no scripts
-    frame.srcdoc = content || '';
+    // load from disk (not srcdoc) so relative css/js/img resolve against the project folder
+    frame.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-forms allow-popups allow-modals');
+    frame.src = fileUrl(file);
     view.appendChild(frame);
   }
   $('#editor').style.display = 'none';
@@ -1232,6 +1239,8 @@ async function buildDir(dir, container, depth) {
 }
 function cssEscape(s) { return (window.CSS && CSS.escape) ? CSS.escape(s) : s.replace(/"/g, '\\"'); }
 const dirName = (p) => { const i = p.search(/[\\/][^\\/]*$/); return i >= 0 ? p.slice(0, i) : p; };
+// absolute fs path → file:// URL (Windows C:\x → file:///C:/x), for preview resources
+function fileUrl(p) { let u = String(p).replace(/\\/g, '/'); if (!u.startsWith('/')) u = '/' + u; return 'file://' + encodeURI(u); }
 
 // small single-input prompt modal; onOk(value) may return {error} to keep the dialog open
 function showPrompt(title, label, initial, onOk) {
