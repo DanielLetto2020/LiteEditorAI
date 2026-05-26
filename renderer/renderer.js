@@ -19,7 +19,7 @@ import { markdown } from '@codemirror/lang-markdown';
 import { html } from '@codemirror/lang-html';
 import { css } from '@codemirror/lang-css';
 
-const APP_VERSION = 'alpha v1.0.11';
+const APP_VERSION = 'alpha v1.0.12';
 const GUTTER = 5;
 
 const lite = window.lite;
@@ -56,7 +56,7 @@ function persist(key, value) { STORE[key] = value; lite.store.set(key, value); }
 function projId(p) { let h = 5381; for (let i = 0; i < p.length; i++) h = ((h << 5) + h + p.charCodeAt(i)) >>> 0; return 'p' + h.toString(36); }
 
 // ---------------------------------------------------------------- settings (tiny on purpose)
-const DEFAULT_SETTINGS = { notifications: true, sound: false, idleMs: 1200, fontSize: 13, workingDir: '', scanDirs: [] };
+const DEFAULT_SETTINGS = { notifications: true, sound: false, idleMs: 1200, fontSize: 13, workingDir: '', scanDirs: [], theme: 'emerald', onboarded: false };
 function loadSettings() { return { ...DEFAULT_SETTINGS, ...(STORE.settings || {}) }; }
 let settings = loadSettings();
 function saveSettings() { persist('settings', settings); }
@@ -88,6 +88,22 @@ const TERM_THEME = {
   black: '#0a120d', red: '#f7768e', green: '#9ece6a', yellow: '#e0af68',
   blue: '#7aa2f7', magenta: '#bb9af7', cyan: '#7dcfff', white: '#a9b1d6',
 };
+// ---------------------------------------------------------------- themes (a curated few)
+const THEMES = {
+  emerald: { label: 'Изумруд', cursor: '#3ddc84', selectionBackground: '#1f4a36' },
+  ocean: { label: 'Океан', cursor: '#46cfe6', selectionBackground: '#1d4a55' },
+  violet: { label: 'Аметист', cursor: '#a98cf0', selectionBackground: '#3a2f5a' },
+};
+function termTheme() {
+  const t = THEMES[settings.theme] || THEMES.emerald;
+  return { ...TERM_THEME, cursor: t.cursor, selectionBackground: t.selectionBackground };
+}
+function applyTheme() {
+  const name = THEMES[settings.theme] ? settings.theme : 'emerald';
+  if (name === 'emerald') document.body.removeAttribute('data-theme');
+  else document.body.dataset.theme = name;
+  for (const rec of terms.values()) { try { rec.term.options.theme = termTheme(); } catch (_) {} }
+}
 
 const activeProject = () => projects.find((p) => p.id === activeId);
 
@@ -675,7 +691,7 @@ function ensureTerminal(proj) {
   $('#terminals').appendChild(container);
   const term = new Terminal({
     fontFamily: '"JetBrains Mono", "Fira Code", "Cascadia Code", Consolas, monospace',
-    fontSize: settings.fontSize, cursorBlink: true, allowProposedApi: true, theme: TERM_THEME, scrollback: 5000,
+    fontSize: settings.fontSize, cursorBlink: true, allowProposedApi: true, theme: termTheme(), scrollback: 5000,
   });
   const fit = new FitAddon();
   const search = new SearchAddon();
@@ -731,6 +747,19 @@ function refitActiveTerminal() {
   requestAnimationFrame(() => {
     try { rec.fit.fit(); lite.pty.resize(activeId, rec.term.cols, rec.term.rows); rec.term.focus(); } catch (_) {}
   });
+}
+function clearTerminal(id) { const rec = terms.get(id || activeId); if (rec) { try { rec.term.clear(); } catch (_) {} rec.term.focus(); } }
+function restartTerminal(id) {
+  const pid = id || activeId;
+  const proj = projects.find((p) => p.id === pid);
+  const rec = terms.get(pid);
+  if (!proj || !rec) return;
+  try { rec.term.reset(); } catch (_) {}
+  rec.sawBell = false; rec.tail = ''; rec.busyStart = Date.now();
+  clearTimeout(rec.idleTimer);
+  setProjState(pid, 'busy');
+  lite.pty.restart({ id: pid, cwd: proj.path, cols: rec.term.cols, rows: rec.term.rows });
+  rec.term.focus();
 }
 
 // ---------------------------------------------------------------- font size
@@ -1189,6 +1218,9 @@ function showTermMenu(x, y, term, projId) {
     if (term.clearSelection) term.clearSelection();
   } : null, hasSel ? '' : 'disabled'));
   dd.appendChild(menuRow('📋', 'Вставить', () => { closeMenus(); pasteInto(projId); }));
+  dd.appendChild(el('div', 'menu-sep'));
+  dd.appendChild(menuRow('🧹', 'Очистить', () => { closeMenus(); clearTerminal(projId); }));
+  dd.appendChild(menuRow('⟳', 'Перезапустить', () => { closeMenus(); restartTerminal(projId); }));
   dd.addEventListener('click', (e) => e.stopPropagation());
   placeMenu(dd, x, y);
 }
@@ -1290,6 +1322,7 @@ function showSettings() {
     <label class="set-row"><span>Звук уведомлений</span><input type="checkbox" id="st-sound"></label>
     <label class="set-row"><span>Тишина до «готов», мс</span><input type="number" id="st-idle" min="300" max="6000" step="100"></label>
     <label class="set-row"><span>Размер шрифта</span><input type="number" id="st-font" min="9" max="24"></label>
+    <label class="set-row"><span>Тема</span><select id="st-theme"></select></label>
     <div class="set-row col"><span>Рабочая папка — куда создаются новые проекты</span>
       <div class="path-pick">
         <input type="text" id="st-wd" readonly placeholder="не задана">
@@ -1304,6 +1337,10 @@ function showSettings() {
   const sound = m.querySelector('#st-sound'); sound.checked = settings.sound;
   const idle = m.querySelector('#st-idle'); idle.value = settings.idleMs;
   const font = m.querySelector('#st-font'); font.value = settings.fontSize;
+  const themeSel = m.querySelector('#st-theme');
+  for (const [key, t] of Object.entries(THEMES)) { const o = document.createElement('option'); o.value = key; o.textContent = t.label; themeSel.appendChild(o); }
+  themeSel.value = THEMES[settings.theme] ? settings.theme : 'emerald';
+  themeSel.addEventListener('change', () => { settings.theme = themeSel.value; saveSettings(); applyTheme(); }); // live preview
   const wd = m.querySelector('#st-wd'); wd.value = settings.workingDir || '';
   let scan = [...(settings.scanDirs || [])];
   const scanBox = m.querySelector('#st-scan');
@@ -1343,6 +1380,8 @@ function paletteActions() {
   acts.push({ label: viewerOpen ? 'Закрыть вивер' : 'Открыть вивер', run: () => setViewerOpen(!viewerOpen) });
   acts.push({ label: 'Режим «один терминал»', run: toggleSingle });
   acts.push({ label: 'Поиск в терминале', run: openTermSearch });
+  acts.push({ label: 'Очистить терминал', run: () => clearTerminal() });
+  acts.push({ label: 'Перезапустить терминал', run: () => restartTerminal() });
   acts.push({ label: 'Настройки…', run: showSettings });
   if (currentFile) acts.push({ label: 'Показать дифф файла', run: toggleDiff });
   return acts;
@@ -1382,6 +1421,31 @@ function showPalette() {
   setTimeout(() => input.focus(), 30);
 }
 
+// ---------------------------------------------------------------- onboarding (first run)
+function showOnboarding() {
+  const { m, close } = makeModal(`
+    <h2><span style="color:var(--green-bright)">▍</span>Добро пожаловать в LiteEditor</h2>
+    <div class="about-desc">
+      Терминал-ориентированное окружение для работы с агентами: у каждого проекта свой живой терминал,
+      а вивер кода и дерево файлов прячутся одной кнопкой.<br><br>
+      С чего начать:
+      <ul style="margin:6px 0 0; padding-left:18px; line-height:1.7">
+        <li><b>Открыть папку</b> — проект слева, справа поднимется его терминал.</li>
+        <li>В <b>Настройках</b> задай рабочую папку и папки для авто-скана проектов.</li>
+        <li><b>Ctrl+K</b> — палитра команд · <b>Ctrl+\\</b> — режим одного терминала.</li>
+      </ul>
+    </div>
+    <div class="modal-actions">
+      <button class="btn" id="ob-settings">Настройки</button>
+      <button class="btn primary" id="ob-open">Открыть папку</button>
+      <button class="btn" id="ob-skip">Позже</button>
+    </div>`);
+  const done = () => { settings.onboarded = true; saveSettings(); close(); };
+  m.querySelector('#ob-settings').onclick = () => { done(); showSettings(); };
+  m.querySelector('#ob-open').onclick = () => { done(); openProjectDialog(); };
+  m.querySelector('#ob-skip').onclick = done;
+}
+
 // ---------------------------------------------------------------- single-terminal toggle
 function toggleSingle() {
   $('#app').classList.toggle('single');
@@ -1392,9 +1456,14 @@ function toggleSingle() {
 function init() {
   makeEditor();
   applyLayout();
+  applyTheme();
   initGutters();
   initWindowControls();
   initMenubar();
+
+  // surface unexpected renderer errors instead of failing silently
+  window.addEventListener('error', (e) => toast('Ошибка: ' + (e.message || (e.error && e.error.message) || 'см. F12'), { kind: 'err', ttl: 8000 }));
+  window.addEventListener('unhandledrejection', (e) => toast('Ошибка: ' + ((e.reason && e.reason.message) || e.reason || 'промис'), { kind: 'err', ttl: 8000 }));
 
   lite.pty.onData(({ id, data }) => {
     const rec = terms.get(id);
@@ -1430,6 +1499,8 @@ function init() {
   $('#viewer-diff').addEventListener('click', toggleDiff);
   $('#viewer-close').addEventListener('click', () => setViewerOpen(false));
   $('#tree-refresh').addEventListener('click', () => { const p = activeProject(); if (p) renderTree(p); });
+  $('#term-clear').addEventListener('click', () => clearTerminal());
+  $('#term-restart').addEventListener('click', () => restartTerminal());
   $('#attention-badge').addEventListener('click', () => {
     const id = [...projState.entries()].find(([, s]) => s === 'waiting');
     if (id) setActive(id[0]);
@@ -1478,6 +1549,8 @@ function init() {
   scanProjects();          // add subfolders of settings.scanDirs (non-blocking)
   checkProjectsExistence();
   window.addEventListener('focus', checkProjectsExistence); // re-check when returning to the app
+
+  if (!settings.onboarded) setTimeout(showOnboarding, 200); // first-run welcome
 }
 
 function cycleProject(dir) {

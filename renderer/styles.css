@@ -11,6 +11,7 @@
   --text: #d6e6dd;
   --text-dim: #748a80;
   --danger: #f7768e;
+  --app-border: rgba(47, 191, 113, 0.34);
 }
 
 * { box-sizing: border-box; }
@@ -29,6 +30,7 @@ html, body {
   display: flex;
   flex-direction: column;
   height: 100vh;
+  border: 1px solid var(--app-border); /* thin accent outline so the frameless window has visible edges */
   /* dark → green business gradient */
   background:
     radial-gradient(130% 110% at 88% -10%, rgba(47, 191, 113, 0.16) 0%, rgba(20, 70, 46, 0.06) 38%, rgba(0,0,0,0) 70%),
@@ -461,5 +463,35 @@ body.resizing { cursor: col-resize; user-select: none; }
 .pal-row.sel, .pal-row:hover { background: rgba(120,200,160,0.13); }
 .pal-label { color: var(--text); }
 .pal-hint { font-size: 10.5px; color: var(--text-dim); margin-left: auto; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 55%; direction: rtl; }
+
+/* ---------------- terminal tools (clear / restart) ---------------- */
+#term-tools {
+  position: absolute; top: 6px; right: 10px; z-index: 15;
+  display: flex; gap: 4px; opacity: 0; transition: opacity .15s;
+}
+#terminal-pane:hover #term-tools { opacity: 0.9; }
+.tt-btn {
+  width: 27px; height: 24px; padding: 0; border-radius: 6px; cursor: pointer; font-size: 13px;
+  background: rgba(10,20,15,0.72); border: 1px solid var(--border); color: var(--text-dim);
+}
+.tt-btn:hover { color: var(--text); border-color: var(--border-strong); background: rgba(20,40,30,0.9); }
+
+/* ---------------- themes (a curated few) ---------------- */
+body[data-theme="ocean"]  { --green: #2f9fbf; --green-bright: #46cfe6; --green-dim: #1d566b; --app-border: rgba(47,159,191,0.34); }
+body[data-theme="ocean"] #app {
+  background:
+    radial-gradient(130% 110% at 88% -10%, rgba(47,159,191,0.16) 0%, rgba(20,55,75,0.06) 38%, rgba(0,0,0,0) 70%),
+    linear-gradient(160deg, #0c1519 0%, #0a1216 45%, #070e12 100%);
+}
+body[data-theme="violet"] { --green: #8b6fd6; --green-bright: #a98cf0; --green-dim: #4a3a7a; --app-border: rgba(139,111,214,0.36); }
+body[data-theme="violet"] #app {
+  background:
+    radial-gradient(130% 110% at 88% -10%, rgba(139,111,214,0.16) 0%, rgba(60,46,110,0.06) 38%, rgba(0,0,0,0) 70%),
+    linear-gradient(160deg, #14111c 0%, #100e16 45%, #0b0910 100%);
+}
+.set-row select {
+  padding: 6px 8px; border-radius: 7px; background: #0a130e; border: 1px solid var(--border-strong);
+  color: var(--text); outline: none; min-width: 120px;
+}
 
 .hidden { display: none !important; }

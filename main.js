@@ -262,8 +262,7 @@ ipcMain.handle('dialog:pickDir', async () => {
 });
 
 // ---------------------------------------------------------------- PTY
-ipcMain.handle('pty:create', (_e, { id, cwd, cols, rows }) => {
-  if (ptys.has(id)) return { ok: true, existed: true };
+function spawnPtyFor(id, cwd, cols, rows) {
   const shell = resolveShell();
   let proc;
   try {
@@ -285,11 +284,22 @@ ipcMain.handle('pty:create', (_e, { id, cwd, cols, rows }) => {
     if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('pty:data', { id, data });
   });
   proc.onExit(() => {
+    if (ptys.get(id) && ptys.get(id) !== proc) return; // replaced by a restart — suppress stale exit
     ptys.delete(id);
     if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('pty:exit', { id });
   });
   ptys.set(id, proc);
   return { ok: true };
+}
+ipcMain.handle('pty:create', (_e, { id, cwd, cols, rows }) => {
+  if (ptys.has(id)) return { ok: true, existed: true };
+  return spawnPtyFor(id, cwd, cols, rows);
+});
+// Kill the existing PTY (if any) and start a fresh one in the same cwd.
+ipcMain.handle('pty:restart', (_e, { id, cwd, cols, rows }) => {
+  const old = ptys.get(id);
+  if (old) { try { old.kill(); } catch (_) {} ptys.delete(id); }
+  return spawnPtyFor(id, cwd, cols, rows);
 });
 ipcMain.on('pty:write', (_e, { id, data }) => { const p = ptys.get(id); if (p) p.write(data); });
 ipcMain.on('pty:resize', (_e, { id, cols, rows }) => {
@@ -335,6 +345,41 @@ ipcMain.handle('fs:mkdir', async (_e, { parent, name }) => {
   } catch (err) { return { error: String(err.message || err) }; }
 });
 ipcMain.handle('fs:exists', (_e, p) => { try { return fs.existsSync(p); } catch { return false; } });
+
+// create a file or directory inside parent
+ipcMain.handle('fs:create', async (_e, { parent, name, dir }) => {
+  try {
+    const full = path.join(parent, name);
+    if (fs.existsSync(full)) return { error: 'уже существует' };
+    if (dir) await fs.promises.mkdir(full, { recursive: false });
+    else { await fs.promises.mkdir(path.dirname(full), { recursive: true }); await fs.promises.writeFile(full, '', { flag: 'wx' }); }
+    return { path: full, name, dir: !!dir };
+  } catch (err) { return { error: String(err.message || err) }; }
+});
+ipcMain.handle('fs:rename', async (_e, { from, to }) => {
+  try {
+    if (fs.existsSync(to)) return { error: 'цель уже существует' };
+    await fs.promises.rename(from, to);
+    return { path: to };
+  } catch (err) { return { error: String(err.message || err) }; }
+});
+// delete → OS trash (recoverable), not rm
+ipcMain.handle('fs:trash', async (_e, target) => {
+  try { await shell.trashItem(target); return { ok: true }; }
+  catch (err) { return { error: String(err.message || err) }; }
+});
+// binary file → data: URL (for image preview under our CSP, which blocks file://)
+const IMG_MIME = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', svg: 'image/svg+xml', bmp: 'image/bmp', ico: 'image/x-icon', avif: 'image/avif' };
+ipcMain.handle('fs:readDataUrl', async (_e, file) => {
+  try {
+    const stat = await fs.promises.stat(file);
+    if (stat.size > 12 * 1024 * 1024) return { error: 'файл слишком большой для превью' };
+    const ext = path.extname(file).slice(1).toLowerCase();
+    const mime = IMG_MIME[ext] || 'application/octet-stream';
+    const buf = await fs.promises.readFile(file);
+    return { url: `data:${mime};base64,${buf.toString('base64')}` };
+  } catch (err) { return { error: String(err.message || err) }; }
+});
 
 // ---------------------------------------------------------------- file watching
 // Watch a project root and tell the renderer when files change on disk — so the
@@ -424,8 +469,18 @@ ipcMain.handle('git:info', async (_e, root) => {
   let ahead = 0, behind = 0, upstream = false;
   const counts = await git(root, ['rev-list', '--left-right', '--count', '@{upstream}...HEAD']);
   if (counts != null) { const m = counts.trim().split(/\s+/); behind = +m[0] || 0; ahead = +m[1] || 0; upstream = true; }
-  return { repo: true, branch, ahead, behind, upstream };
+  const last = await git(root, ['log', '-1', '--format=%h\t%s\t%cr\t%an']);
+  let lastCommit = null;
+  if (last && last.trim()) { const [hash, subject, when, author] = last.trim().split('\t'); lastCommit = { hash, subject, when, author }; }
+  const brOut = await git(root, ['branch', '--format=%(refname:short)']);
+  const branches = brOut ? brOut.split('\n').map((s) => s.trim()).filter(Boolean) : [];
+  const remote = ((await git(root, ['remote'])) || '').trim().split('\n').filter(Boolean);
+  return { repo: true, branch, ahead, behind, upstream, lastCommit, branches, hasRemote: remote.length > 0 };
 });
+ipcMain.handle('git:checkout', async (_e, { root, branch }) => gitRun(root, ['checkout', branch]));
+ipcMain.handle('git:createBranch', async (_e, { root, branch }) => gitRun(root, ['checkout', '-b', branch]));
+ipcMain.handle('git:fetch', async (_e, root) => gitRun(root, ['fetch', '--all', '--prune']));
+ipcMain.handle('git:discardFile', async (_e, { root, file }) => gitRun(root, ['checkout', '--', file]));
 ipcMain.handle('git:init', async (_e, root) => gitRun(root, ['init']));
 ipcMain.handle('git:commit', async (_e, { root, message, push }) => {
   const add = await gitRun(root, ['add', '-A']); if (!add.ok) return add;

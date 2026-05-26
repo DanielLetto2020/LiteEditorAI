@@ -43,6 +43,10 @@ contextBridge.exposeInMainWorld('lite', {
     commit: (root, message, push) => ipcRenderer.invoke('git:commit', { root, message, push }),
     push: (root) => ipcRenderer.invoke('git:push', root),
     pull: (root) => ipcRenderer.invoke('git:pull', root),
+    fetch: (root) => ipcRenderer.invoke('git:fetch', root),
+    checkout: (root, branch) => ipcRenderer.invoke('git:checkout', { root, branch }),
+    createBranch: (root, branch) => ipcRenderer.invoke('git:createBranch', { root, branch }),
+    discardFile: (root, file) => ipcRenderer.invoke('git:discardFile', { root, file }),
   },
 
   pty: {
@@ -50,6 +54,7 @@ contextBridge.exposeInMainWorld('lite', {
     write: (id, data) => ipcRenderer.send('pty:write', { id, data }),
     resize: (id, cols, rows) => ipcRenderer.send('pty:resize', { id, cols, rows }),
     kill: (id) => ipcRenderer.send('pty:kill', { id }),
+    restart: (opts) => ipcRenderer.invoke('pty:restart', opts),
     foregroundState: (id) => ipcRenderer.invoke('pty:foregroundState', { id }),
     onData: (cb) => {
       const h = (_e, payload) => cb(payload);
@@ -69,6 +74,10 @@ contextBridge.exposeInMainWorld('lite', {
     writeFile: (file, content) => ipcRenderer.invoke('fs:writeFile', { file, content }),
     mkdir: (parent, name) => ipcRenderer.invoke('fs:mkdir', { parent, name }),
     exists: (p) => ipcRenderer.invoke('fs:exists', p),
+    create: (parent, name, dir) => ipcRenderer.invoke('fs:create', { parent, name, dir }),
+    rename: (from, to) => ipcRenderer.invoke('fs:rename', { from, to }),
+    trash: (target) => ipcRenderer.invoke('fs:trash', target),
+    readDataUrl: (file) => ipcRenderer.invoke('fs:readDataUrl', file),
     watch: (root) => ipcRenderer.send('fs:watch', root),
     unwatch: (root) => ipcRenderer.send('fs:unwatch', root),
     onChange: (cb) => {
