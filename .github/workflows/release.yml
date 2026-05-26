@@ -19,7 +19,7 @@ jobs:
           - os: ubuntu-latest
             target: --linux deb AppImage
           - os: windows-latest
-            target: --win nsis portable
+            target: --win zip
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -45,6 +45,6 @@ jobs:
           files: |
             dist-release/*.deb
             dist-release/*.AppImage
-            dist-release/*.exe
+            dist-release/*.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
