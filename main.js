@@ -82,7 +82,7 @@ const MAX_VIEW_BYTES = 2 * 1024 * 1024;
 // categories, notes) — like .idea, easy to find/back up. main owns the files;
 // the renderer keeps a sync snapshot and writes through.
 const storeDir = path.join(os.homedir(), '.LiteEditor');
-const STORE_KEYS = ['projects', 'settings', 'layout', 'recents', 'lastParent', 'projFiles', 'categories', 'accordions'];
+const STORE_KEYS = ['projects', 'settings', 'layout', 'recents', 'lastParent', 'projFiles', 'categories', 'accordions', 'dismissed'];
 function ensureStoreDir() { try { fs.mkdirSync(storeDir, { recursive: true }); } catch (_) {} }
 function storeFile(key) { return path.join(storeDir, String(key).replace(/[^\w.-]/g, '_') + '.json'); }
 function readStoreKey(key) { try { return JSON.parse(fs.readFileSync(storeFile(key), 'utf8')); } catch { return undefined; } }
@@ -402,6 +402,39 @@ ipcMain.handle('git:fileDiff', async (_e, { root, file }) => {
   if (out != null && out.trim() === '') out = await git(root, ['diff', '--', file]); // unstaged-only fallback
   return { diff: out || '' };
 });
+
+// Mutating git for the light panel. GIT_TERMINAL_PROMPT=0 + timeout so a command
+// that would block on auth fails fast with a message instead of hanging the app.
+function gitRun(cwd, args) {
+  return new Promise((resolve) => {
+    execFile('git', args, { cwd, timeout: 25000, maxBuffer: 8 * 1024 * 1024, windowsHide: true,
+      env: { ...process.env, GIT_TERMINAL_PROMPT: '0', GIT_ASKPASS: 'echo' } },
+      (err, stdout, stderr) => resolve({
+        ok: !err,
+        out: (stdout || '').trim(),
+        error: err ? ((stderr || '').trim() || String(err.message || err)) : '',
+      }));
+  });
+}
+ipcMain.handle('git:info', async (_e, root) => {
+  if (!root || !fs.existsSync(root)) return { repo: false };
+  const top = await git(root, ['rev-parse', '--show-toplevel']);
+  if (top == null) return { repo: false };
+  const branch = ((await git(root, ['rev-parse', '--abbrev-ref', 'HEAD'])) || '').trim() || 'HEAD';
+  let ahead = 0, behind = 0, upstream = false;
+  const counts = await git(root, ['rev-list', '--left-right', '--count', '@{upstream}...HEAD']);
+  if (counts != null) { const m = counts.trim().split(/\s+/); behind = +m[0] || 0; ahead = +m[1] || 0; upstream = true; }
+  return { repo: true, branch, ahead, behind, upstream };
+});
+ipcMain.handle('git:init', async (_e, root) => gitRun(root, ['init']));
+ipcMain.handle('git:commit', async (_e, { root, message, push }) => {
+  const add = await gitRun(root, ['add', '-A']); if (!add.ok) return add;
+  const c = await gitRun(root, ['commit', '-m', message || 'update']); if (!c.ok) return c;
+  if (push) { const p = await gitRun(root, ['push']); if (!p.ok) return { ok: false, error: 'Коммит создан, push не прошёл: ' + p.error }; }
+  return { ok: true, out: c.out };
+});
+ipcMain.handle('git:push', async (_e, root) => gitRun(root, ['push']));
+ipcMain.handle('git:pull', async (_e, root) => gitRun(root, ['pull', '--ff-only']));
 
 ipcMain.handle('shell:openPath', async (_e, target) => {
   const err = await shell.openPath(target);

@@ -38,6 +38,11 @@ contextBridge.exposeInMainWorld('lite', {
   git: {
     status: (root) => ipcRenderer.invoke('git:status', root),
     fileDiff: (root, file) => ipcRenderer.invoke('git:fileDiff', { root, file }),
+    info: (root) => ipcRenderer.invoke('git:info', root),
+    init: (root) => ipcRenderer.invoke('git:init', root),
+    commit: (root, message, push) => ipcRenderer.invoke('git:commit', { root, message, push }),
+    push: (root) => ipcRenderer.invoke('git:push', root),
+    pull: (root) => ipcRenderer.invoke('git:pull', root),
   },
 
   pty: {

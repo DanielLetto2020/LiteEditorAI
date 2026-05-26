@@ -182,7 +182,9 @@ function makeCard(p) {
     if (activeId === p.id && viewerOpen) setViewerOpen(false);
     else { setActive(p.id); setViewerOpen(true); }
   });
-  actions.appendChild(openViewer);
+  const notesBtn = el('button', null, '📝 заметки');
+  notesBtn.addEventListener('click', (e) => { e.stopPropagation(); showNotes(p); });
+  actions.appendChild(openViewer); actions.appendChild(notesBtn);
   card.appendChild(actions);
 
   card.addEventListener('click', () => setActive(p.id));
@@ -214,10 +216,8 @@ function showCardMenu(x, y, p) {
 function buildCardMenuMain(dd, p) {
   dd.innerHTML = '';
   dd.appendChild(menuRow('📁', 'Открыть в проводнике', () => { closeMenus(); lite.openInFileManager(p.path); }));
-  dd.appendChild(menuRow('👁', activeId === p.id && viewerOpen ? 'Закрыть вивер' : 'Открыть вивер', () => {
-    closeMenus();
-    if (activeId === p.id && viewerOpen) setViewerOpen(false); else { setActive(p.id); setViewerOpen(true); }
-  }));
+  dd.appendChild(menuRow('⎇', 'Git', () => { closeMenus(); showGit(p); }));
+  dd.appendChild(menuRow('📝', 'Заметки', () => { closeMenus(); showNotes(p); }));
   dd.appendChild(menuRow('⧉', 'Копировать путь', () => { closeMenus(); lite.copyText(p.path); toast('Путь скопирован'); }));
   dd.appendChild(menuRow(p.favorite ? '★' : '☆', p.favorite ? 'Убрать из избранного' : 'В избранное', () => { closeMenus(); toggleFavorite(p.id); }));
   dd.appendChild(el('div', 'menu-sep'));
@@ -258,6 +258,176 @@ function showCreateCategory(id) {
   m.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); ok(); } });
 }
 
+// ---------------------------------------------------------------- scan dirs (#1)
+// Add immediate subfolders of each settings.scanDirs as projects (deduped; closed
+// ones stay closed via STORE.dismissed). Runs at startup; non-blocking.
+async function scanProjects() {
+  const dirs = settings.scanDirs || [];
+  if (!dirs.length) return;
+  const dismissed = new Set(STORE.dismissed || []);
+  const known = new Set(projects.map((p) => p.path));
+  let added = false;
+  for (const dir of dirs) {
+    const entries = await lite.fs.readDir(dir);
+    if (!Array.isArray(entries)) continue;
+    for (const ent of entries) {
+      if (!ent.dir || ent.name.startsWith('.')) continue;
+      if (known.has(ent.path) || dismissed.has(ent.path)) continue;
+      projects.push({ id: projId(ent.path), name: ent.name, path: ent.path });
+      known.add(ent.path); added = true;
+    }
+  }
+  if (added) {
+    saveProjects();
+    renderProjects();
+    if (!activeId && projects.length) setActive(projects[0].id);
+  }
+}
+
+// ---------------------------------------------------------------- notes / prompt cards (#4)
+async function showNotes(p) {
+  let notes = await lite.store.notesGet(p.id);
+  if (!Array.isArray(notes)) notes = [];
+  const { m, close } = makeModal(`
+    <h2>📝 Заметки — <span class="nm-proj"></span></h2>
+    <div class="nm-hint">Карточки промптов: «В терминал» отправляет текст в терминал проекта (без Enter). Перетаскивай для сортировки.</div>
+    <div class="nm-list" id="nm-list"></div>
+    <button class="btn nm-add" id="nm-add">＋ Новая карточка</button>
+    <div class="modal-actions"><button class="btn primary" id="nm-close">Готово</button></div>`);
+  m.classList.add('notes-modal');
+  m.querySelector('.nm-proj').textContent = p.name;
+  const list = m.querySelector('#nm-list');
+  const save = () => lite.store.notesSet(p.id, notes);
+  let dragFrom = null;
+
+  function editNote(row, note) {
+    row.innerHTML = '';
+    const ta = el('textarea', 'note-edit'); ta.value = note.text || '';
+    const acts = el('div', 'note-acts');
+    const ok = el('button', 'note-btn', '✓ Сохранить');
+    ok.addEventListener('click', () => { note.text = ta.value; save(); render(); });
+    const cancel = el('button', 'note-btn', 'Отмена');
+    cancel.addEventListener('click', render);
+    acts.append(ok, cancel);
+    row.append(ta, acts);
+    ta.focus();
+  }
+  function render() {
+    list.innerHTML = '';
+    notes.forEach((note, i) => {
+      const row = el('div', 'note-card');
+      row.draggable = true; row.dataset.i = String(i);
+      row.append(el('div', 'note-text', note.text || '(пусто)'));
+      const acts = el('div', 'note-acts');
+      const send = el('button', 'note-btn send', '➤ В терминал');
+      send.addEventListener('click', () => { sendNoteToTerminal(p, note.text); close(); });
+      const edit = el('button', 'note-btn', '✎'); edit.title = 'Редактировать';
+      edit.addEventListener('click', () => editNote(row, note));
+      const del = el('button', 'note-btn danger', '🗑'); del.title = 'Удалить';
+      del.addEventListener('click', () => { notes.splice(i, 1); save(); render(); });
+      acts.append(send, edit, del);
+      row.append(acts);
+      row.addEventListener('dragstart', () => { dragFrom = i; row.classList.add('dragging'); });
+      row.addEventListener('dragend', () => row.classList.remove('dragging'));
+      row.addEventListener('dragover', (e) => e.preventDefault());
+      row.addEventListener('drop', (e) => {
+        e.preventDefault();
+        if (dragFrom == null || dragFrom === i) return;
+        const [moved] = notes.splice(dragFrom, 1); notes.splice(i, 0, moved);
+        dragFrom = null; save(); render();
+      });
+      list.appendChild(row);
+    });
+    if (!notes.length) list.appendChild(el('div', 'nm-empty', 'Пока пусто — добавь карточку с промптом.'));
+  }
+  m.querySelector('#nm-add').addEventListener('click', () => {
+    const note = { id: 'n' + Date.now().toString(36), text: '' };
+    notes.push(note); save(); render();
+    const rows = list.querySelectorAll('.note-card');
+    if (rows.length) editNote(rows[rows.length - 1], note);
+  });
+  m.querySelector('#nm-close').onclick = close;
+  render();
+}
+function sendNoteToTerminal(p, text) {
+  if (!text) return;
+  const proj = projects.find((x) => x.id === p.id);
+  if (!proj) return;
+  ensureTerminal(proj);
+  setActive(proj.id);
+  lite.pty.write(proj.id, text); // no trailing newline — review, then press Enter yourself
+}
+
+// ---------------------------------------------------------------- light git panel (#3)
+function gitCodeClass(code) {
+  if (code === '?' || code.includes('A')) return 'g-add';
+  if (code.includes('D')) return 'g-del';
+  return 'g-mod';
+}
+async function showGit(p) {
+  const { m, close } = makeModal(`<h2>⎇ Git — <span class="gm-proj"></span></h2><div id="gm-body" class="gm-body">Загрузка…</div>`);
+  m.classList.add('git-modal');
+  m.querySelector('.gm-proj').textContent = p.name;
+  const body = m.querySelector('#gm-body');
+  async function refresh() {
+    const info = await lite.git.info(p.path);
+    body.innerHTML = '';
+    if (!info.repo) {
+      body.appendChild(el('div', 'gm-norepo', 'Это не git-репозиторий.'));
+      const row = el('div', 'gm-actions');
+      const init = el('button', 'btn primary', '⎇ git init');
+      init.onclick = async () => {
+        const r = await lite.git.init(p.path);
+        if (r.ok) { toast('git init готов'); refresh(); renderProjects(); }
+        else toast(r.error || 'ошибка init', { kind: 'err', ttl: 7000 });
+      };
+      const cancel = el('button', 'btn', 'Закрыть'); cancel.onclick = close;
+      row.append(init, cancel); body.appendChild(row);
+      return;
+    }
+    const head = el('div', 'gm-branch');
+    head.appendChild(el('span', 'gm-branchname', '⎇ ' + info.branch));
+    if (info.upstream && (info.ahead || info.behind)) head.appendChild(el('span', 'gm-track', `↑${info.ahead} ↓${info.behind}`));
+    body.appendChild(head);
+
+    const st = await lite.git.status(p.path);
+    const files = (st && st.files) ? st.files : {};
+    const keys = Object.keys(files);
+    const changes = el('div', 'gm-changes');
+    if (!keys.length) changes.appendChild(el('div', 'gm-clean', '✓ Рабочее дерево чистое.'));
+    else for (const f of keys) {
+      const r = el('div', 'gm-file'); r.title = f;
+      r.appendChild(el('span', 'gm-code ' + gitCodeClass(files[f]), files[f]));
+      r.appendChild(el('span', 'gm-fname', baseName(f)));
+      changes.appendChild(r);
+    }
+    body.appendChild(changes);
+
+    const msg = el('textarea', 'gm-msg'); msg.placeholder = 'Сообщение коммита…';
+    body.appendChild(msg);
+    const row = el('div', 'gm-actions');
+    const commit = el('button', 'btn primary', 'Commit');
+    const commitPush = el('button', 'btn', 'Commit & Push');
+    const pull = el('button', 'btn', 'Pull');
+    const push = el('button', 'btn', 'Push');
+    commit.disabled = !keys.length; commitPush.disabled = !keys.length;
+    const doCommit = async (withPush) => {
+      const message = msg.value.trim();
+      if (!message) { toast('Введи сообщение коммита', { kind: 'err' }); return; }
+      const r = await lite.git.commit(p.path, message, withPush);
+      if (r.ok) { toast(withPush ? 'Закоммичено и запушено' : 'Закоммичено'); msg.value = ''; refresh(); renderProjects(); }
+      else toast(r.error || 'ошибка коммита', { kind: 'err', ttl: 8000 });
+    };
+    commit.onclick = () => doCommit(false);
+    commitPush.onclick = () => doCommit(true);
+    push.onclick = async () => { const r = await lite.git.push(p.path); toast(r.ok ? 'Запушено' : (r.error || 'push не прошёл'), { kind: r.ok ? undefined : 'err', ttl: 8000 }); refresh(); };
+    pull.onclick = async () => { const r = await lite.git.pull(p.path); toast(r.ok ? 'Pull готов' : (r.error || 'pull не прошёл'), { kind: r.ok ? undefined : 'err', ttl: 8000 }); refresh(); renderProjects(); };
+    row.append(commit, commitPush, pull, push);
+    body.appendChild(row);
+  }
+  refresh();
+}
+
 // Compact project switcher for single-terminal mode: indicator + name, click switches.
 function renderMiniRail() {
   const rail = $('#mini-rail');
@@ -281,6 +451,8 @@ async function openProjectDialog() {
 }
 
 function openByPath(p, name) {
+  const dis = (STORE.dismissed || []); // re-opening clears a prior "closed" mark so scan keeps it
+  if (dis.includes(p)) persist('dismissed', dis.filter((x) => x !== p));
   const existing = projects.find((x) => x.path === p);
   if (existing) { setActive(existing.id); pushRecent({ path: p, name: existing.name }); return; }
   const proj = { id: projId(p), name: name || baseName(p), path: p };
@@ -302,6 +474,9 @@ function closeProject(id) {
 }
 function doCloseProject(id) {
   const closing = projects.find((p) => p.id === id);
+  if (closing) { // remember the close so a scan-dir project doesn't reappear next launch
+    const dis = new Set(STORE.dismissed || []); dis.add(closing.path); persist('dismissed', [...dis]);
+  }
   if (closing && watchedRoot === closing.path) { lite.fs.unwatch(closing.path); watchedRoot = null; }
   lite.pty.kill(id);
   const rec = terms.get(id);
@@ -1042,7 +1217,7 @@ function showCreateFolder() {
   const nameI = m.querySelector('#cf-name');
   const parentI = m.querySelector('#cf-parent');
   const err = m.querySelector('#cf-err');
-  if (lastParent) parentI.value = lastParent;
+  parentI.value = lastParent || settings.workingDir || '';
   setTimeout(() => nameI.focus(), 30);
   m.querySelector('#cf-cancel').onclick = close;
   m.querySelector('#cf-pick').onclick = async () => {
@@ -1072,17 +1247,47 @@ function showSettings() {
     <label class="set-row"><span>Звук уведомлений</span><input type="checkbox" id="st-sound"></label>
     <label class="set-row"><span>Тишина до «готов», мс</span><input type="number" id="st-idle" min="300" max="6000" step="100"></label>
     <label class="set-row"><span>Размер шрифта</span><input type="number" id="st-font" min="9" max="24"></label>
+    <div class="set-row col"><span>Рабочая папка — куда создаются новые проекты</span>
+      <div class="path-pick">
+        <input type="text" id="st-wd" readonly placeholder="не задана">
+        <button class="btn" id="st-wd-pick">Выбрать</button>
+        <button class="btn" id="st-wd-clear" title="Очистить">✕</button>
+      </div></div>
+    <div class="set-row col"><span>Папки для скана — их подпапки добавляются как проекты при запуске</span>
+      <div id="st-scan" class="scan-list"></div>
+      <button class="btn" id="st-scan-add">＋ Добавить папку</button></div>
     <div class="modal-actions"><button class="btn primary" id="st-ok">Готово</button></div>`);
   const notif = m.querySelector('#st-notif'); notif.checked = settings.notifications;
   const sound = m.querySelector('#st-sound'); sound.checked = settings.sound;
   const idle = m.querySelector('#st-idle'); idle.value = settings.idleMs;
   const font = m.querySelector('#st-font'); font.value = settings.fontSize;
+  const wd = m.querySelector('#st-wd'); wd.value = settings.workingDir || '';
+  let scan = [...(settings.scanDirs || [])];
+  const scanBox = m.querySelector('#st-scan');
+  const renderScan = () => {
+    scanBox.innerHTML = '';
+    if (!scan.length) { scanBox.appendChild(el('div', 'scan-empty', '— пусто —')); return; }
+    scan.forEach((d, i) => {
+      const r = el('div', 'scan-item');
+      const path = el('span', 'scan-path', d); path.title = d;
+      const x = el('button', 'scan-del', '✕');
+      x.onclick = () => { scan.splice(i, 1); renderScan(); };
+      r.append(path, x); scanBox.appendChild(r);
+    });
+  };
+  renderScan();
+  m.querySelector('#st-wd-pick').onclick = async () => { const d = await lite.pickDir(); if (d) wd.value = d; };
+  m.querySelector('#st-wd-clear').onclick = () => { wd.value = ''; };
+  m.querySelector('#st-scan-add').onclick = async () => { const d = await lite.pickDir(); if (d && !scan.includes(d)) { scan.push(d); renderScan(); } };
   m.querySelector('#st-ok').onclick = () => {
     settings.notifications = notif.checked;
     settings.sound = sound.checked;
     settings.idleMs = Math.max(300, Math.min(6000, parseInt(idle.value, 10) || 1200));
     settings.fontSize = Math.max(9, Math.min(24, parseInt(font.value, 10) || 13));
+    settings.workingDir = wd.value || '';
+    settings.scanDirs = scan;
     saveSettings(); applyFontSize(); close();
+    scanProjects(); // pick up newly-added scan dirs right away
   };
 }
 
@@ -1227,6 +1432,7 @@ function init() {
   if (projects.length) setActive(projects[0].id);
   else showActiveTerminal();
 
+  scanProjects();          // add subfolders of settings.scanDirs (non-blocking)
   checkProjectsExistence();
   window.addEventListener('focus', checkProjectsExistence); // re-check when returning to the app
 }
