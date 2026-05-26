@@ -426,6 +426,8 @@ body.resizing { cursor: col-resize; user-select: none; }
 .note-btn { padding: 5px 10px; border-radius: 6px; border: 1px solid var(--border); background: rgba(8,16,12,0.5); color: var(--text-dim); cursor: pointer; font-size: 12px; }
 .note-btn:hover { color: var(--text); border-color: var(--border-strong); }
 .note-btn.send { color: var(--green-bright); border-color: var(--green-dim); }
+.note-btn.primary { background: var(--green); border-color: var(--green); color: #04130b; font-weight: 600; }
+.note-btn.primary:hover { background: var(--green-bright); }
 .note-btn.danger:hover { color: #fff; background: rgba(247,118,142,0.7); border-color: transparent; }
 .nm-add { width: 100%; border-style: dashed; color: var(--green-bright); }
 
