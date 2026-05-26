@@ -21,7 +21,7 @@ import { markdown } from '@codemirror/lang-markdown';
 import { html } from '@codemirror/lang-html';
 import { css } from '@codemirror/lang-css';
 
-const APP_VERSION = 'alpha v1.0.13';
+const APP_VERSION = 'alpha v1.0.14';
 const GUTTER = 5;
 
 const lite = window.lite;
@@ -1122,6 +1122,7 @@ async function buildDir(dir, container, depth) {
         if (expandedDirs.has(ent.path)) { expandedDirs.delete(ent.path); collapse(); }
         else { expandedDirs.add(ent.path); await expand(); }
       });
+      row.addEventListener('contextmenu', (e) => { e.preventDefault(); e.stopPropagation(); showTreeMenu(e.clientX, e.clientY, { name: ent.name, path: ent.path, dir: true }); });
       container.appendChild(row); container.appendChild(childBox);
       if (expandedDirs.has(ent.path)) await expand(); // restore after a live refresh
     } else {
@@ -1139,11 +1140,93 @@ async function buildDir(dir, container, depth) {
         if (!viewerOpen) setViewerOpen(true);
         guardDirty(() => openFile(ent.path));
       });
+      row.addEventListener('contextmenu', (e) => { e.preventDefault(); e.stopPropagation(); showTreeMenu(e.clientX, e.clientY, { name: ent.name, path: ent.path, dir: false }); });
       container.appendChild(row);
     }
   }
 }
 function cssEscape(s) { return (window.CSS && CSS.escape) ? CSS.escape(s) : s.replace(/"/g, '\\"'); }
+const dirName = (p) => { const i = p.search(/[\\/][^\\/]*$/); return i >= 0 ? p.slice(0, i) : p; };
+
+// small single-input prompt modal; onOk(value) may return {error} to keep the dialog open
+function showPrompt(title, label, initial, onOk) {
+  const { m, close } = makeModal(`
+    <h2></h2>
+    <div class="field"><label></label><input type="text" id="pr-in" autocomplete="off" spellcheck="false"></div>
+    <div class="err" id="pr-err"></div>
+    <div class="modal-actions"><button class="btn" id="pr-cancel">Отмена</button><button class="btn primary" id="pr-ok">Ок</button></div>`);
+  m.querySelector('h2').textContent = title;
+  m.querySelector('label').textContent = label;
+  const inp = m.querySelector('#pr-in'); inp.value = initial || '';
+  const err = m.querySelector('#pr-err');
+  setTimeout(() => { inp.focus(); inp.select(); }, 30);
+  m.querySelector('#pr-cancel').onclick = close;
+  const ok = async () => {
+    const v = inp.value.trim();
+    if (!v) { err.textContent = 'Введи имя'; return; }
+    const res = await onOk(v);
+    if (res && res.error) { err.textContent = res.error; return; }
+    close();
+  };
+  m.querySelector('#pr-ok').onclick = ok;
+  m.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); ok(); } });
+}
+
+// ---------------------------------------------------------------- tree file operations (#6)
+async function refreshTree() { const p = activeProject(); if (p) await renderTree(p); }
+function treeNewFile(parent) {
+  showPrompt('Новый файл', 'Имя файла (можно путь: src/app.js)', '', async (name) => {
+    const r = await lite.fs.create(parent, name, false);
+    if (r && !r.error) { await refreshTree(); if (r.path) { if (!viewerOpen) setViewerOpen(true); openFile(r.path); } }
+    return r;
+  });
+}
+function treeNewFolder(parent) {
+  showPrompt('Новая папка', 'Имя папки', '', async (name) => {
+    const r = await lite.fs.create(parent, name, true);
+    if (r && !r.error) { expandedDirs.add(parent); await refreshTree(); }
+    return r;
+  });
+}
+function treeRename(ent) {
+  showPrompt('Переименовать', 'Новое имя', ent.name, async (name) => {
+    const to = dirName(ent.path) + '/' + name;
+    const r = await lite.fs.rename(ent.path, to);
+    if (r && !r.error) {
+      if (currentFile === ent.path) { currentFile = to; $('#viewer-filename').textContent = name; if (activeId) { projFiles.set(activeId, to); saveProjFiles(); } }
+      await refreshTree();
+    }
+    return r;
+  });
+}
+function treeDelete(ent) {
+  showConfirm('Удалить?', `«${ent.name}» будет перемещён в корзину.`, 'Удалить', async () => {
+    const r = await lite.fs.trash(ent.path);
+    if (r && r.error) { toast(r.error, { kind: 'err' }); return; }
+    if (currentFile && (currentFile === ent.path || currentFile.startsWith(ent.path + '/'))) clearViewer();
+    await refreshTree();
+  });
+}
+function showTreeMenu(x, y, ent) {
+  closeMenus();
+  const dd = el('div', 'menu-dropdown'); dd.style.minWidth = '190px';
+  dd.addEventListener('click', (e) => e.stopPropagation());
+  if (ent.dir) {
+    dd.appendChild(menuRow('📄', 'Новый файл…', () => { closeMenus(); treeNewFile(ent.path); }));
+    dd.appendChild(menuRow('📁', 'Новая папка…', () => { closeMenus(); treeNewFolder(ent.path); }));
+    dd.appendChild(el('div', 'menu-sep'));
+  } else {
+    dd.appendChild(menuRow('👁', 'Открыть', () => { closeMenus(); if (!viewerOpen) setViewerOpen(true); guardDirty(() => openFile(ent.path)); }));
+    if (['html', 'htm'].includes(extOf(ent.name))) dd.appendChild(menuRow('🌐', 'Открыть в браузере', () => { closeMenus(); lite.openInFileManager(ent.path); }));
+    dd.appendChild(el('div', 'menu-sep'));
+  }
+  if (!ent.root) {
+    dd.appendChild(menuRow('✎', 'Переименовать…', () => { closeMenus(); treeRename(ent); }));
+    dd.appendChild(menuRow('🗑', 'Удалить…', () => { closeMenus(); treeDelete(ent); }, 'danger'));
+  }
+  dd.appendChild(menuRow('⧉', 'Копировать путь', () => { closeMenus(); lite.copyText(ent.path); toast('Путь скопирован'); }));
+  placeMenu(dd, x, y);
+}
 
 // ---------------------------------------------------------------- gutters (resize)
 function initGutters() {
@@ -1561,6 +1644,12 @@ function init() {
   $('#viewer-preview').addEventListener('click', togglePreview);
   $('#viewer-close').addEventListener('click', () => setViewerOpen(false));
   $('#tree-refresh').addEventListener('click', () => { const p = activeProject(); if (p) renderTree(p); });
+  $('#tree-new').addEventListener('click', (e) => { const p = activeProject(); if (p) showTreeMenu(e.clientX, e.clientY, { name: p.name, path: p.path, dir: true, root: true }); });
+  $('#tree').addEventListener('contextmenu', (e) => {
+    if (e.target.closest('.tree-row')) return; // row menus handle their own
+    e.preventDefault();
+    const p = activeProject(); if (p) showTreeMenu(e.clientX, e.clientY, { name: p.name, path: p.path, dir: true, root: true });
+  });
   $('#term-clear').addEventListener('click', () => clearTerminal());
   $('#term-restart').addEventListener('click', () => restartTerminal());
   $('#attention-badge').addEventListener('click', () => {
