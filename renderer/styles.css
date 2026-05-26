@@ -379,6 +379,41 @@ body.resizing { cursor: col-resize; user-select: none; }
 .diff-empty { padding: 18px; color: var(--text-dim); text-align: center; }
 #viewer-diff.on { color: var(--green-bright); border-color: var(--green); }
 
+/* ---------------- viewer preview (md / image / html) ---------------- */
+#preview-view { display: none; flex: 1; overflow: auto; background: rgba(9,17,13,0.6); }
+.prev-empty { padding: 18px; color: var(--text-dim); text-align: center; }
+.prev-img { display: block; max-width: 100%; margin: 16px auto; background:
+  linear-gradient(45deg,#1a261f 25%,transparent 25%),linear-gradient(-45deg,#1a261f 25%,transparent 25%),
+  linear-gradient(45deg,transparent 75%,#1a261f 75%),linear-gradient(-45deg,transparent 75%,#1a261f 75%);
+  background-size: 18px 18px; background-position: 0 0,0 9px,9px -9px,-9px 0; }
+.prev-frame { width: 100%; height: 100%; border: 0; background: #fff; }
+.prev-md { padding: 16px 24px; color: var(--text); line-height: 1.6; font-size: 14px; }
+.prev-md h1, .prev-md h2, .prev-md h3 { color: #fff; border-bottom: 1px solid var(--border); padding-bottom: 4px; margin: 18px 0 10px; }
+.prev-md h1 { font-size: 1.6em; } .prev-md h2 { font-size: 1.35em; } .prev-md h3 { font-size: 1.15em; border-bottom: 0; }
+.prev-md a { color: var(--green-bright); }
+.prev-md code { background: rgba(120,200,160,0.12); padding: 1px 5px; border-radius: 4px; font-family: "JetBrains Mono", monospace; font-size: 0.9em; }
+.prev-md pre { background: #0a130e; border: 1px solid var(--border); border-radius: 8px; padding: 12px; overflow: auto; }
+.prev-md pre code { background: none; padding: 0; }
+.prev-md blockquote { margin: 10px 0; padding: 4px 14px; border-left: 3px solid var(--green-dim); color: var(--text-dim); }
+.prev-md table { border-collapse: collapse; margin: 10px 0; }
+.prev-md th, .prev-md td { border: 1px solid var(--border); padding: 6px 10px; }
+.prev-md img { max-width: 100%; }
+.prev-md hr { border: 0; border-top: 1px solid var(--border); margin: 16px 0; }
+.prev-md ul, .prev-md ol { padding-left: 22px; }
+
+/* CodeMirror search panel — dark to match */
+#editor .cm-panels { background: #0e1b15; color: var(--text); border-color: var(--border-strong); }
+#editor .cm-panel.cm-search { padding: 6px 8px; }
+#editor .cm-panel.cm-search input, #editor .cm-textfield {
+  background: #0a130e; border: 1px solid var(--border-strong); color: var(--text); border-radius: 6px; padding: 3px 6px;
+}
+#editor .cm-panel.cm-search .cm-button {
+  background: rgba(120,200,160,0.12); border: 1px solid var(--border-strong); color: var(--text); border-radius: 6px; background-image: none;
+}
+#editor .cm-panel.cm-search label { color: var(--text-dim); }
+#editor .cm-searchMatch { background: rgba(224,175,104,0.3); }
+#editor .cm-searchMatch-selected { background: rgba(61,220,132,0.4); }
+
 /* ---------------- toasts ---------------- */
 #toasts {
   position: fixed; right: 16px; bottom: 16px; z-index: 300;

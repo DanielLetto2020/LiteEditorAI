@@ -1,6 +1,6 @@
 {
   "name": "lite-editor",
-  "version": "1.0.12-alpha",
+  "version": "1.0.13-alpha",
   "description": "Terminal-first multi-project workspace with a code viewer",
   "main": "main.js",
   "author": "Letto <i@m-letto.ru>",
@@ -27,6 +27,7 @@
     "@codemirror/lang-markdown": "^6.3.1",
     "@codemirror/lang-python": "^6.1.6",
     "@codemirror/language": "^6.10.6",
+    "@codemirror/search": "^6.7.0",
     "@codemirror/state": "^6.5.0",
     "@codemirror/theme-one-dark": "^6.1.2",
     "@codemirror/view": "^6.35.0",
@@ -34,6 +35,7 @@
     "@xterm/addon-search": "^0.16.0",
     "@xterm/addon-web-links": "^0.12.0",
     "@xterm/xterm": "^5.5.0",
+    "marked": "^18.0.4",
     "node-pty": "^1.0.0"
   },
   "devDependencies": {
@@ -46,24 +48,40 @@
   "build": {
     "appId": "com.mletto.liteeditor",
     "productName": "LiteEditor",
-    "directories": { "output": "dist-release", "buildResources": "assets" },
+    "directories": {
+      "output": "dist-release",
+      "buildResources": "assets"
+    },
     "npmRebuild": false,
-    "asarUnpack": ["**/node_modules/node-pty/**"],
+    "asarUnpack": [
+      "**/node_modules/node-pty/**"
+    ],
     "files": [
-      "main.js", "preload.js", "package.json",
-      "renderer/index.html", "renderer/styles.css", "renderer/dist/**",
-      "assets/icon.png", "assets/icon.svg",
+      "main.js",
+      "preload.js",
+      "package.json",
+      "renderer/index.html",
+      "renderer/styles.css",
+      "renderer/dist/**",
+      "assets/icon.png",
+      "assets/icon.svg",
       "!**/*.pdb"
     ],
     "linux": {
-      "target": ["deb"],
+      "target": [
+        "deb"
+      ],
       "category": "Development",
       "icon": "assets/icon.png",
       "maintainer": "Letto <i@m-letto.ru>",
-      "executableArgs": ["--no-sandbox"]
+      "executableArgs": [
+        "--no-sandbox"
+      ]
     },
     "win": {
-      "target": ["zip"],
+      "target": [
+        "zip"
+      ],
       "icon": "assets/icon.png",
       "signAndEditExecutable": false
     }

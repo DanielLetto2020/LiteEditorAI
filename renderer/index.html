@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta http-equiv="Content-Security-Policy"
-        content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data:;" />
+        content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data:; frame-src 'self';" />
   <title>LiteEditor</title>
   <link rel="stylesheet" href="dist/bundle.css" />
   <link rel="stylesheet" href="styles.css" />
@@ -67,12 +67,14 @@
           <span id="viewer-filename">—</span>
           <span id="viewer-dirty" class="dirty-dot" title="Несохранённые изменения"></span>
           <div class="drag-space-static"></div>
+          <button id="viewer-preview" class="icon-btn" title="Превью (Markdown / картинка / HTML)">👁</button>
           <button id="viewer-diff" class="icon-btn" title="Дифф изменений vs HEAD (git)">±</button>
           <button id="viewer-save" class="icon-btn" title="Сохранить (Ctrl+S)">💾</button>
           <button id="viewer-close" class="icon-btn" title="Закрыть вивер">✕</button>
         </div>
         <div id="editor"></div>
         <div id="diff-view"></div>
+        <div id="preview-view"></div>
       </section>
 
       <div class="gutter gutter-v hidden" data-resize="tree"></div>

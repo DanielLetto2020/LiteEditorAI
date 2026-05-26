@@ -11,7 +11,9 @@ import { EditorView, keymap, lineNumbers, highlightActiveLine, drawSelection } f
 import { EditorState, Compartment } from '@codemirror/state';
 import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands';
 import { syntaxHighlighting, defaultHighlightStyle, indentOnInput, bracketMatching } from '@codemirror/language';
+import { search, searchKeymap, highlightSelectionMatches, openSearchPanel } from '@codemirror/search';
 import { oneDark } from '@codemirror/theme-one-dark';
+import { marked } from 'marked';
 import { javascript } from '@codemirror/lang-javascript';
 import { python } from '@codemirror/lang-python';
 import { json } from '@codemirror/lang-json';
@@ -19,7 +21,7 @@ import { markdown } from '@codemirror/lang-markdown';
 import { html } from '@codemirror/lang-html';
 import { css } from '@codemirror/lang-css';
 
-const APP_VERSION = 'alpha v1.0.12';
+const APP_VERSION = 'alpha v1.0.13';
 const GUTTER = 5;
 
 const lite = window.lite;
@@ -74,6 +76,7 @@ let viewerOpen = false;
 let currentFile = null;
 let dirty = false;
 let diffMode = false;        // viewer showing a git diff instead of the file
+let previewMode = false;     // viewer showing a rendered preview (md/image/html) instead of source
 let editor = null;
 let loadingDoc = false;
 const langComp = new Compartment();
@@ -843,31 +846,87 @@ function makeEditor() {
     doc: '',
     extensions: [
       lineNumbers(), highlightActiveLine(), drawSelection(), history(),
-      indentOnInput(), bracketMatching(),
+      indentOnInput(), bracketMatching(), highlightSelectionMatches(), search({ top: true }),
       syntaxHighlighting(defaultHighlightStyle, { fallback: true }), oneDark,
       langComp.of([]),
       keymap.of([
         { key: 'Mod-s', preventDefault: true, run: () => { saveCurrent(); return true; } },
-        indentWithTab, ...defaultKeymap, ...historyKeymap,
+        indentWithTab, ...searchKeymap, ...defaultKeymap, ...historyKeymap,
       ]),
       EditorView.updateListener.of((u) => { if (u.docChanged && !loadingDoc) markDirty(true); }),
     ],
   });
   editor = new EditorView({ state, parent: $('#editor') });
 }
+function previewKind(file) {
+  const e = extOf(file);
+  if (['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'ico', 'avif'].includes(e)) return 'image';
+  if (['md', 'markdown'].includes(e)) return 'markdown';
+  if (['html', 'htm'].includes(e)) return 'html';
+  return null;
+}
 async function openFile(filePath, line) {
   if (diffMode) exitDiff(false);
-  const res = await lite.fs.readFile(filePath);
+  exitPreview();
+  const kind = previewKind(filePath);
   $('#viewer-filename').textContent = baseName(filePath);
+  $('#viewer-preview').style.display = (kind && kind !== 'image') ? '' : 'none'; // toggle only when there's source too
+  document.querySelectorAll('.tree-row.open').forEach((r) => r.classList.remove('open'));
+  const row = document.querySelector(`.tree-row[data-path="${cssEscape(filePath)}"]`);
+  if (row) row.classList.add('open');
+
+  if (kind === 'image') { // binary — no editable source
+    currentFile = filePath;
+    if (activeId) { projFiles.set(activeId, filePath); saveProjFiles(); }
+    setEditorText('', []); markDirty(false);
+    await showPreview('image', filePath, '');
+    return;
+  }
+  const res = await lite.fs.readFile(filePath);
   if (res.error) { setEditorText(`// ${res.error}`, []); currentFile = null; return; }
   currentFile = filePath;
   if (activeId) { projFiles.set(activeId, filePath); saveProjFiles(); } // remember per project
   setEditorText(res.content, languageFor(filePath));
   markDirty(false);
-  document.querySelectorAll('.tree-row.open').forEach((r) => r.classList.remove('open'));
-  const row = document.querySelector(`.tree-row[data-path="${cssEscape(filePath)}"]`);
-  if (row) row.classList.add('open');
-  if (line && line > 0) requestAnimationFrame(() => gotoLine(line));
+  if (kind) await showPreview(kind, filePath, res.content); // md/html default to rendered preview
+  else if (line && line > 0) requestAnimationFrame(() => gotoLine(line));
+}
+
+// ---------------------------------------------------------------- viewer preview (md/image/html)
+async function showPreview(kind, file, content) {
+  previewMode = true;
+  const view = $('#preview-view');
+  view.innerHTML = '';
+  if (kind === 'image') {
+    const res = await lite.fs.readDataUrl(file);
+    if (res.error) view.appendChild(el('div', 'prev-empty', res.error));
+    else { const img = el('img', 'prev-img'); img.src = res.url; view.appendChild(img); }
+  } else if (kind === 'markdown') {
+    const div = el('div', 'prev-md');
+    try { div.innerHTML = marked.parse(content || '', { breaks: true }); } catch (_) { div.textContent = content || ''; }
+    view.appendChild(div);
+  } else if (kind === 'html') {
+    const frame = document.createElement('iframe');
+    frame.className = 'prev-frame';
+    frame.setAttribute('sandbox', ''); // render, but no scripts
+    frame.srcdoc = content || '';
+    view.appendChild(frame);
+  }
+  $('#editor').style.display = 'none';
+  view.style.display = 'block';
+  $('#viewer-preview').classList.add('on');
+}
+function exitPreview() {
+  previewMode = false;
+  const v = $('#preview-view');
+  if (v) { v.style.display = 'none'; v.innerHTML = ''; }
+  $('#editor').style.display = '';
+  $('#viewer-preview').classList.remove('on');
+}
+function togglePreview() {
+  if (previewMode) { exitPreview(); editor.focus(); return; }
+  const kind = previewKind(currentFile);
+  if (kind) showPreview(kind, currentFile, editor.state.doc.toString());
 }
 function gotoLine(line) {
   const doc = editor.state.doc;
@@ -1384,6 +1443,8 @@ function paletteActions() {
   acts.push({ label: 'Перезапустить терминал', run: () => restartTerminal() });
   acts.push({ label: 'Настройки…', run: showSettings });
   if (currentFile) acts.push({ label: 'Показать дифф файла', run: toggleDiff });
+  if (currentFile) acts.push({ label: 'Поиск в файле', run: () => { if (viewerOpen && !previewMode) openSearchPanel(editor); } });
+  if (previewKind(currentFile || '')) acts.push({ label: 'Превью файла (вкл/выкл)', run: togglePreview });
   return acts;
 }
 function showPalette() {
@@ -1497,6 +1558,7 @@ function init() {
   $('#btn-single').addEventListener('click', toggleSingle);
   $('#viewer-save').addEventListener('click', saveCurrent);
   $('#viewer-diff').addEventListener('click', toggleDiff);
+  $('#viewer-preview').addEventListener('click', togglePreview);
   $('#viewer-close').addEventListener('click', () => setViewerOpen(false));
   $('#tree-refresh').addEventListener('click', () => { const p = activeProject(); if (p) renderTree(p); });
   $('#term-clear').addEventListener('click', () => clearTerminal());
