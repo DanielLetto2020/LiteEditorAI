@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data:;" />
+  <title>LiteEditor</title>
+  <link rel="stylesheet" href="dist/bundle.css" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div id="app">
+    <!-- Custom frameless titlebar: menu (left) + window controls (right). Draggable. -->
+    <header id="topbar">
+      <span class="brand"><span class="brand-mark">▍</span>LiteEditor</span>
+      <nav id="menubar">
+        <button class="menu-item" data-menu="file">Файл</button>
+        <button class="menu-item" data-menu="settings">Настройки</button>
+        <button class="menu-item" data-menu="about">О&nbsp;программе</button>
+      </nav>
+      <div class="drag-space"></div>
+      <div class="win-tools">
+        <button id="btn-single" class="icon-btn" title="Один терминал (Ctrl+\)">⛶</button>
+        <span class="win-sep"></span>
+        <button id="win-min" class="win-btn" title="Свернуть" aria-label="Свернуть"></button>
+        <button id="win-max" class="win-btn" title="Развернуть" aria-label="Развернуть"></button>
+        <button id="win-full" class="win-btn" title="Полный экран (F11)" aria-label="Полный экран"></button>
+        <button id="win-close" class="win-btn close" title="Закрыть" aria-label="Закрыть"></button>
+      </div>
+    </header>
+
+    <div id="body">
+      <!-- compact project switcher, shown only in single-terminal mode -->
+      <aside id="mini-rail"></aside>
+
+      <aside id="sidebar">
+        <div class="pane-head">ПРОЕКТЫ</div>
+        <button id="open-folder-btn" class="open-folder">+ Открыть папку</button>
+        <div id="projects"></div>
+      </aside>
+      <div class="gutter" data-resize="sidebar"></div>
+
+      <section id="terminal-pane">
+        <div id="terminals"></div>
+        <div id="empty-hint">
+          <div class="hint-card">
+            <div class="hint-title">Пусто</div>
+            <div class="hint-text">Открой папку слева — справа поднимется её терминал.</div>
+          </div>
+        </div>
+      </section>
+
+      <div class="gutter gutter-v hidden" data-resize="viewer"></div>
+      <section id="viewer-pane" class="hidden">
+        <div class="pane-head">
+          <span id="viewer-filename">—</span>
+          <span id="viewer-dirty" class="dirty-dot" title="Несохранённые изменения"></span>
+          <div class="drag-space-static"></div>
+          <button id="viewer-save" class="icon-btn" title="Сохранить (Ctrl+S)">💾</button>
+          <button id="viewer-close" class="icon-btn" title="Закрыть вивер">✕</button>
+        </div>
+        <div id="editor"></div>
+      </section>
+
+      <div class="gutter gutter-v hidden" data-resize="tree"></div>
+      <section id="tree-pane" class="hidden">
+        <div class="pane-head">
+          <span id="tree-title">ДЕРЕВО</span>
+          <div class="drag-space-static"></div>
+          <button id="tree-refresh" class="icon-btn" title="Обновить дерево файлов">⟳</button>
+        </div>
+        <div id="tree"></div>
+      </section>
+    </div>
+  </div>
+
+  <div id="menu-layer"></div>
+  <div id="modal-root"></div>
+
+  <script src="dist/bundle.js"></script>
+</body>
+</html>

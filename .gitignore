@@ -1,0 +1,12 @@
+node_modules/
+renderer/dist/
+assets/icon*.png
+lite-editor
+*.log
+.DS_Store
+
+# IDE
+.idea/
+
+# Personal agent guidance — readable on disk, kept out of the repo
+CLAUDE.md

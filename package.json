@@ -1,0 +1,39 @@
+{
+  "name": "lite-editor",
+  "version": "1.0.0-alpha",
+  "description": "Terminal-first multi-project workspace with a code viewer",
+  "main": "main.js",
+  "author": "Maxim Letto",
+  "license": "MIT",
+  "scripts": {
+    "build": "node build.js",
+    "start": "node build.js && electron --no-sandbox .",
+    "watch": "node build.js --watch",
+    "rebuild": "electron-rebuild -f -w node-pty",
+    "postinstall": "electron-rebuild -f -w node-pty || echo 'node-pty rebuild skipped — run: npm run rebuild'",
+    "gen-icons": "node scripts/gen-icons.js",
+    "install-desktop": "node scripts/install-desktop.js"
+  },
+  "dependencies": {
+    "@xterm/addon-fit": "^0.10.0",
+    "@xterm/xterm": "^5.5.0",
+    "@codemirror/commands": "^6.7.1",
+    "@codemirror/lang-css": "^6.3.0",
+    "@codemirror/lang-html": "^6.4.9",
+    "@codemirror/lang-javascript": "^6.2.2",
+    "@codemirror/lang-json": "^6.0.1",
+    "@codemirror/lang-markdown": "^6.3.1",
+    "@codemirror/lang-python": "^6.1.6",
+    "@codemirror/language": "^6.10.6",
+    "@codemirror/state": "^6.5.0",
+    "@codemirror/theme-one-dark": "^6.1.2",
+    "@codemirror/view": "^6.35.0",
+    "node-pty": "^1.0.0"
+  },
+  "devDependencies": {
+    "@electron/rebuild": "^3.7.1",
+    "electron": "^33.2.0",
+    "esbuild": "^0.24.0",
+    "sharp": "^0.33.5"
+  }
+}
