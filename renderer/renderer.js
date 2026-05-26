@@ -284,6 +284,42 @@ async function scanProjects() {
   }
 }
 
+// ---------------------------------------------------------------- keyboard layout swap
+// Fix text typed in the wrong layout (e.g. "ghbdtn" → "привет") by physical key
+// position. Direction is auto-detected from which alphabet dominates the text.
+const US_RU_BASE = {
+  '`': 'ё', q: 'й', w: 'ц', e: 'у', r: 'к', t: 'е', y: 'н', u: 'г', i: 'ш', o: 'щ', p: 'з', '[': 'х', ']': 'ъ',
+  a: 'ф', s: 'ы', d: 'в', f: 'а', g: 'п', h: 'р', j: 'о', k: 'л', l: 'д', ';': 'ж', "'": 'э',
+  z: 'я', x: 'ч', c: 'с', v: 'м', b: 'и', n: 'т', m: 'ь', ',': 'б', '.': 'ю', '/': '.',
+};
+const US_RU = {};
+for (const [k, v] of Object.entries(US_RU_BASE)) {
+  US_RU[k] = v;
+  if (/[a-z]/.test(k)) US_RU[k.toUpperCase()] = v.toUpperCase();
+}
+Object.assign(US_RU, { '{': 'Х', '}': 'Ъ', ':': 'Ж', '"': 'Э', '<': 'Б', '>': 'Ю' }); // shifted punctuation keys
+const RU_US = {};
+for (const [k, v] of Object.entries(US_RU)) if (!(v in RU_US)) RU_US[v] = k;
+
+function convertLayout(text) {
+  let lat = 0, cyr = 0;
+  for (const ch of text) { if (/[a-z]/i.test(ch)) lat++; else if (/[а-яё]/i.test(ch)) cyr++; }
+  const map = lat >= cyr ? US_RU : RU_US;
+  let out = '';
+  for (const ch of text) out += (map[ch] || ch);
+  return out;
+}
+function applyLayoutSwap(ta) {
+  const s = ta.selectionStart, e = ta.selectionEnd;
+  if (s !== e) { // convert only the selection if there is one
+    ta.value = ta.value.slice(0, s) + convertLayout(ta.value.slice(s, e)) + ta.value.slice(e);
+    ta.setSelectionRange(s, e);
+  } else {
+    ta.value = convertLayout(ta.value);
+  }
+  ta.focus();
+}
+
 // ---------------------------------------------------------------- notes / prompt cards (#4)
 async function showNotes(p) {
   let notes = await lite.store.notesGet(p.id);
@@ -304,11 +340,14 @@ async function showNotes(p) {
     row.innerHTML = '';
     const ta = el('textarea', 'note-edit'); ta.value = note.text || '';
     const acts = el('div', 'note-acts');
+    const layout = el('button', 'note-btn', '⇄ Раскладка');
+    layout.title = 'Сменить раскладку EN⇄РУ по позиции клавиш (или только выделенное)';
+    layout.addEventListener('click', () => applyLayoutSwap(ta));
     const ok = el('button', 'note-btn', '✓ Сохранить');
     ok.addEventListener('click', () => { note.text = ta.value; save(); render(); });
     const cancel = el('button', 'note-btn', 'Отмена');
     cancel.addEventListener('click', render);
-    acts.append(ok, cancel);
+    acts.append(layout, ok, cancel);
     row.append(ta, acts);
     ta.focus();
   }
