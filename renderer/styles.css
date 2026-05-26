@@ -140,13 +140,28 @@ html, body {
 
 .card-head { display: flex; align-items: center; gap: 7px; }
 .card-title { flex: 1; min-width: 0; font-weight: 600; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.card-close {
-  flex: 0 0 auto; width: 18px; height: 18px; padding: 0; opacity: 0;
-  background: transparent; border: 0; color: var(--text-dim); cursor: pointer; font-size: 12px; border-radius: 5px;
-  transition: opacity .12s, color .12s, background .12s;
+.card-star, .card-kebab {
+  flex: 0 0 auto; width: 20px; height: 20px; padding: 0; border-radius: 5px;
+  background: transparent; border: 0; cursor: pointer; font-size: 13px; line-height: 1;
+  color: var(--text-dim); transition: color .12s, background .12s;
 }
-.card:hover .card-close { opacity: 1; }
-.card-close:hover { color: #fff; background: rgba(247,118,142,0.7); }
+.card-star:hover, .card-kebab:hover { background: rgba(120,200,160,0.14); color: var(--text); }
+.card-star.on { color: #e0c060; }
+.card-kebab { font-size: 16px; }
+
+/* project group accordions (Избранное / Все / категории) */
+.pgroup { margin-bottom: 6px; }
+.pgroup-head {
+  display: flex; align-items: center; gap: 6px; padding: 5px 6px; cursor: pointer;
+  font-size: 11px; letter-spacing: .5px; text-transform: uppercase; color: var(--text-dim);
+  border-radius: 6px; user-select: none;
+}
+.pgroup-head:hover { background: rgba(120,200,160,0.07); color: var(--text); }
+.pgroup-chev { width: 10px; font-size: 9px; }
+.pgroup-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pgroup-count { font-size: 10px; padding: 1px 7px; border-radius: 9px; background: rgba(120,200,160,0.12); color: var(--text-dim); }
+.pgroup.pinned .pgroup-name { color: #e0c060; }
+.pgroup-body { padding-top: 2px; }
 
 /* activity indicator: spinner while the console is producing output, green dot when quiet */
 .pind { flex: 0 0 11px; width: 11px; height: 11px; border-radius: 50%; box-sizing: border-box; }
@@ -267,6 +282,9 @@ body.resizing { cursor: col-resize; user-select: none; }
 .menu-row:hover { background: rgba(120,200,160,0.13); }
 .menu-row.disabled { color: var(--text-dim); cursor: default; }
 .menu-row.disabled:hover { background: transparent; }
+.menu-row.danger { color: var(--danger); }
+.menu-row.danger:hover { background: rgba(247,118,142,0.16); }
+.menu-row.muted { color: var(--text-dim); }
 .menu-sep { height: 1px; background: var(--border); margin: 5px 6px; }
 .menu-label { padding: 6px 10px 3px; font-size: 11px; letter-spacing: .5px; color: var(--text-dim); }
 .recents { max-height: 270px; overflow: auto; }

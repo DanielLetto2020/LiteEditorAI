@@ -113,61 +113,149 @@ function loadProjFiles() {
 function saveProjFiles() { persist('projFiles', Object.fromEntries(projFiles)); }
 
 // ---------------------------------------------------------------- projects column
+const UNCATEGORIZED = 'Все';
+function loadCategories() { return Array.isArray(STORE.categories) ? STORE.categories : []; }
+function saveCategories(c) { persist('categories', c); }
+function isCollapsed(key) { return !!(STORE.accordions || {})[key]; }
+function setCollapsed(key, v) { persist('accordions', { ...(STORE.accordions || {}), [key]: v }); }
+
 function renderProjects() {
   const box = $('#projects');
   box.innerHTML = '';
-  for (const p of projects) {
-    const card = el('div', 'card');
-    card.dataset.id = p.id;
-    if (p.id === activeId) card.classList.add('active');
-    if (missing.has(p.id)) card.classList.add('missing');
-
-    const head = el('div', 'card-head');
-    const ind = el('span', 'pind ' + (projState.get(p.id) || 'quiet'));
-    ind.dataset.id = p.id;
-    ind.title = 'Индикатор: спиннер — в терминале идёт вывод, точка — тихо';
-    const title = el('span', 'card-title', p.name);
-    const closeBtn = el('button', 'card-close', '✕');
-    closeBtn.title = 'Закрыть проект';
-    closeBtn.addEventListener('click', (e) => { e.stopPropagation(); closeProject(p.id); });
-    head.appendChild(ind); head.appendChild(title); head.appendChild(closeBtn);
-    card.appendChild(head);
-
-    const pathRow = el('div', 'card-path-row');
-    const pathEl = el('div', 'card-path', p.path);
-    pathEl.title = p.path;
-    const copyBtn = el('button', 'card-copy', '⧉');
-    copyBtn.title = 'Скопировать полный путь';
-    copyBtn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      lite.copyText(p.path);
-      copyBtn.textContent = '✓'; copyBtn.classList.add('copied');
-      setTimeout(() => { copyBtn.textContent = '⧉'; copyBtn.classList.remove('copied'); }, 1100);
-    });
-    pathRow.appendChild(pathEl); pathRow.appendChild(copyBtn);
-    card.appendChild(pathRow);
-
-    if (missing.has(p.id)) card.appendChild(el('div', 'card-missing', '⚠ папка удалена — закрой проект'));
-
-    const actions = el('div', 'card-actions');
-    const openFs = el('button', null, '📁');
-    openFs.title = 'Открыть в проводнике';
-    openFs.addEventListener('click', (e) => { e.stopPropagation(); lite.openInFileManager(p.path); });
-    const openViewer = el('button', null, '👁');
-    openViewer.title = 'Открыть вивер';
-    if (p.id === activeId && viewerOpen) openViewer.classList.add('on');
-    openViewer.addEventListener('click', (e) => {
-      e.stopPropagation();
-      if (activeId === p.id && viewerOpen) setViewerOpen(false);
-      else { setActive(p.id); setViewerOpen(true); }
-    });
-    actions.appendChild(openFs); actions.appendChild(openViewer);
-    card.appendChild(actions);
-
-    card.addEventListener('click', () => setActive(p.id));
-    box.appendChild(card);
+  const cats = loadCategories();
+  const favs = projects.filter((p) => p.favorite);
+  if (favs.length) box.appendChild(renderSection('★ Избранное', '__fav', favs, true));
+  const inAll = projects.filter((p) => !p.favorite && !cats.includes(p.category));
+  box.appendChild(renderSection(UNCATEGORIZED, UNCATEGORIZED, inAll, false));
+  for (const c of cats) {
+    const list = projects.filter((p) => !p.favorite && p.category === c);
+    box.appendChild(renderSection(c, c, list, false));
   }
   renderMiniRail();
+}
+function renderSection(label, key, list, pinned) {
+  const sec = el('div', 'pgroup' + (pinned ? ' pinned' : ''));
+  const collapsed = isCollapsed(key);
+  const head = el('div', 'pgroup-head');
+  const chev = el('span', 'pgroup-chev', collapsed ? '▸' : '▾');
+  head.appendChild(chev);
+  head.appendChild(el('span', 'pgroup-name', label));
+  head.appendChild(el('span', 'pgroup-count', String(list.length)));
+  const body = el('div', 'pgroup-body');
+  if (collapsed) body.style.display = 'none';
+  head.addEventListener('click', () => {
+    const now = !isCollapsed(key); setCollapsed(key, now);
+    body.style.display = now ? 'none' : 'block'; chev.textContent = now ? '▸' : '▾';
+  });
+  for (const p of list) body.appendChild(makeCard(p));
+  sec.appendChild(head); sec.appendChild(body);
+  return sec;
+}
+function makeCard(p) {
+  const card = el('div', 'card');
+  card.dataset.id = p.id;
+  if (p.id === activeId) card.classList.add('active');
+  if (missing.has(p.id)) card.classList.add('missing');
+
+  const head = el('div', 'card-head');
+  const ind = el('span', 'pind ' + (projState.get(p.id) || 'quiet'));
+  ind.dataset.id = p.id;
+  ind.title = 'Спиннер — работает · янтарный — ждёт ответа · точка — готов';
+  const title = el('span', 'card-title', p.name);
+  title.title = p.path;
+  const star = el('button', 'card-star' + (p.favorite ? ' on' : ''), p.favorite ? '★' : '☆');
+  star.title = p.favorite ? 'Убрать из избранного' : 'В избранное';
+  star.addEventListener('click', (e) => { e.stopPropagation(); toggleFavorite(p.id); });
+  const kebab = el('button', 'card-kebab', '⋮');
+  kebab.title = 'Меню проекта';
+  kebab.addEventListener('click', (e) => { e.stopPropagation(); showCardMenu(e.clientX, e.clientY, p); });
+  head.appendChild(ind); head.appendChild(title); head.appendChild(star); head.appendChild(kebab);
+  card.appendChild(head);
+
+  if (missing.has(p.id)) card.appendChild(el('div', 'card-missing', '⚠ папка удалена — закрой проект'));
+
+  const actions = el('div', 'card-actions');
+  const openViewer = el('button', null, '👁 вивер');
+  if (p.id === activeId && viewerOpen) openViewer.classList.add('on');
+  openViewer.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (activeId === p.id && viewerOpen) setViewerOpen(false);
+    else { setActive(p.id); setViewerOpen(true); }
+  });
+  actions.appendChild(openViewer);
+  card.appendChild(actions);
+
+  card.addEventListener('click', () => setActive(p.id));
+  card.addEventListener('contextmenu', (e) => { e.preventDefault(); showCardMenu(e.clientX, e.clientY, p); });
+  return card;
+}
+function toggleFavorite(id) {
+  const p = projects.find((x) => x.id === id);
+  if (!p) return;
+  p.favorite = !p.favorite;
+  saveProjects(); renderProjects();
+}
+function moveToCategory(id, cat) {
+  const p = projects.find((x) => x.id === id);
+  if (!p) return;
+  p.category = cat;          // null → "Все"; favorite stays independent
+  saveProjects(); renderProjects();
+}
+
+// kebab/right-click project menu (two pages: actions ↔ move-to-category)
+function showCardMenu(x, y, p) {
+  closeMenus();
+  const dd = el('div', 'menu-dropdown');
+  dd.style.minWidth = '210px';
+  dd.addEventListener('click', (e) => e.stopPropagation());
+  buildCardMenuMain(dd, p);
+  placeMenu(dd, x, y);
+}
+function buildCardMenuMain(dd, p) {
+  dd.innerHTML = '';
+  dd.appendChild(menuRow('📁', 'Открыть в проводнике', () => { closeMenus(); lite.openInFileManager(p.path); }));
+  dd.appendChild(menuRow('👁', activeId === p.id && viewerOpen ? 'Закрыть вивер' : 'Открыть вивер', () => {
+    closeMenus();
+    if (activeId === p.id && viewerOpen) setViewerOpen(false); else { setActive(p.id); setViewerOpen(true); }
+  }));
+  dd.appendChild(menuRow('⧉', 'Копировать путь', () => { closeMenus(); lite.copyText(p.path); toast('Путь скопирован'); }));
+  dd.appendChild(menuRow(p.favorite ? '★' : '☆', p.favorite ? 'Убрать из избранного' : 'В избранное', () => { closeMenus(); toggleFavorite(p.id); }));
+  dd.appendChild(el('div', 'menu-sep'));
+  dd.appendChild(menuRow('➜', 'Переместить в категорию…', () => buildCardMenuMove(dd, p)));
+  dd.appendChild(el('div', 'menu-sep'));
+  dd.appendChild(menuRow('✕', 'Закрыть проект', () => { closeMenus(); closeProject(p.id); }, 'danger'));
+}
+function buildCardMenuMove(dd, p) {
+  dd.innerHTML = '';
+  dd.appendChild(menuRow('‹', 'Назад', () => buildCardMenuMain(dd, p), 'muted'));
+  dd.appendChild(el('div', 'menu-label', 'Переместить в'));
+  const cats = loadCategories();
+  const opts = [UNCATEGORIZED, ...cats];
+  for (const c of opts) {
+    const here = c === UNCATEGORIZED ? !cats.includes(p.category) : p.category === c;
+    dd.appendChild(menuRow(here ? '•' : ' ', c, () => { closeMenus(); moveToCategory(p.id, c === UNCATEGORIZED ? null : c); }));
+  }
+  dd.appendChild(el('div', 'menu-sep'));
+  dd.appendChild(menuRow('✚', 'Создать новую…', () => { closeMenus(); showCreateCategory(p.id); }));
+}
+function showCreateCategory(id) {
+  const { m, close } = makeModal(`
+    <h2>✚ Новая категория</h2>
+    <div class="field"><input type="text" id="nc-name" placeholder="Название категории" autocomplete="off" spellcheck="false"></div>
+    <div class="modal-actions"><button class="btn" id="nc-cancel">Отмена</button><button class="btn primary" id="nc-ok">Создать</button></div>`);
+  const inp = m.querySelector('#nc-name');
+  setTimeout(() => inp.focus(), 30);
+  m.querySelector('#nc-cancel').onclick = close;
+  const ok = () => {
+    const name = inp.value.trim();
+    if (!name || name === UNCATEGORIZED) { close(); return; }
+    const cats = loadCategories();
+    if (!cats.includes(name)) { cats.push(name); saveCategories(cats); }
+    moveToCategory(id, name);
+    close();
+  };
+  m.querySelector('#nc-ok').onclick = ok;
+  m.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); ok(); } });
 }
 
 // Compact project switcher for single-terminal mode: indicator + name, click switches.
