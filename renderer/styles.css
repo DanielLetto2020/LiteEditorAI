@@ -529,4 +529,10 @@ body[data-theme="violet"] #app {
   color: var(--text); outline: none; min-width: 120px;
 }
 
+/* ---------------- accent swatches (project color) ---------------- */
+.accent-swatches { display: flex; flex-wrap: wrap; gap: 7px; padding: 6px 10px 8px; }
+.accent-sw { width: 22px; height: 22px; padding: 0; border-radius: 50%; cursor: pointer; border: 2px solid transparent; }
+.accent-sw:hover { transform: scale(1.12); }
+.accent-sw.on { border-color: #fff; box-shadow: 0 0 0 2px rgba(0,0,0,0.4); }
+
 .hidden { display: none !important; }

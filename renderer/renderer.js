@@ -21,7 +21,7 @@ import { markdown } from '@codemirror/lang-markdown';
 import { html } from '@codemirror/lang-html';
 import { css } from '@codemirror/lang-css';
 
-const APP_VERSION = 'alpha v1.0.14';
+const APP_VERSION = 'alpha v1.0.15';
 const GUTTER = 5;
 
 const lite = window.lite;
@@ -166,6 +166,8 @@ function renderSection(label, key, list, pinned) {
     const now = !isCollapsed(key); setCollapsed(key, now);
     body.style.display = now ? 'none' : 'block'; chev.textContent = now ? '▸' : '▾';
   });
+  if (key !== '__fav' && key !== UNCATEGORIZED) // custom categories can be renamed/deleted
+    head.addEventListener('contextmenu', (e) => { e.preventDefault(); showCategoryMenu(e.clientX, e.clientY, key); });
   for (const p of list) body.appendChild(makeCard(p));
   sec.appendChild(head); sec.appendChild(body);
   return sec;
@@ -175,6 +177,7 @@ function makeCard(p) {
   card.dataset.id = p.id;
   if (p.id === activeId) card.classList.add('active');
   if (missing.has(p.id)) card.classList.add('missing');
+  if (p.accent) { card.style.borderLeftWidth = '3px'; card.style.borderLeftColor = p.accent; card.style.paddingLeft = '7px'; }
 
   const head = el('div', 'card-head');
   const ind = el('span', 'pind ' + (projState.get(p.id) || 'quiet'));
@@ -240,9 +243,61 @@ function buildCardMenuMain(dd, p) {
   dd.appendChild(menuRow('⧉', 'Копировать путь', () => { closeMenus(); lite.copyText(p.path); toast('Путь скопирован'); }));
   dd.appendChild(menuRow(p.favorite ? '★' : '☆', p.favorite ? 'Убрать из избранного' : 'В избранное', () => { closeMenus(); toggleFavorite(p.id); }));
   dd.appendChild(el('div', 'menu-sep'));
+  dd.appendChild(menuRow('✎', 'Переименовать проект…', () => { closeMenus(); renameProject(p.id); }));
+  dd.appendChild(menuRow('🎨', 'Цвет проекта…', () => buildCardMenuColor(dd, p)));
   dd.appendChild(menuRow('➜', 'Переместить в категорию…', () => buildCardMenuMove(dd, p)));
   dd.appendChild(el('div', 'menu-sep'));
   dd.appendChild(menuRow('✕', 'Закрыть проект', () => { closeMenus(); closeProject(p.id); }, 'danger'));
+}
+const ACCENTS = ['#2fbf71', '#3dc8dc', '#7aa2f7', '#a98cf0', '#e06fae', '#e0af68', '#f7768e', '#8aa79a'];
+function buildCardMenuColor(dd, p) {
+  dd.innerHTML = '';
+  dd.appendChild(menuRow('‹', 'Назад', () => buildCardMenuMain(dd, p), 'muted'));
+  dd.appendChild(el('div', 'menu-label', 'Цвет проекта'));
+  const sw = el('div', 'accent-swatches');
+  for (const c of ACCENTS) {
+    const b = el('button', 'accent-sw' + (p.accent === c ? ' on' : ''));
+    b.style.background = c;
+    b.onclick = () => { closeMenus(); setAccent(p.id, c); };
+    sw.appendChild(b);
+  }
+  dd.appendChild(sw);
+  dd.appendChild(menuRow('✕', 'Сбросить цвет', () => { closeMenus(); setAccent(p.id, null); }, 'muted'));
+}
+function setAccent(id, c) {
+  const p = projects.find((x) => x.id === id);
+  if (!p) return;
+  if (c) p.accent = c; else delete p.accent;
+  saveProjects(); renderProjects();
+}
+function renameProject(id) {
+  const p = projects.find((x) => x.id === id);
+  if (!p) return;
+  showPrompt('Переименовать проект', 'Название (папка на диске не меняется)', p.name, (name) => { p.name = name; saveProjects(); renderProjects(); });
+}
+// category section header menu
+function showCategoryMenu(x, y, name) {
+  closeMenus();
+  const dd = el('div', 'menu-dropdown'); dd.style.minWidth = '190px';
+  dd.addEventListener('click', (e) => e.stopPropagation());
+  dd.appendChild(menuRow('✎', 'Переименовать категорию…', () => { closeMenus(); renameCategory(name); }));
+  dd.appendChild(menuRow('🗑', 'Удалить категорию', () => { closeMenus(); deleteCategory(name); }, 'danger'));
+  placeMenu(dd, x, y);
+}
+function renameCategory(old) {
+  showPrompt('Переименовать категорию', 'Название', old, (name) => {
+    if (name === old || name === UNCATEGORIZED) return;
+    saveCategories([...new Set(loadCategories().map((c) => (c === old ? name : c)))]);
+    for (const p of projects) if (p.category === old) p.category = name;
+    saveProjects(); renderProjects();
+  });
+}
+function deleteCategory(name) {
+  showConfirm('Удалить категорию?', `Проекты из «${name}» переедут в «Все». Папки на диске не трогаются.`, 'Удалить', () => {
+    saveCategories(loadCategories().filter((c) => c !== name));
+    for (const p of projects) if (p.category === name) p.category = null;
+    saveProjects(); renderProjects();
+  });
 }
 function buildCardMenuMove(dd, p) {
   dd.innerHTML = '';
