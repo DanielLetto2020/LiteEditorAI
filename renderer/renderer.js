@@ -245,10 +245,15 @@ async function checkProjectsExistence() {
 // (\x07) — agents/CLIs ring it on purpose; a normal shell/Claude prompt does not,
 // so we must NOT treat trailing $, #, ❯ as "waiting" (that's just idle/ready).
 // PROMPT_RE is a narrow backup for plain CLIs (git/ssh/sudo) that don't bell.
-const PROMPT_RE = /(\(y\/n\)|\[y\/n\]|\[Y\/n\]|\(yes\/no\)|overwrite\?|password:|passphrase:|press\s+enter)\s*$/i;
+const PROMPT_RE = /\(y\/n\)|\[y\/n\]|\[Y\/n\]|\(yes\/no\)|overwrite\?|password[^\n]{0,24}:|passphrase[^\n]{0,24}:|press\s+(?:enter|return|any key)|continue\?/i;
 // eslint-disable-next-line no-control-regex
 const ANSI_RE = /\x1b\][^\x07]*\x07|\x1b\[[0-?]*[ -\/]*[@-~]|\x1b[@-_]|[\x00-\x08\x0b-\x1f\x7f]/g;
 const stripAnsi = (str) => str.replace(ANSI_RE, '');
+// A real "attention" bell vs the BEL that merely terminates an OSC title sequence
+// (ESC ] 0 ; title BEL) — which bash/zsh/Claude emit on every prompt. Strip OSC
+// first, then a leftover BEL is a genuine bell.
+const OSC_RE = /\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g;
+const hasRealBell = (s) => s.replace(OSC_RE, '').includes('\x07');
 
 function setProjState(id, state) {
   projState.set(id, state);
@@ -258,7 +263,7 @@ function setProjState(id, state) {
 function markActivity(id, data) {
   const rec = terms.get(id);
   if (!rec) return;
-  const bell = !!(data && data.includes('\x07'));
+  const bell = !!(data && hasRealBell(data));
   if (bell) rec.sawBell = true;
   // Local echo of the user's own typing is tiny and arrives right after a keystroke —
   // that's not the agent working, so don't spin on it.
