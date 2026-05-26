@@ -21,7 +21,7 @@ import { markdown } from '@codemirror/lang-markdown';
 import { html } from '@codemirror/lang-html';
 import { css } from '@codemirror/lang-css';
 
-const APP_VERSION = 'alpha v1.0.21';
+const APP_VERSION = 'alpha v1.0.22';
 const GUTTER = 5;
 
 const lite = window.lite;
@@ -72,6 +72,7 @@ const missing = new Set();   // ids of projects whose folder no longer exists on
 const projFiles = loadProjFiles(); // id -> last file opened in the viewer
 const expandedDirs = new Set(); // tree dir paths currently expanded (survives live refresh)
 let gitFiles = {};           // active project: abs path -> git short status code
+let noteCounts = STORE.noteCounts || {}; // project id -> number of notes (card badge)
 let viewerOpen = false;
 let currentFile = null;
 let dirty = false;
@@ -204,7 +205,10 @@ function makeCard(p) {
     if (activeId === p.id && viewerOpen) setViewerOpen(false);
     else { setActive(p.id); setViewerOpen(true); }
   });
-  const notesBtn = el('button', null, '📝 заметки');
+  const notesBtn = el('button', null);
+  notesBtn.appendChild(document.createTextNode('📝 заметки'));
+  const nc = noteCounts[p.id] || 0;
+  if (nc) notesBtn.appendChild(el('span', 'btn-count', String(nc)));
   notesBtn.addEventListener('click', (e) => { e.stopPropagation(); showNotes(p); });
   actions.appendChild(openViewer); actions.appendChild(notesBtn);
   card.appendChild(actions);
@@ -407,7 +411,7 @@ async function showNotes(p) {
   m.classList.add('notes-modal');
   m.querySelector('.nm-proj').textContent = p.name;
   const list = m.querySelector('#nm-list');
-  const save = () => lite.store.notesSet(p.id, notes);
+  const save = () => { lite.store.notesSet(p.id, notes); noteCounts[p.id] = notes.length; renderProjects(); };
   let dragFrom = null;
 
   function editNote(row, note) {
