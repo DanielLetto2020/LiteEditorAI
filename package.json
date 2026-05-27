@@ -1,6 +1,6 @@
 {
   "name": "liteeditor-ai",
-  "version": "1.0.27-alpha",
+  "version": "1.0.36-alpha",
   "description": "Lightweight editor for working with AI coding agents in the terminal",
   "main": "main.js",
   "author": "Максим Кузьминский <i@m-letto.ru>",
@@ -65,6 +65,7 @@
     "files": [
       "main.js",
       "preload.js",
+      "logger.js",
       "package.json",
       "renderer/index.html",
       "renderer/styles.css",
@@ -89,7 +90,8 @@
         "zip"
       ],
       "icon": "assets/icon.png",
-      "signAndEditExecutable": false
+      "signAndEditExecutable": false,
+      "asar": false
     }
   }
 }

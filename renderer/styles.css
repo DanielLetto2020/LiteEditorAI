@@ -96,8 +96,6 @@ html, body {
 #win-max::before { width: 10px; height: 10px; border: 1.6px solid var(--text); border-radius: 1px; transform: translate(-50%, -50%); }
 #app.is-max #win-max::before { width: 8px; height: 8px; transform: translate(-60%, -40%); }
 #app.is-max #win-max::after { width: 8px; height: 8px; border: 1.6px solid var(--text); border-radius: 1px; transform: translate(-30%, -60%); background: var(--panel-solid); }
-#win-full::before { width: 11px; height: 11px; border: 1.6px solid var(--text); border-radius: 2px; transform: translate(-50%, -50%); }
-#win-full::after { width: 5px; height: 5px; background: var(--panel-solid); transform: translate(-50%, -50%); }
 #win-close::before { width: 13px; height: 0; border-top: 1.6px solid var(--text); transform: translate(-50%, -50%) rotate(45deg); }
 #win-close::after { width: 13px; height: 0; border-top: 1.6px solid var(--text); transform: translate(-50%, -50%) rotate(-45deg); }
 .win-btn.close:hover::before, .win-btn.close:hover::after { border-top-color: #fff; }
@@ -139,6 +137,12 @@ html, body {
 }
 .card:hover { border-color: var(--border-strong); background: rgba(22, 40, 31, 0.6); }
 .card.active { border-color: var(--green); background: rgba(28, 56, 42, 0.55); box-shadow: 0 0 0 1px rgba(47,191,113,0.25); }
+/* акцент проекта: красим весь бордер + усиленная левая полоса (перебивает hover/active, но не .missing) */
+.card.accented, .card.accented:hover {
+  border-color: var(--card-accent);
+  border-left: 3px solid var(--card-accent);
+  padding-left: 7px;
+}
 
 .card-head { display: flex; align-items: center; gap: 7px; }
 .card-title { flex: 1; min-width: 0; font-weight: 600; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -250,6 +254,14 @@ html, body {
 .tree-row .ti { flex: 0 0 14px; }
 .tree-name { overflow: hidden; text-overflow: ellipsis; }
 .tree-row.dir .tree-name { color: var(--text); font-weight: 500; }
+
+/* ---------------- system/scratch terminal ---------------- */
+#btn-scratch { font-family: "JetBrains Mono", monospace; font-size: 13px; letter-spacing: -1px; }
+#btn-scratch.on { color: var(--green-bright); border-color: var(--green); }
+#scratch-pane { flex: 0 0 420px; min-width: 240px; border-left: 1px solid var(--border); display: flex; flex-direction: column; background: #0a120d; }
+#scratch-term { flex: 1; position: relative; overflow: hidden; padding: 6px 4px 6px 10px; }
+#scratch-term .xterm { height: 100%; }
+#app.single #scratch-pane { display: none !important; }
 
 /* ---------------- gutters (resize) ---------------- */
 .gutter { flex: 0 0 5px; cursor: col-resize; background: transparent; position: relative; z-index: 5; }
@@ -411,6 +423,20 @@ body.resizing { cursor: col-resize; user-select: none; }
 .prev-md hr { border: 0; border-top: 1px solid var(--border); margin: 16px 0; }
 .prev-md ul, .prev-md ol { padding-left: 22px; }
 
+/* HTML-превью на весь экран — оверлей поверх всего окна для проверки вёрстки */
+body.preview-full #preview-view {
+  position: fixed; inset: 0; z-index: 5000;
+  display: block !important; overflow: auto; background: #fff;
+}
+body.preview-full .prev-frame { width: 100%; height: 100%; }
+#preview-full-exit {
+  position: fixed; top: 12px; right: 14px; z-index: 5001;
+  background: rgba(9,17,13,0.82); color: var(--text); border: 1px solid var(--border);
+  border-radius: 8px; padding: 6px 12px; font-size: 13px; cursor: pointer;
+  backdrop-filter: blur(3px); transition: background .12s, color .12s;
+}
+#preview-full-exit:hover { background: rgba(120,200,160,0.2); color: #fff; }
+
 /* CodeMirror search panel — dark to match */
 #editor .cm-panels { background: #0e1b15; color: var(--text); border-color: var(--border-strong); }
 #editor .cm-panel.cm-search { padding: 6px 8px; }
@@ -471,7 +497,9 @@ body.resizing { cursor: col-resize; user-select: none; }
 .note-edit:focus { border-color: var(--green); }
 .note-acts { display: flex; gap: 6px; flex-wrap: wrap; }
 .note-btn { padding: 5px 10px; border-radius: 6px; border: 1px solid var(--border); background: rgba(8,16,12,0.5); color: var(--text-dim); cursor: pointer; font-size: 12px; }
-.note-btn:hover { color: var(--text); border-color: var(--border-strong); }
+.note-btn:hover:not(:disabled) { color: var(--text); border-color: var(--border-strong); }
+.note-btn.nudge { padding: 5px 8px; min-width: 28px; }
+.note-btn:disabled { opacity: .25; cursor: default; border-color: var(--border); color: var(--text-dim); }
 .note-btn.send { color: var(--green-bright); border-color: var(--green-dim); }
 .note-btn.primary { background: var(--green); border-color: var(--green); color: #04130b; font-weight: 600; }
 .note-btn.primary:hover { background: var(--green-bright); }

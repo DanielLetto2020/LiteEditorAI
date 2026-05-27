@@ -23,8 +23,9 @@ import { markdown } from '@codemirror/lang-markdown';
 import { html } from '@codemirror/lang-html';
 import { css } from '@codemirror/lang-css';
 
-const APP_VERSION = 'alpha v1.0.27';
+const APP_VERSION = 'alpha v1.0.36';
 const GUTTER = 5;
+const SCRATCH_ID = '__scratch__'; // системный терминал (домашняя папка), не привязан к проектам
 
 const lite = window.lite;
 const $ = (sel) => document.querySelector(sel);
@@ -50,7 +51,7 @@ function persist(key, value) { STORE[key] = value; lite.store.set(key, value); }
 (function migrateLocalStorage() {
   if (STORE.projects !== undefined) return;
   let did = false;
-  for (const k of ['projects', 'layout', 'recents', 'projFiles', 'settings']) {
+  for (const k of ['projects', 'layout', 'recents', 'settings']) {
     try { const raw = localStorage.getItem('lite.' + k); if (raw != null) { persist(k, JSON.parse(raw)); did = true; } } catch (_) {}
   }
   const lp = localStorage.getItem('lite.lastParent'); if (lp) persist('lastParent', lp);
@@ -71,11 +72,12 @@ let activeId = null;
 const terms = new Map();
 const projState = new Map(); // id -> 'quiet' | 'busy' | 'waiting'
 const missing = new Set();   // ids of projects whose folder no longer exists on disk
-const projFiles = loadProjFiles(); // id -> last file opened in the viewer
 const expandedDirs = new Set(); // tree dir paths currently expanded (survives live refresh)
 let gitFiles = {};           // active project: abs path -> git short status code
 let noteCounts = STORE.noteCounts || {}; // project id -> number of notes (card badge)
 let viewerOpen = false;
+let scratchOpen = false;     // системный терминал справа открыт
+let scratchRec = null;       // { term, fit, search } — один на приложение
 let currentFile = null;
 let dirty = false;
 let diffMode = false;        // viewer showing a git diff instead of the file
@@ -84,7 +86,7 @@ let editor = null;
 let loadingDoc = false;
 const langComp = new Compartment();
 
-const DEFAULT_LAYOUT = { sidebar: 240, viewer: 520, tree: 240 };
+const DEFAULT_LAYOUT = { sidebar: 240, viewer: 520, tree: 240, scratch: 420 };
 let layout = loadLayout();
 let lastParent = STORE.lastParent || '';
 
@@ -109,6 +111,7 @@ function applyTheme() {
   if (name === 'emerald') document.body.removeAttribute('data-theme');
   else document.body.dataset.theme = name;
   for (const rec of terms.values()) { try { rec.term.options.theme = termTheme(); } catch (_) {} }
+  if (scratchRec) { try { scratchRec.term.options.theme = termTheme(); } catch (_) {} }
 }
 
 const activeProject = () => projects.find((p) => p.id === activeId);
@@ -122,6 +125,7 @@ function applyLayout() {
   $('#sidebar').style.flexBasis = layout.sidebar + 'px';
   $('#viewer-pane').style.flexBasis = layout.viewer + 'px';
   $('#tree-pane').style.flexBasis = layout.tree + 'px';
+  $('#scratch-pane').style.flexBasis = layout.scratch + 'px';
 }
 function loadRecents() { return Array.isArray(STORE.recents) ? STORE.recents : []; }
 function pushRecent(p) {
@@ -129,14 +133,10 @@ function pushRecent(p) {
   r.unshift({ path: p.path, name: p.name });
   persist('recents', r.slice(0, 30));
 }
-function loadProjFiles() {
-  try { return new Map(Object.entries(STORE.projFiles || {})); } catch { return new Map(); }
-}
-function saveProjFiles() { persist('projFiles', Object.fromEntries(projFiles)); }
-
 // ---------------------------------------------------------------- projects column
 const UNCATEGORIZED = 'Все';
 const FAV_KEY = '__fav';
+const ARCHIVE = 'Архив'; // спец-категория: всегда последняя, без перестановки стрелками, свёрнута по дефолту
 function loadCategories() { return Array.isArray(STORE.categories) ? STORE.categories : []; }
 function saveCategories(c) { persist('categories', c); }
 function isCollapsed(key) { return !!(STORE.accordions || {})[key]; }
@@ -148,16 +148,22 @@ function saveSectionOrder(o) { persist('sectionOrder', o); }
 // reordered. effectiveOrder() reconciles the stored order with the keys that exist
 // now: drops gone categories, and slots new ones in just before «Все».
 function effectiveOrder() {
-  const keys = [FAV_KEY, ...loadCategories(), UNCATEGORIZED];
+  const hasArchive = loadCategories().includes(ARCHIVE);
+  const cats = loadCategories().filter((c) => c !== ARCHIVE); // Архив раскладывается отдельно — всегда в самый конец
+  const keys = [FAV_KEY, ...cats, UNCATEGORIZED];
   const stored = loadSectionOrder();
-  if (!stored) return keys;
-  const order = stored.filter((k) => keys.includes(k));
-  for (const k of keys) {
-    if (order.includes(k)) continue;
-    if (k === UNCATEGORIZED) { order.push(k); continue; }
-    const at = order.indexOf(UNCATEGORIZED);
-    if (at >= 0) order.splice(at, 0, k); else order.push(k);
+  let order;
+  if (!stored) order = keys.slice();
+  else {
+    order = stored.filter((k) => keys.includes(k) && k !== ARCHIVE);
+    for (const k of keys) {
+      if (order.includes(k)) continue;
+      if (k === UNCATEGORIZED) { order.push(k); continue; }
+      const at = order.indexOf(UNCATEGORIZED);
+      if (at >= 0) order.splice(at, 0, k); else order.push(k);
+    }
   }
+  if (hasArchive) order.push(ARCHIVE); // всегда последняя, позиция из стора игнорируется
   return order;
 }
 // Sections that actually render now, in display order (★ Избранное only when non-empty).
@@ -167,13 +173,15 @@ function buildSections() {
   return effectiveOrder().map((key) => {
     if (key === FAV_KEY) return favs.length ? { key, label: '★ Избранное', list: favs, pinned: true } : null;
     if (key === UNCATEGORIZED) return { key, label: UNCATEGORIZED, pinned: false, list: projects.filter((p) => !p.favorite && !cats.includes(p.category)) };
+    if (key === ARCHIVE) { const list = projects.filter((p) => !p.favorite && p.category === ARCHIVE); return list.length ? { key, label: '🗄 Архив', list, pinned: false } : null; }
     return { key, label: key, pinned: false, list: projects.filter((p) => !p.favorite && p.category === key) };
   }).filter(Boolean);
 }
 function moveSection(key, dir) {
+  if (key === ARCHIVE) return;            // Архив зафиксирован последним
   const visible = buildSections().map((s) => s.key);
   const target = visible[visible.indexOf(key) + dir];
-  if (target === undefined) return;
+  if (target === undefined || target === ARCHIVE) return; // нельзя уйти ниже Архива
   const order = effectiveOrder();
   const a = order.indexOf(key), b = order.indexOf(target);
   [order[a], order[b]] = [order[b], order[a]];
@@ -184,10 +192,11 @@ function renderProjects() {
   const box = $('#projects');
   box.innerHTML = '';
   const sections = buildSections();
-  sections.forEach((s, i) => box.appendChild(renderSection(s, i, sections.length)));
+  sections.forEach((s, i) => box.appendChild(renderSection(s, i, sections)));
   renderMiniRail();
 }
-function renderSection(s, index, total) {
+function renderSection(s, index, sections) {
+  const total = sections.length;
   const { label, key, list, pinned } = s;
   const sec = el('div', 'pgroup' + (pinned ? ' pinned' : ''));
   const collapsed = isCollapsed(key);
@@ -197,8 +206,15 @@ function renderSection(s, index, total) {
   head.appendChild(el('span', 'pgroup-name', label));
   head.appendChild(el('span', 'pgroup-count', String(list.length)));
   const tools = el('div', 'pgroup-tools');
-  const up = el('button', 'pgroup-arrow', '▲'); up.title = 'Выше'; up.disabled = index === 0;
-  const down = el('button', 'pgroup-arrow', '▼'); down.title = 'Ниже'; down.disabled = index === total - 1;
+  const isCustomCat = key !== FAV_KEY && key !== UNCATEGORIZED && key !== ARCHIVE;
+  if (isCustomCat) { // видимая кнопка переименования (плюс ПКМ-меню)
+    const ren = el('button', 'pgroup-arrow', '✎'); ren.title = 'Переименовать категорию';
+    ren.addEventListener('click', (e) => { e.stopPropagation(); renameCategory(key); });
+    tools.appendChild(ren);
+  }
+  const nextIsArchive = sections[index + 1] && sections[index + 1].key === ARCHIVE;
+  const up = el('button', 'pgroup-arrow', '▲'); up.title = 'Выше'; up.disabled = index === 0 || key === ARCHIVE;
+  const down = el('button', 'pgroup-arrow', '▼'); down.title = 'Ниже'; down.disabled = index === total - 1 || key === ARCHIVE || nextIsArchive;
   up.addEventListener('click', (e) => { e.stopPropagation(); moveSection(key, -1); });
   down.addEventListener('click', (e) => { e.stopPropagation(); moveSection(key, +1); });
   tools.appendChild(up); tools.appendChild(down);
@@ -209,7 +225,7 @@ function renderSection(s, index, total) {
     const now = !isCollapsed(key); setCollapsed(key, now);
     body.style.display = now ? 'none' : 'block'; chev.textContent = now ? '▸' : '▾';
   });
-  if (key !== FAV_KEY && key !== UNCATEGORIZED) // custom categories can be renamed/deleted
+  if (key !== FAV_KEY && key !== UNCATEGORIZED && key !== ARCHIVE) // custom categories can be renamed/deleted (Архив — нет)
     head.addEventListener('contextmenu', (e) => { e.preventDefault(); showCategoryMenu(e.clientX, e.clientY, key); });
   for (const p of list) body.appendChild(makeCard(p));
   sec.appendChild(head); sec.appendChild(body);
@@ -220,7 +236,7 @@ function makeCard(p) {
   card.dataset.id = p.id;
   if (p.id === activeId) card.classList.add('active');
   if (missing.has(p.id)) card.classList.add('missing');
-  if (p.accent) { card.style.borderLeftWidth = '3px'; card.style.borderLeftColor = p.accent; card.style.paddingLeft = '7px'; }
+  if (p.accent) { card.classList.add('accented'); card.style.setProperty('--card-accent', p.accent); } // весь бордер + усиленная левая полоса
 
   const head = el('div', 'card-head');
   const ind = el('span', 'pind ' + (projState.get(p.id) || 'quiet'));
@@ -269,6 +285,12 @@ function moveToCategory(id, cat) {
   p.category = cat;          // null → "Все"; favorite stays independent
   saveProjects(); renderProjects();
 }
+// «В архив»: создаём спец-категорию Архив (свёрнутой по дефолту), если её ещё нет, и переносим проект.
+function archiveProject(id) {
+  const cats = loadCategories();
+  if (!cats.includes(ARCHIVE)) { saveCategories([...cats, ARCHIVE]); setCollapsed(ARCHIVE, true); }
+  moveToCategory(id, ARCHIVE);
+}
 
 // kebab/right-click project menu (two pages: actions ↔ move-to-category)
 function showCardMenu(x, y, p) {
@@ -290,6 +312,10 @@ function buildCardMenuMain(dd, p) {
   dd.appendChild(menuRow('✎', 'Переименовать проект…', () => { closeMenus(); renameProject(p.id); }));
   dd.appendChild(menuRow('🎨', 'Цвет проекта…', () => buildCardMenuColor(dd, p)));
   dd.appendChild(menuRow('➜', 'Переместить в категорию…', () => buildCardMenuMove(dd, p)));
+  if (p.category === ARCHIVE)
+    dd.appendChild(menuRow('🗄', 'Вернуть из архива', () => { closeMenus(); moveToCategory(p.id, null); }));
+  else
+    dd.appendChild(menuRow('🗄', 'В архив', () => { closeMenus(); archiveProject(p.id); }));
   dd.appendChild(el('div', 'menu-sep'));
   dd.appendChild(menuRow('✕', 'Закрыть проект', () => { closeMenus(); closeProject(p.id); }, 'danger'));
 }
@@ -330,7 +356,7 @@ function showCategoryMenu(x, y, name) {
 }
 function renameCategory(old) {
   showPrompt('Переименовать категорию', 'Название', old, (name) => {
-    if (name === old || name === UNCATEGORIZED) return;
+    if (name === old || name === UNCATEGORIZED || name === ARCHIVE) return;
     saveCategories([...new Set(loadCategories().map((c) => (c === old ? name : c)))]);
     const order = loadSectionOrder();
     if (order) saveSectionOrder(order.map((k) => (k === old ? name : k)));
@@ -350,7 +376,7 @@ function buildCardMenuMove(dd, p) {
   dd.appendChild(menuRow('‹', 'Назад', () => buildCardMenuMain(dd, p), 'muted'));
   dd.appendChild(el('div', 'menu-label', 'Переместить в'));
   const cats = loadCategories();
-  const opts = [UNCATEGORIZED, ...cats];
+  const opts = [UNCATEGORIZED, ...cats.filter((c) => c !== ARCHIVE)]; // Архив — через отдельный пункт «В архив»
   for (const c of opts) {
     const here = c === UNCATEGORIZED ? !cats.includes(p.category) : p.category === c;
     dd.appendChild(menuRow(here ? '•' : ' ', c, () => { closeMenus(); moveToCategory(p.id, c === UNCATEGORIZED ? null : c); }));
@@ -368,7 +394,7 @@ function showCreateCategory(id) {
   m.querySelector('#nc-cancel').onclick = close;
   const ok = () => {
     const name = inp.value.trim();
-    if (!name || name === UNCATEGORIZED) { close(); return; }
+    if (!name || name === UNCATEGORIZED || name === ARCHIVE) { close(); return; }
     const cats = loadCategories();
     if (!cats.includes(name)) { cats.push(name); saveCategories(cats); }
     moveToCategory(id, name);
@@ -446,7 +472,7 @@ async function showNotes(p) {
   if (!Array.isArray(notes)) notes = [];
   const { m, close } = makeModal(`
     <h2>📝 Заметки — <span class="nm-proj"></span></h2>
-    <div class="nm-hint">Карточки промптов: «В терминал» отправляет текст в терминал проекта (без Enter). Перетаскивай для сортировки.</div>
+    <div class="nm-hint">Карточки промптов: «В терминал» отправляет текст в терминал проекта (без Enter). Порядок — стрелками ▲/▼ или перетаскиванием.</div>
     <div class="nm-list" id="nm-list"></div>
     <button class="btn nm-add" id="nm-add">＋ Новая карточка</button>
     <div class="modal-actions"><button class="btn primary" id="nm-close">Готово</button></div>`);
@@ -455,10 +481,22 @@ async function showNotes(p) {
   const list = m.querySelector('#nm-list');
   const save = () => { lite.store.notesSet(p.id, notes); noteCounts[p.id] = notes.length; renderProjects(); };
   let dragFrom = null;
+  let editing = null; // { note, ta } — открытый редактор карточки
+  // Снять текст из открытого редактора в заметку (для авто-сохранения по «Готово»).
+  const flushEdit = () => { if (editing) { editing.note.text = editing.ta.value; editing = null; save(); } };
+  // Переставить карточку: свап с соседом (стрелки ▲/▼). flushEdit — не потерять правку при перерисовке.
+  const moveNote = (i, dir) => {
+    const j = i + dir;
+    if (j < 0 || j >= notes.length) return;
+    flushEdit();
+    [notes[i], notes[j]] = [notes[j], notes[i]];
+    save(); render();
+  };
 
   function editNote(row, note) {
     row.innerHTML = '';
     const ta = el('textarea', 'note-edit'); ta.value = note.text || '';
+    editing = { note, ta };
     const acts = el('div', 'note-acts');
     const layout = el('button', 'note-btn', '⇄ Раскладка');
     layout.title = 'Сменить раскладку EN⇄РУ по позиции клавиш (или только выделенное)';
@@ -472,23 +510,28 @@ async function showNotes(p) {
     ta.focus();
   }
   function render() {
+    editing = null; // перерисовка закрывает любой открытый редактор
     list.innerHTML = '';
     notes.forEach((note, i) => {
       const row = el('div', 'note-card');
       row.draggable = true; row.dataset.i = String(i);
       row.append(el('div', 'note-text', note.text || '(пусто)'));
       const acts = el('div', 'note-acts');
+      const up = el('button', 'note-btn nudge', '▲'); up.title = 'Выше'; up.disabled = i === 0;
+      up.addEventListener('click', () => moveNote(i, -1));
+      const down = el('button', 'note-btn nudge', '▼'); down.title = 'Ниже'; down.disabled = i === notes.length - 1;
+      down.addEventListener('click', () => moveNote(i, +1));
       const sendDel = el('button', 'note-btn primary', '➤ В терминал + удалить');
       sendDel.title = 'Отправить в терминал и убрать карточку (одноразовый промпт)';
-      sendDel.addEventListener('click', () => { const t = note.text; notes.splice(i, 1); save(); sendNoteToTerminal(p, t); close(); });
+      sendDel.addEventListener('click', () => { flushEdit(); const t = note.text; notes.splice(i, 1); save(); sendNoteToTerminal(p, t); close(); });
       const send = el('button', 'note-btn', '➤ В терминал');
       send.title = 'Отправить, но оставить карточку (для повторяющихся)';
-      send.addEventListener('click', () => { sendNoteToTerminal(p, note.text); close(); });
+      send.addEventListener('click', () => { flushEdit(); sendNoteToTerminal(p, note.text); close(); });
       const edit = el('button', 'note-btn', '✎'); edit.title = 'Редактировать';
       edit.addEventListener('click', () => editNote(row, note));
       const del = el('button', 'note-btn danger', '🗑'); del.title = 'Удалить';
       del.addEventListener('click', () => { notes.splice(i, 1); save(); render(); });
-      acts.append(sendDel, send, edit, del);
+      acts.append(up, down, sendDel, send, edit, del);
       row.append(acts);
       row.addEventListener('dragstart', () => { dragFrom = i; row.classList.add('dragging'); });
       row.addEventListener('dragend', () => row.classList.remove('dragging'));
@@ -509,7 +552,7 @@ async function showNotes(p) {
     const rows = list.querySelectorAll('.note-card');
     if (rows.length) editNote(rows[rows.length - 1], note);
   });
-  m.querySelector('#nm-close').onclick = close;
+  m.querySelector('#nm-close').onclick = () => { flushEdit(); close(); };
   render();
 }
 function sendNoteToTerminal(p, text) {
@@ -717,8 +760,6 @@ function doCloseProject(id) {
   }
   projState.delete(id);
   missing.delete(id);
-  projFiles.delete(id);
-  saveProjFiles();
   projects = projects.filter((p) => p.id !== id);
   saveProjects();
   if (activeId === id) {
@@ -947,8 +988,12 @@ function refitActiveTerminal(focusIt) {
     try { rec.fit.fit(); lite.pty.resize(activeId, rec.term.cols, rec.term.rows); if (focusIt) rec.term.focus(); } catch (_) {}
   });
 }
-function clearTerminal(id) { const rec = terms.get(id || activeId); if (rec) { try { rec.term.clear(); } catch (_) {} rec.term.focus(); } }
+function clearTerminal(id) {
+  if (id === SCRATCH_ID) { if (scratchRec) { try { scratchRec.term.clear(); } catch (_) {} scratchRec.term.focus(); } return; }
+  const rec = terms.get(id || activeId); if (rec) { try { rec.term.clear(); } catch (_) {} rec.term.focus(); }
+}
 function restartTerminal(id) {
+  if (id === SCRATCH_ID) { restartScratch(); return; }
   const pid = id || activeId;
   const proj = projects.find((p) => p.id === pid);
   const rec = terms.get(pid);
@@ -961,10 +1006,65 @@ function restartTerminal(id) {
   rec.term.focus();
 }
 
+// ---------------------------------------------------------------- system/scratch terminal
+// A single terminal not tied to any project, cwd = home dir (main falls back to
+// os.homedir() when no cwd is given). For running arbitrary system commands.
+function ensureScratchTerminal() {
+  if (scratchRec) return scratchRec;
+  const container = $('#scratch-term');
+  const term = new Terminal({
+    fontFamily: '"JetBrains Mono", "Fira Code", "Cascadia Code", Consolas, monospace',
+    fontSize: settings.fontSize, cursorBlink: true, allowProposedApi: true, theme: termTheme(), scrollback: 5000,
+  });
+  const fit = new FitAddon();
+  const search = new SearchAddon();
+  term.loadAddon(fit);
+  term.loadAddon(search);
+  term.loadAddon(new WebLinksAddon((_e, uri) => lite.openExternal(uri)));
+  term.open(container);
+  loadFastRenderer(term);
+  fit.fit();
+  lite.pty.create({ id: SCRATCH_ID, cols: term.cols, rows: term.rows }); // no cwd → ~ (os.homedir)
+  term.onData((data) => lite.pty.write(SCRATCH_ID, data));
+  term.onResize(({ cols, rows }) => lite.pty.resize(SCRATCH_ID, cols, rows));
+  term.attachCustomKeyEventHandler((e) => {
+    if (e.type === 'keydown' && e.ctrlKey && !e.shiftKey && !e.altKey && (e.key === 'v' || e.key === 'V')) { pasteInto(SCRATCH_ID); return false; }
+    return true;
+  });
+  container.addEventListener('contextmenu', (e) => { e.preventDefault(); showTermMenu(e.clientX, e.clientY, term, SCRATCH_ID); });
+  scratchRec = { term, fit, search, container };
+  return scratchRec;
+}
+function refitScratch(focusIt) {
+  if (!scratchRec || !scratchOpen) return;
+  requestAnimationFrame(() => {
+    try { scratchRec.fit.fit(); lite.pty.resize(SCRATCH_ID, scratchRec.term.cols, scratchRec.term.rows); if (focusIt) scratchRec.term.focus(); } catch (_) {}
+  });
+}
+function setScratchOpen(open) {
+  if (open === scratchOpen) { if (open) refitScratch(true); return; }
+  const delta = layout.scratch + GUTTER;
+  scratchOpen = open;
+  $('#scratch-pane').classList.toggle('hidden', !open);
+  $('#gutter-scratch').classList.toggle('hidden', !open);
+  $('#btn-scratch').classList.toggle('on', open);
+  lite.win.growBy(open ? delta : -delta);
+  if (open) { ensureScratchTerminal(); setTimeout(() => refitScratch(true), 150); }
+  setTimeout(refitActiveTerminal, 160);
+}
+function toggleScratch() { setScratchOpen(!scratchOpen); }
+function restartScratch() {
+  ensureScratchTerminal();
+  try { scratchRec.term.reset(); } catch (_) {}
+  lite.pty.restart({ id: SCRATCH_ID, cols: scratchRec.term.cols, rows: scratchRec.term.rows }); // no cwd → ~
+  scratchRec.term.focus();
+}
+
 // ---------------------------------------------------------------- font size
 let watchedRoot = null; // we live-watch only the active project to limit inotify use
 function applyFontSize() {
   for (const rec of terms.values()) { rec.term.options.fontSize = settings.fontSize; try { rec.fit.fit(); } catch (_) {} }
+  if (scratchRec) { scratchRec.term.options.fontSize = settings.fontSize; try { scratchRec.fit.fit(); } catch (_) {} }
   document.documentElement.style.setProperty('--editor-fs', settings.fontSize + 'px');
   refitActiveTerminal();
 }
@@ -1067,13 +1167,13 @@ async function openFile(filePath, line) {
   const kind = previewKind(filePath);
   $('#viewer-filename').textContent = baseName(filePath);
   $('#viewer-preview').style.display = (kind && kind !== 'image') ? '' : 'none'; // toggle only when there's source too
+  $('#viewer-full').style.display = (kind === 'html') ? '' : 'none'; // «на весь экран» только для HTML-вёрстки
   document.querySelectorAll('.tree-row.open').forEach((r) => r.classList.remove('open'));
   const row = document.querySelector(`.tree-row[data-path="${cssEscape(filePath)}"]`);
   if (row) row.classList.add('open');
 
   if (kind === 'image') { // binary — no editable source
     currentFile = filePath;
-    if (activeId) { projFiles.set(activeId, filePath); saveProjFiles(); }
     setEditorText('', []); markDirty(false);
     await showPreview('image', filePath, '');
     return;
@@ -1081,7 +1181,6 @@ async function openFile(filePath, line) {
   const res = await lite.fs.readFile(filePath);
   if (res.error) { setEditorText(`// ${res.error}`, []); currentFile = null; return; }
   currentFile = filePath;
-  if (activeId) { projFiles.set(activeId, filePath); saveProjFiles(); } // remember per project
   setEditorText(res.content, languageFor(filePath));
   markDirty(false);
   if (kind) await showPreview(kind, filePath, res.content); // md/html default to rendered preview
@@ -1120,6 +1219,7 @@ async function showPreview(kind, file, content) {
   $('#viewer-preview').classList.add('on');
 }
 function exitPreview() {
+  exitPreviewFull(); // на всякий случай свернуть полноэкранный режим
   previewMode = false;
   const v = $('#preview-view');
   if (v) { v.style.display = 'none'; v.innerHTML = ''; }
@@ -1130,6 +1230,30 @@ function togglePreview() {
   if (previewMode) { exitPreview(); editor.focus(); return; }
   const kind = previewKind(currentFile);
   if (kind) showPreview(kind, currentFile, editor.state.doc.toString());
+}
+// «Превью HTML на весь экран» — оверлей поверх всего окна для быстрой проверки вёрстки (Esc / ✕ — выход).
+async function enterPreviewFull() {
+  if (previewKind(currentFile) !== 'html') return;
+  if (!previewMode) await showPreview('html', currentFile, editor.state.doc.toString()); // включить превью, если смотрели исходник
+  if (!$('#preview-full-exit')) {
+    const btn = el('button', 'pf-exit', '✕ Esc');
+    btn.id = 'preview-full-exit';
+    btn.title = 'Выйти из полноэкранного превью (Esc)';
+    btn.addEventListener('click', exitPreviewFull);
+    document.body.appendChild(btn);
+  }
+  $('#preview-full-exit').style.display = '';
+  document.body.classList.add('preview-full');
+}
+function exitPreviewFull() {
+  if (!document.body.classList.contains('preview-full')) return;
+  document.body.classList.remove('preview-full');
+  const btn = $('#preview-full-exit');
+  if (btn) btn.style.display = 'none';
+}
+function togglePreviewFull() {
+  if (document.body.classList.contains('preview-full')) exitPreviewFull();
+  else enterPreviewFull();
 }
 function gotoLine(line) {
   const doc = editor.state.doc;
@@ -1236,17 +1360,13 @@ function clearViewer() {
   markDirty(false);
   document.querySelectorAll('.tree-row.open').forEach((r) => r.classList.remove('open'));
 }
-// Re-render the tree for the active project and reopen its last file (per-project memory).
+// Re-render the tree for the active project; viewer starts empty (no auto-reopen).
+// Switching/opening a project always gives a clean viewer — open files from the tree.
 async function refreshViewerForActive() {
   const p = activeProject();
   if (!p) return;
   await renderTree(p);
-  loadProjectFile(p.id);
-}
-async function loadProjectFile(id) {
-  const last = projFiles.get(id);
-  if (last && (await lite.fs.exists(last))) openFile(last);
-  else { projFiles.delete(id); saveProjFiles(); clearViewer(); }
+  clearViewer();
 }
 
 function setViewerOpen(open) {
@@ -1398,7 +1518,7 @@ function treeRename(ent) {
     const to = dirName(ent.path) + '/' + name;
     const r = await lite.fs.rename(ent.path, to);
     if (r && !r.error) {
-      if (currentFile === ent.path) { currentFile = to; $('#viewer-filename').textContent = name; if (activeId) { projFiles.set(activeId, to); saveProjFiles(); } }
+      if (currentFile === ent.path) { currentFile = to; $('#viewer-filename').textContent = name; }
       await refreshTree();
     }
     return r;
@@ -1465,8 +1585,7 @@ function initGutters() {
 function initWindowControls() {
   $('#win-min').onclick = () => lite.win.minimize();
   $('#win-max').onclick = () => lite.win.maximizeToggle();
-  $('#win-full').onclick = () => lite.win.fullscreen();
-  $('#win-close').onclick = () => lite.win.close();
+  $('#win-close').onclick = () => lite.win.close(); // fullscreen — по F11 (кнопку убрали, стандартные 3 кнопки)
   lite.win.onMaximizeChange((v) => $('#app').classList.toggle('is-max', !!v));
   lite.win.isMaximized().then((v) => $('#app').classList.toggle('is-max', !!v));
   $('#topbar').addEventListener('dblclick', (e) => {
@@ -1810,17 +1929,28 @@ function init() {
   initWindowControls();
   initMenubar();
 
-  // surface unexpected renderer errors instead of failing silently
-  window.addEventListener('error', (e) => toast('Ошибка: ' + (e.message || (e.error && e.error.message) || 'см. F12'), { kind: 'err', ttl: 8000 }));
-  window.addEventListener('unhandledrejection', (e) => toast('Ошибка: ' + ((e.reason && e.reason.message) || e.reason || 'промис'), { kind: 'err', ttl: 8000 }));
+  // surface unexpected renderer errors instead of failing silently — toast for
+  // the user, and forward to the main-process file log so crashes are diagnosable
+  const logErr = (...a) => { try { lite.log('error', ...a); } catch (_) {} };
+  window.addEventListener('error', (e) => {
+    logErr('window.error', (e.error && e.error.stack) || e.message || '', e.filename ? `${e.filename}:${e.lineno}:${e.colno}` : '');
+    toast('Ошибка: ' + (e.message || (e.error && e.error.message) || 'см. F12'), { kind: 'err', ttl: 8000 });
+  });
+  window.addEventListener('unhandledrejection', (e) => {
+    logErr('unhandledrejection', (e.reason && (e.reason.stack || e.reason.message)) || String(e.reason));
+    toast('Ошибка: ' + ((e.reason && e.reason.message) || e.reason || 'промис'), { kind: 'err', ttl: 8000 });
+  });
+  try { lite.log('info', `UI ${APP_VERSION} started`); } catch (_) {}
 
   lite.pty.onData(({ id, data }) => {
+    if (id === SCRATCH_ID) { if (scratchRec) scratchRec.term.write(data); return; }
     const rec = terms.get(id);
     if (!rec) return;
     rec.term.write(data);
     markActivity(id, data);
   });
   lite.pty.onExit(({ id }) => {
+    if (id === SCRATCH_ID) { if (scratchRec) scratchRec.term.write('\r\n\x1b[90m[шелл завершён — ⟳ для нового]\x1b[0m\r\n'); return; }
     const rec = terms.get(id);
     if (rec) rec.term.write('\r\n\x1b[90m[процесс завершён — закрой и переоткрой проект]\x1b[0m\r\n');
     setProjState(id, 'quiet');
@@ -1844,9 +1974,13 @@ function init() {
 
   $('#open-folder-btn').addEventListener('click', openProjectDialog);
   $('#btn-single').addEventListener('click', toggleSingle);
+  $('#btn-scratch').addEventListener('click', toggleScratch);
+  $('#scratch-restart').addEventListener('click', restartScratch);
+  $('#scratch-close').addEventListener('click', () => setScratchOpen(false));
   $('#viewer-save').addEventListener('click', saveCurrent);
   $('#viewer-diff').addEventListener('click', toggleDiff);
   $('#viewer-preview').addEventListener('click', togglePreview);
+  $('#viewer-full').addEventListener('click', togglePreviewFull);
   $('#viewer-close').addEventListener('click', () => setViewerOpen(false));
   $('#tree-refresh').addEventListener('click', () => { const p = activeProject(); if (p) renderTree(p); });
   $('#tree-new').addEventListener('click', (e) => { const p = activeProject(); if (p) showTreeMenu(e.clientX, e.clientY, { name: p.name, path: p.path, dir: true, root: true }); });
@@ -1872,6 +2006,7 @@ function init() {
   $('#term-search-close').addEventListener('click', closeTermSearch);
 
   document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && document.body.classList.contains('preview-full')) { e.preventDefault(); exitPreviewFull(); return; }
     if (e.ctrlKey && e.key === '\\') { e.preventDefault(); toggleSingle(); }
     if (e.ctrlKey && (e.key === 's' || e.key === 'S')) { e.preventDefault(); saveCurrent(); }
     if (e.ctrlKey && (e.key === 'k' || e.key === 'K')) { e.preventDefault(); showPalette(); }
@@ -1896,6 +2031,8 @@ function init() {
 
   let rezTimer;
   new ResizeObserver(() => { clearTimeout(rezTimer); rezTimer = setTimeout(() => refitActiveTerminal(), 80); }).observe($('#terminal-pane'));
+  let scratchRezTimer;
+  new ResizeObserver(() => { clearTimeout(scratchRezTimer); scratchRezTimer = setTimeout(() => refitScratch(), 80); }).observe($('#scratch-pane'));
 
   applyFontSize();
   projects = loadProjectsFromDisk();
