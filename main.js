@@ -497,6 +497,17 @@ ipcMain.handle('git:checkout', async (_e, { root, branch }) => gitRun(root, ['ch
 ipcMain.handle('git:createBranch', async (_e, { root, branch }) => gitRun(root, ['checkout', '-b', branch]));
 ipcMain.handle('git:fetch', async (_e, root) => gitRun(root, ['fetch', '--all', '--prune']));
 ipcMain.handle('git:discardFile', async (_e, { root, file }) => gitRun(root, ['checkout', '--', file]));
+// Update a branch from its upstream WITHOUT checkout (fast-forward of the local ref).
+// Current branch can't be ff-fetched into → use pull --ff-only instead.
+ipcMain.handle('git:branchUpdate', async (_e, { root, branch, current }) => {
+  if (current) return gitRun(root, ['pull', '--ff-only']);
+  const remote = ((await git(root, ['config', `branch.${branch}.remote`])) || '').trim() || 'origin';
+  const rb = ((await git(root, ['config', `branch.${branch}.merge`])) || '').trim().replace('refs/heads/', '') || branch;
+  return gitRun(root, ['fetch', remote, `${rb}:${branch}`]);
+});
+// New branch from any base branch; optionally check it out.
+ipcMain.handle('git:branchCreate', async (_e, { root, name, base, checkout }) =>
+  gitRun(root, checkout ? ['checkout', '-b', name, base] : ['branch', name, base]));
 ipcMain.handle('git:init', async (_e, root) => gitRun(root, ['init']));
 ipcMain.handle('git:commit', async (_e, { root, message, push }) => {
   const add = await gitRun(root, ['add', '-A']); if (!add.ok) return add;

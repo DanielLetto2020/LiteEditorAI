@@ -46,6 +46,8 @@ contextBridge.exposeInMainWorld('lite', {
     fetch: (root) => ipcRenderer.invoke('git:fetch', root),
     checkout: (root, branch) => ipcRenderer.invoke('git:checkout', { root, branch }),
     createBranch: (root, branch) => ipcRenderer.invoke('git:createBranch', { root, branch }),
+    branchUpdate: (root, branch, current) => ipcRenderer.invoke('git:branchUpdate', { root, branch, current }),
+    branchCreate: (root, name, base, checkout) => ipcRenderer.invoke('git:branchCreate', { root, name, base, checkout }),
     discardFile: (root, file) => ipcRenderer.invoke('git:discardFile', { root, file }),
   },
 

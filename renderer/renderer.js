@@ -23,7 +23,7 @@ import { markdown } from '@codemirror/lang-markdown';
 import { html } from '@codemirror/lang-html';
 import { css } from '@codemirror/lang-css';
 
-const APP_VERSION = 'alpha v1.0.24';
+const APP_VERSION = 'alpha v1.0.25';
 const GUTTER = 5;
 
 const lite = window.lite;
@@ -485,6 +485,45 @@ function gitCodeClass(code) {
   if (code.includes('D')) return 'g-del';
   return 'g-mod';
 }
+// Branch manager (JetBrains-style): per branch — checkout · update WITHOUT switching · new branch from it.
+async function showBranches(body, p, back) {
+  const info = await lite.git.info(p.path);
+  body.innerHTML = '';
+  const head = el('div', 'gm-branch');
+  head.appendChild(el('span', 'gm-branchname', 'Ветки'));
+  head.appendChild(el('span', 'gm-track', 'текущая: ' + info.branch));
+  body.appendChild(head);
+
+  const list = el('div', 'gm-branches');
+  for (const b of (info.branches || [])) {
+    const cur = b === info.branch;
+    const row = el('div', 'gm-brow');
+    row.appendChild(el('span', 'gm-brname' + (cur ? ' cur' : ''), (cur ? '• ' : '') + b));
+    const acts = el('div', 'gm-bacts');
+    if (!cur) {
+      const co = el('button', 'gm-mini', '⤳'); co.title = 'Переключиться';
+      co.onclick = async () => { const r = await lite.git.checkout(p.path, b); toast(r.ok ? 'Ветка: ' + b : (r.error || 'не вышло'), { kind: r.ok ? undefined : 'err', ttl: 7000 }); renderProjects(); showBranches(body, p, back); };
+      acts.appendChild(co);
+    }
+    const up = el('button', 'gm-mini', '↻'); up.title = cur ? 'Обновить (pull --ff-only)' : 'Обновить из удалёнки БЕЗ переключения';
+    up.onclick = async () => { const r = await lite.git.branchUpdate(p.path, b, cur); toast(r.ok ? ('Обновлено: ' + b) : (r.error || 'не fast-forward / нет upstream'), { kind: r.ok ? undefined : 'err', ttl: 8000 }); showBranches(body, p, back); };
+    acts.appendChild(up);
+    const nb = el('button', 'gm-mini', '＋'); nb.title = 'Новая ветка от «' + b + '»';
+    nb.onclick = () => showPrompt('Новая ветка от «' + b + '»', 'Имя ветки (создастся и перейдём на неё)', '', async (name) => {
+      const r = await lite.git.branchCreate(p.path, name, b, true);
+      if (r.ok) { toast('Создана и перешёл: ' + name); renderProjects(); back(); } return r;
+    });
+    acts.appendChild(nb);
+    row.appendChild(acts);
+    list.appendChild(row);
+  }
+  body.appendChild(list);
+
+  const footer = el('div', 'gm-actions');
+  const b1 = el('button', 'btn', '‹ Назад к git'); b1.onclick = back;
+  footer.appendChild(b1);
+  body.appendChild(footer);
+}
 async function showGit(p) {
   const { m, close } = makeModal(`<h2>⎇ Git — <span class="gm-proj"></span></h2><div id="gm-body" class="gm-body">Загрузка…</div>`);
   m.classList.add('git-modal');
@@ -516,12 +555,9 @@ async function showGit(p) {
       refresh(); renderProjects();
     };
     head.appendChild(sel);
-    const newBr = el('button', 'gm-mini', '＋'); newBr.title = 'Новая ветка';
-    newBr.onclick = () => showPrompt('Новая ветка', 'Имя ветки', '', async (name) => {
-      const r = await lite.git.createBranch(p.path, name);
-      if (r.ok) { refresh(); renderProjects(); } return r;
-    });
-    head.appendChild(newBr);
+    const mgr = el('button', 'gm-mini', '⎇'); mgr.title = 'Ветки: переключить · обновить без перехода · новая от ветки';
+    mgr.onclick = () => showBranches(body, p, refresh);
+    head.appendChild(mgr);
     if (info.upstream && (info.ahead || info.behind)) head.appendChild(el('span', 'gm-track', `↑${info.ahead} ↓${info.behind}`));
     body.appendChild(head);
 

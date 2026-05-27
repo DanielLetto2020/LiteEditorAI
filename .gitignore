@@ -8,8 +8,9 @@ lite-editor
 # IDE
 .idea/
 
-# Personal agent guidance — readable on disk, kept out of the repo
+# Personal agent guidance / session handoff — readable on disk, kept out of the repo
 CLAUDE.md
+NEXT.md
 
 # Build output / release artifacts (большие бинарники не коммитим)
 dist-release/
