@@ -162,6 +162,16 @@ html, body {
 .pgroup-chev { width: 10px; font-size: 9px; }
 .pgroup-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pgroup-count { font-size: 10px; padding: 1px 7px; border-radius: 9px; background: rgba(120,200,160,0.12); color: var(--text-dim); }
+.pgroup-tools { display: flex; gap: 1px; }
+.pgroup-arrow {
+  width: 16px; height: 16px; padding: 0; line-height: 1; font-size: 8px; cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  background: transparent; border: none; border-radius: 4px; color: var(--text-dim);
+  opacity: .55; transition: opacity .12s, background .12s, color .12s;
+}
+.pgroup-head:hover .pgroup-arrow { opacity: 1; }
+.pgroup-arrow:hover:not(:disabled) { background: rgba(120,200,160,0.18); color: var(--text); }
+.pgroup-arrow:disabled { opacity: .2; cursor: default; }
 .pgroup.pinned .pgroup-name { color: #e0c060; }
 .pgroup-body { padding-top: 2px; }
 

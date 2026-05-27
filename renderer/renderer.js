@@ -23,7 +23,7 @@ import { markdown } from '@codemirror/lang-markdown';
 import { html } from '@codemirror/lang-html';
 import { css } from '@codemirror/lang-css';
 
-const APP_VERSION = 'alpha v1.0.26';
+const APP_VERSION = 'alpha v1.0.27';
 const GUTTER = 5;
 
 const lite = window.lite;
@@ -136,26 +136,59 @@ function saveProjFiles() { persist('projFiles', Object.fromEntries(projFiles)); 
 
 // ---------------------------------------------------------------- projects column
 const UNCATEGORIZED = 'Все';
+const FAV_KEY = '__fav';
 function loadCategories() { return Array.isArray(STORE.categories) ? STORE.categories : []; }
 function saveCategories(c) { persist('categories', c); }
 function isCollapsed(key) { return !!(STORE.accordions || {})[key]; }
 function setCollapsed(key, v) { persist('accordions', { ...(STORE.accordions || {}), [key]: v }); }
+function loadSectionOrder() { return Array.isArray(STORE.sectionOrder) ? STORE.sectionOrder.slice() : null; }
+function saveSectionOrder(o) { persist('sectionOrder', o); }
+
+// Section display order. Default = "избранное / <категории> / все"; persisted once
+// reordered. effectiveOrder() reconciles the stored order with the keys that exist
+// now: drops gone categories, and slots new ones in just before «Все».
+function effectiveOrder() {
+  const keys = [FAV_KEY, ...loadCategories(), UNCATEGORIZED];
+  const stored = loadSectionOrder();
+  if (!stored) return keys;
+  const order = stored.filter((k) => keys.includes(k));
+  for (const k of keys) {
+    if (order.includes(k)) continue;
+    if (k === UNCATEGORIZED) { order.push(k); continue; }
+    const at = order.indexOf(UNCATEGORIZED);
+    if (at >= 0) order.splice(at, 0, k); else order.push(k);
+  }
+  return order;
+}
+// Sections that actually render now, in display order (★ Избранное only when non-empty).
+function buildSections() {
+  const cats = loadCategories();
+  const favs = projects.filter((p) => p.favorite);
+  return effectiveOrder().map((key) => {
+    if (key === FAV_KEY) return favs.length ? { key, label: '★ Избранное', list: favs, pinned: true } : null;
+    if (key === UNCATEGORIZED) return { key, label: UNCATEGORIZED, pinned: false, list: projects.filter((p) => !p.favorite && !cats.includes(p.category)) };
+    return { key, label: key, pinned: false, list: projects.filter((p) => !p.favorite && p.category === key) };
+  }).filter(Boolean);
+}
+function moveSection(key, dir) {
+  const visible = buildSections().map((s) => s.key);
+  const target = visible[visible.indexOf(key) + dir];
+  if (target === undefined) return;
+  const order = effectiveOrder();
+  const a = order.indexOf(key), b = order.indexOf(target);
+  [order[a], order[b]] = [order[b], order[a]];
+  saveSectionOrder(order); renderProjects();
+}
 
 function renderProjects() {
   const box = $('#projects');
   box.innerHTML = '';
-  const cats = loadCategories();
-  const favs = projects.filter((p) => p.favorite);
-  if (favs.length) box.appendChild(renderSection('★ Избранное', '__fav', favs, true));
-  const inAll = projects.filter((p) => !p.favorite && !cats.includes(p.category));
-  box.appendChild(renderSection(UNCATEGORIZED, UNCATEGORIZED, inAll, false));
-  for (const c of cats) {
-    const list = projects.filter((p) => !p.favorite && p.category === c);
-    box.appendChild(renderSection(c, c, list, false));
-  }
+  const sections = buildSections();
+  sections.forEach((s, i) => box.appendChild(renderSection(s, i, sections.length)));
   renderMiniRail();
 }
-function renderSection(label, key, list, pinned) {
+function renderSection(s, index, total) {
+  const { label, key, list, pinned } = s;
   const sec = el('div', 'pgroup' + (pinned ? ' pinned' : ''));
   const collapsed = isCollapsed(key);
   const head = el('div', 'pgroup-head');
@@ -163,13 +196,20 @@ function renderSection(label, key, list, pinned) {
   head.appendChild(chev);
   head.appendChild(el('span', 'pgroup-name', label));
   head.appendChild(el('span', 'pgroup-count', String(list.length)));
+  const tools = el('div', 'pgroup-tools');
+  const up = el('button', 'pgroup-arrow', '▲'); up.title = 'Выше'; up.disabled = index === 0;
+  const down = el('button', 'pgroup-arrow', '▼'); down.title = 'Ниже'; down.disabled = index === total - 1;
+  up.addEventListener('click', (e) => { e.stopPropagation(); moveSection(key, -1); });
+  down.addEventListener('click', (e) => { e.stopPropagation(); moveSection(key, +1); });
+  tools.appendChild(up); tools.appendChild(down);
+  head.appendChild(tools);
   const body = el('div', 'pgroup-body');
   if (collapsed) body.style.display = 'none';
   head.addEventListener('click', () => {
     const now = !isCollapsed(key); setCollapsed(key, now);
     body.style.display = now ? 'none' : 'block'; chev.textContent = now ? '▸' : '▾';
   });
-  if (key !== '__fav' && key !== UNCATEGORIZED) // custom categories can be renamed/deleted
+  if (key !== FAV_KEY && key !== UNCATEGORIZED) // custom categories can be renamed/deleted
     head.addEventListener('contextmenu', (e) => { e.preventDefault(); showCategoryMenu(e.clientX, e.clientY, key); });
   for (const p of list) body.appendChild(makeCard(p));
   sec.appendChild(head); sec.appendChild(body);
@@ -292,6 +332,8 @@ function renameCategory(old) {
   showPrompt('Переименовать категорию', 'Название', old, (name) => {
     if (name === old || name === UNCATEGORIZED) return;
     saveCategories([...new Set(loadCategories().map((c) => (c === old ? name : c)))]);
+    const order = loadSectionOrder();
+    if (order) saveSectionOrder(order.map((k) => (k === old ? name : k)));
     for (const p of projects) if (p.category === old) p.category = name;
     saveProjects(); renderProjects();
   });

@@ -90,7 +90,7 @@ try {
   const legacy = path.join(os.homedir(), '.LiteEditor');
   if (!fs.existsSync(storeDir) && fs.existsSync(legacy)) fs.cpSync(legacy, storeDir, { recursive: true });
 } catch (_) {}
-const STORE_KEYS = ['projects', 'settings', 'layout', 'recents', 'lastParent', 'projFiles', 'categories', 'accordions', 'dismissed'];
+const STORE_KEYS = ['projects', 'settings', 'layout', 'recents', 'lastParent', 'projFiles', 'categories', 'sectionOrder', 'accordions', 'dismissed'];
 function ensureStoreDir() { try { fs.mkdirSync(storeDir, { recursive: true }); } catch (_) {} }
 function storeFile(key) { return path.join(storeDir, String(key).replace(/[^\w.-]/g, '_') + '.json'); }
 function readStoreKey(key) { try { return JSON.parse(fs.readFileSync(storeFile(key), 'utf8')); } catch { return undefined; } }
