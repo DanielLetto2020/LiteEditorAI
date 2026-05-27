@@ -25,7 +25,9 @@ const launcherBody = `#!/usr/bin/env bash
 export PATH="${nodeDir}:$PATH"
 cd "${root}" || exit 1
 node build.js || echo "[build.js упал — открываю прошлую сборку]"
-exec "${electronBin}" --no-sandbox . "$@" > "${logFile}" 2>&1
+# --class задаёт WM_CLASS окна = StartupWMClass из .desktop, иначе WM не свяжет
+# запущенное окно с ярлыком и покажет обобщённую иконку (шестерёнку).
+exec "${electronBin}" --no-sandbox --class=LiteEditorAI . "$@" > "${logFile}" 2>&1
 `;
 
 const desktopBody = `[Desktop Entry]

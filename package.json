@@ -1,6 +1,6 @@
 {
   "name": "liteeditor-ai",
-  "version": "1.0.25-alpha",
+  "version": "1.0.26-alpha",
   "description": "Lightweight editor for working with AI coding agents in the terminal",
   "main": "main.js",
   "author": "Максим Кузьминский <i@m-letto.ru>",
@@ -12,7 +12,7 @@
   },
   "scripts": {
     "build": "node build.js",
-    "start": "node build.js && electron --no-sandbox .",
+    "start": "node build.js && electron --no-sandbox --class=LiteEditorAI .",
     "watch": "node build.js --watch",
     "rebuild": "electron-rebuild -f -w node-pty",
     "postinstall": "electron-rebuild -f -w node-pty || echo 'node-pty rebuild skipped — run: npm run rebuild'",
