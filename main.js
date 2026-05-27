@@ -1,13 +1,19 @@
 // LiteEditor — Electron main process.
 // Thin backend: project picker, PTY lifecycle, file ops, window controls.
-const { app, BrowserWindow, ipcMain, dialog, shell, Menu, clipboard, screen, Tray, nativeImage } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, Menu, clipboard, screen, Tray, nativeImage, crashReporter } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
 const { execFile } = require('child_process');
 const pty = require('node-pty');
+const logger = require('./logger');
 
 app.setName('LiteEditorAI');
+
+// Capture native (C++) crashes — e.g. a GPU/renderer process abort, which on
+// Linux shows up as "trap int3" in dmesg and closes the app with no dialog.
+// uploadToServer:false → minidumps stay local (userData/Crashpad), never sent.
+try { crashReporter.start({ uploadToServer: false }); } catch (_) {}
 
 // Electron installed via npm ships no root-owned setuid sandbox helper, so the
 // Chromium SUID sandbox aborts at launch. We load only our own local content,
@@ -97,6 +103,10 @@ function readStoreKey(key) { try { return JSON.parse(fs.readFileSync(storeFile(k
 function writeStoreKey(key, value) { ensureStoreDir(); try { fs.writeFileSync(storeFile(key), JSON.stringify(value)); } catch (_) {} }
 ensureStoreDir();
 
+// File logging lives next to the store, survives restarts, keeps 5 days.
+logger.init(path.join(storeDir, 'logs'));
+ipcMain.on('log:renderer', (_e, { level, args } = {}) => logger.renderer(level, ...(Array.isArray(args) ? args : [args])));
+
 ipcMain.on('store:loadAll', (e) => {
   const o = {};
   for (const k of STORE_KEYS) { const v = readStoreKey(k); if (v !== undefined) o[k] = v; }
@@ -160,6 +170,16 @@ function createWindow() {
   mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'));
   if (st.maximized) mainWindow.maximize();
 
+  // Renderer death is the most likely "silent close": log reason + exitCode so
+  // a recurrence is diagnosable (e.g. reason:'crashed'/'oom' vs a GPU abort).
+  mainWindow.webContents.on('render-process-gone', (_e, d) =>
+    logger.log('fatal', 'render-process-gone', JSON.stringify(d)));
+  mainWindow.webContents.on('unresponsive', () => logger.log('warn', 'window', 'renderer unresponsive'));
+  mainWindow.webContents.on('responsive', () => logger.log('info', 'window', 'renderer responsive'));
+  mainWindow.webContents.on('console-message', (_e, level, message, line, sourceId) => {
+    if (level >= 2) logger.log(level === 3 ? 'error' : 'warn', 'console', `${message} (${sourceId}:${line})`);
+  });
+
   const persist = () => {
     if (!mainWindow || mainWindow.isDestroyed()) return;
     if (mainWindow.isMaximized()) { saveState({ maximized: true }); return; }
@@ -203,7 +223,14 @@ function createTray() {
   } catch (_) { tray = null; }
 }
 
+// GPU/utility child processes dying (the other half of a "trap int3" crash).
+app.on('child-process-gone', (_e, d) =>
+  logger.log(d && d.reason === 'clean-exit' ? 'info' : 'error', 'child-process-gone', JSON.stringify(d)));
+app.on('before-quit', () => logger.log('info', 'app', 'before-quit'));
+
 app.whenReady().then(() => {
+  const gpu = !(process.env.LITE_NO_GPU === '1' || process.env.LITE_SOFTWARE_RENDER === '1');
+  logger.log('info', 'app', `ready — electron ${process.versions.electron}, chrome ${process.versions.chrome}, node ${process.versions.node}, gpu=${gpu}`);
   Menu.setApplicationMenu(null); // we draw our own menu in the custom titlebar
   createWindow();
   createTray();
@@ -280,22 +307,29 @@ ipcMain.handle('dialog:pickDir', async () => {
 // ---------------------------------------------------------------- PTY
 function spawnPtyFor(id, cwd, cols, rows) {
   const shell = resolveShell();
+  const startCwd = cwd && fs.existsSync(cwd) ? cwd : os.homedir();
+  // Log around the spawn: it runs synchronously on the main thread, so if it ever
+  // hangs (e.g. a ConPTY conout pipe never connecting on Windows) the log shows
+  // "pty spawn …" with no following "pty spawned …" — pinpointing the freeze.
+  logger.log('info', 'pty', `spawn shell=${shell} cwd=${startCwd}`);
   let proc;
   try {
     proc = pty.spawn(shell, [], {
       name: 'xterm-color',
       cols: cols || 80,
       rows: rows || 24,
-      cwd: cwd && fs.existsSync(cwd) ? cwd : os.homedir(),
+      cwd: startCwd,
       env: { ...process.env, SHELL: shell }, // keep the env pointing at a real shell
     });
   } catch (err) {
+    logger.log('error', 'pty', 'spawn failed', err);
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send('pty:data', { id, data: `\r\n\x1b[31mНе удалось запустить шелл (${shell}): ${err.message}\x1b[0m\r\n` });
       mainWindow.webContents.send('pty:exit', { id });
     }
     return { error: String(err.message || err) };
   }
+  logger.log('info', 'pty', `spawned pid=${proc.pid}`);
   proc.onData((data) => {
     if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('pty:data', { id, data });
   });

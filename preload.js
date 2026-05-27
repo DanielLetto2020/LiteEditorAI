@@ -10,6 +10,8 @@ contextBridge.exposeInMainWorld('lite', {
   openExternal: (url) => ipcRenderer.invoke('shell:openExternal', url),
   copyText: (text) => ipcRenderer.send('clipboard:write', text),
   readClipboard: () => ipcRenderer.invoke('clipboard:read'),
+  // Forward renderer-side errors/events to the main-process file log.
+  log: (level, ...args) => ipcRenderer.send('log:renderer', { level, args }),
 
   win: {
     minimize: () => ipcRenderer.send('win:minimize'),
