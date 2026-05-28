@@ -22,8 +22,8 @@
       <div class="drag-space"></div>
       <div class="win-tools">
         <button id="attention-badge" class="attention-badge" title="Агентов ждёт ответа">0</button>
-        <button id="btn-scratch" class="icon-btn" title="Системный терминал справа (домашняя папка, вне проектов)">❯_</button>
-        <button id="btn-single" class="icon-btn" title="Один терминал (Ctrl+\)">⛶</button>
+        <button id="btn-scratch" class="icon-btn" title="Системный терминал справа (домашняя папка, вне проектов)" data-icon="terminal"></button>
+        <button id="btn-single" class="icon-btn" title="Один терминал (Ctrl+\)" data-icon="columns"></button>
         <span class="win-sep"></span>
         <button id="win-min" class="win-btn" title="Свернуть" aria-label="Свернуть"></button>
         <button id="win-max" class="win-btn" title="Развернуть" aria-label="Развернуть"></button>
@@ -37,7 +37,6 @@
 
       <aside id="sidebar">
         <div class="pane-head">ПРОЕКТЫ</div>
-        <button id="open-folder-btn" class="open-folder">+ Открыть папку</button>
         <div id="projects"></div>
       </aside>
       <div class="gutter" data-resize="sidebar"></div>
@@ -45,14 +44,14 @@
       <section id="terminal-pane">
         <div id="terminals"></div>
         <div id="term-tools">
-          <button id="term-clear" class="tt-btn" title="Очистить терминал">🧹</button>
-          <button id="term-restart" class="tt-btn" title="Перезапустить терминал">⟳</button>
+          <button id="term-clear" class="tt-btn" title="Очистить терминал" data-icon="eraser" data-icon-size="15"></button>
+          <button id="term-restart" class="tt-btn" title="Перезапустить терминал" data-icon="refresh" data-icon-size="15"></button>
         </div>
         <div id="term-search">
           <input id="term-search-input" type="text" placeholder="Поиск в терминале…" autocomplete="off" spellcheck="false">
-          <button id="term-search-prev" class="ts-btn" title="Назад (Shift+Enter)">▲</button>
-          <button id="term-search-next" class="ts-btn" title="Вперёд (Enter)">▼</button>
-          <button id="term-search-close" class="ts-btn" title="Закрыть (Esc)">✕</button>
+          <button id="term-search-prev" class="ts-btn" title="Назад (Shift+Enter)" data-icon="chevron-up" data-icon-size="14"></button>
+          <button id="term-search-next" class="ts-btn" title="Вперёд (Enter)" data-icon="chevron-down" data-icon-size="14"></button>
+          <button id="term-search-close" class="ts-btn" title="Закрыть (Esc)" data-icon="x" data-icon-size="14"></button>
         </div>
         <div id="empty-hint">
           <div class="hint-card">
@@ -68,8 +67,8 @@
         <div class="pane-head">
           <span>СИСТЕМА · ~</span>
           <div class="drag-space-static"></div>
-          <button id="scratch-restart" class="icon-btn" title="Перезапустить (новый шелл в ~)">⟳</button>
-          <button id="scratch-close" class="icon-btn" title="Закрыть системный терминал">✕</button>
+          <button id="scratch-restart" class="icon-btn" title="Перезапустить (новый шелл в ~)" data-icon="refresh"></button>
+          <button id="scratch-close" class="icon-btn" title="Закрыть системный терминал" data-icon="x"></button>
         </div>
         <div id="scratch-term"></div>
       </section>
@@ -80,11 +79,11 @@
           <span id="viewer-filename">—</span>
           <span id="viewer-dirty" class="dirty-dot" title="Несохранённые изменения"></span>
           <div class="drag-space-static"></div>
-          <button id="viewer-preview" class="icon-btn" title="Превью (Markdown / картинка / HTML)">👁</button>
-          <button id="viewer-full" class="icon-btn" title="Развернуть превью HTML на весь экран (Esc — выход)" style="display:none">⤢</button>
-          <button id="viewer-diff" class="icon-btn" title="Дифф изменений vs HEAD (git)">±</button>
-          <button id="viewer-save" class="icon-btn" title="Сохранить (Ctrl+S)">💾</button>
-          <button id="viewer-close" class="icon-btn" title="Закрыть вивер">✕</button>
+          <button id="viewer-preview" class="icon-btn" title="Превью (Markdown / картинка / HTML)" data-icon="eye"></button>
+          <button id="viewer-full" class="icon-btn" title="Развернуть превью HTML на весь экран (Esc — выход)" style="display:none" data-icon="maximize"></button>
+          <button id="viewer-diff" class="icon-btn" title="Дифф изменений vs HEAD (git)" data-icon="diff"></button>
+          <button id="viewer-save" class="icon-btn" title="Сохранить (Ctrl+S)" data-icon="save"></button>
+          <button id="viewer-close" class="icon-btn" title="Закрыть вивер" data-icon="x"></button>
         </div>
         <div id="editor"></div>
         <div id="diff-view"></div>
@@ -96,8 +95,8 @@
         <div class="pane-head">
           <span id="tree-title">ДЕРЕВО</span>
           <div class="drag-space-static"></div>
-          <button id="tree-new" class="icon-btn" title="Создать файл/папку в корне проекта">＋</button>
-          <button id="tree-refresh" class="icon-btn" title="Обновить дерево файлов">⟳</button>
+          <button id="tree-new" class="icon-btn" title="Создать файл/папку в корне проекта" data-icon="plus"></button>
+          <button id="tree-refresh" class="icon-btn" title="Обновить дерево файлов" data-icon="refresh"></button>
         </div>
         <div id="tree"></div>
       </section>

@@ -23,7 +23,7 @@ import { markdown } from '@codemirror/lang-markdown';
 import { html } from '@codemirror/lang-html';
 import { css } from '@codemirror/lang-css';
 
-const APP_VERSION = 'alpha v1.0.40';
+const APP_VERSION = 'alpha v1.0.41';
 const GUTTER = 5;
 const SCRATCH_ID = '__scratch__'; // системный терминал (домашняя папка), не привязан к проектам
 
@@ -39,6 +39,64 @@ function svgEl(html) {
   const t = document.createElement('template');
   t.innerHTML = html.trim();
   return t.content.firstChild;
+}
+// ---------------------------------------------------------------- icon set
+// One consistent line-icon family (Lucide-ish): 24-grid, currentColor stroke, rounded.
+// Inner markup only; icon() wraps it. Fill-based glyphs set their own fill/stroke.
+const ICONS = {
+  star: '<path d="M12 3.2l2.6 5.27 5.82.85-4.21 4.1.99 5.79L12 16.48 6.8 19.21l.99-5.79-4.21-4.1 5.82-.85z"/>',
+  'dots-v': '<circle cx="12" cy="5" r="1.5" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.5" fill="currentColor" stroke="none"/><circle cx="12" cy="19" r="1.5" fill="currentColor" stroke="none"/>',
+  'chevron-right': '<path d="M9 5l7 7-7 7"/>',
+  'chevron-down': '<path d="M5 9l7 7 7-7"/>',
+  'chevron-up': '<path d="M5 15l7-7 7 7"/>',
+  'chevron-left': '<path d="M15 5l-7 7 7 7"/>',
+  pencil: '<path d="M4 20h4L18.5 9.5a2 2 0 0 0-2.83-2.83L5 17v3z"/><path d="M13.5 6.5l4 4"/>',
+  eye: '<path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="3"/>',
+  note: '<path d="M5.5 3.5h8L19 9v10.5a1 1 0 0 1-1 1H5.5a1 1 0 0 1-1-1v-15a1 1 0 0 1 1-1z"/><path d="M13 3.5V9h5.5"/><path d="M8 13h7M8 16.5h4.5"/>',
+  git: '<circle cx="6.5" cy="6" r="2.3"/><circle cx="6.5" cy="18" r="2.3"/><circle cx="17.5" cy="9" r="2.3"/><path d="M6.5 8.3v7.4M17.5 11.3c0 3.2-3.3 3.9-6.4 3.9"/>',
+  folder: '<path d="M3.5 7.5a2 2 0 0 1 2-2h3.6l2 2H18.5a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5.5a2 2 0 0 1-2-2z"/>',
+  palette: '<path d="M12 3a9 9 0 1 0 0 18c1.2 0 2-.9 2-2 0-.6-.3-1-.6-1.4-.3-.4-.6-.8-.6-1.3 0-.9.7-1.6 1.6-1.6H16a5 5 0 0 0 5-5c0-3.6-3.6-6.7-9-6.7z"/><circle cx="7.5" cy="11" r="1" fill="currentColor" stroke="none"/><circle cx="11" cy="7.5" r="1" fill="currentColor" stroke="none"/><circle cx="15.5" cy="8.5" r="1" fill="currentColor" stroke="none"/>',
+  'arrow-right': '<path d="M4 12h15M13 6l6 6-6 6"/>',
+  archive: '<rect x="3.5" y="4.5" width="17" height="4" rx="1"/><path d="M5 8.5v10a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-10M10 12h4"/>',
+  x: '<path d="M6 6l12 12M18 6L6 18"/>',
+  plus: '<path d="M12 5v14M5 12h14"/>',
+  refresh: '<path d="M20 11.5a8 8 0 1 0-2.1 6.1"/><path d="M20 4.5v6h-6"/>',
+  save: '<path d="M5.5 4.5h10L20 9v10.5a1 1 0 0 1-1 1H5.5a1 1 0 0 1-1-1v-14a1 1 0 0 1 1-1z"/><path d="M8 4.5v4.5h7M8 20v-5.5h8V20"/>',
+  diff: '<path d="M12 4.5v7M8.5 8h7M6 19h12"/>',
+  maximize: '<path d="M4 9V5.5a1 1 0 0 1 1-1H9M20 9V5.5a1 1 0 0 0-1-1H15M4 15v3.5a1 1 0 0 0 1 1H9M20 15v3.5a1 1 0 0 1-1 1H15"/>',
+  terminal: '<rect x="3" y="4.5" width="18" height="15" rx="2"/><path d="M7 10l3 2.5-3 2.5M13 15h4"/>',
+  columns: '<rect x="3.5" y="4.5" width="17" height="15" rx="2"/><path d="M13 4.5v15"/>',
+  eraser: '<path d="M15.5 5l3.5 3.5a1.8 1.8 0 0 1 0 2.6L12 18.5H7l-2.5-2.5a1.8 1.8 0 0 1 0-2.6l8.4-8.4a1.8 1.8 0 0 1 2.6 0z"/><path d="M8.5 11.5l4 4M5 20.5h14"/>',
+  trash: '<path d="M4.5 7h15M9.5 7V4.8a1 1 0 0 1 1-1h3a1 1 0 0 1 1 1V7M6.5 7l.8 12.2a1 1 0 0 0 1 .95h7.4a1 1 0 0 0 1-.95L18.5 7"/>',
+  search: '<circle cx="11" cy="11" r="6.3"/><path d="M20 20l-3.8-3.8"/>',
+  check: '<path d="M5 12.5l4.2 4.2L19 7"/>',
+  download: '<path d="M12 4v10.5M8 11l4 4 4-4M5 19.5h14"/>',
+  upload: '<path d="M12 20V9.5M8 13l4-4 4 4M5 4.5h14"/>',
+  sliders: '<path d="M4 8h9M17 8h3M4 16h3M11 16h9"/><circle cx="15" cy="8" r="2.1"/><circle cx="9" cy="16" r="2.1"/>',
+  grid: '<rect x="4" y="4" width="7" height="7" rx="1.5"/><rect x="13" y="4" width="7" height="7" rx="1.5"/><rect x="4" y="13" width="7" height="7" rx="1.5"/><rect x="13" y="13" width="7" height="7" rx="1.5"/>',
+  copy: '<rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5.5a2 2 0 0 1 2-2H16"/>',
+  play: '<path d="M7 5l12 7-12 7z" fill="currentColor" stroke="none"/>',
+  warning: '<path d="M12 4l9 16H3z"/><path d="M12 10v4M12 17h.01"/>',
+  file: '<path d="M6 3.5h7L18.5 9v10.5a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1v-15a1 1 0 0 1 1-1z"/><path d="M12.5 3.5V9H18"/>',
+  globe: '<circle cx="12" cy="12" r="8.5"/><path d="M3.5 12h17M12 3.5c2.6 2.4 2.6 14.6 0 17M12 3.5c-2.6 2.4-2.6 14.6 0 17"/>',
+  clipboard: '<rect x="6" y="4.5" width="12" height="16" rx="2"/><rect x="9" y="3" width="6" height="3.4" rx="1"/>',
+};
+function icon(name, size = 16) {
+  return svgEl(`<svg class="ic" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name] || ''}</svg>`);
+}
+// Button carrying a single icon (replaces the old emoji-in-textContent buttons).
+function iconBtn(cls, name, title, size) {
+  const b = el('button', cls);
+  b.appendChild(icon(name, size));
+  if (title) b.title = title;
+  return b;
+}
+// Fill the static [data-icon] buttons defined in index.html (titlebar / pane toolbars).
+function hydrateIcons(root = document) {
+  root.querySelectorAll('[data-icon]').forEach((node) => {
+    if (node.querySelector('svg.ic')) return; // already done
+    node.appendChild(icon(node.dataset.icon, +node.dataset.iconSize || 16));
+  });
 }
 // basename that survives both POSIX and Windows separators (for the Windows build).
 function baseName(p) { return String(p).split(/[\\/]/).filter(Boolean).pop() || String(p); }
@@ -282,9 +340,9 @@ function buildSections() {
   const cats = loadCategories();
   const favs = projects.filter((p) => p.favorite);
   return effectiveOrder().map((key) => {
-    if (key === FAV_KEY) return favs.length ? { key, label: '★ Избранное', list: favs, pinned: true } : null;
+    if (key === FAV_KEY) return favs.length ? { key, label: 'Избранное', list: favs, pinned: true } : null;
     if (key === UNCATEGORIZED) return { key, label: UNCATEGORIZED, pinned: false, list: projects.filter((p) => !p.favorite && !cats.includes(p.category)) };
-    if (key === ARCHIVE) { const list = projects.filter((p) => !p.favorite && p.category === ARCHIVE); return list.length ? { key, label: '🗄 Архив', list, pinned: false } : null; }
+    if (key === ARCHIVE) { const list = projects.filter((p) => !p.favorite && p.category === ARCHIVE); return list.length ? { key, label: 'Архив', list, pinned: false } : null; }
     return { key, label: key, pinned: false, list: projects.filter((p) => !p.favorite && p.category === key) };
   }).filter(Boolean);
 }
@@ -312,20 +370,21 @@ function renderSection(s, index, sections) {
   const sec = el('div', 'pgroup' + (pinned ? ' pinned' : ''));
   const collapsed = isCollapsed(key);
   const head = el('div', 'pgroup-head');
-  const chev = el('span', 'pgroup-chev', collapsed ? '▸' : '▾');
+  const chev = el('span', 'pgroup-chev');
+  chev.appendChild(icon(collapsed ? 'chevron-right' : 'chevron-down', 15));
   head.appendChild(chev);
   head.appendChild(el('span', 'pgroup-name', label));
   head.appendChild(el('span', 'pgroup-count', String(list.length)));
   const tools = el('div', 'pgroup-tools');
   const isCustomCat = key !== FAV_KEY && key !== UNCATEGORIZED && key !== ARCHIVE;
   if (isCustomCat) { // видимая кнопка переименования (плюс ПКМ-меню)
-    const ren = el('button', 'pgroup-arrow', '✎'); ren.title = 'Переименовать категорию';
+    const ren = iconBtn('pgroup-arrow', 'pencil', 'Переименовать категорию');
     ren.addEventListener('click', (e) => { e.stopPropagation(); renameCategory(key); });
     tools.appendChild(ren);
   }
   const nextIsArchive = sections[index + 1] && sections[index + 1].key === ARCHIVE;
-  const up = el('button', 'pgroup-arrow', '▲'); up.title = 'Выше'; up.disabled = index === 0 || key === ARCHIVE;
-  const down = el('button', 'pgroup-arrow', '▼'); down.title = 'Ниже'; down.disabled = index === total - 1 || key === ARCHIVE || nextIsArchive;
+  const up = iconBtn('pgroup-arrow', 'chevron-up', 'Выше'); up.disabled = index === 0 || key === ARCHIVE;
+  const down = iconBtn('pgroup-arrow', 'chevron-down', 'Ниже'); down.disabled = index === total - 1 || key === ARCHIVE || nextIsArchive;
   up.addEventListener('click', (e) => { e.stopPropagation(); moveSection(key, -1); });
   down.addEventListener('click', (e) => { e.stopPropagation(); moveSection(key, +1); });
   tools.appendChild(up); tools.appendChild(down);
@@ -334,7 +393,8 @@ function renderSection(s, index, sections) {
   if (collapsed) body.style.display = 'none';
   head.addEventListener('click', () => {
     const now = !isCollapsed(key); setCollapsed(key, now);
-    body.style.display = now ? 'none' : 'block'; chev.textContent = now ? '▸' : '▾';
+    body.style.display = now ? 'none' : 'block';
+    chev.replaceChildren(icon(now ? 'chevron-right' : 'chevron-down', 15));
   });
   if (key !== FAV_KEY && key !== UNCATEGORIZED && key !== ARCHIVE) // custom categories can be renamed/deleted (Архив — нет)
     head.addEventListener('contextmenu', (e) => { e.preventDefault(); showCategoryMenu(e.clientX, e.clientY, key); });
@@ -355,37 +415,47 @@ function makeCard(p) {
   ind.title = 'Спиннер — работает · янтарный — ждёт ответа · точка — готов';
   const title = el('span', 'card-title', p.name);
   title.title = p.path;
-  const star = el('button', 'card-star' + (p.favorite ? ' on' : ''), p.favorite ? '★' : '☆');
-  star.title = p.favorite ? 'Убрать из избранного' : 'В избранное';
+  const star = iconBtn('card-star' + (p.favorite ? ' on' : ''), 'star', p.favorite ? 'Убрать из избранного' : 'В избранное', 15);
   star.addEventListener('click', (e) => { e.stopPropagation(); toggleFavorite(p.id); });
-  const kebab = el('button', 'card-kebab', '⋮');
-  kebab.title = 'Меню проекта';
+  const kebab = iconBtn('card-kebab', 'dots-v', 'Меню проекта', 18);
   kebab.addEventListener('click', (e) => { e.stopPropagation(); showCardMenu(e.clientX, e.clientY, p); });
   head.appendChild(ind); head.appendChild(title); head.appendChild(star); head.appendChild(kebab);
   card.appendChild(head);
 
-  if (missing.has(p.id)) card.appendChild(el('div', 'card-missing', '⚠ папка удалена — закрой проект'));
+  const pathRow = el('div', 'card-path-row');
+  pathRow.appendChild(el('span', 'card-path', p.path));
+  const copy = iconBtn('card-copy', 'copy', 'Копировать путь', 12);
+  copy.addEventListener('click', (e) => { e.stopPropagation(); lite.copyText(p.path); copy.classList.add('copied'); setTimeout(() => copy.classList.remove('copied'), 900); });
+  pathRow.appendChild(copy);
+  card.appendChild(pathRow);
 
-  const actions = el('div', 'card-actions');
-  const openViewer = el('button', null, '👁 вивер');
-  if (p.id === activeId && viewerOpen) openViewer.classList.add('on');
+  if (missing.has(p.id)) {
+    const w = el('div', 'card-missing'); w.appendChild(icon('warning', 13)); w.appendChild(el('span', null, 'папка удалена — закрой проект'));
+    card.appendChild(w);
+  }
+
+  const foot = el('div', 'card-foot');
+  const openViewer = iconBtn('card-act' + (p.id === activeId && viewerOpen ? ' on' : ''), 'eye', 'Открыть/закрыть вивер');
   openViewer.addEventListener('click', (e) => {
     e.stopPropagation();
     if (activeId === p.id && viewerOpen) setViewerOpen(false);
     else { setActive(p.id); setViewerOpen(true); }
   });
+  const notesBtn = iconBtn('card-act', 'note', 'Заметки');
   const nc = noteCounts[p.id] || 0;
-  const notesBtn = el('button', null, nc ? `заметки · ${nc}` : 'заметки');
+  if (nc) notesBtn.appendChild(el('span', 'act-badge', String(nc)));
   notesBtn.addEventListener('click', (e) => { e.stopPropagation(); showNotes(p); });
-  actions.appendChild(openViewer); actions.appendChild(notesBtn);
+  const gitBtn = iconBtn('card-act', 'git', 'Git');
+  gitBtn.addEventListener('click', (e) => { e.stopPropagation(); showGit(p); });
+  foot.appendChild(openViewer); foot.appendChild(notesBtn); foot.appendChild(gitBtn);
   const qb = queues.get(p.id);
   const qtxt = queueBadgeText(qb);
   const qbadge = el('button', 'card-qbadge' + (qtxt ? ' show' : '') + (qb && qb.running ? ' running' : ''), qtxt);
   qbadge.dataset.id = p.id;
   qbadge.title = 'Авто-очередь заметок';
   qbadge.addEventListener('click', (e) => { e.stopPropagation(); showNotes(p); });
-  actions.appendChild(qbadge);
-  card.appendChild(actions);
+  foot.appendChild(qbadge);
+  card.appendChild(foot);
 
   card.addEventListener('click', () => setActive(p.id));
   card.addEventListener('contextmenu', (e) => { e.preventDefault(); showCardMenu(e.clientX, e.clientY, p); });
@@ -421,26 +491,26 @@ function showCardMenu(x, y, p) {
 }
 function buildCardMenuMain(dd, p) {
   dd.innerHTML = '';
-  dd.appendChild(menuRow('📁', 'Открыть в проводнике', () => { closeMenus(); lite.openInFileManager(p.path); }));
-  dd.appendChild(menuRow('⎇', 'Git', () => { closeMenus(); showGit(p); }));
-  dd.appendChild(menuRow('📝', 'Заметки', () => { closeMenus(); showNotes(p); }));
-  dd.appendChild(menuRow('⧉', 'Копировать путь', () => { closeMenus(); lite.copyText(p.path); toast('Путь скопирован'); }));
-  dd.appendChild(menuRow(p.favorite ? '★' : '☆', p.favorite ? 'Убрать из избранного' : 'В избранное', () => { closeMenus(); toggleFavorite(p.id); }));
+  dd.appendChild(menuRow('folder', 'Открыть в проводнике', () => { closeMenus(); lite.openInFileManager(p.path); }));
+  dd.appendChild(menuRow('git', 'Git', () => { closeMenus(); showGit(p); }));
+  dd.appendChild(menuRow('note', 'Заметки', () => { closeMenus(); showNotes(p); }));
+  dd.appendChild(menuRow('copy', 'Копировать путь', () => { closeMenus(); lite.copyText(p.path); toast('Путь скопирован'); }));
+  dd.appendChild(menuRow('star', p.favorite ? 'Убрать из избранного' : 'В избранное', () => { closeMenus(); toggleFavorite(p.id); }));
   dd.appendChild(el('div', 'menu-sep'));
-  dd.appendChild(menuRow('✎', 'Переименовать проект…', () => { closeMenus(); renameProject(p.id); }));
-  dd.appendChild(menuRow('🎨', 'Цвет проекта…', () => buildCardMenuColor(dd, p)));
-  dd.appendChild(menuRow('➜', 'Переместить в категорию…', () => buildCardMenuMove(dd, p)));
+  dd.appendChild(menuRow('pencil', 'Переименовать проект…', () => { closeMenus(); renameProject(p.id); }));
+  dd.appendChild(menuRow('palette', 'Цвет проекта…', () => buildCardMenuColor(dd, p)));
+  dd.appendChild(menuRow('arrow-right', 'Переместить в категорию…', () => buildCardMenuMove(dd, p)));
   if (p.category === ARCHIVE)
-    dd.appendChild(menuRow('🗄', 'Вернуть из архива', () => { closeMenus(); moveToCategory(p.id, null); }));
+    dd.appendChild(menuRow('archive', 'Вернуть из архива', () => { closeMenus(); moveToCategory(p.id, null); }));
   else
-    dd.appendChild(menuRow('🗄', 'В архив', () => { closeMenus(); archiveProject(p.id); }));
+    dd.appendChild(menuRow('archive', 'В архив', () => { closeMenus(); archiveProject(p.id); }));
   dd.appendChild(el('div', 'menu-sep'));
-  dd.appendChild(menuRow('✕', 'Закрыть проект', () => { closeMenus(); closeProject(p.id); }, 'danger'));
+  dd.appendChild(menuRow('x', 'Закрыть проект', () => { closeMenus(); closeProject(p.id); }, 'danger'));
 }
 const ACCENTS = ['#2fbf71', '#3dc8dc', '#7aa2f7', '#a98cf0', '#e06fae', '#e0af68', '#f7768e', '#8aa79a'];
 function buildCardMenuColor(dd, p) {
   dd.innerHTML = '';
-  dd.appendChild(menuRow('‹', 'Назад', () => buildCardMenuMain(dd, p), 'muted'));
+  dd.appendChild(menuRow('chevron-left', 'Назад', () => buildCardMenuMain(dd, p), 'muted'));
   dd.appendChild(el('div', 'menu-label', 'Цвет проекта'));
   const sw = el('div', 'accent-swatches');
   for (const c of ACCENTS) {
@@ -450,7 +520,7 @@ function buildCardMenuColor(dd, p) {
     sw.appendChild(b);
   }
   dd.appendChild(sw);
-  dd.appendChild(menuRow('✕', 'Сбросить цвет', () => { closeMenus(); setAccent(p.id, null); }, 'muted'));
+  dd.appendChild(menuRow('x', 'Сбросить цвет', () => { closeMenus(); setAccent(p.id, null); }, 'muted'));
 }
 function setAccent(id, c) {
   const p = projects.find((x) => x.id === id);
@@ -468,8 +538,8 @@ function showCategoryMenu(x, y, name) {
   closeMenus();
   const dd = el('div', 'menu-dropdown'); dd.style.minWidth = '190px';
   dd.addEventListener('click', (e) => e.stopPropagation());
-  dd.appendChild(menuRow('✎', 'Переименовать категорию…', () => { closeMenus(); renameCategory(name); }));
-  dd.appendChild(menuRow('🗑', 'Удалить категорию', () => { closeMenus(); deleteCategory(name); }, 'danger'));
+  dd.appendChild(menuRow('pencil', 'Переименовать категорию…', () => { closeMenus(); renameCategory(name); }));
+  dd.appendChild(menuRow('trash', 'Удалить категорию', () => { closeMenus(); deleteCategory(name); }, 'danger'));
   placeMenu(dd, x, y);
 }
 function renameCategory(old) {
@@ -491,16 +561,16 @@ function deleteCategory(name) {
 }
 function buildCardMenuMove(dd, p) {
   dd.innerHTML = '';
-  dd.appendChild(menuRow('‹', 'Назад', () => buildCardMenuMain(dd, p), 'muted'));
+  dd.appendChild(menuRow('chevron-left', 'Назад', () => buildCardMenuMain(dd, p), 'muted'));
   dd.appendChild(el('div', 'menu-label', 'Переместить в'));
   const cats = loadCategories();
   const opts = [UNCATEGORIZED, ...cats.filter((c) => c !== ARCHIVE)]; // Архив — через отдельный пункт «В архив»
   for (const c of opts) {
     const here = c === UNCATEGORIZED ? !cats.includes(p.category) : p.category === c;
-    dd.appendChild(menuRow(here ? '•' : ' ', c, () => { closeMenus(); moveToCategory(p.id, c === UNCATEGORIZED ? null : c); }));
+    dd.appendChild(menuRow(here ? 'check' : null, c, () => { closeMenus(); moveToCategory(p.id, c === UNCATEGORIZED ? null : c); }));
   }
   dd.appendChild(el('div', 'menu-sep'));
-  dd.appendChild(menuRow('✚', 'Создать новую…', () => { closeMenus(); showCreateCategory(p.id); }));
+  dd.appendChild(menuRow('plus', 'Создать новую…', () => { closeMenus(); showCreateCategory(p.id); }));
 }
 function showCreateCategory(id) {
   const { m, close } = makeModal(`
@@ -1844,19 +1914,19 @@ function showTreeMenu(x, y, ent) {
   const dd = el('div', 'menu-dropdown'); dd.style.minWidth = '190px';
   dd.addEventListener('click', (e) => e.stopPropagation());
   if (ent.dir) {
-    dd.appendChild(menuRow('📄', 'Новый файл…', () => { closeMenus(); treeNewFile(ent.path); }));
-    dd.appendChild(menuRow('📁', 'Новая папка…', () => { closeMenus(); treeNewFolder(ent.path); }));
+    dd.appendChild(menuRow('file', 'Новый файл…', () => { closeMenus(); treeNewFile(ent.path); }));
+    dd.appendChild(menuRow('folder', 'Новая папка…', () => { closeMenus(); treeNewFolder(ent.path); }));
     dd.appendChild(el('div', 'menu-sep'));
   } else {
-    dd.appendChild(menuRow('👁', 'Открыть', () => { closeMenus(); if (!viewerOpen) setViewerOpen(true); guardDirty(() => openFile(ent.path)); }));
-    if (['html', 'htm'].includes(extOf(ent.name))) dd.appendChild(menuRow('🌐', 'Открыть в браузере', () => { closeMenus(); lite.openInFileManager(ent.path); }));
+    dd.appendChild(menuRow('eye', 'Открыть', () => { closeMenus(); if (!viewerOpen) setViewerOpen(true); guardDirty(() => openFile(ent.path)); }));
+    if (['html', 'htm'].includes(extOf(ent.name))) dd.appendChild(menuRow('globe', 'Открыть в браузере', () => { closeMenus(); lite.openInFileManager(ent.path); }));
     dd.appendChild(el('div', 'menu-sep'));
   }
   if (!ent.root) {
-    dd.appendChild(menuRow('✎', 'Переименовать…', () => { closeMenus(); treeRename(ent); }));
-    dd.appendChild(menuRow('🗑', 'Удалить…', () => { closeMenus(); treeDelete(ent); }, 'danger'));
+    dd.appendChild(menuRow('pencil', 'Переименовать…', () => { closeMenus(); treeRename(ent); }));
+    dd.appendChild(menuRow('trash', 'Удалить…', () => { closeMenus(); treeDelete(ent); }, 'danger'));
   }
-  dd.appendChild(menuRow('⧉', 'Копировать путь', () => { closeMenus(); lite.copyText(ent.path); toast('Путь скопирован'); }));
+  dd.appendChild(menuRow('copy', 'Копировать путь', () => { closeMenus(); lite.copyText(ent.path); toast('Путь скопирован'); }));
   placeMenu(dd, x, y);
 }
 
@@ -1941,9 +2011,12 @@ function openTopMenu(name, btn) {
   const r = btn.getBoundingClientRect();
   placeMenu(dd, r.left, r.bottom + 4);
 }
-function menuRow(icon, text, onClick, cls) {
+// `glyph` is an ICONS name (rendered as SVG); a non-icon string falls back to text; falsy → empty slot.
+function menuRow(glyph, text, onClick, cls) {
   const row = el('div', 'menu-row' + (cls ? ' ' + cls : ''));
-  const ic = el('span', null, icon); ic.style.width = '16px'; ic.style.textAlign = 'center';
+  const ic = el('span', 'menu-ic');
+  if (glyph && ICONS[glyph]) ic.appendChild(icon(glyph, 16));
+  else if (glyph) ic.textContent = glyph;
   row.appendChild(ic); row.appendChild(el('span', null, text));
   if (onClick) row.addEventListener('click', onClick);
   return row;
@@ -1979,11 +2052,11 @@ async function importSettings() {
     });
 }
 function buildFileMenu(dd) {
-  dd.appendChild(menuRow('📂', 'Открыть папку', () => { closeMenus(); openProjectDialog(); }));
-  dd.appendChild(menuRow('✚', 'Создать папку…', () => { closeMenus(); showCreateFolder(); }));
+  dd.appendChild(menuRow('folder', 'Открыть папку', () => { closeMenus(); openProjectDialog(); }));
+  dd.appendChild(menuRow('plus', 'Создать папку…', () => { closeMenus(); showCreateFolder(); }));
   dd.appendChild(el('div', 'menu-sep'));
-  dd.appendChild(menuRow('⤓', 'Экспорт настроек…', exportSettings));
-  dd.appendChild(menuRow('⤒', 'Импорт настроек…', importSettings));
+  dd.appendChild(menuRow('download', 'Экспорт настроек…', exportSettings));
+  dd.appendChild(menuRow('upload', 'Импорт настроек…', importSettings));
   dd.appendChild(el('div', 'menu-sep'));
   dd.appendChild(el('div', 'menu-label', 'Ранее открытые'));
   const recents = loadRecents();
@@ -2003,14 +2076,14 @@ function buildFileMenu(dd) {
   dd.appendChild(list);
   if (recents.length) {
     dd.appendChild(el('div', 'menu-sep'));
-    dd.appendChild(menuRow('🗑', 'Очистить список', () => { persist('recents', []); closeMenus(); }));
+    dd.appendChild(menuRow('trash', 'Очистить список', () => { persist('recents', []); closeMenus(); }));
   }
 }
 function buildSettingsMenu(dd) {
-  dd.appendChild(menuRow('🎚', 'Настройки…', () => { closeMenus(); showSettings(); }));
-  dd.appendChild(menuRow('⌘', 'Палитра команд (Ctrl+K)', () => { closeMenus(); showPalette(); }));
+  dd.appendChild(menuRow('sliders', 'Настройки…', () => { closeMenus(); showSettings(); }));
+  dd.appendChild(menuRow('grid', 'Палитра команд (Ctrl+K)', () => { closeMenus(); showPalette(); }));
   dd.appendChild(el('div', 'menu-sep'));
-  dd.appendChild(menuRow('🔍', 'Поиск в терминале (Ctrl+F)', () => { closeMenus(); openTermSearch(); }));
+  dd.appendChild(menuRow('search', 'Поиск в терминале (Ctrl+F)', () => { closeMenus(); openTermSearch(); }));
 }
 
 // terminal right-click menu
@@ -2019,15 +2092,15 @@ function showTermMenu(x, y, term, projId) {
   const dd = el('div', 'menu-dropdown');
   dd.style.minWidth = '160px';
   const hasSel = term.hasSelection && term.hasSelection();
-  dd.appendChild(menuRow('⧉', 'Копировать', hasSel ? () => {
+  dd.appendChild(menuRow('copy', 'Копировать', hasSel ? () => {
     closeMenus();
     lite.copyText(term.getSelection());
     if (term.clearSelection) term.clearSelection();
   } : null, hasSel ? '' : 'disabled'));
-  dd.appendChild(menuRow('📋', 'Вставить', () => { closeMenus(); pasteInto(projId); }));
+  dd.appendChild(menuRow('clipboard', 'Вставить', () => { closeMenus(); pasteInto(projId); }));
   dd.appendChild(el('div', 'menu-sep'));
-  dd.appendChild(menuRow('🧹', 'Очистить', () => { closeMenus(); clearTerminal(projId); }));
-  dd.appendChild(menuRow('⟳', 'Перезапустить', () => { closeMenus(); restartTerminal(projId); }));
+  dd.appendChild(menuRow('eraser', 'Очистить', () => { closeMenus(); clearTerminal(projId); }));
+  dd.appendChild(menuRow('refresh', 'Перезапустить', () => { closeMenus(); restartTerminal(projId); }));
   dd.addEventListener('click', (e) => e.stopPropagation());
   placeMenu(dd, x, y);
 }
@@ -2340,6 +2413,7 @@ function toggleSingle() {
 
 // ---------------------------------------------------------------- init
 function init() {
+  hydrateIcons(); // fill the static [data-icon] buttons (titlebar / pane toolbars) with SVG
   makeEditor();
   applyLayout();
   applyTheme();
@@ -2390,7 +2464,6 @@ function init() {
     }, 120);
   });
 
-  $('#open-folder-btn').addEventListener('click', openProjectDialog);
   $('#btn-single').addEventListener('click', toggleSingle);
   $('#btn-scratch').addEventListener('click', toggleScratch);
   $('#scratch-restart').addEventListener('click', restartScratch);
