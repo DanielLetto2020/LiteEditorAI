@@ -23,7 +23,7 @@ import { markdown } from '@codemirror/lang-markdown';
 import { html } from '@codemirror/lang-html';
 import { css } from '@codemirror/lang-css';
 
-const APP_VERSION = 'alpha v1.0.44';
+const APP_VERSION = 'alpha v1.0.45';
 const GUTTER = 5;
 const SCRATCH_ID = '__scratch__'; // системный терминал (домашняя папка), не привязан к проектам
 
@@ -1326,12 +1326,14 @@ function createSession(proj, name) {
   term.onResize(({ cols, rows }) => lite.pty.resize(id, cols, rows));
   term.attachCustomKeyEventHandler((e) => {
     if (e.type !== 'keydown') return true;
-    if (e.ctrlKey && e.shiftKey && (e.key === 'T' || e.key === 't')) { addTab(); return false; }
-    if (e.ctrlKey && e.shiftKey && (e.key === 'W' || e.key === 'w')) { const s = activeSessionId(); if (s) closeTab(s); return false; }
+    // Match by physical key (e.code), NOT e.key — so Ctrl+C/V/F etc. work in ANY keyboard
+    // layout (in Russian layout Ctrl+V gives e.key='м', which the old e.key check missed).
+    if (e.ctrlKey && e.shiftKey && e.code === 'KeyT') { addTab(); return false; }
+    if (e.ctrlKey && e.shiftKey && e.code === 'KeyW') { const s = activeSessionId(); if (s) closeTab(s); return false; }
     if (e.ctrlKey && (e.key === 'PageDown' || e.key === 'PageUp')) { cycleTab(e.key === 'PageDown' ? 1 : -1); return false; }
-    if (e.ctrlKey && !e.shiftKey && !e.altKey && (e.key === 'c' || e.key === 'C')) return !copySelection(term);
-    if (e.ctrlKey && !e.shiftKey && !e.altKey && (e.key === 'v' || e.key === 'V')) { pasteInto(id); return false; }
-    if (e.ctrlKey && !e.altKey && (e.key === 'f' || e.key === 'F')) { openTermSearch(); return false; }
+    if (e.ctrlKey && !e.shiftKey && !e.altKey && e.code === 'KeyC') return !copySelection(term); // copied → swallow; else SIGINT
+    if (e.ctrlKey && !e.shiftKey && !e.altKey && e.code === 'KeyV') { pasteInto(id); return false; }
+    if (e.ctrlKey && !e.altKey && e.code === 'KeyF') { openTermSearch(); return false; }
     if (e.ctrlKey && e.shiftKey && e.key === 'Enter') {
       const q = queues.get(proj.id);
       if (q && q.running) { queueAdvance(proj.id); return false; }
@@ -1492,10 +1494,10 @@ function ensureScratchTerminal() {
   term.onData((data) => lite.pty.write(SCRATCH_ID, data));
   term.onResize(({ cols, rows }) => lite.pty.resize(SCRATCH_ID, cols, rows));
   term.attachCustomKeyEventHandler((e) => {
-    if (e.type === 'keydown' && e.ctrlKey && !e.shiftKey && !e.altKey && (e.key === 'c' || e.key === 'C')) {
-      return !copySelection(term); // copied → swallow; nothing selected → let SIGINT through
-    }
-    if (e.type === 'keydown' && e.ctrlKey && !e.shiftKey && !e.altKey && (e.key === 'v' || e.key === 'V')) { pasteInto(SCRATCH_ID); return false; }
+    if (e.type !== 'keydown') return true;
+    // match by physical key so copy/paste work in any layout (Russian incl.)
+    if (e.ctrlKey && !e.shiftKey && !e.altKey && e.code === 'KeyC') return !copySelection(term); // copied → swallow; else SIGINT
+    if (e.ctrlKey && !e.shiftKey && !e.altKey && e.code === 'KeyV') { pasteInto(SCRATCH_ID); return false; }
     return true;
   });
   container.addEventListener('contextmenu', (e) => { e.preventDefault(); showTermMenu(e.clientX, e.clientY, term, SCRATCH_ID); });
