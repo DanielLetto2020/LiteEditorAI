@@ -23,7 +23,7 @@ import { markdown } from '@codemirror/lang-markdown';
 import { html } from '@codemirror/lang-html';
 import { css } from '@codemirror/lang-css';
 
-const APP_VERSION = 'alpha v1.0.38';
+const APP_VERSION = 'alpha v1.0.39';
 const GUTTER = 5;
 const SCRATCH_ID = '__scratch__'; // системный терминал (домашняя папка), не привязан к проектам
 
@@ -1012,6 +1012,9 @@ function closeProject(id) {
   );
 }
 function doCloseProject(id) {
+  // Closing the project whose unsaved file is open in the viewer would silently drop those
+  // edits — run the save/discard prompt first, then re-enter (dirty is false → falls through).
+  if (dirty && currentFile && activeId === id) { guardDirty(() => doCloseProject(id)); return; }
   const closing = projects.find((p) => p.id === id);
   if (closing) { // remember the close so a scan-dir project doesn't reappear next launch
     const dis = new Set(STORE.dismissed || []); dis.add(closing.path); persist('dismissed', [...dis]);
@@ -1219,8 +1222,12 @@ function ensureTerminal(proj) {
   });
   term.onResize(({ cols, rows }) => lite.pty.resize(proj.id, cols, rows));
 
-  // Ctrl+V → paste from OS clipboard (Ctrl+C left alone so it stays SIGINT).
+  // Ctrl+C copies the selection if any (else passes through as SIGINT); Ctrl+V pastes.
+  // The right-click menu stays as a fallback for both.
   term.attachCustomKeyEventHandler((e) => {
+    if (e.type === 'keydown' && e.ctrlKey && !e.shiftKey && !e.altKey && (e.key === 'c' || e.key === 'C')) {
+      return !copySelection(term); // copied → swallow; nothing selected → let SIGINT through
+    }
     if (e.type === 'keydown' && e.ctrlKey && !e.shiftKey && !e.altKey && (e.key === 'v' || e.key === 'V')) {
       pasteInto(proj.id);
       return false;
@@ -1249,6 +1256,20 @@ function ensureTerminal(proj) {
 async function pasteInto(id) {
   const text = await lite.readClipboard();
   if (text) lite.pty.write(id, text);
+  // Reading the clipboard is async (IPC round-trip) and the right-click menu steals
+  // focus — without this the terminal looks "frozen" until clicked. Refocus the xterm.
+  const rec = id === SCRATCH_ID ? scratchRec : terms.get(id);
+  if (rec && rec.term) { try { rec.term.focus(); } catch (_) {} }
+}
+// Smart Ctrl+C: if there's a non-empty selection, copy it (and clear, so the next
+// Ctrl+C can still send SIGINT) and report handled; otherwise return false so the
+// keypress falls through to the PTY as the interrupt signal. Mirrors the menu's copy.
+function copySelection(term) {
+  if (term.hasSelection && term.hasSelection()) {
+    const sel = term.getSelection();
+    if (sel) { lite.copyText(sel); if (term.clearSelection) term.clearSelection(); return true; }
+  }
+  return false;
 }
 
 function showActiveTerminal() {
@@ -1303,6 +1324,9 @@ function ensureScratchTerminal() {
   term.onData((data) => lite.pty.write(SCRATCH_ID, data));
   term.onResize(({ cols, rows }) => lite.pty.resize(SCRATCH_ID, cols, rows));
   term.attachCustomKeyEventHandler((e) => {
+    if (e.type === 'keydown' && e.ctrlKey && !e.shiftKey && !e.altKey && (e.key === 'c' || e.key === 'C')) {
+      return !copySelection(term); // copied → swallow; nothing selected → let SIGINT through
+    }
     if (e.type === 'keydown' && e.ctrlKey && !e.shiftKey && !e.altKey && (e.key === 'v' || e.key === 'V')) { pasteInto(SCRATCH_ID); return false; }
     return true;
   });
@@ -1378,7 +1402,7 @@ function guardDirty(proceed) {
     'Несохранённые изменения',
     `Файл «${baseName(currentFile)}» изменён. Сохранить перед переключением?`,
     'Сохранить',
-    async () => { await saveCurrent(); proceed(); },
+    async () => { if (await saveCurrent()) proceed(); }, // failed save → stay put, don't lose edits
     'Не сохранять',
     () => { markDirty(false); proceed(); },
   );
@@ -1553,11 +1577,17 @@ function setEditorText(text, lang) {
   loadingDoc = false;
 }
 function markDirty(v) { dirty = v; $('#viewer-dirty').classList.toggle('show', v); }
+// Returns true when the file is safely on disk (or there was nothing to save), false on a
+// failed write. Callers that gate a destructive next step (guardDirty) must NOT proceed on
+// false, or the unsaved edits are lost.
 async function saveCurrent() {
-  if (!currentFile || !dirty) return;
-  const res = await lite.fs.writeFile(currentFile, editor.state.doc.toString());
-  if (res.ok) markDirty(false);
-  else toast(`Не удалось сохранить: ${res.error || 'ошибка записи'}`, { kind: 'err', ttl: 6000 });
+  if (!currentFile || !dirty) return true;
+  let res;
+  try { res = await lite.fs.writeFile(currentFile, editor.state.doc.toString()); }
+  catch (e) { res = { error: String(e) }; }
+  if (res && res.ok) { markDirty(false); return true; }
+  toast(`Не удалось сохранить: ${(res && res.error) || 'ошибка записи'}`, { kind: 'err', ttl: 6000 });
+  return false;
 }
 
 // ---------------------------------------------------------------- git diff in the viewer
@@ -1901,6 +1931,7 @@ function placeMenu(dd, x, y) {
 function openTopMenu(name, btn) {
   closeMenus();
   if (name === 'about') { showAbout(); return; }
+  if (name === 'logs') { showLogs(); return; }
   openMenuName = name;
   btn.classList.add('open');
   const dd = el('div', 'menu-dropdown');
@@ -2097,6 +2128,74 @@ function showCreateFolder() {
   };
   m.querySelector('#cf-create').onclick = create;
   m.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); create(); } });
+}
+
+// ---------------------------------------------------------------- logs viewer
+// In-app reader for ~/.LiteEditorAI/logs/*.log with level highlighting. Read-only.
+// Renders lines via textContent (never innerHTML) — log text is untrusted input.
+function showLogs() {
+  closeMenus();
+  const { m } = makeModal(`
+    <h2>🗒 Логи приложения</h2>
+    <div class="logs-wrap">
+      <div class="logs-files" id="logs-files"></div>
+      <div class="logs-main">
+        <div class="logs-bar">
+          <span class="logs-name" id="logs-curname">—</span>
+          <span class="drag-space-static"></span>
+          <label class="logs-chk"><input type="checkbox" id="logs-erronly"> только ошибки</label>
+          <button class="icon-btn" id="logs-copy" title="Скопировать файл">⧉</button>
+          <button class="icon-btn" id="logs-refresh" title="Обновить">⟳</button>
+        </div>
+        <div class="logs-view" id="logs-view"></div>
+      </div>
+    </div>`);
+  const filesBox = m.querySelector('#logs-files');
+  const view = m.querySelector('#logs-view');
+  const curName = m.querySelector('#logs-curname');
+  const errOnly = m.querySelector('#logs-erronly');
+  let current = null, raw = '';
+  const fmtSize = (n) => n < 1024 ? n + ' B' : n < 1048576 ? Math.round(n / 1024) + ' KB' : (n / 1048576).toFixed(1) + ' MB';
+  const levelOf = (line) => /\[(FATAL|ERROR)\]/.test(line) ? 'err' : /\[WARN\]/.test(line) ? 'warn' : /\[INFO\]/.test(line) ? 'info' : null;
+  function render() {
+    view.innerHTML = '';
+    if (!current) { view.appendChild(el('div', 'logs-empty', 'Выбери файл слева')); return; }
+    let lines = raw.split('\n');
+    if (errOnly.checked) lines = lines.filter((l) => { const k = levelOf(l); return k === 'err' || k === 'warn'; });
+    const MAXL = 2500;
+    if (lines.length > MAXL) { view.appendChild(el('div', 'logs-note', `…последние ${MAXL} строк из ${lines.length}`)); lines = lines.slice(-MAXL); }
+    if (!lines.length) { view.appendChild(el('div', 'logs-empty', errOnly.checked ? 'Ошибок и предупреждений нет 🎉' : 'Файл пуст')); return; }
+    const frag = document.createDocumentFragment();
+    for (const line of lines) { const k = levelOf(line); frag.appendChild(el('div', 'logs-line' + (k ? ' ll-' + k : ''), line || ' ')); }
+    view.appendChild(frag);
+  }
+  async function load(name) {
+    current = name; curName.textContent = name;
+    filesBox.querySelectorAll('.logs-file').forEach((r) => r.classList.toggle('active', r.dataset.name === name));
+    view.innerHTML = ''; view.appendChild(el('div', 'logs-empty', 'Загрузка…'));
+    let res; try { res = await lite.logs.read(name); } catch (e) { res = { error: String(e) }; }
+    if (!res || res.error) { view.innerHTML = ''; view.appendChild(el('div', 'logs-empty', 'Ошибка: ' + ((res && res.error) || '—'))); return; }
+    raw = (res.truncated ? '…(показан конец файла)\n' : '') + (res.content || '');
+    render();
+  }
+  async function refresh() {
+    filesBox.innerHTML = '';
+    let res; try { res = await lite.logs.list(); } catch (e) { res = { error: String(e), files: [] }; }
+    const files = (res && res.files) || [];
+    if (!files.length) { filesBox.appendChild(el('div', 'logs-empty', 'Логов пока нет')); view.innerHTML = ''; return; }
+    for (const f of files) {
+      const row = el('div', 'logs-file'); row.dataset.name = f.name;
+      row.appendChild(el('div', 'logs-fname', f.name));
+      row.appendChild(el('div', 'logs-fmeta', fmtSize(f.size)));
+      row.addEventListener('click', () => load(f.name));
+      filesBox.appendChild(row);
+    }
+    load((current && files.some((f) => f.name === current)) ? current : files[0].name); // newest day first
+  }
+  errOnly.onchange = render;
+  m.querySelector('#logs-refresh').onclick = refresh;
+  m.querySelector('#logs-copy').onclick = () => { if (raw) { lite.copyText(raw); toast('Лог скопирован в буфер'); } };
+  refresh();
 }
 
 // ---------------------------------------------------------------- settings panel (small on purpose)

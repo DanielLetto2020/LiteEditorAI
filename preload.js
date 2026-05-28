@@ -36,6 +36,11 @@ contextBridge.exposeInMainWorld('lite', {
     notesSet: (id, notes) => ipcRenderer.invoke('store:notesSet', { id, notes }),
   },
 
+  logs: {
+    list: () => ipcRenderer.invoke('logs:list'),
+    read: (name) => ipcRenderer.invoke('logs:read', name),
+  },
+
   settings: {
     export: () => ipcRenderer.invoke('settings:export'),  // → { ok, file, dir } | { canceled } | { error }
     import: () => ipcRenderer.invoke('settings:import'),  // → { ok, file } | { canceled } | { error }

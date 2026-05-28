@@ -24,6 +24,7 @@ html, body {
   font-size: 13px;
   overflow: hidden;
   user-select: none;
+  background: transparent; /* let the rounded #app show through the transparent window */
 }
 
 #app {
@@ -31,11 +32,15 @@ html, body {
   flex-direction: column;
   height: 100vh;
   border: 1px solid var(--app-border); /* thin accent outline so the frameless window has visible edges */
+  border-radius: 11px;        /* rounded corners for a more solid, premium look */
+  overflow: hidden;           /* clip the titlebar/content to the rounded shape */
   /* dark → green business gradient */
   background:
     radial-gradient(130% 110% at 88% -10%, rgba(47, 191, 113, 0.16) 0%, rgba(20, 70, 46, 0.06) 38%, rgba(0,0,0,0) 70%),
     linear-gradient(160deg, #0c1712 0%, #0a130e 45%, #07100b 100%);
 }
+/* maximized: fill the screen edge-to-edge, no rounding */
+#app.is-max { border-radius: 0; border-color: transparent; }
 
 /* custom thin dark scrollbars everywhere */
 ::-webkit-scrollbar { width: 9px; height: 9px; }
@@ -349,6 +354,32 @@ body.resizing { cursor: col-resize; user-select: none; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 18px; }
 .modal .about-desc { color: var(--text-dim); line-height: 1.55; font-size: 12.5px; }
 .modal .about-ver { display: inline-block; margin-top: 10px; padding: 3px 10px; border-radius: 20px; background: rgba(47,191,113,0.16); color: var(--green-bright); font-weight: 600; }
+
+/* ---- logs viewer ---- */
+.modal:has(.logs-wrap) { width: 920px; }
+.logs-wrap { display: flex; gap: 10px; height: 66vh; }
+.logs-files { flex: 0 0 200px; overflow-y: auto; border: 1px solid var(--border); border-radius: 9px; padding: 5px; }
+.logs-file { padding: 6px 8px; border-radius: 6px; cursor: pointer; margin-bottom: 3px; }
+.logs-file:hover { background: rgba(120,200,160,0.08); }
+.logs-file.active { background: rgba(47,191,113,0.16); }
+.logs-fname { font-size: 12px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.logs-fmeta { font-size: 10px; color: var(--text-dim); margin-top: 1px; }
+.logs-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.logs-bar { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.logs-name { font-size: 12px; color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.logs-chk { display: flex; align-items: center; gap: 5px; font-size: 11.5px; color: var(--text-dim); cursor: pointer; margin: 0; }
+.logs-view {
+  flex: 1; overflow: auto; border: 1px solid var(--border); border-radius: 9px;
+  background: var(--ink); padding: 8px 10px;
+  font-family: "JetBrains Mono", "Fira Code", Consolas, monospace; font-size: 11.5px; line-height: 1.5;
+  user-select: text;
+}
+.logs-line { white-space: pre-wrap; word-break: break-word; color: var(--text-dim); }
+.logs-line.ll-info { color: var(--text); }
+.logs-line.ll-warn { color: #e0b341; }
+.logs-line.ll-err { color: var(--danger); }
+.logs-note { color: var(--text-dim); font-size: 10.5px; font-style: italic; margin-bottom: 6px; }
+.logs-empty { color: var(--text-dim); padding: 18px; text-align: center; }
 .modal .err { color: var(--danger); font-size: 12px; min-height: 16px; margin-top: 4px; }
 
 /* ---------------- attention badge (titlebar) ---------------- */

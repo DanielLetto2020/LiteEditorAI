@@ -105,19 +105,59 @@ function readStoreKey(key) {
   // ENOENT just means "never written yet" (normal); anything else (bad JSON, perms) is worth logging.
   catch (e) { if (e && e.code !== 'ENOENT') logger.log('error', 'store', `read '${key}' failed`, e); return undefined; }
 }
+// Crash-safe write: write a sibling .tmp then rename(2) over the target. rename is atomic
+// on the same filesystem, so a crash / OOM-kill / power-loss mid-write can never leave a
+// half-written (corrupt) JSON — the original file stays intact and a stale .tmp is harmless
+// (overwritten next time). Without this, dying during the write of projects.json would lose
+// the entire project list on the next launch (JSON.parse throws → undefined).
+function atomicWriteSync(file, data) {
+  const tmp = file + '.tmp';
+  fs.writeFileSync(tmp, data);
+  fs.renameSync(tmp, file);
+}
 // Returns true on success. store:set is fire-and-forget (renderer updates its in-memory
 // snapshot before the write), so a swallowed failure = silent data loss after restart — we
 // log it; the boolean lets callers that DO care (import) detect a partial failure.
 function writeStoreKey(key, value) {
   ensureStoreDir();
-  try { fs.writeFileSync(storeFile(key), JSON.stringify(value)); return true; }
+  try { atomicWriteSync(storeFile(key), JSON.stringify(value)); return true; }
   catch (e) { logger.log('error', 'store', `write '${key}' failed`, e); return false; }
 }
 ensureStoreDir();
 
 // File logging lives next to the store, survives restarts, keeps 5 days.
-logger.init(path.join(storeDir, 'logs'));
+const logsDir = path.join(storeDir, 'logs');
+logger.init(logsDir);
 ipcMain.on('log:renderer', (_e, { level, args } = {}) => logger.renderer(level, ...(Array.isArray(args) ? args : [args])));
+
+// Logs viewer (in-app, menu "Логи"). Only the app's own log files are listed/readable.
+const LOG_FILE_RE = /^(lite|launch)-\d{4}-\d{2}-\d{2}\.log$/;
+ipcMain.handle('logs:list', () => {
+  try {
+    const out = [];
+    for (const f of fs.readdirSync(logsDir)) {
+      if (!LOG_FILE_RE.test(f)) continue;
+      try { const s = fs.statSync(path.join(logsDir, f)); out.push({ name: f, size: s.size, mtime: s.mtimeMs }); } catch (_) {}
+    }
+    out.sort((a, b) => b.name.localeCompare(a.name)); // newest day first
+    return { files: out };
+  } catch (e) { return { error: String(e), files: [] }; }
+});
+ipcMain.handle('logs:read', (_e, name) => {
+  if (!LOG_FILE_RE.test(String(name || ''))) return { error: 'bad name' }; // no path traversal
+  try {
+    const full = path.join(logsDir, name);
+    const stat = fs.statSync(full);
+    const MAX = 1024 * 1024; // tail the last 1 MB so a huge file can't freeze the UI
+    if (stat.size <= MAX) return { content: fs.readFileSync(full, 'utf8'), truncated: false };
+    const fd = fs.openSync(full, 'r');
+    try {
+      const buf = Buffer.alloc(MAX);
+      fs.readSync(fd, buf, 0, MAX, stat.size - MAX);
+      return { content: buf.toString('utf8'), truncated: true };
+    } finally { fs.closeSync(fd); }
+  } catch (e) { return { error: String(e) }; }
+});
 
 ipcMain.on('store:loadAll', (e) => {
   const o = {};
@@ -140,7 +180,7 @@ ipcMain.handle('store:notesGet', (_e, id) => {
 ipcMain.handle('store:notesSet', (_e, { id, notes }) => {
   try {
     fs.mkdirSync(path.join(storeDir, 'notes'), { recursive: true });
-    fs.writeFileSync(path.join(storeDir, 'notes', String(id).replace(/[^\w.-]/g, '_') + '.json'), JSON.stringify(notes));
+    atomicWriteSync(path.join(storeDir, 'notes', String(id).replace(/[^\w.-]/g, '_') + '.json'), JSON.stringify(notes));
     return { ok: true };
   } catch (e) { return { error: String(e) }; }
 });
@@ -186,7 +226,7 @@ ipcMain.handle('settings:export', async () => {
   });
   if (res.canceled || !res.filePath) return { canceled: true };
   try {
-    fs.writeFileSync(res.filePath, JSON.stringify(payload, null, 2));
+    atomicWriteSync(res.filePath, JSON.stringify(payload, null, 2));
     saveState({ lastOpenDir: path.dirname(res.filePath) });
     return { ok: true, file: res.filePath, dir: path.dirname(res.filePath) };
   } catch (e) { return { error: String(e.message || e) }; }
@@ -221,7 +261,7 @@ ipcMain.handle('settings:import', async () => {
       const nd = path.join(storeDir, 'notes');
       fs.mkdirSync(nd, { recursive: true });
       for (const [id, arr] of Object.entries(data.notes)) {
-        try { fs.writeFileSync(path.join(nd, String(id).replace(/[^\w.-]/g, '_') + '.json'), JSON.stringify(arr)); }
+        try { atomicWriteSync(path.join(nd, String(id).replace(/[^\w.-]/g, '_') + '.json'), JSON.stringify(arr)); }
         catch (e) { failedNotes++; logger.log('error', 'store', `import note '${id}' failed`, e); }
       }
     }
@@ -239,7 +279,7 @@ function loadState() {
   try { return JSON.parse(fs.readFileSync(stateFile, 'utf8')); } catch { return {}; }
 }
 function saveState(partial) {
-  try { fs.writeFileSync(stateFile, JSON.stringify({ ...loadState(), ...partial })); } catch (_) {}
+  try { atomicWriteSync(stateFile, JSON.stringify({ ...loadState(), ...partial })); } catch (_) {}
 }
 function debounce(fn, ms) {
   let t;
@@ -254,9 +294,10 @@ function createWindow() {
     height: st.height || 820,
     minWidth: 760,
     minHeight: 480,
-    backgroundColor: '#0a120d',
+    backgroundColor: '#00000000',
     title: 'LiteEditorAI',
     frame: false,
+    transparent: true, // so #app's rounded corners show through to the desktop (needs a compositor)
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
