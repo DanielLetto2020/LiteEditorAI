@@ -23,7 +23,7 @@ import { markdown } from '@codemirror/lang-markdown';
 import { html } from '@codemirror/lang-html';
 import { css } from '@codemirror/lang-css';
 
-const APP_VERSION = 'alpha v1.0.46';
+const APP_VERSION = 'alpha v1.0.47';
 const GUTTER = 5;
 const SCRATCH_ID = '__scratch__'; // системный терминал (домашняя папка), не привязан к проектам
 
@@ -2521,6 +2521,7 @@ function toggleSingle() {
 // ---------------------------------------------------------------- init
 function init() {
   hydrateIcons(); // fill the static [data-icon] buttons (titlebar / pane toolbars) with SVG
+  { const av = $('#app-ver'); if (av) av.textContent = APP_VERSION; } // version label in the titlebar
   makeEditor();
   applyLayout();
   applyTheme();

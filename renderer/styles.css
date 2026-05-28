@@ -102,6 +102,10 @@ html, body {
 
 .win-tools { display: flex; align-items: center; gap: 2px; -webkit-app-region: no-drag; }
 .win-sep { width: 1px; height: 18px; background: var(--border-strong); margin: 0 5px; }
+.app-ver {
+  -webkit-app-region: no-drag; font-size: 10.5px; letter-spacing: .2px; color: var(--text-mute);
+  padding: 2px 9px; margin: 0 4px; border-radius: 20px; background: var(--hover); border: 1px solid var(--border); white-space: nowrap;
+}
 
 .icon-btn {
   background: transparent; border: 1px solid transparent; color: var(--text-dim);
