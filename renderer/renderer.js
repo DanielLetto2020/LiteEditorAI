@@ -23,7 +23,7 @@ import { markdown } from '@codemirror/lang-markdown';
 import { html } from '@codemirror/lang-html';
 import { css } from '@codemirror/lang-css';
 
-const APP_VERSION = 'alpha v1.0.45';
+const APP_VERSION = 'alpha v1.0.46';
 const GUTTER = 5;
 const SCRATCH_ID = '__scratch__'; // системный терминал (домашняя папка), не привязан к проектам
 
@@ -2254,14 +2254,21 @@ function showAbout() {
   const { m, close } = makeModal(`
     <h2><span style="color:var(--green-bright)">▍</span>LiteEditorAI</h2>
     <div class="about-desc">
-      Лёгкий редактор для работы с ИИ-агентами прямо в терминале.
-      У каждого проекта свой терминал, рядом — просмотр и правка файлов, дерево и git.
-      Открыл папку — сразу работаешь с агентом (Claude&nbsp;Code, Codex, Qwen, Kimi и&nbsp;др.).<br><br>
-      Заметки-промпты, темы, индикатор «агент ждёт ответа». Сделано на Electron.
+      Когда код всё чаще пишет агент, а не ты сам, привычный редактор встаёт с ног на голову:
+      в центре уже не файл, а разговор. LiteEditor построен вокруг этого — главный здесь
+      твой терминал с агентом, а просмотр кода, дерево и git живут рядом и прячутся одной
+      кнопкой, когда не нужны.<br><br>
+      Это нарочно лёгкий и тихий инструмент: открыл папку — и сразу за дело, без долгой
+      настройки. Он старается не мешать и держаться в стороне, пока ты направляешь работу,
+      а не выстукиваешь каждую строку руками.<br><br>
+      Маленький проект для себя и тех, кто проводит день в диалоге с ИИ и хочет, чтобы вокруг
+      этого диалога было спокойно и удобно.
     </div>
     <div class="about-ver">${APP_VERSION}</div>
+    <div class="about-meta">Максим&nbsp;Кузьминский · <a href="#" id="ab-src">исходники на GitHub</a></div>
     <div class="modal-actions"><button class="btn primary" id="ab-ok">Ок</button></div>`);
   m.querySelector('#ab-ok').onclick = close;
+  m.querySelector('#ab-src').onclick = (e) => { e.preventDefault(); lite.openExternal('https://github.com/DanielLetto2020/LiteEditorAI'); };
 }
 function showCreateFolder() {
   const { m, close } = makeModal(`

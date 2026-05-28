@@ -408,6 +408,9 @@ body.resizing { cursor: col-resize; user-select: none; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 18px; }
 .modal .about-desc { color: var(--text-dim); line-height: 1.55; font-size: 12.5px; }
 .modal .about-ver { display: inline-block; margin-top: 10px; padding: 3px 10px; border-radius: 20px; background: var(--accent-soft); color: var(--green-bright); font-weight: 600; }
+.modal .about-meta { margin-top: 12px; font-size: 11.5px; color: var(--text-mute); }
+.modal .about-meta a { color: var(--green-bright); text-decoration: none; }
+.modal .about-meta a:hover { text-decoration: underline; }
 
 /* ---- logs viewer ---- */
 .modal:has(.logs-wrap) { width: 920px; }
