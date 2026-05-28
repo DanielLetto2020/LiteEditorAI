@@ -42,11 +42,15 @@
       <div class="gutter" data-resize="sidebar"></div>
 
       <section id="terminal-pane">
-        <div id="terminals"></div>
-        <div id="term-tools">
-          <button id="term-clear" class="tt-btn" title="Очистить терминал" data-icon="eraser" data-icon-size="15"></button>
-          <button id="term-restart" class="tt-btn" title="Перезапустить терминал" data-icon="refresh" data-icon-size="15"></button>
+        <div id="term-header">
+          <div id="term-tabs"></div>
+          <div id="term-tools">
+            <button id="term-clear" class="tt-btn" title="Очистить терминал" data-icon="eraser" data-icon-size="15"></button>
+            <button id="term-restart" class="tt-btn" title="Перезапустить терминал" data-icon="refresh" data-icon-size="15"></button>
+          </div>
         </div>
+        <div id="term-body">
+        <div id="terminals"></div>
         <div id="term-search">
           <input id="term-search-input" type="text" placeholder="Поиск в терминале…" autocomplete="off" spellcheck="false">
           <button id="term-search-prev" class="ts-btn" title="Назад (Shift+Enter)" data-icon="chevron-up" data-icon-size="14"></button>
@@ -58,6 +62,7 @@
             <div class="hint-title">Пусто</div>
             <div class="hint-text">Открой папку слева — справа поднимется её терминал.</div>
           </div>
+        </div>
         </div>
       </section>
 

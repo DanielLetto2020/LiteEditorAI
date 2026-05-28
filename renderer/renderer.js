@@ -23,7 +23,7 @@ import { markdown } from '@codemirror/lang-markdown';
 import { html } from '@codemirror/lang-html';
 import { css } from '@codemirror/lang-css';
 
-const APP_VERSION = 'alpha v1.0.43';
+const APP_VERSION = 'alpha v1.0.44';
 const GUTTER = 5;
 const SCRATCH_ID = '__scratch__'; // системный терминал (домашняя папка), не привязан к проектам
 
@@ -127,8 +127,10 @@ function saveSettings() { persist('settings', settings); }
 // ---------------------------------------------------------------- state
 let projects = [];
 let activeId = null;
-const terms = new Map();
-const projState = new Map(); // id -> 'quiet' | 'busy' | 'waiting'
+const terms = new Map();          // sessionId -> { term, fit, search, container, projId, name, ... }
+const tabsByProj = new Map();     // projId -> { sessions: [sessionId...], active: sessionId }
+let sessionSeq = 0;
+const projState = new Map(); // sessionId -> 'quiet' | 'busy' | 'waiting'
 const missing = new Set();   // ids of projects whose folder no longer exists on disk
 const expandedDirs = new Set(); // tree dir paths currently expanded (survives live refresh)
 let gitFiles = {};           // active project: abs path -> git short status code
@@ -177,8 +179,10 @@ function queueDispatchNext(id) {
   }
   const proj = projects.find((x) => x.id === id);
   if (!proj) { q.running = false; queueChanged(q); return; }
-  ensureTerminal(proj);
-  lite.pty.write(id, (q.items[q.pos].text || '') + '\r'); // '\r' = Enter → submits the prompt
+  ensureProjectTabs(proj);
+  const sid = (tabsByProj.get(id) || {}).active;
+  q.sessionId = sid; // remember which tab the queue drives, so only its activity advances it
+  lite.pty.write(sid, (q.items[q.pos].text || '') + '\r'); // '\r' = Enter → submits the prompt
   q.awaitingBusy = true; // ignore «waiting» until the agent actually starts working on this note
   queueChanged(q);
 }
@@ -187,7 +191,7 @@ function queueStart(id) {
   if (!q.items.length) return;
   const proj = projects.find((x) => x.id === id);
   if (!proj) return;
-  ensureTerminal(proj);
+  ensureProjectTabs(proj);
   setActive(id); // bring this project's terminal to the front when the run begins
   q.running = true; q.pos = -1; q.awaitingBusy = false; q.armed = false;
   queueDispatchNext(id); // first note goes immediately; the rest wait for «▶ Дальше»
@@ -416,7 +420,7 @@ function makeCard(p) {
   if (p.accent) { card.classList.add('accented'); card.style.setProperty('--card-accent', p.accent); } // весь бордер + усиленная левая полоса
 
   const head = el('div', 'card-head');
-  const ind = el('span', 'pind ' + (projState.get(p.id) || 'quiet'));
+  const ind = el('span', 'pind ' + projAggState(p.id));
   ind.dataset.id = p.id;
   ind.title = 'Спиннер — работает · янтарный — ждёт ответа · точка — готов';
   const title = el('span', 'card-title', p.name);
@@ -875,9 +879,10 @@ function sendNoteToTerminal(p, text) {
   if (!text) return;
   const proj = projects.find((x) => x.id === p.id);
   if (!proj) return;
-  ensureTerminal(proj);
+  ensureProjectTabs(proj);
   setActive(proj.id);
-  lite.pty.write(proj.id, text); // no trailing newline — review, then press Enter yourself
+  const sid = (tabsByProj.get(proj.id) || {}).active;
+  if (sid) lite.pty.write(sid, text); // no trailing newline — review, then press Enter yourself
 }
 
 // ---------------------------------------------------------------- light git panel (#3)
@@ -1045,7 +1050,7 @@ function renderMiniRail() {
     const btn = el('button', 'rail-btn');
     if (p.id === activeId) btn.classList.add('active');
     btn.title = p.name;
-    const ind = el('span', 'pind ' + (projState.get(p.id) || 'quiet'));
+    const ind = el('span', 'pind ' + projAggState(p.id));
     ind.dataset.id = p.id;
     btn.appendChild(ind);
     btn.appendChild(el('span', 'rail-name', p.name));
@@ -1090,15 +1095,17 @@ function doCloseProject(id) {
     const dis = new Set(STORE.dismissed || []); dis.add(closing.path); persist('dismissed', [...dis]);
   }
   if (closing && watchedRoot === closing.path) { lite.fs.unwatch(closing.path); watchedRoot = null; }
-  lite.pty.kill(id);
-  const rec = terms.get(id);
-  if (rec) {
-    clearTimeout(rec.idleTimer);
-    try { rec.term.dispose(); } catch (_) {}
-    rec.container.remove();
-    terms.delete(id);
+  const tabs = tabsByProj.get(id);
+  if (tabs) {
+    for (const sid of tabs.sessions) {
+      lite.pty.kill(sid);
+      const rec = terms.get(sid);
+      if (rec) { clearTimeout(rec.idleTimer); try { rec.term.dispose(); } catch (_) {} rec.container.remove(); terms.delete(sid); }
+      projState.delete(sid);
+    }
+    tabsByProj.delete(id);
   }
-  projState.delete(id);
+  const pt = { ...(STORE.projTabs || {}) }; delete pt[id]; persist('projTabs', pt);
   missing.delete(id);
   projects = projects.filter((p) => p.id !== id);
   saveProjects();
@@ -1136,9 +1143,11 @@ const stripAnsi = (str) => str.replace(ANSI_RE, '');
 const OSC_RE = /\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g;
 const hasRealBell = (s) => s.replace(OSC_RE, '').includes('\x07');
 
-function setProjState(id, state) {
-  projState.set(id, state);
-  document.querySelectorAll(`.pind[data-id="${id}"]`).forEach((ind) => { ind.className = 'pind ' + state; });
+function setProjState(sid, state) {
+  projState.set(sid, state);
+  const rec = terms.get(sid);
+  document.querySelectorAll(`.tab[data-sid="${sid}"] .tab-dot`).forEach((d) => { d.className = 'tab-dot pind ' + state; });
+  if (rec) refreshProjIndicator(rec.projId); // card/rail show the project aggregate
   updateAttention();
 }
 function markActivity(id, data) {
@@ -1153,7 +1162,7 @@ function markActivity(id, data) {
   rec.tail = stripAnsi((rec.tail || '') + (data || '')).slice(-400);
   rec.activitySeq = (rec.activitySeq || 0) + 1; // lets a pending settle detect that new output arrived
   if (projState.get(id) !== 'busy') { rec.busyStart = Date.now(); setProjState(id, 'busy'); }
-  const q = queues.get(id); if (q && q.running) q.awaitingBusy = false; // the dispatched note is now running
+  const q = queues.get(rec.projId); if (q && q.running && q.sessionId === id) q.awaitingBusy = false; // dispatched note now running
   clearTimeout(rec.idleTimer);
   rec.idleTimer = setTimeout(() => settleProject(id), settings.idleMs);
 }
@@ -1180,9 +1189,12 @@ async function settleProject(id) {
   const worked = rec.sawBell || (Date.now() - (rec.busyStart || 0)) >= 1500; // skip trivial blips
   rec.sawBell = false;
   setProjState(id, waiting ? 'waiting' : 'quiet');
-  queueOnSettled(id, waiting ? 'waiting' : 'quiet');
-  const qRunning = (queues.get(id) || {}).running; // a running queue posts its own «Дальше» notification
-  if (!qRunning && worked && (id !== activeId || !document.hasFocus())) notifyAgent(id, waiting ? 'waiting' : 'quiet');
+  const pid = rec.projId;
+  const q = queues.get(pid);
+  const qTargets = !!(q && q.running && q.sessionId === id); // this session is the queue's target tab
+  if (qTargets) queueOnSettled(pid, waiting ? 'waiting' : 'quiet');
+  // a running queue posts its own «Дальше» notification; notify per project on a non-visible tab
+  if (!qTargets && worked && (id !== activeSessionId() || !document.hasFocus())) notifyAgent(pid, waiting ? 'waiting' : 'quiet');
 }
 
 let lastNotifyAt = 0;
@@ -1267,8 +1279,29 @@ function loadFastRenderer(term) {
   try { term.loadAddon(new CanvasAddon()); } catch (_) {}
 }
 
-function ensureTerminal(proj) {
-  if (terms.has(proj.id)) return terms.get(proj.id);
+// ---- terminal sessions (tabs) ----
+// Each project owns ≥1 SESSION (tab) = its own PTY + xterm. `terms` is keyed by sessionId;
+// `tabsByProj` keeps per-project order + active session. Tab NAMES persist across restarts
+// (projTabs store); PTYs don't, so tabs are recreated empty on next launch.
+function activeSessionId() { const t = tabsByProj.get(activeId); return t ? t.active : null; }
+function projSessions(projId) { const t = tabsByProj.get(projId); return t ? t.sessions : []; }
+function projAggState(projId) {
+  const ss = projSessions(projId).map((s) => projState.get(s));
+  return ss.includes('busy') ? 'busy' : ss.includes('waiting') ? 'waiting' : 'quiet';
+}
+function refreshProjIndicator(projId) {
+  const st = projAggState(projId);
+  document.querySelectorAll(`.pind[data-id="${projId}"]`).forEach((i) => { i.className = 'pind ' + st; });
+}
+function saveProjTabs() {
+  const out = {};
+  for (const [pid, t] of tabsByProj) {
+    out[pid] = { names: t.sessions.map((s) => (terms.get(s) || {}).name || 'Терминал'), active: t.sessions.indexOf(t.active) };
+  }
+  persist('projTabs', out);
+}
+function createSession(proj, name) {
+  const id = proj.id + '::t' + (++sessionSeq);
   const container = el('div', 'term-instance');
   $('#terminals').appendChild(container);
   const term = new Terminal({
@@ -1281,47 +1314,108 @@ function ensureTerminal(proj) {
   term.loadAddon(search);
   term.loadAddon(new WebLinksAddon((_e, uri) => lite.openExternal(uri)));
   term.open(container);
-  loadFastRenderer(term); // GPU/Canvas renderer → плавный скролл вместо тормозного DOM-рендера
+  loadFastRenderer(term);
   fit.fit();
-  term.registerLinkProvider(fileLinkProvider(term, proj.path)); // src/app.js:42 → viewer
-  lite.pty.create({ id: proj.id, cwd: proj.path, cols: term.cols, rows: term.rows });
+  term.registerLinkProvider(fileLinkProvider(term, proj.path));
+  lite.pty.create({ id, cwd: proj.path, cols: term.cols, rows: term.rows });
   term.onData((data) => {
-    const r = terms.get(proj.id);
-    if (r) r.lastInputAt = Date.now(); // mark typing so its echo isn't counted as agent activity
-    lite.pty.write(proj.id, data);
+    const r = terms.get(id);
+    if (r) r.lastInputAt = Date.now();
+    lite.pty.write(id, data);
   });
-  term.onResize(({ cols, rows }) => lite.pty.resize(proj.id, cols, rows));
-
-  // Ctrl+C copies the selection if any (else passes through as SIGINT); Ctrl+V pastes.
-  // The right-click menu stays as a fallback for both.
+  term.onResize(({ cols, rows }) => lite.pty.resize(id, cols, rows));
   term.attachCustomKeyEventHandler((e) => {
-    if (e.type === 'keydown' && e.ctrlKey && !e.shiftKey && !e.altKey && (e.key === 'c' || e.key === 'C')) {
-      return !copySelection(term); // copied → swallow; nothing selected → let SIGINT through
-    }
-    if (e.type === 'keydown' && e.ctrlKey && !e.shiftKey && !e.altKey && (e.key === 'v' || e.key === 'V')) {
-      pasteInto(proj.id);
-      return false;
-    }
-    if (e.type === 'keydown' && e.ctrlKey && !e.altKey && (e.key === 'f' || e.key === 'F')) {
-      openTermSearch();
-      return false;
-    }
-    // Ctrl+Shift+Enter → advance this project's running queue (swallow so no stray \n hits the PTY).
-    if (e.type === 'keydown' && e.ctrlKey && e.shiftKey && e.key === 'Enter') {
+    if (e.type !== 'keydown') return true;
+    if (e.ctrlKey && e.shiftKey && (e.key === 'T' || e.key === 't')) { addTab(); return false; }
+    if (e.ctrlKey && e.shiftKey && (e.key === 'W' || e.key === 'w')) { const s = activeSessionId(); if (s) closeTab(s); return false; }
+    if (e.ctrlKey && (e.key === 'PageDown' || e.key === 'PageUp')) { cycleTab(e.key === 'PageDown' ? 1 : -1); return false; }
+    if (e.ctrlKey && !e.shiftKey && !e.altKey && (e.key === 'c' || e.key === 'C')) return !copySelection(term);
+    if (e.ctrlKey && !e.shiftKey && !e.altKey && (e.key === 'v' || e.key === 'V')) { pasteInto(id); return false; }
+    if (e.ctrlKey && !e.altKey && (e.key === 'f' || e.key === 'F')) { openTermSearch(); return false; }
+    if (e.ctrlKey && e.shiftKey && e.key === 'Enter') {
       const q = queues.get(proj.id);
       if (q && q.running) { queueAdvance(proj.id); return false; }
     }
     return true;
   });
-  // right-click → copy/paste menu
-  container.addEventListener('contextmenu', (e) => {
-    e.preventDefault();
-    showTermMenu(e.clientX, e.clientY, term, proj.id);
+  container.addEventListener('contextmenu', (e) => { e.preventDefault(); showTermMenu(e.clientX, e.clientY, term, id); });
+  const rec = { term, fit, search, container, projId: proj.id, name, idleTimer: null, sawBell: false, tail: '', busyStart: 0, lastInputAt: 0, activitySeq: 0 };
+  terms.set(id, rec);
+  tabsByProj.get(proj.id).sessions.push(id);
+  return id;
+}
+// Ensure a project's sessions exist (restoring saved tab names on first open).
+function ensureProjectTabs(proj) {
+  if (tabsByProj.has(proj.id)) return;
+  tabsByProj.set(proj.id, { sessions: [], active: null });
+  const saved = (STORE.projTabs || {})[proj.id];
+  const names = saved && Array.isArray(saved.names) && saved.names.length ? saved.names : ['Терминал 1'];
+  names.forEach((n) => createSession(proj, n));
+  const t = tabsByProj.get(proj.id);
+  const ai = saved && Number.isInteger(saved.active) ? saved.active : 0;
+  t.active = t.sessions[Math.max(0, Math.min(ai, t.sessions.length - 1))] || t.sessions[0];
+  saveProjTabs();
+}
+function renderTabBar() {
+  const header = $('#term-header');
+  const bar = $('#term-tabs');
+  if (!bar) return;
+  bar.innerHTML = '';
+  const t = tabsByProj.get(activeId);
+  if (!activeId || !t || !t.sessions.length) { if (header) header.style.display = 'none'; return; }
+  if (header) header.style.display = 'flex';
+  t.sessions.forEach((sid) => {
+    const rec = terms.get(sid); if (!rec) return;
+    const tab = el('div', 'tab' + (sid === t.active ? ' active' : ''));
+    tab.dataset.sid = sid;
+    tab.appendChild(el('span', 'tab-dot pind ' + (projState.get(sid) || 'quiet')));
+    tab.appendChild(el('span', 'tab-name', rec.name));
+    if (t.sessions.length > 1) {
+      const x = iconBtn('tab-close', 'x', 'Закрыть вкладку (Ctrl+Shift+W)', 12);
+      x.addEventListener('click', (e) => { e.stopPropagation(); closeTab(sid); });
+      tab.appendChild(x);
+    }
+    tab.addEventListener('click', () => switchTab(sid));
+    tab.addEventListener('dblclick', () => renameTab(sid));
+    bar.appendChild(tab);
   });
-
-  const rec = { term, fit, search, container, idleTimer: null, sawBell: false, tail: '', busyStart: 0, lastInputAt: 0, activitySeq: 0 };
-  terms.set(proj.id, rec);
-  return rec;
+  const add = iconBtn('tab-add', 'plus', 'Новая вкладка (Ctrl+Shift+T)', 15);
+  add.addEventListener('click', () => addTab());
+  bar.appendChild(add);
+}
+function switchTab(sid) {
+  const t = tabsByProj.get(activeId);
+  if (!t || !terms.has(sid)) return;
+  t.active = sid; saveProjTabs(); showActiveTerminal();
+}
+function addTab() {
+  const proj = activeProject(); if (!proj) return;
+  ensureProjectTabs(proj);
+  const t = tabsByProj.get(proj.id);
+  const sid = createSession(proj, 'Терминал ' + (t.sessions.length + 1));
+  t.active = sid; saveProjTabs(); showActiveTerminal();
+}
+function closeTab(sid) {
+  const t = tabsByProj.get(activeId); if (!t || t.sessions.length <= 1) return; // keep ≥1 tab
+  lite.pty.kill(sid);
+  const rec = terms.get(sid);
+  if (rec) { clearTimeout(rec.idleTimer); try { rec.term.dispose(); } catch (_) {} rec.container.remove(); terms.delete(sid); }
+  projState.delete(sid);
+  const i = t.sessions.indexOf(sid);
+  t.sessions.splice(i, 1);
+  if (t.active === sid) t.active = t.sessions[Math.max(0, i - 1)];
+  saveProjTabs(); showActiveTerminal();
+  refreshProjIndicator(activeId); updateAttention();
+}
+function cycleTab(dir) {
+  const t = tabsByProj.get(activeId); if (!t || t.sessions.length < 2) return;
+  let i = t.sessions.indexOf(t.active) + dir;
+  if (i < 0) i = t.sessions.length - 1; if (i >= t.sessions.length) i = 0;
+  switchTab(t.sessions[i]);
+}
+function renameTab(sid) {
+  const rec = terms.get(sid); if (!rec) return;
+  showPrompt('Переименовать вкладку', 'Название', rec.name, (v) => { rec.name = v; saveProjTabs(); renderTabBar(); });
 }
 async function pasteInto(id) {
   const text = await lite.readClipboard();
@@ -1343,32 +1437,36 @@ function copySelection(term) {
 }
 
 function showActiveTerminal() {
+  const asid = activeSessionId();
   $('#empty-hint').style.display = activeId ? 'none' : 'flex';
-  for (const [id, rec] of terms) rec.container.style.display = id === activeId ? 'block' : 'none';
+  for (const [sid, rec] of terms) rec.container.style.display = sid === asid ? 'block' : 'none';
+  renderTabBar();
   refitActiveTerminal(true);
 }
 function refitActiveTerminal(focusIt) {
-  const rec = terms.get(activeId);
+  const asid = activeSessionId();
+  const rec = asid ? terms.get(asid) : null;
   if (!rec) return;
   requestAnimationFrame(() => {
-    try { rec.fit.fit(); lite.pty.resize(activeId, rec.term.cols, rec.term.rows); if (focusIt) rec.term.focus(); } catch (_) {}
+    try { rec.fit.fit(); lite.pty.resize(asid, rec.term.cols, rec.term.rows); if (focusIt) rec.term.focus(); } catch (_) {}
   });
 }
 function clearTerminal(id) {
   if (id === SCRATCH_ID) { if (scratchRec) { try { scratchRec.term.clear(); } catch (_) {} scratchRec.term.focus(); } return; }
-  const rec = terms.get(id || activeId); if (rec) { try { rec.term.clear(); } catch (_) {} rec.term.focus(); }
+  const sid = (id && terms.has(id)) ? id : activeSessionId();
+  const rec = terms.get(sid); if (rec) { try { rec.term.clear(); } catch (_) {} rec.term.focus(); }
 }
 function restartTerminal(id) {
   if (id === SCRATCH_ID) { restartScratch(); return; }
-  const pid = id || activeId;
-  const proj = projects.find((p) => p.id === pid);
-  const rec = terms.get(pid);
+  const sid = (id && terms.has(id)) ? id : activeSessionId();
+  const rec = terms.get(sid);
+  const proj = rec && projects.find((p) => p.id === rec.projId);
   if (!proj || !rec) return;
   try { rec.term.reset(); } catch (_) {}
   rec.sawBell = false; rec.tail = ''; rec.busyStart = Date.now();
   clearTimeout(rec.idleTimer);
-  setProjState(pid, 'busy');
-  lite.pty.restart({ id: pid, cwd: proj.path, cols: rec.term.cols, rows: rec.term.rows });
+  setProjState(sid, 'busy');
+  lite.pty.restart({ id: sid, cwd: proj.path, cols: rec.term.cols, rows: rec.term.rows });
   rec.term.focus();
 }
 
@@ -1490,7 +1588,7 @@ function doSetActive(id) {
   activeId = id;
   if (watchedRoot && watchedRoot !== proj.path) lite.fs.unwatch(watchedRoot);
   lite.fs.watch(proj.path); watchedRoot = proj.path;
-  ensureTerminal(proj);
+  ensureProjectTabs(proj);
   renderProjects();
   showActiveTerminal();
   applyFontSize();
@@ -2483,8 +2581,9 @@ function init() {
   $('#term-clear').addEventListener('click', () => clearTerminal());
   $('#term-restart').addEventListener('click', () => restartTerminal());
   $('#attention-badge').addEventListener('click', () => {
-    const id = [...projState.entries()].find(([, s]) => s === 'waiting');
-    if (id) setActive(id[0]);
+    const e = [...projState.entries()].find(([, s]) => s === 'waiting');
+    const rec = e && terms.get(e[0]);
+    if (rec) { setActive(rec.projId); switchTab(e[0]); }
   });
 
   // terminal search box

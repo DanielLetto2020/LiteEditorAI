@@ -238,7 +238,7 @@ html, body {
 /* card footer: integrated icon actions, separated by a hairline */
 .card-foot { display: flex; align-items: center; gap: 2px; margin-top: 10px; padding-top: 9px; border-top: 1px solid var(--border); }
 .card-act {
-  position: relative; width: 30px; height: 28px; padding: 0; border-radius: 7px;
+  position: relative; flex: 1; height: 28px; padding: 0; border-radius: 7px;
   background: transparent; border: 0; color: var(--text-mute); cursor: pointer;
   transition: color .12s, background .12s;
 }
@@ -256,8 +256,30 @@ html, body {
 .card-add:hover { background: var(--hover); }
 
 /* ---------------- terminal ---------------- */
-#terminal-pane { flex: 1; min-width: 220px; position: relative; }
+#terminal-pane { flex: 1; min-width: 220px; display: flex; flex-direction: column; }
+#term-body { position: relative; flex: 1; min-height: 0; }
 #terminals { position: absolute; inset: 0; }
+
+/* terminal header: tabs (left, scrollable) + tools (right) */
+#term-header {
+  flex: 0 0 auto; display: none; align-items: stretch;
+  height: 36px; padding: 0 8px; background: var(--bar); border-bottom: 1px solid var(--border);
+}
+#term-tabs { flex: 1; min-width: 0; display: flex; align-items: flex-end; gap: 3px; padding-top: 6px; overflow-x: auto; overflow-y: hidden; }
+#term-tabs::-webkit-scrollbar { height: 0; }
+.tab {
+  display: flex; align-items: center; gap: 7px; flex: 0 0 auto;
+  padding: 6px 9px; max-width: 190px; cursor: pointer; font-size: 12px; color: var(--text-dim);
+  border: 1px solid transparent; border-bottom: 0; border-radius: 8px 8px 0 0; background: transparent;
+}
+.tab:hover { background: var(--hover); color: var(--text); }
+.tab.active { background: var(--surface); color: var(--text); border-color: var(--border); }
+.tab-dot { width: 8px; height: 8px; flex: 0 0 8px; }
+.tab-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tab-close { width: 18px; height: 18px; border: 0; background: none; color: var(--text-mute); border-radius: 4px; display: inline-flex; align-items: center; justify-content: center; cursor: pointer; }
+.tab-close:hover { background: var(--hover-2); color: var(--text); }
+.tab-add { width: 26px; height: 26px; flex: 0 0 auto; align-self: center; margin-bottom: 3px; border: 0; background: none; color: var(--text-dim); border-radius: 7px; display: inline-flex; align-items: center; justify-content: center; cursor: pointer; }
+.tab-add:hover { background: var(--hover); color: var(--text); }
 .term-instance { position: absolute; inset: 0; padding: 6px 4px 6px 10px; }
 .term-instance .xterm { height: 100%; }
 /* hide the terminal scrollbar entirely (wheel scroll still works) */
@@ -651,12 +673,8 @@ body.preview-full .prev-frame { width: 100%; height: 100%; }
 .pal-label { color: var(--text); }
 .pal-hint { font-size: 10.5px; color: var(--text-mute); margin-left: auto; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 55%; direction: rtl; }
 
-/* ---------------- terminal tools (clear / restart) ---------------- */
-#term-tools {
-  position: absolute; top: 6px; right: 10px; z-index: 15;
-  display: flex; gap: 4px; opacity: 0; transition: opacity .15s;
-}
-#terminal-pane:hover #term-tools { opacity: 0.9; }
+/* ---------------- terminal tools (clear / restart) — live in the tab header row ---------------- */
+#term-tools { flex: 0 0 auto; display: flex; align-items: center; gap: 4px; padding-left: 8px; }
 .tt-btn {
   width: 27px; height: 24px; padding: 0; border-radius: 7px; cursor: pointer; font-size: 13px;
   background: rgba(255,255,255,0.04); border: 1px solid var(--border); color: var(--text-dim);
