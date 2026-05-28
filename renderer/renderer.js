@@ -23,7 +23,7 @@ import { markdown } from '@codemirror/lang-markdown';
 import { html } from '@codemirror/lang-html';
 import { css } from '@codemirror/lang-css';
 
-const APP_VERSION = 'alpha v1.0.42';
+const APP_VERSION = 'alpha v1.0.43';
 const GUTTER = 5;
 const SCRATCH_ID = '__scratch__'; // системный терминал (домашняя папка), не привязан к проектам
 
@@ -428,13 +428,7 @@ function makeCard(p) {
   head.appendChild(ind); head.appendChild(title); head.appendChild(star); head.appendChild(kebab);
   card.appendChild(head);
 
-  const pathRow = el('div', 'card-path-row');
-  pathRow.appendChild(el('span', 'card-path', p.path));
-  const copy = iconBtn('card-copy', 'copy', 'Копировать путь', 12);
-  copy.addEventListener('click', (e) => { e.stopPropagation(); lite.copyText(p.path); copy.classList.add('copied'); setTimeout(() => copy.classList.remove('copied'), 900); });
-  pathRow.appendChild(copy);
-  card.appendChild(pathRow);
-
+  // путь не дублируем на карточке — он в тултипе имени и в ⋮-меню («Копировать путь»)
   if (missing.has(p.id)) {
     const w = el('div', 'card-missing'); w.appendChild(icon('warning', 13)); w.appendChild(el('span', null, 'папка удалена — закрой проект'));
     card.appendChild(w);

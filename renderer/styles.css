@@ -185,11 +185,13 @@ html, body {
 /* project group accordions (Избранное / Все / категории) */
 .pgroup { margin-bottom: 6px; }
 .pgroup-head {
-  display: flex; align-items: center; gap: 6px; padding: 6px 7px; cursor: pointer;
-  font-size: 10.5px; letter-spacing: .6px; text-transform: uppercase; color: var(--text-mute);
+  display: flex; align-items: center; gap: 6px; padding: 6px 9px; cursor: pointer;
+  font-size: 10.5px; letter-spacing: .6px; text-transform: uppercase; color: var(--text-dim);
   border-radius: 7px; user-select: none;
+  /* left→right accent wash so categories read as section separators */
+  background: linear-gradient(90deg, var(--accent-soft) 0%, transparent 72%);
 }
-.pgroup-head:hover { background: var(--hover); color: var(--text); }
+.pgroup-head:hover { background: linear-gradient(90deg, var(--hover-2) 0%, transparent 72%); color: var(--text); }
 .pgroup-chev { display: inline-flex; align-items: center; color: var(--text-dim); }
 .pgroup-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pgroup-count { font-size: 10px; padding: 1px 8px; border-radius: 9px; background: var(--hover); color: var(--text-dim); }
@@ -694,7 +696,7 @@ body[data-theme="glass"] {
   --green:#5eead4; --green-bright:#99f6e4; --green-dim:#0f5132;
   --accent-soft:rgba(94,234,212,0.16); --border-accent:rgba(94,234,212,0.6); --accent-contrast:#04130b; --accent-glow:rgba(94,234,212,0.6);
   --bg:radial-gradient(60% 50% at 12% 8%,rgba(94,234,212,0.18),transparent 60%),radial-gradient(55% 45% at 92% 88%,rgba(122,162,247,0.16),transparent 60%),linear-gradient(160deg,#0c1018,#0a0e15);
-  --bar:rgba(255,255,255,0.05); --panel:rgba(255,255,255,0.04); --panel-solid:rgba(255,255,255,0.06);
+  --bar:rgba(255,255,255,0.05); --panel:rgba(255,255,255,0.04); --panel-solid:#12171f;
   --surface:rgba(255,255,255,0.06); --surface-2:rgba(255,255,255,0.1); --bg-input:rgba(255,255,255,0.06); --bg-pop:rgba(18,24,32,0.72); --modal:rgba(255,255,255,0.07);
   --ink:rgba(8,12,18,0.5); --ink-2:rgba(8,12,18,0.55);
   --border:rgba(255,255,255,0.1); --border-strong:rgba(255,255,255,0.16); --app-border:rgba(255,255,255,0.18);
@@ -769,10 +771,12 @@ body[data-theme="aurora"] {
 }
 body[data-theme="aurora"] .card.active .card-title { color: #fff; }
 .set-row select {
-  padding: 7px 9px; border-radius: 8px; background: var(--bg-input); border: 1px solid var(--border-strong);
+  padding: 7px 9px; border-radius: 8px; background: var(--panel-solid); border: 1px solid var(--border-strong);
   color: var(--text); outline: none; min-width: 120px;
 }
 .set-row select:focus { border-color: var(--border-accent); }
+/* the native option popup inherits these — keep it solid+legible on every theme (esp. glass) */
+.set-row select option { background: var(--panel-solid); color: var(--text); }
 
 /* ---------------- accent swatches (project color) ---------------- */
 .accent-swatches { display: flex; flex-wrap: wrap; gap: 7px; padding: 6px 10px 8px; }
