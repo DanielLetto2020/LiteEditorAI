@@ -500,9 +500,9 @@ ipcMain.handle('git:fileDiff', async (_e, { root, file }) => {
 
 // Mutating git for the light panel. GIT_TERMINAL_PROMPT=0 + timeout so a command
 // that would block on auth fails fast with a message instead of hanging the app.
-function gitRun(cwd, args) {
+function gitRun(cwd, args, opts = {}) {
   return new Promise((resolve) => {
-    execFile('git', args, { cwd, timeout: 25000, maxBuffer: 8 * 1024 * 1024, windowsHide: true,
+    execFile('git', args, { cwd, timeout: opts.timeout || 25000, maxBuffer: 8 * 1024 * 1024, windowsHide: true,
       env: { ...process.env, GIT_TERMINAL_PROMPT: '0', GIT_ASKPASS: 'echo' } },
       (err, stdout, stderr) => resolve({
         ok: !err,
@@ -543,6 +543,17 @@ ipcMain.handle('git:branchUpdate', async (_e, { root, branch, current }) => {
 ipcMain.handle('git:branchCreate', async (_e, { root, name, base, checkout }) =>
   gitRun(root, checkout ? ['checkout', '-b', name, base] : ['branch', name, base]));
 ipcMain.handle('git:init', async (_e, root) => gitRun(root, ['init']));
+// Clone INTO the (empty) project folder. Longer timeout than other mutations — fetching
+// a repo legitimately takes a while; private repos that need auth still fail fast via
+// GIT_TERMINAL_PROMPT=0 (do that clone from the terminal instead).
+ipcMain.handle('git:clone', async (_e, { root, url }) => {
+  const u = (url || '').trim();
+  // Guard against argv flag-smuggling (leading '-' parsed as a git option) and the
+  // ext::/fd:: remote-helper transports, which let a URL run arbitrary shell commands.
+  if (!u || u.startsWith('-') || /^(ext|fd)::/i.test(u)) return { ok: false, error: 'Недопустимый URL репозитория' };
+  // '--' ends option parsing so the URL can never be treated as a flag.
+  return gitRun(root, ['clone', '--', u, '.'], { timeout: 120000 });
+});
 ipcMain.handle('git:commit', async (_e, { root, message, push }) => {
   const add = await gitRun(root, ['add', '-A']); if (!add.ok) return add;
   const c = await gitRun(root, ['commit', '-m', message || 'update']); if (!c.ok) return c;

@@ -23,7 +23,7 @@ import { markdown } from '@codemirror/lang-markdown';
 import { html } from '@codemirror/lang-html';
 import { css } from '@codemirror/lang-css';
 
-const APP_VERSION = 'alpha v1.0.36';
+const APP_VERSION = 'alpha v1.0.37';
 const GUTTER = 5;
 const SCRATCH_ID = '__scratch__'; // системный терминал (домашняя папка), не привязан к проектам
 
@@ -75,6 +75,111 @@ const missing = new Set();   // ids of projects whose folder no longer exists on
 const expandedDirs = new Set(); // tree dir paths currently expanded (survives live refresh)
 let gitFiles = {};           // active project: abs path -> git short status code
 let noteCounts = STORE.noteCounts || {}; // project id -> number of notes (card badge)
+
+// ---------------------------------------------------------------- notes auto-queue
+// Per-project queue that fires notes one-by-one: dispatch a note (text + Enter, so it
+// actually submits — unlike the manual «В терминал»), then wait for the agent to finish
+// its turn. The advance trigger is busy→waiting (янтарный): the agent is alive and back
+// to waiting on your input. Runtime-only — survives the modal closing, not an app restart.
+const queues = new Map(); // id -> { id, items:[{noteId,text}], running, pos, awaitingBusy, armed, onChange }
+function getQueue(id) {
+  let q = queues.get(id);
+  if (!q) { q = { id, items: [], running: false, pos: -1, awaitingBusy: false, armed: false, onChange: null }; queues.set(id, q); }
+  return q;
+}
+function queueBadgeText(q) {
+  if (!q || !q.items.length) return '';
+  if (!q.running) return `☰ ${q.items.length}`;
+  return q.armed ? '▶ ждёт' : `▶ ${Math.min(q.pos + 1, q.items.length)}/${q.items.length}`;
+}
+function updateQueueBadge(id) {
+  const q = queues.get(id);
+  const txt = queueBadgeText(q);
+  document.querySelectorAll(`.card-qbadge[data-id="${id}"]`).forEach((b) => {
+    b.textContent = txt;
+    b.classList.toggle('show', !!txt);
+    b.classList.toggle('running', !!(q && q.running));
+    b.classList.toggle('armed', !!(q && q.armed));
+  });
+}
+// Notify any open modal + refresh the card badge after a queue state change.
+function queueChanged(q) { try { q.onChange && q.onChange(); } catch (_) {} updateQueueBadge(q.id); }
+
+function queueDispatchNext(id) {
+  const q = queues.get(id);
+  if (!q || !q.running) return;
+  q.armed = false;
+  q.pos += 1;
+  if (q.pos >= q.items.length) { // reached the end → done
+    q.running = false; q.pos = q.items.length; q.awaitingBusy = false;
+    queueChanged(q);
+    const p = projects.find((x) => x.id === id);
+    toast(`✓ Очередь выполнена${p ? ' — ' + p.name : ''}`);
+    return;
+  }
+  const proj = projects.find((x) => x.id === id);
+  if (!proj) { q.running = false; queueChanged(q); return; }
+  ensureTerminal(proj);
+  lite.pty.write(id, (q.items[q.pos].text || '') + '\r'); // '\r' = Enter → submits the prompt
+  q.awaitingBusy = true; // ignore «waiting» until the agent actually starts working on this note
+  queueChanged(q);
+}
+function queueStart(id) {
+  const q = getQueue(id);
+  if (!q.items.length) return;
+  const proj = projects.find((x) => x.id === id);
+  if (!proj) return;
+  ensureTerminal(proj);
+  setActive(id); // bring this project's terminal to the front when the run begins
+  q.running = true; q.pos = -1; q.awaitingBusy = false; q.armed = false;
+  queueDispatchNext(id); // first note goes immediately; the rest wait for «▶ Дальше»
+}
+function queueStop(id) {
+  const q = queues.get(id);
+  if (!q) return;
+  q.running = false; q.awaitingBusy = false; q.armed = false;
+  queueChanged(q);
+}
+// User-confirmed advance (semi-auto): «▶ Дальше» button, the armed notification's
+// click, or the Ctrl+Shift+Enter hotkey all route here.
+function queueAdvance(id) {
+  const q = queues.get(id);
+  if (!q || !q.running) return;
+  queueDispatchNext(id);
+}
+// Called from settleProject. Amber (waiting) is ambiguous — the agent could be done OR
+// asking a question / awaiting a permission. We can't tell from process state, so we DON'T
+// auto-send: we «arm» the queue (surface «▶ Дальше» + a notification) and let the user decide.
+function queueOnSettled(id, state) {
+  const q = queues.get(id);
+  if (!q || !q.running || q.awaitingBusy || q.armed) return;
+  if (state !== 'waiting') return;
+  if (q.pos >= q.items.length - 1) { // last note's turn ended → queue complete, no extra click
+    q.running = false; q.pos = q.items.length; q.armed = false;
+    queueChanged(q);
+    const p = projects.find((x) => x.id === id);
+    toast(`✓ Очередь выполнена${p ? ' — ' + p.name : ''}`);
+    return;
+  }
+  q.armed = true;
+  queueChanged(q);
+  queueNotifyArmed(id);
+}
+let lastQueueNotifyAt = 0;
+function queueNotifyArmed(id) {
+  const q = queues.get(id);
+  const p = projects.find((x) => x.id === id);
+  if (!q || !p) return;
+  const next = Math.min(q.pos + 2, q.items.length); // 1-based number of the note «▶ Дальше» will send
+  toast(`▶ ${p.name}: агент ждёт. Открой «Очередь» и нажми «Дальше» — заметка ${next}/${q.items.length}.`);
+  if (!settings.notifications || Date.now() - lastQueueNotifyAt < 1200) return;
+  if (id === activeId && document.hasFocus()) return; // foreground: toast + armed button is enough
+  lastQueueNotifyAt = Date.now();
+  try {
+    const n = new Notification(`▶ ${p.name} — очередь ждёт`, { body: `Готов отправить заметку ${next} из ${q.items.length}. Клик — отправить.`, silent: !settings.sound, tag: 'lite-q-' + id });
+    n.onclick = () => { lite.win.show(); setActive(id); queueAdvance(id); };
+  } catch (_) {}
+}
 let viewerOpen = false;
 let scratchOpen = false;     // системный терминал справа открыт
 let scratchRec = null;       // { term, fit, search } — один на приложение
@@ -267,6 +372,13 @@ function makeCard(p) {
   const notesBtn = el('button', null, nc ? `заметки · ${nc}` : 'заметки');
   notesBtn.addEventListener('click', (e) => { e.stopPropagation(); showNotes(p); });
   actions.appendChild(openViewer); actions.appendChild(notesBtn);
+  const qb = queues.get(p.id);
+  const qtxt = queueBadgeText(qb);
+  const qbadge = el('button', 'card-qbadge' + (qtxt ? ' show' : '') + (qb && qb.running ? ' running' : ''), qtxt);
+  qbadge.dataset.id = p.id;
+  qbadge.title = 'Авто-очередь заметок';
+  qbadge.addEventListener('click', (e) => { e.stopPropagation(); showNotes(p); });
+  actions.appendChild(qbadge);
   card.appendChild(actions);
 
   card.addEventListener('click', () => setActive(p.id));
@@ -470,16 +582,39 @@ function applyLayoutSwap(ta) {
 async function showNotes(p) {
   let notes = await lite.store.notesGet(p.id);
   if (!Array.isArray(notes)) notes = [];
+  const q = getQueue(p.id);
   const { m, close } = makeModal(`
     <h2>📝 Заметки — <span class="nm-proj"></span></h2>
-    <div class="nm-hint">Карточки промптов: «В терминал» отправляет текст в терминал проекта (без Enter). Порядок — стрелками ▲/▼ или перетаскиванием.</div>
-    <div class="nm-list" id="nm-list"></div>
-    <button class="btn nm-add" id="nm-add">＋ Новая карточка</button>
+    <div class="nm-tabs">
+      <button class="nm-tab active" data-tab="notes">Карточки</button>
+      <button class="nm-tab" data-tab="queue">▶ Очередь<span class="nm-qbadge" id="nm-qbadge"></span></button>
+    </div>
+    <div class="nm-pane" id="nm-pane-notes">
+      <div class="nm-hint">«В терминал» отправляет текст без Enter. «＋ в очередь» добавляет карточку в авто-очередь (вкладка «Очередь»). Порядок — ▲/▼ или перетаскиванием.</div>
+      <div class="nm-list" id="nm-list"></div>
+      <button class="btn nm-add" id="nm-add">＋ Новая карточка</button>
+    </div>
+    <div class="nm-pane" id="nm-pane-queue" hidden></div>
     <div class="modal-actions"><button class="btn primary" id="nm-close">Готово</button></div>`);
   m.classList.add('notes-modal');
   m.querySelector('.nm-proj').textContent = p.name;
   const list = m.querySelector('#nm-list');
-  const save = () => { lite.store.notesSet(p.id, notes); noteCounts[p.id] = notes.length; renderProjects(); };
+  const qpane = m.querySelector('#nm-pane-queue');
+  const updateTabBadge = () => {
+    const b = m.querySelector('#nm-qbadge');
+    b.textContent = q.items.length ? String(q.items.length) : '';
+    b.classList.toggle('show', q.items.length > 0);
+  };
+  // Persist notes; keep queued snapshots in sync with edits and drop queued items
+  // whose underlying note was deleted (queue references notes by id).
+  const save = () => {
+    lite.store.notesSet(p.id, notes); noteCounts[p.id] = notes.length;
+    q.items = q.items
+      .filter((it) => notes.some((n) => n.id === it.noteId))
+      .map((it) => ({ noteId: it.noteId, text: (notes.find((n) => n.id === it.noteId) || {}).text || '' }));
+    updateTabBadge();
+    renderProjects();
+  };
   let dragFrom = null;
   let editing = null; // { note, ta } — открытый редактор карточки
   // Снять текст из открытого редактора в заметку (для авто-сохранения по «Готово»).
@@ -531,7 +666,18 @@ async function showNotes(p) {
       edit.addEventListener('click', () => editNote(row, note));
       const del = el('button', 'note-btn danger', '🗑'); del.title = 'Удалить';
       del.addEventListener('click', () => { notes.splice(i, 1); save(); render(); });
-      acts.append(up, down, sendDel, send, edit, del);
+      const qi = q.items.findIndex((it) => it.noteId === note.id);
+      const queued = qi >= 0;
+      const qBtn = el('button', 'note-btn qtoggle' + (queued ? ' on' : ''), queued ? `№ ${qi + 1}` : '＋ в очередь');
+      qBtn.title = queued ? 'Убрать из авто-очереди' : 'Добавить в авто-очередь';
+      qBtn.addEventListener('click', () => {
+        flushEdit();
+        const idx = q.items.findIndex((it) => it.noteId === note.id);
+        if (idx >= 0) q.items.splice(idx, 1);
+        else q.items.push({ noteId: note.id, text: note.text || '' });
+        queueChanged(q); updateTabBadge(); render();
+      });
+      acts.append(qBtn, up, down, sendDel, send, edit, del);
       row.append(acts);
       row.addEventListener('dragstart', () => { dragFrom = i; row.classList.add('dragging'); });
       row.addEventListener('dragend', () => row.classList.remove('dragging'));
@@ -552,7 +698,82 @@ async function showNotes(p) {
     const rows = list.querySelectorAll('.note-card');
     if (rows.length) editNote(rows[rows.length - 1], note);
   });
-  m.querySelector('#nm-close').onclick = () => { flushEdit(); close(); };
+
+  // ---- Queue tab ----
+  function swapQueue(i, j) {
+    if (j < 0 || j >= q.items.length) return;
+    [q.items[i], q.items[j]] = [q.items[j], q.items[i]];
+    queueChanged(q); renderQueue();
+  }
+  function renderQueue() {
+    qpane.innerHTML = '';
+    const bar = el('div', 'q-bar');
+    const status = el('div', 'q-status');
+    const next = Math.min(q.pos + 2, q.items.length);
+    if (!q.items.length) status.textContent = 'Очередь пуста — добавь карточки кнопкой «＋ в очередь».';
+    else if (q.armed) { status.textContent = `▶ Агент ждёт — нажми «Дальше» для заметки ${next} из ${q.items.length}`; status.classList.add('armed'); }
+    else if (q.running) { status.textContent = `Выполняется ${Math.min(q.pos + 1, q.items.length)} из ${q.items.length} — ждём, пока агент закончит ход…`; status.classList.add('run'); }
+    else status.textContent = `${q.items.length} в очереди — нажми «Старт».`;
+    bar.appendChild(status);
+    const ctrls = el('div', 'q-ctrls');
+    if (!q.running) {
+      const start = el('button', 'note-btn primary', '▶ Старт'); start.disabled = !q.items.length;
+      start.addEventListener('click', () => { queueStart(p.id); renderQueue(); });
+      ctrls.appendChild(start);
+    } else {
+      const adv = el('button', 'note-btn primary' + (q.armed ? ' armed' : ''), '▶ Дальше');
+      adv.title = 'Отправить следующую заметку (Ctrl+Shift+Enter)';
+      adv.addEventListener('click', () => { queueAdvance(p.id); renderQueue(); });
+      const stop = el('button', 'note-btn danger', '⏹ Стоп');
+      stop.addEventListener('click', () => { queueStop(p.id); renderQueue(); });
+      ctrls.append(adv, stop);
+    }
+    const clear = el('button', 'note-btn', '🗑 Очистить'); clear.disabled = !q.items.length;
+    clear.addEventListener('click', () => { q.items = []; q.running = false; q.pos = -1; q.awaitingBusy = false; q.armed = false; queueChanged(q); updateTabBadge(); renderQueue(); });
+    ctrls.appendChild(clear);
+    bar.appendChild(ctrls);
+    qpane.appendChild(bar);
+    qpane.appendChild(el('div', 'nm-hint', 'Первая карточка уходит сразу при старте (с Enter). Следующая — НЕ автоматически: когда агент закончит ход и индикатор станет янтарным, прилетит уведомление, а тут загорится «▶ Дальше» (или Ctrl+Shift+Enter в активном проекте). Так агент успевает задать вопрос, а ты решаешь, слать ли следующую.'));
+    const qlist = el('div', 'nm-list');
+    q.items.forEach((it, i) => {
+      let cls = 'pending';
+      if (q.running) { if (i < q.pos) cls = 'done'; else if (i === q.pos) cls = 'current'; }
+      const row = el('div', 'q-card q-' + cls);
+      const num = el('span', 'q-num', cls === 'done' ? '✓' : cls === 'current' ? '▶' : String(i + 1));
+      const txt = el('div', 'q-text', it.text || '(пусто)');
+      const acts = el('div', 'note-acts');
+      const up = el('button', 'note-btn nudge', '▲'); up.title = 'Выше'; up.disabled = i === 0 || q.running;
+      up.addEventListener('click', () => swapQueue(i, i - 1));
+      const down = el('button', 'note-btn nudge', '▼'); down.title = 'Ниже'; down.disabled = i === q.items.length - 1 || q.running;
+      down.addEventListener('click', () => swapQueue(i, i + 1));
+      const rm = el('button', 'note-btn danger', '✕'); rm.title = 'Убрать из очереди'; rm.disabled = q.running;
+      rm.addEventListener('click', () => { q.items.splice(i, 1); queueChanged(q); updateTabBadge(); renderQueue(); });
+      acts.append(up, down, rm);
+      row.append(num, txt, acts);
+      qlist.appendChild(row);
+    });
+    if (!q.items.length) qlist.appendChild(el('div', 'nm-empty', 'Пусто.'));
+    qpane.appendChild(qlist);
+  }
+
+  // ---- tabs + live sync ----
+  const panes = { notes: m.querySelector('#nm-pane-notes'), queue: qpane };
+  const tabs = m.querySelectorAll('.nm-tab');
+  function setTab(name) {
+    tabs.forEach((t) => t.classList.toggle('active', t.dataset.tab === name));
+    Object.entries(panes).forEach(([k, pane]) => { pane.hidden = k !== name; });
+    if (name === 'queue') renderQueue(); else render();
+  }
+  tabs.forEach((t) => t.addEventListener('click', () => setTab(t.dataset.tab)));
+  // Background auto-advance keeps the open modal live (and detaches itself once closed).
+  q.onChange = () => {
+    if (!m.isConnected) { q.onChange = null; return; }
+    updateTabBadge();
+    if (!qpane.hidden) renderQueue();
+  };
+
+  m.querySelector('#nm-close').onclick = () => { flushEdit(); q.onChange = null; close(); };
+  updateTabBadge();
   render();
 }
 function sendNoteToTerminal(p, text) {
@@ -628,6 +849,27 @@ async function showGit(p) {
       };
       const cancel = el('button', 'btn', 'Закрыть'); cancel.onclick = close;
       row.append(init, cancel); body.appendChild(row);
+
+      body.appendChild(el('div', 'gm-or', 'или клонировать репозиторий в эту папку'));
+      const cloneRow = el('div', 'gm-actions');
+      const url = el('input', 'gm-cloneurl'); url.type = 'text';
+      url.placeholder = 'URL репозитория (https://… или git@…)';
+      const clone = el('button', 'btn', '⬇ git clone');
+      const doClone = async () => {
+        const u = url.value.trim();
+        if (!u) { toast('Введи URL репозитория', { kind: 'err' }); return; }
+        clone.disabled = true; const lbl = clone.textContent; clone.textContent = 'Клонирую…';
+        const r = await lite.git.clone(p.path, u);
+        clone.disabled = false; clone.textContent = lbl;
+        if (r.ok) {
+          toast('Репозиторий склонирован');
+          refresh(); renderProjects();
+          if (p.id === activeId) refreshTree();
+        } else toast(r.error || 'ошибка clone', { kind: 'err', ttl: 9000 });
+      };
+      clone.onclick = doClone;
+      url.addEventListener('keydown', (e) => { if (e.key === 'Enter') doClone(); });
+      cloneRow.append(url, clone); body.appendChild(cloneRow);
       return;
     }
     const head = el('div', 'gm-branch');
@@ -813,6 +1055,7 @@ function markActivity(id, data) {
   rec.tail = stripAnsi((rec.tail || '') + (data || '')).slice(-400);
   rec.activitySeq = (rec.activitySeq || 0) + 1; // lets a pending settle detect that new output arrived
   if (projState.get(id) !== 'busy') { rec.busyStart = Date.now(); setProjState(id, 'busy'); }
+  const q = queues.get(id); if (q && q.running) q.awaitingBusy = false; // the dispatched note is now running
   clearTimeout(rec.idleTimer);
   rec.idleTimer = setTimeout(() => settleProject(id), settings.idleMs);
 }
@@ -839,7 +1082,9 @@ async function settleProject(id) {
   const worked = rec.sawBell || (Date.now() - (rec.busyStart || 0)) >= 1500; // skip trivial blips
   rec.sawBell = false;
   setProjState(id, waiting ? 'waiting' : 'quiet');
-  if (worked && (id !== activeId || !document.hasFocus())) notifyAgent(id, waiting ? 'waiting' : 'quiet');
+  queueOnSettled(id, waiting ? 'waiting' : 'quiet');
+  const qRunning = (queues.get(id) || {}).running; // a running queue posts its own «Дальше» notification
+  if (!qRunning && worked && (id !== activeId || !document.hasFocus())) notifyAgent(id, waiting ? 'waiting' : 'quiet');
 }
 
 let lastNotifyAt = 0;
@@ -958,6 +1203,11 @@ function ensureTerminal(proj) {
     if (e.type === 'keydown' && e.ctrlKey && !e.altKey && (e.key === 'f' || e.key === 'F')) {
       openTermSearch();
       return false;
+    }
+    // Ctrl+Shift+Enter → advance this project's running queue (swallow so no stray \n hits the PTY).
+    if (e.type === 'keydown' && e.ctrlKey && e.shiftKey && e.key === 'Enter') {
+      const q = queues.get(proj.id);
+      if (q && q.running) { queueAdvance(proj.id); return false; }
     }
     return true;
   });

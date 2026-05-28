@@ -42,6 +42,7 @@ contextBridge.exposeInMainWorld('lite', {
     fileDiff: (root, file) => ipcRenderer.invoke('git:fileDiff', { root, file }),
     info: (root) => ipcRenderer.invoke('git:info', root),
     init: (root) => ipcRenderer.invoke('git:init', root),
+    clone: (root, url) => ipcRenderer.invoke('git:clone', { root, url }),
     commit: (root, message, push) => ipcRenderer.invoke('git:commit', { root, message, push }),
     push: (root) => ipcRenderer.invoke('git:push', root),
     pull: (root) => ipcRenderer.invoke('git:pull', root),

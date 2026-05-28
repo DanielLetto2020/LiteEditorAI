@@ -505,6 +505,38 @@ body.preview-full .prev-frame { width: 100%; height: 100%; }
 .note-btn.primary:hover { background: var(--green-bright); }
 .note-btn.danger:hover { color: #fff; background: rgba(247,118,142,0.7); border-color: transparent; }
 .nm-add { width: 100%; border-style: dashed; color: var(--green-bright); }
+.note-btn.qtoggle.on { color: #e0af68; border-color: rgba(224,175,104,0.5); background: rgba(224,175,104,0.12); }
+
+/* tabs */
+.nm-tabs { display: flex; gap: 6px; margin-bottom: 12px; border-bottom: 1px solid var(--border); }
+.nm-tab { padding: 7px 12px; background: transparent; border: 0; border-bottom: 2px solid transparent; color: var(--text-dim); cursor: pointer; font-size: 13px; margin-bottom: -1px; }
+.nm-tab:hover { color: var(--text); }
+.nm-tab.active { color: var(--green-bright); border-bottom-color: var(--green); }
+.nm-qbadge { display: none; margin-left: 6px; padding: 1px 7px; border-radius: 9px; background: rgba(120,200,160,0.16); color: var(--text-dim); font-size: 10px; }
+.nm-qbadge.show { display: inline-block; }
+
+/* queue tab */
+.q-bar { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
+.q-status { font-size: 12.5px; color: var(--text-dim); }
+.q-status.run { color: var(--text-dim); }
+.q-status.armed { color: #e0af68; font-weight: 600; }
+.note-btn.armed { background: #e0af68; border-color: #e0af68; color: #1a1206; animation: qbadge-pulse 1.3s ease-out infinite; }
+@keyframes qbadge-pulse { 0% { box-shadow: 0 0 0 0 rgba(224,175,104,0.6); } 70% { box-shadow: 0 0 0 7px rgba(224,175,104,0); } 100% { box-shadow: 0 0 0 0 rgba(224,175,104,0); } }
+.q-ctrls { display: flex; gap: 6px; }
+.q-card { display: flex; align-items: center; gap: 10px; background: rgba(18,32,25,0.6); border: 1px solid var(--border); border-radius: 9px; padding: 8px 10px; }
+.q-num { flex: 0 0 22px; height: 22px; display: flex; align-items: center; justify-content: center; border-radius: 50%; background: rgba(120,200,160,0.12); color: var(--text-dim); font-size: 11px; font-weight: 600; }
+.q-text { flex: 1; white-space: pre-wrap; word-break: break-word; color: var(--text); font-size: 12.5px; max-height: 64px; overflow: auto; }
+.q-card.q-current { border-color: #e0af68; box-shadow: 0 0 0 1px rgba(224,175,104,0.3); }
+.q-card.q-current .q-num { background: #e0af68; color: #1a1206; }
+.q-card.q-done { opacity: 0.55; }
+.q-card.q-done .q-num { background: var(--green); color: #04130b; }
+
+/* running-queue badge on the project card */
+.card-qbadge { display: none; padding: 4px 8px; border-radius: 6px; border: 1px solid var(--border); background: rgba(8,16,12,0.5); color: var(--text-dim); cursor: pointer; font-size: 11px; }
+.card-qbadge.show { display: inline-block; }
+.card-qbadge:hover { color: var(--text); border-color: var(--border-strong); }
+.card-qbadge.running { color: #e0af68; border-color: rgba(224,175,104,0.5); background: rgba(224,175,104,0.12); }
+.card-qbadge.armed { color: #1a1206; background: #e0af68; border-color: #e0af68; animation: qbadge-pulse 1.3s ease-out infinite; }
 
 /* ---------------- git panel ---------------- */
 .git-modal { width: 520px; }
@@ -539,6 +571,9 @@ body.preview-full .prev-frame { width: 100%; height: 100%; }
 .gm-msg:focus { border-color: var(--green); }
 .gm-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .gm-actions .btn:disabled { opacity: 0.45; cursor: default; }
+.gm-or { color: var(--text-dim); font-size: 12px; margin-top: 4px; }
+.gm-cloneurl { flex: 1; min-width: 220px; padding: 8px 10px; border-radius: 7px; background: #0a130e; border: 1px solid var(--border-strong); color: var(--text); font-size: 12.5px; outline: none; font-family: inherit; }
+.gm-cloneurl:focus { border-color: var(--green); }
 
 /* ---------------- command palette ---------------- */
 .modal.palette { width: 540px; padding: 12px; }
