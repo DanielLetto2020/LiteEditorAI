@@ -23,7 +23,7 @@ import { markdown } from '@codemirror/lang-markdown';
 import { html } from '@codemirror/lang-html';
 import { css } from '@codemirror/lang-css';
 
-const APP_VERSION = 'alpha v1.0.39';
+const APP_VERSION = 'alpha v1.0.40';
 const GUTTER = 5;
 const SCRATCH_ID = '__scratch__'; // системный терминал (домашняя папка), не привязан к проектам
 
@@ -199,16 +199,16 @@ let layout = loadLayout();
 let lastParent = STORE.lastParent || '';
 
 const TERM_THEME = {
-  background: '#0a120d', foreground: '#cfe6d9', cursor: '#3ddc84',
-  selectionBackground: '#1f4a36',
-  black: '#0a120d', red: '#f7768e', green: '#9ece6a', yellow: '#e0af68',
+  background: '#0d1116', foreground: '#cdd6e0', cursor: '#34d399',
+  selectionBackground: '#1f3a4d',
+  black: '#0d1116', red: '#f7768e', green: '#9ece6a', yellow: '#e0af68',
   blue: '#7aa2f7', magenta: '#bb9af7', cyan: '#7dcfff', white: '#a9b1d6',
 };
 // ---------------------------------------------------------------- themes (a curated few)
 const THEMES = {
-  emerald: { label: 'Изумруд', cursor: '#3ddc84', selectionBackground: '#1f4a36' },
-  ocean: { label: 'Океан', cursor: '#46cfe6', selectionBackground: '#1d4a55' },
-  violet: { label: 'Аметист', cursor: '#a98cf0', selectionBackground: '#3a2f5a' },
+  emerald: { label: 'Графит · Изумруд', cursor: '#34d399', selectionBackground: '#173a2c' },
+  ocean: { label: 'Графит · Океан', cursor: '#7dd3fc', selectionBackground: '#0c3a4a' },
+  violet: { label: 'Графит · Аметист', cursor: '#c4b5fd', selectionBackground: '#332a52' },
 };
 function termTheme() {
   const t = THEMES[settings.theme] || THEMES.emerald;
