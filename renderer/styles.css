@@ -7,35 +7,35 @@
   src: url("fonts/inter.woff2") format("woff2");
 }
 
+/* ============================================================================
+   THEME TOKEN CONTRACT — every themeable value is a CSS variable declared here.
+   :root holds the DEFAULT theme (Неоморфизм). Each additional theme overrides this
+   SAME set under `body[data-theme="…"]` near the end of this file. Rule: nothing in
+   the stylesheet may hardcode a theme colour/shadow — always reference a token, so a
+   theme = one self-contained block. See CLAUDE.md → "Темы интерфейса".
+   ============================================================================ */
 :root {
-  /* one restrained accent (emerald) — used only for active/focus/thin lines */
-  --green: #34d399;
-  --green-bright: #6ee7b7;
-  --green-dim: #10503a;
-  --accent-soft: rgba(52, 211, 153, 0.13);
-  --border-accent: rgba(52, 211, 153, 0.42);
-  --accent-contrast: #04130b;
-  /* neutral graphite base — no green tint */
-  --ink: #0a0d11;
-  --ink-2: #0d1116;
-  --panel: rgba(255, 255, 255, 0.018);
-  --panel-solid: #12161b;
-  --surface: #181d23;
-  --surface-2: #1e242b;
-  --bg-input: #12161b;
-  --bg-pop: #161b21;
-  --hover: rgba(255, 255, 255, 0.06);
-  --hover-2: rgba(255, 255, 255, 0.09);
-  --border: rgba(255, 255, 255, 0.07);
-  --border-strong: rgba(255, 255, 255, 0.13);
-  --app-border: rgba(255, 255, 255, 0.14);
-  --text: #e7ebf0;
-  --text-dim: #8b939d;
-  --text-mute: #5a626b;
-  --danger: #f7768e;
-  --warn: #e0af68;
-  --info: #7aa2f7;
-  --add: #9ece6a;
+  /* accent (restrained by default; some themes raise it) */
+  --green: #34d399; --green-bright: #6ee7b7; --green-dim: #1f3a30;
+  --accent-soft: rgba(52, 211, 153, 0.11); --border-accent: rgba(52, 211, 153, 0.30);
+  --accent-contrast: #04130b; --accent-glow: rgba(52, 211, 153, 0.45);
+  /* surfaces */
+  --bg: #161a20; --bar: #161a20; --panel: #161a20; --panel-solid: #161a20;
+  --surface: #161a20; --surface-2: rgba(255, 255, 255, 0.05);
+  --bg-input: #161a20; --bg-pop: #1a1f26; --modal: #181d24;
+  --ink: #10141a; --ink-2: #161a20;
+  /* lines */
+  --border: rgba(255, 255, 255, 0.045); --border-strong: rgba(255, 255, 255, 0.08); --app-border: rgba(255, 255, 255, 0.07);
+  /* text */
+  --text: #dfe4ea; --text-dim: #8d949d; --text-mute: #626a73;
+  --hover: rgba(255, 255, 255, 0.04); --hover-2: rgba(255, 255, 255, 0.07);
+  /* status */
+  --danger: #f7768e; --warn: #e0af68; --info: #7aa2f7; --add: #9ece6a; --star: #e0af68;
+  /* shape + elevation */
+  --radius: 16px;
+  --card-shadow: 7px 7px 15px #0d0f13, -7px -7px 15px #1f252e;
+  --card-active-bg: #161a20;
+  --card-active-shadow: inset 5px 5px 11px #0d0f13, inset -5px -5px 12px #1f252e, inset 0 0 0 1.5px rgba(52,211,153,0.22);
 }
 
 * { box-sizing: border-box; }
@@ -59,10 +59,7 @@ html, body {
   border: 1px solid var(--app-border); /* thin neutral outline so the frameless window has visible edges */
   border-radius: 11px;        /* rounded corners for a more solid, premium look */
   overflow: hidden;           /* clip the titlebar/content to the rounded shape */
-  /* neutral graphite with a faint accent glow top-right */
-  background:
-    radial-gradient(120% 90% at 92% -8%, var(--accent-soft) 0%, rgba(0,0,0,0) 55%),
-    linear-gradient(165deg, #10141a 0%, #0d1116 50%, #0a0d12 100%);
+  background: var(--bg);      /* themed — see token contract */
 }
 /* maximized: fill the screen edge-to-edge, no rounding */
 #app.is-max { border-radius: 0; border-color: transparent; }
@@ -86,7 +83,7 @@ html, body {
   gap: 4px;
   height: 42px;
   padding: 0 6px 0 14px;
-  background: linear-gradient(180deg, rgba(255,255,255,0.025), rgba(255,255,255,0));
+  background: var(--bar);
   border-bottom: 1px solid var(--border);
   -webkit-app-region: drag;
 }
@@ -161,11 +158,12 @@ html, body {
 .card {
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 11px; padding: 11px 12px; margin-bottom: 9px; cursor: pointer;
+  border-radius: var(--radius); padding: 11px 12px; margin-bottom: 9px; cursor: pointer;
+  box-shadow: var(--card-shadow);
   transition: border-color .12s, background .12s;
 }
 .card:hover { border-color: var(--border-strong); background: var(--surface-2); }
-.card.active { border-color: var(--border-accent); background: linear-gradient(180deg, var(--accent-soft), rgba(52,211,153,0.035)); }
+.card.active { border-color: var(--border-accent); background: var(--card-active-bg); box-shadow: var(--card-active-shadow); }
 /* акцент проекта: тонкая левая полоса (перебивает hover/active, но не .missing) */
 .card.accented, .card.accented:hover {
   border-color: var(--card-accent);
@@ -181,7 +179,7 @@ html, body {
   color: var(--text-mute); transition: color .12s, background .12s;
 }
 .card-star:hover, .card-kebab:hover { background: var(--hover); color: var(--text); }
-.card-star.on { color: #e8c75a; }
+.card-star.on { color: var(--star); }
 .card-star.on .ic { fill: currentColor; } /* filled gold star when favorited */
 
 /* project group accordions (Избранное / Все / категории) */
@@ -209,7 +207,7 @@ html, body {
 
 /* activity indicator: spinner while the console is producing output, accent dot when quiet */
 .pind { flex: 0 0 10px; width: 10px; height: 10px; border-radius: 50%; box-sizing: border-box; }
-.pind.quiet { background: var(--green); box-shadow: 0 0 7px rgba(52,211,153,0.55); }
+.pind.quiet { background: var(--green); box-shadow: 0 0 7px var(--accent-glow); }
 .pind.busy { background: transparent; border: 2px solid rgba(224,175,104,0.3); border-top-color: var(--warn); animation: pind-spin 0.7s linear infinite; }
 /* waiting = quiet but looks like it wants input from you (amber pulse) */
 .pind.waiting { background: var(--warn); box-shadow: 0 0 0 0 rgba(224,175,104,0.7); animation: pind-pulse 1.3s ease-out infinite; }
@@ -361,7 +359,7 @@ body.resizing { cursor: col-resize; user-select: none; }
 }
 .modal {
   width: 460px; max-width: 90vw;
-  background: linear-gradient(165deg, #171c22, #11151a);
+  background: var(--modal);
   border: 1px solid var(--border-strong); border-radius: 16px;
   box-shadow: 0 30px 90px rgba(0,0,0,0.7); padding: 22px 24px;
 }
@@ -663,19 +661,113 @@ body.preview-full .prev-frame { width: 100%; height: 100%; }
 }
 .tt-btn:hover { color: var(--text); border-color: var(--border-strong); background: var(--hover-2); }
 
-/* ---------------- themes (a curated few) — only the accent + glow change, base stays graphite ---------------- */
-body[data-theme="ocean"]  { --green: #38bdf8; --green-bright: #7dd3fc; --green-dim: #0c4a6e; --accent-soft: rgba(56,189,248,0.13); --border-accent: rgba(56,189,248,0.42); --app-border: rgba(56,189,248,0.28); }
-body[data-theme="ocean"] #app {
-  background:
-    radial-gradient(120% 90% at 92% -8%, rgba(56,189,248,0.08) 0%, rgba(0,0,0,0) 55%),
-    linear-gradient(165deg, #10141a 0%, #0d1116 50%, #0a0d12 100%);
+/* ============================================================================
+   THEMES — each block sets the full token contract (see :root) + optional
+   signature rules. Default (Неоморфизм) lives in :root; its signature shadows are
+   below. To add a theme: copy a block, set every token, register it in renderer.js
+   THEMES (label + terminal colours). Keep it self-contained.
+   ============================================================================ */
+
+/* — 03 · Неоморфизм (default, tokens in :root) — soft extruded dual shadows — */
+body[data-theme="neumorphism"] .btn,
+body[data-theme="neumorphism"] .icon-btn,
+body[data-theme="neumorphism"] .tt-btn,
+body[data-theme="neumorphism"] .gm-mini,
+body[data-theme="neumorphism"] .card-act,
+body[data-theme="neumorphism"] .card-star,
+body[data-theme="neumorphism"] .card-kebab,
+body[data-theme="neumorphism"] .card-copy,
+body[data-theme="neumorphism"] .pgroup-arrow { box-shadow: 3px 3px 6px #0d0f13, -3px -3px 6px #1f252e; }
+body[data-theme="neumorphism"] .menu-dropdown,
+body[data-theme="neumorphism"] .toast { box-shadow: 6px 6px 16px #0c0e12, -6px -6px 16px #20262f; }
+body[data-theme="neumorphism"] .modal { box-shadow: 9px 9px 24px #0a0c0f, -9px -9px 24px #22282f; }
+body[data-theme="neumorphism"] input,
+body[data-theme="neumorphism"] select,
+body[data-theme="neumorphism"] .note-edit,
+body[data-theme="neumorphism"] .gm-msg,
+body[data-theme="neumorphism"] .gm-cloneurl,
+body[data-theme="neumorphism"] .pal-input,
+body[data-theme="neumorphism"] #term-search-input { box-shadow: inset 2px 2px 5px #0d0f13, inset -2px -2px 5px #1f252e; border-color: transparent; }
+
+/* — 04 · Стекло (Glassmorphism) — frosted translucent panels + blur — */
+body[data-theme="glass"] {
+  --green:#5eead4; --green-bright:#99f6e4; --green-dim:#0f5132;
+  --accent-soft:rgba(94,234,212,0.16); --border-accent:rgba(94,234,212,0.6); --accent-contrast:#04130b; --accent-glow:rgba(94,234,212,0.6);
+  --bg:radial-gradient(60% 50% at 12% 8%,rgba(94,234,212,0.18),transparent 60%),radial-gradient(55% 45% at 92% 88%,rgba(122,162,247,0.16),transparent 60%),linear-gradient(160deg,#0c1018,#0a0e15);
+  --bar:rgba(255,255,255,0.05); --panel:rgba(255,255,255,0.04); --panel-solid:rgba(255,255,255,0.06);
+  --surface:rgba(255,255,255,0.06); --surface-2:rgba(255,255,255,0.1); --bg-input:rgba(255,255,255,0.06); --bg-pop:rgba(18,24,32,0.72); --modal:rgba(255,255,255,0.07);
+  --ink:rgba(8,12,18,0.5); --ink-2:rgba(8,12,18,0.55);
+  --border:rgba(255,255,255,0.1); --border-strong:rgba(255,255,255,0.16); --app-border:rgba(255,255,255,0.18);
+  --text:#eef2f6; --text-dim:#b3bcc6; --text-mute:#7e8893; --hover:rgba(255,255,255,0.1); --hover-2:rgba(255,255,255,0.16);
+  --warn:#fcd34d; --star:#fcd34d; --info:#93c5fd; --add:#bef264;
+  --radius:14px; --card-shadow:0 8px 30px rgba(0,0,0,0.35);
+  --card-active-bg:rgba(94,234,212,0.12); --card-active-shadow:0 8px 30px rgba(0,0,0,0.4), inset 0 0 0 1px rgba(94,234,212,0.3);
 }
-body[data-theme="violet"] { --green: #a78bfa; --green-bright: #c4b5fd; --green-dim: #4c3a82; --accent-soft: rgba(167,139,250,0.13); --border-accent: rgba(167,139,250,0.42); --app-border: rgba(167,139,250,0.3); }
-body[data-theme="violet"] #app {
-  background:
-    radial-gradient(120% 90% at 92% -8%, rgba(167,139,250,0.09) 0%, rgba(0,0,0,0) 55%),
-    linear-gradient(165deg, #14131c 0%, #100f16 50%, #0b0a10 100%);
+body[data-theme="glass"] #sidebar,
+body[data-theme="glass"] #tree-pane,
+body[data-theme="glass"] #viewer-pane,
+body[data-theme="glass"] .card,
+body[data-theme="glass"] .modal,
+body[data-theme="glass"] .menu-dropdown,
+body[data-theme="glass"] .toast { backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px); }
+
+/* — 06 · Material Dark — solid surfaces, elevation drop-shadows, teal accent — */
+body[data-theme="material"] {
+  --green:#26a69a; --green-bright:#4db6ac; --green-dim:#004d40;
+  --accent-soft:rgba(38,166,154,0.18); --border-accent:rgba(38,166,154,0.6); --accent-contrast:#00211d; --accent-glow:rgba(38,166,154,0.5);
+  --bg:#121212; --bar:#1e1e1e; --panel:#181818; --panel-solid:#242424;
+  --surface:#242424; --surface-2:#2c2c2c; --bg-input:#1a1a1a; --bg-pop:#2a2a2a; --modal:#2a2a2a;
+  --ink:#0c0c0c; --ink-2:#121212;
+  --border:rgba(255,255,255,0.09); --border-strong:rgba(255,255,255,0.14); --app-border:#000;
+  --text:#eceff1; --text-dim:#9aa0a6; --text-mute:#6b7177; --hover:rgba(255,255,255,0.08); --hover-2:rgba(255,255,255,0.13);
+  --warn:#ffb74d; --star:#ffca28; --info:#64b5f6; --add:#aed581;
+  --radius:8px; --card-shadow:0 1px 3px rgba(0,0,0,0.5),0 1px 2px rgba(0,0,0,0.4);
+  --card-active-bg:#2a2f2e; --card-active-shadow:0 4px 10px rgba(0,0,0,0.55), inset 0 0 0 1px var(--border-accent);
 }
+
+/* — 08 · Catppuccin (Mocha) — soft pastel, cosy low-contrast — */
+body[data-theme="catppuccin"] {
+  --green:#a6e3a1; --green-bright:#cbf5c6; --green-dim:#2d4a2c;
+  --accent-soft:rgba(166,227,161,0.14); --border-accent:rgba(166,227,161,0.55); --accent-contrast:#11210f; --accent-glow:rgba(166,227,161,0.5);
+  --bg:linear-gradient(165deg,#1e1e2e,#181825); --bar:#181825; --panel:#1e1e2e; --panel-solid:#28283b;
+  --surface:#28283b; --surface-2:#313244; --bg-input:#181825; --bg-pop:#28283b; --modal:#28283b;
+  --ink:#181825; --ink-2:#1e1e2e;
+  --border:#313244; --border-strong:#45475a; --app-border:#45475a;
+  --text:#cdd6f4; --text-dim:#a6adc8; --text-mute:#6c7086; --hover:rgba(203,166,247,0.1); --hover-2:rgba(203,166,247,0.16);
+  --warn:#f9e2af; --star:#f9e2af; --info:#89b4fa; --add:#a6e3a1;
+  --radius:12px; --card-shadow:0 4px 12px rgba(0,0,0,0.3);
+  --card-active-bg:#2c3050; --card-active-shadow:0 4px 14px rgba(0,0,0,0.35), inset 0 0 0 1px rgba(203,166,247,0.3);
+}
+
+/* — 09 · Gruvbox — warm base, amber accent — */
+body[data-theme="gruvbox"] {
+  --green:#fabd2f; --green-bright:#fbd860; --green-dim:#7c5e10;
+  --accent-soft:rgba(250,189,47,0.14); --border-accent:rgba(250,189,47,0.55); --accent-contrast:#1d1a12; --accent-glow:rgba(250,189,47,0.5);
+  --bg:linear-gradient(165deg,#32302f,#282828); --bar:#282828; --panel:#2c2a29; --panel-solid:#3a3735;
+  --surface:#3a3735; --surface-2:#45403d; --bg-input:#282828; --bg-pop:#3a3735; --modal:#3a3735;
+  --ink:#1d2021; --ink-2:#282828;
+  --border:#504945; --border-strong:#665c54; --app-border:#665c54;
+  --text:#ebdbb2; --text-dim:#a89984; --text-mute:#7c6f64; --hover:rgba(254,128,25,0.1); --hover-2:rgba(254,128,25,0.16);
+  --warn:#fe8019; --star:#fabd2f; --info:#83a598; --add:#b8bb26;
+  --radius:9px; --card-shadow:0 3px 9px rgba(0,0,0,0.4);
+  --card-active-bg:#43403d; --card-active-shadow:0 3px 12px rgba(0,0,0,0.45), inset 0 0 0 1px rgba(250,189,47,0.3);
+}
+
+/* — 10 · Aurora — dark base, emerald→cyan gradient accent + glow — */
+body[data-theme="aurora"] {
+  --green:#2dd4bf; --green-bright:#5eead4; --green-dim:#0f5132;
+  --accent-soft:rgba(45,212,191,0.14); --border-accent:rgba(45,212,191,0.55); --accent-contrast:#04130b; --accent-glow:rgba(45,212,191,0.7);
+  --bg:radial-gradient(70% 60% at 100% 0%,rgba(16,185,129,0.14),transparent 55%),radial-gradient(60% 50% at 0% 100%,rgba(56,189,248,0.12),transparent 55%),linear-gradient(160deg,#0a0f14,#080b10);
+  --bar:rgba(255,255,255,0.02); --panel:rgba(255,255,255,0.012); --panel-solid:#10161d;
+  --surface:#10161d; --surface-2:#161d26; --bg-input:#0c1117; --bg-pop:#121922; --modal:linear-gradient(160deg,#121922,#0c1117);
+  --ink:#0a0f14; --ink-2:#0c1117;
+  --border:rgba(255,255,255,0.06); --border-strong:rgba(255,255,255,0.12); --app-border:rgba(45,212,191,0.3);
+  --text:#e7eef5; --text-dim:#8b97a5; --text-mute:#586573; --hover:rgba(255,255,255,0.06); --hover-2:rgba(255,255,255,0.1);
+  --warn:#fbbf24; --star:#fbbf24; --info:#38bdf8; --add:#86efac;
+  --radius:14px; --card-shadow:0 6px 20px rgba(0,0,0,0.4);
+  --card-active-bg:linear-gradient(120deg,rgba(45,212,191,0.16),rgba(56,189,248,0.12)); --card-active-shadow:0 0 0 1px rgba(45,212,191,0.4),0 6px 24px rgba(45,212,191,0.15);
+}
+body[data-theme="aurora"] .card.active .card-title { color: #fff; }
 .set-row select {
   padding: 7px 9px; border-radius: 8px; background: var(--bg-input); border: 1px solid var(--border-strong);
   color: var(--text); outline: none; min-width: 120px;

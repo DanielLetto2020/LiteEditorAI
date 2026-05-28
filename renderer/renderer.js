@@ -23,7 +23,7 @@ import { markdown } from '@codemirror/lang-markdown';
 import { html } from '@codemirror/lang-html';
 import { css } from '@codemirror/lang-css';
 
-const APP_VERSION = 'alpha v1.0.41';
+const APP_VERSION = 'alpha v1.0.42';
 const GUTTER = 5;
 const SCRATCH_ID = '__scratch__'; // системный терминал (домашняя папка), не привязан к проектам
 
@@ -119,7 +119,7 @@ function persist(key, value) { STORE[key] = value; lite.store.set(key, value); }
 function projId(p) { let h = 5381; for (let i = 0; i < p.length; i++) h = ((h << 5) + h + p.charCodeAt(i)) >>> 0; return 'p' + h.toString(36); }
 
 // ---------------------------------------------------------------- settings (tiny on purpose)
-const DEFAULT_SETTINGS = { notifications: true, sound: false, idleMs: 1200, fontSize: 13, workingDir: '', scanDirs: [], theme: 'emerald', onboarded: false };
+const DEFAULT_SETTINGS = { notifications: true, sound: false, idleMs: 1200, fontSize: 13, workingDir: '', scanDirs: [], theme: 'neumorphism', onboarded: false };
 function loadSettings() { return { ...DEFAULT_SETTINGS, ...(STORE.settings || {}) }; }
 let settings = loadSettings();
 function saveSettings() { persist('settings', settings); }
@@ -263,19 +263,25 @@ const TERM_THEME = {
   blue: '#7aa2f7', magenta: '#bb9af7', cyan: '#7dcfff', white: '#a9b1d6',
 };
 // ---------------------------------------------------------------- themes (a curated few)
+// Theme registry. The CSS does the heavy lifting via body[data-theme] (token contract
+// in styles.css); here we carry the human label + per-theme terminal (xterm) colours.
+// To add a theme: add a block in styles.css AND an entry here. Default = neumorphism.
+const DEFAULT_THEME = 'neumorphism';
 const THEMES = {
-  emerald: { label: 'Графит · Изумруд', cursor: '#34d399', selectionBackground: '#173a2c' },
-  ocean: { label: 'Графит · Океан', cursor: '#7dd3fc', selectionBackground: '#0c3a4a' },
-  violet: { label: 'Графит · Аметист', cursor: '#c4b5fd', selectionBackground: '#332a52' },
+  neumorphism: { label: 'Неоморфизм', term: { background: '#161a20', foreground: '#cfd4db', cursor: '#34d399', selectionBackground: '#1f3a30' } },
+  glass:       { label: 'Стекло',     term: { background: '#0b0f16', foreground: '#dbe5ee', cursor: '#5eead4', selectionBackground: '#13443c' } },
+  material:    { label: 'Material',   term: { background: '#121212', foreground: '#e0e0e0', cursor: '#26a69a', selectionBackground: '#004d40' } },
+  catppuccin:  { label: 'Catppuccin', term: { background: '#181825', foreground: '#cdd6f4', cursor: '#a6e3a1', selectionBackground: '#333b54' } },
+  gruvbox:     { label: 'Gruvbox',    term: { background: '#282828', foreground: '#ebdbb2', cursor: '#fabd2f', selectionBackground: '#504945' } },
+  aurora:      { label: 'Aurora',     term: { background: '#0a0f14', foreground: '#dbe7f0', cursor: '#2dd4bf', selectionBackground: '#0f4a44' } },
 };
 function termTheme() {
-  const t = THEMES[settings.theme] || THEMES.emerald;
-  return { ...TERM_THEME, cursor: t.cursor, selectionBackground: t.selectionBackground };
+  const t = THEMES[settings.theme] || THEMES[DEFAULT_THEME];
+  return { ...TERM_THEME, ...t.term };
 }
 function applyTheme() {
-  const name = THEMES[settings.theme] ? settings.theme : 'emerald';
-  if (name === 'emerald') document.body.removeAttribute('data-theme');
-  else document.body.dataset.theme = name;
+  const name = THEMES[settings.theme] ? settings.theme : DEFAULT_THEME;
+  document.body.dataset.theme = name; // always set; index.html ships data-theme too so there's no flash
   for (const rec of terms.values()) { try { rec.term.options.theme = termTheme(); } catch (_) {} }
   if (scratchRec) { try { scratchRec.term.options.theme = termTheme(); } catch (_) {} }
 }
@@ -2296,7 +2302,7 @@ function showSettings() {
   const font = m.querySelector('#st-font'); font.value = settings.fontSize;
   const themeSel = m.querySelector('#st-theme');
   for (const [key, t] of Object.entries(THEMES)) { const o = document.createElement('option'); o.value = key; o.textContent = t.label; themeSel.appendChild(o); }
-  themeSel.value = THEMES[settings.theme] ? settings.theme : 'emerald';
+  themeSel.value = THEMES[settings.theme] ? settings.theme : DEFAULT_THEME;
   themeSel.addEventListener('change', () => { settings.theme = themeSel.value; saveSettings(); applyTheme(); }); // live preview
   const wd = m.querySelector('#st-wd'); wd.value = settings.workingDir || '';
   let scan = [...(settings.scanDirs || [])];
