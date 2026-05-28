@@ -69,7 +69,7 @@ function foregroundKind(shellPid) {
   let alive = false, running = false;
   try {
     for (const ent of fs.readdirSync('/proc')) {
-      if (ent.charCodeAt(0) < 49 || ent.charCodeAt(0) > 57) continue; // numeric pids only
+      if (ent.charCodeAt(0) < 48 || ent.charCodeAt(0) > 57) continue; // numeric pids only ('0'..'9' = 48..57)
       const st = readProcStat(ent);
       if (!st || st.pgrp !== sh.tpgid) continue;
       alive = true;
@@ -85,6 +85,7 @@ const IGNORE_DIRS = new Set([
   'dist', 'build', '.next', 'target', '.cache', '.idea',
 ]);
 const MAX_VIEW_BYTES = 2 * 1024 * 1024;
+const IMPORT_MAX_BYTES = 64 * 1024 * 1024; // settings backup gate — small in practice, blocks pathological files
 
 // ---------------------------------------------------------------- global store (~/.LiteEditor)
 // One predictable home-dir folder holds everything (settings, projects, recents,
@@ -96,11 +97,22 @@ try {
   const legacy = path.join(os.homedir(), '.LiteEditor');
   if (!fs.existsSync(storeDir) && fs.existsSync(legacy)) fs.cpSync(legacy, storeDir, { recursive: true });
 } catch (_) {}
-const STORE_KEYS = ['projects', 'settings', 'layout', 'recents', 'lastParent', 'projFiles', 'categories', 'sectionOrder', 'accordions', 'dismissed'];
+const STORE_KEYS = ['projects', 'settings', 'layout', 'recents', 'lastParent', 'categories', 'sectionOrder', 'accordions', 'dismissed', 'uiState'];
 function ensureStoreDir() { try { fs.mkdirSync(storeDir, { recursive: true }); } catch (_) {} }
 function storeFile(key) { return path.join(storeDir, String(key).replace(/[^\w.-]/g, '_') + '.json'); }
-function readStoreKey(key) { try { return JSON.parse(fs.readFileSync(storeFile(key), 'utf8')); } catch { return undefined; } }
-function writeStoreKey(key, value) { ensureStoreDir(); try { fs.writeFileSync(storeFile(key), JSON.stringify(value)); } catch (_) {} }
+function readStoreKey(key) {
+  try { return JSON.parse(fs.readFileSync(storeFile(key), 'utf8')); }
+  // ENOENT just means "never written yet" (normal); anything else (bad JSON, perms) is worth logging.
+  catch (e) { if (e && e.code !== 'ENOENT') logger.log('error', 'store', `read '${key}' failed`, e); return undefined; }
+}
+// Returns true on success. store:set is fire-and-forget (renderer updates its in-memory
+// snapshot before the write), so a swallowed failure = silent data loss after restart — we
+// log it; the boolean lets callers that DO care (import) detect a partial failure.
+function writeStoreKey(key, value) {
+  ensureStoreDir();
+  try { fs.writeFileSync(storeFile(key), JSON.stringify(value)); return true; }
+  catch (e) { logger.log('error', 'store', `write '${key}' failed`, e); return false; }
+}
 ensureStoreDir();
 
 // File logging lives next to the store, survives restarts, keeps 5 days.
@@ -131,6 +143,94 @@ ipcMain.handle('store:notesSet', (_e, { id, notes }) => {
     fs.writeFileSync(path.join(storeDir, 'notes', String(id).replace(/[^\w.-]/g, '_') + '.json'), JSON.stringify(notes));
     return { ok: true };
   } catch (e) { return { error: String(e) }; }
+});
+
+// ---------------------------------------------------------------- settings backup (export / import)
+// A single self-contained JSON snapshot of the editor's whole state: every store key
+// (projects+categories, settings, layout, recents, accordions, section order, uiState…),
+// per-project notes, and the saved window geometry. Lets a user back up / move their setup.
+function readAllNotes() {
+  const out = {};
+  try {
+    const nd = path.join(storeDir, 'notes');
+    for (const f of fs.readdirSync(nd)) {
+      if (!f.endsWith('.json')) continue;
+      try { out[f.slice(0, -5)] = JSON.parse(fs.readFileSync(path.join(nd, f), 'utf8')); } catch (_) {}
+    }
+  } catch (_) {}
+  return out;
+}
+function backupStamp() {
+  const d = new Date();
+  const p = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}_${p(d.getHours())}-${p(d.getMinutes())}-${p(d.getSeconds())}`;
+}
+ipcMain.handle('settings:export', async () => {
+  const store = {};
+  for (const k of STORE_KEYS) { const v = readStoreKey(k); if (v !== undefined) store[k] = v; }
+  const payload = {
+    _format: 'lite-settings',
+    _app: app.getName(),
+    _version: app.getVersion(),
+    _exportedAt: new Date().toISOString(),
+    store,
+    notes: readAllNotes(),
+    windowState: loadState(),
+  };
+  const fname = `${app.getName()}_${backupStamp()}.json`;
+  const last = loadState().lastOpenDir;
+  const res = await dialog.showSaveDialog(mainWindow, {
+    title: 'Экспорт настроек',
+    defaultPath: path.join(last && fs.existsSync(last) ? last : os.homedir(), fname),
+    filters: [{ name: 'JSON', extensions: ['json'] }],
+  });
+  if (res.canceled || !res.filePath) return { canceled: true };
+  try {
+    fs.writeFileSync(res.filePath, JSON.stringify(payload, null, 2));
+    saveState({ lastOpenDir: path.dirname(res.filePath) });
+    return { ok: true, file: res.filePath, dir: path.dirname(res.filePath) };
+  } catch (e) { return { error: String(e.message || e) }; }
+});
+ipcMain.handle('settings:import', async () => {
+  const res = await dialog.showOpenDialog(mainWindow, {
+    title: 'Импорт настроек', properties: ['openFile'],
+    filters: [{ name: 'JSON', extensions: ['json'] }], ...lastDirOpts(),
+  });
+  if (res.canceled || res.filePaths.length === 0) return { canceled: true };
+  const file = res.filePaths[0];
+  let data;
+  try {
+    // Guard the synchronous read+parse against a pathologically large file freezing main.
+    const stat = fs.statSync(file);
+    if (stat.size > IMPORT_MAX_BYTES) return { error: `Файл слишком большой (${Math.round(stat.size / 1024)} КБ)` };
+    data = JSON.parse(fs.readFileSync(file, 'utf8'));
+  } catch (e) { return { error: 'Не удалось прочитать файл: ' + String(e.message || e) }; }
+  if (!data || data._format !== 'lite-settings' || typeof data.store !== 'object') {
+    return { error: 'Это не файл настроек LiteEditor.' };
+  }
+  try {
+    ensureStoreDir();
+    // writeStoreKey logs+swallows its own errors, so track its boolean result here:
+    // an unreported failure would let import claim success after losing settings.
+    const failedKeys = [];
+    for (const k of STORE_KEYS) {
+      if (Object.prototype.hasOwnProperty.call(data.store, k) && !writeStoreKey(k, data.store[k])) failedKeys.push(k);
+    }
+    let failedNotes = 0;
+    if (data.notes && typeof data.notes === 'object') {
+      const nd = path.join(storeDir, 'notes');
+      fs.mkdirSync(nd, { recursive: true });
+      for (const [id, arr] of Object.entries(data.notes)) {
+        try { fs.writeFileSync(path.join(nd, String(id).replace(/[^\w.-]/g, '_') + '.json'), JSON.stringify(arr)); }
+        catch (e) { failedNotes++; logger.log('error', 'store', `import note '${id}' failed`, e); }
+      }
+    }
+    if (data.windowState && typeof data.windowState === 'object') saveState(data.windowState);
+    saveState({ lastOpenDir: path.dirname(file) });
+    // Surface partial failure instead of a false "success" so the renderer can warn the user.
+    if (failedKeys.length || failedNotes) return { ok: true, partial: true, failedKeys, failedNotes, file };
+    return { ok: true, file };
+  } catch (e) { return { error: String(e.message || e) }; }
 });
 
 // ---------------------------------------------------------------- window state
@@ -254,7 +354,6 @@ ipcMain.on('win:maximizeToggle', () => {
   if (mainWindow.isMaximized()) mainWindow.unmaximize();
   else mainWindow.maximize();
 });
-ipcMain.on('win:fullscreen', () => mainWindow && mainWindow.setFullScreen(!mainWindow.isFullScreen()));
 ipcMain.on('win:close', () => mainWindow && mainWindow.close());
 ipcMain.handle('win:isMaximized', () => !!(mainWindow && mainWindow.isMaximized()));
 ipcMain.on('win:show', showWindow);
@@ -461,9 +560,14 @@ ipcMain.on('fs:unwatch', (_e, root) => {
 });
 
 // ---------------------------------------------------------------- git (read-only)
+// Resolves stdout on success, or null on ANY failure (non-repo, error, or timeout)
+// — null is the deliberate error sentinel every caller already checks. The timeout
+// matters: git:status runs on every tree decoration and git:info fires 6 calls per
+// branch view, so a hook or slow/networked repo without it would hang the handler
+// (and freeze the UI) forever. Mirrors gitRun()'s timeout for mutating commands.
 function git(cwd, args) {
   return new Promise((resolve) => {
-    execFile('git', args, { cwd, maxBuffer: 8 * 1024 * 1024, windowsHide: true }, (err, stdout) => {
+    execFile('git', args, { cwd, timeout: 15000, maxBuffer: 8 * 1024 * 1024, windowsHide: true }, (err, stdout) => {
       resolve(err ? null : stdout);
     });
   });
@@ -528,7 +632,6 @@ ipcMain.handle('git:info', async (_e, root) => {
   return { repo: true, branch, ahead, behind, upstream, lastCommit, branches, hasRemote: remote.length > 0 };
 });
 ipcMain.handle('git:checkout', async (_e, { root, branch }) => gitRun(root, ['checkout', branch]));
-ipcMain.handle('git:createBranch', async (_e, { root, branch }) => gitRun(root, ['checkout', '-b', branch]));
 ipcMain.handle('git:fetch', async (_e, root) => gitRun(root, ['fetch', '--all', '--prune']));
 ipcMain.handle('git:discardFile', async (_e, { root, file }) => gitRun(root, ['checkout', '--', file]));
 // Update a branch from its upstream WITHOUT checkout (fast-forward of the local ref).

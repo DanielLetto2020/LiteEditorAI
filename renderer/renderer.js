@@ -23,7 +23,7 @@ import { markdown } from '@codemirror/lang-markdown';
 import { html } from '@codemirror/lang-html';
 import { css } from '@codemirror/lang-css';
 
-const APP_VERSION = 'alpha v1.0.37';
+const APP_VERSION = 'alpha v1.0.38';
 const GUTTER = 5;
 const SCRATCH_ID = '__scratch__'; // системный терминал (домашняя папка), не привязан к проектам
 
@@ -154,7 +154,10 @@ function queueOnSettled(id, state) {
   const q = queues.get(id);
   if (!q || !q.running || q.awaitingBusy || q.armed) return;
   if (state !== 'waiting') return;
-  if (q.pos >= q.items.length - 1) { // last note's turn ended → queue complete, no extra click
+  // Complete when the last note's turn ended — OR when the queue was emptied mid-run.
+  // The length check is essential: without it an empty q.items makes the comparison
+  // `q.pos >= -1` (always true), so the queue would "complete" having sent nothing.
+  if (!q.items.length || q.pos >= q.items.length - 1) {
     q.running = false; q.pos = q.items.length; q.armed = false;
     queueChanged(q);
     const p = projects.find((x) => x.id === id);
@@ -226,6 +229,9 @@ function saveProjects() { persist('projects', projects); }
 function loadProjectsFromDisk() { return Array.isArray(STORE.projects) ? STORE.projects : []; }
 function loadLayout() { return { ...DEFAULT_LAYOUT, ...(STORE.layout || {}) }; }
 function saveLayout() { persist('layout', layout); }
+// Whether the viewer / system terminal panes are open — part of the backed-up state,
+// restored on startup (and on import) so the window reopens the way it was left.
+function saveUiState() { persist('uiState', { viewerOpen, scratchOpen }); }
 function applyLayout() {
   $('#sidebar').style.flexBasis = layout.sidebar + 'px';
   $('#viewer-pane').style.flexBasis = layout.viewer + 'px';
@@ -583,6 +589,8 @@ async function showNotes(p) {
   let notes = await lite.store.notesGet(p.id);
   if (!Array.isArray(notes)) notes = [];
   const q = getQueue(p.id);
+  // Detach the live-update callback on ANY close (button/Esc/backdrop) so the dismissed
+  // modal + its listeners don't linger in memory until the next queue event fires.
   const { m, close } = makeModal(`
     <h2>📝 Заметки — <span class="nm-proj"></span></h2>
     <div class="nm-tabs">
@@ -595,7 +603,8 @@ async function showNotes(p) {
       <button class="btn nm-add" id="nm-add">＋ Новая карточка</button>
     </div>
     <div class="nm-pane" id="nm-pane-queue" hidden></div>
-    <div class="modal-actions"><button class="btn primary" id="nm-close">Готово</button></div>`);
+    <div class="modal-actions"><button class="btn primary" id="nm-close">Готово</button></div>`,
+    () => { q.onChange = null; });
   m.classList.add('notes-modal');
   m.querySelector('.nm-proj').textContent = p.name;
   const list = m.querySelector('#nm-list');
@@ -609,9 +618,21 @@ async function showNotes(p) {
   // whose underlying note was deleted (queue references notes by id).
   const save = () => {
     lite.store.notesSet(p.id, notes); noteCounts[p.id] = notes.length;
+    // Capture the running queue's cursor BY ID before refiltering, so deleting a note
+    // mid-run can't shift q.pos onto the wrong item (which would skip a note or make
+    // queueOnSettled finish early). doneIds = items already sent (before the cursor).
+    const running = q.running && q.pos >= 0 && q.pos < q.items.length;
+    const curId = running ? q.items[q.pos].noteId : null;
+    const doneIds = running ? new Set(q.items.slice(0, q.pos).map((it) => it.noteId)) : null;
     q.items = q.items
       .filter((it) => notes.some((n) => n.id === it.noteId))
       .map((it) => ({ noteId: it.noteId, text: (notes.find((n) => n.id === it.noteId) || {}).text || '' }));
+    if (running) {
+      const ci = q.items.findIndex((it) => it.noteId === curId);
+      // current survived → its new index; current was deleted → sit just before the first
+      // remaining pending item so the next advance dispatches it instead of skipping it.
+      q.pos = ci >= 0 ? ci : q.items.filter((it) => doneIds.has(it.noteId)).length - 1;
+    }
     updateTabBadge();
     renderProjects();
   };
@@ -669,8 +690,12 @@ async function showNotes(p) {
       const qi = q.items.findIndex((it) => it.noteId === note.id);
       const queued = qi >= 0;
       const qBtn = el('button', 'note-btn qtoggle' + (queued ? ' on' : ''), queued ? `№ ${qi + 1}` : '＋ в очередь');
-      qBtn.title = queued ? 'Убрать из авто-очереди' : 'Добавить в авто-очередь';
+      // While the queue runs, membership is frozen (matches the queue tab's disabled
+      // reorder/remove) — changing q.items mid-run would shift q.pos onto the wrong note.
+      qBtn.disabled = q.running;
+      qBtn.title = q.running ? 'Очередь выполняется — изменить состав нельзя' : (queued ? 'Убрать из авто-очереди' : 'Добавить в авто-очередь');
       qBtn.addEventListener('click', () => {
+        if (q.running) return;
         flushEdit();
         const idx = q.items.findIndex((it) => it.noteId === note.id);
         if (idx >= 0) q.items.splice(idx, 1);
@@ -772,7 +797,7 @@ async function showNotes(p) {
     if (!qpane.hidden) renderQueue();
   };
 
-  m.querySelector('#nm-close').onclick = () => { flushEdit(); q.onChange = null; close(); };
+  m.querySelector('#nm-close').onclick = () => { flushEdit(); close(); }; // close() nulls q.onChange via onClose
   updateTabBadge();
   render();
 }
@@ -1291,14 +1316,15 @@ function refitScratch(focusIt) {
     try { scratchRec.fit.fit(); lite.pty.resize(SCRATCH_ID, scratchRec.term.cols, scratchRec.term.rows); if (focusIt) scratchRec.term.focus(); } catch (_) {}
   });
 }
-function setScratchOpen(open) {
+function setScratchOpen(open, opts = {}) {
   if (open === scratchOpen) { if (open) refitScratch(true); return; }
   const delta = layout.scratch + GUTTER;
   scratchOpen = open;
   $('#scratch-pane').classList.toggle('hidden', !open);
   $('#gutter-scratch').classList.toggle('hidden', !open);
   $('#btn-scratch').classList.toggle('on', open);
-  lite.win.growBy(open ? delta : -delta);
+  if (opts.grow !== false) lite.win.growBy(open ? delta : -delta); // grow:false on restore — saved width already counts this pane
+  saveUiState();
   if (open) { ensureScratchTerminal(); setTimeout(() => refitScratch(true), 150); }
   setTimeout(refitActiveTerminal, 160);
 }
@@ -1619,7 +1645,7 @@ async function refreshViewerForActive() {
   clearViewer();
 }
 
-function setViewerOpen(open) {
+function setViewerOpen(open, opts = {}) {
   if (open === viewerOpen) {
     if (open) refreshViewerForActive();
     renderProjects();
@@ -1630,7 +1656,8 @@ function setViewerOpen(open) {
   $('#viewer-pane').classList.toggle('hidden', !open);
   $('#tree-pane').classList.toggle('hidden', !open);
   document.querySelectorAll('.gutter-v').forEach((g) => g.classList.toggle('hidden', !open));
-  lite.win.growBy(open ? delta : -delta);
+  if (opts.grow !== false) lite.win.growBy(open ? delta : -delta); // grow:false on restore — saved width already counts these panes
+  saveUiState();
   renderProjects();
   if (open) refreshViewerForActive();
   setTimeout(refitActiveTerminal, 150);
@@ -1890,9 +1917,42 @@ function menuRow(icon, text, onClick, cls) {
   if (onClick) row.addEventListener('click', onClick);
   return row;
 }
+// Back up the whole editor state to one JSON file, then offer to open its folder.
+async function exportSettings() {
+  closeMenus();
+  const r = await lite.settings.export();
+  if (!r || r.canceled) return;
+  if (r.error) { toast('Ошибка экспорта: ' + r.error); return; }
+  toast('Настройки экспортированы', { actionLabel: 'Открыть папку', action: () => lite.openInFileManager(r.dir), ttl: 8000 });
+}
+// Restore from a backup. Overwrites the current state, so confirm first; reload to apply.
+async function importSettings() {
+  closeMenus();
+  showConfirm(
+    'Импорт настроек',
+    'Импорт перезапишет текущие настройки, проекты, категории и заметки данными из файла. Открытые терминалы не затрагиваются. Продолжить?',
+    'Импортировать',
+    async () => {
+      const r = await lite.settings.import();
+      if (!r || r.canceled) return;
+      if (r.error) { toast('Ошибка импорта: ' + r.error); return; }
+      if (r.partial) {
+        const parts = [];
+        if (r.failedKeys && r.failedKeys.length) parts.push(`настройки: ${r.failedKeys.join(', ')}`);
+        if (r.failedNotes) parts.push(`заметок: ${r.failedNotes}`);
+        toast('Импорт частичный — не записано: ' + parts.join('; ') + '. Перезагружаю…', { ttl: 9000 });
+      } else {
+        toast('Настройки импортированы — перезагружаю…');
+      }
+      setTimeout(() => location.reload(), r.partial ? 1500 : 700);
+    });
+}
 function buildFileMenu(dd) {
   dd.appendChild(menuRow('📂', 'Открыть папку', () => { closeMenus(); openProjectDialog(); }));
   dd.appendChild(menuRow('✚', 'Создать папку…', () => { closeMenus(); showCreateFolder(); }));
+  dd.appendChild(el('div', 'menu-sep'));
+  dd.appendChild(menuRow('⤓', 'Экспорт настроек…', exportSettings));
+  dd.appendChild(menuRow('⤒', 'Импорт настроек…', importSettings));
   dd.appendChild(el('div', 'menu-sep'));
   dd.appendChild(el('div', 'menu-label', 'Ранее открытые'));
   const recents = loadRecents();
@@ -1942,13 +2002,22 @@ function showTermMenu(x, y, term, projId) {
 }
 
 // ---------------------------------------------------------------- modals
-function makeModal(innerHtml) {
+// onClose runs on EVERY close path (button, Esc, overlay-click) exactly once — so
+// callers can release listeners/refs they attached (e.g. a queue's onChange) without
+// leaking when the user dismisses via Esc or backdrop instead of the explicit button.
+function makeModal(innerHtml, onClose) {
   const overlay = el('div', 'modal-overlay');
   const m = el('div', 'modal');
   m.innerHTML = innerHtml;
   overlay.appendChild(m);
   $('#modal-root').appendChild(overlay);
-  const close = () => { $('#modal-root').innerHTML = ''; };
+  let closed = false;
+  const close = () => {
+    if (closed) return;
+    closed = true;
+    $('#modal-root').innerHTML = '';
+    if (onClose) { try { onClose(); } catch (_) {} }
+  };
   overlay.addEventListener('mousedown', (e) => { if (e.target === overlay) close(); });
   m.addEventListener('keydown', (e) => { if (e.key === 'Escape') close(); });
   return { overlay, m, close };
@@ -2289,6 +2358,12 @@ function init() {
   renderProjects();
   if (projects.length) setActive(projects[0].id);
   else showActiveTerminal();
+
+  // Restore which panes were open last time (viewer / system terminal). grow:false —
+  // the saved window width already includes them, so reveal in place without resizing.
+  const ui = STORE.uiState || {};
+  if (ui.viewerOpen) setViewerOpen(true, { grow: false });
+  if (ui.scratchOpen) setScratchOpen(true, { grow: false });
 
   scanProjects();          // add subfolders of settings.scanDirs (non-blocking)
   checkProjectsExistence();

@@ -34,7 +34,11 @@ function fmt(a) {
 function write(level, src, parts) {
   const line = `${ts()} [${String(level).toUpperCase()}] [${src}] ${parts.map(fmt).join(' ')}\n`;
   if (logDir) {
-    try { fs.mkdirSync(logDir, { recursive: true }); fs.appendFileSync(logPath(), line); } catch (_) {}
+    try { fs.mkdirSync(logDir, { recursive: true }); fs.appendFileSync(logPath(), line); }
+    // If the log dir is unwritable at runtime, don't silently lose crash diagnostics —
+    // emit to stderr (the raw launcher capture). NOT console.error: wrapConsole() routes
+    // that back through write(), which would recurse on the same failure.
+    catch (e) { try { process.stderr.write(`[logger] write failed (${e && e.message}); line: ${line}`); } catch (_) {} }
   }
   return line;
 }

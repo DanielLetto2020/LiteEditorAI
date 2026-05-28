@@ -16,7 +16,6 @@ contextBridge.exposeInMainWorld('lite', {
   win: {
     minimize: () => ipcRenderer.send('win:minimize'),
     maximizeToggle: () => ipcRenderer.send('win:maximizeToggle'),
-    fullscreen: () => ipcRenderer.send('win:fullscreen'),
     close: () => ipcRenderer.send('win:close'),
     show: () => ipcRenderer.send('win:show'),
     isMaximized: () => ipcRenderer.invoke('win:isMaximized'),
@@ -37,6 +36,11 @@ contextBridge.exposeInMainWorld('lite', {
     notesSet: (id, notes) => ipcRenderer.invoke('store:notesSet', { id, notes }),
   },
 
+  settings: {
+    export: () => ipcRenderer.invoke('settings:export'),  // → { ok, file, dir } | { canceled } | { error }
+    import: () => ipcRenderer.invoke('settings:import'),  // → { ok, file } | { canceled } | { error }
+  },
+
   git: {
     status: (root) => ipcRenderer.invoke('git:status', root),
     fileDiff: (root, file) => ipcRenderer.invoke('git:fileDiff', { root, file }),
@@ -48,7 +52,6 @@ contextBridge.exposeInMainWorld('lite', {
     pull: (root) => ipcRenderer.invoke('git:pull', root),
     fetch: (root) => ipcRenderer.invoke('git:fetch', root),
     checkout: (root, branch) => ipcRenderer.invoke('git:checkout', { root, branch }),
-    createBranch: (root, branch) => ipcRenderer.invoke('git:createBranch', { root, branch }),
     branchUpdate: (root, branch, current) => ipcRenderer.invoke('git:branchUpdate', { root, branch, current }),
     branchCreate: (root, name, base, checkout) => ipcRenderer.invoke('git:branchCreate', { root, name, base, checkout }),
     discardFile: (root, file) => ipcRenderer.invoke('git:discardFile', { root, file }),
