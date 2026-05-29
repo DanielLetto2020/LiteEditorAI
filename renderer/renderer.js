@@ -23,7 +23,7 @@ import { markdown } from '@codemirror/lang-markdown';
 import { html } from '@codemirror/lang-html';
 import { css } from '@codemirror/lang-css';
 
-const APP_VERSION = 'alpha v1.0.49';
+const APP_VERSION = 'alpha v1.0.50';
 const GUTTER = 5;
 const SCRATCH_ID = '__scratch__'; // системный терминал (домашняя папка), не привязан к проектам
 
@@ -2608,8 +2608,8 @@ function init() {
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && document.body.classList.contains('preview-full')) { e.preventDefault(); exitPreviewFull(); return; }
     if (e.ctrlKey && e.key === '\\') { e.preventDefault(); toggleSingle(); }
-    if (e.ctrlKey && (e.key === 's' || e.key === 'S')) { e.preventDefault(); saveCurrent(); }
-    if (e.ctrlKey && (e.key === 'k' || e.key === 'K')) { e.preventDefault(); showPalette(); }
+    if (e.ctrlKey && e.code === 'KeyS') { e.preventDefault(); saveCurrent(); }   // e.code, не e.key — иначе в русской раскладке не сработает (Ctrl+S → e.key='ы')
+    if (e.ctrlKey && e.code === 'KeyK') { e.preventDefault(); showPalette(); }   // то же: Ctrl+K → e.key='л' в русской раскладке
     if (e.ctrlKey && (e.key === '=' || e.key === '+')) { e.preventDefault(); bumpFont(1); }
     if (e.ctrlKey && e.key === '-') { e.preventDefault(); bumpFont(-1); }
     if (e.ctrlKey && e.key === 'Tab') { e.preventDefault(); cycleProject(e.shiftKey ? -1 : 1); }
