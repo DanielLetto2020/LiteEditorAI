@@ -23,7 +23,7 @@ import { markdown } from '@codemirror/lang-markdown';
 import { html } from '@codemirror/lang-html';
 import { css } from '@codemirror/lang-css';
 
-const APP_VERSION = 'alpha v1.0.47';
+const APP_VERSION = 'alpha v1.0.48';
 const GUTTER = 5;
 const SCRATCH_ID = '__scratch__'; // системный терминал (домашняя папка), не привязан к проектам
 
@@ -1332,7 +1332,7 @@ function createSession(proj, name) {
     if (e.ctrlKey && e.shiftKey && e.code === 'KeyW') { const s = activeSessionId(); if (s) closeTab(s); return false; }
     if (e.ctrlKey && (e.key === 'PageDown' || e.key === 'PageUp')) { cycleTab(e.key === 'PageDown' ? 1 : -1); return false; }
     if (e.ctrlKey && !e.shiftKey && !e.altKey && e.code === 'KeyC') return !copySelection(term); // copied → swallow; else SIGINT
-    if (e.ctrlKey && !e.shiftKey && !e.altKey && e.code === 'KeyV') { pasteInto(id); return false; }
+    if (e.ctrlKey && !e.shiftKey && !e.altKey && e.code === 'KeyV') { e.preventDefault(); pasteInto(id); return false; } // preventDefault — иначе xterm вставит ещё раз нативно (дубль)
     if (e.ctrlKey && !e.altKey && e.code === 'KeyF') { openTermSearch(); return false; }
     if (e.ctrlKey && e.shiftKey && e.key === 'Enter') {
       const q = queues.get(proj.id);
@@ -1497,7 +1497,7 @@ function ensureScratchTerminal() {
     if (e.type !== 'keydown') return true;
     // match by physical key so copy/paste work in any layout (Russian incl.)
     if (e.ctrlKey && !e.shiftKey && !e.altKey && e.code === 'KeyC') return !copySelection(term); // copied → swallow; else SIGINT
-    if (e.ctrlKey && !e.shiftKey && !e.altKey && e.code === 'KeyV') { pasteInto(SCRATCH_ID); return false; }
+    if (e.ctrlKey && !e.shiftKey && !e.altKey && e.code === 'KeyV') { e.preventDefault(); pasteInto(SCRATCH_ID); return false; } // preventDefault — без него дубль вставки
     return true;
   });
   container.addEventListener('contextmenu', (e) => { e.preventDefault(); showTermMenu(e.clientX, e.clientY, term, SCRATCH_ID); });

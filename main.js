@@ -9,6 +9,7 @@ const pty = require('node-pty');
 const logger = require('./logger');
 
 app.setName('LiteEditorAI');
+app.setAppUserModelId('com.mletto.liteeditorai'); // Windows: имя/иконка/группировка в панели задач и уведомлениях
 
 // Capture native (C++) crashes — e.g. a GPU/renderer process abort, which on
 // Linux shows up as "trap int3" in dmesg and closes the app with no dialog.
