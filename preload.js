@@ -41,6 +41,17 @@ contextBridge.exposeInMainWorld('lite', {
     read: (name) => ipcRenderer.invoke('logs:read', name),
   },
 
+  openrouter: {
+    models: (key) => ipcRenderer.invoke('openrouter:models', { key }),
+    histGet: (id) => ipcRenderer.invoke('openrouter:histGet', id),
+    histSet: (id, messages) => ipcRenderer.invoke('openrouter:histSet', { id, messages }),
+    chatStart: (opts) => ipcRenderer.send('openrouter:chatStart', opts),
+    chatAbort: (reqId) => ipcRenderer.send('openrouter:chatAbort', { reqId }),
+    onChunk: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('openrouter:chunk', h); return () => ipcRenderer.removeListener('openrouter:chunk', h); },
+    onDone: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('openrouter:done', h); return () => ipcRenderer.removeListener('openrouter:done', h); },
+    onError: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('openrouter:error', h); return () => ipcRenderer.removeListener('openrouter:error', h); },
+  },
+
   settings: {
     export: () => ipcRenderer.invoke('settings:export'),  // → { ok, file, dir } | { canceled } | { error }
     import: () => ipcRenderer.invoke('settings:import'),  // → { ok, file } | { canceled } | { error }

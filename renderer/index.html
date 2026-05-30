@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta http-equiv="Content-Security-Policy"
-        content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data: file:; frame-src 'self' file:;" />
+        content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data: file: https: http:; frame-src 'self' file:;" />
   <title>LiteEditorAI</title>
   <link rel="stylesheet" href="dist/bundle.css" />
   <link rel="stylesheet" href="styles.css" />
@@ -17,6 +17,7 @@
         <button class="menu-item" data-menu="file">Файл</button>
         <button class="menu-item" data-menu="settings">Настройки</button>
         <button class="menu-item" data-menu="logs">Логи</button>
+        <button class="menu-item" data-menu="openrouter">OpenRouter</button>
         <button class="menu-item" data-menu="about">О&nbsp;программе</button>
       </nav>
       <div class="drag-space"></div>
@@ -62,6 +63,32 @@
           <div class="hint-card">
             <div class="hint-title">Пусто</div>
             <div class="hint-text">Открой папку слева — справа поднимется её терминал.</div>
+          </div>
+        </div>
+        <!-- OpenRouter chat: shown instead of the terminal when an OpenRouter card is active -->
+        <div id="chat-pane" class="hidden">
+          <div id="chat-top">
+            <span id="chat-title" class="chat-title"></span>
+            <div id="chat-session-wrap" class="chat-session-wrap">
+              <button id="chat-session-btn" class="chat-session-btn" type="button" title="Сессии этого ключа">☰ Сессия 1</button>
+              <div id="chat-session-pop" class="chat-session-pop hidden"></div>
+            </div>
+            <div id="chat-model-wrap" class="chat-model-wrap">
+              <button id="chat-model-btn" class="chat-model-btn" type="button">Выбрать модель…</button>
+              <div id="chat-model-pop" class="chat-model-pop hidden">
+                <input id="chat-model-search" type="text" placeholder="Поиск модели…" autocomplete="off" spellcheck="false">
+                <div id="chat-model-list" class="chat-model-list"></div>
+              </div>
+            </div>
+            <div class="chat-ctx" title="Сколько последних сообщений отправлять модели (1–100)">
+              <label for="chat-ctx-input">контекст</label>
+              <input id="chat-ctx-input" type="number" min="1" max="100" value="10">
+            </div>
+          </div>
+          <div id="chat-log" class="chat-log"></div>
+          <div id="chat-input-row" class="chat-input-row">
+            <textarea id="chat-input" rows="1" placeholder="Сообщение…  (Enter — отправить, Shift+Enter — перенос строки)" spellcheck="false"></textarea>
+            <button id="chat-send" class="btn primary chat-send" type="button" title="Отправить">▶</button>
           </div>
         </div>
         </div>

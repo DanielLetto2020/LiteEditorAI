@@ -5,6 +5,7 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 const { execFile } = require('child_process');
+const https = require('https');
 const pty = require('node-pty');
 const logger = require('./logger');
 
@@ -98,7 +99,7 @@ try {
   const legacy = path.join(os.homedir(), '.LiteEditor');
   if (!fs.existsSync(storeDir) && fs.existsSync(legacy)) fs.cpSync(legacy, storeDir, { recursive: true });
 } catch (_) {}
-const STORE_KEYS = ['projects', 'settings', 'layout', 'recents', 'lastParent', 'categories', 'sectionOrder', 'accordions', 'dismissed', 'uiState', 'projTabs'];
+const STORE_KEYS = ['projects', 'settings', 'layout', 'recents', 'lastParent', 'categories', 'sectionOrder', 'accordions', 'dismissed', 'uiState', 'projTabs', 'openrouter'];
 function ensureStoreDir() { try { fs.mkdirSync(storeDir, { recursive: true }); } catch (_) {} }
 function storeFile(key) { return path.join(storeDir, String(key).replace(/[^\w.-]/g, '_') + '.json'); }
 function readStoreKey(key) {
@@ -184,6 +185,106 @@ ipcMain.handle('store:notesSet', (_e, { id, notes }) => {
     atomicWriteSync(path.join(storeDir, 'notes', String(id).replace(/[^\w.-]/g, '_') + '.json'), JSON.stringify(notes));
     return { ok: true };
   } catch (e) { return { error: String(e) }; }
+});
+
+// ---------------------------------------------------------------- OpenRouter chat
+// HTTP from main (Node https): no CORS, the API key never reaches the renderer bundle.
+// The list of keys/cards lives in store ('openrouter'); per-card chat history lives in
+// orchats/<id>.json (mirrors notes). Streaming uses SSE — chunks are pushed to the
+// renderer as openrouter:chunk events, finished with openrouter:done / openrouter:error.
+const OR_BASE = 'https://openrouter.ai/api/v1';
+function orHeaders(key) {
+  return {
+    'Authorization': 'Bearer ' + (key || ''),
+    'Content-Type': 'application/json',
+    'HTTP-Referer': 'https://apisell.ru', // OpenRouter attribution headers (optional)
+    'X-Title': 'LiteEditorAI',
+  };
+}
+function safeSend(sender, channel, payload) {
+  try { if (sender && !sender.isDestroyed()) sender.send(channel, payload); } catch (_) {}
+}
+function orChatFile(id) { return path.join(storeDir, 'orchats', String(id).replace(/[^\w.-]/g, '_') + '.json'); }
+ipcMain.handle('openrouter:histGet', (_e, id) => {
+  try { return JSON.parse(fs.readFileSync(orChatFile(id), 'utf8')); } catch { return []; }
+});
+ipcMain.handle('openrouter:histSet', (_e, { id, messages }) => {
+  try {
+    fs.mkdirSync(path.join(storeDir, 'orchats'), { recursive: true });
+    atomicWriteSync(orChatFile(id), JSON.stringify(Array.isArray(messages) ? messages : []));
+    return { ok: true };
+  } catch (e) { return { error: String(e) }; }
+});
+ipcMain.handle('openrouter:models', async (_e, { key } = {}) => {
+  return await new Promise((resolve) => {
+    const req = https.request(OR_BASE + '/models', { method: 'GET', headers: orHeaders(key) }, (res) => {
+      let data = '';
+      res.on('data', (c) => { data += c; });
+      res.on('end', () => {
+        try {
+          const j = JSON.parse(data);
+          if (res.statusCode >= 400) return resolve({ error: (j.error && j.error.message) || ('HTTP ' + res.statusCode) });
+          // keep pricing (USD per token) + context window so the UI can show cost/size
+          const models = (j.data || []).map((m) => ({
+            id: m.id,
+            name: m.name || m.id,
+            context: m.context_length || (m.top_provider && m.top_provider.context_length) || 0,
+            pricing: { prompt: m.pricing && m.pricing.prompt, completion: m.pricing && m.pricing.completion },
+          }));
+          resolve({ models });
+        } catch (_) { resolve({ error: 'Не удалось разобрать ответ OpenRouter' }); }
+      });
+    });
+    req.on('error', (e) => resolve({ error: String(e.message || e) }));
+    req.setTimeout(20000, () => { req.destroy(); resolve({ error: 'таймаут запроса моделей' }); });
+    req.end();
+  });
+});
+const orReqs = new Map(); // reqId -> ClientRequest (for abort)
+ipcMain.on('openrouter:chatStart', (e, { reqId, key, model, messages, temperature } = {}) => {
+  const sender = e.sender;
+  const body = JSON.stringify({ model, messages, stream: true, ...(typeof temperature === 'number' ? { temperature } : {}) });
+  const req = https.request(OR_BASE + '/chat/completions',
+    { method: 'POST', headers: { ...orHeaders(key), 'Content-Length': Buffer.byteLength(body) } },
+    (res) => {
+      if (res.statusCode >= 400) { // surface the API error body (bad key, no credit, bad model…)
+        let errData = '';
+        res.on('data', (c) => { errData += c; });
+        res.on('end', () => {
+          let msg = 'HTTP ' + res.statusCode;
+          try { const j = JSON.parse(errData); if (j.error && j.error.message) msg = j.error.message; } catch (_) {}
+          if (!orReqs.has(reqId)) return; // aborted meanwhile
+          orReqs.delete(reqId); safeSend(sender, 'openrouter:error', { reqId, error: msg });
+        });
+        return;
+      }
+      let buf = '';
+      res.on('data', (chunk) => {
+        buf += chunk.toString('utf8');
+        let idx;
+        while ((idx = buf.indexOf('\n')) >= 0) {
+          const line = buf.slice(0, idx).trim();
+          buf = buf.slice(idx + 1);
+          if (!line.startsWith('data:')) continue;        // skip SSE comments / blank lines
+          const payload = line.slice(5).trim();
+          if (payload === '[DONE]') continue;
+          try {
+            const j = JSON.parse(payload);
+            const delta = j.choices && j.choices[0] && j.choices[0].delta && j.choices[0].delta.content;
+            if (delta) safeSend(sender, 'openrouter:chunk', { reqId, delta });
+          } catch (_) {}
+        }
+      });
+      res.on('end', () => { if (!orReqs.has(reqId)) return; orReqs.delete(reqId); safeSend(sender, 'openrouter:done', { reqId }); });
+    });
+  req.on('error', (err) => { if (!orReqs.has(reqId)) return; orReqs.delete(reqId); safeSend(sender, 'openrouter:error', { reqId, error: String(err.message || err) }); });
+  req.setTimeout(120000, () => { req.destroy(); if (!orReqs.has(reqId)) return; orReqs.delete(reqId); safeSend(sender, 'openrouter:error', { reqId, error: 'таймаут запроса' }); });
+  orReqs.set(reqId, req);
+  req.write(body); req.end();
+});
+ipcMain.on('openrouter:chatAbort', (e, { reqId } = {}) => {
+  const r = orReqs.get(reqId);
+  if (r) { orReqs.delete(reqId); try { r.destroy(); } catch (_) {} safeSend(e.sender, 'openrouter:done', { reqId }); }
 });
 
 // ---------------------------------------------------------------- settings backup (export / import)
