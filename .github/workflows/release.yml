@@ -43,15 +43,8 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           fail_on_unmatched_files: false
-          prerelease: true
-          body: |
-            **LiteEditorAI — alpha.** Лёгкий редактор для работы с ИИ-агентами в терминале.
-
-            ### Что скачать
-            - 🐧 **`.deb`** — Ubuntu / Debian (x64). Установка: `sudo apt install ./LiteEditorAI_*.deb`, затем иконка **LiteEditorAI** в меню.
-            - 🪟 **`.zip`** — Windows (x64), portable: распакуй и запусти `LiteEditorAI.exe` (установка не нужна).
-
-            Это alpha — терминалы не переживают перезапуск. Баги и идеи → Issues.
+          prerelease: false                 # помечать как Latest (не Pre-release)
+          body_path: RELEASE_NOTES.md        # тело релиза — из файла в репо (единый источник, см. CHANGELOG.md)
           files: |
             dist-release/*.deb
             dist-release/*.zip

@@ -7,6 +7,7 @@ import { SearchAddon } from '@xterm/addon-search';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import { WebglAddon } from '@xterm/addon-webgl';
 import { CanvasAddon } from '@xterm/addon-canvas';
+import { Unicode11Addon } from '@xterm/addon-unicode11';
 import '@xterm/xterm/css/xterm.css';
 
 import { EditorView, keymap, lineNumbers, highlightActiveLine, drawSelection } from '@codemirror/view';
@@ -25,7 +26,7 @@ import { markdown } from '@codemirror/lang-markdown';
 import { html } from '@codemirror/lang-html';
 import { css } from '@codemirror/lang-css';
 
-const APP_VERSION = 'alpha v1.0.52';
+const APP_VERSION = 'alpha v1.0.53';
 const GUTTER = 5;
 const SCRATCH_ID = '__scratch__'; // системный терминал (домашняя папка), не привязан к проектам
 
@@ -1825,6 +1826,12 @@ function loadFastRenderer(term) {
   }
   try { term.loadAddon(new CanvasAddon()); } catch (_) {}
 }
+// xterm ships Unicode V6 width tables, which lack newer emoji ranges (📁 U+1F4C1, ⏰ U+23F0…)
+// → they're treated as width 1 and overlap neighbouring text (e.g. Claude Code's status line).
+// The unicode11 addon adds the Unicode 11 width tables; activeVersion='11' switches to them.
+function applyUnicode11(term) {
+  try { term.loadAddon(new Unicode11Addon()); term.unicode.activeVersion = '11'; } catch (_) {}
+}
 
 // ---- terminal sessions (tabs) ----
 // Each project owns ≥1 SESSION (tab) = its own PTY + xterm. `terms` is keyed by sessionId;
@@ -1860,6 +1867,7 @@ function createSession(proj, name) {
   term.loadAddon(fit);
   term.loadAddon(search);
   term.loadAddon(new WebLinksAddon((_e, uri) => lite.openExternal(uri)));
+  applyUnicode11(term);
   term.open(container);
   loadFastRenderer(term);
   fit.fit();
@@ -2042,6 +2050,7 @@ function ensureScratchTerminal() {
   term.loadAddon(fit);
   term.loadAddon(search);
   term.loadAddon(new WebLinksAddon((_e, uri) => lite.openExternal(uri)));
+  applyUnicode11(term);
   term.open(container);
   loadFastRenderer(term);
   fit.fit();
