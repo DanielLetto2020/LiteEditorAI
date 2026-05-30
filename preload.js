@@ -43,6 +43,7 @@ contextBridge.exposeInMainWorld('lite', {
 
   openrouter: {
     models: (key) => ipcRenderer.invoke('openrouter:models', { key }),
+    keyInfo: (key) => ipcRenderer.invoke('openrouter:keyInfo', { key }),
     histGet: (id) => ipcRenderer.invoke('openrouter:histGet', id),
     histSet: (id, messages) => ipcRenderer.invoke('openrouter:histSet', { id, messages }),
     chatStart: (opts) => ipcRenderer.send('openrouter:chatStart', opts),

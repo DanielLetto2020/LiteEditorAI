@@ -25,7 +25,7 @@ import { markdown } from '@codemirror/lang-markdown';
 import { html } from '@codemirror/lang-html';
 import { css } from '@codemirror/lang-css';
 
-const APP_VERSION = 'alpha v1.0.51';
+const APP_VERSION = 'alpha v1.0.52';
 const GUTTER = 5;
 const SCRATCH_ID = '__scratch__'; // системный терминал (домашняя папка), не привязан к проектам
 
@@ -147,6 +147,7 @@ let orCards = Array.isArray(STORE.openrouter) ? STORE.openrouter : [];
 let activeOrId = null;        // id of the OpenRouter card whose chat is shown (null → terminal mode)
 const orChats = new Map();    // cardId -> { messages:[{role,content}], loaded, streaming, reqId }
 const orModelsByKey = new Map(); // apiKey -> [{id,name}] (fetched once, cached for the session)
+const orUsageByKey = new Map();  // apiKey -> {usage,limit,limit_remaining,label} | {loading} | {error}
 const pendingOr = new Map();  // reqId -> { chunk, done, error } stream handlers
 let orReqSeq = 0;
 const OR_KEY = '__openrouter__'; // accordion/section key for the OpenRouter group
@@ -187,6 +188,33 @@ function fmtPrice(p) {
   if (v === 0) return 'free';
   const per = v * 1e6;
   return '$' + (per >= 1 ? per.toFixed(2) : per.toPrecision(2));
+}
+function fmtUsd(v) { const n = Number(v); return '$' + (Number.isFinite(n) ? n : 0).toFixed(2); }
+function usageText(key) {
+  const u = orUsageByKey.get(key);
+  if (!u || u.loading) return 'баланс: загрузка…';
+  if (u.error) return 'баланс: —';
+  const used = fmtUsd(u.usage);
+  if (u.limit == null) return `израсходовано ${used} · лимит ∞`;
+  return `${used} / ${fmtUsd(u.limit)}`;
+}
+function cssEsc(s) { return (window.CSS && CSS.escape) ? CSS.escape(s) : String(s); }
+function updateUsageDom(key) {
+  const esc = cssEsc(key);
+  document.querySelectorAll(`.or-usage-text[data-key="${esc}"]`).forEach((s) => { s.textContent = usageText(key); });
+  const loading = (orUsageByKey.get(key) || {}).loading;
+  document.querySelectorAll(`.or-refresh[data-key="${esc}"]`).forEach((b) => b.classList.toggle('spinning', !!loading));
+}
+async function fetchKeyInfo(key, force) {
+  const cur = orUsageByKey.get(key);
+  if (!force && cur) return;            // already have data (or loading) — auto-load runs once
+  if (cur && cur.loading) return;       // a request is already in flight
+  orUsageByKey.set(key, { loading: true });
+  updateUsageDom(key);
+  let r; try { r = await lite.openrouter.keyInfo(key); } catch (e) { r = { error: String(e) }; }
+  if (r && !r.error) orUsageByKey.set(key, { usage: r.usage, limit: r.limit, limit_remaining: r.limit_remaining, label: r.label });
+  else orUsageByKey.set(key, { error: (r && r.error) || 'ошибка' });
+  updateUsageDom(key);
 }
 function modelMetaText(card) {
   const mm = card.modelMeta; if (!mm) return card.model || '';
@@ -248,6 +276,32 @@ function renderMsgContent(bubble, role, text) {
   bubble.classList.remove('err');
   if (role === 'assistant') { bubble.innerHTML = mdToSafeHtml(text); enhanceCodeBlocks(bubble); }
   else bubble.textContent = text || '';
+}
+// Fullscreen image viewer with a download button (for generated/markdown images).
+function openImageLightbox(src) {
+  const ov = el('div', 'img-lightbox');
+  const img = el('img', 'img-lb-img'); img.src = src;
+  const bar = el('div', 'img-lb-bar');
+  const dl = el('button', 'btn primary', 'Скачать');
+  dl.addEventListener('click', (e) => { e.stopPropagation(); downloadImage(src); });
+  const cl = el('button', 'btn', 'Закрыть');
+  const close = () => { ov.remove(); document.removeEventListener('keydown', onKey); };
+  const onKey = (e) => { if (e.key === 'Escape') close(); };
+  cl.addEventListener('click', (e) => { e.stopPropagation(); close(); });
+  bar.appendChild(dl); bar.appendChild(cl);
+  ov.appendChild(img); ov.appendChild(bar);
+  ov.addEventListener('click', (e) => { if (e.target === ov) close(); }); // click backdrop to dismiss
+  document.addEventListener('keydown', onKey);
+  document.body.appendChild(ov);
+}
+function downloadImage(src) {
+  try {
+    const a = document.createElement('a');
+    a.href = src;
+    const ext = (src.match(/^data:image\/(\w+)/) || [])[1] || 'png';
+    a.download = 'openrouter-image-' + Date.now() + '.' + ext;
+    document.body.appendChild(a); a.click(); a.remove();
+  } catch (_) {}
 }
 
 // ---------------------------------------------------------------- notes auto-queue
@@ -533,6 +587,15 @@ function makeOrCard(c) {
   sub.appendChild(el('span', 'or-key', maskKey(c.key)));
   if (c.model) { const mm = el('span', 'or-model', c.model); mm.title = c.model; sub.appendChild(mm); }
   card.appendChild(sub);
+  // balance row: spent / limit + refresh
+  const usage = el('div', 'or-usage');
+  const uText = el('span', 'or-usage-text', usageText(c.key)); uText.dataset.key = c.key;
+  const refresh = iconBtn('or-refresh', 'refresh', 'Обновить баланс ключа', 13); refresh.dataset.key = c.key;
+  if ((orUsageByKey.get(c.key) || {}).loading) refresh.classList.add('spinning');
+  refresh.addEventListener('click', (e) => { e.stopPropagation(); fetchKeyInfo(c.key, true); });
+  usage.appendChild(uText); usage.appendChild(refresh);
+  card.appendChild(usage);
+  if (!orUsageByKey.has(c.key)) fetchKeyInfo(c.key, false); // lazy auto-load once per key
   card.addEventListener('click', () => openChat(c.id));
   card.addEventListener('contextmenu', (e) => { e.preventDefault(); showOpenRouter(); });
   return card;
@@ -741,6 +804,7 @@ function sendChat() {
   st.streaming = true; st.reqId = reqId;
   setChatSending(true);
   let acc = '';
+  let rich = false; // once an image arrives, render markdown live (don't dump the data: URL as text)
   const finish = (errMsg) => {
     pendingOr.delete(reqId);
     st.streaming = false; st.reqId = null;
@@ -752,7 +816,12 @@ function sendChat() {
     scrollChat();
   };
   pendingOr.set(reqId, {
-    chunk: (d) => { acc += d; bubble.textContent = acc; scrollChat(); },
+    chunk: (d) => {
+      acc += d;
+      if (!rich && d.includes('![image](')) rich = true;
+      if (rich) renderMsgContent(bubble, 'assistant', acc); else bubble.textContent = acc;
+      scrollChat();
+    },
     done: () => finish(null),
     error: (msg) => finish(msg),
   });
@@ -3105,8 +3174,10 @@ function init() {
   $('#chat-model-pop').addEventListener('click', (e) => e.stopPropagation());
   $('#chat-session-btn').addEventListener('click', (e) => { e.stopPropagation(); toggleSessionPop(); });
   $('#chat-session-pop').addEventListener('click', (e) => e.stopPropagation());
-  $('#chat-log').addEventListener('click', (e) => { // links in messages open in the system browser
-    const a = e.target.closest('a[href]'); if (!a) return;
+  $('#chat-log').addEventListener('click', (e) => {
+    const img = e.target.closest('img'); // generated/markdown image → open in a lightbox
+    if (img && img.src) { e.preventDefault(); openImageLightbox(img.src); return; }
+    const a = e.target.closest('a[href]'); if (!a) return; // links in messages open in the system browser
     e.preventDefault();
     // model output is untrusted — only open http(s); never file:/custom schemes via openExternal
     try { const u = new URL(a.getAttribute('href'), location.href); if (u.protocol === 'http:' || u.protocol === 'https:') lite.openExternal(u.href); } catch (_) {}

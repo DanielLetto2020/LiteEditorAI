@@ -1,6 +1,6 @@
 {
   "name": "liteeditor-ai",
-  "version": "1.0.51-alpha",
+  "version": "1.0.52-alpha",
   "description": "Lightweight editor for working with AI coding agents in the terminal",
   "main": "main.js",
   "author": "Максим Кузьминский <i@m-letto.ru>",

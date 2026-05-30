@@ -240,6 +240,26 @@ ipcMain.handle('openrouter:models', async (_e, { key } = {}) => {
     req.end();
   });
 });
+// Key balance: GET /key → credit limit + usage (so the card can show «израсходовано / лимит»).
+ipcMain.handle('openrouter:keyInfo', async (_e, { key } = {}) => {
+  return await new Promise((resolve) => {
+    const req = https.request(OR_BASE + '/key', { method: 'GET', headers: orHeaders(key) }, (res) => {
+      let data = '';
+      res.on('data', (c) => { data += c; });
+      res.on('end', () => {
+        try {
+          const j = JSON.parse(data);
+          if (res.statusCode >= 400) return resolve({ error: (j.error && j.error.message) || ('HTTP ' + res.statusCode) });
+          const d = j.data || {};
+          resolve({ usage: d.usage, limit: d.limit, limit_remaining: d.limit_remaining, label: d.label, is_free_tier: d.is_free_tier });
+        } catch (_) { resolve({ error: 'Не удалось разобрать ответ OpenRouter' }); }
+      });
+    });
+    req.on('error', (e) => resolve({ error: String(e.message || e) }));
+    req.setTimeout(15000, () => { req.destroy(); resolve({ error: 'таймаут' }); });
+    req.end();
+  });
+});
 const orReqs = new Map(); // reqId -> ClientRequest (for abort)
 ipcMain.on('openrouter:chatStart', (e, { reqId, key, model, messages, temperature } = {}) => {
   const sender = e.sender;
@@ -259,6 +279,7 @@ ipcMain.on('openrouter:chatStart', (e, { reqId, key, model, messages, temperatur
         return;
       }
       let buf = '';
+      const seenImg = new Set(); // de-dupe images that arrive both in a delta and the final message
       res.on('data', (chunk) => {
         buf += chunk.toString('utf8');
         let idx;
@@ -270,8 +291,20 @@ ipcMain.on('openrouter:chatStart', (e, { reqId, key, model, messages, temperatur
           if (payload === '[DONE]') continue;
           try {
             const j = JSON.parse(payload);
-            const delta = j.choices && j.choices[0] && j.choices[0].delta && j.choices[0].delta.content;
+            const ch = j.choices && j.choices[0];
+            if (!ch) continue;
+            const delta = ch.delta && ch.delta.content;
             if (delta) safeSend(sender, 'openrouter:chunk', { reqId, delta });
+            // image-generation models return pictures in delta.images / message.images
+            // ({type:'image_url', image_url:{url}}). Fold them into the stream as markdown
+            // images so the renderer shows <img> (data:/https: allowed by CSP).
+            const imgs = (ch.delta && ch.delta.images) || (ch.message && ch.message.images);
+            if (Array.isArray(imgs)) {
+              for (const im of imgs) {
+                const url = im && (im.image_url ? im.image_url.url : im.url);
+                if (url && !seenImg.has(url)) { seenImg.add(url); safeSend(sender, 'openrouter:chunk', { reqId, delta: `\n\n![image](${url})\n\n` }); }
+              }
+            }
           } catch (_) {}
         }
       });

@@ -695,6 +695,17 @@ body.preview-full .prev-frame { width: 100%; height: 100%; }
 .or-key-row .ic { flex: 0 0 auto; color: var(--text-mute); }
 .or-key { font-size: 11px; font-family: "JetBrains Mono", monospace; letter-spacing: .2px; }
 .or-model { margin-left: auto; font-size: 10px; padding: 1px 7px; border-radius: 8px; background: var(--accent-soft); color: var(--green); max-width: 48%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.or-usage { display: flex; align-items: center; gap: 6px; margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border); }
+.or-usage-text { flex: 1; min-width: 0; font-size: 11px; color: var(--text-dim); font-family: "JetBrains Mono", monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.or-refresh { flex: 0 0 auto; width: 22px; height: 22px; border-radius: 6px; background: none; border: none; box-shadow: none; color: var(--text-mute); opacity: .7; cursor: pointer; }
+.or-refresh:hover { opacity: 1; color: var(--text); background: var(--hover); }
+.or-refresh.spinning .ic { animation: pind-spin .8s linear infinite; }
+
+/* fullscreen image viewer (generated images) */
+.img-lightbox { position: fixed; inset: 0; z-index: 200; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; background: rgba(0,0,0,.82); padding: 28px; }
+.img-lb-img { max-width: 92vw; max-height: 80vh; border-radius: 10px; box-shadow: 0 20px 60px rgba(0,0,0,.6); object-fit: contain; }
+.img-lb-bar { display: flex; gap: 10px; }
+.chat-bubble img { cursor: zoom-in; }
 
 /* ---------------- OpenRouter keys modal ---------------- */
 .or-intro a { color: var(--green); text-decoration: none; }
