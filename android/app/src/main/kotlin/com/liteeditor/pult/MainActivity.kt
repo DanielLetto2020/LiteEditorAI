@@ -28,6 +28,9 @@ class MainActivity : Activity() {
 
         web.settings.javaScriptEnabled = true
         web.settings.domStorageEnabled = true
+        @Suppress("DEPRECATION")
+        web.settings.databaseEnabled = true   // localStorage на file:// надёжнее
+        web.settings.allowFileAccess = true
         WebView.setWebContentsDebuggingEnabled(true)
 
         val cfg = JSONObject()

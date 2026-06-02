@@ -10,8 +10,9 @@
     html, body { margin: 0; height: 100%; background: #0d1117; color: #d6deeb;
       font-family: -apple-system, Roboto, sans-serif; overflow: hidden; }
 
-    /* Экран входа */
-    #login { display: none; height: 100%; align-items: center; justify-content: center; }
+    /* Экран входа — виден по умолчанию (JS прячет его при входе в приложение),
+       чтобы даже при сбое JS не было пустого «чёрного экрана». */
+    #login { display: flex; height: 100%; align-items: center; justify-content: center; }
     .login-box { width: 280px; max-width: 86vw; display: flex; flex-direction: column; gap: 12px; }
     .login-box h1 { font-size: 18px; color: #7fdbca; text-align: center; margin: 0 0 6px; }
     .login-box input { background: #11161d; color: #d6deeb; border: 1px solid #2a323d;

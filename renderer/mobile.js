@@ -21,6 +21,28 @@ let booted = false;
 
 const $ = (id) => document.getElementById(id);
 
+// localStorage на file://-странице WebView может бросать SecurityError — оборачиваем
+// и падаем в память (токен переживёт сессию, но не полный перезапуск приложения).
+const mem = {};
+function lsGet(k) { try { return localStorage.getItem(k); } catch (_) { return (k in mem) ? mem[k] : null; } }
+function lsSet(k, v) { try { localStorage.setItem(k, v); } catch (_) { mem[k] = v; } }
+function lsDel(k) { try { localStorage.removeItem(k); } catch (_) { delete mem[k]; } }
+
+// Видимый баннер ошибок — чтобы на планшете не было «чёрного экрана» без причины.
+function showFatal(msg) {
+  let b = $('fatal');
+  if (!b) {
+    b = document.createElement('div');
+    b.id = 'fatal';
+    b.style.cssText = 'position:fixed;left:0;right:0;bottom:0;z-index:9999;background:#5a1620;color:#fff;'
+      + 'font:12px monospace;padding:8px;white-space:pre-wrap;max-height:40%;overflow:auto';
+    document.body.appendChild(b);
+  }
+  b.textContent = 'Ошибка: ' + msg;
+}
+window.addEventListener('error', (e) => showFatal((e && e.message) || String(e)));
+window.addEventListener('unhandledrejection', (e) => showFatal('promise: ' + ((e && e.reason && e.reason.message) || e.reason)));
+
 function deriveHttp(wsu) {
   return wsu.replace(/^wss:\/\//, 'https://').replace(/^ws:\/\//, 'http://').replace(/\/ws$/, '');
 }
@@ -51,8 +73,8 @@ async function doLogin() {
     const data = await res.json().catch(() => ({}));
     if (res.ok && data.token) {
       token = data.token;
-      localStorage.setItem('lite_token', token);
-      localStorage.setItem('lite_login', data.login || login);
+      lsSet('lite_token', token);
+      lsSet('lite_login', data.login || login);
       enterApp();
     } else {
       $('lg-err').textContent = data.detail || (res.status === 401 ? 'Неверный логин или пароль' : 'Ошибка входа');
@@ -65,8 +87,8 @@ async function doLogin() {
 }
 
 function logout() {
-  localStorage.removeItem('lite_token');
-  localStorage.removeItem('lite_login');
+  lsDel('lite_token');
+  lsDel('lite_login');
   token = '';
   try { ws && ws.close(); } catch (_) {}
   ws = null;
@@ -164,7 +186,7 @@ function enterApp() {
   $('login').style.display = 'none';
   $('app').style.display = 'flex';
   if (!term) { initTerm(); wirePrompt(); }
-  const who = localStorage.getItem('lite_login') || '';
+  const who = lsGet('lite_login') || '';
   const wEl = $('whoami'); if (wEl) wEl.textContent = who;
   try { ws && ws.close(); } catch (_) {}
   ws = null;
@@ -176,11 +198,16 @@ function start(config) {
   httpBase = deriveHttp(relayUrl);
   if (booted) return; // Android зовёт __bootLite после DOMContentLoaded — не перезапускаем
   booted = true;
-  $('lg-go').onclick = doLogin;
-  $('lg-pass').addEventListener('keydown', (e) => { if (e.key === 'Enter') doLogin(); });
-  const lo = $('logout'); if (lo) lo.onclick = logout;
-  token = localStorage.getItem('lite_token') || '';
-  if (token) enterApp(); else showLogin('');
+  try {
+    $('lg-go').onclick = doLogin;
+    $('lg-pass').addEventListener('keydown', (e) => { if (e.key === 'Enter') doLogin(); });
+    const lo = $('logout'); if (lo) lo.onclick = logout;
+    token = lsGet('lite_token') || '';
+    if (token) enterApp(); else showLogin('');
+  } catch (e) {
+    showLogin('');
+    showFatal('start: ' + ((e && e.message) || e));
+  }
 }
 
 // Android вызывает после загрузки. Браузер — из query (?relay=...).
