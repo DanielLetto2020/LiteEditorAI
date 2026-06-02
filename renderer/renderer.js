@@ -26,7 +26,7 @@ import { markdown } from '@codemirror/lang-markdown';
 import { html } from '@codemirror/lang-html';
 import { css } from '@codemirror/lang-css';
 
-const APP_VERSION = 'alpha v1.0.64';
+const APP_VERSION = 'alpha v1.0.65';
 const GUTTER = 5;
 const SCRATCH_ID = '__scratch__'; // системный терминал (домашняя папка), не привязан к проектам
 
@@ -2134,6 +2134,13 @@ function handleRemoteOpen(projId) {
   doSetActive(projId); // активируем проект (ensureProjectTabs)
   addTab();            // новая вкладка-терминал в активном проекте
 }
+// Пульт закрыл вкладку (×) → закрываем её на десктопе (closeTab работает по активному проекту).
+function handleRemoteClose(sid) {
+  const rec = terms.get(sid);
+  if (!rec) return;
+  if (rec.projId !== activeId) doSetActive(rec.projId);
+  closeTab(sid);
+}
 function refitActiveTerminal(focusIt) {
   const asid = activeSessionId();
   const rec = asid ? terms.get(asid) : null;
@@ -3253,6 +3260,8 @@ function init() {
   try { if (lite.remote && lite.remote.onSelect) lite.remote.onSelect((sid) => { try { handleRemoteSelect(sid); } catch (_) {} }); } catch (_) {}
   // Пульт открыл терминал проекта → создаём вкладку на десктопе.
   try { if (lite.remote && lite.remote.onOpenProject) lite.remote.onOpenProject((projId) => { try { handleRemoteOpen(projId); } catch (_) {} }); } catch (_) {}
+  // Пульт закрыл вкладку → закрываем на десктопе.
+  try { if (lite.remote && lite.remote.onCloseTab) lite.remote.onCloseTab((sid) => { try { handleRemoteClose(sid); } catch (_) {} }); } catch (_) {}
 
   // OpenRouter streaming → route SSE events to the live request's handlers (by reqId).
   lite.openrouter.onChunk(({ reqId, delta }) => { const h = pendingOr.get(reqId); if (h) h.chunk(delta); });

@@ -85,7 +85,7 @@ function showOverlay(title, bodyEl) {
   let ov = $('overlay');
   if (!ov) {
     ov = document.createElement('div'); ov.id = 'overlay';
-    ov.style.cssText = 'position:fixed;inset:0;z-index:60;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;padding:14px';
+    ov.style.cssText = 'position:fixed;top:0;right:0;bottom:0;left:0;z-index:60;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;padding:14px';
     ov.addEventListener('click', (e) => { if (e.target === ov) ov.style.display = 'none'; });
     document.body.appendChild(ov);
   }
@@ -194,9 +194,11 @@ function initTerm() {
       rendererType: 'dom',
       theme: { background: '#0d1117', foreground: '#d6deeb', cursor: '#7fdbca' },
     });
-    term.open($('term'));
+    const host = $('term');
+    term.open(host);
     term.onData((d) => sendInput(d));   // ввод прямо в терминал (клавиатура планшета)
     window.addEventListener('resize', applyTermSize);
+    attachTouchScroll(host);            // независимый скрол истории жестом на планшете
     termOk = true;
   } catch (e) {
     termOk = false;
@@ -232,6 +234,28 @@ function clearOut() {
   lineBuf = ['']; curRow = 0; curCol = 0; if (pre) pre.textContent = '';
 }
 function focusOut() { if (termOk) { try { term.focus(); } catch (_) {} } }
+
+// Скрол истории терминала жестом (независимо от ПК — это локальный буфер xterm).
+function attachTouchScroll(host) {
+  let ty = null;
+  host.addEventListener('touchstart', (e) => { if (e.touches.length === 1) ty = e.touches[0].clientY; }, { passive: true });
+  host.addEventListener('touchmove', (e) => {
+    if (ty === null || e.touches.length !== 1 || !termOk) return;
+    const y = e.touches[0].clientY;
+    const lineH = Math.max(8, host.clientHeight / (term.rows || 24));
+    const lines = Math.trunc((ty - y) / lineH);
+    if (lines !== 0) { try { term.scrollLines(lines); } catch (_) {} ty = y; }
+  }, { passive: true });
+  host.addEventListener('touchend', () => { ty = null; }, { passive: true });
+}
+
+// Тонкий тулбар над терминалом (для стилуса): спецклавиши.
+const TKEYS = { 'c-c': '\x03', 'esc': '\x1b', 'tab': '\t', 'up': '\x1b[A', 'down': '\x1b[B', 'enter': '\r', 'c-d': '\x04' };
+function wireTermbar() {
+  for (const b of document.querySelectorAll('.tk')) {
+    b.onclick = (e) => { e.preventDefault(); const seq = TKEYS[b.dataset.key]; if (seq != null) sendInput(seq); };
+  }
+}
 
 // --- текстовый фолбэк (если xterm не завёлся) ---
 let pre = null;
@@ -310,8 +334,13 @@ function renderTree() {
   const addSession = (s) => {
     const t = document.createElement('div');
     t.className = 'tab' + (s.sid === selected ? ' active' : '');
-    t.textContent = s.tab || s.label || s.sid;
-    t.onclick = () => selectSession(s.sid);
+    const nm = document.createElement('span');
+    nm.className = 'tab-name'; nm.textContent = s.tab || s.label || s.sid;
+    nm.onclick = () => selectSession(s.sid);
+    const x = document.createElement('button');
+    x.className = 'tab-x'; x.textContent = '×';
+    x.onclick = (e) => { e.stopPropagation(); send({ t: 'close', sid: s.sid }); };
+    t.appendChild(nm); t.appendChild(x);
     box.appendChild(t);
   };
 
@@ -388,7 +417,7 @@ function scheduleReconnect() {
 function enterApp() {
   $('login').style.display = 'none';
   $('app').style.display = 'flex';
-  if (!termInited) { termInited = true; initTerm(); }
+  if (!termInited) { termInited = true; initTerm(); wireTermbar(); }
   const w = $('whoami'); if (w) w.textContent = lsGet('lite_login') || '';
 }
 
@@ -406,7 +435,7 @@ function start(config) {
     token = lsGet('lite_token') || '';
     if (token) enterApp(); else showLogin('');
     connect();           // с токеном → авторизуемся; без → пред-авторизованный сокет для входа
-    sendReport('boot', 'app started v0.10.0', (token ? 'has-token' : 'no-token'));
+    sendReport('boot', 'app started v0.11.0', (token ? 'has-token' : 'no-token'));
   } catch (e) {
     showLogin('');
     showFatal('start: ' + ((e && e.message) || e));
