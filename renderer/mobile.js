@@ -7,16 +7,13 @@
 //     ждём {t:"auth_ok",token} | {t:"auth_err",error}.
 // Любая JS-ошибка шлётся на сервер ({t:"report"}) и показывается баннером — чтобы
 // «чёрный экран»/«тишину» можно было диагностировать удалённо (таблица reports).
-import { Terminal } from '@xterm/xterm';
-import { FitAddon } from '@xterm/addon-fit';
-import '@xterm/xterm/css/xterm.css';
+// БЕЗ xterm: на старых WebView (Chrome 79 и т.п.) xterm 5.x падает в асинхронном
+// рендер-цикле. Терминал — простой <pre> с очисткой ANSI: рисует на любом WebView.
 
 let ws = null;
 let relayUrl = 'wss://lite.codecopy.ru/ws';
 let token = '';
 let selected = null;
-let term = null;
-let fit = null;
 let lastSessions = [];
 let lastProjects = [];
 let booted = false;
@@ -33,7 +30,10 @@ function lsSet(k, v) { try { localStorage.setItem(k, v); } catch (_) { mem[k] = 
 function lsDel(k) { try { localStorage.removeItem(k); } catch (_) { delete mem[k]; } }
 
 // ----------------------------------------------------------- телеметрия/ошибки
+let reportCount = 0;
 function sendReport(kind, message, detail) {
+  if (reportCount > 25) return;   // защита от флуда (повторяющиеся ошибки)
+  reportCount++;
   const payload = JSON.stringify({
     t: 'report', kind: String(kind || ''), message: String(message || '').slice(0, 2000),
     detail: String(detail || '').slice(0, 8000), ua: (navigator && navigator.userAgent) || '',
@@ -105,38 +105,17 @@ function logout() {
   connect(); // пред-авторизованный сокет для нового входа
 }
 
-// ----------------------------------------------------------------- терминал
-// Терминал: пробуем xterm; если падает (старый WebView, напр. Chrome 79) — простой <pre>.
-let termMode = null;  // 'xterm' | 'pre'
+// ------------------------------------------------------------ терминал (текст)
 let pre = null;
 
 function initTerm() {
-  try {
-    term = new Terminal({
-      fontSize: 13, fontFamily: 'monospace', cursorBlink: true, scrollback: 5000,
-      theme: { background: '#0d1117', foreground: '#d6deeb', cursor: '#7fdbca' },
-    });
-    fit = new FitAddon();
-    term.loadAddon(fit);
-    term.open($('term'));
-    try { fit.fit(); } catch (_) {}
-    window.addEventListener('resize', () => { try { fit.fit(); } catch (_) {} });
-    term.onData((d) => sendInput(d));
-    termMode = 'xterm';
-  } catch (e) {
-    sendReport('xterm-init', (e && e.message) || String(e), (e && e.stack) || '');
-    initPre();
-  }
-}
-function initPre() {
-  termMode = 'pre';
   const host = $('term');
   host.innerHTML = '';
   pre = document.createElement('pre');
   pre.style.cssText = 'margin:0;height:100%;overflow:auto;white-space:pre-wrap;word-break:break-word;color:#d6deeb;font:12px/1.35 monospace;padding:6px';
   host.appendChild(pre);
 }
-// Грубая чистка ANSI/OSC для текстового фолбэка.
+// Грубая чистка ANSI/OSC, чтобы текст был читаемым.
 function stripAnsi(s) {
   return String(s)
     .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '')
@@ -145,18 +124,13 @@ function stripAnsi(s) {
     .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, '');
 }
 function writeOut(data) {
-  if (termMode === 'xterm') {
-    try { term.write(data); return; }
-    catch (e) { sendReport('xterm-write', (e && e.message) || String(e), (e && e.stack) || ''); initPre(); }
-  }
-  if (termMode === 'pre' && pre) {
-    pre.textContent += stripAnsi(data);
-    if (pre.textContent.length > 120000) pre.textContent = pre.textContent.slice(-90000);
-    pre.scrollTop = pre.scrollHeight;
-  }
+  if (!pre) return;
+  pre.textContent += stripAnsi(data);
+  if (pre.textContent.length > 120000) pre.textContent = pre.textContent.slice(-90000);
+  pre.scrollTop = pre.scrollHeight;
 }
-function clearOut() { if (termMode === 'xterm') { try { term.reset(); } catch (_) {} } else if (pre) pre.textContent = ''; }
-function focusOut() { if (termMode === 'xterm') { try { term.focus(); } catch (_) {} } }
+function clearOut() { if (pre) pre.textContent = ''; }
+function focusOut() {}
 
 // Дерево вкладок: проекты по категориям (как сайдбар редактора), под каждым —
 // открытые терминалы; «＋» рядом с проектом — открыть терминал удалённо.
@@ -258,7 +232,7 @@ function wirePrompt() {
 function enterApp() {
   $('login').style.display = 'none';
   $('app').style.display = 'flex';
-  if (!term) { initTerm(); wirePrompt(); }
+  if (!pre) { initTerm(); wirePrompt(); }
   const w = $('whoami'); if (w) w.textContent = lsGet('lite_login') || '';
 }
 
@@ -273,7 +247,7 @@ function start(config) {
     token = lsGet('lite_token') || '';
     if (token) enterApp(); else showLogin('');
     connect();           // с токеном → авторизуемся; без → пред-авторизованный сокет для входа
-    sendReport('boot', 'app started v0.6.0', (token ? 'has-token' : 'no-token'));
+    sendReport('boot', 'app started v0.7.0', (token ? 'has-token' : 'no-token'));
   } catch (e) {
     showLogin('');
     showFatal('start: ' + ((e && e.message) || e));
