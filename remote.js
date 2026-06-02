@@ -12,12 +12,13 @@
 let WebSocket = null;
 try { WebSocket = require('ws'); } catch (_) { /* ws не установлен — фича не поднимется */ }
 
-const BUF_LIMIT = 64 * 1024;
+const BUF_LIMIT = 16 * 1024; // короткий «хвост» вывода на сессию (не копим большую историю)
 
 let logger = { log() {} };
 let getSessions = () => ({ sessions: [], projects: [] });
 let writeInput = () => {};
 let openProject = () => {};
+let onSelect = () => {};
 
 let host = 'lite.codecopy.ru';
 let token = '';
@@ -38,7 +39,7 @@ function send(obj) {
 function sendState() {
   let s = {};
   try { s = getSessions() || {}; } catch (_) {}
-  send({ t: 'state', sessions: s.sessions || [], projects: s.projects || [] });
+  send({ t: 'state', sessions: s.sessions || [], projects: s.projects || [], active: s.active || '' });
 }
 
 function connect() {
@@ -56,6 +57,7 @@ function connect() {
       activeSid = m.sid;
       const buf = buffers.get(m.sid);
       if (buf) send({ t: 'data', sid: m.sid, data: buf });
+      try { onSelect(m.sid); } catch (_) {}   // пульт выбрал → переключить десктоп
     } else if (m.t === 'input' && typeof m.sid === 'string') {
       try { writeInput(m.sid, m.data || ''); } catch (_) {}
     } else if (m.t === 'open' && typeof m.projId === 'string') {
@@ -79,6 +81,7 @@ function init(opts = {}) {
   if (opts.getSessions) getSessions = opts.getSessions;
   if (opts.writeInput) writeInput = opts.writeInput;
   if (opts.openProject) openProject = opts.openProject;
+  if (opts.onSelect) onSelect = opts.onSelect;
 }
 
 // Применить конфиг (host/token/enabled). Поднимает или гасит соединение.

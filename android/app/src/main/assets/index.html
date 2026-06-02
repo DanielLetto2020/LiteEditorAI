@@ -20,6 +20,7 @@
       } catch (e) {}
     }
     window.__report = report;
+    window.PULT_VER = '0.8.0';
     window.onerror = function (m, src, line, col, err) {
       report('page-error', m, (err && err.stack) || (src + ':' + line));
       var b = document.getElementById('fatal') || document.createElement('div');
@@ -29,7 +30,7 @@
       if (document.body) document.body.appendChild(b);
       return false;
     };
-    report('page-loaded', 'index.html v0.7.0', navigator.userAgent);
+    report('page-loaded', 'index.html v0.8.0', navigator.userAgent);
   })();
   </script>
   <style>
@@ -50,13 +51,21 @@
     .login-note { color: #5a6675; font-size: 12px; text-align: center; }
 
     /* Основной экран */
-    #app { display: none; height: 100%; }
+    #app { display: none; flex-direction: column; height: 100%; }
+    #topbar { display: flex; align-items: center; gap: 8px; padding: 7px 10px; background: #11161d;
+      border-bottom: 1px solid #1f2630; position: relative; flex: 0 0 auto; }
+    #menu-btn { background: none; border: 0; color: #9fb0c0; font-size: 18px; padding: 0 4px; }
+    #top-title { font-size: 13px; color: #7fdbca; flex: 1; }
+    #top-ver { font-size: 11px; color: #5a6675; }
+    #menu { display: none; position: absolute; left: 8px; top: 40px; z-index: 70; min-width: 150px;
+      background: #161c24; border: 1px solid #2a323d; border-radius: 8px; overflow: hidden; }
+    .mi { padding: 11px 14px; font-size: 13px; color: #d6deeb; }
+    .mi:active { background: #1c2530; }
+    #content { flex: 1; display: flex; min-height: 0; }
     #sidebar { width: 150px; min-width: 150px; background: #11161d; border-right: 1px solid #1f2630;
       display: flex; flex-direction: column; }
-    .side-head { padding: 8px 10px; border-bottom: 1px solid #1f2630; }
-    .side-head h1 { font-size: 12px; margin: 0; color: #7fdbca; }
-    .side-head .who { font-size: 10px; color: #5a6675; margin-top: 2px; }
-    #logout { margin-top: 4px; font-size: 10px; color: #6a7a8c; background: none; border: 0; padding: 0; text-decoration: underline; }
+    .side-head { padding: 6px 10px; border-bottom: 1px solid #1f2630; }
+    .side-head .who { font-size: 11px; color: #7fdbca; }
     #tabs { flex: 1; overflow-y: auto; }
     .cat { padding: 8px 10px 3px; font-size: 10px; color: #7fdbca; text-transform: uppercase; letter-spacing: .5px; }
     .proj { display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 6px 8px 6px 10px; }
@@ -86,26 +95,33 @@
       <div id="lg-err"></div>
       <button id="lg-go">Войти</button>
       <div class="login-note">Регистрация аккаунта — в редакторе на ПК (меню «Пульт»).</div>
-      <div class="login-note" style="opacity:.6">пульт v0.7.0</div>
+      <div class="login-note" style="opacity:.6">пульт v0.8.0</div>
     </div>
   </div>
 
   <!-- Основной экран -->
   <div id="app">
-    <div id="sidebar">
-      <div class="side-head">
-        <h1>Терминалы ПК</h1>
-        <div class="who" id="whoami"></div>
-        <button id="logout">сменить аккаунт</button>
+    <div id="topbar">
+      <button id="menu-btn">☰</button>
+      <span id="top-title">LiteEditor Пульт</span>
+      <span id="top-ver"></span>
+      <div id="menu">
+        <div class="mi" id="mi-account">Аккаунт</div>
+        <div class="mi" id="mi-logs">Логи</div>
       </div>
-      <div id="tabs"></div>
     </div>
-    <div id="main">
-      <div id="status">…</div>
-      <div id="term"></div>
-      <div id="prompt">
-        <textarea id="pmt" placeholder="Промпт для агента…" autocapitalize="off" autocorrect="off"></textarea>
-        <button id="send">▶</button>
+    <div id="content">
+      <div id="sidebar">
+        <div class="side-head"><span class="who" id="whoami"></span></div>
+        <div id="tabs"></div>
+      </div>
+      <div id="main">
+        <div id="status">…</div>
+        <div id="term"></div>
+        <div id="prompt">
+          <textarea id="pmt" placeholder="Промпт для агента…" autocapitalize="off" autocorrect="off"></textarea>
+          <button id="send">▶</button>
+        </div>
       </div>
     </div>
   </div>

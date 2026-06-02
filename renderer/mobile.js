@@ -29,9 +29,17 @@ function lsGet(k) { try { return localStorage.getItem(k); } catch (_) { return (
 function lsSet(k, v) { try { localStorage.setItem(k, v); } catch (_) { mem[k] = v; } }
 function lsDel(k) { try { localStorage.removeItem(k); } catch (_) { delete mem[k]; } }
 
-// ----------------------------------------------------------- телеметрия/ошибки
+// ----------------------------------------------------------- логи/телеметрия
+const logBuf = [];
+function pushLog(msg) {
+  let t = ''; try { t = new Date().toLocaleTimeString(); } catch (_) {}
+  logBuf.push('[' + t + '] ' + msg);
+  if (logBuf.length > 400) logBuf.shift();
+}
+
 let reportCount = 0;
 function sendReport(kind, message, detail) {
+  pushLog('report:' + kind + ' ' + (message || ''));
   if (reportCount > 25) return;   // защита от флуда (повторяющиеся ошибки)
   reportCount++;
   const payload = JSON.stringify({
@@ -68,7 +76,59 @@ window.addEventListener('unhandledrejection', (e) => {
   sendReport('promise', r.message || String(r), r.stack || '');
 });
 
-function setStatus(text, cls) { const el = $('status'); if (el) { el.textContent = text; el.className = cls || ''; } }
+function setStatus(text, cls) { pushLog('status: ' + text); const el = $('status'); if (el) { el.textContent = text; el.className = cls || ''; } }
+
+// --- Меню в шапке: оверлей + экраны «Аккаунт» и «Логи» ---
+function showOverlay(title, bodyEl) {
+  let ov = $('overlay');
+  if (!ov) {
+    ov = document.createElement('div'); ov.id = 'overlay';
+    ov.style.cssText = 'position:fixed;inset:0;z-index:60;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;padding:14px';
+    ov.addEventListener('click', (e) => { if (e.target === ov) ov.style.display = 'none'; });
+    document.body.appendChild(ov);
+  }
+  ov.innerHTML = '';
+  const card = document.createElement('div');
+  card.style.cssText = 'background:#11161d;border:1px solid #2a323d;border-radius:10px;width:440px;max-width:92vw;max-height:82vh;overflow:auto;padding:14px';
+  const head = document.createElement('div');
+  head.style.cssText = 'display:flex;justify-content:space-between;align-items:center;margin-bottom:10px';
+  const tt = document.createElement('b'); tt.textContent = title; tt.style.color = '#7fdbca';
+  const x = document.createElement('button'); x.textContent = '✕';
+  x.style.cssText = 'background:none;border:0;color:#9fb0c0;font-size:18px';
+  x.onclick = () => { ov.style.display = 'none'; };
+  head.appendChild(tt); head.appendChild(x);
+  card.appendChild(head); card.appendChild(bodyEl);
+  ov.appendChild(card); ov.style.display = 'flex';
+}
+function showAccount() {
+  const b = document.createElement('div');
+  const who = document.createElement('div');
+  who.style.cssText = 'color:#d6deeb;margin-bottom:12px';
+  who.textContent = 'Вы вошли как: ' + (lsGet('lite_login') || '—');
+  const ver = document.createElement('div');
+  ver.style.cssText = 'color:#5a6675;font-size:12px;margin-bottom:14px';
+  ver.textContent = 'Версия пульта: ' + (window.PULT_VER || '');
+  const out = document.createElement('button');
+  out.textContent = 'Выйти / сменить аккаунт';
+  out.style.cssText = 'background:#5a1620;color:#fff;border:0;border-radius:6px;padding:10px 14px;font-size:14px';
+  out.onclick = () => { const ov = $('overlay'); if (ov) ov.style.display = 'none'; logout(); };
+  b.appendChild(who); b.appendChild(ver); b.appendChild(out);
+  showOverlay('Аккаунт', b);
+}
+function showLogs() {
+  const b = document.createElement('div');
+  const lp = document.createElement('pre');
+  lp.style.cssText = 'margin:0;white-space:pre-wrap;word-break:break-word;color:#b7c2d0;font:11px/1.4 monospace;max-height:62vh;overflow:auto';
+  lp.textContent = logBuf.slice().reverse().join('\n') || 'пусто';
+  const row = document.createElement('div'); row.style.cssText = 'margin-top:10px;display:flex;gap:8px';
+  const cp = document.createElement('button'); cp.textContent = 'Копировать';
+  cp.style.cssText = 'background:#1f6feb;color:#fff;border:0;border-radius:6px;padding:8px 12px';
+  cp.onclick = () => { try { navigator.clipboard.writeText(logBuf.join('\n')); } catch (_) {} };
+  row.appendChild(cp); b.appendChild(lp); b.appendChild(row);
+  showOverlay('Логи пульта', b);
+}
+function closeMenu() { const m = $('menu'); if (m) m.style.display = 'none'; }
+function toggleMenu() { const m = $('menu'); if (m) m.style.display = (m.style.display === 'block') ? 'none' : 'block'; }
 
 // ----------------------------------------------------------------- вход
 function showLogin(errText) {
@@ -106,30 +166,69 @@ function logout() {
 }
 
 // ------------------------------------------------------------ терминал (текст)
+// Лёгкая построчная «эмуляция»: обрабатываем \r (возврат каретки → перезапись
+// строки), \n, \b, очистку строки (ESC[K), прочие ESC-последовательности
+// отбрасываем. Это убирает «кашу» от прогресс-баров/перерисовок агента.
 let pre = null;
+let lineBuf = [''];
+let curRow = 0;
+let curCol = 0;
 
 function initTerm() {
   const host = $('term');
   host.innerHTML = '';
   pre = document.createElement('pre');
-  pre.style.cssText = 'margin:0;height:100%;overflow:auto;white-space:pre-wrap;word-break:break-word;color:#d6deeb;font:12px/1.35 monospace;padding:6px';
+  pre.style.cssText = 'margin:0;height:100%;overflow:auto;white-space:pre-wrap;word-break:break-word;color:#d6deeb;font:12px/1.4 monospace;padding:6px';
   host.appendChild(pre);
+  lineBuf = ['']; curRow = 0; curCol = 0;
 }
-// Грубая чистка ANSI/OSC, чтобы текст был читаемым.
-function stripAnsi(s) {
-  return String(s)
-    .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '')
-    .replace(/\x1b[[\]][0-9;?=]*[ -/]*[@-~]/g, '')
-    .replace(/\x1b[@-Z\\-_]/g, '')
-    .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, '');
+// Историю на пульте держим короткой (не копим большой буфер).
+function renderPre() {
+  if (lineBuf.length > 500) { const drop = lineBuf.length - 400; lineBuf = lineBuf.slice(drop); curRow = Math.max(0, curRow - drop); }
+  pre.textContent = lineBuf.join('\n');
+  pre.scrollTop = pre.scrollHeight;
+}
+function putChar(ch) {
+  let line = lineBuf[curRow] || '';
+  if (curCol > line.length) line = line + ' '.repeat(curCol - line.length);
+  lineBuf[curRow] = line.slice(0, curCol) + ch + line.slice(curCol + 1);
+  curCol++;
 }
 function writeOut(data) {
   if (!pre) return;
-  pre.textContent += stripAnsi(data);
-  if (pre.textContent.length > 120000) pre.textContent = pre.textContent.slice(-90000);
-  pre.scrollTop = pre.scrollHeight;
+  data = String(data);
+  for (let i = 0; i < data.length; i++) {
+    const ch = data[i];
+    if (ch === '\x1b') {
+      if (data[i + 1] === '[') {
+        let j = i + 2;
+        while (j < data.length && !/[@-~]/.test(data[j])) j++;
+        const fin = data[j], params = data.slice(i + 2, j);
+        if (fin === 'K') {
+          const line = lineBuf[curRow] || '';
+          if (params === '2') lineBuf[curRow] = '';
+          else if (params !== '1') lineBuf[curRow] = line.slice(0, curCol);
+        } else if (fin === 'J' && (params === '2' || params === '3')) {
+          lineBuf = ['']; curRow = 0; curCol = 0;
+        }
+        i = j; continue;
+      } else if (data[i + 1] === ']') {
+        let j = i + 2;
+        while (j < data.length && data[j] !== '\x07' && data[j] !== '\x1b') j++;
+        if (data[j] === '\x1b') j++;
+        i = j; continue;
+      } else { i++; continue; }
+    }
+    if (ch === '\r') { curCol = 0; continue; }
+    if (ch === '\n') { curRow++; curCol = 0; if (lineBuf[curRow] === undefined) lineBuf[curRow] = ''; continue; }
+    if (ch === '\b') { if (curCol > 0) curCol--; continue; }
+    if (ch === '\t') { putChar(' '); while (curCol % 4 !== 0) putChar(' '); continue; }
+    if (ch < ' ') continue; // прочие управляющие
+    putChar(ch);
+  }
+  renderPre();
 }
-function clearOut() { if (pre) pre.textContent = ''; }
+function clearOut() { lineBuf = ['']; curRow = 0; curCol = 0; if (pre) pre.textContent = ''; }
 function focusOut() {}
 
 // Дерево вкладок: проекты по категориям (как сайдбар редактора), под каждым —
@@ -174,8 +273,6 @@ function renderTree() {
   const known = {}; projects.forEach((p) => { known[p.id] = 1; });
   const orphans = sessions.filter((s) => !s.projId || !known[s.projId]);
   if (orphans.length) { addCat('Прочее'); orphans.forEach(addSession); }
-
-  if (!selected && sessions.length) selectSession(sessions[0].sid);
 }
 function selectSession(sid) {
   selected = sid;
@@ -208,7 +305,12 @@ function connect() {
       send({ t: 'hello' });
     } else if (m.t === 'auth_err') {
       authError(m.error || 'Ошибка входа');
-    } else if (m.t === 'state') { lastSessions = m.sessions || []; lastProjects = m.projects || []; renderTree(); }
+    } else if (m.t === 'state') {
+      lastSessions = m.sessions || []; lastProjects = m.projects || []; renderTree();
+      // Синхронизация активной вкладки: следуем за активной на ПК.
+      if (m.active && m.active !== selected) selectSession(m.active);
+      else if (!selected && lastSessions.length) selectSession(lastSessions[0].sid);
+    }
     else if (m.t === 'data') { if (m.sid === selected) writeOut(m.data || ''); }
     else if (m.t === 'exit') { if (m.sid === selected) writeOut('\r\n[сессия завершена]\r\n'); }
     else if (m.t === 'peer' && m.role === 'pc' && m.event === 'leave') { setStatus('ПК отключился', 'wait'); }
@@ -244,10 +346,16 @@ function start(config) {
     $('lg-go').onclick = submitAuth;
     $('lg-pass').addEventListener('keydown', (e) => { if (e.key === 'Enter') submitAuth(); });
     const lo = $('logout'); if (lo) lo.onclick = logout;
+    // Шапка: версия справа + меню (Аккаунт, Логи).
+    const ver = $('top-ver'); if (ver) ver.textContent = window.PULT_VER || '';
+    const mb = $('menu-btn'); if (mb) mb.onclick = (e) => { e.stopPropagation(); toggleMenu(); };
+    const ma = $('mi-account'); if (ma) ma.onclick = () => { closeMenu(); showAccount(); };
+    const ml = $('mi-logs'); if (ml) ml.onclick = () => { closeMenu(); showLogs(); };
+    document.addEventListener('click', closeMenu);
     token = lsGet('lite_token') || '';
     if (token) enterApp(); else showLogin('');
     connect();           // с токеном → авторизуемся; без → пред-авторизованный сокет для входа
-    sendReport('boot', 'app started v0.7.0', (token ? 'has-token' : 'no-token'));
+    sendReport('boot', 'app started v0.8.0', (token ? 'has-token' : 'no-token'));
   } catch (e) {
     showLogin('');
     showFatal('start: ' + ((e && e.message) || e));

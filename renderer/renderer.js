@@ -26,7 +26,7 @@ import { markdown } from '@codemirror/lang-markdown';
 import { html } from '@codemirror/lang-html';
 import { css } from '@codemirror/lang-css';
 
-const APP_VERSION = 'alpha v1.0.61';
+const APP_VERSION = 'alpha v1.0.62';
 const GUTTER = 5;
 const SCRATCH_ID = '__scratch__'; // системный терминал (домашняя папка), не привязан к проектам
 
@@ -2100,6 +2100,7 @@ function showActiveTerminal() {
   if (chatMode) { // chat replaces the terminal; hide tabs/terminals/hint
     $('#empty-hint').style.display = 'none';
     $('#term-header').style.display = 'none';
+    reportRemoteActive(null);
     return;
   }
   const asid = activeSessionId();
@@ -2107,6 +2108,24 @@ function showActiveTerminal() {
   for (const [sid, rec] of terms) rec.container.style.display = sid === asid ? 'block' : 'none';
   renderTabBar();
   refitActiveTerminal(true);
+  reportRemoteActive(asid);
+}
+// Сообщаем main, какая вкладка активна на десктопе → пульт синхронизирует выделение.
+let lastReportedActive;
+function reportRemoteActive(sid) {
+  if (sid === lastReportedActive) return;
+  lastReportedActive = sid;
+  try { lite.remote.activeChanged(sid || ''); } catch (_) {}
+}
+// Пульт выбрал вкладку → переключаем десктоп на неё (если такая сессия есть локально).
+function handleRemoteSelect(sid) {
+  if (!sid) return;
+  const rec = terms.get(sid);
+  if (!rec) return; // удалённо открытый/неизвестный терминал — десктоп не следует
+  const t = tabsByProj.get(rec.projId);
+  if (t) t.active = sid;
+  if (rec.projId !== activeId) doSetActive(rec.projId);
+  else { saveProjTabs(); showActiveTerminal(); }
 }
 function refitActiveTerminal(focusIt) {
   const asid = activeSessionId();
@@ -3222,6 +3241,9 @@ function init() {
     if (rec) rec.term.write('\r\n\x1b[90m[процесс завершён — закрой и переоткрой проект]\x1b[0m\r\n');
     setProjState(id, 'quiet');
   });
+
+  // Пульт выбрал вкладку → синхронизируем активную на десктопе.
+  try { if (lite.remote && lite.remote.onSelect) lite.remote.onSelect((sid) => { try { handleRemoteSelect(sid); } catch (_) {} }); } catch (_) {}
 
   // OpenRouter streaming → route SSE events to the live request's handlers (by reqId).
   lite.openrouter.onChunk(({ reqId, delta }) => { const h = pendingOr.get(reqId); if (h) h.chunk(delta); });

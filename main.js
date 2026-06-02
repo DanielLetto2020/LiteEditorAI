@@ -521,6 +521,7 @@ app.whenReady().then(() => {
 // список вкладок-сессий (метка = имя проекта · seq), зеркалит вывод PTY и пишет
 // ввод/промпт с пульта в нужный PTY. См. remote.js.
 let remoteSeq = 0;
+let remoteActiveSid = '';   // активная вкладка десктопа (репортит рендерер) — для синка с пультом
 // Состояние для пульта: открытые сессии-терминалы + все проекты (с категориями).
 function buildRemoteState() {
   const projects = readStoreKey('projects') || [];
@@ -541,7 +542,7 @@ function buildRemoteState() {
     }
   }
   const projOut = projects.map((p) => ({ id: p.id, name: p.name, category: p.category || '', favorite: !!p.favorite }));
-  return { sessions, projects: projOut };
+  return { sessions, projects: projOut, active: remoteActiveSid };
 }
 // Открыть новый терминал для проекта по запросу с пульта (PTY создаётся в main;
 // зеркалится пульту; на десктопе не отображается — это нормально для удалённого).
@@ -561,6 +562,7 @@ function startRemotePult() {
       getSessions: buildRemoteState,
       writeInput: (sid, data) => { const p = ptys.get(sid); if (p) p.write(data); },
       openProject: remoteOpenProject,
+      onSelect: (sid) => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('remote:select', { sid }); },
     });
     const r = readStoreKey('remote') || {};
     if (r.token) {
@@ -624,6 +626,12 @@ ipcMain.handle('remote:setEnabled', (_e, { enabled } = {}) => {
   writeStoreKey('remote', { ...r, enabled: !!enabled });
   remote.apply({ enabled: !!enabled });
   return remoteStoreState();
+});
+// Рендерер сообщает, какая вкладка активна на десктопе → шлём пульту (синк активной).
+ipcMain.on('remote:activeChanged', (_e, { sid } = {}) => {
+  if ((sid || '') === remoteActiveSid) return;
+  remoteActiveSid = sid || '';
+  try { remote.notifyState(); } catch (_) {}
 });
 
 app.on('window-all-closed', () => {

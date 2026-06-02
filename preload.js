@@ -65,6 +65,8 @@ contextBridge.exposeInMainWorld('lite', {
     login: (login, password) => ipcRenderer.invoke('remote:login', { login, password }),
     logout: () => ipcRenderer.invoke('remote:logout'),
     setEnabled: (enabled) => ipcRenderer.invoke('remote:setEnabled', { enabled }),
+    activeChanged: (sid) => ipcRenderer.send('remote:activeChanged', { sid }),               // десктоп → пульт: какая вкладка активна
+    onSelect: (cb) => { const h = (_e, p) => cb(p && p.sid); ipcRenderer.on('remote:select', h); return () => ipcRenderer.removeListener('remote:select', h); }, // пульт → десктоп: переключить вкладку
   },
 
   git: {
