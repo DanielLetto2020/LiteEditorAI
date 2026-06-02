@@ -395,9 +395,11 @@ function connect() {
       authError(m.error || 'Ошибка входа');
     } else if (m.t === 'state') {
       lastSessions = m.sessions || []; lastProjects = m.projects || []; renderTree();
-      // Синхронизация активной вкладки: следуем за активной на ПК.
-      if (m.active && m.active !== selected) selectSession(m.active);
-      else if (!selected && lastSessions.length) selectSession(lastSessions[0].sid);
+      // Если выбранная сессия исчезла (перезапуск ПК → новые id) — перевыбрать.
+      const exists = selected && lastSessions.some((s) => s.sid === selected);
+      const target = m.active || (lastSessions[0] && lastSessions[0].sid);
+      if (!exists) { selected = null; if (target) selectSession(target); }
+      else if (m.active && m.active !== selected) selectSession(m.active); // следуем за активной на ПК
       else applyTermSize();   // размер сессии на ПК мог измениться — перемасштабировать шрифт
     }
     else if (m.t === 'data') { if (m.sid === selected) writeOut(m.data || ''); }
@@ -435,7 +437,7 @@ function start(config) {
     token = lsGet('lite_token') || '';
     if (token) enterApp(); else showLogin('');
     connect();           // с токеном → авторизуемся; без → пред-авторизованный сокет для входа
-    sendReport('boot', 'app started v0.11.0', (token ? 'has-token' : 'no-token'));
+    sendReport('boot', 'app started v0.12.0', (token ? 'has-token' : 'no-token'));
   } catch (e) {
     showLogin('');
     showFatal('start: ' + ((e && e.message) || e));
