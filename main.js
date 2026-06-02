@@ -32,6 +32,7 @@ if (process.env.LITE_NO_GPU === '1' || process.env.LITE_SOFTWARE_RENDER === '1')
 let mainWindow = null;
 let tray = null;
 const ptys = new Map();     // projectId -> IPty
+const ptySize = new Map();  // sessionId -> { cols, rows } — текущий размер PTY (для пульта)
 const watchers = new Map(); // project root path -> { watcher, timer, pending:Set }
 
 // Resolve a shell that actually exists. $SHELL can point at a shell that was
@@ -529,16 +530,17 @@ function buildRemoteState() {
   for (const p of projects) if (p && p.id) byId[p.id] = p;
   const sessions = [];
   for (const sid of ptys.keys()) {
-    if (sid === '__scratch__') { sessions.push({ sid, projId: null, proj: 'Система', tab: 'Системный (~)', label: 'Системный (~)' }); continue; }
+    const sz = ptySize.get(sid) || { cols: 80, rows: 24 };
+    if (sid === '__scratch__') { sessions.push({ sid, projId: null, proj: 'Система', tab: 'Системный (~)', label: 'Системный (~)', cols: sz.cols, rows: sz.rows }); continue; }
     const i = sid.indexOf('::t');
     if (i > 0) {
       const projId = sid.slice(0, i);
       const seq = sid.slice(i + 3);
       const proj = byId[projId];
       const name = proj ? proj.name : projId;
-      sessions.push({ sid, projId, proj: name, tab: 'Терминал ' + seq, label: name + ' · ' + seq });
+      sessions.push({ sid, projId, proj: name, tab: 'Терминал ' + seq, label: name + ' · ' + seq, cols: sz.cols, rows: sz.rows });
     } else {
-      sessions.push({ sid, projId: null, proj: '', tab: sid, label: sid });
+      sessions.push({ sid, projId: null, proj: '', tab: sid, label: sid, cols: sz.cols, rows: sz.rows });
     }
   }
   const projOut = projects.map((p) => ({ id: p.id, name: p.name, category: p.category || '', favorite: !!p.favorite }));
@@ -558,7 +560,6 @@ function startRemotePult() {
       writeInput: (sid, data) => { const p = ptys.get(sid); if (p) p.write(data); },
       openProject: remoteOpenProject,
       onSelect: (sid) => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('remote:select', { sid }); },
-      resizeSession: (sid, cols, rows) => { const p = ptys.get(sid); if (p && cols > 0 && rows > 0) { try { p.resize(cols, rows); } catch (_) {} } },
     });
     const r = readStoreKey('remote') || {};
     if (r.token) {
@@ -727,10 +728,12 @@ function spawnPtyFor(id, cwd, cols, rows) {
   proc.onExit(() => {
     if (ptys.get(id) && ptys.get(id) !== proc) return; // replaced by a restart — suppress stale exit
     ptys.delete(id);
+    ptySize.delete(id);
     if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('pty:exit', { id });
     try { remote.exit(id); remote.notifyState(); } catch (_) {}
   });
   ptys.set(id, proc);
+  ptySize.set(id, { cols: cols || 80, rows: rows || 24 });
   return { ok: true };
 }
 ipcMain.handle('pty:create', (_e, { id, cwd, cols, rows }) => {
@@ -748,7 +751,7 @@ ipcMain.handle('pty:restart', (_e, { id, cwd, cols, rows }) => {
 ipcMain.on('pty:write', (_e, { id, data }) => { const p = ptys.get(id); if (p) p.write(data); });
 ipcMain.on('pty:resize', (_e, { id, cols, rows }) => {
   const p = ptys.get(id);
-  if (p && cols > 0 && rows > 0) { try { p.resize(cols, rows); } catch (_) {} }
+  if (p && cols > 0 && rows > 0) { try { p.resize(cols, rows); } catch (_) {} ptySize.set(id, { cols, rows }); try { remote.notifyState(); } catch (_) {} }
 });
 ipcMain.on('pty:kill', (_e, { id }) => {
   const p = ptys.get(id);

@@ -20,7 +20,7 @@
       } catch (e) {}
     }
     window.__report = report;
-    window.PULT_VER = '0.9.0';
+    window.PULT_VER = '0.10.0';
     window.onerror = function (m, src, line, col, err) {
       report('page-error', m, (err && err.stack) || (src + ':' + line));
       var b = document.getElementById('fatal') || document.createElement('div');
@@ -30,7 +30,7 @@
       if (document.body) document.body.appendChild(b);
       return false;
     };
-    report('page-loaded', 'index.html v0.9.0', navigator.userAgent);
+    report('page-loaded', 'index.html v0.10.0', navigator.userAgent);
   })();
   </script>
   <link rel="stylesheet" href="./app.css" />
@@ -79,11 +79,6 @@
     #status { padding: 6px 10px; font-size: 12px; background: #11161d; border-bottom: 1px solid #1f2630; color: #b7c2d0; }
     #status.ok { color: #7fdbca; } #status.wait { color: #e0af68; } #status.bad { color: #f7768e; }
     #term { flex: 1; min-height: 0; padding: 4px; }
-    #prompt { display: flex; gap: 6px; padding: 6px; background: #11161d; border-top: 1px solid #1f2630; }
-    #pmt { flex: 1; resize: none; height: 38px; background: #0d1117; color: #d6deeb;
-      border: 1px solid #2a323d; border-radius: 6px; padding: 8px; font-size: 14px; }
-    #send { width: 52px; background: #1f6feb; color: #fff; border: 0; border-radius: 6px; font-size: 18px; }
-    #send:active { background: #1857b8; }
   </style>
 </head>
 <body>
@@ -96,7 +91,7 @@
       <div id="lg-err"></div>
       <button id="lg-go">Войти</button>
       <div class="login-note">Регистрация аккаунта — в редакторе на ПК (меню «Пульт»).</div>
-      <div class="login-note" style="opacity:.6">пульт v0.9.0</div>
+      <div class="login-note" style="opacity:.6">пульт v0.10.0</div>
     </div>
   </div>
 
@@ -119,10 +114,6 @@
       <div id="main">
         <div id="status">…</div>
         <div id="term"></div>
-        <div id="prompt">
-          <textarea id="pmt" placeholder="Промпт для агента…" autocapitalize="off" autocorrect="off"></textarea>
-          <button id="send">▶</button>
-        </div>
       </div>
     </div>
   </div>

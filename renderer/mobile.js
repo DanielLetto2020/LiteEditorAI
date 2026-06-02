@@ -10,7 +10,6 @@
 // Терминал — xterm 4.x (поддерживает старые WebView, в т.ч. Chrome 79; xterm 5.x
 // там крашится). Если и он не заведётся — текстовый фолбэк.
 import { Terminal } from 'xterm';
-import { FitAddon } from 'xterm-addon-fit';
 import 'xterm/css/xterm.css';
 
 let ws = null;
@@ -185,7 +184,6 @@ function logout() {
 // Chrome 79) — рисует TUI Claude Code корректно (курсор, спиннеры). Если упадёт —
 // текстовый фолбэк. Ширина подстраивается под планшет: fit + ресайз PTY на ПК.
 let term = null;
-let fit = null;
 let termOk = false;
 let termInited = false;
 
@@ -196,12 +194,9 @@ function initTerm() {
       rendererType: 'dom',
       theme: { background: '#0d1117', foreground: '#d6deeb', cursor: '#7fdbca' },
     });
-    fit = new FitAddon();
-    term.loadAddon(fit);
     term.open($('term'));
-    fitTerm();
-    window.addEventListener('resize', fitTerm);
-    term.onData((d) => sendInput(d));
+    term.onData((d) => sendInput(d));   // ввод прямо в терминал (клавиатура планшета)
+    window.addEventListener('resize', applyTermSize);
     termOk = true;
   } catch (e) {
     termOk = false;
@@ -209,13 +204,21 @@ function initTerm() {
     initPre();
   }
 }
-// Подгоняем размер под планшет и сообщаем ПК новый размер PTY (адаптация ширины).
-function fitTerm() {
-  if (!termOk || !fit) return;
-  try {
-    fit.fit();
-    if (selected && term.cols > 0) send({ t: 'resize', sid: selected, cols: term.cols, rows: term.rows });
-  } catch (_) {}
+// Показываем сетку ТОГО ЖЕ размера, что на ПК (PTY), и масштабируем шрифт под ширину
+// планшета — НЕ трогаем размер PTY (иначе на ПК сыпется). Высота клавиатуры на число
+// колонок не влияет, поэтому открытие клавиатуры терминал не ломает.
+function termSizeOf(sid) {
+  const s = (lastSessions || []).find((x) => x.sid === sid);
+  return { cols: (s && s.cols) || 80, rows: (s && s.rows) || 24 };
+}
+function applyTermSize() {
+  if (!termOk || !selected) return;
+  const { cols, rows } = termSizeOf(selected);
+  const host = $('term');
+  const w = (host.clientWidth || 320) - 8;
+  let fs = Math.floor(w / cols / 0.62);   // ширина монопробела ≈ 0.62·fontSize
+  fs = Math.max(7, Math.min(fs, 15));
+  try { term.setOption('fontSize', fs); term.resize(cols, rows); } catch (_) {}
 }
 function writeOut(data) {
   if (termOk) {
@@ -333,7 +336,7 @@ function selectSession(sid) {
   selected = sid;
   clearOut();
   send({ t: 'select', sid });
-  fitTerm();           // подстроить PTY на ПК под ширину планшета для этой сессии
+  applyTermSize();     // подогнать шрифт под ширину планшета (PTY не трогаем)
   renderTree();
   focusOut();
 }
@@ -366,6 +369,7 @@ function connect() {
       // Синхронизация активной вкладки: следуем за активной на ПК.
       if (m.active && m.active !== selected) selectSession(m.active);
       else if (!selected && lastSessions.length) selectSession(lastSessions[0].sid);
+      else applyTermSize();   // размер сессии на ПК мог измениться — перемасштабировать шрифт
     }
     else if (m.t === 'data') { if (m.sid === selected) writeOut(m.data || ''); }
     else if (m.t === 'exit') { if (m.sid === selected) writeOut('\r\n[сессия завершена]\r\n'); }
@@ -380,17 +384,11 @@ function scheduleReconnect() {
   reconnectTimer = setTimeout(() => { reconnectTimer = null; if (!ws) connect(); }, 3000);
 }
 
-function wirePrompt() {
-  const pmt = $('pmt');
-  const fire = () => { const t = pmt.value; if (!t) return; sendInput(t + '\r'); pmt.value = ''; focusOut(); };
-  $('send').onclick = fire;
-  pmt.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); fire(); } });
-}
 
 function enterApp() {
   $('login').style.display = 'none';
   $('app').style.display = 'flex';
-  if (!termInited) { termInited = true; initTerm(); wirePrompt(); }
+  if (!termInited) { termInited = true; initTerm(); }
   const w = $('whoami'); if (w) w.textContent = lsGet('lite_login') || '';
 }
 
@@ -408,7 +406,7 @@ function start(config) {
     token = lsGet('lite_token') || '';
     if (token) enterApp(); else showLogin('');
     connect();           // с токеном → авторизуемся; без → пред-авторизованный сокет для входа
-    sendReport('boot', 'app started v0.9.0', (token ? 'has-token' : 'no-token'));
+    sendReport('boot', 'app started v0.10.0', (token ? 'has-token' : 'no-token'));
   } catch (e) {
     showLogin('');
     showFatal('start: ' + ((e && e.message) || e));
