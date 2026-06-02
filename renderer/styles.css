@@ -394,11 +394,13 @@ body.resizing { cursor: col-resize; user-select: none; }
 .modal h2 { margin: 0 0 16px; font-size: 16px; font-weight: 600; display: flex; align-items: center; gap: 9px; }
 .modal .field { margin-bottom: 12px; }
 .modal label { display: block; font-size: 11px; color: var(--text-dim); margin-bottom: 5px; letter-spacing: .4px; }
-.modal input[type="text"] {
+.modal input[type="text"],
+.modal input[type="password"] {
   width: 100%; padding: 9px 11px; border-radius: 9px; font-size: 13px;
   background: var(--bg-input); border: 1px solid var(--border-strong); color: var(--text); outline: none;
 }
-.modal input[type="text"]:focus { border-color: var(--border-accent); }
+.modal input[type="text"]:focus,
+.modal input[type="password"]:focus { border-color: var(--border-accent); }
 .path-pick { display: flex; gap: 8px; }
 .path-pick input { flex: 1; }
 .btn {

@@ -26,7 +26,7 @@ import { markdown } from '@codemirror/lang-markdown';
 import { html } from '@codemirror/lang-html';
 import { css } from '@codemirror/lang-css';
 
-const APP_VERSION = 'alpha v1.0.55';
+const APP_VERSION = 'alpha v1.0.56';
 const GUTTER = 5;
 const SCRATCH_ID = '__scratch__'; // системный терминал (домашняя папка), не привязан к проектам
 
@@ -1039,59 +1039,78 @@ function showRemote() {
     return { f, inp };
   }
 
-  async function refresh() {
+  let mode = null;      // 'auth' | 'account' — перестраиваем только при СМЕНЕ режима
+  let statusEl = null;  // строка статуса в режиме «вошли» — её обновляем по таймеру (без пересборки полей)
+
+  function statusText(st) { return st.connected ? '● На связи' : (st.enabled ? '○ Подключение…' : '○ Выключено'); }
+
+  function buildAuth() {
+    body.innerHTML = '';
+    const login = field('Логин', 'text');
+    const pass = field('Пароль', 'password');
+    const err = el('div', 'err');
+    const actions = el('div', 'modal-actions');
+    const reg = el('button', 'btn', 'Зарегистрироваться');
+    const inb = el('button', 'btn primary', 'Войти');
+    actions.appendChild(reg); actions.appendChild(inb);
+    body.appendChild(login.f); body.appendChild(pass.f); body.appendChild(err); body.appendChild(actions);
+    const run = async (fn) => {
+      err.textContent = '';
+      const l = login.inp.value.trim(), p = pass.inp.value;
+      if (l.length < 3 || p.length < 4) { err.textContent = 'Логин ≥3, пароль ≥4 символа'; return; }
+      reg.disabled = inb.disabled = true;
+      let res; try { res = await fn(l, p); } catch (_) { res = { ok: false, error: 'Нет связи с релеем' }; }
+      reg.disabled = inb.disabled = false;
+      if (res.ok) { toast('Пульт: вошли как ' + res.status.login); tick(); }
+      else err.textContent = res.error || 'Ошибка';
+    };
+    inb.onclick = () => run((l, p) => lite.remote.login(l, p));
+    reg.onclick = () => run((l, p) => lite.remote.register(l, p));
+    pass.inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') inb.click(); });
+    setTimeout(() => login.inp.focus(), 30);
+  }
+
+  function buildAccount(st) {
+    body.innerHTML = '';
+    const who = el('div', 'rmt-info');
+    who.appendChild(el('span', '', 'Вошли как: '));
+    who.appendChild(el('b', '', st.login));
+    statusEl = el('div', '', statusText(st));
+    statusEl.style.color = st.connected ? 'var(--green-bright)' : 'var(--warn)';
+    statusEl.style.margin = '8px 0';
+    const tgl = el('label', '');
+    tgl.style.cssText = 'display:flex;align-items:center;gap:8px;cursor:pointer;margin:8px 0';
+    const cb = document.createElement('input'); cb.type = 'checkbox'; cb.checked = st.enabled;
+    tgl.appendChild(cb); tgl.appendChild(el('span', '', 'Пульт включён'));
+    cb.onchange = async () => { await lite.remote.setEnabled(cb.checked); tick(); };
+    const hint = el('div', 'about-desc');
+    hint.appendChild(el('span', '', 'На планшете в приложении «LiteEditor Пульт» войди логином '));
+    hint.appendChild(el('b', '', st.login));
+    hint.appendChild(el('span', '', ' и тем же паролем. Открой здесь хотя бы один терминал, чтобы он появился на пульте.'));
+    const actions = el('div', 'modal-actions');
+    const out = el('button', 'btn', 'Выйти');
+    out.onclick = async () => { await lite.remote.logout(); tick(); };
+    actions.appendChild(out);
+    body.appendChild(who); body.appendChild(statusEl); body.appendChild(tgl); body.appendChild(hint); body.appendChild(actions);
+  }
+
+  async function tick() {
     if (!document.body.contains(body)) { clearInterval(timer); return; }
     let st; try { st = await lite.remote.status(); } catch (_) { return; }
     if (!document.body.contains(body)) return;
-    body.innerHTML = '';
-    if (!st.loggedIn) {
-      const login = field('Логин', 'text');
-      const pass = field('Пароль', 'password');
-      const err = el('div', 'err');
-      const actions = el('div', 'modal-actions');
-      const reg = el('button', 'btn', 'Зарегистрироваться');
-      const inb = el('button', 'btn primary', 'Войти');
-      actions.appendChild(reg); actions.appendChild(inb);
-      body.appendChild(login.f); body.appendChild(pass.f); body.appendChild(err); body.appendChild(actions);
-      const run = async (fn) => {
-        err.textContent = '';
-        const l = login.inp.value.trim(), p = pass.inp.value;
-        if (l.length < 3 || p.length < 4) { err.textContent = 'Логин ≥3, пароль ≥4 символа'; return; }
-        reg.disabled = inb.disabled = true;
-        let res; try { res = await fn(l, p); } catch (_) { res = { ok: false, error: 'Нет связи с релеем' }; }
-        reg.disabled = inb.disabled = false;
-        if (res.ok) { toast('Пульт: вошли как ' + res.status.login); refresh(); }
-        else err.textContent = res.error || 'Ошибка';
-      };
-      inb.onclick = () => run((l, p) => lite.remote.login(l, p));
-      reg.onclick = () => run((l, p) => lite.remote.register(l, p));
-      pass.inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') inb.click(); });
-      setTimeout(() => login.inp.focus(), 30);
-    } else {
-      const who = el('div', 'rmt-info');
-      who.appendChild(el('span', '', 'Вошли как: '));
-      who.appendChild(el('b', '', st.login));
-      const status = el('div', '', st.connected ? '● На связи' : (st.enabled ? '○ Подключение…' : '○ Выключено'));
-      status.style.color = st.connected ? 'var(--green-bright)' : 'var(--warn)';
-      status.style.margin = '8px 0';
-      const tgl = el('label', '');
-      tgl.style.cssText = 'display:flex;align-items:center;gap:8px;cursor:pointer;margin:8px 0';
-      const cb = document.createElement('input'); cb.type = 'checkbox'; cb.checked = st.enabled;
-      tgl.appendChild(cb); tgl.appendChild(el('span', '', 'Пульт включён'));
-      cb.onchange = async () => { await lite.remote.setEnabled(cb.checked); refresh(); };
-      const hint = el('div', 'about-desc');
-      hint.appendChild(el('span', '', 'На планшете в приложении «LiteEditor Пульт» войди логином '));
-      hint.appendChild(el('b', '', st.login));
-      hint.appendChild(el('span', '', ' и тем же паролем. Открой здесь хотя бы один терминал, чтобы он появился на пульте.'));
-      const actions = el('div', 'modal-actions');
-      const out = el('button', 'btn', 'Выйти');
-      out.onclick = async () => { await lite.remote.logout(); refresh(); };
-      actions.appendChild(out);
-      body.appendChild(who); body.appendChild(status); body.appendChild(tgl); body.appendChild(hint); body.appendChild(actions);
+    const want = st.loggedIn ? 'account' : 'auth';
+    if (want !== mode) {
+      mode = want;
+      statusEl = null;
+      if (want === 'auth') buildAuth(); else buildAccount(st);
+    } else if (mode === 'account' && statusEl) {
+      // Тот же режим — НЕ пересобираем (иначе терялся бы фокус/ввод), только статус.
+      statusEl.textContent = statusText(st);
+      statusEl.style.color = st.connected ? 'var(--green-bright)' : 'var(--warn)';
     }
   }
-  const timer = setInterval(refresh, 2500);
-  refresh();
+  const timer = setInterval(tick, 2500);
+  tick();
 }
 
 function toggleFavorite(id) {
