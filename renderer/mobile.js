@@ -7,8 +7,11 @@
 //     ждём {t:"auth_ok",token} | {t:"auth_err",error}.
 // Любая JS-ошибка шлётся на сервер ({t:"report"}) и показывается баннером — чтобы
 // «чёрный экран»/«тишину» можно было диагностировать удалённо (таблица reports).
-// БЕЗ xterm: на старых WebView (Chrome 79 и т.п.) xterm 5.x падает в асинхронном
-// рендер-цикле. Терминал — простой <pre> с очисткой ANSI: рисует на любом WebView.
+// Терминал — xterm 4.x (поддерживает старые WebView, в т.ч. Chrome 79; xterm 5.x
+// там крашится). Если и он не заведётся — текстовый фолбэк.
+import { Terminal } from 'xterm';
+import { FitAddon } from 'xterm-addon-fit';
+import 'xterm/css/xterm.css';
 
 let ws = null;
 let relayUrl = 'wss://lite.codecopy.ru/ws';
@@ -127,8 +130,20 @@ function showLogs() {
   row.appendChild(cp); b.appendChild(lp); b.appendChild(row);
   showOverlay('Логи пульта', b);
 }
-function closeMenu() { const m = $('menu'); if (m) m.style.display = 'none'; }
-function toggleMenu() { const m = $('menu'); if (m) m.style.display = (m.style.display === 'block') ? 'none' : 'block'; }
+// ☰ → оверлей-меню с кнопками (надёжнее дропдауна на тач-экране).
+function openMenu() {
+  const b = document.createElement('div');
+  const mk = (label, fn) => {
+    const x = document.createElement('button');
+    x.textContent = label;
+    x.style.cssText = 'display:block;width:100%;text-align:left;background:#161c24;color:#d6deeb;border:1px solid #2a323d;border-radius:8px;padding:13px 14px;font-size:15px;margin-bottom:8px';
+    x.onclick = () => { const ov = $('overlay'); if (ov) ov.style.display = 'none'; fn(); };
+    return x;
+  };
+  b.appendChild(mk('Аккаунт', showAccount));
+  b.appendChild(mk('Логи', showLogs));
+  showOverlay('Меню', b);
+}
 
 // ----------------------------------------------------------------- вход
 function showLogin(errText) {
@@ -165,24 +180,68 @@ function logout() {
   connect(); // пред-авторизованный сокет для нового входа
 }
 
-// ------------------------------------------------------------ терминал (текст)
-// Лёгкая построчная «эмуляция»: обрабатываем \r (возврат каретки → перезапись
-// строки), \n, \b, очистку строки (ESC[K), прочие ESC-последовательности
-// отбрасываем. Это убирает «кашу» от прогресс-баров/перерисовок агента.
+// ------------------------------------------------------------ терминал
+// Основной рендерер — xterm 4.x (DOM-рендерер; работает на старых WebView, в т.ч.
+// Chrome 79) — рисует TUI Claude Code корректно (курсор, спиннеры). Если упадёт —
+// текстовый фолбэк. Ширина подстраивается под планшет: fit + ресайз PTY на ПК.
+let term = null;
+let fit = null;
+let termOk = false;
+let termInited = false;
+
+function initTerm() {
+  try {
+    term = new Terminal({
+      fontSize: 13, fontFamily: 'monospace', cursorBlink: true, scrollback: 800,
+      rendererType: 'dom',
+      theme: { background: '#0d1117', foreground: '#d6deeb', cursor: '#7fdbca' },
+    });
+    fit = new FitAddon();
+    term.loadAddon(fit);
+    term.open($('term'));
+    fitTerm();
+    window.addEventListener('resize', fitTerm);
+    term.onData((d) => sendInput(d));
+    termOk = true;
+  } catch (e) {
+    termOk = false;
+    sendReport('xterm4-init', (e && e.message) || String(e), (e && e.stack) || '');
+    initPre();
+  }
+}
+// Подгоняем размер под планшет и сообщаем ПК новый размер PTY (адаптация ширины).
+function fitTerm() {
+  if (!termOk || !fit) return;
+  try {
+    fit.fit();
+    if (selected && term.cols > 0) send({ t: 'resize', sid: selected, cols: term.cols, rows: term.rows });
+  } catch (_) {}
+}
+function writeOut(data) {
+  if (termOk) {
+    try { term.write(data); return; }
+    catch (e) { sendReport('xterm4-write', (e && e.message) || '', (e && e.stack) || ''); termOk = false; initPre(); }
+  }
+  appendPre(data);
+}
+function clearOut() {
+  if (termOk) { try { term.reset(); } catch (_) {} return; }
+  lineBuf = ['']; curRow = 0; curCol = 0; if (pre) pre.textContent = '';
+}
+function focusOut() { if (termOk) { try { term.focus(); } catch (_) {} } }
+
+// --- текстовый фолбэк (если xterm не завёлся) ---
 let pre = null;
 let lineBuf = [''];
 let curRow = 0;
 let curCol = 0;
-
-function initTerm() {
-  const host = $('term');
-  host.innerHTML = '';
+function initPre() {
+  const host = $('term'); host.innerHTML = '';
   pre = document.createElement('pre');
   pre.style.cssText = 'margin:0;height:100%;overflow:auto;white-space:pre-wrap;word-break:break-word;color:#d6deeb;font:12px/1.4 monospace;padding:6px';
   host.appendChild(pre);
   lineBuf = ['']; curRow = 0; curCol = 0;
 }
-// Историю на пульте держим короткой (не копим большой буфер).
 function renderPre() {
   if (lineBuf.length > 500) { const drop = lineBuf.length - 400; lineBuf = lineBuf.slice(drop); curRow = Math.max(0, curRow - drop); }
   pre.textContent = lineBuf.join('\n');
@@ -194,7 +253,7 @@ function putChar(ch) {
   lineBuf[curRow] = line.slice(0, curCol) + ch + line.slice(curCol + 1);
   curCol++;
 }
-function writeOut(data) {
+function appendPre(data) {
   if (!pre) return;
   data = String(data);
   for (let i = 0; i < data.length; i++) {
@@ -208,9 +267,7 @@ function writeOut(data) {
           const line = lineBuf[curRow] || '';
           if (params === '2') lineBuf[curRow] = '';
           else if (params !== '1') lineBuf[curRow] = line.slice(0, curCol);
-        } else if (fin === 'J' && (params === '2' || params === '3')) {
-          lineBuf = ['']; curRow = 0; curCol = 0;
-        }
+        } else if (fin === 'J' && (params === '2' || params === '3')) { lineBuf = ['']; curRow = 0; curCol = 0; }
         i = j; continue;
       } else if (data[i + 1] === ']') {
         let j = i + 2;
@@ -223,13 +280,11 @@ function writeOut(data) {
     if (ch === '\n') { curRow++; curCol = 0; if (lineBuf[curRow] === undefined) lineBuf[curRow] = ''; continue; }
     if (ch === '\b') { if (curCol > 0) curCol--; continue; }
     if (ch === '\t') { putChar(' '); while (curCol % 4 !== 0) putChar(' '); continue; }
-    if (ch < ' ') continue; // прочие управляющие
+    if (ch < ' ') continue;
     putChar(ch);
   }
   renderPre();
 }
-function clearOut() { lineBuf = ['']; curRow = 0; curCol = 0; if (pre) pre.textContent = ''; }
-function focusOut() {}
 
 // Дерево вкладок: проекты по категориям (как сайдбар редактора), под каждым —
 // открытые терминалы; «＋» рядом с проектом — открыть терминал удалённо.
@@ -278,6 +333,7 @@ function selectSession(sid) {
   selected = sid;
   clearOut();
   send({ t: 'select', sid });
+  fitTerm();           // подстроить PTY на ПК под ширину планшета для этой сессии
   renderTree();
   focusOut();
 }
@@ -334,7 +390,7 @@ function wirePrompt() {
 function enterApp() {
   $('login').style.display = 'none';
   $('app').style.display = 'flex';
-  if (!pre) { initTerm(); wirePrompt(); }
+  if (!termInited) { termInited = true; initTerm(); wirePrompt(); }
   const w = $('whoami'); if (w) w.textContent = lsGet('lite_login') || '';
 }
 
@@ -348,14 +404,11 @@ function start(config) {
     const lo = $('logout'); if (lo) lo.onclick = logout;
     // Шапка: версия справа + меню (Аккаунт, Логи).
     const ver = $('top-ver'); if (ver) ver.textContent = window.PULT_VER || '';
-    const mb = $('menu-btn'); if (mb) mb.onclick = (e) => { e.stopPropagation(); toggleMenu(); };
-    const ma = $('mi-account'); if (ma) ma.onclick = () => { closeMenu(); showAccount(); };
-    const ml = $('mi-logs'); if (ml) ml.onclick = () => { closeMenu(); showLogs(); };
-    document.addEventListener('click', closeMenu);
+    const mb = $('menu-btn'); if (mb) mb.onclick = openMenu;
     token = lsGet('lite_token') || '';
     if (token) enterApp(); else showLogin('');
     connect();           // с токеном → авторизуемся; без → пред-авторизованный сокет для входа
-    sendReport('boot', 'app started v0.8.0', (token ? 'has-token' : 'no-token'));
+    sendReport('boot', 'app started v0.9.0', (token ? 'has-token' : 'no-token'));
   } catch (e) {
     showLogin('');
     showFatal('start: ' + ((e && e.message) || e));

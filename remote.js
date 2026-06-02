@@ -19,6 +19,7 @@ let getSessions = () => ({ sessions: [], projects: [] });
 let writeInput = () => {};
 let openProject = () => {};
 let onSelect = () => {};
+let resizeSession = () => {};
 
 let host = 'lite.codecopy.ru';
 let token = '';
@@ -62,6 +63,8 @@ function connect() {
       try { writeInput(m.sid, m.data || ''); } catch (_) {}
     } else if (m.t === 'open' && typeof m.projId === 'string') {
       try { openProject(m.projId); } catch (_) {}
+    } else if (m.t === 'resize' && typeof m.sid === 'string') {
+      try { resizeSession(m.sid, m.cols | 0, m.rows | 0); } catch (_) {}
     }
   });
   ws.on('close', () => { ws = null; scheduleReconnect(); });
@@ -82,6 +85,7 @@ function init(opts = {}) {
   if (opts.writeInput) writeInput = opts.writeInput;
   if (opts.openProject) openProject = opts.openProject;
   if (opts.onSelect) onSelect = opts.onSelect;
+  if (opts.resizeSession) resizeSession = opts.resizeSession;
 }
 
 // Применить конфиг (host/token/enabled). Поднимает или гасит соединение.

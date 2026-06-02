@@ -544,15 +544,10 @@ function buildRemoteState() {
   const projOut = projects.map((p) => ({ id: p.id, name: p.name, category: p.category || '', favorite: !!p.favorite }));
   return { sessions, projects: projOut, active: remoteActiveSid };
 }
-// Открыть новый терминал для проекта по запросу с пульта (PTY создаётся в main;
-// зеркалится пульту; на десктопе не отображается — это нормально для удалённого).
+// Открыть терминал для проекта по запросу с пульта → просим рендерер открыть
+// настоящую вкладку (как ＋ в редакторе), чтобы она появилась И на ПК, И на пульте.
 function remoteOpenProject(projId) {
-  const projects = readStoreKey('projects') || [];
-  const p = projects.find((x) => x && x.id === projId);
-  if (!p || !p.path || !fs.existsSync(p.path)) return;
-  const id = projId + '::tR' + (++remoteSeq);
-  spawnPtyFor(id, p.path);
-  try { remote.notifyState(); } catch (_) {}
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('remote:openProject', { projId });
 }
 const REMOTE_DEFAULT_HOST = 'lite.codecopy.ru';
 function startRemotePult() {
@@ -563,6 +558,7 @@ function startRemotePult() {
       writeInput: (sid, data) => { const p = ptys.get(sid); if (p) p.write(data); },
       openProject: remoteOpenProject,
       onSelect: (sid) => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('remote:select', { sid }); },
+      resizeSession: (sid, cols, rows) => { const p = ptys.get(sid); if (p && cols > 0 && rows > 0) { try { p.resize(cols, rows); } catch (_) {} } },
     });
     const r = readStoreKey('remote') || {};
     if (r.token) {

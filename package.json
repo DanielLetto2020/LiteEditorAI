@@ -1,6 +1,6 @@
 {
   "name": "liteeditor-ai",
-  "version": "1.0.62-alpha",
+  "version": "1.0.63-alpha",
   "description": "Lightweight editor for working with AI coding agents in the terminal",
   "main": "main.js",
   "author": "Максим Кузьминский <i@m-letto.ru>",
@@ -45,7 +45,9 @@
     "highlight.js": "^11.11.1",
     "marked": "^18.0.4",
     "node-pty": "^1.0.0",
-    "ws": "^8.21.0"
+    "ws": "^8.21.0",
+    "xterm": "^4.19.0",
+    "xterm-addon-fit": "^0.5.0"
   },
   "devDependencies": {
     "@electron/rebuild": "^3.7.1",
