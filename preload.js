@@ -58,6 +58,15 @@ contextBridge.exposeInMainWorld('lite', {
     import: () => ipcRenderer.invoke('settings:import'),  // → { ok, file } | { canceled } | { error }
   },
 
+  // Удалённый пульт (Android): аккаунт логин/пароль вместо токена.
+  remote: {
+    status: () => ipcRenderer.invoke('remote:status'),
+    register: (login, password) => ipcRenderer.invoke('remote:register', { login, password }),
+    login: (login, password) => ipcRenderer.invoke('remote:login', { login, password }),
+    logout: () => ipcRenderer.invoke('remote:logout'),
+    setEnabled: (enabled) => ipcRenderer.invoke('remote:setEnabled', { enabled }),
+  },
+
   git: {
     status: (root) => ipcRenderer.invoke('git:status', root),
     fileDiff: (root, file) => ipcRenderer.invoke('git:fileDiff', { root, file }),

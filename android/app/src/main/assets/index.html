@@ -9,19 +9,33 @@
     * { box-sizing: border-box; }
     html, body { margin: 0; height: 100%; background: #0d1117; color: #d6deeb;
       font-family: -apple-system, Roboto, sans-serif; overflow: hidden; }
-    #app { display: flex; height: 100%; }
+
+    /* Экран входа */
+    #login { display: none; height: 100%; align-items: center; justify-content: center; }
+    .login-box { width: 280px; max-width: 86vw; display: flex; flex-direction: column; gap: 12px; }
+    .login-box h1 { font-size: 18px; color: #7fdbca; text-align: center; margin: 0 0 6px; }
+    .login-box input { background: #11161d; color: #d6deeb; border: 1px solid #2a323d;
+      border-radius: 8px; padding: 12px; font-size: 16px; }
+    #lg-go { background: #1f6feb; color: #fff; border: 0; border-radius: 8px; padding: 13px; font-size: 16px; }
+    #lg-go:disabled { opacity: .6; }
+    #lg-err { color: #f7768e; font-size: 13px; min-height: 16px; text-align: center; }
+    .login-note { color: #5a6675; font-size: 12px; text-align: center; }
+
+    /* Основной экран */
+    #app { display: none; height: 100%; }
     #sidebar { width: 150px; min-width: 150px; background: #11161d; border-right: 1px solid #1f2630;
       display: flex; flex-direction: column; }
-    #sidebar h1 { font-size: 12px; margin: 0; padding: 10px; color: #7fdbca; border-bottom: 1px solid #1f2630; }
+    .side-head { padding: 8px 10px; border-bottom: 1px solid #1f2630; }
+    .side-head h1 { font-size: 12px; margin: 0; color: #7fdbca; }
+    .side-head .who { font-size: 10px; color: #5a6675; margin-top: 2px; }
+    #logout { margin-top: 4px; font-size: 10px; color: #6a7a8c; background: none; border: 0; padding: 0; text-decoration: underline; }
     #tabs { flex: 1; overflow-y: auto; }
     .tab { padding: 10px; font-size: 12px; border-bottom: 1px solid #161c24; color: #b7c2d0; }
     .tab.active { background: #1c2530; color: #7fdbca; border-left: 3px solid #7fdbca; }
     .tab-empty { padding: 12px; font-size: 11px; color: #5a6675; }
     #main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
     #status { padding: 6px 10px; font-size: 12px; background: #11161d; border-bottom: 1px solid #1f2630; color: #b7c2d0; }
-    #status.ok { color: #7fdbca; }
-    #status.wait { color: #e0af68; }
-    #status.bad { color: #f7768e; }
+    #status.ok { color: #7fdbca; } #status.wait { color: #e0af68; } #status.bad { color: #f7768e; }
     #term { flex: 1; min-height: 0; padding: 4px; }
     #prompt { display: flex; gap: 6px; padding: 6px; background: #11161d; border-top: 1px solid #1f2630; }
     #pmt { flex: 1; resize: none; height: 38px; background: #0d1117; color: #d6deeb;
@@ -31,9 +45,26 @@
   </style>
 </head>
 <body>
+  <!-- Экран входа -->
+  <div id="login">
+    <div class="login-box">
+      <h1>LiteEditor Пульт</h1>
+      <input id="lg-login" placeholder="Логин" autocapitalize="off" autocorrect="off" />
+      <input id="lg-pass" type="password" placeholder="Пароль" />
+      <div id="lg-err"></div>
+      <button id="lg-go">Войти</button>
+      <div class="login-note">Регистрация аккаунта — в редакторе на ПК (меню «Пульт»).</div>
+    </div>
+  </div>
+
+  <!-- Основной экран -->
   <div id="app">
     <div id="sidebar">
-      <h1>Терминалы ПК</h1>
+      <div class="side-head">
+        <h1>Терминалы ПК</h1>
+        <div class="who" id="whoami"></div>
+        <button id="logout">сменить аккаунт</button>
+      </div>
       <div id="tabs"></div>
     </div>
     <div id="main">

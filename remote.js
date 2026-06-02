@@ -1,50 +1,37 @@
 // remote.js — удалённый пульт LiteEditor (ПК-сторона).
 //
 // Открывает ИСХОДЯЩИЙ WebSocket к релею (lite.codecopy.ru) с role=pc. Релей
-// склеивает нас с Android-пультом (role=app) по общей комнате. Дальше:
-//   • вывод PTY (pty:data) зеркалим пульту;
-//   • ввод/промпт с пульта пишем в соответствующий PTY;
-//   • отдаём пульту список вкладок-сессий (метки).
+// склеивает нас с Android-пультом(ами) по аккаунту (логин/пароль → токен сессии).
+// Токен пользователь не вводит: входит логином/паролем в модалке «Пульт», main
+// получает токен от релея и передаёт его сюда через apply().
 //
-// Включается ТОЛЬКО при env LITE_REMOTE=1 (по умолчанию выключено → у обычных
-// пользователей ничего не меняется). Файл грузится напрямую (не бандлится),
-// как logger.js — правки применяются на следующем запуске.
-//
-// Конфиг через окружение:
-//   LITE_REMOTE=1                 — включить
-//   LITE_RELAY_URL=wss://lite.codecopy.ru/ws   (дефолт)
-//   LITE_RELAY_TOKEN=<секрет>     — общий секрет (как в релее и в APK)
-//   LITE_RELAY_ROOM=default       — код пейринга (дефолт)
+// Включается, когда есть сохранённый токен И включён тумблер (enabled). Конфиг —
+// из стора (ключ remote); legacy-путь через env (LITE_REMOTE=1 + LITE_RELAY_TOKEN)
+// тоже работает. Файл грузится напрямую (не бандлится) — правки на след. запуске.
 
 let WebSocket = null;
-try { WebSocket = require('ws'); } catch (_) { /* ws не установлен — фича просто не поднимется */ }
+try { WebSocket = require('ws'); } catch (_) { /* ws не установлен — фича не поднимется */ }
 
-const DEFAULT_URL = 'wss://lite.codecopy.ru/ws';
-const BUF_LIMIT = 64 * 1024; // сколько последнего вывода держим на сессию для реплея при выборе вкладки
+const BUF_LIMIT = 64 * 1024;
 
 let logger = { log() {} };
-let getSessions = () => [];   // () => [{ sid, label }]
-let writeInput = () => {};    // (sid, data) => void
+let getSessions = () => [];
+let writeInput = () => {};
+
+let host = 'lite.codecopy.ru';
+let token = '';
+let enabled = false;
 
 let ws = null;
 let stopped = true;
 let reconnectTimer = null;
-let activeSid = null;                 // какую сессию сейчас смотрит пульт
-const buffers = new Map();            // sid -> string (хвост вывода)
+let activeSid = null;
+const buffers = new Map();
 
-function cfg() {
-  return {
-    enabled: process.env.LITE_REMOTE === '1',
-    url: process.env.LITE_RELAY_URL || DEFAULT_URL,
-    token: process.env.LITE_RELAY_TOKEN || '',
-    room: process.env.LITE_RELAY_ROOM || 'default',
-  };
-}
+function wsUrl() { return `wss://${host}/ws`; }
 
 function send(obj) {
-  if (ws && ws.readyState === 1) {
-    try { ws.send(JSON.stringify(obj)); } catch (_) {}
-  }
+  if (ws && ws.readyState === 1) { try { ws.send(JSON.stringify(obj)); } catch (_) {} }
 }
 
 function sendState() {
@@ -54,57 +41,57 @@ function sendState() {
 }
 
 function connect() {
-  const c = cfg();
-  if (!WebSocket || !c.enabled || !c.token) return;
-  const url = `${c.url}?token=${encodeURIComponent(c.token)}&room=${encodeURIComponent(c.room)}&role=pc`;
-  try {
-    ws = new WebSocket(url);
-  } catch (e) {
-    logger.log('error', 'remote', 'connect failed', e); scheduleReconnect(); return;
-  }
+  if (!WebSocket || !enabled || !token) return;
+  const url = `${wsUrl()}?token=${encodeURIComponent(token)}&role=pc`;
+  try { ws = new WebSocket(url); }
+  catch (e) { logger.log('error', 'remote', 'connect failed', e); scheduleReconnect(); return; }
 
-  ws.on('open', () => { logger.log('info', 'remote', `connected to relay room=${c.room}`); sendState(); });
-
+  ws.on('open', () => { logger.log('info', 'remote', `connected to relay ${host}`); sendState(); });
   ws.on('message', (raw) => {
-    let m;
-    try { m = JSON.parse(raw.toString()); } catch (_) { return; }
-    if (m.t === 'peer' && m.role === 'app' && m.event === 'join') {
-      // Пульт подключился — отдать ему актуальный список вкладок.
-      sendState();
-    } else if (m.t === 'hello') {
-      sendState();
-    } else if (m.t === 'select' && typeof m.sid === 'string') {
+    let m; try { m = JSON.parse(raw.toString()); } catch (_) { return; }
+    if (m.t === 'peer' && m.role === 'app' && m.event === 'join') sendState();
+    else if (m.t === 'hello') sendState();
+    else if (m.t === 'select' && typeof m.sid === 'string') {
       activeSid = m.sid;
       const buf = buffers.get(m.sid);
-      if (buf) send({ t: 'data', sid: m.sid, data: buf }); // реплей последнего вывода
+      if (buf) send({ t: 'data', sid: m.sid, data: buf });
     } else if (m.t === 'input' && typeof m.sid === 'string') {
       try { writeInput(m.sid, m.data || ''); } catch (_) {}
     }
   });
-
-  ws.on('close', () => { scheduleReconnect(); });
+  ws.on('close', () => { ws = null; scheduleReconnect(); });
   ws.on('error', (e) => { logger.log('warn', 'remote', 'ws error', e && e.message); try { ws.close(); } catch (_) {} });
 }
 
 function scheduleReconnect() {
-  if (stopped) return;
+  if (stopped || !enabled || !token) return;
   if (reconnectTimer) return;
-  reconnectTimer = setTimeout(() => { reconnectTimer = null; connect(); }, 3000);
+  reconnectTimer = setTimeout(() => { reconnectTimer = null; if (!ws) connect(); }, 3000);
 }
 
-// --- Публичный API (зовётся из main.js) -----------------------------------
+// --- Публичный API -----------------------------------------------------------
 
-function start(opts = {}) {
+function init(opts = {}) {
   if (opts.logger) logger = opts.logger;
   if (opts.getSessions) getSessions = opts.getSessions;
   if (opts.writeInput) writeInput = opts.writeInput;
-  const c = cfg();
-  if (!c.enabled) return;
-  if (!WebSocket) { logger.log('warn', 'remote', 'ws not installed — remote disabled'); return; }
-  if (!c.token) { logger.log('warn', 'remote', 'LITE_RELAY_TOKEN empty — remote disabled'); return; }
-  stopped = false;
-  logger.log('info', 'remote', `starting remote pult → ${c.url} room=${c.room}`);
-  connect();
+}
+
+// Применить конфиг (host/token/enabled). Поднимает или гасит соединение.
+function apply(cfg = {}) {
+  if (cfg.host !== undefined) host = cfg.host || 'lite.codecopy.ru';
+  if (cfg.token !== undefined) token = cfg.token || '';
+  if (cfg.enabled !== undefined) enabled = !!cfg.enabled;
+  reconcile();
+}
+
+function reconcile() {
+  if (enabled && token && WebSocket) {
+    stopped = false;
+    if (!ws) connect();
+  } else {
+    stop();
+  }
 }
 
 function stop() {
@@ -114,7 +101,10 @@ function stop() {
   ws = null;
 }
 
-// Зовётся из onData PTY: копим хвост и (если эту сессию смотрят) шлём пульту.
+function status() {
+  return { enabled, hasToken: !!token, host, connected: !!(ws && ws.readyState === 1) };
+}
+
 function broadcast(sid, data) {
   let buf = (buffers.get(sid) || '') + data;
   if (buf.length > BUF_LIMIT) buf = buf.slice(buf.length - BUF_LIMIT);
@@ -122,12 +112,7 @@ function broadcast(sid, data) {
   if (sid === activeSid) send({ t: 'data', sid, data });
 }
 
-function exit(sid) {
-  buffers.delete(sid);
-  send({ t: 'exit', sid });
-}
-
-// Вызвать, когда список вкладок мог измениться (создали/закрыли/переименовали).
+function exit(sid) { buffers.delete(sid); send({ t: 'exit', sid }); }
 function notifyState() { sendState(); }
 
-module.exports = { start, stop, broadcast, exit, notifyState };
+module.exports = { init, apply, stop, status, broadcast, exit, notifyState };

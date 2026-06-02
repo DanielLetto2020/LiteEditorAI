@@ -100,7 +100,7 @@ try {
   const legacy = path.join(os.homedir(), '.LiteEditor');
   if (!fs.existsSync(storeDir) && fs.existsSync(legacy)) fs.cpSync(legacy, storeDir, { recursive: true });
 } catch (_) {}
-const STORE_KEYS = ['projects', 'settings', 'layout', 'recents', 'lastParent', 'categories', 'sectionOrder', 'accordions', 'dismissed', 'uiState', 'projTabs', 'openrouter'];
+const STORE_KEYS = ['projects', 'settings', 'layout', 'recents', 'lastParent', 'categories', 'sectionOrder', 'accordions', 'dismissed', 'uiState', 'projTabs', 'openrouter', 'remote'];
 function ensureStoreDir() { try { fs.mkdirSync(storeDir, { recursive: true }); } catch (_) {} }
 function storeFile(key) { return path.join(storeDir, String(key).replace(/[^\w.-]/g, '_') + '.json'); }
 function readStoreKey(key) {
@@ -537,15 +537,77 @@ function buildRemoteSessions() {
   }
   return out;
 }
+const REMOTE_DEFAULT_HOST = 'lite.codecopy.ru';
 function startRemotePult() {
   try {
-    remote.start({
+    remote.init({
       logger,
       getSessions: buildRemoteSessions,
       writeInput: (sid, data) => { const p = ptys.get(sid); if (p) p.write(data); },
     });
+    const r = readStoreKey('remote') || {};
+    if (r.token) {
+      // Аккаунт сохранён (вошли через модалку «Пульт»).
+      remote.apply({ host: r.host || REMOTE_DEFAULT_HOST, token: r.token, enabled: r.enabled !== false });
+    } else if (process.env.LITE_REMOTE === '1' && process.env.LITE_RELAY_TOKEN) {
+      // Legacy: включение через env (общий токен).
+      const host = (process.env.LITE_RELAY_URL || '').replace(/^wss?:\/\//, '').replace(/\/.*$/, '') || REMOTE_DEFAULT_HOST;
+      remote.apply({ host, token: process.env.LITE_RELAY_TOKEN, enabled: true });
+    }
   } catch (e) { logger.log('error', 'remote', 'start failed', e); }
 }
+
+// POST JSON на релей (https). FastAPI-ошибки приходят как {detail:"..."}.
+function relayPost(host, pathname, body) {
+  return new Promise((resolve) => {
+    let data;
+    try { data = Buffer.from(JSON.stringify(body)); } catch (_) { resolve({ status: 0, error: 'bad body' }); return; }
+    const req = https.request(
+      { host, path: pathname, method: 'POST', headers: { 'Content-Type': 'application/json', 'Content-Length': data.length }, timeout: 12000 },
+      (res) => { let buf = ''; res.on('data', (d) => (buf += d)); res.on('end', () => { let j = null; try { j = JSON.parse(buf); } catch (_) {} resolve({ status: res.statusCode, body: j }); }); }
+    );
+    req.on('timeout', () => { req.destroy(); resolve({ status: 0, error: 'timeout' }); });
+    req.on('error', (e) => resolve({ status: 0, error: String(e && e.message || e) }));
+    req.write(data); req.end();
+  });
+}
+
+function remoteStoreState() {
+  const r = readStoreKey('remote') || {};
+  const st = remote.status();
+  return { loggedIn: !!r.token, login: r.login || '', enabled: r.enabled !== false, connected: st.connected, host: r.host || REMOTE_DEFAULT_HOST };
+}
+
+// Регистрация/вход: дергаем релей, сохраняем {login, token, host, enabled}, поднимаем соединение.
+async function remoteAuth(kind, { login, password } = {}) {
+  const host = REMOTE_DEFAULT_HOST;
+  const res = await relayPost(host, '/' + kind, { login, password });
+  if (res.status === 200 && res.body && res.body.token) {
+    const rec = { login: res.body.login || login, token: res.body.token, host, enabled: true };
+    writeStoreKey('remote', rec);
+    remote.apply({ host, token: rec.token, enabled: true });
+    return { ok: true, status: remoteStoreState() };
+  }
+  const msg = (res.body && (res.body.detail || res.body.error)) || res.error ||
+    (res.status === 401 ? 'Неверный логин или пароль' : res.status === 409 ? 'Логин занят' : `Ошибка (${res.status || 'нет связи'})`);
+  return { ok: false, error: String(msg) };
+}
+
+ipcMain.handle('remote:status', () => remoteStoreState());
+ipcMain.handle('remote:register', (_e, creds) => remoteAuth('register', creds || {}));
+ipcMain.handle('remote:login', (_e, creds) => remoteAuth('login', creds || {}));
+ipcMain.handle('remote:logout', () => {
+  const r = readStoreKey('remote') || {};
+  writeStoreKey('remote', { ...r, token: '', enabled: false });
+  remote.apply({ token: '', enabled: false });
+  return remoteStoreState();
+});
+ipcMain.handle('remote:setEnabled', (_e, { enabled } = {}) => {
+  const r = readStoreKey('remote') || {};
+  writeStoreKey('remote', { ...r, enabled: !!enabled });
+  remote.apply({ enabled: !!enabled });
+  return remoteStoreState();
+});
 
 app.on('window-all-closed', () => {
   for (const p of ptys.values()) { try { p.kill(); } catch (_) {} }
