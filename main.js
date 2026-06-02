@@ -8,6 +8,7 @@ const { execFile } = require('child_process');
 const https = require('https');
 const pty = require('node-pty');
 const logger = require('./logger');
+const remote = require('./remote'); // удалённый пульт (вкл. только при env LITE_REMOTE=1)
 
 app.setName('LiteEditorAI');
 app.setAppUserModelId('com.mletto.liteeditorai'); // Windows: имя/иконка/группировка в панели задач и уведомлениях
@@ -510,10 +511,41 @@ app.whenReady().then(() => {
   Menu.setApplicationMenu(null); // we draw our own menu in the custom titlebar
   createWindow();
   createTray();
+  startRemotePult();
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
 });
+
+// Удалённый пульт (Android). Поднимается только при LITE_REMOTE=1 — отдаёт пульту
+// список вкладок-сессий (метка = имя проекта · seq), зеркалит вывод PTY и пишет
+// ввод/промпт с пульта в нужный PTY. См. remote.js.
+function buildRemoteSessions() {
+  const projects = readStoreKey('projects') || [];
+  const byId = {};
+  for (const p of projects) if (p && p.id) byId[p.id] = p;
+  const out = [];
+  for (const sid of ptys.keys()) {
+    if (sid === '__scratch__') { out.push({ sid, label: 'Системный (~)' }); continue; }
+    const i = sid.indexOf('::t');
+    if (i > 0) {
+      const proj = byId[sid.slice(0, i)];
+      out.push({ sid, label: (proj ? proj.name : sid.slice(0, i)) + ' · ' + sid.slice(i + 3) });
+    } else {
+      out.push({ sid, label: sid });
+    }
+  }
+  return out;
+}
+function startRemotePult() {
+  try {
+    remote.start({
+      logger,
+      getSessions: buildRemoteSessions,
+      writeInput: (sid, data) => { const p = ptys.get(sid); if (p) p.write(data); },
+    });
+  } catch (e) { logger.log('error', 'remote', 'start failed', e); }
+}
 
 app.on('window-all-closed', () => {
   for (const p of ptys.values()) { try { p.kill(); } catch (_) {} }
@@ -607,18 +639,22 @@ function spawnPtyFor(id, cwd, cols, rows) {
   logger.log('info', 'pty', `spawned pid=${proc.pid}`);
   proc.onData((data) => {
     if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('pty:data', { id, data });
+    try { remote.broadcast(id, data); } catch (_) {} // зеркалим вывод на удалённый пульт
   });
   proc.onExit(() => {
     if (ptys.get(id) && ptys.get(id) !== proc) return; // replaced by a restart — suppress stale exit
     ptys.delete(id);
     if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('pty:exit', { id });
+    try { remote.exit(id); remote.notifyState(); } catch (_) {}
   });
   ptys.set(id, proc);
   return { ok: true };
 }
 ipcMain.handle('pty:create', (_e, { id, cwd, cols, rows }) => {
   if (ptys.has(id)) return { ok: true, existed: true };
-  return spawnPtyFor(id, cwd, cols, rows);
+  const r = spawnPtyFor(id, cwd, cols, rows);
+  try { remote.notifyState(); } catch (_) {} // обновить список вкладок на пульте
+  return r;
 });
 // Kill the existing PTY (if any) and start a fresh one in the same cwd.
 ipcMain.handle('pty:restart', (_e, { id, cwd, cols, rows }) => {

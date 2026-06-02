@@ -1,0 +1,14 @@
+# Секрет/конфиг — не коммитим (вшивается в APK)
+lite.properties
+
+# Сгенерированный бандл UI (собирается из renderer/mobile.js)
+app/src/main/assets/app.js
+app/src/main/assets/app.css
+
+# Артефакты сборки
+.gradle/
+.gradle-cache/
+build/
+app/build/
+out/
+local.properties
