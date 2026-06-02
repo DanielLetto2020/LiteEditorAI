@@ -520,30 +520,47 @@ app.whenReady().then(() => {
 // Удалённый пульт (Android). Поднимается только при LITE_REMOTE=1 — отдаёт пульту
 // список вкладок-сессий (метка = имя проекта · seq), зеркалит вывод PTY и пишет
 // ввод/промпт с пульта в нужный PTY. См. remote.js.
-function buildRemoteSessions() {
+let remoteSeq = 0;
+// Состояние для пульта: открытые сессии-терминалы + все проекты (с категориями).
+function buildRemoteState() {
   const projects = readStoreKey('projects') || [];
   const byId = {};
   for (const p of projects) if (p && p.id) byId[p.id] = p;
-  const out = [];
+  const sessions = [];
   for (const sid of ptys.keys()) {
-    if (sid === '__scratch__') { out.push({ sid, label: 'Системный (~)' }); continue; }
+    if (sid === '__scratch__') { sessions.push({ sid, projId: null, proj: 'Система', tab: 'Системный (~)', label: 'Системный (~)' }); continue; }
     const i = sid.indexOf('::t');
     if (i > 0) {
-      const proj = byId[sid.slice(0, i)];
-      out.push({ sid, label: (proj ? proj.name : sid.slice(0, i)) + ' · ' + sid.slice(i + 3) });
+      const projId = sid.slice(0, i);
+      const seq = sid.slice(i + 3);
+      const proj = byId[projId];
+      const name = proj ? proj.name : projId;
+      sessions.push({ sid, projId, proj: name, tab: 'Терминал ' + seq, label: name + ' · ' + seq });
     } else {
-      out.push({ sid, label: sid });
+      sessions.push({ sid, projId: null, proj: '', tab: sid, label: sid });
     }
   }
-  return out;
+  const projOut = projects.map((p) => ({ id: p.id, name: p.name, category: p.category || '', favorite: !!p.favorite }));
+  return { sessions, projects: projOut };
+}
+// Открыть новый терминал для проекта по запросу с пульта (PTY создаётся в main;
+// зеркалится пульту; на десктопе не отображается — это нормально для удалённого).
+function remoteOpenProject(projId) {
+  const projects = readStoreKey('projects') || [];
+  const p = projects.find((x) => x && x.id === projId);
+  if (!p || !p.path || !fs.existsSync(p.path)) return;
+  const id = projId + '::tR' + (++remoteSeq);
+  spawnPtyFor(id, p.path);
+  try { remote.notifyState(); } catch (_) {}
 }
 const REMOTE_DEFAULT_HOST = 'lite.codecopy.ru';
 function startRemotePult() {
   try {
     remote.init({
       logger,
-      getSessions: buildRemoteSessions,
+      getSessions: buildRemoteState,
       writeInput: (sid, data) => { const p = ptys.get(sid); if (p) p.write(data); },
+      openProject: remoteOpenProject,
     });
     const r = readStoreKey('remote') || {};
     if (r.token) {

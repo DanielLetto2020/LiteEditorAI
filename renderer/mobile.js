@@ -18,6 +18,7 @@ let selected = null;
 let term = null;
 let fit = null;
 let lastSessions = [];
+let lastProjects = [];
 let booted = false;
 let reconnectTimer = null;
 let authPending = null;   // {login,password} — отправить после открытия сокета
@@ -105,41 +106,109 @@ function logout() {
 }
 
 // ----------------------------------------------------------------- терминал
+// Терминал: пробуем xterm; если падает (старый WebView, напр. Chrome 79) — простой <pre>.
+let termMode = null;  // 'xterm' | 'pre'
+let pre = null;
+
 function initTerm() {
-  term = new Terminal({
-    fontSize: 13, fontFamily: 'monospace', cursorBlink: true, scrollback: 5000,
-    theme: { background: '#0d1117', foreground: '#d6deeb', cursor: '#7fdbca' },
-  });
-  fit = new FitAddon();
-  term.loadAddon(fit);
-  term.open($('term'));
-  try { fit.fit(); } catch (_) {}
-  window.addEventListener('resize', () => { try { fit.fit(); } catch (_) {} });
-  term.onData((d) => sendInput(d));
+  try {
+    term = new Terminal({
+      fontSize: 13, fontFamily: 'monospace', cursorBlink: true, scrollback: 5000,
+      theme: { background: '#0d1117', foreground: '#d6deeb', cursor: '#7fdbca' },
+    });
+    fit = new FitAddon();
+    term.loadAddon(fit);
+    term.open($('term'));
+    try { fit.fit(); } catch (_) {}
+    window.addEventListener('resize', () => { try { fit.fit(); } catch (_) {} });
+    term.onData((d) => sendInput(d));
+    termMode = 'xterm';
+  } catch (e) {
+    sendReport('xterm-init', (e && e.message) || String(e), (e && e.stack) || '');
+    initPre();
+  }
 }
-function renderTabs(sessions) {
+function initPre() {
+  termMode = 'pre';
+  const host = $('term');
+  host.innerHTML = '';
+  pre = document.createElement('pre');
+  pre.style.cssText = 'margin:0;height:100%;overflow:auto;white-space:pre-wrap;word-break:break-word;color:#d6deeb;font:12px/1.35 monospace;padding:6px';
+  host.appendChild(pre);
+}
+// Грубая чистка ANSI/OSC для текстового фолбэка.
+function stripAnsi(s) {
+  return String(s)
+    .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '')
+    .replace(/\x1b[[\]][0-9;?=]*[ -/]*[@-~]/g, '')
+    .replace(/\x1b[@-Z\\-_]/g, '')
+    .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, '');
+}
+function writeOut(data) {
+  if (termMode === 'xterm') {
+    try { term.write(data); return; }
+    catch (e) { sendReport('xterm-write', (e && e.message) || String(e), (e && e.stack) || ''); initPre(); }
+  }
+  if (termMode === 'pre' && pre) {
+    pre.textContent += stripAnsi(data);
+    if (pre.textContent.length > 120000) pre.textContent = pre.textContent.slice(-90000);
+    pre.scrollTop = pre.scrollHeight;
+  }
+}
+function clearOut() { if (termMode === 'xterm') { try { term.reset(); } catch (_) {} } else if (pre) pre.textContent = ''; }
+function focusOut() { if (termMode === 'xterm') { try { term.focus(); } catch (_) {} } }
+
+// Дерево вкладок: проекты по категориям (как сайдбар редактора), под каждым —
+// открытые терминалы; «＋» рядом с проектом — открыть терминал удалённо.
+function renderTree() {
   const box = $('tabs');
   box.innerHTML = '';
-  if (!sessions.length) {
-    const empty = document.createElement('div');
-    empty.className = 'tab-empty'; empty.textContent = 'Нет открытых терминалов на ПК';
-    box.appendChild(empty); return;
+  const projects = lastProjects || [];
+  const sessions = lastSessions || [];
+  const byProj = {};
+  for (const s of sessions) { const k = s.projId || '__none__'; (byProj[k] = byProj[k] || []).push(s); }
+
+  const fav = projects.filter((p) => p.favorite);
+  const cats = {};
+  for (const p of projects) { if (p.favorite) continue; const c = p.category || 'Все'; (cats[c] = cats[c] || []).push(p); }
+  const groups = [];
+  if (fav.length) groups.push(['★ Избранное', fav]);
+  Object.keys(cats).sort((a, b) => (a === 'Все') - (b === 'Все') || a.localeCompare(b)).forEach((c) => groups.push([c, cats[c]]));
+
+  const addCat = (name) => { const h = document.createElement('div'); h.className = 'cat'; h.textContent = name; box.appendChild(h); };
+  const addSession = (s) => {
+    const t = document.createElement('div');
+    t.className = 'tab' + (s.sid === selected ? ' active' : '');
+    t.textContent = s.tab || s.label || s.sid;
+    t.onclick = () => selectSession(s.sid);
+    box.appendChild(t);
+  };
+
+  for (const g of groups) {
+    addCat(g[0]);
+    for (const p of g[1]) {
+      const pr = document.createElement('div');
+      pr.className = 'proj';
+      const nm = document.createElement('span'); nm.className = 'proj-name'; nm.textContent = p.name;
+      const plus = document.createElement('button'); plus.className = 'open'; plus.textContent = '＋';
+      plus.onclick = (e) => { e.stopPropagation(); send({ t: 'open', projId: p.id }); };
+      pr.appendChild(nm); pr.appendChild(plus);
+      box.appendChild(pr);
+      for (const s of (byProj[p.id] || [])) addSession(s);
+    }
   }
-  for (const s of sessions) {
-    const elx = document.createElement('div');
-    elx.className = 'tab' + (s.sid === selected ? ' active' : '');
-    elx.textContent = s.label || s.sid;
-    elx.onclick = () => selectSession(s.sid);
-    box.appendChild(elx);
-  }
+  const known = {}; projects.forEach((p) => { known[p.id] = 1; });
+  const orphans = sessions.filter((s) => !s.projId || !known[s.projId]);
+  if (orphans.length) { addCat('Прочее'); orphans.forEach(addSession); }
+
   if (!selected && sessions.length) selectSession(sessions[0].sid);
 }
 function selectSession(sid) {
   selected = sid;
-  if (term) term.reset();
+  clearOut();
   send({ t: 'select', sid });
-  renderTabs(lastSessions);
-  if (term) term.focus();
+  renderTree();
+  focusOut();
 }
 function sendInput(data) { if (selected) send({ t: 'input', sid: selected, data }); }
 function send(obj) { if (ws && ws.readyState === 1) { try { ws.send(JSON.stringify(obj)); } catch (_) {} } }
@@ -165,9 +234,9 @@ function connect() {
       send({ t: 'hello' });
     } else if (m.t === 'auth_err') {
       authError(m.error || 'Ошибка входа');
-    } else if (m.t === 'state') { lastSessions = m.sessions || []; renderTabs(lastSessions); }
-    else if (m.t === 'data') { if (m.sid === selected && term) term.write(m.data || ''); }
-    else if (m.t === 'exit') { if (m.sid === selected && term) term.write('\r\n\x1b[90m[сессия завершена]\x1b[0m\r\n'); }
+    } else if (m.t === 'state') { lastSessions = m.sessions || []; lastProjects = m.projects || []; renderTree(); }
+    else if (m.t === 'data') { if (m.sid === selected) writeOut(m.data || ''); }
+    else if (m.t === 'exit') { if (m.sid === selected) writeOut('\r\n[сессия завершена]\r\n'); }
     else if (m.t === 'peer' && m.role === 'pc' && m.event === 'leave') { setStatus('ПК отключился', 'wait'); }
     else if (m.t === 'peer' && m.role === 'pc' && m.event === 'join') { setStatus('● На связи', 'ok'); send({ t: 'hello' }); }
   };
@@ -181,7 +250,7 @@ function scheduleReconnect() {
 
 function wirePrompt() {
   const pmt = $('pmt');
-  const fire = () => { const t = pmt.value; if (!t) return; sendInput(t + '\r'); pmt.value = ''; if (term) term.focus(); };
+  const fire = () => { const t = pmt.value; if (!t) return; sendInput(t + '\r'); pmt.value = ''; focusOut(); };
   $('send').onclick = fire;
   pmt.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); fire(); } });
 }
@@ -204,7 +273,7 @@ function start(config) {
     token = lsGet('lite_token') || '';
     if (token) enterApp(); else showLogin('');
     connect();           // с токеном → авторизуемся; без → пред-авторизованный сокет для входа
-    sendReport('boot', 'app started v0.4.0', (token ? 'has-token' : 'no-token'));
+    sendReport('boot', 'app started v0.6.0', (token ? 'has-token' : 'no-token'));
   } catch (e) {
     showLogin('');
     showFatal('start: ' + ((e && e.message) || e));

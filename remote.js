@@ -15,8 +15,9 @@ try { WebSocket = require('ws'); } catch (_) { /* ws не установлен �
 const BUF_LIMIT = 64 * 1024;
 
 let logger = { log() {} };
-let getSessions = () => [];
+let getSessions = () => ({ sessions: [], projects: [] });
 let writeInput = () => {};
+let openProject = () => {};
 
 let host = 'lite.codecopy.ru';
 let token = '';
@@ -35,9 +36,9 @@ function send(obj) {
 }
 
 function sendState() {
-  let sessions = [];
-  try { sessions = getSessions() || []; } catch (_) {}
-  send({ t: 'state', sessions });
+  let s = {};
+  try { s = getSessions() || {}; } catch (_) {}
+  send({ t: 'state', sessions: s.sessions || [], projects: s.projects || [] });
 }
 
 function connect() {
@@ -57,6 +58,8 @@ function connect() {
       if (buf) send({ t: 'data', sid: m.sid, data: buf });
     } else if (m.t === 'input' && typeof m.sid === 'string') {
       try { writeInput(m.sid, m.data || ''); } catch (_) {}
+    } else if (m.t === 'open' && typeof m.projId === 'string') {
+      try { openProject(m.projId); } catch (_) {}
     }
   });
   ws.on('close', () => { ws = null; scheduleReconnect(); });
@@ -75,6 +78,7 @@ function init(opts = {}) {
   if (opts.logger) logger = opts.logger;
   if (opts.getSessions) getSessions = opts.getSessions;
   if (opts.writeInput) writeInput = opts.writeInput;
+  if (opts.openProject) openProject = opts.openProject;
 }
 
 // Применить конфиг (host/token/enabled). Поднимает или гасит соединение.
