@@ -4,6 +4,34 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
   <title>LiteEditor Пульт</title>
+  <!-- ES5-маяк: работает ДО и НЕЗАВИСИМО от app.js. Шлёт пинг «страница загрузилась»
+       и ловит любые ошибки бандла (включая SyntaxError при парсинге) → таблица reports.
+       Так мы видим причину «тишины»/чёрного экрана, даже если основной JS не исполняется. -->
+  <script>
+  (function () {
+    var RELAY = 'wss://lite.codecopy.ru/ws';
+    function report(kind, msg, detail) {
+      try {
+        var w = new WebSocket(RELAY + '?role=app');
+        w.onopen = function () {
+          try { w.send(JSON.stringify({ t: 'report', kind: kind, message: String(msg || ''), detail: String(detail || ''), ua: navigator.userAgent })); } catch (e) {}
+          setTimeout(function () { try { w.close(); } catch (e) {} }, 1200);
+        };
+      } catch (e) {}
+    }
+    window.__report = report;
+    window.onerror = function (m, src, line, col, err) {
+      report('page-error', m, (err && err.stack) || (src + ':' + line));
+      var b = document.getElementById('fatal') || document.createElement('div');
+      b.id = 'fatal';
+      b.style.cssText = 'position:fixed;left:0;right:0;bottom:0;z-index:99999;background:#5a1620;color:#fff;font:12px monospace;padding:8px;white-space:pre-wrap;max-height:45%;overflow:auto';
+      b.textContent = 'Ошибка: ' + m;
+      if (document.body) document.body.appendChild(b);
+      return false;
+    };
+    report('page-loaded', 'index.html v0.5.0', navigator.userAgent);
+  })();
+  </script>
   <link rel="stylesheet" href="./app.css" />
   <style>
     * { box-sizing: border-box; }
@@ -55,6 +83,7 @@
       <div id="lg-err"></div>
       <button id="lg-go">Войти</button>
       <div class="login-note">Регистрация аккаунта — в редакторе на ПК (меню «Пульт»).</div>
+      <div class="login-note" style="opacity:.6">пульт v0.5.0</div>
     </div>
   </div>
 

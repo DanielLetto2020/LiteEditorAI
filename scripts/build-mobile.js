@@ -11,6 +11,7 @@ const opts = {
   outfile: path.join(root, 'android', 'app', 'src', 'main', 'assets', 'app.js'),
   platform: 'browser',
   format: 'iife',
+  target: ['es2015'],   // старые Android WebView не парсят esnext → транспилируем вниз
   minify: true,
   sourcemap: false,
   logLevel: 'info',
