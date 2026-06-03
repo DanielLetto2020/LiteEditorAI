@@ -26,7 +26,7 @@ import { markdown } from '@codemirror/lang-markdown';
 import { html } from '@codemirror/lang-html';
 import { css } from '@codemirror/lang-css';
 
-const APP_VERSION = 'alpha v1.0.66';
+const APP_VERSION = 'alpha v1.0.95';
 const GUTTER = 5;
 const SCRATCH_ID = '__scratch__'; // системный терминал (домашняя папка), не привязан к проектам
 
@@ -1087,11 +1087,28 @@ function showRemote() {
     hint.appendChild(el('span', '', 'На планшете в приложении «LiteEditor Пульт» войди логином '));
     hint.appendChild(el('b', '', st.login));
     hint.appendChild(el('span', '', ' и тем же паролем. Открой здесь хотя бы один терминал, чтобы он появился на пульте.'));
+    // Безопасность: «выйти на всех устройствах» — на случай потери планшета. Снимает одобрение
+    // со всех пультов аккаунта (потребуют повторного одобрения); этот ПК остаётся в системе.
+    const sec = el('div', 'about-desc');
+    sec.style.marginTop = '6px';
+    sec.appendChild(el('span', '', 'Потеряли планшет с пультом? Отключите все устройства — свои переодобрите заново.'));
+    const revoke = el('button', 'btn', '⎋ Выйти на всех устройствах');
+    revoke.style.cssText = 'margin-top:6px;color:var(--danger);border-color:var(--danger)';
+    revoke.onclick = () => showConfirm(
+      'Выйти на всех устройствах?',
+      'Все одобренные пульты будут отключены и потребуют повторного одобрения на ПК. Используйте при потере устройства. Этот ПК останется в системе.',
+      'Выйти везде',
+      async () => {
+        const r = await lite.remote.revokeAllDevices();
+        toast(r && r.ok ? 'Все устройства отключены — переодобрите свои заново' : 'Ошибка: ' + ((r && r.error) || ''));
+      },
+    );
     const actions = el('div', 'modal-actions');
     const out = el('button', 'btn', 'Выйти');
     out.onclick = async () => { await lite.remote.logout(); tick(); };
     actions.appendChild(out);
-    body.appendChild(who); body.appendChild(statusEl); body.appendChild(tgl); body.appendChild(hint); body.appendChild(actions);
+    body.appendChild(who); body.appendChild(statusEl); body.appendChild(tgl); body.appendChild(hint);
+    body.appendChild(sec); body.appendChild(revoke); body.appendChild(actions);
   }
 
   async function tick() {
@@ -1975,7 +1992,7 @@ function createSession(proj, name) {
   lite.pty.create({ id, cwd: proj.path, cols: term.cols, rows: term.rows });
   term.onData((data) => {
     const r = terms.get(id);
-    if (r) r.lastInputAt = Date.now();
+    if (r) { r.lastInputAt = Date.now(); if (r.remoteSized) reclaimTermSize(id); }   // печатаю на ПК → забираю владение размером у пульта
     lite.pty.write(id, data);
   });
   term.onResize(({ cols, rows }) => lite.pty.resize(id, cols, rows));
@@ -1996,7 +2013,7 @@ function createSession(proj, name) {
     return true;
   });
   container.addEventListener('contextmenu', (e) => { e.preventDefault(); showTermMenu(e.clientX, e.clientY, term, id); });
-  const rec = { term, fit, search, container, projId: proj.id, name, idleTimer: null, sawBell: false, tail: '', busyStart: 0, lastInputAt: 0, activitySeq: 0 };
+  const rec = { term, fit, search, container, projId: proj.id, name, idleTimer: null, sawBell: false, tail: '', busyStart: 0, lastInputAt: 0, activitySeq: 0, remoteSized: false };
   terms.set(id, rec);
   tabsByProj.get(proj.id).sessions.push(id);
   return id;
@@ -2131,8 +2148,42 @@ function handleRemoteSelect(sid) {
 function handleRemoteOpen(projId) {
   const proj = projects.find((p) => p.id === projId);
   if (!proj) return;
-  doSetActive(projId); // активируем проект (ensureProjectTabs)
-  addTab();            // новая вкладка-терминал в активном проекте
+  // Если у проекта ещё НЕТ терминалов — doSetActive сам создаст «Терминал 1» (ensureProjectTabs).
+  // Только если терминалы уже были, «＋» с пульта открывает ДОПОЛНИТЕЛЬНУЮ вкладку. Иначе
+  // получалось 2 терминала сразу (авто-первый + addTab) и пульт зацикливался на переключении.
+  const hadTabs = tabsByProj.has(projId) && (tabsByProj.get(projId).sessions || []).length > 0;
+  doSetActive(projId);
+  if (hadTabs) addTab();
+}
+// Пульт прислал «Создать папку» → создаём её на ПК в рабочем каталоге и открываем
+// проектом (новая вкладка-терминал прилетит обратно на пульт через состояние).
+async function handleRemoteNewFolder(name) {
+  name = String(name || '').trim();
+  if (!name) return;
+  const parent = (settings && settings.workingDir) || lastParent || '';
+  if (!parent) { toast('Пульт: задай рабочий каталог в Настройках, чтобы создавать папки'); return; }
+  try {
+    const res = await lite.fs.mkdir(parent, name);
+    if (res && res.error) { toast('Пульт: ' + res.error); return; }
+    if (res && res.path) { openByPath(res.path, res.name); toast(`Папка «${res.name}» создана (с пульта)`); }
+  } catch (e) { toast('Пульт: не удалось создать папку'); }
+}
+// Пульт просит одобрить устройство (pairing) → модалка с именем устройства и проверочным
+// кодом. Одобрять только своё устройство, у которого код на экране совпадает.
+function handleRemotePairRequest(info) {
+  info = info || {};
+  const device = info.device || '';
+  if (!device) return;
+  const name = info.name || 'Неизвестное устройство';
+  const code = info.code ? `\n\nКод на устройстве: ${info.code}` : '';
+  showConfirm(
+    `Подключить устройство «${name}»?`,
+    `Устройство запрашивает доступ к терминалу через пульт. Одобряйте ТОЛЬКО если это ваше устройство и код ниже совпадает с показанным на нём.${code}`,
+    '✓ Одобрить',
+    () => { try { lite.remote.pairApprove(device); toast(`Устройство «${name}» одобрено`); } catch (_) {} },
+    '✕ Отклонить',
+    () => { try { lite.remote.pairDeny(device); toast(`Устройство «${name}» отклонено`); } catch (_) {} },
+  );
 }
 // Пульт закрыл вкладку (×) → закрываем её на десктопе (closeTab работает по активному проекту).
 function handleRemoteClose(sid) {
@@ -2145,9 +2196,26 @@ function refitActiveTerminal(focusIt) {
   const asid = activeSessionId();
   const rec = asid ? terms.get(asid) : null;
   if (!rec) return;
+  // Пульт владеет размером этой сессии (подключён и задал свою сетку): ПК зеркалит её
+  // (letterbox) и НЕ навязывает свой fit, иначе PTY дёргается туда-сюда и пульт «сыпется».
+  if (rec.remoteSized) { if (focusIt) { try { rec.term.focus(); } catch (_) {} } return; }
   requestAnimationFrame(() => {
     try { rec.fit.fit(); lite.pty.resize(asid, rec.term.cols, rec.term.rows); if (focusIt) rec.term.focus(); } catch (_) {}
   });
+}
+// Пульт задал размер сессии → ПК подгоняет свой xterm под ту же сетку (без пере-фита).
+function applyRemoteTermSize(id, cols, rows) {
+  const rec = terms.get(id);
+  if (!rec || !cols || !rows) return;
+  rec.remoteSized = true;
+  try { if (rec.term.cols !== cols || rec.term.rows !== rows) rec.term.resize(cols, rows); } catch (_) {}
+}
+// ПК забирает владение размером назад (пульт отключился ИЛИ юзер печатает на ПК) → обычный fit.
+function reclaimTermSize(id) {
+  const rec = id ? terms.get(id) : null;
+  if (id && rec) rec.remoteSized = false;
+  else for (const r of terms.values()) r.remoteSized = false;
+  refitActiveTerminal();
 }
 function clearTerminal(id) {
   if (id === SCRATCH_ID) { if (scratchRec) { try { scratchRec.term.clear(); } catch (_) {} scratchRec.term.focus(); } return; }
@@ -3096,6 +3164,9 @@ function showSettings() {
     <div class="set-row col"><span>Папки для скана — их подпапки добавляются как проекты при запуске</span>
       <div id="st-scan" class="scan-list"></div>
       <button class="btn" id="st-scan-add">＋ Добавить папку</button></div>
+    <div class="set-row col"><span>Доступ с пульта — папки, которые можно смотреть/скачивать с планшета (только чтение). «Стор» доступен всегда.</span>
+      <div id="st-shares" class="scan-list"></div>
+      <button class="btn" id="st-share-add">＋ Открыть папку пульту</button></div>
     <div class="modal-actions"><button class="btn primary" id="st-ok">Готово</button></div>`);
   const notif = m.querySelector('#st-notif'); notif.checked = settings.notifications;
   const sound = m.querySelector('#st-sound'); sound.checked = settings.sound;
@@ -3120,6 +3191,25 @@ function showSettings() {
     });
   };
   renderScan();
+  // Доступ с пульта (shares) — список папок {path,name}; «Стор» неявно всегда доступен.
+  let shares = [...(STORE.shares || [])];
+  const sharesBox = m.querySelector('#st-shares');
+  const renderShares = () => {
+    sharesBox.innerHTML = '';
+    if (!shares.length) { sharesBox.appendChild(el('div', 'scan-empty', '— только «Стор» —')); return; }
+    shares.forEach((s, i) => {
+      const r = el('div', 'scan-item');
+      const path = el('span', 'scan-path', s.path); path.title = s.path;
+      const x = el('button', 'scan-del', '✕');
+      x.onclick = () => { shares.splice(i, 1); renderShares(); };
+      r.append(path, x); sharesBox.appendChild(r);
+    });
+  };
+  renderShares();
+  m.querySelector('#st-share-add').onclick = async () => {
+    const d = await lite.pickDir();
+    if (d && !shares.some((s) => s.path === d)) { shares.push({ path: d, name: d.split('/').filter(Boolean).pop() || d }); renderShares(); }
+  };
   m.querySelector('#st-wd-pick').onclick = async () => { const d = await lite.pickDir(); if (d) wd.value = d; };
   m.querySelector('#st-wd-clear').onclick = () => { wd.value = ''; };
   m.querySelector('#st-scan-add').onclick = async () => { const d = await lite.pickDir(); if (d && !scan.includes(d)) { scan.push(d); renderScan(); } };
@@ -3130,6 +3220,7 @@ function showSettings() {
     settings.fontSize = Math.max(9, Math.min(24, parseInt(font.value, 10) || 13));
     settings.workingDir = wd.value || '';
     settings.scanDirs = scan;
+    persist('shares', shares);   // доступ с пульта (main читает свежим при каждом запросе)
     saveSettings(); applyFontSize(); close();
     scanProjects(); // pick up newly-added scan dirs right away
   };
@@ -3255,6 +3346,10 @@ function init() {
     if (rec) rec.term.write('\r\n\x1b[90m[процесс завершён — закрой и переоткрой проект]\x1b[0m\r\n');
     setProjState(id, 'quiet');
   });
+  // Пульт задал размер сессии → зеркалим его сетку на ПК (letterbox), не навязываем свою.
+  try { if (lite.pty.onRemoteSize) lite.pty.onRemoteSize(({ id, cols, rows }) => { try { applyRemoteTermSize(id, cols, rows); } catch (_) {} }); } catch (_) {}
+  // Пульт отключился → ПК возвращает себе размер (обычный fit всех сессий).
+  try { if (lite.pty.onRemoteRelease) lite.pty.onRemoteRelease(() => { try { reclaimTermSize(); } catch (_) {} }); } catch (_) {}
 
   // Пульт выбрал вкладку → синхронизируем активную на десктопе.
   try { if (lite.remote && lite.remote.onSelect) lite.remote.onSelect((sid) => { try { handleRemoteSelect(sid); } catch (_) {} }); } catch (_) {}
@@ -3262,6 +3357,10 @@ function init() {
   try { if (lite.remote && lite.remote.onOpenProject) lite.remote.onOpenProject((projId) => { try { handleRemoteOpen(projId); } catch (_) {} }); } catch (_) {}
   // Пульт закрыл вкладку → закрываем на десктопе.
   try { if (lite.remote && lite.remote.onCloseTab) lite.remote.onCloseTab((sid) => { try { handleRemoteClose(sid); } catch (_) {} }); } catch (_) {}
+  // Пульт: «Создать папку» → создаём на десктопе.
+  try { if (lite.remote && lite.remote.onNewFolder) lite.remote.onNewFolder((name) => { try { handleRemoteNewFolder(name); } catch (_) {} }); } catch (_) {}
+  // Пульт просит одобрить устройство (pairing) → модалка одобрения.
+  try { if (lite.remote && lite.remote.onPairRequest) lite.remote.onPairRequest((info) => { try { handleRemotePairRequest(info); } catch (_) {} }); } catch (_) {}
 
   // OpenRouter streaming → route SSE events to the live request's handlers (by reqId).
   lite.openrouter.onChunk(({ reqId, delta }) => { const h = pendingOr.get(reqId); if (h) h.chunk(delta); });
