@@ -18,6 +18,7 @@ const { SerializeAddon } = require('@xterm/addon-serialize');
 const logger = require('./logger');
 const remote = require('./remote'); // удалённый пульт (вкл. только при env LITE_REMOTE=1)
 const { safeChildName } = require('./lib/safe-name'); // анти-traversal для имён (в т.ч. с пульта)
+const { resolveShell: resolveShellPure } = require('./lib/shell'); // выбор оболочки терминала
 
 app.setName('LiteEditorAI');
 app.setAppUserModelId('com.mletto.liteeditorai'); // Windows: имя/иконка/группировка в панели задач и уведомлениях
@@ -94,13 +95,16 @@ const watchers = new Map(); // project root path -> { watcher, timer, pending:Se
 
 // Resolve a shell that actually exists. $SHELL can point at a shell that was
 // uninstalled (e.g. zsh removed), which makes node-pty fail with "execvp failed".
+// Выбор оболочки терминала. Чистая логика — в lib/shell.js (тестируется); здесь тонкая обёртка:
+// читает settings.shell из стора и инжектит платформу/env/проверку существования. { file, args }.
 function resolveShell() {
-  if (process.platform === 'win32') return process.env.COMSPEC || 'powershell.exe';
-  const candidates = [process.env.SHELL, '/bin/bash', '/usr/bin/bash', '/bin/zsh', '/usr/bin/zsh', '/bin/sh'];
-  for (const c of candidates) {
-    if (c && fs.existsSync(c)) return c;
-  }
-  return 'bash'; // last resort — let PATH resolve it
+  const selected = ((readStoreKey('settings') || {}).shell) || '';
+  return resolveShellPure({
+    platform: process.platform,
+    selected,
+    env: process.env,
+    exists: (p) => { try { return !!p && fs.existsSync(p); } catch (_) { return false; } },
+  });
 }
 
 // Universal "is the agent waiting for input?" detection via the PTY's foreground
@@ -972,15 +976,15 @@ ipcMain.handle('dialog:pickDir', async () => {
 
 // ---------------------------------------------------------------- PTY
 function spawnPtyFor(id, cwd, cols, rows) {
-  const shell = resolveShell();
+  const { file: shell, args: shellArgs } = resolveShell();
   const startCwd = cwd && fs.existsSync(cwd) ? cwd : os.homedir();
   // Log around the spawn: it runs synchronously on the main thread, so if it ever
   // hangs (e.g. a ConPTY conout pipe never connecting on Windows) the log shows
   // "pty spawn …" with no following "pty spawned …" — pinpointing the freeze.
-  logger.log('info', 'pty', `spawn shell=${shell} cwd=${startCwd}`);
+  logger.log('info', 'pty', `spawn shell=${shell} args=${shellArgs.join(' ')} cwd=${startCwd}`);
   let proc;
   try {
-    proc = pty.spawn(shell, [], {
+    proc = pty.spawn(shell, shellArgs, {
       name: 'xterm-color',
       cols: cols || 80,
       rows: rows || 24,

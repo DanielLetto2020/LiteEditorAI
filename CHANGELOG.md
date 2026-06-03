@@ -3,6 +3,16 @@
 Все заметные изменения LiteEditorAI. Формат — [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/),
 нумерация — [SemVer](https://semver.org/lang/ru/). Проект в стадии **alpha**.
 
+## [1.0.96] — 2026-06-03
+
+### ✨ Добавлено
+- **Выбор оболочки терминала в настройках** (#2). На **Windows** по умолчанию теперь **PowerShell**
+  (PowerShell 7 `pwsh.exe`, если установлен, иначе Windows PowerShell) с флагом `-NoLogo` — и при этом
+  загружается пользовательский `$PROFILE` с алиасами (без `-NoProfile`); плюс выбор `cmd` или произвольного
+  пути к оболочке. На **Linux** — `bash` по умолчанию или свой путь (zsh/fish/…). Раньше на Windows всегда
+  запускался `cmd` (`resolveShell` безусловно брал `COMSPEC`, фолбэк на PowerShell был недостижим).
+  Спасибо @Eurgen за детальный разбор.
+
 ## [1.0.95] — 2026-06-03
 
 ### ✨ Добавлено
@@ -78,6 +88,7 @@
 - Первые публичные alpha-сборки: терминал на проект (xterm + node-pty), вивер кода (CodeMirror), дерево
   файлов, дистрибуция под Linux (`.deb`) и Windows (portable `.zip`) через GitHub Actions.
 
+[1.0.96]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.0.96
 [1.0.95]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.0.95
 [1.0.53]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.0.53
 [1.0.52]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.0.52
