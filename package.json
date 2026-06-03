@@ -1,6 +1,6 @@
 {
   "name": "liteeditor-ai",
-  "version": "1.0.101-alpha",
+  "version": "1.0.102-alpha",
   "description": "Lightweight editor for working with AI coding agents in the terminal",
   "main": "main.js",
   "author": "Максим Кузьминский <i@m-letto.ru>",
@@ -30,6 +30,7 @@
     "@codemirror/lang-json": "^6.0.1",
     "@codemirror/lang-markdown": "^6.3.1",
     "@codemirror/lang-python": "^6.1.6",
+    "@codemirror/lang-sql": "^6.10.0",
     "@codemirror/language": "^6.10.6",
     "@codemirror/search": "^6.7.0",
     "@codemirror/state": "^6.5.0",
@@ -46,7 +47,11 @@
     "@xterm/xterm": "^5.5.0",
     "highlight.js": "^11.11.1",
     "marked": "^18.0.4",
+    "mysql2": "^3.22.4",
     "node-pty": "^1.0.0",
+    "pg": "^8.21.0",
+    "sql.js": "^1.14.1",
+    "ssh2": "^1.17.0",
     "ws": "^8.21.0",
     "xterm": "^4.19.0",
     "xterm-addon-fit": "^0.5.0"
@@ -67,7 +72,8 @@
     },
     "npmRebuild": false,
     "asarUnpack": [
-      "**/node_modules/node-pty/**"
+      "**/node_modules/node-pty/**",
+      "**/node_modules/sql.js/dist/sql-wasm.wasm"
     ],
     "files": [
       "main.js",

@@ -335,7 +335,9 @@ html, body {
 /* ---------------- system/scratch terminal ---------------- */
 #btn-scratch.on { color: var(--green); border-color: var(--border-accent); }
 #scratch-pane { flex: 0 0 420px; min-width: 240px; border-left: 1px solid var(--border); display: flex; flex-direction: column; background: var(--ink-2); }
-#scratch-term { flex: 1; position: relative; overflow: hidden; padding: 6px 4px 6px 10px; }
+#scratch-term { flex: 1; position: relative; overflow: hidden; }
+.scratch-tabs { flex: 0 0 auto; min-width: 0; display: flex; align-items: flex-end; gap: 3px; padding: 4px 8px 0; overflow-x: auto; overflow-y: hidden; border-bottom: 1px solid var(--border); }
+.scratch-tabs::-webkit-scrollbar { height: 0; }
 #scratch-term .xterm { height: 100%; }
 #app.single #scratch-pane { display: none !important; }
 
@@ -433,6 +435,63 @@ html, body {
 .docker-term { flex: 1; min-height: 0; position: relative; border: 1px solid var(--border); border-radius: 9px; overflow: hidden; padding: 6px 4px 6px 8px; background: #0d1116; }
 .docker-term .xterm { height: 100%; }
 
+/* ---------------- Databases module (Postgres/MySQL/SQLite) ---------------- */
+#db-pane { flex: 0 0 560px; min-width: 340px; border-left: 1px solid var(--border); display: flex; flex-direction: column; background: var(--panel); }
+#db-title { color: var(--green-bright); font-size: 12px; font-weight: 600; }
+.db-body { flex: 1; min-height: 0; overflow: auto; padding: 10px; display: flex; flex-direction: column; gap: 8px; }
+.db-topbar { display: flex; align-items: center; gap: 8px; }
+.db-topbar-title { font-size: 12px; font-weight: 700; color: var(--text); flex: 1; }
+.db-warn { font-size: 11.5px; color: var(--warn); padding: 4px 2px; }
+.db-conn-row { display: flex; align-items: center; gap: 9px; padding: 7px; border-radius: 8px; cursor: pointer; }
+.db-conn-row:hover { background: var(--hover); }
+.db-conn-row > svg { color: var(--green-bright); flex: 0 0 auto; }
+/* connection modal form */
+.db-modal { width: 460px; max-width: 94vw; }
+.db-form { display: flex; flex-direction: column; gap: 9px; max-height: 70vh; overflow: auto; }
+.db-field { display: flex; flex-direction: column; gap: 3px; }
+.db-field > label { font-size: 11px; color: var(--text-mute); }
+.db-form input, .db-form select { background: var(--bg-input); border: 1px solid var(--border-strong); color: var(--text); border-radius: 8px; padding: 6px 9px; font-size: 12.5px; outline: none; font-family: inherit; }
+.db-form input:focus, .db-form select:focus { border-color: var(--border-accent); }
+.db-group { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; border: 1px solid var(--border); border-radius: 9px; padding: 9px; }
+.db-group .db-field:first-child, .db-check { grid-column: 1 / -1; }
+.db-check { display: flex; align-items: center; gap: 7px; font-size: 12px; color: var(--text); cursor: pointer; }
+.db-test-status { font-size: 12px; color: var(--text-dim); }
+.db-test-status.ok { color: var(--green-bright); }
+.db-test-status.err { color: var(--danger); }
+/* workspace */
+.db-ws-head { display: flex; align-items: center; gap: 8px; padding-bottom: 8px; border-bottom: 1px solid var(--border); }
+.db-ws-name { font-size: 13px; font-weight: 600; color: var(--text); overflow: hidden; text-overflow: ellipsis; }
+.db-ro-badge { font-size: 10px; color: var(--warn); border: 1px solid var(--warn); border-radius: 8px; padding: 1px 7px; margin-left: auto; }
+.db-ws-view { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 8px; }
+.db-table-row { display: flex; align-items: center; gap: 7px; padding: 4px 8px 4px 18px; border-radius: 6px; cursor: pointer; font-size: 12.5px; }
+.db-table-row:hover { background: var(--hover); }
+.db-table-row > svg { color: var(--text-mute); flex: 0 0 auto; }
+.db-table-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* table data view */
+.db-tablebar { display: flex; align-items: center; gap: 8px; }
+.db-table-title { font-size: 13px; font-weight: 600; color: var(--green-bright); flex: 1; overflow: hidden; text-overflow: ellipsis; }
+.db-grid-wrap, .db-grid { overflow: auto; }
+.db-grid-wrap { flex: 1; min-height: 0; border: 1px solid var(--border); border-radius: 9px; }
+.db-grid table { border-collapse: collapse; font-size: 11.5px; width: max-content; min-width: 100%; }
+.db-grid th { position: sticky; top: 0; background: var(--bar); color: var(--text); text-align: left; font-weight: 600; padding: 5px 9px; border-bottom: 1px solid var(--border-strong); white-space: nowrap; }
+.db-grid td { padding: 4px 9px; border-bottom: 1px solid var(--border); color: var(--text-dim); white-space: nowrap; max-width: 360px; overflow: hidden; text-overflow: ellipsis; }
+.db-grid tbody tr:hover { background: var(--hover); }
+.db-null { color: var(--text-mute); font-style: italic; }
+.db-pager { display: flex; align-items: center; gap: 8px; }
+.db-pageinfo { font-size: 11.5px; color: var(--text-mute); flex: 1; }
+/* SQL console */
+.db-sql-editor { border: 1px solid var(--border); border-radius: 9px; overflow: hidden; max-height: 38vh; }
+.db-sql-editor .cm-editor { max-height: 38vh; }
+.db-sql-editor .cm-scroller { font-family: "JetBrains Mono", monospace; font-size: 12.5px; }
+.db-sql-bar { display: flex; align-items: center; gap: 8px; }
+.db-run { padding: 5px 14px; }
+.db-sql-result { flex: 1; min-height: 0; overflow: auto; display: flex; flex-direction: column; gap: 6px; }
+.db-result-info { font-size: 11.5px; color: var(--text-mute); }
+/* export buttons */
+.db-export { display: flex; gap: 4px; margin-left: auto; }
+.db-exp-btn { font-size: 10.5px; font-weight: 700; letter-spacing: .03em; color: var(--text-dim); background: var(--bg-input); border: 1px solid var(--border-strong); border-radius: 7px; padding: 4px 8px; cursor: pointer; }
+.db-exp-btn:hover { color: var(--green-bright); border-color: var(--border-accent); }
+
 /* ---------------- gutters (resize) ---------------- */
 .gutter { flex: 0 0 5px; cursor: col-resize; background: transparent; position: relative; z-index: 5; }
 .gutter::after { content: ""; position: absolute; inset: 0 2px; background: transparent; transition: background .12s; }
@@ -445,6 +504,7 @@ body.resizing { cursor: col-resize; user-select: none; }
 #app.single #tree-pane,
 #app.single #git-pane,
 #app.single #docker-pane,
+#app.single #db-pane,
 #app.single .gutter { display: none !important; }
 #app.single #btn-single { color: var(--green); border-color: var(--border-accent); }
 
@@ -699,9 +759,27 @@ body.preview-full .prev-frame { width: 100%; height: 100%; }
 .nm-hint { color: var(--text-dim); font-size: 12px; margin-bottom: 10px; line-height: 1.45; }
 .nm-list { display: flex; flex-direction: column; gap: 8px; max-height: 50vh; overflow: auto; margin-bottom: 10px; }
 .nm-empty { color: var(--text-dim); text-align: center; padding: 16px; }
-.note-card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 9px 10px; cursor: grab; }
+.note-card { background: var(--surface); border: 1px solid var(--border); border-radius: 11px; padding: 8px 11px 10px; cursor: default; transition: border-color .12s, box-shadow .12s; }
 .note-card.dragging { opacity: 0.5; border-color: var(--border-accent); }
-.note-card:hover { border-color: var(--border-strong); }
+.note-card:hover { border-color: var(--border-strong); box-shadow: 0 2px 10px rgba(0,0,0,0.18); }
+/* notes-tab card chrome (queue cards keep the legacy .note-btn styles) */
+.note-top { display: flex; align-items: center; gap: 8px; margin-bottom: 7px; }
+.note-grip { color: var(--text-mute); cursor: grab; font-size: 13px; letter-spacing: -2px; }
+.note-qpill { margin-left: auto; padding: 3px 11px; border-radius: 9px; border: 1px solid var(--border); background: rgba(255,255,255,0.03); color: var(--text-dim); font-size: 11px; cursor: pointer; white-space: nowrap; }
+.note-qpill:hover:not(:disabled) { color: var(--text); border-color: var(--border-strong); }
+.note-qpill.on { color: var(--warn); border-color: rgba(224,175,104,0.5); background: rgba(224,175,104,0.12); }
+.note-qpill:disabled { opacity: .4; cursor: default; }
+.note-card .note-acts { justify-content: space-between; align-items: center; flex-wrap: nowrap; }
+.note-send-group { display: flex; flex: 0 0 auto; }
+.note-send { padding: 6px 13px; border: 1px solid var(--green); border-right: 0; border-radius: 8px 0 0 8px; background: var(--green); color: var(--accent-contrast); font-weight: 600; font-size: 12px; cursor: pointer; }
+.note-send:hover { background: var(--green-bright); }
+.note-send-sub { padding: 6px 11px; border: 1px solid var(--green-dim); border-radius: 0 8px 8px 0; background: transparent; color: var(--green); font-size: 11.5px; cursor: pointer; }
+.note-send-sub:hover { background: var(--accent-soft); }
+.note-tools { display: flex; gap: 2px; }
+.note-ibtn { width: 28px; height: 28px; display: inline-flex; align-items: center; justify-content: center; border-radius: 7px; border: 1px solid transparent; background: transparent; color: var(--text-dim); cursor: pointer; }
+.note-ibtn:hover:not(:disabled) { color: var(--text); background: var(--hover); }
+.note-ibtn:disabled { opacity: .25; cursor: default; }
+.note-ibtn.danger:hover { color: var(--danger); }
 .note-text { white-space: pre-wrap; word-break: break-word; color: var(--text); font-size: 12.5px; max-height: 110px; overflow: auto; margin-bottom: 8px; }
 .note-edit { width: 100%; min-height: 70px; resize: vertical; padding: 8px 10px; border-radius: 8px; background: var(--bg-input); border: 1px solid var(--border-strong); color: var(--text); font-size: 12.5px; outline: none; margin-bottom: 8px; font-family: inherit; }
 .note-edit:focus { border-color: var(--border-accent); }
@@ -816,6 +894,10 @@ body.preview-full .prev-frame { width: 100%; height: 100%; }
 .or-refresh { flex: 0 0 auto; width: 22px; height: 22px; border-radius: 6px; background: none; border: none; box-shadow: none; color: var(--text-mute); opacity: .7; cursor: pointer; }
 .or-refresh:hover { opacity: 1; color: var(--text); background: var(--hover); }
 .or-refresh.spinning .ic { animation: pind-spin .8s linear infinite; }
+/* OpenRouter section gets its own «интеграции» strip, set apart from project categories */
+.or-group { margin-top: 14px; }
+.or-divider { display: flex; align-items: center; gap: 8px; font-size: 9px; font-weight: 700; letter-spacing: .14em; color: var(--text-mute); padding: 0 4px 7px; user-select: none; }
+.or-divider::before, .or-divider::after { content: ""; height: 1px; flex: 1; background: linear-gradient(90deg, transparent, var(--border-accent), transparent); }
 
 /* fullscreen image viewer (generated images) */
 .img-lightbox { position: fixed; inset: 0; z-index: 200; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; background: rgba(0,0,0,.82); padding: 28px; }

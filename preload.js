@@ -116,6 +116,20 @@ contextBridge.exposeInMainWorld('lite', {
     onExecExit: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('containers:execExit', h); return () => ipcRenderer.removeListener('containers:execExit', h); },
   },
 
+  db: {
+    list: () => ipcRenderer.invoke('db:list'),
+    save: (conn) => ipcRenderer.invoke('db:save', { conn }),
+    delete: (id) => ipcRenderer.invoke('db:delete', { id }),
+    test: (conn) => ipcRenderer.invoke('db:test', { conn }),
+    schema: (id) => ipcRenderer.invoke('db:schema', { id }),
+    columns: (id, schema, table) => ipcRenderer.invoke('db:columns', { id, schema, table }),
+    tableData: (id, schema, table, opts) => ipcRenderer.invoke('db:tableData', { id, schema, table, ...(opts || {}) }),
+    query: (id, sql) => ipcRenderer.invoke('db:query', { id, sql }),
+    close: (id) => ipcRenderer.invoke('db:close', { id }),
+    saveText: (defaultName, text) => ipcRenderer.invoke('db:saveText', { defaultName, text }),
+    openText: () => ipcRenderer.invoke('db:openText'),
+  },
+
   pty: {
     create: (opts) => ipcRenderer.invoke('pty:create', opts),
     write: (id, data) => ipcRenderer.send('pty:write', { id, data }),

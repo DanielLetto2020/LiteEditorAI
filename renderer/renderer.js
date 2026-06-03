@@ -25,10 +25,12 @@ import { json } from '@codemirror/lang-json';
 import { markdown } from '@codemirror/lang-markdown';
 import { html } from '@codemirror/lang-html';
 import { css } from '@codemirror/lang-css';
+import { sql, PostgreSQL, MySQL, SQLite } from '@codemirror/lang-sql';
 
-const APP_VERSION = 'alpha v1.0.101';
+const APP_VERSION = 'alpha v1.0.102';
 const GUTTER = 5;
-const SCRATCH_ID = '__scratch__'; // системный терминал (домашняя папка), не привязан к проектам
+const SCRATCH_ID = '__scratch__'; // префикс id системных терминалов (домашняя папка), не привязаны к проектам
+const isScratch = (id) => typeof id === 'string' && id.startsWith(SCRATCH_ID);
 
 const lite = window.lite;
 const $ = (sel) => document.querySelector(sel);
@@ -423,8 +425,12 @@ function queueNotifyArmed(id) {
 let viewerOpen = false;
 let gitOpen = false;         // Git-модуль справа открыт (показывает активный проект)
 let dockerOpen = false;      // модуль контейнеров (docker/podman) справа открыт
+let dbOpen = false;          // модуль баз данных справа открыт
 let scratchOpen = false;     // системный терминал справа открыт
-let scratchRec = null;       // { term, fit, search } — один на приложение
+const scratchTerms = new Map(); // scratchId -> { term, fit, search, container, name }
+let scratchSessions = [];        // ordered scratch ids (tabs)
+let scratchActiveId = null;
+let scratchSeq = 0;
 let currentFile = null;
 let dirty = false;
 let diffMode = false;        // viewer showing a git diff instead of the file
@@ -433,7 +439,7 @@ let editor = null;
 let loadingDoc = false;
 const langComp = new Compartment();
 
-const DEFAULT_LAYOUT = { sidebar: 240, viewer: 520, tree: 240, scratch: 420, git: 360, docker: 460 };
+const DEFAULT_LAYOUT = { sidebar: 240, viewer: 520, tree: 240, scratch: 420, git: 360, docker: 460, db: 560 };
 let layout = loadLayout();
 let lastParent = STORE.lastParent || '';
 
@@ -464,7 +470,7 @@ function applyTheme() {
   const name = THEMES[settings.theme] ? settings.theme : DEFAULT_THEME;
   document.body.dataset.theme = name; // always set; index.html ships data-theme too so there's no flash
   for (const rec of terms.values()) { try { rec.term.options.theme = termTheme(); } catch (_) {} }
-  if (scratchRec) { try { scratchRec.term.options.theme = termTheme(); } catch (_) {} }
+  for (const rec of scratchTerms.values()) { try { rec.term.options.theme = termTheme(); } catch (_) {} }
   if (dockerExecTerm) { try { dockerExecTerm.options.theme = termTheme(); } catch (_) {} }
 }
 
@@ -477,7 +483,7 @@ function loadLayout() { return { ...DEFAULT_LAYOUT, ...(STORE.layout || {}) }; }
 function saveLayout() { persist('layout', layout); }
 // Whether the viewer / system terminal panes are open — part of the backed-up state,
 // restored on startup (and on import) so the window reopens the way it was left.
-function saveUiState() { persist('uiState', { viewerOpen, scratchOpen, gitOpen, dockerOpen }); }
+function saveUiState() { persist('uiState', { viewerOpen, scratchOpen, gitOpen, dockerOpen, dbOpen }); }
 function applyLayout() {
   $('#sidebar').style.flexBasis = layout.sidebar + 'px';
   $('#viewer-pane').style.flexBasis = layout.viewer + 'px';
@@ -485,6 +491,7 @@ function applyLayout() {
   $('#scratch-pane').style.flexBasis = layout.scratch + 'px';
   $('#git-pane').style.flexBasis = layout.git + 'px';
   $('#docker-pane').style.flexBasis = layout.docker + 'px';
+  $('#db-pane').style.flexBasis = layout.db + 'px';
 }
 function loadRecents() { return Array.isArray(STORE.recents) ? STORE.recents : []; }
 function pushRecent(p) {
@@ -552,13 +559,14 @@ function renderProjects() {
   box.innerHTML = '';
   const sections = buildSections();
   sections.forEach((s, i) => box.appendChild(renderSection(s, i, sections)));
-  if (orCards.length) box.appendChild(renderOrSection());
+  box.appendChild(renderOrSection()); // always shown (even with 0 keys) — own «интеграции» strip
   renderMiniRail();
 }
 // OpenRouter section — fixed group (no reorder arrows), like a special category.
 // Cards here aren't real projects: deletion lives only in the OpenRouter modal.
 function renderOrSection() {
-  const sec = el('div', 'pgroup');
+  const sec = el('div', 'pgroup or-group');
+  sec.appendChild(el('div', 'or-divider', 'ИНТЕГРАЦИИ')); // visual strip separating it from project categories
   const collapsed = isCollapsed(OR_KEY);
   const head = el('div', 'pgroup-head');
   const chev = el('span', 'pgroup-chev');
@@ -727,6 +735,8 @@ function openChat(id) {
     if (viewerOpen) setViewerOpen(false);
     if (gitOpen) setGitOpen(false);
     if (dockerOpen) setDockerOpen(false);
+    if (dbOpen) setDbOpen(false);
+    if (scratchOpen) setScratchOpen(false);
     activeOrId = id;
     const st = getOrChat(id);
     renderProjects();        // refresh card highlights (active OR card, deselect projects)
@@ -1429,25 +1439,12 @@ async function showNotes(p) {
     notes.forEach((note, i) => {
       const row = el('div', 'note-card');
       row.draggable = true; row.dataset.i = String(i);
-      row.append(el('div', 'note-text', note.text || '(пусто)'));
-      const acts = el('div', 'note-acts');
-      const up = el('button', 'note-btn nudge', '▲'); up.title = 'Выше'; up.disabled = i === 0;
-      up.addEventListener('click', () => moveNote(i, -1));
-      const down = el('button', 'note-btn nudge', '▼'); down.title = 'Ниже'; down.disabled = i === notes.length - 1;
-      down.addEventListener('click', () => moveNote(i, +1));
-      const sendDel = el('button', 'note-btn primary', '➤ В терминал + удалить');
-      sendDel.title = 'Отправить в терминал и убрать карточку (одноразовый промпт)';
-      sendDel.addEventListener('click', () => { flushEdit(); const t = note.text; notes.splice(i, 1); save(); sendNoteToTerminal(p, t); close(); });
-      const send = el('button', 'note-btn', '➤ В терминал');
-      send.title = 'Отправить, но оставить карточку (для повторяющихся)';
-      send.addEventListener('click', () => { flushEdit(); sendNoteToTerminal(p, note.text); close(); });
-      const edit = el('button', 'note-btn', '✎'); edit.title = 'Редактировать';
-      edit.addEventListener('click', () => editNote(row, note));
-      const del = el('button', 'note-btn danger', '🗑'); del.title = 'Удалить';
-      del.addEventListener('click', () => { notes.splice(i, 1); save(); render(); });
+      // top strip: drag grip + queue pill
       const qi = q.items.findIndex((it) => it.noteId === note.id);
       const queued = qi >= 0;
-      const qBtn = el('button', 'note-btn qtoggle' + (queued ? ' on' : ''), queued ? `№ ${qi + 1}` : '＋ в очередь');
+      const top = el('div', 'note-top');
+      top.appendChild(el('span', 'note-grip', '⠿'));
+      const qBtn = el('button', 'note-qpill' + (queued ? ' on' : ''), queued ? `▶ в очереди · ${qi + 1}` : '＋ в очередь');
       // While the queue runs, membership is frozen (matches the queue tab's disabled
       // reorder/remove) — changing q.items mid-run would shift q.pos onto the wrong note.
       qBtn.disabled = q.running;
@@ -1460,7 +1457,31 @@ async function showNotes(p) {
         else q.items.push({ noteId: note.id, text: note.text || '' });
         queueChanged(q); updateTabBadge(); render();
       });
-      acts.append(qBtn, up, down, sendDel, send, edit, del);
+      top.appendChild(qBtn);
+      row.appendChild(top);
+      row.append(el('div', 'note-text', note.text || '(пусто)'));
+      // footer: prominent send split-button (left) + tidy icon cluster (right)
+      const acts = el('div', 'note-acts');
+      const sendG = el('div', 'note-send-group');
+      const send = el('button', 'note-send', '➤ В терминал');
+      send.title = 'Отправить, но оставить карточку (для повторяющихся)';
+      send.addEventListener('click', () => { flushEdit(); sendNoteToTerminal(p, note.text); close(); });
+      const sendDel = el('button', 'note-send-sub', 'и удалить');
+      sendDel.title = 'Отправить в терминал и убрать карточку (одноразовый промпт)';
+      sendDel.addEventListener('click', () => { flushEdit(); const t = note.text; notes.splice(i, 1); save(); sendNoteToTerminal(p, t); close(); });
+      sendG.append(send, sendDel);
+      acts.appendChild(sendG);
+      const tools = el('div', 'note-tools');
+      const up = iconBtn('note-ibtn', 'chevron-up', 'Выше', 14); up.disabled = i === 0;
+      up.addEventListener('click', () => moveNote(i, -1));
+      const down = iconBtn('note-ibtn', 'chevron-down', 'Ниже', 14); down.disabled = i === notes.length - 1;
+      down.addEventListener('click', () => moveNote(i, +1));
+      const edit = iconBtn('note-ibtn', 'pencil', 'Редактировать', 14);
+      edit.addEventListener('click', () => editNote(row, note));
+      const del = iconBtn('note-ibtn danger', 'trash', 'Удалить', 14);
+      del.addEventListener('click', () => { notes.splice(i, 1); save(); render(); });
+      tools.append(up, down, edit, del);
+      acts.appendChild(tools);
       row.append(acts);
       row.addEventListener('dragstart', () => { dragFrom = i; row.classList.add('dragging'); });
       row.addEventListener('dragend', () => row.classList.remove('dragging'));
@@ -2004,7 +2025,7 @@ async function pasteInto(id) {
   if (text) lite.pty.write(id, text);
   // Reading the clipboard is async (IPC round-trip) and the right-click menu steals
   // focus — without this the terminal looks "frozen" until clicked. Refocus the xterm.
-  const rec = id === SCRATCH_ID ? scratchRec : terms.get(id);
+  const rec = scratchTerms.get(id) || terms.get(id);
   if (rec && rec.term) { try { rec.term.focus(); } catch (_) {} }
 }
 // Smart Ctrl+C: if there's a non-empty selection, copy it (and clear, so the next
@@ -2127,12 +2148,12 @@ function reclaimTermSize(id) {
   refitActiveTerminal();
 }
 function clearTerminal(id) {
-  if (id === SCRATCH_ID) { if (scratchRec) { try { scratchRec.term.clear(); } catch (_) {} scratchRec.term.focus(); } return; }
+  if (isScratch(id)) { const r = scratchTerms.get(id) || scratchTerms.get(scratchActiveId); if (r) { try { r.term.clear(); } catch (_) {} r.term.focus(); } return; }
   const sid = (id && terms.has(id)) ? id : activeSessionId();
   const rec = terms.get(sid); if (rec) { try { rec.term.clear(); } catch (_) {} rec.term.focus(); }
 }
 function restartTerminal(id) {
-  if (id === SCRATCH_ID) { restartScratch(); return; }
+  if (isScratch(id)) { restartScratch(id); return; }
   const sid = (id && terms.has(id)) ? id : activeSessionId();
   const rec = terms.get(sid);
   const proj = rec && projects.find((p) => p.id === rec.projId);
@@ -2145,12 +2166,15 @@ function restartTerminal(id) {
   rec.term.focus();
 }
 
-// ---------------------------------------------------------------- system/scratch terminal
-// A single terminal not tied to any project, cwd = home dir (main falls back to
-// os.homedir() when no cwd is given). For running arbitrary system commands.
-function ensureScratchTerminal() {
-  if (scratchRec) return scratchRec;
-  const container = $('#scratch-term');
+// ---------------------------------------------------------------- system terminals (module)
+// System terminals aren't tied to any project (cwd = home dir; main falls back to os.homedir()
+// when no cwd is given). Now a right-slot MODULE with its own TABS — several independent shells.
+// PTY ids are `__scratch__::tN`.
+function newScratchId() { return SCRATCH_ID + '::t' + (++scratchSeq); }
+function createScratchSession(name) {
+  const id = newScratchId();
+  const container = el('div', 'term-instance');
+  $('#scratch-term').appendChild(container);
   const term = new Terminal({
     fontFamily: '"JetBrains Mono", "Fira Code", "Cascadia Code", Consolas, monospace',
     fontSize: settings.fontSize, cursorBlink: true, allowProposedApi: true, theme: termTheme(), scrollback: 5000,
@@ -2164,28 +2188,82 @@ function ensureScratchTerminal() {
   term.open(container);
   loadFastRenderer(term);
   fit.fit();
-  lite.pty.create({ id: SCRATCH_ID, cols: term.cols, rows: term.rows }); // no cwd → ~ (os.homedir)
-  term.onData((data) => lite.pty.write(SCRATCH_ID, data));
-  term.onResize(({ cols, rows }) => lite.pty.resize(SCRATCH_ID, cols, rows));
+  lite.pty.create({ id, cols: term.cols, rows: term.rows }); // no cwd → ~ (os.homedir)
+  term.onData((data) => lite.pty.write(id, data));
+  term.onResize(({ cols, rows }) => lite.pty.resize(id, cols, rows));
   term.attachCustomKeyEventHandler((e) => {
     if (e.type !== 'keydown') return true;
+    if (e.ctrlKey && e.shiftKey && e.code === 'KeyT') { addScratchTab(); return false; }
+    if (e.ctrlKey && e.shiftKey && e.code === 'KeyW') { closeScratchTab(scratchActiveId); return false; }
+    if (e.ctrlKey && (e.key === 'PageDown' || e.key === 'PageUp')) { cycleScratchTab(e.key === 'PageDown' ? 1 : -1); return false; }
     // match by physical key so copy/paste work in any layout (Russian incl.)
     if (e.ctrlKey && !e.shiftKey && !e.altKey && e.code === 'KeyC') return !copySelection(term); // copied → swallow; else SIGINT
-    if (e.ctrlKey && !e.shiftKey && !e.altKey && e.code === 'KeyV') { e.preventDefault(); pasteInto(SCRATCH_ID); return false; } // preventDefault — без него дубль вставки
+    if (e.ctrlKey && !e.shiftKey && !e.altKey && e.code === 'KeyV') { e.preventDefault(); pasteInto(id); return false; }
     return true;
   });
-  container.addEventListener('contextmenu', (e) => { e.preventDefault(); showTermMenu(e.clientX, e.clientY, term, SCRATCH_ID); });
-  scratchRec = { term, fit, search, container };
-  return scratchRec;
+  container.addEventListener('contextmenu', (e) => { e.preventDefault(); showTermMenu(e.clientX, e.clientY, term, id); });
+  scratchTerms.set(id, { term, fit, search, container, name: name || ('Терминал ' + (scratchSessions.length + 1)) });
+  scratchSessions.push(id);
+  return id;
+}
+function ensureScratch() { if (!scratchSessions.length) scratchActiveId = createScratchSession('Терминал 1'); }
+function showActiveScratch() {
+  for (const [sid, rec] of scratchTerms) rec.container.style.display = sid === scratchActiveId ? 'block' : 'none';
+  renderScratchTabs();
+  refitScratch(true);
+}
+function renderScratchTabs() {
+  const bar = $('#scratch-tabs'); if (!bar) return;
+  bar.innerHTML = '';
+  scratchSessions.forEach((sid) => {
+    const rec = scratchTerms.get(sid); if (!rec) return;
+    const tab = el('div', 'tab' + (sid === scratchActiveId ? ' active' : ''));
+    tab.appendChild(el('span', 'tab-name', rec.name));
+    if (scratchSessions.length > 1) {
+      const x = iconBtn('tab-close', 'x', 'Закрыть вкладку (Ctrl+Shift+W)', 12);
+      x.addEventListener('click', (e) => { e.stopPropagation(); closeScratchTab(sid); });
+      tab.appendChild(x);
+    }
+    tab.addEventListener('click', () => switchScratchTab(sid));
+    tab.addEventListener('dblclick', () => renameScratchTab(sid));
+    bar.appendChild(tab);
+  });
+  const add = iconBtn('tab-add', 'plus', 'Новый системный терминал (Ctrl+Shift+T)', 15);
+  add.addEventListener('click', () => addScratchTab());
+  bar.appendChild(add);
+}
+function switchScratchTab(sid) { if (!scratchTerms.has(sid)) return; scratchActiveId = sid; showActiveScratch(); }
+function addScratchTab() { scratchActiveId = createScratchSession('Терминал ' + (scratchSessions.length + 1)); showActiveScratch(); }
+function closeScratchTab(sid) {
+  if (scratchSessions.length <= 1) return; // keep ≥1
+  lite.pty.kill(sid);
+  const rec = scratchTerms.get(sid);
+  if (rec) { try { rec.term.dispose(); } catch (_) {} rec.container.remove(); scratchTerms.delete(sid); }
+  const i = scratchSessions.indexOf(sid); scratchSessions.splice(i, 1);
+  if (scratchActiveId === sid) scratchActiveId = scratchSessions[Math.max(0, i - 1)];
+  showActiveScratch();
+}
+function cycleScratchTab(dir) {
+  if (scratchSessions.length < 2) return;
+  let i = scratchSessions.indexOf(scratchActiveId) + dir;
+  if (i < 0) i = scratchSessions.length - 1; if (i >= scratchSessions.length) i = 0;
+  switchScratchTab(scratchSessions[i]);
+}
+function renameScratchTab(sid) {
+  const rec = scratchTerms.get(sid); if (!rec) return;
+  showPrompt('Переименовать вкладку', 'Название', rec.name, (v) => { rec.name = v; renderScratchTabs(); });
 }
 function refitScratch(focusIt) {
-  if (!scratchRec || !scratchOpen) return;
+  if (!scratchOpen || !scratchActiveId) return;
+  const rec = scratchTerms.get(scratchActiveId); if (!rec) return;
   requestAnimationFrame(() => {
-    try { scratchRec.fit.fit(); lite.pty.resize(SCRATCH_ID, scratchRec.term.cols, scratchRec.term.rows); if (focusIt) scratchRec.term.focus(); } catch (_) {}
+    try { rec.fit.fit(); lite.pty.resize(scratchActiveId, rec.term.cols, rec.term.rows); if (focusIt) rec.term.focus(); } catch (_) {}
   });
 }
 function setScratchOpen(open, opts = {}) {
   if (open === scratchOpen) { if (open) refitScratch(true); return; }
+  // System terminals are a right-slot module now → mutually exclusive with viewer/git/docker/db.
+  if (open) { if (viewerOpen) setViewerOpen(false); if (gitOpen) setGitOpen(false); if (dockerOpen) setDockerOpen(false); if (dbOpen) setDbOpen(false); }
   const delta = layout.scratch + GUTTER;
   scratchOpen = open;
   $('#scratch-pane').classList.toggle('hidden', !open);
@@ -2193,22 +2271,23 @@ function setScratchOpen(open, opts = {}) {
   $('#btn-scratch').classList.toggle('on', open);
   if (opts.grow !== false) lite.win.growBy(open ? delta : -delta); // grow:false on restore — saved width already counts this pane
   saveUiState();
-  if (open) { ensureScratchTerminal(); setTimeout(() => refitScratch(true), 150); }
+  if (open) { ensureScratch(); setTimeout(() => showActiveScratch(), 60); }
   setTimeout(refitActiveTerminal, 160);
 }
 function toggleScratch() { setScratchOpen(!scratchOpen); }
-function restartScratch() {
-  ensureScratchTerminal();
-  try { scratchRec.term.reset(); } catch (_) {}
-  lite.pty.restart({ id: SCRATCH_ID, cols: scratchRec.term.cols, rows: scratchRec.term.rows }); // no cwd → ~
-  scratchRec.term.focus();
+function restartScratch(id) {
+  const sid = (id && scratchTerms.has(id)) ? id : scratchActiveId;
+  const rec = scratchTerms.get(sid); if (!rec) return;
+  try { rec.term.reset(); } catch (_) {}
+  lite.pty.restart({ id: sid, cols: rec.term.cols, rows: rec.term.rows }); // no cwd → ~
+  rec.term.focus();
 }
 
 // ---------------------------------------------------------------- font size
 let watchedRoot = null; // we live-watch only the active project to limit inotify use
 function applyFontSize() {
   for (const rec of terms.values()) { rec.term.options.fontSize = settings.fontSize; try { rec.fit.fit(); } catch (_) {} }
-  if (scratchRec) { scratchRec.term.options.fontSize = settings.fontSize; try { scratchRec.fit.fit(); } catch (_) {} }
+  for (const rec of scratchTerms.values()) { rec.term.options.fontSize = settings.fontSize; try { rec.fit.fit(); } catch (_) {} }
   document.documentElement.style.setProperty('--editor-fs', settings.fontSize + 'px');
   refitActiveTerminal();
 }
@@ -2527,8 +2606,8 @@ function setViewerOpen(open, opts = {}) {
     renderProjects();
     return;
   }
-  // Viewer/Git/Docker share the right slot — opening the viewer closes the others (chat is separate).
-  if (open) { if (gitOpen) setGitOpen(false); if (dockerOpen) setDockerOpen(false); }
+  // Right slot holds one module — opening the viewer closes the others (chat is separate).
+  if (open) { if (gitOpen) setGitOpen(false); if (dockerOpen) setDockerOpen(false); if (dbOpen) setDbOpen(false); if (scratchOpen) setScratchOpen(false); }
   const delta = layout.viewer + layout.tree + GUTTER * 2;
   viewerOpen = open;
   $('#viewer-pane').classList.toggle('hidden', !open);
@@ -2550,14 +2629,16 @@ function openModule(id) {
   if (id === 'files') { if (!viewerOpen) setViewerOpen(true); }
   else if (id === 'git') setGitOpen(true);
   else if (id === 'docker') setDockerOpen(true);
+  else if (id === 'db') setDbOpen(true);
+  else if (id === 'scratch') setScratchOpen(true);
 }
 
 // ---------------------------------------------------------------- Git module (right pane)
 function setGitOpen(open, opts = {}) {
   if (open && !activeProject() && !opts.allowEmpty) { toast('Сначала открой проект'); return; }
   if (open === gitOpen) { if (open) renderGitPanel(activeProject()); return; }
-  // Viewer/Git/Docker share the right slot — opening Git closes the others (chat is separate).
-  if (open) { if (viewerOpen) setViewerOpen(false); if (dockerOpen) setDockerOpen(false); }
+  // Right slot holds one module — opening Git closes the others (chat is separate).
+  if (open) { if (viewerOpen) setViewerOpen(false); if (dockerOpen) setDockerOpen(false); if (dbOpen) setDbOpen(false); if (scratchOpen) setScratchOpen(false); }
   const delta = layout.git + GUTTER;
   gitOpen = open;
   $('#git-pane').classList.toggle('hidden', !open);
@@ -2772,8 +2853,8 @@ function stripAnsiSeq(s) { return String(s).replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '
 function setDockerOpen(open, opts = {}) {
   if (open === dockerOpen) { if (open) renderDockerPanel(); return; }
   if (!open) { closeDockerDetail(); dockerView = 'list'; } // tear down logs/exec on close
-  // Viewer/Git/Docker share the right slot — opening Docker closes the others (chat is separate).
-  if (open) { if (viewerOpen) setViewerOpen(false); if (gitOpen) setGitOpen(false); }
+  // Right slot holds one module — opening Docker closes the others (chat is separate).
+  if (open) { if (viewerOpen) setViewerOpen(false); if (gitOpen) setGitOpen(false); if (dbOpen) setDbOpen(false); if (scratchOpen) setScratchOpen(false); }
   const delta = layout.docker + GUTTER;
   dockerOpen = open;
   $('#docker-pane').classList.toggle('hidden', !open);
@@ -3117,6 +3198,340 @@ async function renderDockerPanel() {
   renderDockerSections(listBox, data);
 }
 
+// ================================================================ Database module (Postgres/MySQL/SQLite)
+// Right-pane lightweight DB client: connections grouped by category, schema tree, table data
+// grid, SQL console (CodeMirror) and CSV/JSON/SQL export. Drivers live in main (lib/db.js).
+let dbConnsList = [], dbSecure = true;
+let dbActiveId = null, dbActiveConn = null, dbSchema = null;
+let dbWsTab = 'tree', dbTableSel = null, dbSqlEditor = null, dbLastResult = null, dbRenderSeq = 0;
+let dbUi = (STORE.dbUi && typeof STORE.dbUi === 'object') ? STORE.dbUi : {}; // {catCollapsed, treeOpen, lastSql}
+const DB_TYPES = { postgres: 'PostgreSQL', mysql: 'MySQL / MariaDB', sqlite: 'SQLite' };
+const DB_DEF_PORT = { postgres: 5432, mysql: 3306, sqlite: 0 };
+
+function setDbOpen(open, opts = {}) {
+  if (open === dbOpen) { if (open) renderDbPanel(); return; }
+  if (open) { if (viewerOpen) setViewerOpen(false); if (gitOpen) setGitOpen(false); if (dockerOpen) setDockerOpen(false); if (scratchOpen) setScratchOpen(false); }
+  else dbDispose();
+  const delta = layout.db + GUTTER;
+  dbOpen = open;
+  $('#db-pane').classList.toggle('hidden', !open);
+  $('#gutter-db').classList.toggle('hidden', !open);
+  if (opts.grow !== false) lite.win.growBy(open ? delta : -delta);
+  saveUiState();
+  if (open) renderDbPanel();
+  setTimeout(refitActiveTerminal, 150);
+}
+function toggleDb() { setDbOpen(!dbOpen); }
+function dbDispose() { if (dbSqlEditor) { try { dbSqlEditor.destroy(); } catch (_) {} dbSqlEditor = null; } }
+function saveDbUi() { persist('dbUi', dbUi); }
+function dbCatHue(name) { let h = 0; for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) % 360; return h; }
+
+async function renderDbPanel() {
+  const seq = ++dbRenderSeq;
+  const body = $('#db-body');
+  if (!dbActiveId) {
+    body.innerHTML = '<div class="git-loading">Загрузка подключений…</div>';
+    try { const r = await lite.db.list(); dbConnsList = r.connections || []; dbSecure = r.secure !== false; }
+    catch (_) { dbConnsList = []; }
+    if (seq !== dbRenderSeq || !dbOpen) return;
+    renderDbConnections(body);
+  } else {
+    renderDbWorkspace(body);
+  }
+}
+
+// ---- connections list (grouped by category, accordion + gradient, default «Все»)
+function renderDbConnections(body) {
+  body.innerHTML = '';
+  const top = el('div', 'db-topbar');
+  top.appendChild(el('span', 'db-topbar-title', 'Подключения'));
+  const add = iconBtn('drow-act', 'plus', 'Новое подключение', 16); add.onclick = () => dbConnModal(null);
+  top.appendChild(add);
+  body.appendChild(top);
+  if (!dbSecure) body.appendChild(el('div', 'db-warn', '⚠ Системное хранилище ключей недоступно — пароли шифруются слабее.'));
+  if (!dbConnsList.length) { body.appendChild(el('div', 'docker-empty', 'Нет подключений. Добавь первое кнопкой ＋.')); return; }
+  const groups = {};
+  for (const c of dbConnsList) { const g = c.category || 'Все'; (groups[g] = groups[g] || []).push(c); }
+  const cats = Object.keys(groups).sort((a, b) => (a === 'Все' ? -1 : b === 'Все' ? 1 : a.localeCompare(b)));
+  for (const cat of cats) body.appendChild(dbCatBlock(cat, groups[cat]));
+}
+function dbCatBlock(cat, list) {
+  const block = el('div', 'docker-group-block');
+  const head = el('div', 'docker-group-head');
+  const hue = dbCatHue(cat);
+  head.style.background = `linear-gradient(90deg, hsla(${hue},55%,50%,.22), hsla(${hue},55%,50%,.05) 55%, transparent)`;
+  head.style.borderLeft = `3px solid hsl(${hue},60%,55%)`;
+  const collapsed = !!(dbUi.catCollapsed && dbUi.catCollapsed[cat]);
+  const chev = icon(collapsed ? 'chevron-right' : 'chevron-down', 13); chev.classList.add('dgrp-chev');
+  head.append(chev, el('span', 'dgrp-name', cat), el('span', 'dgrp-count', String(list.length)));
+  const bodyEl = el('div', 'docker-group-body');
+  if (collapsed) bodyEl.style.display = 'none';
+  for (const c of list) bodyEl.appendChild(dbConnRow(c));
+  head.onclick = () => {
+    dbUi.catCollapsed = dbUi.catCollapsed || {}; dbUi.catCollapsed[cat] = !dbUi.catCollapsed[cat]; saveDbUi();
+    const col = dbUi.catCollapsed[cat]; bodyEl.style.display = col ? 'none' : '';
+    const nc = icon(col ? 'chevron-right' : 'chevron-down', 13); nc.classList.add('dgrp-chev'); head.replaceChild(nc, head.firstChild);
+  };
+  block.append(head, bodyEl);
+  return block;
+}
+function dbConnRow(c) {
+  const row = el('div', 'db-conn-row clickable');
+  row.appendChild(icon('database', 16));
+  const main = el('div', 'drow-main');
+  main.appendChild(el('span', 'drow-name', c.name || '(без имени)'));
+  const sub = c.type === 'sqlite' ? (c.file || c.database || 'файл не задан')
+    : `${DB_TYPES[c.type] || c.type} · ${c.host || 'localhost'}:${c.port || DB_DEF_PORT[c.type] || ''}${c.sshEnabled ? ' · SSH' : ''}${c.readOnly ? ' · RO' : ''}`;
+  main.appendChild(el('span', 'drow-sub', sub));
+  row.appendChild(main);
+  const acts = el('div', 'drow-acts');
+  const edit = iconBtn('drow-act', 'pencil', 'Изменить', 13); edit.onclick = (e) => { e.stopPropagation(); dbConnModal(c); };
+  const del = iconBtn('drow-act danger', 'trash', 'Удалить', 13);
+  del.onclick = (e) => { e.stopPropagation(); showConfirm('Удалить подключение?', `«${c.name}» удалится из списка (сама БД не трогается).`, 'Удалить', async () => { await lite.db.delete(c.id); renderDbPanel(); }); };
+  acts.append(edit, del); row.appendChild(acts);
+  row.addEventListener('click', () => { dbActiveId = c.id; dbActiveConn = c; dbSchema = null; dbTableSel = null; dbWsTab = 'tree'; renderDbPanel(); });
+  return row;
+}
+
+// ---- add/edit connection modal (host + SSH, безопасно)
+function dbConnModal(existing) {
+  const c = existing ? { ...existing } : { type: 'postgres', category: 'Все', port: 5432 };
+  const { m, close } = makeModal(`<h2>${existing ? 'Изменить' : 'Новое'} подключение</h2><div id="dbf" class="db-form"></div>`);
+  m.classList.add('db-modal');
+  const f = m.querySelector('#dbf');
+  const field = (label, node) => { const w = el('div', 'db-field'); w.appendChild(el('label', null, label)); w.appendChild(node); f.appendChild(w); return node; };
+  const inp = (val, ph, type) => { const i = el('input'); i.type = type || 'text'; if (val != null) i.value = val; if (ph) i.placeholder = ph; return i; };
+  const name = field('Имя', inp(c.name, 'Моя база'));
+  const typeSel = el('select'); for (const [k, v] of Object.entries(DB_TYPES)) { const o = document.createElement('option'); o.value = k; o.textContent = v; if (k === c.type) o.selected = true; typeSel.appendChild(o); }
+  field('Тип', typeSel);
+  const cat = field('Категория', inp(c.category || 'Все', 'Все'));
+  // host group
+  const hostWrap = el('div', 'db-group');
+  const host = inp(c.host || '', 'localhost'); const port = inp(c.port || DB_DEF_PORT[c.type] || '', '5432', 'number');
+  const user = inp(c.user || '', 'пользователь'); const pass = inp('', existing ? '(без изменений)' : 'пароль', 'password');
+  const database = inp(c.database || '', 'имя базы (опц.)');
+  const ssl = el('input'); ssl.type = 'checkbox'; ssl.checked = !!c.ssl;
+  const sslIns = el('input'); sslIns.type = 'checkbox'; sslIns.checked = !!c.sslInsecure;
+  const mk = (lbl, node) => { const w = el('div', 'db-field'); w.appendChild(el('label', null, lbl)); w.appendChild(node); return w; };
+  const sslLabel = (() => { const w = el('label', 'db-check'); w.append(ssl, document.createTextNode(' Использовать SSL/TLS')); return w; })();
+  const sslInsLabel = (() => { const w = el('label', 'db-check db-check-warn'); w.append(sslIns, document.createTextNode(' Доверять самоподписанному сертификату (небезопасно)')); return w; })();
+  ssl.onchange = () => { sslInsLabel.style.display = ssl.checked ? '' : 'none'; };
+  hostWrap.append(mk('Хост', host), mk('Порт', port), mk('Пользователь', user), mk('Пароль', pass), mk('База', database), sslLabel, sslInsLabel);
+  f.appendChild(hostWrap);
+  // sqlite group
+  const sqliteWrap = el('div', 'db-group');
+  const file = inp(c.file || c.database || '', '/путь/к/базе.sqlite');
+  sqliteWrap.append(mk('Файл БД', file));
+  f.appendChild(sqliteWrap);
+  // SSH group
+  const sshOn = el('input'); sshOn.type = 'checkbox'; sshOn.checked = !!c.sshEnabled;
+  const sshLabel = el('label', 'db-check'); sshLabel.append(sshOn, document.createTextNode(' Подключаться через SSH-туннель'));
+  f.appendChild(sshLabel);
+  const sshWrap = el('div', 'db-group');
+  const sshHost = inp(c.sshHost || '', 'ssh-хост'); const sshPort = inp(c.sshPort || 22, '22', 'number');
+  const sshUser = inp(c.sshUser || '', 'ssh-пользователь'); const sshPass = inp('', existing ? '(без изменений)' : 'пароль/passphrase', 'password');
+  sshWrap.append(mk('SSH хост', sshHost), mk('SSH порт', sshPort), mk('SSH пользователь', sshUser), mk('SSH пароль', sshPass));
+  f.appendChild(sshWrap);
+  // read-only
+  const ro = el('input'); ro.type = 'checkbox'; ro.checked = !!c.readOnly;
+  const roLabel = el('label', 'db-check'); roLabel.append(ro, document.createTextNode(' Только чтение (запрет изменяющих запросов)'));
+  f.appendChild(roLabel);
+  // visibility by type
+  const syncType = () => {
+    const t = typeSel.value;
+    hostWrap.style.display = t === 'sqlite' ? 'none' : '';
+    sqliteWrap.style.display = t === 'sqlite' ? '' : 'none';
+    sshLabel.style.display = t === 'sqlite' ? 'none' : '';
+    sshWrap.style.display = (t !== 'sqlite' && sshOn.checked) ? '' : 'none';
+    sslInsLabel.style.display = (t !== 'sqlite' && ssl.checked) ? '' : 'none';
+  };
+  typeSel.onchange = () => { if (!port.value || port.value == DB_DEF_PORT[c.type]) port.value = DB_DEF_PORT[typeSel.value] || ''; syncType(); };
+  sshOn.onchange = syncType; syncType();
+  // collect form → conn object (passwords only if typed)
+  const collect = () => {
+    const o = { id: c.id, name: name.value.trim(), type: typeSel.value, category: cat.value.trim() || 'Все', readOnly: ro.checked };
+    if (typeSel.value === 'sqlite') { o.file = file.value.trim(); o.database = o.file; }
+    else { o.host = host.value.trim(); o.port = +port.value || DB_DEF_PORT[typeSel.value]; o.user = user.value.trim(); o.database = database.value.trim(); o.ssl = ssl.checked; o.sslInsecure = sslIns.checked; o.sshEnabled = sshOn.checked; o.sshHost = sshHost.value.trim(); o.sshPort = +sshPort.value || 22; o.sshUser = sshUser.value.trim(); if (sshPass.value) o.sshPassword = sshPass.value; }
+    if (pass.value) o.password = pass.value;
+    return o;
+  };
+  // buttons
+  const row = el('div', 'gm-actions'); row.style.marginTop = '12px';
+  const status = el('span', 'db-test-status');
+  const test = el('button', 'btn', 'Тест');
+  test.onclick = async () => { status.textContent = 'Проверяю…'; status.className = 'db-test-status'; const r = await lite.db.test(collect()); if (r.ok) { status.textContent = '✓ ' + (r.version || 'подключение успешно'); status.classList.add('ok'); } else { status.textContent = '✕ ' + (r.error || 'не удалось'); status.classList.add('err'); } };
+  const save = el('button', 'btn primary', 'Сохранить');
+  save.onclick = async () => { const o = collect(); if (!o.name) { toast('Введи имя', { kind: 'err' }); return; } const r = await lite.db.save(o); if (r && r.error) { toast(r.error, { kind: 'err' }); return; } close(); renderDbPanel(); };
+  const cancel = el('button', 'btn', 'Отмена'); cancel.onclick = close;
+  row.append(test, save, cancel); f.appendChild(row); f.appendChild(status);
+}
+
+// ---- workspace (active connection): tabs «Объекты» / «SQL»
+function renderDbWorkspace(body) {
+  body.innerHTML = '';
+  const head = el('div', 'db-ws-head');
+  const back = iconBtn('drow-act', 'chevron-left', 'К подключениям', 16);
+  back.onclick = () => { dbActiveId = null; dbActiveConn = null; dbSchema = null; dbTableSel = null; dbDispose(); renderDbPanel(); };
+  head.append(back, icon('database', 15), el('span', 'db-ws-name', dbActiveConn.name));
+  if (dbActiveConn.readOnly) head.appendChild(el('span', 'db-ro-badge', 'только чтение'));
+  body.appendChild(head);
+  const tabs = el('div', 'docker-subtabs');
+  for (const [k, label] of [['tree', 'Объекты'], ['sql', 'SQL']]) {
+    const t = el('button', 'docker-subtab' + (dbWsTab === k ? ' on' : '')); t.textContent = label;
+    t.onclick = () => { if (dbWsTab !== k) { dbWsTab = k; renderDbWorkspace(body); } };
+    tabs.appendChild(t);
+  }
+  body.appendChild(tabs);
+  const view = el('div', 'db-ws-view'); body.appendChild(view);
+  if (dbWsTab === 'tree') renderDbTree(view); else renderDbSql(view);
+}
+
+async function renderDbTree(view) {
+  dbDispose(); // no SQL editor needed on the objects tab — release the lingering CodeMirror
+  if (dbTableSel) { renderDbTableView(view); return; }
+  const seq = ++dbRenderSeq;
+  view.innerHTML = '<div class="git-loading">Чтение схемы…</div>';
+  if (!dbSchema) { const r = await lite.db.schema(dbActiveId); if (seq !== dbRenderSeq) return; if (r.error) { view.innerHTML = ''; view.appendChild(el('div', 'docker-err', r.error)); return; } dbSchema = r; }
+  view.innerHTML = '';
+  if (!dbSchema.schemas || !dbSchema.schemas.length) { view.appendChild(el('div', 'docker-empty', 'Нет таблиц.')); return; }
+  for (const sch of dbSchema.schemas) view.appendChild(dbSchemaBlock(sch));
+}
+function dbSchemaBlock(sch) {
+  const block = el('div', 'docker-sec');
+  const k = dbActiveId + ':' + sch.name;
+  const open = !(dbUi.treeOpen && dbUi.treeOpen[k] === false); // default open
+  const head = el('button', 'docker-sec-head');
+  const chev = icon(open ? 'chevron-down' : 'chevron-right', 13); chev.classList.add('dsec-chev');
+  head.append(chev, icon('grid', 14), el('span', 'dsec-title', sch.name), el('span', 'dsec-count', String(sch.tables.length)));
+  const list = el('div', 'docker-sec-body'); if (!open) list.style.display = 'none';
+  for (const t of sch.tables) {
+    const r = el('div', 'db-table-row clickable');
+    r.append(icon(t.view ? 'eye' : 'box', 13), el('span', 'db-table-name', t.name));
+    r.onclick = () => { dbTableSel = { schema: sch.name, table: t.name, view: t.view, page: 0 }; renderDbPanel(); };
+    list.appendChild(r);
+  }
+  head.onclick = () => {
+    dbUi.treeOpen = dbUi.treeOpen || {}; const cur = !(dbUi.treeOpen[k] === false); dbUi.treeOpen[k] = !cur; saveDbUi();
+    list.style.display = dbUi.treeOpen[k] ? '' : 'none';
+    const nc = icon(dbUi.treeOpen[k] ? 'chevron-down' : 'chevron-right', 13); nc.classList.add('dsec-chev'); head.replaceChild(nc, head.firstChild);
+  };
+  block.append(head, list);
+  return block;
+}
+
+const DB_PAGE = 200;
+async function renderDbTableView(view) {
+  const sel = dbTableSel;
+  view.innerHTML = '';
+  const bar = el('div', 'db-tablebar');
+  const back = iconBtn('drow-act', 'chevron-left', 'К объектам', 15); back.onclick = () => { dbTableSel = null; renderDbPanel(); };
+  bar.append(back, el('span', 'db-table-title', sel.table));
+  bar.appendChild(dbExportBar(() => dbLastResult, sel.table));
+  view.appendChild(bar);
+  const grid = el('div', 'db-grid-wrap'); grid.innerHTML = '<div class="git-loading">Загрузка…</div>'; view.appendChild(grid);
+  const pager = el('div', 'db-pager'); view.appendChild(pager);
+  const seq = ++dbRenderSeq;
+  const r = await lite.db.tableData(dbActiveId, sel.schema, sel.table, { limit: DB_PAGE, offset: sel.page * DB_PAGE });
+  if (seq !== dbRenderSeq) return;
+  grid.innerHTML = '';
+  if (r.error) { grid.appendChild(el('div', 'docker-err', r.error)); return; }
+  dbLastResult = r;
+  grid.appendChild(dbGrid(r.columns, r.rows));
+  const total = r.total != null && !Number.isNaN(r.total) ? r.total : '?';
+  pager.appendChild(el('span', 'db-pageinfo', `${r.rows.length ? sel.page * DB_PAGE + 1 : 0}–${sel.page * DB_PAGE + r.rows.length} из ${total}`));
+  const prev = iconBtn('drow-act', 'chevron-left', 'Назад', 13); prev.disabled = sel.page <= 0; prev.onclick = () => { if (sel.page > 0) { sel.page--; renderDbPanel(); } };
+  const next = iconBtn('drow-act', 'chevron-right', 'Вперёд', 13); next.disabled = r.rows.length < DB_PAGE; next.onclick = () => { sel.page++; renderDbPanel(); };
+  pager.append(prev, next);
+}
+
+function dbGrid(columns, rows) {
+  const wrap = el('div', 'db-grid');
+  const tbl = document.createElement('table');
+  const thead = document.createElement('thead'); const htr = document.createElement('tr');
+  for (const c of columns) { const th = document.createElement('th'); th.textContent = c; htr.appendChild(th); }
+  thead.appendChild(htr); tbl.appendChild(thead);
+  const tb = document.createElement('tbody');
+  for (const rowv of rows) {
+    const tr = document.createElement('tr');
+    for (const v of rowv) {
+      const td = document.createElement('td');
+      if (v === null || v === undefined) { td.textContent = 'NULL'; td.className = 'db-null'; }
+      else { let s = typeof v === 'object' ? JSON.stringify(v) : String(v); if (s.length > 400) s = s.slice(0, 400) + '…'; td.textContent = s; td.title = s; }
+      tr.appendChild(td);
+    }
+    tb.appendChild(tr);
+  }
+  tbl.appendChild(tb); wrap.appendChild(tbl);
+  return wrap;
+}
+
+// ---- SQL console (CodeMirror + run + results + export/import)
+function dbDialect() { return dbActiveConn.type === 'mysql' ? MySQL : dbActiveConn.type === 'sqlite' ? SQLite : PostgreSQL; }
+function renderDbSql(view) {
+  view.innerHTML = '';
+  const edWrap = el('div', 'db-sql-editor'); view.appendChild(edWrap);
+  const bar = el('div', 'db-sql-bar');
+  const run = el('button', 'btn primary db-run', '▶ Выполнить'); run.title = 'Ctrl+Enter'; run.onclick = dbRunSql;
+  bar.appendChild(run);
+  const imp = el('button', 'btn db-imp', '⬇ Импорт'); imp.title = 'Загрузить SQL-файл в редактор';
+  imp.onclick = async () => { const r = await lite.db.openText(); if (r && r.ok && dbSqlEditor) dbSqlEditor.dispatch({ changes: { from: 0, to: dbSqlEditor.state.doc.length, insert: r.content } }); else if (r && r.error) toast(r.error, { kind: 'err' }); };
+  bar.appendChild(imp);
+  bar.appendChild(dbExportBar(() => dbLastResult, 'query'));
+  view.appendChild(bar);
+  const res = el('div', 'db-sql-result'); res.id = 'db-sql-result'; view.appendChild(res);
+  if (dbSqlEditor) { try { dbSqlEditor.destroy(); } catch (_) {} dbSqlEditor = null; }
+  const initial = (dbUi.lastSql && dbUi.lastSql[dbActiveId]) || '';
+  const state = EditorState.create({
+    doc: initial,
+    extensions: [
+      lineNumbers(), history(), drawSelection(), indentOnInput(), bracketMatching(),
+      syntaxHighlighting(defaultHighlightStyle), sql({ dialect: dbDialect() }), oneDark,
+      keymap.of([{ key: 'Ctrl-Enter', run: () => { dbRunSql(); return true; } }, indentWithTab, ...defaultKeymap, ...historyKeymap]),
+      EditorView.updateListener.of((u) => { if (u.docChanged) { dbUi.lastSql = dbUi.lastSql || {}; dbUi.lastSql[dbActiveId] = u.state.doc.toString(); } }),
+    ],
+  });
+  dbSqlEditor = new EditorView({ state, parent: edWrap });
+}
+async function dbRunSql() {
+  if (!dbSqlEditor) return;
+  const text = dbSqlEditor.state.doc.toString().trim();
+  if (!text) return;
+  saveDbUi();
+  const res = $('#db-sql-result'); if (!res) return;
+  res.innerHTML = '<div class="git-loading">Выполняю…</div>';
+  const seq = ++dbRenderSeq;
+  const r = await lite.db.query(dbActiveId, text);
+  if (seq !== dbRenderSeq || !document.getElementById('db-sql-result')) return;
+  res.innerHTML = '';
+  if (r.error) { res.appendChild(el('div', 'docker-err', r.error)); return; }
+  dbLastResult = r;
+  if (r.columns && r.columns.length) { res.appendChild(el('div', 'db-result-info', `${r.rows.length} строк`)); res.appendChild(dbGrid(r.columns, r.rows)); dbSchema = null; }
+  else { res.appendChild(el('div', 'db-result-info', `Готово${r.rowCount != null ? ` · затронуто строк: ${r.rowCount}` : ''}`)); dbSchema = null; }
+}
+
+// ---- export (CSV / JSON / SQL) — three small buttons
+function dbExportBar(getResult, name) {
+  const wrap = el('div', 'db-export');
+  for (const fmt of ['csv', 'json', 'sql']) {
+    const b = el('button', 'db-exp-btn', fmt.toUpperCase());
+    b.title = 'Экспорт в ' + fmt.toUpperCase();
+    b.onclick = (e) => { e.stopPropagation(); dbDoExport(getResult(), name, fmt); };
+    wrap.appendChild(b);
+  }
+  return wrap;
+}
+async function dbDoExport(result, name, fmt) {
+  if (!result || !result.columns || !result.columns.length) { toast('Нет данных для экспорта'); return; }
+  const { columns, rows } = result;
+  let text = '', ext = fmt;
+  if (fmt === 'csv') { const esc = (v) => v == null ? '' : /[",\n]/.test(String(v)) ? '"' + String(v).replace(/"/g, '""') + '"' : String(v); text = [columns.join(','), ...rows.map((r) => r.map(esc).join(','))].join('\n'); }
+  else if (fmt === 'json') { text = JSON.stringify(rows.map((r) => Object.fromEntries(columns.map((c, i) => [c, r[i]]))), null, 2); }
+  else { const qv = (v) => v == null ? 'NULL' : typeof v === 'number' ? String(v) : "'" + String(v).replace(/'/g, "''") + "'"; text = rows.map((r) => `INSERT INTO ${name} (${columns.join(', ')}) VALUES (${r.map(qv).join(', ')});`).join('\n'); }
+  const r = await lite.db.saveText(`${name}.${ext}`, text);
+  if (r && r.ok) toast('Сохранено: ' + r.path, { ttl: 7000 });
+  else if (r && r.error) toast(r.error, { kind: 'err' });
+}
+
 // ---------------------------------------------------------------- file tree
 const EXT_COLORS = {
   js: '#e8d44d', jsx: '#e8d44d', mjs: '#e8d44d', cjs: '#e8d44d',
@@ -3439,13 +3854,15 @@ function buildSettingsMenu(dd) {
   dd.appendChild(menuRow('grid', 'Палитра команд (Ctrl+K)', () => { closeMenus(); showPalette(); }));
   dd.appendChild(menuRow('search', 'Поиск в терминале (Ctrl+F)', () => { closeMenus(); openTermSearch(); }));
   dd.appendChild(el('div', 'menu-sep'));
-  dd.appendChild(menuRow('chat', 'OpenRouter — ключи и чат', () => { closeMenus(); showOpenRouter(); }));
   dd.appendChild(menuRow('globe', 'Пульт (Android)', () => { closeMenus(); showRemote(); }));
 }
 // «Модули» — функциональные панели справа от терминала (терминалы и OpenRouter-чат — НЕ модули).
 function buildModulesMenu(dd) {
   dd.appendChild(menuRow('git', 'Git — выбранного проекта', () => { closeMenus(); openModule('git'); }));
   dd.appendChild(menuRow('box', 'Контейнеры — Docker / Podman', () => { closeMenus(); openModule('docker'); }));
+  dd.appendChild(menuRow('database', 'Базы данных — Postgres / MySQL / SQLite', () => { closeMenus(); openModule('db'); }));
+  dd.appendChild(el('div', 'menu-sep'));
+  dd.appendChild(menuRow('terminal', 'Системный терминал (вне проектов)', () => { closeMenus(); openModule('scratch'); }));
 }
 
 // terminal right-click menu
@@ -3771,6 +4188,7 @@ function paletteActions() {
   acts.push({ label: viewerOpen ? 'Закрыть вивер' : 'Открыть вивер', run: () => setViewerOpen(!viewerOpen) });
   acts.push({ label: gitOpen ? 'Закрыть Git' : 'Открыть Git', run: toggleGit });
   acts.push({ label: dockerOpen ? 'Закрыть контейнеры' : 'Контейнеры (Docker / Podman)', run: toggleDocker });
+  acts.push({ label: dbOpen ? 'Закрыть базы данных' : 'Базы данных (Postgres / MySQL / SQLite)', run: toggleDb });
   acts.push({ label: 'Режим «один терминал»', run: toggleSingle });
   acts.push({ label: 'Поиск в терминале', run: openTermSearch });
   acts.push({ label: 'Очистить терминал', run: () => clearTerminal() });
@@ -3916,14 +4334,14 @@ function init() {
   setTimeout(() => { checkForUpdate().catch(() => {}); }, 3000);
 
   lite.pty.onData(({ id, data }) => {
-    if (id === SCRATCH_ID) { if (scratchRec) scratchRec.term.write(data); return; }
+    if (isScratch(id)) { const r = scratchTerms.get(id); if (r) r.term.write(data); return; }
     const rec = terms.get(id);
     if (!rec) return;
     rec.term.write(data);
     markActivity(id, data);
   });
   lite.pty.onExit(({ id }) => {
-    if (id === SCRATCH_ID) { if (scratchRec) scratchRec.term.write('\r\n\x1b[90m[шелл завершён — ⟳ для нового]\x1b[0m\r\n'); return; }
+    if (isScratch(id)) { const r = scratchTerms.get(id); if (r) r.term.write('\r\n\x1b[90m[шелл завершён — ⟳ для нового]\x1b[0m\r\n'); return; }
     const rec = terms.get(id);
     if (rec) rec.term.write('\r\n\x1b[90m[процесс завершён — закрой и переоткрой проект]\x1b[0m\r\n');
     setProjState(id, 'quiet');
@@ -3967,7 +4385,7 @@ function init() {
 
   $('#btn-single').addEventListener('click', toggleSingle);
   $('#btn-scratch').addEventListener('click', toggleScratch);
-  $('#scratch-restart').addEventListener('click', restartScratch);
+  $('#scratch-restart').addEventListener('click', () => restartScratch());
   $('#scratch-close').addEventListener('click', () => setScratchOpen(false));
   $('#viewer-save').addEventListener('click', saveCurrent);
   $('#viewer-diff').addEventListener('click', toggleDiff);
@@ -3978,6 +4396,8 @@ function init() {
   $('#git-refresh').addEventListener('click', () => { if (gitOpen) renderGitPanel(activeProject()); });
   $('#docker-close').addEventListener('click', () => setDockerOpen(false));
   $('#docker-refresh').addEventListener('click', () => { dockerDetect = null; if (dockerOpen) renderDockerPanel(); });
+  $('#db-close').addEventListener('click', () => setDbOpen(false));
+  $('#db-refresh').addEventListener('click', () => { dbSchema = null; if (dbOpen) renderDbPanel(); });
   $('#tree-refresh').addEventListener('click', () => { const p = activeProject(); if (p) renderTree(p); });
   $('#tree-new').addEventListener('click', (e) => { const p = activeProject(); if (p) showTreeMenu(e.clientX, e.clientY, { name: p.name, path: p.path, dir: true, root: true }); });
   $('#tree').addEventListener('contextmenu', (e) => {
@@ -4073,12 +4493,13 @@ function init() {
   // Restore which panes were open last time (viewer / system terminal). grow:false —
   // the saved window width already includes them, so reveal in place without resizing.
   const ui = STORE.uiState || {};
+  // Right-slot modules are mutually exclusive — restore at most one (saved state has ≤1 open).
   if (ui.viewerOpen) setViewerOpen(true, { grow: false });
-  if (ui.scratchOpen) setScratchOpen(true, { grow: false });
-  // Restore Git only if the viewer wasn't (mutually exclusive); allowEmpty so the pane
-  // returns even before a project is active — matching the viewer, so the window width fits.
-  if (ui.gitOpen && !viewerOpen) setGitOpen(true, { grow: false, allowEmpty: true });
-  if (ui.dockerOpen && !viewerOpen && !gitOpen) setDockerOpen(true, { grow: false });
+  if (ui.scratchOpen && !viewerOpen) setScratchOpen(true, { grow: false });
+  // allowEmpty so Git returns even before a project is active — matching the viewer, so window width fits.
+  if (ui.gitOpen && !viewerOpen && !scratchOpen) setGitOpen(true, { grow: false, allowEmpty: true });
+  if (ui.dockerOpen && !viewerOpen && !scratchOpen && !gitOpen) setDockerOpen(true, { grow: false });
+  if (ui.dbOpen && !viewerOpen && !scratchOpen && !gitOpen && !dockerOpen) setDbOpen(true, { grow: false });
 
   scanProjects();          // add subfolders of settings.scanDirs (non-blocking)
   checkProjectsExistence();

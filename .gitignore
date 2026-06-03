@@ -11,6 +11,8 @@ lite-editor
 # Personal agent guidance / session handoff — readable on disk, kept out of the repo
 CLAUDE.md
 NEXT.md
+# внутренние доки-компаньоны CLAUDE.md (ARCHITECTURE/RELEASE/PULT) — не в публичный main
+docs/
 
 # Build output / release artifacts (большие бинарники не коммитим)
 dist-release/

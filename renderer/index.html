@@ -100,9 +100,10 @@
         <div class="pane-head">
           <span>СИСТЕМА · ~</span>
           <div class="drag-space-static"></div>
-          <button id="scratch-restart" class="icon-btn" title="Перезапустить (новый шелл в ~)" data-icon="refresh"></button>
-          <button id="scratch-close" class="icon-btn" title="Закрыть системный терминал" data-icon="x"></button>
+          <button id="scratch-restart" class="icon-btn" title="Перезапустить активную вкладку (новый шелл в ~)" data-icon="refresh"></button>
+          <button id="scratch-close" class="icon-btn" title="Закрыть модуль" data-icon="x"></button>
         </div>
+        <div id="scratch-tabs" class="term-tabs scratch-tabs"></div>
         <div id="scratch-term"></div>
       </section>
 
@@ -129,6 +130,18 @@
         </div>
         <div id="docker-tabs" class="docker-tabs"></div>
         <div id="docker-body" class="docker-body"></div>
+      </section>
+
+      <!-- Databases module (Postgres/MySQL/SQLite): system-wide, opens to the right -->
+      <div id="gutter-db" class="gutter hidden" data-resize="db"></div>
+      <section id="db-pane" class="hidden">
+        <div class="pane-head">
+          <span id="db-title">Базы данных</span>
+          <div class="drag-space-static"></div>
+          <button id="db-refresh" class="icon-btn" title="Обновить" data-icon="refresh"></button>
+          <button id="db-close" class="icon-btn" title="Закрыть" data-icon="x"></button>
+        </div>
+        <div id="db-body" class="db-body"></div>
       </section>
 
       <div class="gutter gutter-v hidden" data-resize="viewer"></div>
