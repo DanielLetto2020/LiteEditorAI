@@ -86,6 +86,7 @@ contextBridge.exposeInMainWorld('lite', {
     status: (root) => ipcRenderer.invoke('git:status', root),
     fileDiff: (root, file) => ipcRenderer.invoke('git:fileDiff', { root, file }),
     info: (root) => ipcRenderer.invoke('git:info', root),
+    log: (root, limit) => ipcRenderer.invoke('git:log', { root, limit }),
     init: (root) => ipcRenderer.invoke('git:init', root),
     clone: (root, url) => ipcRenderer.invoke('git:clone', { root, url }),
     commit: (root, message, push) => ipcRenderer.invoke('git:commit', { root, message, push }),
@@ -96,6 +97,23 @@ contextBridge.exposeInMainWorld('lite', {
     branchUpdate: (root, branch, current) => ipcRenderer.invoke('git:branchUpdate', { root, branch, current }),
     branchCreate: (root, name, base, checkout) => ipcRenderer.invoke('git:branchCreate', { root, name, base, checkout }),
     discardFile: (root, file) => ipcRenderer.invoke('git:discardFile', { root, file }),
+  },
+
+  containers: {
+    detect: () => ipcRenderer.invoke('containers:detect'),
+    list: (engine) => ipcRenderer.invoke('containers:list', { engine }),
+    action: (engine, kind, action, id) => ipcRenderer.invoke('containers:action', { engine, kind, action, id }),
+    bulk: (engine, action, ids) => ipcRenderer.invoke('containers:bulk', { engine, action, ids }),
+    logsStart: (engine, id, streamId, tail) => ipcRenderer.invoke('containers:logsStart', { engine, id, streamId, tail }),
+    logsStop: (streamId) => ipcRenderer.send('containers:logsStop', { streamId }),
+    onLogsData: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('containers:logsData', h); return () => ipcRenderer.removeListener('containers:logsData', h); },
+    onLogsExit: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('containers:logsExit', h); return () => ipcRenderer.removeListener('containers:logsExit', h); },
+    execStart: (engine, id, execId, cols, rows) => ipcRenderer.invoke('containers:execStart', { engine, id, execId, cols, rows }),
+    execWrite: (execId, data) => ipcRenderer.send('containers:execWrite', { execId, data }),
+    execResize: (execId, cols, rows) => ipcRenderer.send('containers:execResize', { execId, cols, rows }),
+    execKill: (execId) => ipcRenderer.send('containers:execKill', { execId }),
+    onExecData: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('containers:execData', h); return () => ipcRenderer.removeListener('containers:execData', h); },
+    onExecExit: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('containers:execExit', h); return () => ipcRenderer.removeListener('containers:execExit', h); },
   },
 
   pty: {

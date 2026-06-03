@@ -16,9 +16,7 @@
       <nav id="menubar">
         <button class="menu-item" data-menu="file">Файл</button>
         <button class="menu-item" data-menu="settings">Настройки</button>
-        <button class="menu-item" data-menu="logs">Логи</button>
-        <button class="menu-item" data-menu="openrouter">OpenRouter</button>
-        <button class="menu-item" data-menu="remote">Пульт</button>
+        <button class="menu-item" data-menu="modules">Модули</button>
         <button class="menu-item" data-menu="about">О&nbsp;программе</button>
       </nav>
       <div class="drag-space"></div>
@@ -106,6 +104,31 @@
           <button id="scratch-close" class="icon-btn" title="Закрыть системный терминал" data-icon="x"></button>
         </div>
         <div id="scratch-term"></div>
+      </section>
+
+      <!-- Git module: opens to the right of the terminal (PhpStorm-style), one project at a time -->
+      <div id="gutter-git" class="gutter hidden" data-resize="git"></div>
+      <section id="git-pane" class="hidden">
+        <div class="pane-head">
+          <span id="git-proj">Git</span>
+          <div class="drag-space-static"></div>
+          <button id="git-refresh" class="icon-btn" title="Обновить" data-icon="refresh"></button>
+          <button id="git-close" class="icon-btn" title="Закрыть Git" data-icon="x"></button>
+        </div>
+        <div id="git-body" class="git-body"></div>
+      </section>
+
+      <!-- Containers module (docker/podman): system-wide, opens to the right -->
+      <div id="gutter-docker" class="gutter hidden" data-resize="docker"></div>
+      <section id="docker-pane" class="hidden">
+        <div class="pane-head">
+          <span id="docker-title">Контейнеры</span>
+          <div class="drag-space-static"></div>
+          <button id="docker-refresh" class="icon-btn" title="Обновить" data-icon="refresh"></button>
+          <button id="docker-close" class="icon-btn" title="Закрыть" data-icon="x"></button>
+        </div>
+        <div id="docker-tabs" class="docker-tabs"></div>
+        <div id="docker-body" class="docker-body"></div>
       </section>
 
       <div class="gutter gutter-v hidden" data-resize="viewer"></div>
