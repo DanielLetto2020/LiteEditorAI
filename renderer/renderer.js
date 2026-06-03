@@ -26,7 +26,7 @@ import { markdown } from '@codemirror/lang-markdown';
 import { html } from '@codemirror/lang-html';
 import { css } from '@codemirror/lang-css';
 
-const APP_VERSION = 'alpha v1.0.95';
+const APP_VERSION = 'alpha v1.0.96';
 const GUTTER = 5;
 const SCRATCH_ID = '__scratch__'; // системный терминал (домашняя папка), не привязан к проектам
 
@@ -124,7 +124,7 @@ function persist(key, value) { STORE[key] = value; lite.store.set(key, value); }
 function projId(p) { let h = 5381; for (let i = 0; i < p.length; i++) h = ((h << 5) + h + p.charCodeAt(i)) >>> 0; return 'p' + h.toString(36); }
 
 // ---------------------------------------------------------------- settings (tiny on purpose)
-const DEFAULT_SETTINGS = { notifications: true, sound: false, idleMs: 1200, fontSize: 13, workingDir: '', scanDirs: [], theme: 'neumorphism', onboarded: false };
+const DEFAULT_SETTINGS = { notifications: true, sound: false, idleMs: 1200, fontSize: 13, workingDir: '', scanDirs: [], theme: 'neumorphism', onboarded: false, shell: '' };
 function loadSettings() { return { ...DEFAULT_SETTINGS, ...(STORE.settings || {}) }; }
 let settings = loadSettings();
 function saveSettings() { persist('settings', settings); }
@@ -3155,6 +3155,11 @@ function showSettings() {
     <label class="set-row"><span>Тишина до «готов», мс</span><input type="number" id="st-idle" min="300" max="6000" step="100"></label>
     <label class="set-row"><span>Размер шрифта</span><input type="number" id="st-font" min="9" max="24"></label>
     <label class="set-row"><span>Тема</span><select id="st-theme"></select></label>
+    <div class="set-row col"><span>Оболочка терминала — применяется к новым терминалам (старые — ⟳)</span>
+      <div class="path-pick">
+        <select id="st-shell"></select>
+        <input type="text" id="st-shell-path" placeholder="путь к исполняемому файлу" spellcheck="false" style="display:none">
+      </div></div>
     <div class="set-row col"><span>Рабочая папка — куда создаются новые проекты</span>
       <div class="path-pick">
         <input type="text" id="st-wd" readonly placeholder="не задана">
@@ -3176,6 +3181,21 @@ function showSettings() {
   for (const [key, t] of Object.entries(THEMES)) { const o = document.createElement('option'); o.value = key; o.textContent = t.label; themeSel.appendChild(o); }
   themeSel.value = THEMES[settings.theme] ? settings.theme : DEFAULT_THEME;
   themeSel.addEventListener('change', () => { settings.theme = themeSel.value; saveSettings(); applyTheme(); }); // live preview
+  // Выбор оболочки терминала — платформо-зависимо (Windows: PowerShell/cmd/свой; Linux: bash/свой).
+  const shellSel = m.querySelector('#st-shell');
+  const shellPath = m.querySelector('#st-shell-path');
+  const isWin = (lite.platform === 'win32');
+  const shellOpts = isWin
+    ? [['', 'PowerShell (по умолчанию)'], ['cmd', 'cmd'], ['__custom__', 'Свой путь…']]
+    : [['', 'bash (по умолчанию)'], ['__custom__', 'Свой путь…']];
+  for (const [v, t] of shellOpts) { const o = document.createElement('option'); o.value = v; o.textContent = t; shellSel.appendChild(o); }
+  const shellPresets = isWin ? ['', 'cmd'] : [''];
+  const curShell = settings.shell || '';
+  const shellCustom = curShell && !shellPresets.includes(curShell);
+  shellSel.value = shellCustom ? '__custom__' : curShell;
+  shellPath.style.display = shellCustom ? '' : 'none';
+  shellPath.value = shellCustom ? curShell : '';
+  shellSel.addEventListener('change', () => { shellPath.style.display = shellSel.value === '__custom__' ? '' : 'none'; });
   const wd = m.querySelector('#st-wd'); wd.value = settings.workingDir || '';
   let scan = [...(settings.scanDirs || [])];
   const scanBox = m.querySelector('#st-scan');
@@ -3220,6 +3240,7 @@ function showSettings() {
     settings.fontSize = Math.max(9, Math.min(24, parseInt(font.value, 10) || 13));
     settings.workingDir = wd.value || '';
     settings.scanDirs = scan;
+    settings.shell = shellSel.value === '__custom__' ? shellPath.value.trim() : shellSel.value;
     persist('shares', shares);   // доступ с пульта (main читает свежим при каждом запросе)
     saveSettings(); applyFontSize(); close();
     scanProjects(); // pick up newly-added scan dirs right away
