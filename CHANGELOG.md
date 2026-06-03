@@ -3,6 +3,15 @@
 Все заметные изменения LiteEditorAI. Формат — [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/),
 нумерация — [SemVer](https://semver.org/lang/ru/). Проект в стадии **alpha**.
 
+## [1.0.97] — 2026-06-03
+
+### 🐛 Исправлено
+- **Windows-сборка не запускалась** — на первом же старте падала с `Error: Cannot find module
+  './lib/safe-name'`. Новые модули `lib/safe-name.js` (анти-traversal) и `lib/shell.js` (выбор оболочки),
+  появившиеся в v1.0.95–96, не были добавлены в whitelist упаковки (`build.files` в `package.json`), поэтому
+  в Windows-дистрибутив (asar) не попадали. Добавлено `lib/**` — теперь весь каталог `lib/` входит в сборку.
+  На Linux проблема не воспроизводилась (там запуск из исходников). Спасибо за репорт первого Windows-теста.
+
 ## [1.0.96] — 2026-06-03
 
 ### ✨ Добавлено
@@ -88,6 +97,7 @@
 - Первые публичные alpha-сборки: терминал на проект (xterm + node-pty), вивер кода (CodeMirror), дерево
   файлов, дистрибуция под Linux (`.deb`) и Windows (portable `.zip`) через GitHub Actions.
 
+[1.0.97]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.0.97
 [1.0.96]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.0.96
 [1.0.95]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.0.95
 [1.0.53]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.0.53
