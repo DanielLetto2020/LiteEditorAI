@@ -1,6 +1,7 @@
 // LiteEditor — Electron main process.
 // Thin backend: project picker, PTY lifecycle, file ops, window controls.
-const { app, BrowserWindow, ipcMain, dialog, shell, Menu, clipboard, screen, Tray, nativeImage, crashReporter } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, Menu, clipboard, screen, Tray, nativeImage, crashReporter, safeStorage } = require('electron');
+const dbBackend = require('./lib/db');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
@@ -169,7 +170,7 @@ try {
   const legacy = path.join(os.homedir(), '.LiteEditor');
   if (!fs.existsSync(storeDir) && fs.existsSync(legacy)) fs.cpSync(legacy, storeDir, { recursive: true });
 } catch (_) {}
-const STORE_KEYS = ['projects', 'settings', 'layout', 'recents', 'lastParent', 'categories', 'sectionOrder', 'accordions', 'dismissed', 'uiState', 'projTabs', 'openrouter', 'remote', 'shares', 'dockerUi'];
+const STORE_KEYS = ['projects', 'settings', 'layout', 'recents', 'lastParent', 'categories', 'sectionOrder', 'accordions', 'dismissed', 'uiState', 'projTabs', 'openrouter', 'remote', 'shares', 'dockerUi', 'dbConnections', 'dbUi'];
 // Папка-«стор» для шаринга с пультом (агент кладёт сюда файлы; в PTY доступна как $LITE_STORE).
 const pultStoreDir = path.join(storeDir, 'store');
 try { fs.mkdirSync(pultStoreDir, { recursive: true }); } catch (_) {}
@@ -220,6 +221,13 @@ function writeStoreKey(key, value) {
   catch (e) { logger.log('error', 'store', `write '${key}' failed`, e); return false; }
 }
 ensureStoreDir();
+
+// «Базы данных» backend (drivers + SSH tunnel + safeStorage secrets) — handlers live in lib/db.js.
+const dbApi = dbBackend.registerDbIpc({
+  ipcMain, safeStorage, dialog,
+  getConnections: () => readStoreKey('dbConnections'),
+  setConnections: (v) => writeStoreKey('dbConnections', v),
+});
 
 // File logging lives next to the store, survives restarts, keeps 5 days.
 const logsDir = path.join(storeDir, 'logs');
@@ -958,6 +966,7 @@ app.on('window-all-closed', () => {
   cExecPtys.clear();
   for (const cp of cLogProcs.values()) { try { cp.kill(); } catch (_) {} }
   cLogProcs.clear();
+  try { dbApi.closeAll(); } catch (_) {}
   for (const w of watchers.values()) { try { w.watcher.close(); } catch (_) {} }
   watchers.clear();
   if (process.platform !== 'darwin') app.quit();
