@@ -3,6 +3,14 @@
 Все заметные изменения LiteEditorAI. Формат — [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/),
 нумерация — [SemVer](https://semver.org/lang/ru/). Проект в стадии **alpha**.
 
+## [1.0.99] — 2026-06-03
+
+### ✨ Добавлено
+- **Иконка приложения у пульта (Android).** APK теперь устанавливается с собственной иконкой в фирменном
+  стиле редактора (тёмный градиент + синий шеврон `>` и зелёный курсор `_`) вместо системной заглушки.
+  Адаптивная иконка для Android 8+ (с монохромным слоем под тематические иконки Android 13+) и обычные
+  PNG для более старых версий. Версия APK — **0.44.0**.
+
 ## [1.0.98] — 2026-06-03
 
 ### ✨ Добавлено
@@ -107,6 +115,7 @@
 - Первые публичные alpha-сборки: терминал на проект (xterm + node-pty), вивер кода (CodeMirror), дерево
   файлов, дистрибуция под Linux (`.deb`) и Windows (portable `.zip`) через GitHub Actions.
 
+[1.0.99]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.0.99
 [1.0.98]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.0.98
 [1.0.97]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.0.97
 [1.0.96]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.0.96
