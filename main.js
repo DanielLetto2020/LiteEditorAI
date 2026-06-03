@@ -169,7 +169,7 @@ try {
   const legacy = path.join(os.homedir(), '.LiteEditor');
   if (!fs.existsSync(storeDir) && fs.existsSync(legacy)) fs.cpSync(legacy, storeDir, { recursive: true });
 } catch (_) {}
-const STORE_KEYS = ['projects', 'settings', 'layout', 'recents', 'lastParent', 'categories', 'sectionOrder', 'accordions', 'dismissed', 'uiState', 'projTabs', 'openrouter', 'remote', 'shares'];
+const STORE_KEYS = ['projects', 'settings', 'layout', 'recents', 'lastParent', 'categories', 'sectionOrder', 'accordions', 'dismissed', 'uiState', 'projTabs', 'openrouter', 'remote', 'shares', 'dockerUi'];
 // Папка-«стор» для шаринга с пультом (агент кладёт сюда файлы; в PTY доступна как $LITE_STORE).
 const pultStoreDir = path.join(storeDir, 'store');
 try { fs.mkdirSync(pultStoreDir, { recursive: true }); } catch (_) {}
@@ -954,6 +954,10 @@ ipcMain.on('remote:activeChanged', (_e, { sid } = {}) => {
 app.on('window-all-closed', () => {
   for (const p of ptys.values()) { try { p.kill(); } catch (_) {} }
   ptys.clear();
+  for (const p of cExecPtys.values()) { try { p.kill(); } catch (_) {} }
+  cExecPtys.clear();
+  for (const cp of cLogProcs.values()) { try { cp.kill(); } catch (_) {} }
+  cLogProcs.clear();
   for (const w of watchers.values()) { try { w.watcher.close(); } catch (_) {} }
   watchers.clear();
   if (process.platform !== 'darwin') app.quit();
@@ -1264,6 +1268,22 @@ ipcMain.handle('git:info', async (_e, root) => {
   const remote = ((await git(root, ['remote'])) || '').trim().split('\n').filter(Boolean);
   return { repo: true, branch, ahead, behind, upstream, lastCommit, branches, hasRemote: remote.length > 0 };
 });
+// Recent commit history for the Git module's log view (PhpStorm-style). Read-only.
+ipcMain.handle('git:log', async (_e, { root, limit } = {}) => {
+  if (!root || !fs.existsSync(root)) return { error: 'no root' };
+  const top = await git(root, ['rev-parse', '--show-toplevel']);
+  if (top == null) return { repo: false, commits: [] };
+  const n = Math.max(1, Math.min(200, parseInt(limit, 10) || 40));
+  // \x1f = field sep, one record per line; safe against spaces in subject/author.
+  const out = await git(root, ['log', `-${n}`, '--pretty=format:%h%x1f%s%x1f%cr%x1f%an%x1f%D']);
+  const commits = [];
+  if (out) for (const rec of out.split('\n')) {
+    if (!rec) continue;
+    const [hash, subject, when, author, refs] = rec.split('\x1f');
+    commits.push({ hash, subject, when, author, refs: (refs || '').trim() });
+  }
+  return { repo: true, commits };
+});
 ipcMain.handle('git:checkout', async (_e, { root, branch }) => gitRun(root, ['checkout', branch]));
 ipcMain.handle('git:fetch', async (_e, root) => gitRun(root, ['fetch', '--all', '--prune']));
 ipcMain.handle('git:discardFile', async (_e, { root, file }) => gitRun(root, ['checkout', '--', file]));
@@ -1298,6 +1318,172 @@ ipcMain.handle('git:commit', async (_e, { root, message, push }) => {
 });
 ipcMain.handle('git:push', async (_e, root) => gitRun(root, ['push']));
 ipcMain.handle('git:pull', async (_e, root) => gitRun(root, ['pull', '--ff-only']));
+
+// ================================================================ containers (docker/podman)
+// Lightweight container manager — a desktop-GUI replacement. Read-only listing + basic
+// lifecycle actions, shelled out to the docker/podman CLIs (no daemon socket, no extra deps).
+// execFile (no shell) + an {engine} whitelist make CLI-arg injection a non-issue.
+function containerRun(cli, args, opts = {}) {
+  return new Promise((resolve) => {
+    execFile(cli, args, { timeout: opts.timeout || 15000, maxBuffer: 24 * 1024 * 1024, windowsHide: true },
+      (err, stdout, stderr) => resolve({
+        ok: !err, out: (stdout || '').trim(),
+        error: err ? ((stderr || '').trim() || String(err.message || err)) : '',
+      }));
+  });
+}
+const cFirstLine = (s) => String(s || '').split('\n')[0].trim();
+function cHumanSize(bytes) { // podman reports image size in bytes; docker is already human
+  const n = Number(bytes); if (!Number.isFinite(n) || n <= 0) return '';
+  const u = ['B', 'KB', 'MB', 'GB', 'TB']; let i = 0, v = n;
+  while (v >= 1024 && i < u.length - 1) { v /= 1024; i++; }
+  return (v >= 10 || i === 0 ? v.toFixed(0) : v.toFixed(1)) + ' ' + u[i];
+}
+function cParseLines(out) { // docker `{{json .}}` → one JSON object per line
+  const arr = [];
+  for (const ln of String(out || '').split('\n')) { const s = ln.trim(); if (!s) continue; try { arr.push(JSON.parse(s)); } catch (_) {} }
+  return arr;
+}
+function cParseJson(out) { // podman `--format json` → array (fallback to line-JSON)
+  const s = String(out || '').trim(); if (!s) return [];
+  try { const j = JSON.parse(s); return Array.isArray(j) ? j : [j]; } catch (_) { return cParseLines(out); }
+}
+function cLabelMap(str) { const m = {}; for (const part of String(str || '').split(',')) { const i = part.indexOf('='); if (i > 0) m[part.slice(0, i)] = part.slice(i + 1); } return m; }
+const C_PROJECT = 'com.docker.compose.project', C_SERVICE = 'com.docker.compose.service';
+
+// Detect both engines + their compose flavours (legacy `docker-compose` vs the `docker compose` plugin).
+ipcMain.handle('containers:detect', async () => {
+  const probe = (cli, args) => containerRun(cli, args, { timeout: 6000 });
+  const [dcli, dleg, dplug, pcli, pleg, pplug] = await Promise.all([
+    probe('docker', ['--version']), probe('docker-compose', ['--version']), probe('docker', ['compose', 'version']),
+    probe('podman', ['--version']), probe('podman-compose', ['--version']), probe('podman', ['compose', 'version']),
+  ]);
+  // Only treat output as a real version if the first line looks version-like — some shims
+  // (e.g. a `docker-compose` redirect to the v2 plugin) print usage text with exit 0.
+  const v = (r) => { const fl = cFirstLine(r.out); return r.ok && /v?\d+\.\d+/.test(fl) ? fl : null; };
+  return {
+    docker: { cli: v(dcli), compose: v(dleg), composePlugin: v(dplug) },
+    podman: { cli: v(pcli), compose: v(pleg), composePlugin: v(pplug) },
+  };
+});
+
+async function cListContainers(engine) {
+  if (engine === 'docker') {
+    const r = await containerRun('docker', ['ps', '-a', '--format', '{{json .}}'], { timeout: 12000 });
+    if (!r.ok) return { error: r.error };
+    return { items: cParseLines(r.out).map((c) => { const L = cLabelMap(c.Labels);
+      return { id: c.ID, name: c.Names, image: c.Image, state: String(c.State || '').toLowerCase(), status: c.Status, ports: c.Ports || '', project: L[C_PROJECT] || '', service: L[C_SERVICE] || '' }; }) };
+  }
+  const r = await containerRun('podman', ['ps', '-a', '--format', 'json'], { timeout: 12000 });
+  if (!r.ok) return { error: r.error };
+  return { items: cParseJson(r.out).map((c) => { const L = c.Labels || {};
+    const name = Array.isArray(c.Names) ? c.Names[0] : (c.Names || c.Name || '');
+    const ports = Array.isArray(c.Ports) ? c.Ports.map((p) => `${p.host_port || p.hostPort || ''}${(p.host_port || p.hostPort) ? ':' : ''}${p.container_port || p.containerPort || ''}`).filter((s) => s && s !== ':').join(', ') : '';
+    return { id: c.Id || c.ID, name, image: c.Image, state: String(c.State || '').toLowerCase(), status: c.Status || c.State, ports, project: L[C_PROJECT] || L['io.podman.compose.project'] || '', service: L[C_SERVICE] || '' }; }) };
+}
+async function cListPods() {
+  const r = await containerRun('podman', ['pod', 'ps', '--format', 'json'], { timeout: 10000 });
+  if (!r.ok) return { error: r.error };
+  return { items: cParseJson(r.out).map((p) => ({ id: p.Id || p.ID, name: p.Name, status: String(p.Status || '').toLowerCase(), containers: Array.isArray(p.Containers) ? p.Containers.length : (p.NumberOfContainers || 0) })) };
+}
+async function cListImages(engine) {
+  const fmt = engine === 'docker' ? '{{json .}}' : 'json';
+  const r = await containerRun(engine, ['images', '--format', fmt], { timeout: 12000 });
+  if (!r.ok) return { error: r.error };
+  if (engine === 'docker') return { items: cParseLines(r.out).map((i) => ({ id: i.ID, repo: i.Repository, tag: i.Tag, size: i.Size, created: i.CreatedSince })) };
+  return { items: cParseJson(r.out).map((i) => { const names = i.Names || i.RepoTags || [];
+    const full = Array.isArray(names) ? (names[0] || '<none>:<none>') : String(names);
+    const ci = full.lastIndexOf(':'); const repo = ci > 0 ? full.slice(0, ci) : full; const tag = ci > 0 ? full.slice(ci + 1) : '';
+    return { id: String(i.Id || i.ID || '').slice(0, 12), repo, tag, size: cHumanSize(i.Size), created: i.Created }; }) };
+}
+async function cListVolumes(engine) {
+  const fmt = engine === 'docker' ? '{{json .}}' : 'json';
+  const r = await containerRun(engine, ['volume', 'ls', '--format', fmt], { timeout: 10000 });
+  if (!r.ok) return { error: r.error };
+  const raw = engine === 'docker' ? cParseLines(r.out) : cParseJson(r.out);
+  return { items: raw.map((vo) => ({ name: vo.Name, driver: vo.Driver || '' })) };
+}
+async function cListDf(engine) { // disk usage per object type (`system df`)
+  const fmt = engine === 'docker' ? '{{json .}}' : 'json';
+  const r = await containerRun(engine, ['system', 'df', '--format', fmt], { timeout: 12000 });
+  if (!r.ok) return { error: r.error };
+  const raw = engine === 'docker' ? cParseLines(r.out) : cParseJson(r.out);
+  const out = {};
+  for (const row of raw) {
+    const t = String(row.Type || '').toLowerCase();
+    if (t.includes('image')) out.images = row.Size;
+    else if (t.includes('container')) out.containers = row.Size;
+    else if (t.includes('volume')) out.volumes = row.Size;
+    else if (t.includes('build') || t.includes('cache')) out.cache = row.Size;
+  }
+  return out;
+}
+ipcMain.handle('containers:list', async (_e, { engine } = {}) => {
+  if (engine !== 'docker' && engine !== 'podman') return { error: 'bad engine' };
+  const [containers, images, volumes, pods, df] = await Promise.all([
+    cListContainers(engine), cListImages(engine), cListVolumes(engine),
+    engine === 'podman' ? cListPods() : Promise.resolve({ items: [] }),
+    cListDf(engine),
+  ]);
+  return { containers, images, volumes, pods, df };
+});
+// Bulk action over a list of container ids (a compose group). Applies sequentially, collecting errors.
+ipcMain.handle('containers:bulk', async (_e, { engine, action, ids } = {}) => {
+  if (engine !== 'docker' && engine !== 'podman') return { ok: false, error: 'bad engine' };
+  if (!Array.isArray(ids) || !ids.length) return { ok: false, error: 'no ids' };
+  const verb = { start: ['start'], stop: ['stop'], pause: ['pause'], unpause: ['unpause'], restart: ['restart'], remove: ['rm', '-f'] }[action];
+  if (!verb) return { ok: false, error: 'bad action' };
+  const failed = [];
+  for (const id of ids) { if (typeof id !== 'string') continue; const r = await containerRun(engine, [...verb, id], { timeout: 60000 }); if (!r.ok) failed.push(r.error); }
+  return failed.length ? { ok: false, error: failed.join('; ') } : { ok: true };
+});
+
+// --- container logs (streamed) and interactive exec (PTY) for the detail view
+const cLogProcs = new Map();  // streamId -> ChildProcess (logs -f)
+const cExecPtys = new Map();  // execId   -> IPty (exec -it)
+ipcMain.handle('containers:logsStart', (_e, { engine, id, streamId, tail } = {}) => {
+  if (engine !== 'docker' && engine !== 'podman') return { error: 'bad engine' };
+  if (!id || !streamId) return { error: 'bad args' };
+  let cp;
+  try { cp = spawn(engine, ['logs', '-f', '--tail', String(Math.max(1, Math.min(5000, parseInt(tail, 10) || 500))), id], { windowsHide: true }); }
+  catch (e) { return { error: String(e.message || e) }; }
+  const send = (d) => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('containers:logsData', { streamId, data: d.toString('utf8') }); };
+  cp.stdout.on('data', send); cp.stderr.on('data', send);
+  cp.on('error', (err) => send('\n[ошибка logs: ' + (err.message || err) + ']\n'));
+  cp.on('close', () => { cLogProcs.delete(streamId); if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('containers:logsExit', { streamId }); });
+  cLogProcs.set(streamId, cp);
+  return { ok: true };
+});
+ipcMain.on('containers:logsStop', (_e, { streamId } = {}) => { const cp = cLogProcs.get(streamId); if (cp) { try { cp.kill(); } catch (_) {} cLogProcs.delete(streamId); } });
+ipcMain.handle('containers:execStart', (_e, { engine, id, execId, cols, rows } = {}) => {
+  if (engine !== 'docker' && engine !== 'podman') return { error: 'bad engine' };
+  if (!id || !execId) return { error: 'bad args' };
+  let proc;
+  try {
+    proc = pty.spawn(engine, ['exec', '-it', id, 'sh', '-c', 'command -v bash >/dev/null 2>&1 && exec bash || exec sh'],
+      { name: 'xterm-color', cols: cols || 80, rows: rows || 24, env: process.env });
+  } catch (e) { return { error: String(e.message || e) }; }
+  proc.onData((d) => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('containers:execData', { execId, data: d }); });
+  proc.onExit(() => { cExecPtys.delete(execId); if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('containers:execExit', { execId }); });
+  cExecPtys.set(execId, proc);
+  return { ok: true };
+});
+ipcMain.on('containers:execWrite', (_e, { execId, data } = {}) => { const p = cExecPtys.get(execId); if (p) p.write(data); });
+ipcMain.on('containers:execResize', (_e, { execId, cols, rows } = {}) => { const p = cExecPtys.get(execId); if (p && cols > 0 && rows > 0) { try { p.resize(cols, rows); } catch (_) {} } });
+ipcMain.on('containers:execKill', (_e, { execId } = {}) => { const p = cExecPtys.get(execId); if (p) { try { p.kill(); } catch (_) {} cExecPtys.delete(execId); } });
+// Lifecycle action on one object. action/kind are whitelisted; id is a CLI arg (execFile, no shell).
+ipcMain.handle('containers:action', async (_e, { engine, kind, action, id } = {}) => {
+  if (engine !== 'docker' && engine !== 'podman') return { ok: false, error: 'bad engine' };
+  if (!id || typeof id !== 'string') return { ok: false, error: 'no id' };
+  let args = null;
+  if (kind === 'container') args = ({ start: ['start', id], stop: ['stop', id], pause: ['pause', id], unpause: ['unpause', id], restart: ['restart', id], remove: ['rm', '-f', id] })[action];
+  else if (kind === 'pod') args = ({ start: ['pod', 'start', id], stop: ['pod', 'stop', id], remove: ['pod', 'rm', '-f', id] })[action];
+  else if (kind === 'image' && action === 'remove') args = ['rmi', '-f', id];
+  else if (kind === 'volume' && action === 'remove') args = ['volume', 'rm', id];
+  if (!args) return { ok: false, error: 'bad action' };
+  const r = await containerRun(engine, args, { timeout: 60000 });
+  return { ok: r.ok, error: r.error };
+});
 
 ipcMain.handle('shell:openPath', async (_e, target) => {
   const err = await shell.openPath(target);

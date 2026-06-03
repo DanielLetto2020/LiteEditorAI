@@ -339,6 +339,100 @@ html, body {
 #scratch-term .xterm { height: 100%; }
 #app.single #scratch-pane { display: none !important; }
 
+/* ---------------- Git module (right pane, PhpStorm-style) ---------------- */
+#git-pane { flex: 0 0 360px; min-width: 240px; border-left: 1px solid var(--border); display: flex; flex-direction: column; background: var(--panel); }
+#git-proj { color: var(--green-bright); font-size: 12px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; }
+.git-body { flex: 1; overflow: auto; padding: 10px; display: flex; flex-direction: column; gap: 10px; }
+.git-body .gm-branch { flex-wrap: wrap; }
+.git-body .gm-changes { max-height: 34vh; }
+.git-loading { color: var(--text-dim); font-size: 12.5px; padding: 4px 2px; }
+.git-sec { font-size: 11px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; color: var(--text-mute); margin-top: 2px; }
+.git-body .gm-file { cursor: pointer; border-radius: 6px; }
+.git-body .gm-file:hover { background: var(--hover); }
+.git-body .gm-file.open { background: var(--accent-soft); color: #fff; }
+.git-body .gm-fname { flex: 1; overflow: hidden; text-overflow: ellipsis; }
+.git-diff { max-height: 38vh; overflow: auto; border: 1px solid var(--border); border-radius: 9px; padding: 6px 8px; font-family: monospace; font-size: 12px; line-height: 1.45; background: var(--bg-input); }
+.git-log { display: flex; flex-direction: column; gap: 2px; max-height: 30vh; overflow: auto; }
+.git-commit { display: flex; align-items: baseline; gap: 8px; padding: 3px 6px; border-radius: 6px; font-size: 12px; white-space: nowrap; }
+.git-commit:hover { background: var(--hover); }
+.git-csubj { flex: 1; overflow: hidden; text-overflow: ellipsis; color: var(--text); }
+.git-commit .gm-meta { color: var(--text-mute); font-size: 11px; flex: 0 0 auto; }
+.git-refs { color: var(--warn); font-size: 11px; }
+
+/* ---------------- Containers module (docker/podman) ---------------- */
+#docker-pane { flex: 0 0 460px; min-width: 300px; border-left: 1px solid var(--border); display: flex; flex-direction: column; background: var(--panel); }
+#docker-title { color: var(--green-bright); font-size: 12px; font-weight: 600; }
+.docker-tabs { display: flex; gap: 6px; padding: 8px 10px 4px; border-bottom: 1px solid var(--border); }
+.docker-tab { display: flex; align-items: center; gap: 7px; padding: 6px 12px; border-radius: 9px; border: 1px solid var(--border-strong); background: var(--bg-input); color: var(--text-dim); font-size: 12.5px; font-weight: 600; cursor: pointer; transition: all .12s; }
+.docker-tab:hover { color: var(--text); border-color: var(--border-accent); }
+.docker-tab.on { color: var(--green-contrast, #06241a); background: var(--green); border-color: var(--green); }
+.docker-tab.off { opacity: 0.5; }
+.docker-tab.off::after { content: "•"; color: var(--text-mute); }
+.docker-body { flex: 1; overflow: auto; padding: 10px; display: flex; flex-direction: column; gap: 10px; }
+.docker-env { display: flex; flex-wrap: wrap; gap: 4px 14px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 9px; background: var(--bg-input); }
+.docker-env-row { display: flex; align-items: baseline; gap: 7px; font-size: 11.5px; }
+.denv-k { color: var(--text-mute); font-family: monospace; }
+.denv-v { color: var(--green-bright); font-family: monospace; }
+.denv-v.missing { color: var(--text-mute); font-style: italic; }
+.docker-notice { display: flex; flex-direction: column; align-items: center; gap: 8px; text-align: center; padding: 34px 16px; color: var(--warn); }
+.docker-notice-t { font-size: 14px; font-weight: 700; color: var(--text); }
+.docker-notice-s { font-size: 12px; color: var(--text-dim); max-width: 280px; }
+.docker-list { display: flex; flex-direction: column; gap: 8px; }
+.docker-sec { border: 1px solid var(--border); border-radius: 10px; overflow: hidden; background: var(--surface, var(--panel)); }
+.docker-sec-head { width: 100%; display: flex; align-items: center; gap: 8px; padding: 8px 10px; background: var(--bar); border: none; color: var(--text); cursor: pointer; font-size: 12px; font-weight: 600; }
+.docker-sec-head:hover { background: var(--hover); }
+.dsec-chev { color: var(--text-mute); flex: 0 0 14px; }
+.dsec-title { flex: 1; text-align: left; }
+.dsec-count { color: var(--text-mute); font-size: 11px; background: var(--bg-input); border-radius: 10px; padding: 1px 8px; min-width: 22px; text-align: center; }
+.docker-sec-body { display: flex; flex-direction: column; padding: 4px; gap: 2px; }
+.docker-group { font-size: 10.5px; font-weight: 700; letter-spacing: 0.03em; text-transform: uppercase; color: var(--green-bright); padding: 6px 6px 2px; }
+.docker-group.muted { color: var(--text-mute); }
+.docker-row { display: flex; align-items: center; gap: 9px; padding: 6px 7px; border-radius: 8px; }
+.docker-row:hover { background: var(--hover); }
+.dstate { flex: 0 0 9px; width: 9px; height: 9px; border-radius: 50%; background: var(--text-mute); }
+.dstate-run { background: var(--green); box-shadow: 0 0 6px var(--green-glow, rgba(52,211,153,.5)); }
+.dstate-pause { background: var(--warn); }
+.dstate-stop { background: var(--text-mute); }
+.dstate-dead { background: var(--danger); }
+.drow-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.drow-name { font-size: 12.5px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.drow-sub { font-size: 11px; color: var(--text-mute); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.drow-acts { display: flex; gap: 2px; flex: 0 0 auto; }
+.drow-act { display: flex; align-items: center; justify-content: center; width: 26px; height: 26px; border-radius: 7px; border: 1px solid transparent; background: transparent; color: var(--text-dim); cursor: pointer; transition: all .12s; }
+.drow-act:hover { color: var(--text); background: var(--bg-input); border-color: var(--border-strong); }
+.drow-act.danger:hover { color: var(--danger); border-color: var(--danger); }
+.docker-empty, .docker-err { font-size: 12px; padding: 8px 6px; }
+.docker-empty { color: var(--text-mute); }
+.docker-err { color: var(--danger); white-space: pre-wrap; word-break: break-word; }
+/* disk usage strip */
+.docker-disk { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 12px; padding: 6px 10px; border: 1px solid var(--border); border-radius: 9px; background: var(--bg-input); color: var(--text-dim); }
+.docker-disk > svg { color: var(--text-mute); }
+.ddisk-seg { display: inline-flex; align-items: baseline; gap: 5px; font-size: 11.5px; }
+.ddisk-k { color: var(--text-mute); }
+.ddisk-v { color: var(--green-bright); font-family: monospace; }
+/* compose group blocks (collapsible, gradient header, bulk actions, sort) */
+.docker-group-block { border: 1px solid var(--border); border-radius: 9px; overflow: hidden; margin-bottom: 6px; }
+.docker-group-head { display: flex; align-items: center; gap: 7px; padding: 6px 9px; cursor: pointer; user-select: none; }
+.docker-group-head:hover { filter: brightness(1.08); }
+.dgrp-chev { color: var(--text-mute); flex: 0 0 13px; }
+.dgrp-name { font-size: 12px; font-weight: 700; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dgrp-count { color: var(--text-mute); font-size: 10.5px; background: rgba(0,0,0,0.25); border-radius: 9px; padding: 1px 7px; }
+.dgrp-acts { display: flex; gap: 1px; margin-left: auto; flex: 0 0 auto; opacity: 0.55; transition: opacity .12s; }
+.docker-group-head:hover .dgrp-acts { opacity: 1; }
+.docker-group-body { display: flex; flex-direction: column; padding: 3px; gap: 2px; background: var(--bg, var(--panel)); }
+.docker-row.clickable { cursor: pointer; }
+/* container detail: header, sub-tabs, logs, embedded exec terminal */
+.docker-detail-head { display: flex; align-items: center; gap: 9px; padding: 2px 2px 8px; border-bottom: 1px solid var(--border); }
+.docker-detail-name { font-size: 13px; font-weight: 600; color: var(--text); overflow: hidden; text-overflow: ellipsis; }
+.docker-subtabs { display: flex; gap: 6px; padding: 2px 0; }
+.docker-subtab { padding: 5px 14px; border-radius: 8px; border: 1px solid var(--border-strong); background: var(--bg-input); color: var(--text-dim); font-size: 12px; font-weight: 600; cursor: pointer; }
+.docker-subtab:hover { color: var(--text); }
+.docker-subtab.on { color: var(--green-contrast, #06241a); background: var(--green); border-color: var(--green); }
+.docker-detail-view { flex: 1; min-height: 0; display: flex; }
+.docker-logs { flex: 1; min-height: 0; margin: 0; overflow: auto; padding: 8px 10px; border: 1px solid var(--border); border-radius: 9px; background: #0b0f14; color: #c6d0da; font-family: monospace; font-size: 11.5px; line-height: 1.45; white-space: pre-wrap; word-break: break-word; }
+.docker-term { flex: 1; min-height: 0; position: relative; border: 1px solid var(--border); border-radius: 9px; overflow: hidden; padding: 6px 4px 6px 8px; background: #0d1116; }
+.docker-term .xterm { height: 100%; }
+
 /* ---------------- gutters (resize) ---------------- */
 .gutter { flex: 0 0 5px; cursor: col-resize; background: transparent; position: relative; z-index: 5; }
 .gutter::after { content: ""; position: absolute; inset: 0 2px; background: transparent; transition: background .12s; }
@@ -349,6 +443,8 @@ body.resizing { cursor: col-resize; user-select: none; }
 #app.single #sidebar,
 #app.single #viewer-pane,
 #app.single #tree-pane,
+#app.single #git-pane,
+#app.single #docker-pane,
 #app.single .gutter { display: none !important; }
 #app.single #btn-single { color: var(--green); border-color: var(--border-accent); }
 
@@ -652,9 +748,7 @@ body.preview-full .prev-frame { width: 100%; height: 100%; }
 .card-qbadge.running { color: var(--warn); border-color: rgba(224,175,104,0.5); background: rgba(224,175,104,0.12); }
 .card-qbadge.armed { color: #1a1206; background: var(--warn); border-color: var(--warn); animation: qbadge-pulse 1.3s ease-out infinite; }
 
-/* ---------------- git panel ---------------- */
-.git-modal { width: 520px; }
-.gm-body { display: flex; flex-direction: column; gap: 10px; }
+/* ---------------- git panel (gm-* shared by the right-pane Git module) ---------------- */
 .gm-branch { display: flex; align-items: center; gap: 10px; }
 .gm-branchname { font-weight: 600; color: var(--green-bright); }
 .gm-track { font-size: 12px; color: var(--text-dim); }

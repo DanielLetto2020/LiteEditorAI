@@ -26,7 +26,7 @@ import { markdown } from '@codemirror/lang-markdown';
 import { html } from '@codemirror/lang-html';
 import { css } from '@codemirror/lang-css';
 
-const APP_VERSION = 'alpha v1.0.100';
+const APP_VERSION = 'alpha v1.0.101';
 const GUTTER = 5;
 const SCRATCH_ID = '__scratch__'; // системный терминал (домашняя папка), не привязан к проектам
 
@@ -85,6 +85,12 @@ const ICONS = {
   clipboard: '<rect x="6" y="4.5" width="12" height="16" rx="2"/><rect x="9" y="3" width="6" height="3.4" rx="1"/>',
   chat: '<path d="M4.5 5.5h15a1 1 0 0 1 1 1v8.5a1 1 0 0 1-1 1H9.5L5 19.5V16a1 1 0 0 1-1-1V6.5a1 1 0 0 1 .5-1z"/><path d="M8 9.5h8M8 12.5h5"/>',
   key: '<circle cx="8" cy="15" r="3.5"/><path d="M10.5 12.5L19 4M16 7l2.5 2.5M14 9l2.5 2.5"/>',
+  stop: '<rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor" stroke="none"/>',
+  pause: '<rect x="7" y="5" width="3.4" height="14" rx="1" fill="currentColor" stroke="none"/><rect x="13.6" y="5" width="3.4" height="14" rx="1" fill="currentColor" stroke="none"/>',
+  box: '<path d="M12 2.8l8.2 4.6v9.2L12 21.2 3.8 16.6V7.4z"/><path d="M3.8 7.4l8.2 4.6 8.2-4.6M12 12v9.2"/>',
+  layers: '<path d="M12 3l8.5 4.5L12 12 3.5 7.5z"/><path d="M3.5 12L12 16.5 20.5 12M3.5 16.5L12 21l8.5-4.5"/>',
+  database: '<ellipse cx="12" cy="6" rx="7" ry="3"/><path d="M5 6v12c0 1.66 3.13 3 7 3s7-1.34 7-3V6"/><path d="M5 12c0 1.66 3.13 3 7 3s7-1.34 7-3"/>',
+  power: '<path d="M12 4v8"/><path d="M7.5 7.5a6.5 6.5 0 1 0 9 0"/>',
 };
 function icon(name, size = 16) {
   return svgEl(`<svg class="ic" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name] || ''}</svg>`);
@@ -415,6 +421,8 @@ function queueNotifyArmed(id) {
   } catch (_) {}
 }
 let viewerOpen = false;
+let gitOpen = false;         // Git-модуль справа открыт (показывает активный проект)
+let dockerOpen = false;      // модуль контейнеров (docker/podman) справа открыт
 let scratchOpen = false;     // системный терминал справа открыт
 let scratchRec = null;       // { term, fit, search } — один на приложение
 let currentFile = null;
@@ -425,7 +433,7 @@ let editor = null;
 let loadingDoc = false;
 const langComp = new Compartment();
 
-const DEFAULT_LAYOUT = { sidebar: 240, viewer: 520, tree: 240, scratch: 420 };
+const DEFAULT_LAYOUT = { sidebar: 240, viewer: 520, tree: 240, scratch: 420, git: 360, docker: 460 };
 let layout = loadLayout();
 let lastParent = STORE.lastParent || '';
 
@@ -457,6 +465,7 @@ function applyTheme() {
   document.body.dataset.theme = name; // always set; index.html ships data-theme too so there's no flash
   for (const rec of terms.values()) { try { rec.term.options.theme = termTheme(); } catch (_) {} }
   if (scratchRec) { try { scratchRec.term.options.theme = termTheme(); } catch (_) {} }
+  if (dockerExecTerm) { try { dockerExecTerm.options.theme = termTheme(); } catch (_) {} }
 }
 
 const activeProject = () => projects.find((p) => p.id === activeId);
@@ -468,12 +477,14 @@ function loadLayout() { return { ...DEFAULT_LAYOUT, ...(STORE.layout || {}) }; }
 function saveLayout() { persist('layout', layout); }
 // Whether the viewer / system terminal panes are open — part of the backed-up state,
 // restored on startup (and on import) so the window reopens the way it was left.
-function saveUiState() { persist('uiState', { viewerOpen, scratchOpen }); }
+function saveUiState() { persist('uiState', { viewerOpen, scratchOpen, gitOpen, dockerOpen }); }
 function applyLayout() {
   $('#sidebar').style.flexBasis = layout.sidebar + 'px';
   $('#viewer-pane').style.flexBasis = layout.viewer + 'px';
   $('#tree-pane').style.flexBasis = layout.tree + 'px';
   $('#scratch-pane').style.flexBasis = layout.scratch + 'px';
+  $('#git-pane').style.flexBasis = layout.git + 'px';
+  $('#docker-pane').style.flexBasis = layout.docker + 'px';
 }
 function loadRecents() { return Array.isArray(STORE.recents) ? STORE.recents : []; }
 function pushRecent(p) {
@@ -676,8 +687,12 @@ function makeCard(p) {
   const nc = noteCounts[p.id] || 0;
   if (nc) notesBtn.appendChild(el('span', 'act-badge', String(nc)));
   notesBtn.addEventListener('click', (e) => { e.stopPropagation(); showNotes(p); });
-  const gitBtn = iconBtn('card-act', 'git', 'Git');
-  gitBtn.addEventListener('click', (e) => { e.stopPropagation(); showGit(p); });
+  const gitBtn = iconBtn('card-act' + (p.id === activeId && gitOpen ? ' on' : ''), 'git', 'Git — ветки, изменения, коммиты');
+  gitBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (activeId === p.id && gitOpen) setGitOpen(false);
+    else openGitForProject(p.id);
+  });
   foot.appendChild(openViewer); foot.appendChild(notesBtn); foot.appendChild(gitBtn);
   const qb = queues.get(p.id);
   const qtxt = queueBadgeText(qb);
@@ -708,6 +723,10 @@ function openChat(id) {
   const card = orCards.find((c) => c.id === id);
   if (!card) return;
   guardDirty(async () => {
+    // Opening the OpenRouter chat hides any open right module — chat takes over.
+    if (viewerOpen) setViewerOpen(false);
+    if (gitOpen) setGitOpen(false);
+    if (dockerOpen) setDockerOpen(false);
     activeOrId = id;
     const st = getOrChat(id);
     renderProjects();        // refresh card highlights (active OR card, deselect projects)
@@ -1161,7 +1180,7 @@ function showCardMenu(x, y, p) {
 function buildCardMenuMain(dd, p) {
   dd.innerHTML = '';
   dd.appendChild(menuRow('folder', 'Открыть в проводнике', () => { closeMenus(); lite.openInFileManager(p.path); }));
-  dd.appendChild(menuRow('git', 'Git', () => { closeMenus(); showGit(p); }));
+  dd.appendChild(menuRow('git', 'Git', () => { closeMenus(); openGitForProject(p.id); }));
   dd.appendChild(menuRow('note', 'Заметки', () => { closeMenus(); showNotes(p); }));
   dd.appendChild(menuRow('copy', 'Копировать путь', () => { closeMenus(); lite.copyText(p.path); toast('Путь скопирован'); }));
   dd.appendChild(menuRow('star', p.favorite ? 'Убрать из избранного' : 'В избранное', () => { closeMenus(); toggleFavorite(p.id); }));
@@ -1594,117 +1613,6 @@ async function showBranches(body, p, back) {
   const b1 = el('button', 'btn', '‹ Назад к git'); b1.onclick = back;
   footer.appendChild(b1);
   body.appendChild(footer);
-}
-async function showGit(p) {
-  const { m, close } = makeModal(`<h2>⎇ Git — <span class="gm-proj"></span></h2><div id="gm-body" class="gm-body">Загрузка…</div>`);
-  m.classList.add('git-modal');
-  m.querySelector('.gm-proj').textContent = p.name;
-  const body = m.querySelector('#gm-body');
-  async function refresh() {
-    const info = await lite.git.info(p.path);
-    body.innerHTML = '';
-    if (!info.repo) {
-      body.appendChild(el('div', 'gm-norepo', 'Это не git-репозиторий.'));
-      const row = el('div', 'gm-actions');
-      const init = el('button', 'btn primary', '⎇ git init');
-      init.onclick = async () => {
-        const r = await lite.git.init(p.path);
-        if (r.ok) { toast('git init готов'); refresh(); renderProjects(); }
-        else toast(r.error || 'ошибка init', { kind: 'err', ttl: 7000 });
-      };
-      const cancel = el('button', 'btn', 'Закрыть'); cancel.onclick = close;
-      row.append(init, cancel); body.appendChild(row);
-
-      body.appendChild(el('div', 'gm-or', 'или клонировать репозиторий в эту папку'));
-      const cloneRow = el('div', 'gm-actions');
-      const url = el('input', 'gm-cloneurl'); url.type = 'text';
-      url.placeholder = 'URL репозитория (https://… или git@…)';
-      const clone = el('button', 'btn', '⬇ git clone');
-      const doClone = async () => {
-        const u = url.value.trim();
-        if (!u) { toast('Введи URL репозитория', { kind: 'err' }); return; }
-        clone.disabled = true; const lbl = clone.textContent; clone.textContent = 'Клонирую…';
-        const r = await lite.git.clone(p.path, u);
-        clone.disabled = false; clone.textContent = lbl;
-        if (r.ok) {
-          toast('Репозиторий склонирован');
-          refresh(); renderProjects();
-          if (p.id === activeId) refreshTree();
-        } else toast(r.error || 'ошибка clone', { kind: 'err', ttl: 9000 });
-      };
-      clone.onclick = doClone;
-      url.addEventListener('keydown', (e) => { if (e.key === 'Enter') doClone(); });
-      cloneRow.append(url, clone); body.appendChild(cloneRow);
-      return;
-    }
-    const head = el('div', 'gm-branch');
-    const sel = el('select', 'gm-branchsel');
-    const brs = info.branches && info.branches.length ? info.branches : [info.branch];
-    for (const b of brs) { const o = document.createElement('option'); o.value = b; o.textContent = '⎇ ' + b; if (b === info.branch) o.selected = true; sel.appendChild(o); }
-    sel.onchange = async () => {
-      const r = await lite.git.checkout(p.path, sel.value);
-      if (r.ok) toast('Ветка: ' + sel.value); else toast(r.error || 'не удалось переключить', { kind: 'err', ttl: 8000 });
-      refresh(); renderProjects();
-    };
-    head.appendChild(sel);
-    const mgr = el('button', 'gm-mini', '⎇'); mgr.title = 'Ветки: переключить · обновить без перехода · новая от ветки';
-    mgr.onclick = () => showBranches(body, p, refresh);
-    head.appendChild(mgr);
-    if (info.upstream && (info.ahead || info.behind)) head.appendChild(el('span', 'gm-track', `↑${info.ahead} ↓${info.behind}`));
-    body.appendChild(head);
-
-    if (info.lastCommit) {
-      const lc = el('div', 'gm-last');
-      lc.appendChild(el('span', 'gm-hash', info.lastCommit.hash));
-      lc.appendChild(el('span', 'gm-subject', info.lastCommit.subject));
-      lc.appendChild(el('span', 'gm-meta', `${info.lastCommit.when} · ${info.lastCommit.author}`));
-      body.appendChild(lc);
-    }
-
-    const st = await lite.git.status(p.path);
-    const files = (st && st.files) ? st.files : {};
-    const keys = Object.keys(files);
-    const changes = el('div', 'gm-changes');
-    if (!keys.length) changes.appendChild(el('div', 'gm-clean', '✓ Рабочее дерево чистое.'));
-    else for (const f of keys) {
-      const r = el('div', 'gm-file'); r.title = f;
-      r.appendChild(el('span', 'gm-code ' + gitCodeClass(files[f]), files[f]));
-      r.appendChild(el('span', 'gm-fname', baseName(f)));
-      const disc = el('button', 'gm-mini gm-disc', '↩'); disc.title = 'Откатить изменения файла';
-      disc.onclick = () => showConfirm('Откатить файл?', `Изменения в «${baseName(f)}» будут отменены (git checkout --).`, 'Откатить', async () => {
-        const rr = await lite.git.discardFile(p.path, f);
-        if (rr.ok) { refresh(); renderProjects(); } else toast(rr.error || 'не удалось', { kind: 'err' });
-      });
-      r.appendChild(disc);
-      changes.appendChild(r);
-    }
-    body.appendChild(changes);
-
-    const msg = el('textarea', 'gm-msg'); msg.placeholder = 'Сообщение коммита…';
-    body.appendChild(msg);
-    const row = el('div', 'gm-actions');
-    const commit = el('button', 'btn primary', 'Commit');
-    const commitPush = el('button', 'btn', 'Commit & Push');
-    const fetchBtn = el('button', 'btn', 'Fetch');
-    const pull = el('button', 'btn', 'Pull');
-    const push = el('button', 'btn', 'Push');
-    commit.disabled = !keys.length; commitPush.disabled = !keys.length;
-    const doCommit = async (withPush) => {
-      const message = msg.value.trim();
-      if (!message) { toast('Введи сообщение коммита', { kind: 'err' }); return; }
-      const r = await lite.git.commit(p.path, message, withPush);
-      if (r.ok) { toast(withPush ? 'Закоммичено и запушено' : 'Закоммичено'); msg.value = ''; refresh(); renderProjects(); }
-      else toast(r.error || 'ошибка коммита', { kind: 'err', ttl: 8000 });
-    };
-    commit.onclick = () => doCommit(false);
-    commitPush.onclick = () => doCommit(true);
-    fetchBtn.onclick = async () => { const r = await lite.git.fetch(p.path); toast(r.ok ? 'Fetch готов' : (r.error || 'fetch не прошёл'), { kind: r.ok ? undefined : 'err', ttl: 8000 }); refresh(); };
-    push.onclick = async () => { const r = await lite.git.push(p.path); toast(r.ok ? 'Запушено' : (r.error || 'push не прошёл'), { kind: r.ok ? undefined : 'err', ttl: 8000 }); refresh(); };
-    pull.onclick = async () => { const r = await lite.git.pull(p.path); toast(r.ok ? 'Pull готов' : (r.error || 'pull не прошёл'), { kind: r.ok ? undefined : 'err', ttl: 8000 }); refresh(); renderProjects(); };
-    row.append(commit, commitPush, fetchBtn, pull, push);
-    body.appendChild(row);
-  }
-  refresh();
 }
 
 // Compact project switcher for single-terminal mode: indicator + name, click switches.
@@ -2193,6 +2101,7 @@ function handleRemoteClose(sid) {
   closeTab(sid);
 }
 function refitActiveTerminal(focusIt) {
+  if (dockerExecFit && dockerView === 'detail' && dockerDetailTab === 'term') { try { dockerExecFit.fit(); } catch (_) {} }
   const asid = activeSessionId();
   const rec = asid ? terms.get(asid) : null;
   if (!rec) return;
@@ -2361,6 +2270,7 @@ function doSetActive(id) {
   showActiveTerminal();
   applyFontSize();
   if (viewerOpen) refreshViewerForActive();
+  if (gitOpen) renderGitPanel(proj); // Git module follows the active project
 }
 
 // ---------------------------------------------------------------- viewer (CodeMirror)
@@ -2617,6 +2527,8 @@ function setViewerOpen(open, opts = {}) {
     renderProjects();
     return;
   }
+  // Viewer/Git/Docker share the right slot — opening the viewer closes the others (chat is separate).
+  if (open) { if (gitOpen) setGitOpen(false); if (dockerOpen) setDockerOpen(false); }
   const delta = layout.viewer + layout.tree + GUTTER * 2;
   viewerOpen = open;
   $('#viewer-pane').classList.toggle('hidden', !open);
@@ -2627,6 +2539,582 @@ function setViewerOpen(open, opts = {}) {
   renderProjects();
   if (open) refreshViewerForActive();
   setTimeout(refitActiveTerminal, 150);
+}
+
+// ================================================================ right module slot
+// One module open at a time in the right slot. NOT modules: terminals (project + scratch ~)
+// and the OpenRouter chat (it replaces the terminal, its cards live in the project column).
+// Modules: 'files' (viewer), 'git'. Mutual exclusion is enforced at each module's open path.
+// Entry point used by the «Модули» menu.
+function openModule(id) {
+  if (id === 'files') { if (!viewerOpen) setViewerOpen(true); }
+  else if (id === 'git') setGitOpen(true);
+  else if (id === 'docker') setDockerOpen(true);
+}
+
+// ---------------------------------------------------------------- Git module (right pane)
+function setGitOpen(open, opts = {}) {
+  if (open && !activeProject() && !opts.allowEmpty) { toast('Сначала открой проект'); return; }
+  if (open === gitOpen) { if (open) renderGitPanel(activeProject()); return; }
+  // Viewer/Git/Docker share the right slot — opening Git closes the others (chat is separate).
+  if (open) { if (viewerOpen) setViewerOpen(false); if (dockerOpen) setDockerOpen(false); }
+  const delta = layout.git + GUTTER;
+  gitOpen = open;
+  $('#git-pane').classList.toggle('hidden', !open);
+  $('#gutter-git').classList.toggle('hidden', !open);
+  if (opts.grow !== false) lite.win.growBy(open ? delta : -delta); // grow:false on restore — saved width already counts this pane
+  saveUiState();
+  renderProjects();
+  if (open) renderGitPanel(activeProject());
+  setTimeout(refitActiveTerminal, 150);
+}
+function toggleGit() { setGitOpen(!gitOpen); }
+// Open Git for a specific project: guard unsaved viewer edits, switch project FIRST, then
+// open — so setGitOpen never runs against the old activeId while a save-prompt is up.
+function openGitForProject(id) {
+  guardDirty(() => { if (id !== activeId || activeOrId !== null) doSetActive(id); setGitOpen(true); });
+}
+
+// Render a unified diff string into a container, line-classed like the viewer's diff.
+function renderDiffInto(view, text) {
+  view.innerHTML = '';
+  if (!text || !text.trim()) { view.appendChild(el('div', 'diff-empty', 'Нет изменений относительно HEAD.')); return; }
+  for (const ln of text.split('\n')) {
+    let cls = '';
+    if (ln.startsWith('@@')) cls = 'hunk';
+    else if (ln.startsWith('+++') || ln.startsWith('---') || ln.startsWith('diff ') || ln.startsWith('index ')) cls = 'meta';
+    else if (ln.startsWith('+')) cls = 'add';
+    else if (ln.startsWith('-')) cls = 'del';
+    view.appendChild(el('div', 'diff-line ' + cls, ln || ' '));
+  }
+}
+
+// PhpStorm-style Git panel for project `p`. Bound to the active project; re-rendered on
+// project switch (see doSetActive). Reuses lite.git.* — no new backend except git:log.
+let gitRenderSeq = 0; // bumped on every render; a stale render (older seq) bails after its awaits
+async function renderGitPanel(p) {
+  const body = $('#git-body');
+  $('#git-proj').textContent = p ? `⎇ ${p.name}` : 'Git';
+  if (!p) { body.innerHTML = ''; return; }
+  const reqPath = p.path;
+  const seq = ++gitRenderSeq;
+  // Bail if a newer render started, Git closed, or the active project changed during an await.
+  const stale = () => seq !== gitRenderSeq || !gitOpen || activeProject()?.path !== reqPath;
+  body.innerHTML = '<div class="git-loading">Загрузка…</div>';
+  const info = await lite.git.info(p.path);
+  if (stale()) return;
+  body.innerHTML = '';
+
+  if (!info.repo) { // not a git repo → init / clone (same as the old modal)
+    body.appendChild(el('div', 'gm-norepo', 'Это не git-репозиторий.'));
+    const row = el('div', 'gm-actions');
+    const init = el('button', 'btn primary', '⎇ git init');
+    init.onclick = async () => {
+      const r = await lite.git.init(p.path);
+      if (r.ok) { toast('git init готов'); renderGitPanel(p); renderProjects(); }
+      else toast(r.error || 'ошибка init', { kind: 'err', ttl: 7000 });
+    };
+    row.append(init); body.appendChild(row);
+    body.appendChild(el('div', 'gm-or', 'или клонировать репозиторий в эту папку'));
+    const cloneRow = el('div', 'gm-actions');
+    const url = el('input', 'gm-cloneurl'); url.type = 'text';
+    url.placeholder = 'URL репозитория (https://… или git@…)';
+    const clone = el('button', 'btn', '⬇ git clone');
+    const doClone = async () => {
+      const u = url.value.trim();
+      if (!u) { toast('Введи URL репозитория', { kind: 'err' }); return; }
+      clone.disabled = true; const lbl = clone.textContent; clone.textContent = 'Клонирую…';
+      const r = await lite.git.clone(p.path, u);
+      clone.disabled = false; clone.textContent = lbl;
+      if (r.ok) { toast('Репозиторий склонирован'); renderGitPanel(p); renderProjects(); if (p.id === activeId) refreshTree(); }
+      else toast(r.error || 'ошибка clone', { kind: 'err', ttl: 9000 });
+    };
+    clone.onclick = doClone;
+    url.addEventListener('keydown', (e) => { if (e.key === 'Enter') doClone(); });
+    cloneRow.append(url, clone); body.appendChild(cloneRow);
+    return;
+  }
+
+  // --- Branch row: switch + manager + ahead/behind
+  const head = el('div', 'gm-branch');
+  const sel = el('select', 'gm-branchsel');
+  const brs = info.branches && info.branches.length ? info.branches : [info.branch];
+  for (const b of brs) { const o = document.createElement('option'); o.value = b; o.textContent = '⎇ ' + b; if (b === info.branch) o.selected = true; sel.appendChild(o); }
+  sel.onchange = async () => {
+    const r = await lite.git.checkout(p.path, sel.value);
+    if (r.ok) toast('Ветка: ' + sel.value); else toast(r.error || 'не удалось переключить', { kind: 'err', ttl: 8000 });
+    renderGitPanel(p); renderProjects();
+  };
+  head.appendChild(sel);
+  const mgr = el('button', 'gm-mini', '⎇'); mgr.title = 'Ветки: переключить · обновить без перехода · новая от ветки';
+  mgr.onclick = () => showBranches(body, p, () => renderGitPanel(p));
+  head.appendChild(mgr);
+  if (info.upstream && (info.ahead || info.behind)) head.appendChild(el('span', 'gm-track', `↑${info.ahead} ↓${info.behind}`));
+  body.appendChild(head);
+
+  // --- Changes section (click a file → inline diff)
+  const st = await lite.git.status(p.path);
+  if (stale()) return;
+  const files = (st && st.files) ? st.files : {};
+  const keys = Object.keys(files);
+  body.appendChild(el('div', 'git-sec', 'Изменения' + (keys.length ? ` · ${keys.length}` : '')));
+  const diffView = el('div', 'git-diff'); diffView.style.display = 'none';
+  const changes = el('div', 'gm-changes');
+  if (!keys.length) changes.appendChild(el('div', 'gm-clean', '✓ Рабочее дерево чистое.'));
+  else for (const f of keys) {
+    const r = el('div', 'gm-file'); r.title = f;
+    r.appendChild(el('span', 'gm-code ' + gitCodeClass(files[f]), files[f]));
+    const name = el('span', 'gm-fname', baseName(f)); r.appendChild(name);
+    const disc = el('button', 'gm-mini gm-disc', '↩'); disc.title = 'Откатить изменения файла';
+    disc.onclick = (e) => { e.stopPropagation(); showConfirm('Откатить файл?', `Изменения в «${baseName(f)}» будут отменены (git checkout --).`, 'Откатить', async () => {
+      const rr = await lite.git.discardFile(p.path, f);
+      if (rr.ok) { renderGitPanel(p); renderProjects(); } else toast(rr.error || 'не удалось', { kind: 'err' });
+    }); };
+    r.appendChild(disc);
+    r.addEventListener('click', async () => {
+      const wasOpen = r.classList.contains('open');
+      changes.querySelectorAll('.gm-file.open').forEach((x) => x.classList.remove('open'));
+      if (wasOpen) { diffView.style.display = 'none'; return; }
+      r.classList.add('open');
+      diffView.style.display = 'block';
+      diffView.innerHTML = '<div class="git-loading">Загрузка диффа…</div>';
+      const d = await lite.git.fileDiff(p.path, f);
+      renderDiffInto(diffView, d && d.diff);
+    });
+    changes.appendChild(r);
+  }
+  body.appendChild(changes);
+  body.appendChild(diffView);
+
+  // --- Commit box
+  const msg = el('textarea', 'gm-msg'); msg.placeholder = 'Сообщение коммита…';
+  body.appendChild(msg);
+  const row = el('div', 'gm-actions');
+  const commit = el('button', 'btn primary', 'Commit');
+  const commitPush = el('button', 'btn', 'Commit & Push');
+  const fetchBtn = el('button', 'btn', 'Fetch');
+  const pull = el('button', 'btn', 'Pull');
+  const push = el('button', 'btn', 'Push');
+  commit.disabled = !keys.length; commitPush.disabled = !keys.length;
+  const doCommit = async (withPush) => {
+    const message = msg.value.trim();
+    if (!message) { toast('Введи сообщение коммита', { kind: 'err' }); return; }
+    const r = await lite.git.commit(p.path, message, withPush);
+    if (r.ok) { toast(withPush ? 'Закоммичено и запушено' : 'Закоммичено'); msg.value = ''; renderGitPanel(p); renderProjects(); }
+    else toast(r.error || 'ошибка коммита', { kind: 'err', ttl: 8000 });
+  };
+  commit.onclick = () => doCommit(false);
+  commitPush.onclick = () => doCommit(true);
+  fetchBtn.onclick = async () => { const r = await lite.git.fetch(p.path); toast(r.ok ? 'Fetch готов' : (r.error || 'fetch не прошёл'), { kind: r.ok ? undefined : 'err', ttl: 8000 }); renderGitPanel(p); };
+  push.onclick = async () => { const r = await lite.git.push(p.path); toast(r.ok ? 'Запушено' : (r.error || 'push не прошёл'), { kind: r.ok ? undefined : 'err', ttl: 8000 }); renderGitPanel(p); };
+  pull.onclick = async () => { const r = await lite.git.pull(p.path); toast(r.ok ? 'Pull готов' : (r.error || 'pull не прошёл'), { kind: r.ok ? undefined : 'err', ttl: 8000 }); renderGitPanel(p); renderProjects(); };
+  row.append(commit, commitPush, fetchBtn, pull, push);
+  body.appendChild(row);
+
+  // --- Commit history log (git:log)
+  body.appendChild(el('div', 'git-sec', 'История'));
+  const logBox = el('div', 'git-log');
+  logBox.appendChild(el('div', 'git-loading', 'Загрузка истории…'));
+  body.appendChild(logBox);
+  const lg = await lite.git.log(p.path, 40);
+  if (stale()) return;
+  logBox.innerHTML = '';
+  const commits = (lg && lg.commits) ? lg.commits : [];
+  if (!commits.length) logBox.appendChild(el('div', 'gm-clean', 'Пока нет коммитов.'));
+  else for (const c of commits) {
+    const cr = el('div', 'git-commit'); cr.title = c.subject;
+    cr.appendChild(el('span', 'gm-hash', c.hash));
+    cr.appendChild(el('span', 'git-csubj', c.subject));
+    cr.appendChild(el('span', 'gm-meta', `${c.when} · ${c.author}`));
+    if (c.refs) cr.appendChild(el('span', 'git-refs', c.refs));
+    logBox.appendChild(cr);
+  }
+}
+
+// ================================================================ Containers module (docker/podman)
+// System-wide (not per-project) right-pane manager: tabs Docker|Podman, accordion sections for
+// containers (grouped by compose project), pods (podman), images, volumes, with lifecycle actions.
+let dockerEngine = 'docker';   // active tab
+let dockerDetect = null;        // cached {docker:{cli,compose,composePlugin}, podman:{...}}
+let dockerRenderSeq = 0;        // stale-render guard
+const dockerAcc = { containers: true, pods: true, images: false, volumes: false }; // accordion open state
+// Persisted per-engine group order + collapse: { order:{engine:[names]}, collapsed:{'engine:name':bool} }
+let dockerUi = (STORE.dockerUi && typeof STORE.dockerUi === 'object') ? STORE.dockerUi : {};
+let dockerView = 'list';        // 'list' | 'detail'
+let dockerDetail = null;        // { id, name, engine, state } when viewing one container
+let dockerDetailTab = 'logs';   // 'logs' | 'term'
+let dockerLogId = null, dockerExecId = null, dockerExecTerm = null, dockerExecFit = null;
+const dockerDetailUnsub = [];   // IPC listener cleanups for the open detail view
+
+function dockerGroupOrder(engine, names) { // saved order first, new groups appended (alpha)
+  const saved = (dockerUi.order && dockerUi.order[engine]) || [];
+  const head = saved.filter((n) => names.includes(n));
+  const tail = names.filter((n) => !head.includes(n)).sort((a, b) => a.localeCompare(b));
+  return [...head, ...tail];
+}
+function moveDockerGroup(engine, name, dir, allNames) {
+  const order = dockerGroupOrder(engine, allNames);
+  const i = order.indexOf(name), j = i + dir;
+  if (i < 0 || j < 0 || j >= order.length) return;
+  [order[i], order[j]] = [order[j], order[i]];
+  dockerUi.order = dockerUi.order || {}; dockerUi.order[engine] = order; persist('dockerUi', dockerUi);
+  renderDockerPanel();
+}
+function dockerGroupCollapsed(engine, name) { return !!(dockerUi.collapsed && dockerUi.collapsed[engine + ':' + name]); }
+function toggleDockerGroup(engine, name) {
+  dockerUi.collapsed = dockerUi.collapsed || {}; const k = engine + ':' + name;
+  dockerUi.collapsed[k] = !dockerUi.collapsed[k]; persist('dockerUi', dockerUi);
+}
+function dockerGroupHue(name) { let h = 0; for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) % 360; return h; }
+// Strip ANSI/OSC so container logs render cleanly in a <pre>.
+function stripAnsiSeq(s) { return String(s).replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '').replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, ''); }
+
+function setDockerOpen(open, opts = {}) {
+  if (open === dockerOpen) { if (open) renderDockerPanel(); return; }
+  if (!open) { closeDockerDetail(); dockerView = 'list'; } // tear down logs/exec on close
+  // Viewer/Git/Docker share the right slot — opening Docker closes the others (chat is separate).
+  if (open) { if (viewerOpen) setViewerOpen(false); if (gitOpen) setGitOpen(false); }
+  const delta = layout.docker + GUTTER;
+  dockerOpen = open;
+  $('#docker-pane').classList.toggle('hidden', !open);
+  $('#gutter-docker').classList.toggle('hidden', !open);
+  if (opts.grow !== false) lite.win.growBy(open ? delta : -delta); // grow:false on restore — saved width already counts this pane
+  saveUiState();
+  if (open) renderDockerPanel();
+  setTimeout(refitActiveTerminal, 150);
+}
+function toggleDocker() { setDockerOpen(!dockerOpen); }
+
+function renderDockerTabs() {
+  const t = $('#docker-tabs'); t.innerHTML = '';
+  for (const e of ['docker', 'podman']) {
+    const installed = dockerDetect ? !!(dockerDetect[e] && dockerDetect[e].cli) : true;
+    const tab = el('button', 'docker-tab' + (e === dockerEngine ? ' on' : '') + (installed ? '' : ' off'));
+    tab.appendChild(icon('box', 15));
+    tab.appendChild(el('span', null, e === 'docker' ? 'Docker' : 'Podman'));
+    tab.onclick = () => { if (e !== dockerEngine) { dockerEngine = e; renderDockerPanel(); } };
+    t.appendChild(tab);
+  }
+}
+// Versions strip for the active engine: cli + compose plugin (no dash) + legacy compose (dash).
+function renderDockerEnv(eng) {
+  const box = el('div', 'docker-env');
+  const rows = dockerEngine === 'docker'
+    ? [['docker', eng.cli], ['docker compose', eng.composePlugin], ['docker-compose', eng.compose]]
+    : [['podman', eng.cli], ['podman compose', eng.composePlugin], ['podman-compose', eng.compose]];
+  for (const [label, ver] of rows) {
+    const r = el('div', 'docker-env-row');
+    r.appendChild(el('span', 'denv-k', label));
+    r.appendChild(el('span', 'denv-v' + (ver ? '' : ' missing'), ver || 'не установлено'));
+    box.appendChild(r);
+  }
+  return box;
+}
+function dStateClass(s) {
+  s = String(s || '').toLowerCase();
+  if (s.includes('run')) return 'run';
+  if (s.includes('paus')) return 'pause';
+  if (s.includes('dead')) return 'dead';
+  return 'stop';
+}
+// Collapsible section with a count badge; `fill(inner)` populates the body.
+function dockerAccordion(key, iconName, title, count, fill) {
+  const sec = el('div', 'docker-sec');
+  const head = el('button', 'docker-sec-head');
+  const chev = icon(dockerAcc[key] ? 'chevron-down' : 'chevron-right', 14); chev.classList.add('dsec-chev');
+  head.appendChild(chev);
+  head.appendChild(icon(iconName, 15));
+  head.appendChild(el('span', 'dsec-title', title));
+  head.appendChild(el('span', 'dsec-count', String(count)));
+  const inner = el('div', 'docker-sec-body');
+  if (!dockerAcc[key]) inner.style.display = 'none';
+  fill(inner);
+  head.onclick = () => {
+    dockerAcc[key] = !dockerAcc[key];
+    inner.style.display = dockerAcc[key] ? '' : 'none';
+    const nc = icon(dockerAcc[key] ? 'chevron-down' : 'chevron-right', 14); nc.classList.add('dsec-chev');
+    head.replaceChild(nc, head.firstChild);
+  };
+  sec.append(head, inner);
+  return sec;
+}
+async function dockerDo(kind, action, id, label) {
+  let r;
+  try { r = await lite.containers.action(dockerEngine, kind, action, id); } catch (e) { r = { ok: false, error: String(e) }; }
+  if (r && r.ok) { toast((label || 'Готово') + ' ✓'); renderDockerPanel(); }
+  else toast((r && r.error) || 'Команда не выполнена', { kind: 'err', ttl: 8000 });
+}
+function dActBtn(kind, action, iconName, title, id, size) {
+  const b = iconBtn('drow-act', iconName, title, size || 14);
+  b.onclick = (e) => { e.stopPropagation(); dockerDo(kind, action, id, title); };
+  return b;
+}
+function dRemoveBtn(kind, id, label, force, extra) {
+  const b = iconBtn('drow-act danger', 'trash', 'Удалить', 14);
+  b.onclick = (e) => { e.stopPropagation(); showConfirm('Удалить?', `«${label}» будет удалён${force ? ' (принудительно — объект запущен)' : ''}.${extra || ''}`, 'Удалить', () => dockerDo(kind, 'remove', id, 'Удаление')); };
+  return b;
+}
+function dockerContainerRow(c) {
+  const row = el('div', 'docker-row');
+  const dot = el('span', 'dstate dstate-' + dStateClass(c.state)); dot.title = c.status || c.state || '';
+  row.appendChild(dot);
+  const main = el('div', 'drow-main');
+  main.appendChild(el('span', 'drow-name', c.service || c.name || String(c.id).slice(0, 12)));
+  main.appendChild(el('span', 'drow-sub', [c.image, c.ports].filter(Boolean).join('   ·   ')));
+  row.appendChild(main);
+  const acts = el('div', 'drow-acts');
+  const running = c.state === 'running', paused = c.state === 'paused';
+  if (running) {
+    acts.appendChild(dActBtn('container', 'pause', 'pause', 'Пауза', c.id));
+    acts.appendChild(dActBtn('container', 'restart', 'refresh', 'Перезапуск', c.id));
+    acts.appendChild(dActBtn('container', 'stop', 'stop', 'Стоп', c.id));
+  } else if (paused) {
+    acts.appendChild(dActBtn('container', 'unpause', 'play', 'Возобновить', c.id));
+    acts.appendChild(dActBtn('container', 'stop', 'stop', 'Стоп', c.id));
+  } else {
+    acts.appendChild(dActBtn('container', 'start', 'play', 'Старт', c.id));
+  }
+  acts.appendChild(dRemoveBtn('container', c.id, c.service || c.name || c.id, running));
+  row.appendChild(acts);
+  row.classList.add('clickable'); row.title = 'Открыть: логи и терминал';
+  row.addEventListener('click', () => openDockerDetail(c));
+  return row;
+}
+function dockerPodRow(p) {
+  const row = el('div', 'docker-row');
+  const dot = el('span', 'dstate dstate-' + dStateClass(p.status)); dot.title = p.status || '';
+  row.appendChild(dot);
+  const main = el('div', 'drow-main');
+  main.appendChild(el('span', 'drow-name', p.name || String(p.id).slice(0, 12)));
+  main.appendChild(el('span', 'drow-sub', `${p.containers} контейнер(ов)   ·   ${p.status || ''}`));
+  row.appendChild(main);
+  const acts = el('div', 'drow-acts');
+  const running = p.status === 'running' || p.status === 'degraded';
+  if (running) acts.appendChild(dActBtn('pod', 'stop', 'stop', 'Стоп пода', p.id));
+  else acts.appendChild(dActBtn('pod', 'start', 'play', 'Старт пода', p.id));
+  acts.appendChild(dRemoveBtn('pod', p.id, p.name || p.id, running));
+  row.appendChild(acts);
+  return row;
+}
+function dockerImageRow(im) {
+  const row = el('div', 'docker-row');
+  row.appendChild(icon('layers', 15));
+  const main = el('div', 'drow-main');
+  main.appendChild(el('span', 'drow-name', (im.repo || '<none>') + (im.tag ? ':' + im.tag : '')));
+  main.appendChild(el('span', 'drow-sub', [im.size, im.created].filter(Boolean).join('   ·   ')));
+  row.appendChild(main);
+  const acts = el('div', 'drow-acts');
+  acts.appendChild(dRemoveBtn('image', im.id, (im.repo || '<none>') + (im.tag ? ':' + im.tag : ''), false));
+  row.appendChild(acts);
+  return row;
+}
+function dockerVolumeRow(vo) {
+  const row = el('div', 'docker-row');
+  row.appendChild(icon('database', 15));
+  const main = el('div', 'drow-main');
+  main.appendChild(el('span', 'drow-name', vo.name));
+  main.appendChild(el('span', 'drow-sub', vo.driver || ''));
+  row.appendChild(main);
+  const acts = el('div', 'drow-acts');
+  acts.appendChild(dRemoveBtn('volume', vo.name, vo.name, false, ' Данные тома будут потеряны.'));
+  row.appendChild(acts);
+  return row;
+}
+function dockerSectionList(box, payload, iconName, title, key, rowFn, emptyText) {
+  const items = (payload && payload.items) || [];
+  box.appendChild(dockerAccordion(key, iconName, title, items.length, (inner) => {
+    if (payload && payload.error) { inner.appendChild(el('div', 'docker-err', payload.error)); return; }
+    if (!items.length) { inner.appendChild(el('div', 'docker-empty', emptyText)); return; }
+    for (const it of items) inner.appendChild(rowFn(it));
+  }));
+}
+async function dockerBulk(engine, action, ids, label) {
+  if (!ids.length) return;
+  let r; try { r = await lite.containers.bulk(engine, action, ids); } catch (e) { r = { ok: false, error: String(e) }; }
+  if (r && r.ok) { toast((label || 'Готово') + ' ✓'); renderDockerPanel(); }
+  else toast((r && r.error) || 'Не выполнено', { kind: 'err', ttl: 9000 });
+}
+function dGroupAct(action, iconName, title, engine, ids) {
+  const b = iconBtn('drow-act', iconName, title, 13);
+  b.onclick = (e) => { e.stopPropagation(); dockerBulk(engine, action, ids, title); };
+  return b;
+}
+// One compose group: gradient header (collapsible) + bulk actions + sort arrows + container rows.
+function dockerGroupBlock(engine, name, list, allNames) {
+  const block = el('div', 'docker-group-block');
+  const head = el('div', 'docker-group-head');
+  const hue = dockerGroupHue(name || 'misc');
+  head.style.background = `linear-gradient(90deg, hsla(${hue},55%,50%,.22), hsla(${hue},55%,50%,.05) 55%, transparent)`;
+  head.style.borderLeft = `3px solid hsl(${hue},60%,55%)`;
+  const chev = icon(dockerGroupCollapsed(engine, name) ? 'chevron-right' : 'chevron-down', 13); chev.classList.add('dgrp-chev');
+  head.appendChild(chev);
+  head.appendChild(el('span', 'dgrp-name', name || 'Без группы'));
+  head.appendChild(el('span', 'dgrp-count', String(list.length)));
+  const acts = el('div', 'dgrp-acts');
+  const ids = list.map((c) => c.id);
+  acts.appendChild(dGroupAct('start', 'play', 'Старт всех', engine, ids));
+  acts.appendChild(dGroupAct('pause', 'pause', 'Пауза всех', engine, ids));
+  acts.appendChild(dGroupAct('stop', 'stop', 'Стоп всех', engine, ids));
+  const rm = iconBtn('drow-act danger', 'trash', 'Удалить всю группу', 13);
+  rm.onclick = (e) => { e.stopPropagation(); showConfirm('Удалить группу?', `Все контейнеры группы «${name || 'без группы'}» (${list.length} шт.) будут удалены принудительно.`, 'Удалить', () => dockerBulk(engine, 'remove', ids, 'Удаление группы')); };
+  acts.appendChild(rm);
+  if (name) { // sort arrows only for real compose groups (ungrouped stays last)
+    const up = iconBtn('drow-act', 'chevron-up', 'Поднять группу', 13); up.onclick = (e) => { e.stopPropagation(); moveDockerGroup(engine, name, -1, allNames); };
+    const dn = iconBtn('drow-act', 'chevron-down', 'Опустить группу', 13); dn.onclick = (e) => { e.stopPropagation(); moveDockerGroup(engine, name, 1, allNames); };
+    acts.append(up, dn);
+  }
+  head.appendChild(acts);
+  const body = el('div', 'docker-group-body');
+  if (dockerGroupCollapsed(engine, name)) body.style.display = 'none';
+  for (const c of list) body.appendChild(dockerContainerRow(c));
+  head.onclick = () => {
+    toggleDockerGroup(engine, name);
+    const col = dockerGroupCollapsed(engine, name);
+    body.style.display = col ? 'none' : '';
+    const nc = icon(col ? 'chevron-right' : 'chevron-down', 13); nc.classList.add('dgrp-chev');
+    head.replaceChild(nc, head.firstChild);
+  };
+  block.append(head, body);
+  return block;
+}
+function renderDockerDisk(df) {
+  const box = el('div', 'docker-disk');
+  box.appendChild(icon('database', 13));
+  const parts = [['Образы', df.images], ['Контейнеры', df.containers], ['Тома', df.volumes], ['Кэш', df.cache]].filter((p) => p[1]);
+  if (!parts.length) { box.appendChild(el('span', 'ddisk-k', 'диск: н/д')); return box; }
+  for (const [k, v] of parts) { const seg = el('span', 'ddisk-seg'); seg.appendChild(el('span', 'ddisk-k', k)); seg.appendChild(el('span', 'ddisk-v', v)); box.appendChild(seg); }
+  return box;
+}
+function renderDockerSections(box, data) {
+  if (data.df && !data.df.error) box.appendChild(renderDockerDisk(data.df));
+  const cont = (data.containers && data.containers.items) || [];
+  box.appendChild(dockerAccordion('containers', 'box', 'Контейнеры', cont.length, (inner) => {
+    if (data.containers && data.containers.error) { inner.appendChild(el('div', 'docker-err', data.containers.error)); return; }
+    if (!cont.length) { inner.appendChild(el('div', 'docker-empty', 'Нет контейнеров.')); return; }
+    const groups = {};
+    for (const c of cont) { const g = c.project || ''; (groups[g] = groups[g] || []).push(c); }
+    const named = Object.keys(groups).filter((g) => g);
+    const order = dockerGroupOrder(dockerEngine, named);
+    for (const g of order) inner.appendChild(dockerGroupBlock(dockerEngine, g, groups[g], order));
+    if (groups['']) inner.appendChild(dockerGroupBlock(dockerEngine, '', groups[''], order)); // ungrouped last
+  }));
+  if (dockerEngine === 'podman') dockerSectionList(box, data.pods, 'grid', 'Поды', 'pods', dockerPodRow, 'Нет подов.');
+  dockerSectionList(box, data.images, 'layers', 'Образы', 'images', dockerImageRow, 'Нет образов.');
+  dockerSectionList(box, data.volumes, 'database', 'Тома', 'volumes', dockerVolumeRow, 'Нет томов.');
+}
+// --- container detail view (live logs + interactive exec terminal), inside the module pane
+function openDockerDetail(c) {
+  closeDockerDetail();
+  dockerDetail = { id: c.id, name: c.service || c.name || String(c.id).slice(0, 12), engine: dockerEngine, state: c.state };
+  dockerView = 'detail';
+  dockerDetailTab = 'logs';
+  renderDockerDetail();
+}
+function closeDockerDetail() { // stop streams, kill exec PTY, dispose xterm, drop listeners
+  for (const u of dockerDetailUnsub.splice(0)) { try { u(); } catch (_) {} }
+  if (dockerLogId) { try { lite.containers.logsStop(dockerLogId); } catch (_) {} dockerLogId = null; }
+  if (dockerExecId) { try { lite.containers.execKill(dockerExecId); } catch (_) {} dockerExecId = null; }
+  if (dockerExecTerm) { try { dockerExecTerm.dispose(); } catch (_) {} dockerExecTerm = null; dockerExecFit = null; }
+  dockerDetail = null;
+}
+function backToDockerList() { closeDockerDetail(); dockerView = 'list'; renderDockerPanel(); }
+function startDockerLogs(view) {
+  view.innerHTML = '';
+  const pre = el('pre', 'docker-logs'); view.appendChild(pre);
+  const d = dockerDetail; if (!d) return;
+  const sid = 'log' + (++dockerRenderSeq) + Date.now().toString(36); dockerLogId = sid;
+  const unData = lite.containers.onLogsData((p) => {
+    if (p.streamId !== sid) return;
+    const atBottom = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 40;
+    pre.appendChild(document.createTextNode(stripAnsiSeq(p.data)));
+    while (pre.childNodes.length > 3000) pre.removeChild(pre.firstChild);
+    if (atBottom) pre.scrollTop = pre.scrollHeight;
+  });
+  const unExit = lite.containers.onLogsExit((p) => { if (p.streamId === sid) pre.appendChild(document.createTextNode('\n— поток логов завершён —\n')); });
+  dockerDetailUnsub.push(unData, unExit);
+  lite.containers.logsStart(d.engine, d.id, sid, 800).then((r) => { if (r && r.error) pre.appendChild(document.createTextNode('[ошибка: ' + r.error + ']')); });
+}
+function startDockerExec(view) {
+  view.innerHTML = '';
+  const wrap = el('div', 'docker-term'); view.appendChild(wrap);
+  const d = dockerDetail; if (!d) return;
+  const term = new Terminal({ fontFamily: '"JetBrains Mono", "Fira Code", "Cascadia Code", Consolas, monospace', fontSize: settings.fontSize, cursorBlink: true, allowProposedApi: true, theme: termTheme(), scrollback: 3000 });
+  const fit = new FitAddon(); term.loadAddon(fit);
+  applyUnicode11(term);
+  term.open(wrap);
+  loadFastRenderer(term);
+  try { fit.fit(); } catch (_) {}
+  dockerExecTerm = term; dockerExecFit = fit;
+  const xid = 'cx' + (++dockerRenderSeq) + Date.now().toString(36); dockerExecId = xid;
+  const unData = lite.containers.onExecData((p) => { if (p.execId === xid) term.write(p.data); });
+  const unExit = lite.containers.onExecExit((p) => { if (p.execId === xid) term.write('\r\n\x1b[33m— сеанс завершён —\x1b[0m\r\n'); });
+  dockerDetailUnsub.push(unData, unExit);
+  term.onData((data) => lite.containers.execWrite(xid, data));
+  term.onResize(({ cols, rows }) => lite.containers.execResize(xid, cols, rows));
+  lite.containers.execStart(d.engine, d.id, xid, term.cols, term.rows).then((r) => { if (r && r.error) term.write('\r\n\x1b[31m' + r.error + '\x1b[0m\r\n'); });
+  setTimeout(() => { try { fit.fit(); term.focus(); } catch (_) {} }, 40);
+}
+function renderDockerDetail() {
+  const d = dockerDetail; if (!d) { dockerView = 'list'; renderDockerPanel(); return; }
+  $('#docker-tabs').style.display = 'none';
+  const body = $('#docker-body'); body.innerHTML = '';
+  const head = el('div', 'docker-detail-head');
+  const back = iconBtn('drow-act', 'chevron-left', 'Назад к списку', 16);
+  back.onclick = backToDockerList;
+  head.appendChild(back);
+  head.appendChild(el('span', 'dstate dstate-' + dStateClass(d.state)));
+  head.appendChild(el('span', 'docker-detail-name', d.name));
+  body.appendChild(head);
+  const tabsEl = el('div', 'docker-subtabs');
+  const logsView = el('div', 'docker-detail-view');
+  const termView = el('div', 'docker-detail-view');
+  let logsStarted = false, execStarted = false;
+  const show = (k) => {
+    dockerDetailTab = k;
+    tabsEl.querySelectorAll('.docker-subtab').forEach((b) => b.classList.toggle('on', b.dataset.k === k));
+    logsView.style.display = k === 'logs' ? '' : 'none';
+    termView.style.display = k === 'term' ? '' : 'none';
+    if (k === 'logs' && !logsStarted) { logsStarted = true; startDockerLogs(logsView); }
+    else if (k === 'term' && !execStarted) { execStarted = true; startDockerExec(termView); }
+    else if (k === 'term' && dockerExecFit) setTimeout(() => { try { dockerExecFit.fit(); dockerExecTerm && dockerExecTerm.focus(); } catch (_) {} }, 30);
+  };
+  for (const [k, label] of [['logs', 'Логи'], ['term', 'Терминал']]) {
+    const t = el('button', 'docker-subtab'); t.dataset.k = k; t.textContent = label; t.onclick = () => show(k); tabsEl.appendChild(t);
+  }
+  body.append(tabsEl, logsView, termView);
+  show(dockerDetailTab || 'logs');
+}
+async function renderDockerPanel() {
+  if (dockerView === 'detail') { closeDockerDetail(); dockerView = 'list'; }
+  $('#docker-tabs').style.display = '';
+  const seq = ++dockerRenderSeq;
+  const body = $('#docker-body');
+  if (!dockerDetect) { // probe both engines once (cached; ⟳ resets it)
+    body.innerHTML = '<div class="git-loading">Поиск Docker / Podman…</div>';
+    try { dockerDetect = await lite.containers.detect(); } catch (_) { dockerDetect = { docker: {}, podman: {} }; }
+    if (seq !== dockerRenderSeq || !dockerOpen) return;
+  }
+  renderDockerTabs();
+  const eng = dockerDetect[dockerEngine] || {};
+  body.innerHTML = '';
+  body.appendChild(renderDockerEnv(eng));
+  if (!eng.cli) { // engine CLI not found
+    const notice = el('div', 'docker-notice');
+    notice.appendChild(icon('warning', 26));
+    notice.appendChild(el('div', 'docker-notice-t', (dockerEngine === 'docker' ? 'Docker' : 'Podman') + ' не установлен'));
+    notice.appendChild(el('div', 'docker-notice-s', 'CLI не найден в системе. Установи и нажми ⟳ для повторной проверки.'));
+    body.appendChild(notice);
+    return;
+  }
+  const listBox = el('div', 'docker-list');
+  listBox.appendChild(el('div', 'git-loading', 'Считываю объекты…'));
+  body.appendChild(listBox);
+  let data;
+  try { data = await lite.containers.list(dockerEngine); } catch (e) { data = { containers: { error: String(e) } }; }
+  if (seq !== dockerRenderSeq || !dockerOpen) return;
+  listBox.innerHTML = '';
+  if (data.error) { listBox.appendChild(el('div', 'docker-err', data.error)); return; }
+  renderDockerSections(listBox, data);
 }
 
 // ---------------------------------------------------------------- file tree
@@ -2867,14 +3355,12 @@ function placeMenu(dd, x, y) {
 function openTopMenu(name, btn) {
   closeMenus();
   if (name === 'about') { showAbout(); return; }
-  if (name === 'logs') { showLogs(); return; }
-  if (name === 'openrouter') { showOpenRouter(); return; }
-  if (name === 'remote') { showRemote(); return; }
   openMenuName = name;
   btn.classList.add('open');
   const dd = el('div', 'menu-dropdown');
   if (name === 'file') buildFileMenu(dd);
   else if (name === 'settings') buildSettingsMenu(dd);
+  else if (name === 'modules') buildModulesMenu(dd);
   dd.addEventListener('click', (e) => e.stopPropagation());
   const r = btn.getBoundingClientRect();
   placeMenu(dd, r.left, r.bottom + 4);
@@ -2925,6 +3411,7 @@ function buildFileMenu(dd) {
   dd.appendChild(el('div', 'menu-sep'));
   dd.appendChild(menuRow('download', 'Экспорт настроек…', exportSettings));
   dd.appendChild(menuRow('upload', 'Импорт настроек…', importSettings));
+  dd.appendChild(menuRow('clipboard', 'Логи…', () => { closeMenus(); showLogs(); }));
   dd.appendChild(el('div', 'menu-sep'));
   dd.appendChild(el('div', 'menu-label', 'Ранее открытые'));
   const recents = loadRecents();
@@ -2950,8 +3437,15 @@ function buildFileMenu(dd) {
 function buildSettingsMenu(dd) {
   dd.appendChild(menuRow('sliders', 'Настройки…', () => { closeMenus(); showSettings(); }));
   dd.appendChild(menuRow('grid', 'Палитра команд (Ctrl+K)', () => { closeMenus(); showPalette(); }));
-  dd.appendChild(el('div', 'menu-sep'));
   dd.appendChild(menuRow('search', 'Поиск в терминале (Ctrl+F)', () => { closeMenus(); openTermSearch(); }));
+  dd.appendChild(el('div', 'menu-sep'));
+  dd.appendChild(menuRow('chat', 'OpenRouter — ключи и чат', () => { closeMenus(); showOpenRouter(); }));
+  dd.appendChild(menuRow('globe', 'Пульт (Android)', () => { closeMenus(); showRemote(); }));
+}
+// «Модули» — функциональные панели справа от терминала (терминалы и OpenRouter-чат — НЕ модули).
+function buildModulesMenu(dd) {
+  dd.appendChild(menuRow('git', 'Git — выбранного проекта', () => { closeMenus(); openModule('git'); }));
+  dd.appendChild(menuRow('box', 'Контейнеры — Docker / Podman', () => { closeMenus(); openModule('docker'); }));
 }
 
 // terminal right-click menu
@@ -3275,6 +3769,8 @@ function paletteActions() {
   acts.push({ label: 'Открыть папку…', run: openProjectDialog });
   acts.push({ label: 'Создать папку…', run: showCreateFolder });
   acts.push({ label: viewerOpen ? 'Закрыть вивер' : 'Открыть вивер', run: () => setViewerOpen(!viewerOpen) });
+  acts.push({ label: gitOpen ? 'Закрыть Git' : 'Открыть Git', run: toggleGit });
+  acts.push({ label: dockerOpen ? 'Закрыть контейнеры' : 'Контейнеры (Docker / Podman)', run: toggleDocker });
   acts.push({ label: 'Режим «один терминал»', run: toggleSingle });
   acts.push({ label: 'Поиск в терминале', run: openTermSearch });
   acts.push({ label: 'Очистить терминал', run: () => clearTerminal() });
@@ -3478,6 +3974,10 @@ function init() {
   $('#viewer-preview').addEventListener('click', togglePreview);
   $('#viewer-full').addEventListener('click', togglePreviewFull);
   $('#viewer-close').addEventListener('click', () => setViewerOpen(false));
+  $('#git-close').addEventListener('click', () => setGitOpen(false));
+  $('#git-refresh').addEventListener('click', () => { if (gitOpen) renderGitPanel(activeProject()); });
+  $('#docker-close').addEventListener('click', () => setDockerOpen(false));
+  $('#docker-refresh').addEventListener('click', () => { dockerDetect = null; if (dockerOpen) renderDockerPanel(); });
   $('#tree-refresh').addEventListener('click', () => { const p = activeProject(); if (p) renderTree(p); });
   $('#tree-new').addEventListener('click', (e) => { const p = activeProject(); if (p) showTreeMenu(e.clientX, e.clientY, { name: p.name, path: p.path, dir: true, root: true }); });
   $('#tree').addEventListener('contextmenu', (e) => {
@@ -3575,6 +4075,10 @@ function init() {
   const ui = STORE.uiState || {};
   if (ui.viewerOpen) setViewerOpen(true, { grow: false });
   if (ui.scratchOpen) setScratchOpen(true, { grow: false });
+  // Restore Git only if the viewer wasn't (mutually exclusive); allowEmpty so the pane
+  // returns even before a project is active — matching the viewer, so the window width fits.
+  if (ui.gitOpen && !viewerOpen) setGitOpen(true, { grow: false, allowEmpty: true });
+  if (ui.dockerOpen && !viewerOpen && !gitOpen) setDockerOpen(true, { grow: false });
 
   scanProjects();          // add subfolders of settings.scanDirs (non-blocking)
   checkProjectsExistence();
