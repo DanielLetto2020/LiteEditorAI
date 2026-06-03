@@ -253,22 +253,22 @@ html, body {
 .card-copy:hover { color: var(--green); background: var(--hover); }
 .card-copy.copied { color: var(--green); }
 
-/* card footer: integrated icon actions, separated by a hairline */
-.card-foot { display: flex; align-items: center; gap: 2px; margin-top: 10px; padding-top: 9px; border-top: 1px solid var(--border); }
+/* card actions: compact icon cluster on the head row (бывший футер убран → карточка ниже) */
+.card-acts { display: flex; align-items: center; gap: 1px; flex: 0 0 auto; }
 .card-act {
-  position: relative; flex: 1; height: 28px; padding: 0; border-radius: 7px;
+  position: relative; flex: 0 0 auto; width: 24px; height: 24px; padding: 0; border-radius: 6px;
   background: transparent; border: 0; color: var(--text-mute); cursor: pointer;
   transition: color .12s, background .12s;
 }
 .card-act:hover { color: var(--text); background: var(--hover); }
 .card-act.on { color: var(--green); background: var(--accent-soft); }
 .act-badge {
-  position: absolute; top: 0; right: 0; min-width: 14px; height: 14px; padding: 0 3px;
+  position: absolute; top: -2px; right: -2px; min-width: 13px; height: 13px; padding: 0 3px;
   display: flex; align-items: center; justify-content: center;
   border-radius: 7px; background: var(--green); color: var(--accent-contrast);
   font-size: 9px; font-weight: 700; line-height: 1;
 }
-.card-foot .card-qbadge { margin-left: auto; }
+.card-acts .card-qbadge { margin-right: 3px; }
 
 .card-add { text-align: center; color: var(--green); border-style: dashed; background: transparent; font-weight: 600; }
 .card-add:hover { background: var(--hover); }
@@ -355,11 +355,29 @@ html, body {
 .git-body .gm-fname { flex: 1; overflow: hidden; text-overflow: ellipsis; }
 .git-diff { max-height: 38vh; overflow: auto; border: 1px solid var(--border); border-radius: 9px; padding: 6px 8px; font-family: monospace; font-size: 12px; line-height: 1.45; background: var(--bg-input); }
 .git-log { display: flex; flex-direction: column; gap: 2px; max-height: 30vh; overflow: auto; }
-.git-commit { display: flex; align-items: baseline; gap: 8px; padding: 3px 6px; border-radius: 6px; font-size: 12px; white-space: nowrap; }
+.git-commit { display: flex; align-items: baseline; gap: 8px; padding: 3px 6px; border-radius: 6px; font-size: 12px; white-space: nowrap; cursor: pointer; }
 .git-commit:hover { background: var(--hover); }
 .git-csubj { flex: 1; overflow: hidden; text-overflow: ellipsis; color: var(--text); }
 .git-commit .gm-meta { color: var(--text-mute); font-size: 11px; flex: 0 0 auto; }
 .git-refs { color: var(--warn); font-size: 11px; }
+
+/* Git toolbar: neat compact pill buttons (replaces the old massive .btn row) */
+.git-tools { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.git-tool {
+  display: inline-flex; align-items: center; gap: 6px; padding: 5px 11px;
+  border-radius: 8px; font-size: 12px; font-weight: 500; line-height: 1;
+  background: var(--surface-2); border: 1px solid var(--border); color: var(--text-dim);
+  cursor: pointer; transition: background .12s, border-color .12s, color .12s;
+}
+.git-tool .ic { flex: 0 0 auto; }
+.git-tool:hover:not(:disabled) { background: var(--hover-2); border-color: var(--border-strong); color: var(--text); }
+.git-tool:disabled { opacity: .45; cursor: default; }
+.git-tool.primary { background: var(--green); border-color: var(--green); color: var(--accent-contrast); font-weight: 600; }
+.git-tool.primary:hover:not(:disabled) { background: var(--green-bright); }
+.git-tool.ico { padding: 6px; }
+.git-tool.danger:hover:not(:disabled) { background: transparent; border-color: var(--danger); color: var(--danger); }
+.git-tsep { width: 1px; align-self: stretch; min-height: 18px; background: var(--border); margin: 0 2px; }
+.git-sec-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 
 /* ---------------- Containers module (docker/podman) ---------------- */
 #docker-pane { flex: 0 0 460px; min-width: 300px; border-left: 1px solid var(--border); display: flex; flex-direction: column; background: var(--panel); }
