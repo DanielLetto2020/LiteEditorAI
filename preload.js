@@ -58,6 +58,25 @@ contextBridge.exposeInMainWorld('lite', {
     import: () => ipcRenderer.invoke('settings:import'),  // → { ok, file } | { canceled } | { error }
   },
 
+  // Удалённый пульт (Android): аккаунт логин/пароль вместо токена.
+  remote: {
+    status: () => ipcRenderer.invoke('remote:status'),
+    register: (login, password) => ipcRenderer.invoke('remote:register', { login, password }),
+    login: (login, password) => ipcRenderer.invoke('remote:login', { login, password }),
+    logout: () => ipcRenderer.invoke('remote:logout'),
+    revokeAllDevices: () => ipcRenderer.invoke('remote:revokeAllDevices'),   // «выйти на всех устройствах»
+    setEnabled: (enabled) => ipcRenderer.invoke('remote:setEnabled', { enabled }),
+    activeChanged: (sid) => ipcRenderer.send('remote:activeChanged', { sid }),               // десктоп → пульт: какая вкладка активна
+    onSelect: (cb) => { const h = (_e, p) => cb(p && p.sid); ipcRenderer.on('remote:select', h); return () => ipcRenderer.removeListener('remote:select', h); }, // пульт → десктоп: переключить вкладку
+    onOpenProject: (cb) => { const h = (_e, p) => cb(p && p.projId); ipcRenderer.on('remote:openProject', h); return () => ipcRenderer.removeListener('remote:openProject', h); }, // пульт → десктоп: открыть терминал проекта
+    onCloseTab: (cb) => { const h = (_e, p) => cb(p && p.sid); ipcRenderer.on('remote:closeTab', h); return () => ipcRenderer.removeListener('remote:closeTab', h); }, // пульт → десктоп: закрыть вкладку
+    onNewFolder: (cb) => { const h = (_e, p) => cb(p && p.name); ipcRenderer.on('remote:newFolder', h); return () => ipcRenderer.removeListener('remote:newFolder', h); }, // пульт → десктоп: создать папку
+    // Pairing: пульт просит одобрить устройство → показать модалку; ответ — approve/deny.
+    onPairRequest: (cb) => { const h = (_e, p) => cb(p || {}); ipcRenderer.on('remote:pairRequest', h); return () => ipcRenderer.removeListener('remote:pairRequest', h); },
+    pairApprove: (device) => ipcRenderer.send('remote:pairApprove', { device }),
+    pairDeny: (device) => ipcRenderer.send('remote:pairDeny', { device }),
+  },
+
   git: {
     status: (root) => ipcRenderer.invoke('git:status', root),
     fileDiff: (root, file) => ipcRenderer.invoke('git:fileDiff', { root, file }),
@@ -90,6 +109,19 @@ contextBridge.exposeInMainWorld('lite', {
       const h = (_e, payload) => cb(payload);
       ipcRenderer.on('pty:exit', h);
       return () => ipcRenderer.removeListener('pty:exit', h);
+    },
+    // Пульт «владеет» размером сессии, пока подключён: ПК зеркалит его сетку (letterbox),
+    // а не навязывает свою → терминал на ПК не «сыпется». remoteSize — пульт задал размер;
+    // remoteRelease — пульт отключился, ПК возвращает свой fit.
+    onRemoteSize: (cb) => {
+      const h = (_e, payload) => cb(payload);
+      ipcRenderer.on('pty:remoteSize', h);
+      return () => ipcRenderer.removeListener('pty:remoteSize', h);
+    },
+    onRemoteRelease: (cb) => {
+      const h = (_e, payload) => cb(payload);
+      ipcRenderer.on('pty:remoteRelease', h);
+      return () => ipcRenderer.removeListener('pty:remoteRelease', h);
     },
   },
 

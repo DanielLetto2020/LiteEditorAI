@@ -1,0 +1,6 @@
+# Конфиг пульта, вшивается в APK при сборке (gitignored, скопируй в lite.properties).
+# TOKEN должен совпадать с RELAY_TOKEN релея (ansible/secrets/liteeditor-relay.env)
+# и с тем, что задаёт ПК-редактор (LITE_RELAY_TOKEN). ROOM — одинаковый у ПК и пульта.
+RELAY_URL=wss://lite.codecopy.ru/ws
+ROOM=default
+TOKEN=changeme

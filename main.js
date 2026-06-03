@@ -4,10 +4,20 @@ const { app, BrowserWindow, ipcMain, dialog, shell, Menu, clipboard, screen, Tra
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
-const { execFile } = require('child_process');
+const { execFile, spawn } = require('child_process');
 const https = require('https');
+const net = require('net');
 const pty = require('node-pty');
+// Headless-xterm + SerializeAddon: на каждую сессию держим «теневой» терминал, который
+// потребляет тот же поток PTY. При подключении пульта отдаём serialize() — чистый снапшот
+// состояния (scrollback + alt-screen + modes) вместо сырого байтового хвоста, который рвался
+// по середине ESC-последовательности и терял вход в alt-screen (отсюда «застревания» и кривой
+// скрол у TUI-агентов). Пакеты — pure-JS, нативных зависимостей нет, в main-процессе работают.
+const { Terminal: HeadlessTerminal } = require('@xterm/headless');
+const { SerializeAddon } = require('@xterm/addon-serialize');
 const logger = require('./logger');
+const remote = require('./remote'); // удалённый пульт (вкл. только при env LITE_REMOTE=1)
+const { safeChildName } = require('./lib/safe-name'); // анти-traversal для имён (в т.ч. с пульта)
 
 app.setName('LiteEditorAI');
 app.setAppUserModelId('com.mletto.liteeditorai'); // Windows: имя/иконка/группировка в панели задач и уведомлениях
@@ -31,6 +41,55 @@ if (process.env.LITE_NO_GPU === '1' || process.env.LITE_SOFTWARE_RENDER === '1')
 let mainWindow = null;
 let tray = null;
 const ptys = new Map();     // projectId -> IPty
+const ptySize = new Map();  // sessionId -> { cols, rows } — текущий размер PTY (для пульта)
+const mirrors = new Map();  // sessionId -> { term: HeadlessTerminal, serialize: SerializeAddon } — теневой терминал для пульта
+const MIRROR_SCROLLBACK = 20000;
+const transcripts = new Map(); // sessionId -> plain text transcript for the pult "История"
+const TRANSCRIPT_MAX_CHARS = 4 * 1024 * 1024;
+
+// --- Теневой терминал сессии (для чистого снапшота на пульт) --------------------
+function mirrorCreate(id, cols, rows) {
+  mirrorDispose(id);
+  try {
+    const term = new HeadlessTerminal({
+      cols: cols || 80, rows: rows || 24, scrollback: MIRROR_SCROLLBACK, allowProposedApi: true,
+    });
+    const serialize = new SerializeAddon();
+    term.loadAddon(serialize);
+    mirrors.set(id, { term, serialize });
+  } catch (e) { logger.log('warn', 'mirror', 'create failed', e && e.message); }
+}
+function mirrorWrite(id, data) { const m = mirrors.get(id); if (m) { try { m.term.write(data); } catch (_) {} } }
+function mirrorResize(id, cols, rows) { const m = mirrors.get(id); if (m && cols > 0 && rows > 0) { try { m.term.resize(cols, rows); } catch (_) {} } }
+function mirrorDispose(id) { const m = mirrors.get(id); if (m) { try { m.term.dispose(); } catch (_) {} mirrors.delete(id); } }
+function mirrorSnapshot(id) { const m = mirrors.get(id); if (!m) return ''; try { return m.serialize.serialize({ scrollback: MIRROR_SCROLLBACK }) || ''; } catch (_) { return ''; } }
+function stripAnsiForTranscript(data) {
+  return String(data || '')
+    .replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g, '')      // OSC
+    .replace(/\x1b[PX^_][\s\S]*?\x1b\\/g, '')           // DCS/SOS/PM/APC
+    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '')            // CSI
+    .replace(/\x1b[@-Z\\-_]/g, '')                      // 2-char ESC
+    .replace(/\x07/g, '');
+}
+function transcriptAppend(id, data) {
+  let out = transcripts.get(id) || '';
+  const text = stripAnsiForTranscript(data);
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (ch === '\r') {
+      const j = out.lastIndexOf('\n');
+      out = j >= 0 ? out.slice(0, j + 1) : '';
+    } else if (ch === '\b' || ch === '\x7f') {
+      const j = out.lastIndexOf('\n');
+      if (out.length > (j + 1)) out = out.slice(0, -1);
+    } else if (ch === '\n' || ch === '\t' || ch >= ' ') {
+      out += ch;
+    }
+  }
+  if (out.length > TRANSCRIPT_MAX_CHARS) out = out.slice(out.length - TRANSCRIPT_MAX_CHARS);
+  transcripts.set(id, out);
+}
+function transcriptGet(id) { return transcripts.get(id) || ''; }
 const watchers = new Map(); // project root path -> { watcher, timer, pending:Set }
 
 // Resolve a shell that actually exists. $SHELL can point at a shell that was
@@ -99,7 +158,31 @@ try {
   const legacy = path.join(os.homedir(), '.LiteEditor');
   if (!fs.existsSync(storeDir) && fs.existsSync(legacy)) fs.cpSync(legacy, storeDir, { recursive: true });
 } catch (_) {}
-const STORE_KEYS = ['projects', 'settings', 'layout', 'recents', 'lastParent', 'categories', 'sectionOrder', 'accordions', 'dismissed', 'uiState', 'projTabs', 'openrouter'];
+const STORE_KEYS = ['projects', 'settings', 'layout', 'recents', 'lastParent', 'categories', 'sectionOrder', 'accordions', 'dismissed', 'uiState', 'projTabs', 'openrouter', 'remote', 'shares'];
+// Папка-«стор» для шаринга с пультом (агент кладёт сюда файлы; в PTY доступна как $LITE_STORE).
+const pultStoreDir = path.join(storeDir, 'store');
+try { fs.mkdirSync(pultStoreDir, { recursive: true }); } catch (_) {}
+// Разрешённые с пульта папки (shares). По умолчанию — только стор. Пользователь добавляет
+// свои в Настройках; что добавить (хоть «/») — на его усмотрение и ответственность.
+function getPultShares() {
+  const raw = readStoreKey('shares');
+  const user = (Array.isArray(raw) ? raw : []).filter((s) => s && s.path)
+    .map((s) => ({ path: path.resolve(s.path), name: s.name || path.basename(s.path) || s.path }));
+  const out = [{ path: pultStoreDir, name: 'Стор' }];   // стор доступен всегда
+  const seen = new Set([pultStoreDir]);
+  for (const s of user) if (!seen.has(s.path)) { seen.add(s.path); out.push(s); }
+  return out;
+}
+// Путь разрешён, только если он внутри одной из shares. Сверяем РЕАЛЬНЫЕ пути (realpath),
+// иначе симлинк внутри шары (напр. store/evil → ~/.ssh) обошёл бы строковую проверку границы.
+function resolveInShares(p) {
+  let abs; try { abs = fs.realpathSync(path.resolve(p)); } catch (_) { return null; }
+  for (const s of getPultShares()) {
+    let base; try { base = fs.realpathSync(s.path); } catch (_) { continue; }
+    if (abs === base || abs.startsWith(base + path.sep)) return abs;
+  }
+  return null;
+}
 function ensureStoreDir() { try { fs.mkdirSync(storeDir, { recursive: true }); } catch (_) {} }
 function storeFile(key) { return path.join(storeDir, String(key).replace(/[^\w.-]/g, '_') + '.json'); }
 function readStoreKey(key) {
@@ -510,9 +593,317 @@ app.whenReady().then(() => {
   Menu.setApplicationMenu(null); // we draw our own menu in the custom titlebar
   createWindow();
   createTray();
+  startRemotePult();
+  signalHeirReady();   // если нас запустили как «наследника» при перезагрузке с пульта — отрапортовать старой копии
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
+});
+
+// --- Безопасный перезапуск редактора по команде с пульта ------------------------
+// Старая копия поднимает локальный сокет, запускает новую копию (detached) с env
+// LITE_HEIR_PORT, ждёт от неё рукопожатие «загрузилась» и ТОЛЬКО ТОГДА закрывается.
+// Если новая копия не поднимется за 45с — старая остаётся жить (пульт не теряет ПК).
+let restarting = false;
+function restartAppSafely() {
+  if (restarting) return; restarting = true;
+  logger.log('info', 'remote', 'safe restart requested from pult');
+  const server = net.createServer();
+  let finished = false;
+  const fail = (why) => {
+    if (finished) return; finished = true; restarting = false;
+    try { server.close(); } catch (_) {}
+    logger.log('warn', 'remote', 'restart aborted: ' + why);
+  };
+  server.on('error', (e) => fail('server ' + (e && e.message)));
+  server.listen(0, '127.0.0.1', () => {
+    const port = server.address().port;
+    let child;
+    try {
+      child = spawn(process.execPath, process.argv.slice(1), {
+        detached: true, stdio: 'ignore', cwd: process.cwd(),
+        env: Object.assign({}, process.env, { LITE_HEIR_PORT: String(port) }),
+      });
+    } catch (e) { fail('spawn ' + (e && e.message)); return; }
+    child.on('error', (e) => fail('child ' + (e && e.message)));
+    child.unref();
+    const timer = setTimeout(() => fail('heir not ready in 45s'), 45000);
+    server.on('connection', (sock) => {
+      sock.on('data', (d) => {
+        if (finished || String(d).indexOf('ready') < 0) return;
+        finished = true; clearTimeout(timer);
+        logger.log('info', 'remote', 'heir ready → closing old instance');
+        try { server.close(); } catch (_) {}
+        setTimeout(() => app.exit(0), 250);   // даём наследнику долю секунды занять место
+      });
+    });
+  });
+}
+// Если нас запустили как наследника — после загрузки окна сообщаем старой копии «я жив».
+function signalHeirReady() {
+  const port = Number(process.env.LITE_HEIR_PORT);
+  if (!port || !mainWindow) return;
+  const ping = () => {
+    try {
+      const sock = net.connect(port, '127.0.0.1', () => { try { sock.write('ready'); sock.end(); } catch (_) {} });
+      sock.on('error', () => {});
+    } catch (_) {}
+  };
+  // did-finish-load = рендерер загрузился (редактор реально живой) → рапортуем.
+  if (mainWindow.webContents.isLoadingMainFrame && mainWindow.webContents.isLoadingMainFrame()) {
+    mainWindow.webContents.once('did-finish-load', () => setTimeout(ping, 400));
+  } else {
+    mainWindow.webContents.once('did-finish-load', () => setTimeout(ping, 400));
+    setTimeout(ping, 1500); // подстраховка, если did-finish-load уже прошёл
+  }
+}
+
+// ----------------------------------------------------------- стор (файлы для пульта)
+// Read-only шаринг: пульт может листать дерево внутри разрешённых папок (shares) и
+// СКАЧИВАТЬ файлы/папки (папка → zip). Никаких правок/удалений с пульта нет.
+const STORE_CHUNK = 64 * 1024;            // сырой размер чанка (≈85КБ в base64)
+const storeCancelled = new Set();         // reqId, отменённые пультом
+const MIME = { txt:'text/plain', md:'text/markdown', json:'application/json', js:'text/javascript', html:'text/html', css:'text/css', png:'image/png', jpg:'image/jpeg', jpeg:'image/jpeg', gif:'image/gif', webp:'image/webp', svg:'image/svg+xml', pdf:'application/pdf', zip:'application/zip', mp4:'video/mp4', mp3:'audio/mpeg' };
+function mimeOf(name) { const e = String(name).split('.').pop().toLowerCase(); return MIME[e] || 'application/octet-stream'; }
+// Бэкпрешер: не заливаем релей быстрее, чем он отдаёт (по bufferedAmount сокета).
+function remoteDrain() {
+  return new Promise((resolve) => {
+    const check = () => { if (remote.bufferedAmount() < 512 * 1024) resolve(); else setTimeout(check, 15); };
+    check();
+  });
+}
+async function streamFileToPult(reqId, filePath, displayName) {
+  let fd, stat;
+  try { stat = fs.statSync(filePath); fd = fs.openSync(filePath, 'r'); }
+  catch (e) { remote.send({ t: 'store:err', reqId, error: 'open: ' + (e && e.message) }); return; }
+  remote.send({ t: 'store:begin', reqId, name: displayName, size: stat.size, mime: mimeOf(displayName) });
+  const buf = Buffer.allocUnsafe(STORE_CHUNK);
+  let seq = 0, pos = 0;
+  try {
+    while (pos < stat.size) {
+      if (storeCancelled.has(reqId)) { storeCancelled.delete(reqId); remote.send({ t: 'store:err', reqId, error: 'cancelled' }); return; }
+      const n = fs.readSync(fd, buf, 0, STORE_CHUNK, pos);
+      if (n <= 0) break;
+      pos += n;
+      remote.send({ t: 'store:chunk', reqId, seq: seq++, data: buf.slice(0, n).toString('base64') });
+      await remoteDrain();
+    }
+    remote.send({ t: 'store:end', reqId });
+  } catch (e) { remote.send({ t: 'store:err', reqId, error: 'read: ' + (e && e.message) }); }
+  finally { try { fs.closeSync(fd); } catch (_) {} }
+}
+function zipDirToPult(reqId, dirPath) {
+  const tmp = path.join(os.tmpdir(), 'lite-store-' + Date.now() + '-' + Math.floor(Math.random() * 1e9) + '.zip');
+  // zip содержимого папки (cwd=dir, '.'); требует утилиту zip (есть на большинстве Linux).
+  // -y: симлинки хранятся как ссылки, а не разыменовываются — иначе симлинк внутри папки,
+  // указывающий наружу шары, утащил бы в архив содержимое внешнего файла.
+  execFile('zip', ['-r', '-y', '-q', tmp, '.'], { cwd: dirPath, maxBuffer: 8 * 1024 * 1024 }, (err) => {
+    if (err) { remote.send({ t: 'store:err', reqId, error: 'zip недоступен/ошибка: ' + (err.message || err) }); try { fs.unlinkSync(tmp); } catch (_) {} return; }
+    streamFileToPult(reqId, tmp, path.basename(dirPath) + '.zip').finally(() => { try { fs.unlinkSync(tmp); } catch (_) {} });
+  });
+}
+function pultStoreList(reqId, p) {
+  if (!p || p === '/' || p === '') {   // корень → отдаём сами shares как папки верхнего уровня
+    remote.send({ t: 'store:tree', reqId, path: '', entries: getPultShares().map((s) => ({ name: s.name, path: s.path, isDir: true })) });
+    return;
+  }
+  const abs = resolveInShares(p);
+  if (!abs) { remote.send({ t: 'store:err', reqId, error: 'доступ запрещён' }); return; }
+  let st; try { st = fs.statSync(abs); } catch (_) { remote.send({ t: 'store:err', reqId, error: 'нет доступа' }); return; }
+  if (!st.isDirectory()) { remote.send({ t: 'store:err', reqId, error: 'не папка' }); return; }
+  let names; try { names = fs.readdirSync(abs); } catch (e) { remote.send({ t: 'store:err', reqId, error: 'readdir: ' + (e && e.message) }); return; }
+  const entries = [];
+  for (const name of names) {
+    try { const full = path.join(abs, name); const s = fs.statSync(full); entries.push({ name, path: full, isDir: s.isDirectory(), size: s.size, mtime: s.mtimeMs }); }
+    catch (_) { /* нечитаемое пропускаем */ }
+  }
+  entries.sort((a, b) => (b.isDir - a.isDir) || a.name.localeCompare(b.name));
+  remote.send({ t: 'store:tree', reqId, path: abs, entries });
+}
+function pultStoreGet(reqId, p) {
+  const abs = resolveInShares(p);
+  if (!abs) { remote.send({ t: 'store:err', reqId, error: 'доступ запрещён' }); return; }
+  let st; try { st = fs.statSync(abs); } catch (_) { remote.send({ t: 'store:err', reqId, error: 'нет файла' }); return; }
+  if (st.isDirectory()) zipDirToPult(reqId, abs); else streamFileToPult(reqId, abs, path.basename(abs));
+}
+function pultStoreGetZip(reqId, p) {
+  const abs = resolveInShares(p);
+  if (!abs) { remote.send({ t: 'store:err', reqId, error: 'доступ запрещён' }); return; }
+  let st; try { st = fs.statSync(abs); } catch (_) { remote.send({ t: 'store:err', reqId, error: 'нет папки' }); return; }
+  if (st.isDirectory()) zipDirToPult(reqId, abs); else streamFileToPult(reqId, abs, path.basename(abs));
+}
+
+// Удалённый пульт (Android). Поднимается только при LITE_REMOTE=1 — отдаёт пульту
+// список вкладок-сессий (метка = имя проекта · seq), зеркалит вывод PTY и пишет
+// ввод/промпт с пульта в нужный PTY. См. remote.js.
+let remoteSeq = 0;
+let remoteActiveSid = '';   // активная вкладка десктопа (репортит рендерер) — для синка с пультом
+// Состояние для пульта: открытые сессии-терминалы + все проекты (с категориями).
+function buildRemoteState() {
+  const projects = readStoreKey('projects') || [];
+  const byId = {};
+  for (const p of projects) if (p && p.id) byId[p.id] = p;
+  const sessions = [];
+  const seqByProj = {};   // нумеруем вкладки последовательно по проекту (1,2,3…), а не по суффиксу sid —
+                          // иначе на пульте «Терминал 2», когда в редакторе это «Терминал 1»
+  for (const sid of ptys.keys()) {
+    const sz = ptySize.get(sid) || { cols: 80, rows: 24 };
+    if (sid === '__scratch__') { sessions.push({ sid, projId: null, proj: 'Система', tab: 'Системный (~)', label: 'Системный (~)', cols: sz.cols, rows: sz.rows }); continue; }
+    const i = sid.indexOf('::t');
+    if (i > 0) {
+      const projId = sid.slice(0, i);
+      const n = (seqByProj[projId] = (seqByProj[projId] || 0) + 1);
+      const proj = byId[projId];
+      const name = proj ? proj.name : projId;
+      sessions.push({ sid, projId, proj: name, tab: 'Терминал ' + n, label: name + ' · ' + n, cols: sz.cols, rows: sz.rows });
+    } else {
+      sessions.push({ sid, projId: null, proj: '', tab: sid, label: sid, cols: sz.cols, rows: sz.rows });
+    }
+  }
+  const projOut = projects.map((p) => ({ id: p.id, name: p.name, category: p.category || '', favorite: !!p.favorite }));
+  return { sessions, projects: projOut, active: remoteActiveSid };
+}
+// Открыть терминал для проекта по запросу с пульта → просим рендерер открыть
+// настоящую вкладку (как ＋ в редакторе), чтобы она появилась И на ПК, И на пульте.
+function remoteOpenProject(projId) {
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('remote:openProject', { projId });
+}
+function remoteResizePty(sid, cols, rows) {
+  cols = Math.max(40, Math.min(220, parseInt(cols, 10) || 0));
+  rows = Math.max(12, Math.min(90, parseInt(rows, 10) || 0));
+  if (!sid || !cols || !rows) return;
+  const p = ptys.get(sid);
+  if (!p) return;
+  try { p.resize(cols, rows); } catch (_) {}
+  ptySize.set(sid, { cols, rows });
+  mirrorResize(sid, cols, rows);
+  // ПК зеркалит сетку пульта (letterbox), а не навязывает свою — иначе терминал на ПК «сыпется»
+  // (PTY уже под сетку пульта, а xterm ПК рисует под старую). Рендерер ресайзит свой xterm и
+  // перестаёт авто-фитить эту сессию, пока пульт владеет размером.
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('pty:remoteSize', { id: sid, cols, rows });
+  try { remote.notifyState(); } catch (_) {}
+}
+function remoteHistoryGet(reqId, sid) {
+  const text = transcriptGet(sid);
+  const CH = 32 * 1024;
+  remote.send({ t: 'history:begin', reqId, sid, size: text.length });
+  for (let i = 0, seq = 0; i < text.length; i += CH, seq++) {
+    remote.send({ t: 'history:chunk', reqId, sid, seq, data: text.slice(i, i + CH) });
+  }
+  remote.send({ t: 'history:end', reqId, sid });
+}
+const REMOTE_DEFAULT_HOST = 'lite.codecopy.ru';
+function startRemotePult() {
+  try {
+    remote.init({
+      logger,
+      getSessions: buildRemoteState,
+      snapshot: (sid) => mirrorSnapshot(sid),   // чистый снапшот сессии для пульта (вместо сырого хвоста)
+      writeInput: (sid, data) => { const p = ptys.get(sid); if (p) p.write(data); },
+      openProject: remoteOpenProject,
+      onSelect: (sid) => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('remote:select', { sid }); },
+      onClose: (sid) => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('remote:closeTab', { sid }); },
+      onNewFolder: (name) => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('remote:newFolder', { name }); },
+      onRestartApp: () => { restartAppSafely(); },
+      onResize: (sid, cols, rows) => remoteResizePty(sid, cols, rows),
+      onHistoryGet: (reqId, sid) => remoteHistoryGet(reqId, sid),
+      onStoreList: (reqId, p) => pultStoreList(reqId, p),
+      onStoreGet: (reqId, p) => pultStoreGet(reqId, p),
+      onStoreGetZip: (reqId, p) => pultStoreGetZip(reqId, p),
+      onStoreCancel: (reqId) => { storeCancelled.add(reqId); },
+      // Пульт отключился → ПК возвращает себе владение размером терминалов (свой fit).
+      onPultPresence: (connected) => {
+        if (!connected && mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('pty:remoteRelease', {});
+      },
+      // Пульт просит одобрить устройство → показать модалку в редакторе.
+      onPairRequest: (info) => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('remote:pairRequest', info); },
+    });
+    const r = readStoreKey('remote') || {};
+    if (r.token) {
+      // Аккаунт сохранён (вошли через модалку «Пульт»).
+      remote.apply({ host: r.host || REMOTE_DEFAULT_HOST, token: r.token, enabled: r.enabled !== false });
+    } else if (process.env.LITE_REMOTE === '1' && process.env.LITE_RELAY_TOKEN) {
+      // Legacy: включение через env (общий токен).
+      const host = (process.env.LITE_RELAY_URL || '').replace(/^wss?:\/\//, '').replace(/\/.*$/, '') || REMOTE_DEFAULT_HOST;
+      remote.apply({ host, token: process.env.LITE_RELAY_TOKEN, enabled: true });
+    }
+  } catch (e) { logger.log('error', 'remote', 'start failed', e); }
+}
+
+// POST JSON на релей (https). FastAPI-ошибки приходят как {detail:"..."}.
+function relayPost(host, pathname, body, extraHeaders) {
+  return new Promise((resolve) => {
+    let data;
+    try { data = Buffer.from(JSON.stringify(body)); } catch (_) { resolve({ status: 0, error: 'bad body' }); return; }
+    const headers = Object.assign({ 'Content-Type': 'application/json', 'Content-Length': data.length }, extraHeaders || {});
+    const req = https.request(
+      { host, path: pathname, method: 'POST', headers, timeout: 12000 },
+      (res) => { let buf = ''; res.on('data', (d) => (buf += d)); res.on('end', () => { let j = null; try { j = JSON.parse(buf); } catch (_) {} resolve({ status: res.statusCode, body: j }); }); }
+    );
+    req.on('timeout', () => { req.destroy(); resolve({ status: 0, error: 'timeout' }); });
+    req.on('error', (e) => resolve({ status: 0, error: String(e && e.message || e) }));
+    req.write(data); req.end();
+  });
+}
+
+function remoteStoreState() {
+  const r = readStoreKey('remote') || {};
+  const st = remote.status();
+  return { loggedIn: !!r.token, login: r.login || '', enabled: r.enabled !== false, connected: st.connected, host: r.host || REMOTE_DEFAULT_HOST };
+}
+
+// Регистрация/вход: дергаем релей, сохраняем {login, token, host, enabled}, поднимаем соединение.
+async function remoteAuth(kind, { login, password } = {}) {
+  const host = REMOTE_DEFAULT_HOST;
+  const res = await relayPost(host, '/' + kind, { login, password });
+  if (res.status === 200 && res.body && res.body.token) {
+    const rec = { login: res.body.login || login, token: res.body.token, host, enabled: true };
+    writeStoreKey('remote', rec);
+    remote.apply({ host, token: rec.token, enabled: true });
+    return { ok: true, status: remoteStoreState() };
+  }
+  const msg = (res.body && (res.body.detail || res.body.error)) || res.error ||
+    (res.status === 401 ? 'Неверный логин или пароль' : res.status === 409 ? 'Логин занят' : `Ошибка (${res.status || 'нет связи'})`);
+  return { ok: false, error: String(msg) };
+}
+
+ipcMain.handle('remote:status', () => remoteStoreState());
+// «Выйти на всех устройствах» — снять одобрение со всех устройств аккаунта + отозвать сессии
+// (на случай потери планшета). Авторизуемся сохранённым токеном аккаунта.
+ipcMain.handle('remote:revokeAllDevices', async () => {
+  const r = readStoreKey('remote') || {};
+  if (!r.token) return { ok: false, error: 'не выполнен вход' };
+  const host = r.host || REMOTE_DEFAULT_HOST;
+  const res = await relayPost(host, '/devices/revoke-all', {}, { Authorization: 'Bearer ' + r.token });
+  if (res.status === 200) return { ok: true };
+  return { ok: false, error: (res.body && (res.body.detail || res.body.error)) || res.error || `Ошибка (${res.status || 'нет связи'})` };
+});
+ipcMain.handle('remote:register', (_e, creds) => remoteAuth('register', creds || {}));
+ipcMain.handle('remote:login', (_e, creds) => remoteAuth('login', creds || {}));
+ipcMain.handle('remote:logout', () => {
+  const r = readStoreKey('remote') || {};
+  writeStoreKey('remote', { ...r, token: '', enabled: false });
+  remote.apply({ token: '', enabled: false });
+  return remoteStoreState();
+});
+ipcMain.handle('remote:setEnabled', (_e, { enabled } = {}) => {
+  const r = readStoreKey('remote') || {};
+  writeStoreKey('remote', { ...r, enabled: !!enabled });
+  remote.apply({ enabled: !!enabled });
+  return remoteStoreState();
+});
+// Pairing: пользователь на ПК одобрил/отклонил устройство пульта → шлём решение релею.
+ipcMain.on('remote:pairApprove', (_e, { device } = {}) => {
+  try { remote.send({ t: 'pair:approve', device: String(device || ''), pubkey: '' }); } catch (_) {}
+});
+ipcMain.on('remote:pairDeny', (_e, { device } = {}) => {
+  try { remote.send({ t: 'pair:deny', device: String(device || '') }); } catch (_) {}
+});
+// Рендерер сообщает, какая вкладка активна на десктопе → шлём пульту (синк активной).
+ipcMain.on('remote:activeChanged', (_e, { sid } = {}) => {
+  if ((sid || '') === remoteActiveSid) return;
+  remoteActiveSid = sid || '';
+  try { remote.notifyState(); } catch (_) {}
 });
 
 app.on('window-all-closed', () => {
@@ -594,7 +985,8 @@ function spawnPtyFor(id, cwd, cols, rows) {
       cols: cols || 80,
       rows: rows || 24,
       cwd: startCwd,
-      env: { ...process.env, SHELL: shell }, // keep the env pointing at a real shell
+      // SHELL → реальный шелл; LITE_STORE → папка-стор (агент кладёт туда файлы для пульта).
+      env: { ...process.env, SHELL: shell, LITE_STORE: pultStoreDir },
     });
   } catch (err) {
     logger.log('error', 'pty', 'spawn failed', err);
@@ -605,20 +997,31 @@ function spawnPtyFor(id, cwd, cols, rows) {
     return { error: String(err.message || err) };
   }
   logger.log('info', 'pty', `spawned pid=${proc.pid}`);
+  transcripts.set(id, '');
+  mirrorCreate(id, cols, rows);   // свежий теневой терминал (сбрасывает scrollback при рестарте PTY)
   proc.onData((data) => {
     if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('pty:data', { id, data });
+    mirrorWrite(id, data);                         // сначала в теневой терминал (снапшот всегда консистентен)
+    transcriptAppend(id, data);
+    try { remote.broadcast(id, data); } catch (_) {} // потом зеркалим вывод на удалённый пульт
   });
   proc.onExit(() => {
     if (ptys.get(id) && ptys.get(id) !== proc) return; // replaced by a restart — suppress stale exit
     ptys.delete(id);
+    ptySize.delete(id);
+    mirrorDispose(id);
     if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('pty:exit', { id });
+    try { remote.exit(id); remote.notifyState(); } catch (_) {}
   });
   ptys.set(id, proc);
+  ptySize.set(id, { cols: cols || 80, rows: rows || 24 });
   return { ok: true };
 }
 ipcMain.handle('pty:create', (_e, { id, cwd, cols, rows }) => {
   if (ptys.has(id)) return { ok: true, existed: true };
-  return spawnPtyFor(id, cwd, cols, rows);
+  const r = spawnPtyFor(id, cwd, cols, rows);
+  try { remote.notifyState(); } catch (_) {} // обновить список вкладок на пульте
+  return r;
 });
 // Kill the existing PTY (if any) and start a fresh one in the same cwd.
 ipcMain.handle('pty:restart', (_e, { id, cwd, cols, rows }) => {
@@ -629,11 +1032,12 @@ ipcMain.handle('pty:restart', (_e, { id, cwd, cols, rows }) => {
 ipcMain.on('pty:write', (_e, { id, data }) => { const p = ptys.get(id); if (p) p.write(data); });
 ipcMain.on('pty:resize', (_e, { id, cols, rows }) => {
   const p = ptys.get(id);
-  if (p && cols > 0 && rows > 0) { try { p.resize(cols, rows); } catch (_) {} }
+  if (p && cols > 0 && rows > 0) { try { p.resize(cols, rows); } catch (_) {} ptySize.set(id, { cols, rows }); mirrorResize(id, cols, rows); try { remote.notifyState(); } catch (_) {} }
 });
 ipcMain.on('pty:kill', (_e, { id }) => {
   const p = ptys.get(id);
   if (p) { try { p.kill(); } catch (_) {} ptys.delete(id); }
+  transcripts.delete(id);
 });
 // 'shell' | 'running' | 'waiting' | null — see foregroundKind().
 ipcMain.handle('pty:foregroundState', (_e, { id }) => {
@@ -663,22 +1067,26 @@ ipcMain.handle('fs:writeFile', async (_e, { file, content }) => {
   catch (err) { return { error: String(err.message || err) }; }
 });
 ipcMain.handle('fs:mkdir', async (_e, { parent, name }) => {
+  const safe = safeChildName(name);                       // блокируем ../ и сепараторы (PC-3)
+  if (!safe) return { error: 'недопустимое имя' };
   try {
-    const full = path.join(parent, name);
+    const full = path.join(parent, safe);
     await fs.promises.mkdir(full, { recursive: false });
-    return { path: full, name };
+    return { path: full, name: safe };
   } catch (err) { return { error: String(err.message || err) }; }
 });
 ipcMain.handle('fs:exists', (_e, p) => { try { return fs.existsSync(p); } catch { return false; } });
 
 // create a file or directory inside parent
 ipcMain.handle('fs:create', async (_e, { parent, name, dir }) => {
+  const safe = safeChildName(name);                       // блокируем ../ и сепараторы (PC-3)
+  if (!safe) return { error: 'недопустимое имя' };
   try {
-    const full = path.join(parent, name);
+    const full = path.join(parent, safe);
     if (fs.existsSync(full)) return { error: 'уже существует' };
     if (dir) await fs.promises.mkdir(full, { recursive: false });
     else { await fs.promises.mkdir(path.dirname(full), { recursive: true }); await fs.promises.writeFile(full, '', { flag: 'wx' }); }
-    return { path: full, name, dir: !!dir };
+    return { path: full, name: safe, dir: !!dir };
   } catch (err) { return { error: String(err.message || err) }; }
 });
 ipcMain.handle('fs:rename', async (_e, { from, to }) => {

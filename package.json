@@ -1,6 +1,6 @@
 {
   "name": "liteeditor-ai",
-  "version": "1.0.53-alpha",
+  "version": "1.0.95-alpha",
   "description": "Lightweight editor for working with AI coding agents in the terminal",
   "main": "main.js",
   "author": "Максим Кузьминский <i@m-letto.ru>",
@@ -38,13 +38,18 @@
     "@xterm/addon-canvas": "^0.7.0",
     "@xterm/addon-fit": "^0.10.0",
     "@xterm/addon-search": "^0.16.0",
+    "@xterm/addon-serialize": "^0.13.0",
     "@xterm/addon-unicode11": "^0.9.0",
     "@xterm/addon-web-links": "^0.12.0",
     "@xterm/addon-webgl": "^0.19.0",
+    "@xterm/headless": "^5.5.0",
     "@xterm/xterm": "^5.5.0",
     "highlight.js": "^11.11.1",
     "marked": "^18.0.4",
-    "node-pty": "^1.0.0"
+    "node-pty": "^1.0.0",
+    "ws": "^8.21.0",
+    "xterm": "^4.19.0",
+    "xterm-addon-fit": "^0.5.0"
   },
   "devDependencies": {
     "@electron/rebuild": "^3.7.1",
@@ -66,6 +71,7 @@
     ],
     "files": [
       "main.js",
+      "remote.js",
       "preload.js",
       "logger.js",
       "package.json",
