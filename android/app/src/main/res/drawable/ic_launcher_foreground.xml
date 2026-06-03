@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Передний план: тот же глиф, что у десктоп-иконки — синий шеврон-приглашение «>»
+     и зелёный блок-курсор «_». Координаты в системе 512, глиф отцентрован и слегка
+     уменьшен (scale 1.1, сдвиг -13 по X) так, чтобы попасть в «безопасную зону» 66dp
+     адаптивной иконки и не обрезаться маской лаунчера. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="512"
+    android:viewportHeight="512">
+    <group
+        android:pivotX="269"
+        android:pivotY="256"
+        android:scaleX="1.1"
+        android:scaleY="1.1"
+        android:translateX="-13"
+        android:translateY="0">
+        <path
+            android:pathData="M148,178 L232,256 L148,334"
+            android:strokeColor="#7AA2F7"
+            android:strokeWidth="36"
+            android:strokeLineCap="round"
+            android:strokeLineJoin="round" />
+        <path
+            android:pathData="M271,300 H381 A9,9 0 0 1 390,309 V325 A9,9 0 0 1 381,334 H271 A9,9 0 0 1 262,325 V309 A9,9 0 0 1 271,300 Z"
+            android:fillColor="#9ECE6A" />
+    </group>
+</vector>
