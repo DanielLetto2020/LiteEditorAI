@@ -27,7 +27,7 @@ import { html } from '@codemirror/lang-html';
 import { css } from '@codemirror/lang-css';
 import { sql, PostgreSQL, MySQL, SQLite } from '@codemirror/lang-sql';
 
-const APP_VERSION = 'alpha v1.0.102';
+const APP_VERSION = 'alpha v1.0.103';
 const GUTTER = 5;
 const SCRATCH_ID = '__scratch__'; // префикс id системных терминалов (домашняя папка), не привязаны к проектам
 const isScratch = (id) => typeof id === 'string' && id.startsWith(SCRATCH_ID);
@@ -1935,6 +1935,8 @@ function createSession(proj, name) {
     if (e.ctrlKey && !e.shiftKey && !e.altKey && e.code === 'KeyC') return !copySelection(term); // copied → swallow; else SIGINT
     if (e.ctrlKey && !e.shiftKey && !e.altKey && e.code === 'KeyV') { e.preventDefault(); pasteInto(id); return false; } // preventDefault — иначе xterm вставит ещё раз нативно (дубль)
     if (e.ctrlKey && !e.altKey && e.code === 'KeyF') { openTermSearch(); return false; }
+    // Ctrl+Enter — перенос строки в вводе (продолжение команды), а не выполнение: \ + CR для bash/zsh, LF для ConPTY/PSReadLine (Win)
+    if (e.ctrlKey && !e.shiftKey && !e.altKey && e.key === 'Enter') { lite.pty.write(id, lite.platform === 'win32' ? '\n' : '\\\r'); return false; }
     if (e.ctrlKey && e.shiftKey && e.key === 'Enter') {
       const q = queues.get(proj.id);
       if (q && q.running) { queueAdvance(proj.id); return false; }
@@ -2199,6 +2201,8 @@ function createScratchSession(name) {
     // match by physical key so copy/paste work in any layout (Russian incl.)
     if (e.ctrlKey && !e.shiftKey && !e.altKey && e.code === 'KeyC') return !copySelection(term); // copied → swallow; else SIGINT
     if (e.ctrlKey && !e.shiftKey && !e.altKey && e.code === 'KeyV') { e.preventDefault(); pasteInto(id); return false; }
+    // Ctrl+Enter — перенос строки в вводе (продолжение команды): \ + CR для bash/zsh, LF для ConPTY/PSReadLine (Win)
+    if (e.ctrlKey && !e.shiftKey && !e.altKey && e.key === 'Enter') { lite.pty.write(id, lite.platform === 'win32' ? '\n' : '\\\r'); return false; }
     return true;
   });
   container.addEventListener('contextmenu', (e) => { e.preventDefault(); showTermMenu(e.clientX, e.clientY, term, id); });

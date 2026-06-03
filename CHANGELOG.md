@@ -3,6 +3,15 @@
 Все заметные изменения LiteEditorAI. Формат — [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/),
 нумерация — [SemVer](https://semver.org/lang/ru/). Проект в стадии **alpha**.
 
+## [1.0.103] — 2026-06-03
+
+### ✨ Добавлено
+- **`Ctrl+Enter` в терминале — перенос строки без выполнения команды.** Раньше `Enter` всегда сразу
+  запускал команду, а продолжить ввод на новой строке можно было только через `Alt+Enter`. Теперь
+  `Ctrl+Enter` переносит ввод на следующую строку (продолжение команды): на Linux/macOS — через `\`+
+  перевод строки (вторичное приглашение `>` в bash/zsh), на Windows — через `LF` (ConPTY/PSReadLine, `>>`).
+  Работает и в проектных, и в системных терминалах. Спасибо за идею в Issues.
+
 ## [1.0.102] — 2026-06-03
 
 ### ✨ Добавлено
@@ -172,6 +181,7 @@
 - Первые публичные alpha-сборки: терминал на проект (xterm + node-pty), вивер кода (CodeMirror), дерево
   файлов, дистрибуция под Linux (`.deb`) и Windows (portable `.zip`) через GitHub Actions.
 
+[1.0.103]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.0.103
 [1.0.102]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.0.102
 [1.0.101]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.0.101
 [1.0.100]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.0.100
