@@ -54,6 +54,10 @@ contextBridge.exposeInMainWorld('lite', {
     onError: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('openrouter:error', h); return () => ipcRenderer.removeListener('openrouter:error', h); },
   },
 
+  update: {
+    check: () => ipcRenderer.invoke('update:check'), // latest GitHub release → {tag,name,notes,url} | {error}
+  },
+
   settings: {
     export: () => ipcRenderer.invoke('settings:export'),  // → { ok, file, dir } | { canceled } | { error }
     import: () => ipcRenderer.invoke('settings:import'),  // → { ok, file } | { canceled } | { error }

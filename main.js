@@ -327,6 +327,33 @@ ipcMain.handle('openrouter:models', async (_e, { key } = {}) => {
     req.end();
   });
 });
+// Update check: query the GitHub Releases API for the latest published release
+// and return its tag/notes/url. Public repo → no token needed. The renderer
+// compares the tag with APP_VERSION and shows an «update available» badge next
+// to the version label. Never throws — resolves {error} so the UI degrades quietly.
+const GH_REPO = 'DanielLetto2020/LiteEditorAI';
+ipcMain.handle('update:check', async () => {
+  return await new Promise((resolve) => {
+    const req = https.request(
+      `https://api.github.com/repos/${GH_REPO}/releases/latest`,
+      { method: 'GET', headers: { 'User-Agent': 'LiteEditorAI', 'Accept': 'application/vnd.github+json' } },
+      (res) => {
+        let data = '';
+        res.on('data', (c) => { data += c; });
+        res.on('end', () => {
+          try {
+            const j = JSON.parse(data);
+            if (res.statusCode >= 400) return resolve({ error: j.message || ('HTTP ' + res.statusCode) });
+            resolve({ tag: j.tag_name || '', name: j.name || '', notes: j.body || '', url: j.html_url || '' });
+          } catch (_) { resolve({ error: 'Не удалось разобрать ответ GitHub' }); }
+        });
+      },
+    );
+    req.on('error', (e) => resolve({ error: String(e.message || e) }));
+    req.setTimeout(15000, () => { req.destroy(); resolve({ error: 'таймаут проверки обновления' }); });
+    req.end();
+  });
+});
 // Key balance: GET /key → credit limit + usage (so the card can show «израсходовано / лимит»).
 ipcMain.handle('openrouter:keyInfo', async (_e, { key } = {}) => {
   return await new Promise((resolve) => {
