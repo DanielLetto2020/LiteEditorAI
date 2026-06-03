@@ -26,7 +26,7 @@ import { markdown } from '@codemirror/lang-markdown';
 import { html } from '@codemirror/lang-html';
 import { css } from '@codemirror/lang-css';
 
-const APP_VERSION = 'alpha v1.0.97';
+const APP_VERSION = 'alpha v1.0.98';
 const GUTTER = 5;
 const SCRATCH_ID = '__scratch__'; // системный терминал (домашняя папка), не привязан к проектам
 
@@ -3032,11 +3032,32 @@ function showAbout() {
       Маленький проект для себя и тех, кто проводит день в диалоге с ИИ и хочет, чтобы вокруг
       этого диалога было спокойно и удобно.
     </div>
-    <div class="about-ver">${APP_VERSION}</div>
+    <div class="about-ver">${APP_VERSION} <span id="ab-upd-status" class="about-upd"></span></div>
     <div class="about-meta">Максим&nbsp;Кузьминский · <a href="#" id="ab-src">исходники на GitHub</a></div>
-    <div class="modal-actions"><button class="btn primary" id="ab-ok">Ок</button></div>`);
+    <div class="modal-actions">
+      <button class="btn" id="ab-check">Проверить обновление</button>
+      <button class="btn primary" id="ab-ok">Ок</button>
+    </div>`);
   m.querySelector('#ab-ok').onclick = close;
   m.querySelector('#ab-src').onclick = (e) => { e.preventDefault(); lite.openExternal('https://github.com/DanielLetto2020/LiteEditorAI'); };
+  const st = m.querySelector('#ab-upd-status');
+  const setSt = (txt, cls) => { if (st) { st.textContent = txt; st.className = 'about-upd' + (cls ? ' ' + cls : ''); } };
+  // Reflect a known result immediately; otherwise prompt to check.
+  if (updateInfo) setSt('— доступна ' + updateInfo.tag, 'has');
+  m.querySelector('#ab-check').onclick = async (e) => {
+    const btn = e.currentTarget; btn.disabled = true; setSt('— проверяю…');
+    const r = await checkForUpdate({ manual: true });
+    btn.disabled = false;
+    if (r && r.error) setSt('— не удалось проверить', 'err');
+    else if (verNewer(r.tag, APP_VERSION)) {
+      // Build with DOM methods (tag comes from the API) — no innerHTML.
+      setSt('— доступна ', 'has');
+      const dl = el('a', null, (r.tag || 'новая версия') + ' (скачать)');
+      dl.href = '#';
+      dl.onclick = (ev) => { ev.preventDefault(); lite.openExternal(r.url || 'https://github.com/DanielLetto2020/LiteEditorAI/releases/latest'); };
+      st.appendChild(dl);
+    } else setSt('— у вас последняя версия', 'ok');
+  };
 }
 function showCreateFolder() {
   const { m, close } = makeModal(`
@@ -3330,6 +3351,46 @@ function toggleSingle() {
   refitActiveTerminal();
 }
 
+// ---------------------------------------------------------------- update check
+// Pull a version triple out of «alpha v1.0.97» or a tag «v1.0.97-alpha».
+function parseVer(s) {
+  const m = String(s || '').match(/(\d+)\.(\d+)\.(\d+)/);
+  return m ? [+m[1], +m[2], +m[3]] : [0, 0, 0];
+}
+function verNewer(a, b) { // is version a strictly newer than b?
+  const x = parseVer(a), y = parseVer(b);
+  for (let i = 0; i < 3; i++) { if (x[i] !== y[i]) return x[i] > y[i]; }
+  return false;
+}
+let updateInfo = null; // {tag,url,notes,name} when a newer release exists
+// Ask main to fetch the latest GitHub release and compare with APP_VERSION.
+// Silent on failure / when up to date (so a startup auto-check never nags);
+// `manual` = user pressed «Проверить обновление» → toast the result either way.
+async function checkForUpdate({ manual = false } = {}) {
+  let r;
+  try { r = await lite.update.check(); } catch (_) { r = { error: 'нет связи' }; }
+  if (!r || r.error) {
+    if (manual) toast('Не удалось проверить обновление: ' + ((r && r.error) || 'нет связи'), { kind: 'err' });
+    return r || { error: 'нет связи' };
+  }
+  if (verNewer(r.tag, APP_VERSION)) {
+    updateInfo = r;
+    const b = $('#update-badge');
+    if (b) {
+      b.hidden = false;
+      b.textContent = '↑ ' + (r.tag || 'обновление');
+      b.title = 'Доступна ' + (r.tag || 'новая версия') + ' — открыть страницу загрузки';
+      b.onclick = () => lite.openExternal(r.url || 'https://github.com/DanielLetto2020/LiteEditorAI/releases/latest');
+    }
+    if (manual) toast('Доступна новая версия ' + r.tag, { ttl: 5000 });
+  } else {
+    updateInfo = null;
+    const b = $('#update-badge'); if (b) b.hidden = true;
+    if (manual) toast('У вас последняя версия');
+  }
+  return r;
+}
+
 // ---------------------------------------------------------------- init
 function init() {
   hydrateIcons(); // fill the static [data-icon] buttons (titlebar / pane toolbars) with SVG
@@ -3353,6 +3414,10 @@ function init() {
     toast('Ошибка: ' + ((e.reason && e.reason.message) || e.reason || 'промис'), { kind: 'err', ttl: 8000 });
   });
   try { lite.log('info', `UI ${APP_VERSION} started`); } catch (_) {}
+
+  // Auto-check for a newer release shortly after startup (non-blocking, silent on
+  // failure). The badge next to the version lights up if one is available.
+  setTimeout(() => { checkForUpdate().catch(() => {}); }, 3000);
 
   lite.pty.onData(({ id, data }) => {
     if (id === SCRATCH_ID) { if (scratchRec) scratchRec.term.write(data); return; }
