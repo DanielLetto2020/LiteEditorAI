@@ -1327,6 +1327,11 @@ ipcMain.handle('git:commit', async (_e, { root, message, push }) => {
 });
 ipcMain.handle('git:push', async (_e, root) => gitRun(root, ['push']));
 ipcMain.handle('git:pull', async (_e, root) => gitRun(root, ['pull', '--ff-only']));
+// Stash including untracked (-u) so a quick "спрятать всё" doesn't leave new files behind.
+ipcMain.handle('git:stash', async (_e, root) => gitRun(root, ['stash', 'push', '-u']));
+ipcMain.handle('git:stashPop', async (_e, root) => gitRun(root, ['stash', 'pop']));
+// Revert tracked edits only ('checkout -- .'); untracked files are deliberately kept (no -fd clean).
+ipcMain.handle('git:discardAll', async (_e, root) => gitRun(root, ['checkout', '--', '.']));
 
 // ================================================================ containers (docker/podman)
 // Lightweight container manager — a desktop-GUI replacement. Read-only listing + basic

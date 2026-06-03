@@ -27,7 +27,7 @@ import { html } from '@codemirror/lang-html';
 import { css } from '@codemirror/lang-css';
 import { sql, PostgreSQL, MySQL, SQLite } from '@codemirror/lang-sql';
 
-const APP_VERSION = 'alpha v1.0.103';
+const APP_VERSION = 'alpha v1.0.104';
 const GUTTER = 5;
 const SCRATCH_ID = '__scratch__'; // префикс id системных терминалов (домашняя папка), не привязаны к проектам
 const isScratch = (id) => typeof id === 'string' && id.startsWith(SCRATCH_ID);
@@ -673,9 +673,35 @@ function makeCard(p) {
   title.title = p.path;
   const star = iconBtn('card-star' + (p.favorite ? ' on' : ''), 'star', p.favorite ? 'Убрать из избранного' : 'В избранное', 15);
   star.addEventListener('click', (e) => { e.stopPropagation(); toggleFavorite(p.id); });
+  // module toggles (бывший футер) — компактные иконки сразу после «избранного», чтобы карточка была ниже
+  const openViewer = iconBtn('card-act' + (p.id === activeId && viewerOpen ? ' on' : ''), 'eye', 'Открыть/закрыть вивер', 15);
+  openViewer.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (activeId === p.id && viewerOpen) setViewerOpen(false);
+    else { setActive(p.id); setViewerOpen(true); }
+  });
+  const notesBtn = iconBtn('card-act', 'note', 'Заметки', 15);
+  const nc = noteCounts[p.id] || 0;
+  if (nc) notesBtn.appendChild(el('span', 'act-badge', String(nc)));
+  notesBtn.addEventListener('click', (e) => { e.stopPropagation(); showNotes(p); });
+  const gitBtn = iconBtn('card-act' + (p.id === activeId && gitOpen ? ' on' : ''), 'git', 'Git — ветки, изменения, коммиты', 15);
+  gitBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (activeId === p.id && gitOpen) setGitOpen(false);
+    else openGitForProject(p.id);
+  });
   const kebab = iconBtn('card-kebab', 'dots-v', 'Меню проекта', 18);
   kebab.addEventListener('click', (e) => { e.stopPropagation(); showCardMenu(e.clientX, e.clientY, p); });
-  head.appendChild(ind); head.appendChild(title); head.appendChild(star); head.appendChild(kebab);
+  // авто-очередь заметок: бейдж в той же строке (виден только когда в очереди что-то есть)
+  const qb = queues.get(p.id);
+  const qtxt = queueBadgeText(qb);
+  const qbadge = el('button', 'card-qbadge' + (qtxt ? ' show' : '') + (qb && qb.running ? ' running' : ''), qtxt);
+  qbadge.dataset.id = p.id;
+  qbadge.title = 'Авто-очередь заметок';
+  qbadge.addEventListener('click', (e) => { e.stopPropagation(); showNotes(p); });
+  const acts = el('div', 'card-acts');
+  acts.append(qbadge, star, openViewer, notesBtn, gitBtn, kebab);
+  head.append(ind, title, acts);
   card.appendChild(head);
 
   // путь не дублируем на карточке — он в тултипе имени и в ⋮-меню («Копировать путь»)
@@ -683,33 +709,6 @@ function makeCard(p) {
     const w = el('div', 'card-missing'); w.appendChild(icon('warning', 13)); w.appendChild(el('span', null, 'папка удалена — закрой проект'));
     card.appendChild(w);
   }
-
-  const foot = el('div', 'card-foot');
-  const openViewer = iconBtn('card-act' + (p.id === activeId && viewerOpen ? ' on' : ''), 'eye', 'Открыть/закрыть вивер');
-  openViewer.addEventListener('click', (e) => {
-    e.stopPropagation();
-    if (activeId === p.id && viewerOpen) setViewerOpen(false);
-    else { setActive(p.id); setViewerOpen(true); }
-  });
-  const notesBtn = iconBtn('card-act', 'note', 'Заметки');
-  const nc = noteCounts[p.id] || 0;
-  if (nc) notesBtn.appendChild(el('span', 'act-badge', String(nc)));
-  notesBtn.addEventListener('click', (e) => { e.stopPropagation(); showNotes(p); });
-  const gitBtn = iconBtn('card-act' + (p.id === activeId && gitOpen ? ' on' : ''), 'git', 'Git — ветки, изменения, коммиты');
-  gitBtn.addEventListener('click', (e) => {
-    e.stopPropagation();
-    if (activeId === p.id && gitOpen) setGitOpen(false);
-    else openGitForProject(p.id);
-  });
-  foot.appendChild(openViewer); foot.appendChild(notesBtn); foot.appendChild(gitBtn);
-  const qb = queues.get(p.id);
-  const qtxt = queueBadgeText(qb);
-  const qbadge = el('button', 'card-qbadge' + (qtxt ? ' show' : '') + (qb && qb.running ? ' running' : ''), qtxt);
-  qbadge.dataset.id = p.id;
-  qbadge.title = 'Авто-очередь заметок';
-  qbadge.addEventListener('click', (e) => { e.stopPropagation(); showNotes(p); });
-  foot.appendChild(qbadge);
-  card.appendChild(foot);
 
   card.addEventListener('click', () => focusProject(p.id));
   card.addEventListener('contextmenu', (e) => { e.preventDefault(); showCardMenu(e.clientX, e.clientY, p); });
@@ -2677,6 +2676,14 @@ function renderDiffInto(view, text) {
 // PhpStorm-style Git panel for project `p`. Bound to the active project; re-rendered on
 // project switch (see doSetActive). Reuses lite.git.* — no new backend except git:log.
 let gitRenderSeq = 0; // bumped on every render; a stale render (older seq) bails after its awaits
+// Compact pill button for the Git toolbar (icon + optional label). Variants: 'primary' | 'ico' | 'danger'.
+function gitTool(iconName, label, title, variant) {
+  const b = el('button', 'git-tool' + (variant ? ' ' + variant : ''));
+  b.appendChild(icon(iconName, 14));
+  if (label) b.appendChild(el('span', null, label));
+  if (title) b.title = title;
+  return b;
+}
 async function renderGitPanel(p) {
   const body = $('#git-body');
   $('#git-proj').textContent = p ? `⎇ ${p.name}` : 'Git';
@@ -2742,7 +2749,17 @@ async function renderGitPanel(p) {
   if (stale()) return;
   const files = (st && st.files) ? st.files : {};
   const keys = Object.keys(files);
-  body.appendChild(el('div', 'git-sec', 'Изменения' + (keys.length ? ` · ${keys.length}` : '')));
+  const chHead = el('div', 'git-sec git-sec-row');
+  chHead.appendChild(el('span', null, 'Изменения' + (keys.length ? ` · ${keys.length}` : '')));
+  if (keys.length) {
+    const discAll = gitTool('eraser', null, 'Откатить все правки (git checkout -- .)', 'ico danger');
+    discAll.onclick = () => showConfirm('Откатить все правки?', 'Изменения во всех отслеживаемых файлах будут отменены. Новые (неотслеживаемые) файлы останутся на месте.', 'Откатить всё', async () => {
+      const rr = await lite.git.discardAll(p.path);
+      if (rr.ok) { toast('Правки откачены'); renderGitPanel(p); renderProjects(); } else toast(rr.error || 'не удалось', { kind: 'err' });
+    });
+    chHead.appendChild(discAll);
+  }
+  body.appendChild(chHead);
   const diffView = el('div', 'git-diff'); diffView.style.display = 'none';
   const changes = el('div', 'gm-changes');
   if (!keys.length) changes.appendChild(el('div', 'gm-clean', '✓ Рабочее дерево чистое.'));
@@ -2774,12 +2791,10 @@ async function renderGitPanel(p) {
   // --- Commit box
   const msg = el('textarea', 'gm-msg'); msg.placeholder = 'Сообщение коммита…';
   body.appendChild(msg);
-  const row = el('div', 'gm-actions');
-  const commit = el('button', 'btn primary', 'Commit');
-  const commitPush = el('button', 'btn', 'Commit & Push');
-  const fetchBtn = el('button', 'btn', 'Fetch');
-  const pull = el('button', 'btn', 'Pull');
-  const push = el('button', 'btn', 'Push');
+  // commit row: compact primary + push variant
+  const commitRow = el('div', 'git-tools');
+  const commit = gitTool('check', 'Commit', 'Закоммитить все изменения', 'primary');
+  const commitPush = gitTool('upload', 'Commit & Push', 'Закоммитить и сразу запушить');
   commit.disabled = !keys.length; commitPush.disabled = !keys.length;
   const doCommit = async (withPush) => {
     const message = msg.value.trim();
@@ -2790,11 +2805,24 @@ async function renderGitPanel(p) {
   };
   commit.onclick = () => doCommit(false);
   commitPush.onclick = () => doCommit(true);
+  commitRow.append(commit, commitPush);
+  body.appendChild(commitRow);
+
+  // sync row: fetch / pull / push, then stash group — neat icon pills
+  const syncRow = el('div', 'git-tools');
+  const fetchBtn = gitTool('refresh', 'Fetch', 'git fetch --all --prune');
+  const pull = gitTool('download', 'Pull', 'git pull --ff-only');
+  const push = gitTool('upload', 'Push', 'git push');
+  const stash = gitTool('layers', 'Stash', 'Спрятать все изменения (git stash -u)');
+  const stashPop = gitTool('archive', 'Pop', 'Вернуть последний stash (git stash pop)');
+  stash.disabled = !keys.length;
   fetchBtn.onclick = async () => { const r = await lite.git.fetch(p.path); toast(r.ok ? 'Fetch готов' : (r.error || 'fetch не прошёл'), { kind: r.ok ? undefined : 'err', ttl: 8000 }); renderGitPanel(p); };
   push.onclick = async () => { const r = await lite.git.push(p.path); toast(r.ok ? 'Запушено' : (r.error || 'push не прошёл'), { kind: r.ok ? undefined : 'err', ttl: 8000 }); renderGitPanel(p); };
   pull.onclick = async () => { const r = await lite.git.pull(p.path); toast(r.ok ? 'Pull готов' : (r.error || 'pull не прошёл'), { kind: r.ok ? undefined : 'err', ttl: 8000 }); renderGitPanel(p); renderProjects(); };
-  row.append(commit, commitPush, fetchBtn, pull, push);
-  body.appendChild(row);
+  stash.onclick = async () => { const r = await lite.git.stash(p.path); toast(r.ok ? 'Изменения спрятаны в stash' : (r.error || 'stash не прошёл'), { kind: r.ok ? undefined : 'err', ttl: 8000 }); renderGitPanel(p); renderProjects(); };
+  stashPop.onclick = async () => { const r = await lite.git.stashPop(p.path); toast(r.ok ? 'Stash возвращён' : (r.error || 'нет stash или конфликт'), { kind: r.ok ? undefined : 'err', ttl: 8000 }); renderGitPanel(p); renderProjects(); };
+  syncRow.append(fetchBtn, pull, push, el('span', 'git-tsep'), stash, stashPop);
+  body.appendChild(syncRow);
 
   // --- Commit history log (git:log)
   body.appendChild(el('div', 'git-sec', 'История'));
@@ -2807,11 +2835,12 @@ async function renderGitPanel(p) {
   const commits = (lg && lg.commits) ? lg.commits : [];
   if (!commits.length) logBox.appendChild(el('div', 'gm-clean', 'Пока нет коммитов.'));
   else for (const c of commits) {
-    const cr = el('div', 'git-commit'); cr.title = c.subject;
+    const cr = el('div', 'git-commit'); cr.title = `${c.subject}\n${c.hash} · клик — скопировать хеш`;
     cr.appendChild(el('span', 'gm-hash', c.hash));
     cr.appendChild(el('span', 'git-csubj', c.subject));
     cr.appendChild(el('span', 'gm-meta', `${c.when} · ${c.author}`));
     if (c.refs) cr.appendChild(el('span', 'git-refs', c.refs));
+    cr.addEventListener('click', () => { lite.copyText(c.hash); toast('Хеш скопирован: ' + c.hash); });
     logBox.appendChild(cr);
   }
 }

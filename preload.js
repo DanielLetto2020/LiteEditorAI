@@ -97,6 +97,9 @@ contextBridge.exposeInMainWorld('lite', {
     branchUpdate: (root, branch, current) => ipcRenderer.invoke('git:branchUpdate', { root, branch, current }),
     branchCreate: (root, name, base, checkout) => ipcRenderer.invoke('git:branchCreate', { root, name, base, checkout }),
     discardFile: (root, file) => ipcRenderer.invoke('git:discardFile', { root, file }),
+    discardAll: (root) => ipcRenderer.invoke('git:discardAll', root),
+    stash: (root) => ipcRenderer.invoke('git:stash', root),
+    stashPop: (root) => ipcRenderer.invoke('git:stashPop', root),
   },
 
   containers: {
