@@ -41,6 +41,13 @@ if (process.env.LITE_NO_GPU === '1' || process.env.LITE_SOFTWARE_RENDER === '1')
 
 let mainWindow = null;
 let tray = null;
+// Virtual target width for win:growBy. Growth accumulates here UNCLAMPED, while the
+// real setBounds is clamped to the screen edge — so a growth cut short by the edge is
+// matched by an equal shrink and the window returns to its exact pre-grow size.
+// growAppliedWidth = the last width we set ourselves; a resize to anything else means
+// the user dragged the edge, so we forget the virtual width and start fresh from there.
+let growDesiredWidth = null;
+let growAppliedWidth = null;
 const ptys = new Map();     // projectId -> IPty
 const ptySize = new Map();  // sessionId -> { cols, rows } — текущий размер PTY (для пульта)
 const mirrors = new Map();  // sessionId -> { term: HeadlessTerminal, serialize: SerializeAddon } — теневой терминал для пульта
@@ -576,6 +583,13 @@ function createWindow() {
     const b = mainWindow.getBounds();
     saveState({ x: b.x, y: b.y, width: b.width, height: b.height, maximized: false });
   };
+  // A resize to a width we didn't set = the user dragged the edge → forget the virtual
+  // grow width so the next viewer open/close measures from where the user left it.
+  mainWindow.on('resize', () => {
+    if (mainWindow.isMaximized() || mainWindow.isFullScreen()) return;
+    const w = mainWindow.getBounds().width;
+    if (growAppliedWidth == null || Math.abs(w - growAppliedWidth) > 2) growDesiredWidth = null;
+  });
   mainWindow.on('resize', debounce(persist, 400));
   mainWindow.on('move', debounce(persist, 400));
   mainWindow.on('close', persist);
@@ -969,8 +983,12 @@ ipcMain.on('win:growBy', (_e, { dx }) => {
   if (!mainWindow || mainWindow.isFullScreen() || mainWindow.isMaximized()) return;
   const b = mainWindow.getBounds();
   const work = screen.getDisplayMatching(b).workArea;
-  let width = Math.max(760, b.width + dx);
-  if (dx > 0) width = Math.min(width, work.x + work.width - b.x); // don't run off-screen
+  // Accumulate the request in a virtual width (unclamped) so a clamped grow + full shrink
+  // cancel out exactly. Re-sync from the real width if the user resized in between.
+  const base = growDesiredWidth != null ? growDesiredWidth : b.width;
+  growDesiredWidth = Math.max(760, base + dx);
+  const width = Math.max(760, Math.min(growDesiredWidth, work.x + work.width - b.x)); // don't run off-screen
+  growAppliedWidth = width;
   mainWindow.setBounds({ x: b.x, y: b.y, width, height: b.height });
 });
 
