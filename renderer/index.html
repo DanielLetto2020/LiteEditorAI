@@ -144,12 +144,28 @@
         <div id="db-body" class="db-body"></div>
       </section>
 
+      <!-- RemoteHost module (SSH-сессии к серверам/хостингам): system-wide, opens to the right -->
+      <div id="gutter-rh" class="gutter hidden" data-resize="rh"></div>
+      <section id="rh-pane" class="hidden">
+        <div class="pane-head">
+          <span id="rh-title">Удалённые хосты</span>
+          <div class="drag-space-static"></div>
+          <button id="rh-back" class="icon-btn" title="К списку подключений" data-icon="chevron-left" style="display:none"></button>
+          <button id="rh-refresh" class="icon-btn" title="Обновить список" data-icon="refresh"></button>
+          <button id="rh-close" class="icon-btn" title="Закрыть модуль" data-icon="x"></button>
+        </div>
+        <div id="rh-tabs" class="term-tabs rh-tabs" style="display:none"></div>
+        <div id="rh-conns" class="db-body"></div>
+        <div id="rh-term" style="display:none"></div>
+      </section>
+
       <div class="gutter gutter-v hidden" data-resize="viewer"></div>
       <section id="viewer-pane" class="hidden">
         <div class="pane-head">
           <span id="viewer-filename">—</span>
           <span id="viewer-dirty" class="dirty-dot" title="Несохранённые изменения"></span>
           <div class="drag-space-static"></div>
+          <button id="viewer-minimap" class="icon-btn" title="Миникарта кода (вкл/выкл)" data-icon="columns"></button>
           <button id="viewer-preview" class="icon-btn" title="Превью (Markdown / картинка / HTML)" data-icon="eye"></button>
           <button id="viewer-full" class="icon-btn" title="Развернуть превью HTML на весь экран (Esc — выход)" style="display:none" data-icon="maximize"></button>
           <button id="viewer-diff" class="icon-btn" title="Дифф изменений vs HEAD (git)" data-icon="diff"></button>
