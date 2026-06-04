@@ -825,6 +825,41 @@ body.preview-full .prev-frame { width: 100%; height: 100%; }
 .nm-hint { color: var(--text-dim); font-size: 12px; margin-bottom: 10px; line-height: 1.45; }
 .nm-list { display: flex; flex-direction: column; gap: 8px; max-height: 50vh; overflow: auto; margin-bottom: 10px; }
 .nm-empty { color: var(--text-dim); text-align: center; padding: 16px; }
+/* TODO-list: строки со статусом и важностью */
+.nm-toolbar { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+.nm-sort { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-dim); }
+.nm-sort select { background: var(--bg-input); border: 1px solid var(--border-strong); color: var(--text); border-radius: 7px; padding: 4px 8px; font-size: 12px; font-family: inherit; outline: none; }
+.nm-toolbar .nm-add { margin-left: auto; width: auto; padding: 6px 14px; border-style: solid; }
+.todo-row { display: flex; align-items: center; gap: 9px; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 7px 10px; transition: border-color .12s; }
+.todo-row:hover { border-color: var(--border-strong); }
+.todo-row.dragging { opacity: .5; border-color: var(--border-accent); }
+.todo-row.done { opacity: .6; }
+.todo-row.done .todo-text { text-decoration: line-through; color: var(--text-mute); }
+.todo-row.pr-1 { border-left: 3px solid var(--warn); }
+.todo-row.pr-2 { border-left: 3px solid var(--danger); }
+.todo-row.editing { flex-direction: column; align-items: stretch; gap: 8px; }
+/* статус-чекбокс (☐ к выполнению → ◐ в работе → ☑ готово) */
+.todo-check { flex: 0 0 auto; width: 20px; height: 20px; border-radius: 6px; border: 2px solid var(--border-strong); background: transparent; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; padding: 0; color: var(--accent-contrast); transition: background .12s, border-color .12s; }
+.todo-check:hover { border-color: var(--text-dim); }
+.todo-check.st-doing { border-color: var(--warn); }
+.todo-check.st-doing::after { content: ''; width: 9px; height: 9px; border-radius: 3px; background: var(--warn); }
+.todo-check.st-done { background: var(--green); border-color: var(--green); }
+/* флажок важности (обычная → важная → срочная) */
+.todo-flag { flex: 0 0 auto; width: 24px; height: 24px; border-radius: 6px; border: 0; background: transparent; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; padding: 0; color: var(--text-mute); transition: color .12s, background .12s; }
+.todo-flag:hover { background: var(--hover); }
+.todo-flag.pr-0 { color: var(--text-mute); opacity: .5; }
+.todo-flag.pr-1 { color: var(--warn); }
+.todo-flag.pr-1 .ic { fill: var(--warn); }
+.todo-flag.pr-2 { color: var(--danger); }
+.todo-flag.pr-2 .ic { fill: var(--danger); }
+.todo-text { flex: 1; min-width: 0; white-space: pre-wrap; word-break: break-word; color: var(--text); font-size: 12.5px; max-height: 88px; overflow: auto; line-height: 1.4; cursor: text; }
+/* иконки-действия — в стиле плашек проекта, всегда видимые */
+.todo-acts { flex: 0 0 auto; display: flex; align-items: center; gap: 2px; }
+.todo-act { flex: 0 0 auto; width: 26px; height: 26px; padding: 0; border-radius: 7px; background: transparent; border: 0; color: var(--text-mute); cursor: pointer; transition: color .12s, background .12s; display: inline-flex; align-items: center; justify-content: center; }
+.todo-act:hover:not(:disabled) { color: var(--text); background: var(--hover); }
+.todo-act.on { color: var(--warn); background: rgba(224,175,104,0.14); }
+.todo-act.danger:hover { color: var(--danger); }
+.todo-act:disabled { opacity: .3; cursor: default; }
 .note-card { background: var(--surface); border: 1px solid var(--border); border-radius: 11px; padding: 8px 11px 10px; cursor: default; transition: border-color .12s, box-shadow .12s; }
 .note-card.dragging { opacity: 0.5; border-color: var(--border-accent); }
 .note-card:hover { border-color: var(--border-strong); box-shadow: 0 2px 10px rgba(0,0,0,0.18); }

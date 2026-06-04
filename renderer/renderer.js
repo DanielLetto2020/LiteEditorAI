@@ -28,7 +28,7 @@ import { css } from '@codemirror/lang-css';
 import { sql, PostgreSQL, MySQL, SQLite } from '@codemirror/lang-sql';
 import { showMinimap } from '@replit/codemirror-minimap';
 
-const APP_VERSION = 'alpha v1.0.107';
+const APP_VERSION = 'alpha v1.0.108';
 const GUTTER = 5;
 const SCRATCH_ID = '__scratch__'; // префикс id системных терминалов (домашняя папка), не привязаны к проектам
 const isScratch = (id) => typeof id === 'string' && id.startsWith(SCRATCH_ID);
@@ -94,6 +94,7 @@ const ICONS = {
   layers: '<path d="M12 3l8.5 4.5L12 12 3.5 7.5z"/><path d="M3.5 12L12 16.5 20.5 12M3.5 16.5L12 21l8.5-4.5"/>',
   database: '<ellipse cx="12" cy="6" rx="7" ry="3"/><path d="M5 6v12c0 1.66 3.13 3 7 3s7-1.34 7-3V6"/><path d="M5 12c0 1.66 3.13 3 7 3s7-1.34 7-3"/>',
   power: '<path d="M12 4v8"/><path d="M7.5 7.5a6.5 6.5 0 1 0 9 0"/>',
+  flag: '<path d="M6 21V4.5h11l-2 4 2 4H6"/>',
 };
 function icon(name, size = 16) {
   return svgEl(`<svg class="ic" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name] || ''}</svg>`);
@@ -133,7 +134,7 @@ function persist(key, value) { STORE[key] = value; lite.store.set(key, value); }
 function projId(p) { let h = 5381; for (let i = 0; i < p.length; i++) h = ((h << 5) + h + p.charCodeAt(i)) >>> 0; return 'p' + h.toString(36); }
 
 // ---------------------------------------------------------------- settings (tiny on purpose)
-const DEFAULT_SETTINGS = { notifications: true, sound: false, idleMs: 1200, fontSize: 13, workingDir: '', scanDirs: [], theme: 'neumorphism', onboarded: false, shell: '', minimap: true };
+const DEFAULT_SETTINGS = { notifications: true, sound: false, idleMs: 1200, fontSize: 13, workingDir: '', scanDirs: [], theme: 'neumorphism', onboarded: false, shell: '', minimap: true, notesSort: 'manual' };
 function loadSettings() { return { ...DEFAULT_SETTINGS, ...(STORE.settings || {}) }; }
 let settings = loadSettings();
 function saveSettings() { persist('settings', settings); }
@@ -1371,22 +1372,48 @@ function applyLayoutSwap(ta) {
 }
 
 // ---------------------------------------------------------------- notes / prompt cards (#4)
+// Статусы и важность задачи (TODO-модель поверх старых заметок {id,text}).
+const TODO_STATUS = ['todo', 'doing', 'done']; // цикл по клику
+const TODO_STATUS_LABEL = { todo: 'К выполнению', doing: 'В работе', done: 'Выполнено' };
+const TODO_PRIO_LABEL = ['Обычная', 'Важная', 'Срочная'];
 async function showNotes(p) {
   let notes = await lite.store.notesGet(p.id);
   if (!Array.isArray(notes)) notes = [];
+  // Миграция без потери данных: старым заметкам {id,text} проставляем дефолты status/prio.
+  notes.forEach((n) => { if (!TODO_STATUS.includes(n.status)) n.status = 'todo'; if (typeof n.prio !== 'number') n.prio = 0; });
   const q = getQueue(p.id);
+  // Порядок отображения: ручной (как в массиве) либо сортировка по важности/статусу.
+  // Операции над задачами идут по note (id), а не по индексу показа — сортировка ничего не ломает.
+  const sortedView = () => {
+    const mode = settings.notesSort || 'manual';
+    if (mode === 'manual') return notes.slice();
+    const rank = { todo: 0, doing: 1, done: 2 };
+    return notes.map((n, idx) => ({ n, idx })).sort((a, b) =>
+      mode === 'prio' ? (b.n.prio - a.n.prio) || (a.idx - b.idx)
+        : (rank[a.n.status] - rank[b.n.status]) || (b.n.prio - a.n.prio) || (a.idx - b.idx)
+    ).map((x) => x.n);
+  };
   // Detach the live-update callback on ANY close (button/Esc/backdrop) so the dismissed
   // modal + its listeners don't linger in memory until the next queue event fires.
   const { m, close } = makeModal(`
-    <h2>📝 Заметки — <span class="nm-proj"></span></h2>
+    <h2>✅ Задачи — <span class="nm-proj"></span></h2>
     <div class="nm-tabs">
-      <button class="nm-tab active" data-tab="notes">Карточки</button>
+      <button class="nm-tab active" data-tab="notes">Задачи</button>
       <button class="nm-tab" data-tab="queue">▶ Очередь<span class="nm-qbadge" id="nm-qbadge"></span></button>
     </div>
     <div class="nm-pane" id="nm-pane-notes">
-      <div class="nm-hint">«В терминал» отправляет текст без Enter. «＋ в очередь» добавляет карточку в авто-очередь (вкладка «Очередь»). Порядок — ▲/▼ или перетаскиванием.</div>
+      <div class="nm-toolbar">
+        <label class="nm-sort">Сортировка
+          <select id="nm-sort">
+            <option value="manual">Вручную</option>
+            <option value="prio">По важности</option>
+            <option value="status">По статусу</option>
+          </select>
+        </label>
+        <button class="btn nm-add" id="nm-add">＋ Новая задача</button>
+      </div>
+      <div class="nm-hint">Слева — статус (клик меняет: ☐ к выполнению → ◐ в работе → ☑ готово) и важность (флажок). Задачи не удаляются при отметке «готово» — просто помечаются. «➤» — в терминал, «→» — в авто-очередь.</div>
       <div class="nm-list" id="nm-list"></div>
-      <button class="btn nm-add" id="nm-add">＋ Новая карточка</button>
     </div>
     <div class="nm-pane" id="nm-pane-queue" hidden></div>
     <div class="modal-actions"><button class="btn primary" id="nm-close">Готово</button></div>`,
@@ -1403,7 +1430,7 @@ async function showNotes(p) {
   // Persist notes; keep queued snapshots in sync with edits and drop queued items
   // whose underlying note was deleted (queue references notes by id).
   const save = () => {
-    lite.store.notesSet(p.id, notes); noteCounts[p.id] = notes.length;
+    lite.store.notesSet(p.id, notes); noteCounts[p.id] = notes.filter((n) => n.status !== 'done').length;
     // Capture the running queue's cursor BY ID before refiltering, so deleting a note
     // mid-run can't shift q.pos onto the wrong item (which would skip a note or make
     // queueOnSettled finish early). doneIds = items already sent (before the cursor).
@@ -1437,6 +1464,7 @@ async function showNotes(p) {
 
   function editNote(row, note) {
     row.innerHTML = '';
+    row.classList.add('editing');
     const ta = el('textarea', 'note-edit'); ta.value = note.text || '';
     editing = { note, ta };
     const acts = el('div', 'note-acts');
@@ -1454,71 +1482,71 @@ async function showNotes(p) {
   function render() {
     editing = null; // перерисовка закрывает любой открытый редактор
     list.innerHTML = '';
-    notes.forEach((note, i) => {
-      const row = el('div', 'note-card');
-      row.draggable = true; row.dataset.i = String(i);
-      // top strip: drag grip + queue pill
+    const manual = (settings.notesSort || 'manual') === 'manual';
+    sortedView().forEach((note) => {
+      const realIdx = notes.indexOf(note); // индекс в массиве (для ручного порядка/перетаскивания)
+      const row = el('div', 'todo-row st-' + note.status + ' pr-' + note.prio + (note.status === 'done' ? ' done' : ''));
+      row.dataset.id = note.id;
+      if (manual) { row.draggable = true; row.dataset.i = String(realIdx); }
+      // статус: клик циклит ☐ к выполнению → ◐ в работе → ☑ готово
+      const chk = el('button', 'todo-check st-' + note.status);
+      chk.title = 'Статус: ' + TODO_STATUS_LABEL[note.status] + ' (клик — сменить)';
+      if (note.status === 'done') chk.appendChild(icon('check', 13));
+      chk.addEventListener('click', () => { flushEdit(); note.status = TODO_STATUS[(TODO_STATUS.indexOf(note.status) + 1) % TODO_STATUS.length]; save(); render(); });
+      // важность: клик циклит обычная → важная → срочная
+      const flag = el('button', 'todo-flag pr-' + note.prio);
+      flag.title = 'Важность: ' + TODO_PRIO_LABEL[note.prio] + ' (клик — сменить)';
+      flag.appendChild(icon('flag', 13));
+      flag.addEventListener('click', () => { flushEdit(); note.prio = (note.prio + 1) % 3; save(); render(); });
+      // текст задачи
+      const txt = el('div', 'todo-text', note.text || '(пусто)');
+      txt.title = 'Двойной клик — редактировать';
+      txt.addEventListener('dblclick', () => editNote(row, note));
+      // действия — иконки-кнопки в стиле плашек проекта, всегда видимые
+      const acts = el('div', 'todo-acts');
       const qi = q.items.findIndex((it) => it.noteId === note.id);
       const queued = qi >= 0;
-      const top = el('div', 'note-top');
-      top.appendChild(el('span', 'note-grip', '⠿'));
-      const qBtn = el('button', 'note-qpill' + (queued ? ' on' : ''), queued ? `▶ в очереди · ${qi + 1}` : '＋ в очередь');
-      // While the queue runs, membership is frozen (matches the queue tab's disabled
-      // reorder/remove) — changing q.items mid-run would shift q.pos onto the wrong note.
+      const qBtn = iconBtn('todo-act' + (queued ? ' on' : ''), 'arrow-right', '', 14);
       qBtn.disabled = q.running;
-      qBtn.title = q.running ? 'Очередь выполняется — изменить состав нельзя' : (queued ? 'Убрать из авто-очереди' : 'Добавить в авто-очередь');
+      qBtn.title = q.running ? 'Очередь выполняется — состав менять нельзя' : (queued ? `В авто-очереди · ${qi + 1} (клик — убрать)` : 'Добавить в авто-очередь');
       qBtn.addEventListener('click', () => {
         if (q.running) return;
         flushEdit();
         const idx = q.items.findIndex((it) => it.noteId === note.id);
-        if (idx >= 0) q.items.splice(idx, 1);
-        else q.items.push({ noteId: note.id, text: note.text || '' });
+        if (idx >= 0) q.items.splice(idx, 1); else q.items.push({ noteId: note.id, text: note.text || '' });
         queueChanged(q); updateTabBadge(); render();
       });
-      top.appendChild(qBtn);
-      row.appendChild(top);
-      row.append(el('div', 'note-text', note.text || '(пусто)'));
-      // footer: prominent send split-button (left) + tidy icon cluster (right)
-      const acts = el('div', 'note-acts');
-      const sendG = el('div', 'note-send-group');
-      const send = el('button', 'note-send', '➤ В терминал');
-      send.title = 'Отправить, но оставить карточку (для повторяющихся)';
+      const send = iconBtn('todo-act', 'terminal', 'В терминал (без Enter)', 14);
       send.addEventListener('click', () => { flushEdit(); sendNoteToTerminal(p, note.text); close(); });
-      const sendDel = el('button', 'note-send-sub', 'и удалить');
-      sendDel.title = 'Отправить в терминал и убрать карточку (одноразовый промпт)';
-      sendDel.addEventListener('click', () => { flushEdit(); const t = note.text; notes.splice(i, 1); save(); sendNoteToTerminal(p, t); close(); });
-      sendG.append(send, sendDel);
-      acts.appendChild(sendG);
-      const tools = el('div', 'note-tools');
-      const up = iconBtn('note-ibtn', 'chevron-up', 'Выше', 14); up.disabled = i === 0;
-      up.addEventListener('click', () => moveNote(i, -1));
-      const down = iconBtn('note-ibtn', 'chevron-down', 'Ниже', 14); down.disabled = i === notes.length - 1;
-      down.addEventListener('click', () => moveNote(i, +1));
-      const edit = iconBtn('note-ibtn', 'pencil', 'Редактировать', 14);
+      const edit = iconBtn('todo-act', 'pencil', 'Редактировать', 14);
       edit.addEventListener('click', () => editNote(row, note));
-      const del = iconBtn('note-ibtn danger', 'trash', 'Удалить', 14);
-      del.addEventListener('click', () => { notes.splice(i, 1); save(); render(); });
-      tools.append(up, down, edit, del);
-      acts.appendChild(tools);
-      row.append(acts);
-      row.addEventListener('dragstart', () => { dragFrom = i; row.classList.add('dragging'); });
-      row.addEventListener('dragend', () => row.classList.remove('dragging'));
-      row.addEventListener('dragover', (e) => e.preventDefault());
-      row.addEventListener('drop', (e) => {
-        e.preventDefault();
-        if (dragFrom == null || dragFrom === i) return;
-        const [moved] = notes.splice(dragFrom, 1); notes.splice(i, 0, moved);
-        dragFrom = null; save(); render();
-      });
+      const del = iconBtn('todo-act danger', 'trash', 'Удалить задачу', 14);
+      del.addEventListener('click', () => { showConfirm('Удалить задачу?', 'Удалить совсем (а не пометить выполненной)?', 'Удалить', () => { const ix = notes.indexOf(note); if (ix >= 0) notes.splice(ix, 1); save(); render(); }); });
+      acts.append(qBtn, send, edit, del);
+      if (manual) { // перестановка только в ручном режиме (в сортировках индексы показа не равны порядку)
+        const up = iconBtn('todo-act', 'chevron-up', 'Выше', 14); up.disabled = realIdx === 0; up.addEventListener('click', () => moveNote(realIdx, -1));
+        const down = iconBtn('todo-act', 'chevron-down', 'Ниже', 14); down.disabled = realIdx === notes.length - 1; down.addEventListener('click', () => moveNote(realIdx, +1));
+        acts.append(up, down);
+      }
+      row.append(chk, flag, txt, acts);
+      if (manual) {
+        row.addEventListener('dragstart', () => { dragFrom = realIdx; row.classList.add('dragging'); });
+        row.addEventListener('dragend', () => row.classList.remove('dragging'));
+        row.addEventListener('dragover', (e) => e.preventDefault());
+        row.addEventListener('drop', (e) => { e.preventDefault(); if (dragFrom == null || dragFrom === realIdx) return; const [moved] = notes.splice(dragFrom, 1); notes.splice(realIdx, 0, moved); dragFrom = null; save(); render(); });
+      }
       list.appendChild(row);
     });
-    if (!notes.length) list.appendChild(el('div', 'nm-empty', 'Пока пусто — добавь карточку с промптом.'));
+    if (!notes.length) list.appendChild(el('div', 'nm-empty', 'Пока пусто — добавь задачу кнопкой «＋ Новая задача».'));
   }
+  const sortSel = m.querySelector('#nm-sort');
+  sortSel.value = settings.notesSort || 'manual';
+  sortSel.addEventListener('change', () => { settings.notesSort = sortSel.value; saveSettings(); render(); });
   m.querySelector('#nm-add').addEventListener('click', () => {
-    const note = { id: 'n' + Date.now().toString(36), text: '' };
+    const note = { id: 'n' + Date.now().toString(36), text: '', status: 'todo', prio: 0 };
     notes.push(note); save(); render();
-    const rows = list.querySelectorAll('.note-card');
-    if (rows.length) editNote(rows[rows.length - 1], note);
+    const row = list.querySelector(`.todo-row[data-id="${note.id}"]`);
+    if (row) editNote(row, note);
   });
 
   // ---- Queue tab ----
