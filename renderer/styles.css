@@ -253,8 +253,8 @@ html, body {
 .card-copy:hover { color: var(--green); background: var(--hover); }
 .card-copy.copied { color: var(--green); }
 
-/* card actions: compact icon cluster on the head row (бывший футер убран → карточка ниже) */
-.card-acts { display: flex; align-items: center; gap: 1px; flex: 0 0 auto; }
+/* card actions: compact icon cluster on its own row под заголовком, выровнено влево */
+.card-acts { display: flex; align-items: center; justify-content: flex-start; gap: 5px; margin-top: 4px; }
 .card-act {
   position: relative; flex: 0 0 auto; width: 24px; height: 24px; padding: 0; border-radius: 6px;
   background: transparent; border: 0; color: var(--text-mute); cursor: pointer;
@@ -269,6 +269,7 @@ html, body {
   font-size: 9px; font-weight: 700; line-height: 1;
 }
 .card-acts .card-qbadge { margin-right: 3px; }
+.card-acts .card-kebab { margin-left: auto; } /* кебаб всегда прижат к правому краю плашки */
 
 .card-add { text-align: center; color: var(--green); border-style: dashed; background: transparent; font-weight: 600; }
 .card-add:hover { background: var(--hover); }

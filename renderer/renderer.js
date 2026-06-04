@@ -27,7 +27,7 @@ import { html } from '@codemirror/lang-html';
 import { css } from '@codemirror/lang-css';
 import { sql, PostgreSQL, MySQL, SQLite } from '@codemirror/lang-sql';
 
-const APP_VERSION = 'alpha v1.0.104';
+const APP_VERSION = 'alpha v1.0.105';
 const GUTTER = 5;
 const SCRATCH_ID = '__scratch__'; // префикс id системных терминалов (домашняя папка), не привязаны к проектам
 const isScratch = (id) => typeof id === 'string' && id.startsWith(SCRATCH_ID);
@@ -701,8 +701,9 @@ function makeCard(p) {
   qbadge.addEventListener('click', (e) => { e.stopPropagation(); showNotes(p); });
   const acts = el('div', 'card-acts');
   acts.append(qbadge, star, openViewer, notesBtn, gitBtn, kebab);
-  head.append(ind, title, acts);
+  head.append(ind, title);
   card.appendChild(head);
+  card.appendChild(acts); // иконки вынесены на отдельную строку под заголовком (слева) — карточка компактнее по ширине
 
   // путь не дублируем на карточке — он в тултипе имени и в ⋮-меню («Копировать путь»)
   if (missing.has(p.id)) {
