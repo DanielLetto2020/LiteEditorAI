@@ -213,13 +213,18 @@ html, body {
 .pgroup-chev { display: inline-flex; align-items: center; color: var(--text-dim); }
 .pgroup-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pgroup-count { font-size: 10px; padding: 1px 8px; border-radius: 9px; background: var(--hover); color: var(--text-dim); }
-.pgroup-tools { display: flex; gap: 1px; }
-.pgroup-arrow {
-  width: 23px; height: 22px; padding: 0; cursor: pointer;
-  background: transparent; border: none; border-radius: 6px; color: var(--text-dim);
-  opacity: .6; transition: opacity .12s, background .12s, color .12s;
+/* инструменты категории спрятаны в покое, выезжают по наведению на шапку → строка компактнее */
+.pgroup-tools {
+  display: flex; gap: 1px; flex: 0 0 auto;
+  max-width: 0; overflow: hidden; opacity: 0;
+  transition: max-width .15s ease, opacity .15s ease;
 }
-.pgroup-head:hover .pgroup-arrow { opacity: 1; }
+.pgroup-head:hover .pgroup-tools, .pgroup-head:focus-within .pgroup-tools { max-width: 90px; opacity: 1; }
+.pgroup-arrow {
+  width: 22px; height: 21px; padding: 0; cursor: pointer; flex: 0 0 auto;
+  background: transparent; border: none; border-radius: 6px; color: var(--text-dim);
+  transition: background .12s, color .12s;
+}
 .pgroup-arrow:hover:not(:disabled) { background: var(--hover-2); color: var(--text); }
 .pgroup-arrow:disabled { opacity: .2; cursor: default; }
 .pgroup.pinned .pgroup-name { color: #e0c060; }
@@ -253,8 +258,21 @@ html, body {
 .card-copy:hover { color: var(--green); background: var(--hover); }
 .card-copy.copied { color: var(--green); }
 
-/* card actions: compact icon cluster on its own row под заголовком, выровнено влево */
-.card-acts { display: flex; align-items: center; justify-content: flex-start; gap: 5px; margin-top: 4px; }
+/* правый «хвост» карточки: в покое — свёрнутая стрелка, по наведению на карточку выезжают кнопки */
+.card-tail { display: flex; align-items: center; gap: 0; flex: 0 0 auto; }
+.card-reveal {
+  display: inline-flex; align-items: center; justify-content: center;
+  flex: 0 0 auto; width: 24px; height: 24px; color: var(--text-mute);
+  max-width: 24px; opacity: .55; overflow: hidden;
+  transition: max-width .16s ease, opacity .16s ease;
+}
+.card:hover .card-reveal { max-width: 0; opacity: 0; }
+.card-acts {
+  display: flex; align-items: center; gap: 5px; flex: 0 0 auto;
+  max-width: 0; opacity: 0; overflow: hidden; padding: 2px 0;
+  transition: max-width .18s ease, opacity .16s ease;
+}
+.card:hover .card-acts { max-width: 240px; opacity: 1; }
 .card-act {
   position: relative; flex: 0 0 auto; width: 24px; height: 24px; padding: 0; border-radius: 6px;
   background: transparent; border: 0; color: var(--text-mute); cursor: pointer;
@@ -269,7 +287,6 @@ html, body {
   font-size: 9px; font-weight: 700; line-height: 1;
 }
 .card-acts .card-qbadge { margin-right: 3px; }
-.card-acts .card-kebab { margin-left: auto; } /* кебаб всегда прижат к правому краю плашки */
 
 .card-add { text-align: center; color: var(--green); border-style: dashed; background: transparent; font-weight: 600; }
 .card-add:hover { background: var(--hover); }
