@@ -91,6 +91,20 @@
             <button id="chat-send" class="btn primary chat-send" type="button" title="Отправить">▶</button>
           </div>
         </div>
+        <!-- Обработка текста: документ вместо терминала (как чат OpenRouter). Модуль renderer/textproc.js -->
+        <div id="doc-pane" class="hidden">
+          <div id="doc-toolbar">
+            <span id="doc-title" class="doc-title"></span>
+            <div id="doc-modes" class="doc-modes"></div>
+            <div class="doc-tools-space"></div>
+            <span id="doc-saved" class="doc-saved"></span>
+          </div>
+          <div id="doc-body" class="doc-body">
+            <div id="doc-editor" class="doc-editor"></div>
+            <div id="doc-preview" class="doc-preview prev-md" style="display:none"></div>
+            <button id="doc-ai-btn" class="doc-ai-btn" type="button" style="display:none">✦ AI</button>
+          </div>
+        </div>
         </div>
       </section>
 

@@ -27,8 +27,9 @@ import { html } from '@codemirror/lang-html';
 import { css } from '@codemirror/lang-css';
 import { sql, PostgreSQL, MySQL, SQLite } from '@codemirror/lang-sql';
 import { showMinimap } from '@replit/codemirror-minimap';
+import { initTextProc } from './textproc.js';
 
-const APP_VERSION = 'alpha v1.0.108';
+const APP_VERSION = 'alpha v1.0.109';
 const GUTTER = 5;
 const SCRATCH_ID = '__scratch__'; // префикс id системных терминалов (домашняя папка), не привязаны к проектам
 const isScratch = (id) => typeof id === 'string' && id.startsWith(SCRATCH_ID);
@@ -162,6 +163,20 @@ const orUsageByKey = new Map();  // apiKey -> {usage,limit,limit_remaining,label
 const pendingOr = new Map();  // reqId -> { chunk, done, error } stream handlers
 let orReqSeq = 0;
 const OR_KEY = '__openrouter__'; // accordion/section key for the OpenRouter group
+
+// ---------------------------------------------------------------- Text processing (изолированный модуль)
+// Документ-плашка открывается ВМЕСТО терминала (как чат OpenRouter). Вся логика — в
+// renderer/textproc.js; связь только через host-контракт (см. модуль). activeDocId ≠ null
+// → центральная зона показывает документ. Mutually exclusive с чатом и терминалом.
+let activeDocId = null;
+const TextProc = initTextProc({
+  el, icon, iconBtn, makeModal, showConfirm, showPrompt, toast,
+  STORE, persist, settings, saveSettings, isCollapsed, setCollapsed,
+  activate: (id) => guardDirty(() => { activeOrId = null; activeDocId = id; renderProjects(); showActiveTerminal(); }),
+  isActive: (id) => activeDocId === id,
+  deactivate: () => { activeDocId = null; renderProjects(); showActiveTerminal(); },
+  refresh: () => renderProjects(),
+});
 function saveOrCards() { persist('openrouter', orCards); }
 function activeOrCard() { return orCards.find((c) => c.id === activeOrId) || null; }
 function newOrId() { return 'or' + Date.now().toString(36) + Math.floor(Math.random() * 1e5).toString(36); }
@@ -573,6 +588,7 @@ function renderProjects() {
   const sections = buildSections();
   sections.forEach((s, i) => box.appendChild(renderSection(s, i, sections)));
   box.appendChild(renderOrSection()); // always shown (even with 0 keys) — own «интеграции» strip
+  box.appendChild(TextProc.renderSection()); // «Обработка текста» — изолированный модуль
   renderMiniRail();
 }
 // OpenRouter section — fixed group (no reorder arrows), like a special category.
@@ -756,6 +772,7 @@ function openChat(id) {
     if (dbOpen) setDbOpen(false);
     if (scratchOpen) setScratchOpen(false);
     activeOrId = id;
+    activeDocId = null; // чат и документ «Обработки текста» взаимоисключающи
     const st = getOrChat(id);
     renderProjects();        // refresh card highlights (active OR card, deselect projects)
     if (viewerOpen) refreshViewerForActive(); // chat mode → вивер показывает заглушку
@@ -2088,10 +2105,13 @@ function copySelection(term) {
 }
 
 function showActiveTerminal() {
-  const chatMode = activeOrId !== null;
+  const docMode = activeDocId !== null;            // документ «Обработки текста»
+  const chatMode = !docMode && activeOrId !== null; // чат OpenRouter
+  TextProc.sync(docMode ? activeDocId : null);      // показать/спрятать (и сохранить) документ
+  $('#doc-pane').classList.toggle('hidden', !docMode);
   $('#chat-pane').classList.toggle('hidden', !chatMode);
-  $('#terminals').style.display = chatMode ? 'none' : '';
-  if (chatMode) { // chat replaces the terminal; hide tabs/terminals/hint
+  $('#terminals').style.display = (docMode || chatMode) ? 'none' : '';
+  if (docMode || chatMode) { // документ/чат заменяют терминал; прячем вкладки/терминалы/подсказку
     $('#empty-hint').style.display = 'none';
     $('#term-header').style.display = 'none';
     reportRemoteActive(null);
@@ -2740,6 +2760,7 @@ function doSetActive(id) {
   if (!proj) return;
   activeId = id;
   activeOrId = null; // selecting a project always leaves chat mode
+  activeDocId = null; // …и режим документа «Обработки текста»
   if (watchedRoot && watchedRoot !== proj.path) lite.fs.unwatch(watchedRoot);
   lite.fs.watch(proj.path); watchedRoot = proj.path;
   ensureProjectTabs(proj);
