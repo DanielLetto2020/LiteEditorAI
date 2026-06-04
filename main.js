@@ -171,7 +171,7 @@ try {
   const legacy = path.join(os.homedir(), '.LiteEditor');
   if (!fs.existsSync(storeDir) && fs.existsSync(legacy)) fs.cpSync(legacy, storeDir, { recursive: true });
 } catch (_) {}
-const STORE_KEYS = ['projects', 'settings', 'layout', 'recents', 'lastParent', 'categories', 'sectionOrder', 'accordions', 'dismissed', 'uiState', 'projTabs', 'openrouter', 'remote', 'shares', 'dockerUi', 'dbConnections', 'dbUi', 'rhConnections', 'rhUi'];
+const STORE_KEYS = ['projects', 'settings', 'layout', 'recents', 'lastParent', 'categories', 'sectionOrder', 'accordions', 'dismissed', 'uiState', 'projTabs', 'openrouter', 'remote', 'shares', 'dockerUi', 'dbConnections', 'dbUi', 'rhConnections', 'rhUi', 'textproc', 'tpPrompts'];
 // Папка-«стор» для шаринга с пультом (агент кладёт сюда файлы; в PTY доступна как $LITE_STORE).
 const pultStoreDir = path.join(storeDir, 'store');
 try { fs.mkdirSync(pultStoreDir, { recursive: true }); } catch (_) {}
@@ -458,6 +458,55 @@ ipcMain.on('openrouter:chatStart', (e, { reqId, key, model, messages, temperatur
 ipcMain.on('openrouter:chatAbort', (e, { reqId } = {}) => {
   const r = orReqs.get(reqId);
   if (r) { orReqs.delete(reqId); try { r.destroy(); } catch (_) {} safeSend(e.sender, 'openrouter:done', { reqId }); }
+});
+
+// ---------------------------------------------------------------- Text processing (Обработка текста)
+// Изолированная подсистема (renderer/textproc.js). Документы-плашки = файлы в
+// ~/.LiteEditorAI/textproc/ (IO идёт через общие fs:* по абсолютным путям). Выделенный
+// фрагмент прогоняется через ЛОКАЛЬНОГО агента в headless-режиме — по подписке
+// пользователя, БЕЗ API-ключей (ключевая идея фичи).
+const tpDir = path.join(storeDir, 'textproc');
+ipcMain.handle('tp:dir', () => { try { fs.mkdirSync(tpDir, { recursive: true }); } catch (_) {} return tpDir; });
+
+// Как звать CLI в неинтерактивном режиме и куда подавать промпт (stdin/arg).
+const TP_AGENTS = {
+  claude: { cmd: 'claude', args: ['-p', '--output-format', 'text'], via: 'stdin' },
+  codex: { cmd: 'codex', args: ['exec'], via: 'arg' },
+};
+// GUI-сессия часто не видит ~/.local/bin и nvm-bin → дополняем PATH, чтобы claude/codex нашлись.
+function tpEnv() {
+  const sep = process.platform === 'win32' ? ';' : ':';
+  const extra = [path.join(os.homedir(), '.local', 'bin'), path.dirname(process.execPath)];
+  return { ...process.env, PATH: extra.join(sep) + sep + (process.env.PATH || '') };
+}
+const tpReqs = new Map(); // reqId -> ChildProcess
+ipcMain.on('tp:run', (e, { reqId, agent, prompt } = {}) => {
+  const sender = e.sender;
+  const conf = TP_AGENTS[agent] || TP_AGENTS.claude;
+  const args = conf.via === 'arg' ? [...conf.args, prompt || ''] : [...conf.args];
+  let child;
+  try { child = spawn(conf.cmd, args, { cwd: os.homedir(), env: tpEnv() }); }
+  catch (err) { safeSend(sender, 'tp:error', { reqId, error: 'не запустить «' + conf.cmd + '»: ' + (err.message || err) }); return; }
+  tpReqs.set(reqId, child);
+  let out = '', errOut = '';
+  const to = setTimeout(() => { if (tpReqs.has(reqId)) { tpReqs.delete(reqId); try { child.kill(); } catch (_) {} safeSend(sender, 'tp:error', { reqId, error: 'таймаут (агент не ответил вовремя)' }); } }, 240000);
+  child.stdout.on('data', (c) => { out += c.toString('utf8'); });
+  child.stderr.on('data', (c) => { errOut += c.toString('utf8'); });
+  child.on('error', (err) => {
+    if (!tpReqs.has(reqId)) return; tpReqs.delete(reqId); clearTimeout(to);
+    safeSend(sender, 'tp:error', { reqId, error: 'агент «' + conf.cmd + '» не найден/не запустился: ' + (err.message || err) });
+  });
+  child.on('close', (code) => {
+    if (!tpReqs.has(reqId)) return; tpReqs.delete(reqId); clearTimeout(to);
+    const text = out.trim();
+    if (text) safeSend(sender, 'tp:done', { reqId, text }); // непустой вывод = результат (даже при ненулевом коде)
+    else safeSend(sender, 'tp:error', { reqId, error: errOut.trim() || ('агент завершился с кодом ' + code) });
+  });
+  if (conf.via === 'stdin') { try { child.stdin.write(prompt || ''); child.stdin.end(); } catch (_) {} }
+});
+ipcMain.on('tp:abort', (_e, { reqId } = {}) => {
+  const c = tpReqs.get(reqId);
+  if (c) { tpReqs.delete(reqId); try { c.kill(); } catch (_) {} }
 });
 
 // ---------------------------------------------------------------- settings backup (export / import)

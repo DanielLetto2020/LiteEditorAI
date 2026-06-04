@@ -54,6 +54,15 @@ contextBridge.exposeInMainWorld('lite', {
     onError: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('openrouter:error', h); return () => ipcRenderer.removeListener('openrouter:error', h); },
   },
 
+  // Обработка текста: дефолтная папка документов + прогон фрагмента через локального агента.
+  tp: {
+    dir: () => ipcRenderer.invoke('tp:dir'),
+    run: (opts) => ipcRenderer.send('tp:run', opts),
+    abort: (reqId) => ipcRenderer.send('tp:abort', { reqId }),
+    onDone: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('tp:done', h); return () => ipcRenderer.removeListener('tp:done', h); },
+    onError: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('tp:error', h); return () => ipcRenderer.removeListener('tp:error', h); },
+  },
+
   update: {
     check: () => ipcRenderer.invoke('update:check'), // latest GitHub release → {tag,name,notes,url} | {error}
   },
