@@ -276,12 +276,13 @@ ipcMain.handle('logs:read', (_e, name) => {
 ipcMain.on('store:loadAll', (e) => {
   const o = {};
   for (const k of STORE_KEYS) { const v = readStoreKey(k); if (v !== undefined) o[k] = v; }
-  o.noteCounts = {}; // project id -> number of notes, for card badges
+  o.noteCounts = {}; // project id -> number of ACTIVE (не выполненных) задач, for card badges
   try {
     const nd = path.join(storeDir, 'notes');
     for (const f of fs.readdirSync(nd)) {
       if (!f.endsWith('.json')) continue;
-      try { const a = JSON.parse(fs.readFileSync(path.join(nd, f), 'utf8')); if (Array.isArray(a) && a.length) o.noteCounts[f.slice(0, -5)] = a.length; } catch (_) {}
+      // старые заметки без поля status считаем активными (status='todo' по умолчанию)
+      try { const a = JSON.parse(fs.readFileSync(path.join(nd, f), 'utf8')); if (Array.isArray(a)) { const n = a.filter((x) => x && x.status !== 'done').length; if (n) o.noteCounts[f.slice(0, -5)] = n; } } catch (_) {}
     }
   } catch (_) {}
   e.returnValue = o; // synchronous: renderer loads the snapshot once at startup
