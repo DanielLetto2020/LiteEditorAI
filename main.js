@@ -2,6 +2,7 @@
 // Thin backend: project picker, PTY lifecycle, file ops, window controls.
 const { app, BrowserWindow, ipcMain, dialog, shell, Menu, clipboard, screen, Tray, nativeImage, crashReporter, safeStorage } = require('electron');
 const dbBackend = require('./lib/db');
+const rhBackend = require('./lib/remotehost');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
@@ -170,7 +171,7 @@ try {
   const legacy = path.join(os.homedir(), '.LiteEditor');
   if (!fs.existsSync(storeDir) && fs.existsSync(legacy)) fs.cpSync(legacy, storeDir, { recursive: true });
 } catch (_) {}
-const STORE_KEYS = ['projects', 'settings', 'layout', 'recents', 'lastParent', 'categories', 'sectionOrder', 'accordions', 'dismissed', 'uiState', 'projTabs', 'openrouter', 'remote', 'shares', 'dockerUi', 'dbConnections', 'dbUi'];
+const STORE_KEYS = ['projects', 'settings', 'layout', 'recents', 'lastParent', 'categories', 'sectionOrder', 'accordions', 'dismissed', 'uiState', 'projTabs', 'openrouter', 'remote', 'shares', 'dockerUi', 'dbConnections', 'dbUi', 'rhConnections', 'rhUi'];
 // Папка-«стор» для шаринга с пультом (агент кладёт сюда файлы; в PTY доступна как $LITE_STORE).
 const pultStoreDir = path.join(storeDir, 'store');
 try { fs.mkdirSync(pultStoreDir, { recursive: true }); } catch (_) {}
@@ -227,6 +228,15 @@ const dbApi = dbBackend.registerDbIpc({
   ipcMain, safeStorage, dialog,
   getConnections: () => readStoreKey('dbConnections'),
   setConnections: (v) => writeStoreKey('dbConnections', v),
+});
+
+// «RemoteHost» backend (интерактивные SSH-сессии + safeStorage-секреты) — lib/remotehost.js.
+// send() лениво ссылается на mainWindow (создаётся позже), вызывается только при живой сессии.
+const rhApi = rhBackend.registerRemoteIpc({
+  ipcMain, safeStorage, dialog,
+  send: (ch, payload) => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(ch, payload); },
+  getConnections: () => readStoreKey('rhConnections'),
+  setConnections: (v) => writeStoreKey('rhConnections', v),
 });
 
 // File logging lives next to the store, survives restarts, keeps 5 days.
@@ -967,6 +977,7 @@ app.on('window-all-closed', () => {
   for (const cp of cLogProcs.values()) { try { cp.kill(); } catch (_) {} }
   cLogProcs.clear();
   try { dbApi.closeAll(); } catch (_) {}
+  try { rhApi.closeAll(); } catch (_) {}
   for (const w of watchers.values()) { try { w.watcher.close(); } catch (_) {} }
   watchers.clear();
   if (process.platform !== 'darwin') app.quit();

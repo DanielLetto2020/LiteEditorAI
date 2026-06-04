@@ -201,7 +201,7 @@ html, body {
 .card-star.on .ic { fill: currentColor; } /* filled gold star when favorited */
 
 /* project group accordions (Избранное / Все / категории) */
-.pgroup { margin-bottom: 6px; }
+.pgroup { margin-bottom: 10px; }
 .pgroup-head {
   display: flex; align-items: center; gap: 6px; padding: 6px 9px; cursor: pointer;
   font-size: 10.5px; letter-spacing: .6px; text-transform: uppercase; color: var(--text-dim);
@@ -213,17 +213,22 @@ html, body {
 .pgroup-chev { display: inline-flex; align-items: center; color: var(--text-dim); }
 .pgroup-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pgroup-count { font-size: 10px; padding: 1px 8px; border-radius: 9px; background: var(--hover); color: var(--text-dim); }
-.pgroup-tools { display: flex; gap: 1px; }
-.pgroup-arrow {
-  width: 23px; height: 22px; padding: 0; cursor: pointer;
-  background: transparent; border: none; border-radius: 6px; color: var(--text-dim);
-  opacity: .6; transition: opacity .12s, background .12s, color .12s;
+/* инструменты категории спрятаны в покое, выезжают по наведению на шапку → строка компактнее */
+.pgroup-tools {
+  display: flex; gap: 1px; flex: 0 0 auto;
+  max-width: 0; overflow: hidden; opacity: 0;
+  transition: max-width .15s ease, opacity .15s ease;
 }
-.pgroup-head:hover .pgroup-arrow { opacity: 1; }
+.pgroup-head:hover .pgroup-tools, .pgroup-head:focus-within .pgroup-tools { max-width: 90px; opacity: 1; }
+.pgroup-arrow {
+  width: 22px; height: 21px; padding: 0; cursor: pointer; flex: 0 0 auto;
+  background: transparent; border: none; border-radius: 6px; color: var(--text-dim);
+  transition: background .12s, color .12s;
+}
 .pgroup-arrow:hover:not(:disabled) { background: var(--hover-2); color: var(--text); }
 .pgroup-arrow:disabled { opacity: .2; cursor: default; }
 .pgroup.pinned .pgroup-name { color: #e0c060; }
-.pgroup-body { padding-top: 2px; }
+.pgroup-body { padding-top: 2px; padding-bottom: 4px; }
 
 /* activity indicator: spinner while the console is producing output, accent dot when quiet */
 .pind { flex: 0 0 10px; width: 10px; height: 10px; border-radius: 50%; box-sizing: border-box; }
@@ -253,8 +258,21 @@ html, body {
 .card-copy:hover { color: var(--green); background: var(--hover); }
 .card-copy.copied { color: var(--green); }
 
-/* card actions: compact icon cluster on the head row (бывший футер убран → карточка ниже) */
-.card-acts { display: flex; align-items: center; gap: 1px; flex: 0 0 auto; }
+/* правый «хвост» карточки: в покое — свёрнутая стрелка, по наведению на карточку выезжают кнопки */
+.card-tail { display: flex; align-items: center; gap: 0; flex: 0 0 auto; }
+.card-reveal {
+  display: inline-flex; align-items: center; justify-content: center;
+  flex: 0 0 auto; width: 24px; height: 24px; color: var(--text-mute);
+  max-width: 24px; opacity: .55; overflow: hidden;
+  transition: max-width .16s ease, opacity .16s ease;
+}
+.card-tail:hover .card-reveal { max-width: 0; opacity: 0; }
+.card-acts {
+  display: flex; align-items: center; gap: 5px; flex: 0 0 auto;
+  max-width: 0; opacity: 0; overflow: hidden; padding: 2px 0;
+  transition: max-width .18s ease, opacity .16s ease;
+}
+.card-tail:hover .card-acts { max-width: 240px; opacity: 1; }
 .card-act {
   position: relative; flex: 0 0 auto; width: 24px; height: 24px; padding: 0; border-radius: 6px;
   background: transparent; border: 0; color: var(--text-mute); cursor: pointer;
@@ -317,10 +335,15 @@ html, body {
 #editor .cm-editor { height: 100%; background: transparent; }
 #editor .cm-scroller { font-family: "JetBrains Mono", "Fira Code", "Cascadia Code", Consolas, monospace; font-size: var(--editor-fs, 13px); }
 #editor .cm-scroller::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.16); }
+/* minimap — вписываем в тему: разделитель слева + акцентная рамка «где ты» */
+#editor .cm-minimap-gutter { border-left: 1px solid var(--border); background: var(--ink-2); }
+#editor .cm-minimap-overlay { background: var(--green) !important; opacity: 0.14 !important; }
+#editor .cm-minimap-overlay-container:hover .cm-minimap-overlay { opacity: 0.24 !important; }
 
 /* ---------------- tree ---------------- */
 #tree-pane { flex: 0 0 240px; min-width: 170px; border-left: 1px solid var(--border); background: var(--panel); display: flex; flex-direction: column; }
 #tree { overflow: auto; flex: 1; padding: 4px 0 10px; }
+.tree-empty { padding: 22px 16px; color: var(--text-mute); font-size: 12px; line-height: 1.5; text-align: center; }
 .tree-row {
   display: flex; align-items: center; gap: 6px;
   white-space: nowrap; cursor: pointer; padding: 3px 8px; font-size: 12.5px; color: var(--text);
@@ -510,6 +533,30 @@ html, body {
 .db-exp-btn { font-size: 10.5px; font-weight: 700; letter-spacing: .03em; color: var(--text-dim); background: var(--bg-input); border: 1px solid var(--border-strong); border-radius: 7px; padding: 4px 8px; cursor: pointer; }
 .db-exp-btn:hover { color: var(--green-bright); border-color: var(--border-accent); }
 
+/* ---------------- RemoteHost module (SSH) ---------------- */
+#rh-pane { flex: 0 0 520px; min-width: 320px; border-left: 1px solid var(--border); display: flex; flex-direction: column; background: var(--panel); }
+#rh-title { color: var(--green-bright); font-size: 12px; font-weight: 600; }
+#rh-conns { flex: 1; min-height: 0; }
+#rh-term { flex: 1; position: relative; overflow: hidden; }
+#rh-term .xterm { height: 100%; }
+.rh-tabs { flex: 0 0 auto; }
+.rh-tabs .rh-tab-dot { flex: 0 0 7px; width: 7px; height: 7px; border-radius: 50%; background: var(--green); box-shadow: 0 0 6px var(--accent-glow); margin-right: 6px; }
+.rh-name-line { display: flex; align-items: center; gap: 7px; }
+.rh-live { font-size: 9.5px; font-weight: 700; letter-spacing: .03em; color: var(--accent-contrast); background: var(--green); border-radius: 7px; padding: 1px 6px; }
+.rh-hint { font-size: 11.5px; line-height: 1.45; color: var(--text-mute); background: var(--hover); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; }
+/* remote file browser (read-only) */
+.rh-fbar { display: flex; align-items: center; gap: 6px; padding-bottom: 7px; border-bottom: 1px solid var(--border); position: sticky; top: -10px; background: var(--panel); z-index: 1; }
+.rh-fpath { flex: 1; min-width: 0; font-size: 11.5px; color: var(--text-dim); font-family: "JetBrains Mono", monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; direction: rtl; text-align: left; }
+.rh-flist { display: flex; flex-direction: column; }
+.rh-frow { display: flex; align-items: center; gap: 8px; padding: 5px 7px; border-radius: 7px; cursor: pointer; font-size: 12.5px; }
+.rh-frow:hover { background: var(--hover); }
+.rh-frow > svg { color: var(--text-mute); flex: 0 0 auto; }
+.rh-fname { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
+.rh-fsize { flex: 0 0 auto; font-size: 10.5px; color: var(--text-mute); }
+.rh-fchead { display: flex; align-items: center; gap: 8px; padding-bottom: 8px; border-bottom: 1px solid var(--border); }
+.rh-fcname { flex: 1; min-width: 0; font-size: 13px; font-weight: 600; color: var(--green-bright); overflow: hidden; text-overflow: ellipsis; }
+.rh-fview { flex: 1; min-height: 0; overflow: auto; margin: 0; padding: 8px 4px; font-family: "JetBrains Mono", monospace; font-size: 11.5px; line-height: 1.5; color: var(--text-dim); white-space: pre; }
+
 /* ---------------- gutters (resize) ---------------- */
 .gutter { flex: 0 0 5px; cursor: col-resize; background: transparent; position: relative; z-index: 5; }
 .gutter::after { content: ""; position: absolute; inset: 0 2px; background: transparent; transition: background .12s; }
@@ -523,6 +570,7 @@ body.resizing { cursor: col-resize; user-select: none; }
 #app.single #git-pane,
 #app.single #docker-pane,
 #app.single #db-pane,
+#app.single #rh-pane,
 #app.single .gutter { display: none !important; }
 #app.single #btn-single { color: var(--green); border-color: var(--border-accent); }
 

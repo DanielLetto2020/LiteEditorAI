@@ -26,8 +26,9 @@ import { markdown } from '@codemirror/lang-markdown';
 import { html } from '@codemirror/lang-html';
 import { css } from '@codemirror/lang-css';
 import { sql, PostgreSQL, MySQL, SQLite } from '@codemirror/lang-sql';
+import { showMinimap } from '@replit/codemirror-minimap';
 
-const APP_VERSION = 'alpha v1.0.104';
+const APP_VERSION = 'alpha v1.0.107';
 const GUTTER = 5;
 const SCRATCH_ID = '__scratch__'; // префикс id системных терминалов (домашняя папка), не привязаны к проектам
 const isScratch = (id) => typeof id === 'string' && id.startsWith(SCRATCH_ID);
@@ -132,7 +133,7 @@ function persist(key, value) { STORE[key] = value; lite.store.set(key, value); }
 function projId(p) { let h = 5381; for (let i = 0; i < p.length; i++) h = ((h << 5) + h + p.charCodeAt(i)) >>> 0; return 'p' + h.toString(36); }
 
 // ---------------------------------------------------------------- settings (tiny on purpose)
-const DEFAULT_SETTINGS = { notifications: true, sound: false, idleMs: 1200, fontSize: 13, workingDir: '', scanDirs: [], theme: 'neumorphism', onboarded: false, shell: '' };
+const DEFAULT_SETTINGS = { notifications: true, sound: false, idleMs: 1200, fontSize: 13, workingDir: '', scanDirs: [], theme: 'neumorphism', onboarded: false, shell: '', minimap: true };
 function loadSettings() { return { ...DEFAULT_SETTINGS, ...(STORE.settings || {}) }; }
 let settings = loadSettings();
 function saveSettings() { persist('settings', settings); }
@@ -431,6 +432,16 @@ const scratchTerms = new Map(); // scratchId -> { term, fit, search, container, 
 let scratchSessions = [];        // ordered scratch ids (tabs)
 let scratchActiveId = null;
 let scratchSeq = 0;
+// RemoteHost-модуль (SSH-сессии к серверам): список профилей + живые сессии-вкладки
+let rhOpen = false;
+let rhConnsList = [], rhSecure = true;
+let rhView = 'list';             // 'list' (менеджер подключений) | 'session' (открытый терминал)
+const rhTerms = new Map();       // sessionId -> { term, fit, search, container, name, connId }
+let rhSessions = [];             // ordered session ids (вкладки)
+let rhActiveSession = null;
+let rhSeq = 0, rhRenderSeq = 0;
+let rhFiles = null;              // активный браузер файлов: { connId, name, type, path, entries, loading, file, error }
+let rhUi = (STORE.rhUi && typeof STORE.rhUi === 'object') ? STORE.rhUi : {}; // { catCollapsed }
 let currentFile = null;
 let dirty = false;
 let diffMode = false;        // viewer showing a git diff instead of the file
@@ -439,7 +450,7 @@ let editor = null;
 let loadingDoc = false;
 const langComp = new Compartment();
 
-const DEFAULT_LAYOUT = { sidebar: 240, viewer: 520, tree: 240, scratch: 420, git: 360, docker: 460, db: 560 };
+const DEFAULT_LAYOUT = { sidebar: 240, viewer: 520, tree: 240, scratch: 420, git: 360, docker: 460, db: 560, rh: 520 };
 let layout = loadLayout();
 let lastParent = STORE.lastParent || '';
 
@@ -483,7 +494,7 @@ function loadLayout() { return { ...DEFAULT_LAYOUT, ...(STORE.layout || {}) }; }
 function saveLayout() { persist('layout', layout); }
 // Whether the viewer / system terminal panes are open — part of the backed-up state,
 // restored on startup (and on import) so the window reopens the way it was left.
-function saveUiState() { persist('uiState', { viewerOpen, scratchOpen, gitOpen, dockerOpen, dbOpen }); }
+function saveUiState() { persist('uiState', { viewerOpen, scratchOpen, gitOpen, dockerOpen, dbOpen, rhOpen }); }
 function applyLayout() {
   $('#sidebar').style.flexBasis = layout.sidebar + 'px';
   $('#viewer-pane').style.flexBasis = layout.viewer + 'px';
@@ -492,6 +503,7 @@ function applyLayout() {
   $('#git-pane').style.flexBasis = layout.git + 'px';
   $('#docker-pane').style.flexBasis = layout.docker + 'px';
   $('#db-pane').style.flexBasis = layout.db + 'px';
+  $('#rh-pane').style.flexBasis = layout.rh + 'px';
 }
 function loadRecents() { return Array.isArray(STORE.recents) ? STORE.recents : []; }
 function pushRecent(p) {
@@ -701,7 +713,13 @@ function makeCard(p) {
   qbadge.addEventListener('click', (e) => { e.stopPropagation(); showNotes(p); });
   const acts = el('div', 'card-acts');
   acts.append(qbadge, star, openViewer, notesBtn, gitBtn, kebab);
-  head.append(ind, title, acts);
+  // в покое — свёрнутая стрелка; по наведению на карточку кнопки выезжают, стрелка прячется
+  const reveal = el('span', 'card-reveal');
+  reveal.appendChild(icon('chevron-left', 15));
+  reveal.title = 'Действия проекта';
+  const tail = el('div', 'card-tail');
+  tail.append(reveal, acts);
+  head.append(ind, title, tail);
   card.appendChild(head);
 
   // путь не дублируем на карточке — он в тултипе имени и в ⋮-меню («Копировать путь»)
@@ -718,7 +736,7 @@ function makeCard(p) {
 function focusProject(id) {
   if (activeOrId !== null) {
     activeOrId = null;
-    if (id === activeId) { renderProjects(); showActiveTerminal(); return; }
+    if (id === activeId) { renderProjects(); showActiveTerminal(); if (viewerOpen) refreshViewerForActive(); return; }
   }
   setActive(id);
 }
@@ -730,8 +748,8 @@ function openChat(id) {
   const card = orCards.find((c) => c.id === id);
   if (!card) return;
   guardDirty(async () => {
-    // Opening the OpenRouter chat hides any open right module — chat takes over.
-    if (viewerOpen) setViewerOpen(false);
+    // Opening the OpenRouter chat hides project-specific right modules — chat takes over.
+    // Вивер оставляем открытым: он покажет заглушку «нет выбранного проекта» (см. refreshViewerForActive).
     if (gitOpen) setGitOpen(false);
     if (dockerOpen) setDockerOpen(false);
     if (dbOpen) setDbOpen(false);
@@ -739,6 +757,7 @@ function openChat(id) {
     activeOrId = id;
     const st = getOrChat(id);
     renderProjects();        // refresh card highlights (active OR card, deselect projects)
+    if (viewerOpen) refreshViewerForActive(); // chat mode → вивер показывает заглушку
     showActiveTerminal();    // single source of pane visibility → reveals #chat-pane
     $('#chat-title').textContent = card.name;
     $('#chat-model-btn').textContent = card.model || 'Выбрать модель…';
@@ -2265,8 +2284,8 @@ function refitScratch(focusIt) {
 }
 function setScratchOpen(open, opts = {}) {
   if (open === scratchOpen) { if (open) refitScratch(true); return; }
-  // System terminals are a right-slot module now → mutually exclusive with viewer/git/docker/db.
-  if (open) { if (viewerOpen) setViewerOpen(false); if (gitOpen) setGitOpen(false); if (dockerOpen) setDockerOpen(false); if (dbOpen) setDbOpen(false); }
+  // System terminals are a right-slot module now → mutually exclusive with viewer/git/docker/db/rh.
+  if (open) { if (viewerOpen) setViewerOpen(false); if (gitOpen) setGitOpen(false); if (dockerOpen) setDockerOpen(false); if (dbOpen) setDbOpen(false); if (rhOpen) setRhOpen(false); }
   const delta = layout.scratch + GUTTER;
   scratchOpen = open;
   $('#scratch-pane').classList.toggle('hidden', !open);
@@ -2286,11 +2305,359 @@ function restartScratch(id) {
   rec.term.focus();
 }
 
+// ================================================================ RemoteHost module (SSH)
+// Менеджер профилей подключений + живые SSH-сессии-вкладки (ssh2 shell ↔ xterm).
+// Два вида внутри панели: 'list' (список хостов) и 'session' (открытый терминал). Вкладки
+// сессий живут поверх обоих видов; «+» возвращает к списку для нового подключения.
+function setRhOpen(open, opts = {}) {
+  if (open === rhOpen) { if (open) renderRhPanel(); return; }
+  // Right slot holds one module — opening RemoteHost closes the others (chat is separate).
+  if (open) { if (viewerOpen) setViewerOpen(false); if (gitOpen) setGitOpen(false); if (dockerOpen) setDockerOpen(false); if (dbOpen) setDbOpen(false); if (scratchOpen) setScratchOpen(false); }
+  if (!open && rhFiles) { try { lite.rh.fsClose(rhFiles.connId); } catch (_) {} rhFiles = null; if (rhView === 'files') rhView = rhSessions.length ? 'session' : 'list'; }
+  const delta = layout.rh + GUTTER;
+  rhOpen = open;
+  $('#rh-pane').classList.toggle('hidden', !open);
+  $('#gutter-rh').classList.toggle('hidden', !open);
+  if (opts.grow !== false) lite.win.growBy(open ? delta : -delta); // grow:false on restore — saved width already counts this pane
+  saveUiState();
+  if (open) renderRhPanel();
+  setTimeout(refitActiveTerminal, 150);
+}
+function saveRhUi() { persist('rhUi', rhUi); }
+
+async function renderRhPanel() {
+  const seq = ++rhRenderSeq;
+  renderRhTabs(); // вкладки терминал-сессий видны во всех видах
+  $('#rh-back').style.display = (rhView !== 'list') ? '' : 'none';
+  const showSession = rhView === 'session' && rhActiveSession && rhTerms.has(rhActiveSession);
+  $('#rh-conns').style.display = showSession ? 'none' : '';
+  $('#rh-term').style.display = showSession ? 'block' : 'none';
+  if (showSession) { $('#rh-title').textContent = rhTerms.get(rhActiveSession).name; showActiveRhSession(); return; }
+  if (rhView === 'files' && rhFiles) { renderRhFiles(); return; }
+  $('#rh-title').textContent = 'Удалённые хосты';
+  const body = $('#rh-conns');
+  body.innerHTML = '<div class="git-loading">Загрузка подключений…</div>';
+  try { const r = await lite.rh.list(); rhConnsList = r.connections || []; rhSecure = r.secure !== false; }
+  catch (_) { rhConnsList = []; }
+  if (seq !== rhRenderSeq || !rhOpen) return;
+  renderRhConnections(body);
+}
+// Вернуться к списку хостов; если был открыт браузер файлов — закрыть его соединение.
+function rhGoList() { if (rhFiles) { try { lite.rh.fsClose(rhFiles.connId); } catch (_) {} rhFiles = null; } rhView = 'list'; renderRhPanel(); }
+function renderRhConnections(body) {
+  body.innerHTML = '';
+  const top = el('div', 'db-topbar');
+  top.appendChild(el('span', 'db-topbar-title', 'Подключения'));
+  const add = iconBtn('drow-act', 'plus', 'Новое подключение', 16); add.onclick = () => rhConnModal(null);
+  top.appendChild(add);
+  body.appendChild(top);
+  if (!rhSecure) body.appendChild(el('div', 'db-warn', '⚠ Системное хранилище ключей недоступно — секреты шифруются слабее (base64).'));
+  if (!rhConnsList.length) { body.appendChild(el('div', 'docker-empty', 'Нет подключений. Добавь сервер по кнопке +')); return; }
+  const groups = {};
+  for (const c of rhConnsList) { const g = c.category || 'Все'; (groups[g] = groups[g] || []).push(c); }
+  const cats = Object.keys(groups).sort((a, b) => (a === 'Все' ? -1 : b === 'Все' ? 1 : a.localeCompare(b)));
+  for (const cat of cats) body.appendChild(rhCatBlock(cat, groups[cat]));
+}
+function rhCatBlock(cat, list) {
+  const block = el('div', 'docker-group-block');
+  const head = el('div', 'docker-group-head');
+  const hue = dbCatHue(cat);
+  head.style.background = `linear-gradient(90deg, hsla(${hue},55%,50%,.22), hsla(${hue},55%,50%,.05) 55%, transparent)`;
+  head.style.borderLeft = `3px solid hsl(${hue},60%,55%)`;
+  const collapsed = !!(rhUi.catCollapsed && rhUi.catCollapsed[cat]);
+  const chev = icon(collapsed ? 'chevron-right' : 'chevron-down', 13); chev.classList.add('dgrp-chev');
+  head.append(chev, el('span', 'dgrp-name', cat), el('span', 'dgrp-count', String(list.length)));
+  const bodyEl = el('div', 'docker-group-body');
+  if (collapsed) bodyEl.style.display = 'none';
+  for (const c of list) bodyEl.appendChild(rhConnRow(c));
+  head.onclick = () => {
+    rhUi.catCollapsed = rhUi.catCollapsed || {}; rhUi.catCollapsed[cat] = !rhUi.catCollapsed[cat]; saveRhUi();
+    const col = rhUi.catCollapsed[cat]; bodyEl.style.display = col ? 'none' : '';
+    const nc = icon(col ? 'chevron-right' : 'chevron-down', 13); nc.classList.add('dgrp-chev'); head.replaceChild(nc, head.firstChild);
+  };
+  block.append(head, bodyEl);
+  return block;
+}
+function rhConnRow(c) {
+  const row = el('div', 'db-conn-row clickable');
+  row.appendChild(icon('globe', 16));
+  const main = el('div', 'drow-main');
+  const nameLine = el('div', 'rh-name-line');
+  nameLine.appendChild(el('span', 'drow-name', c.name || '(без имени)'));
+  if (rhSessions.some((sid) => { const r = rhTerms.get(sid); return r && r.connId === c.id; })) nameLine.appendChild(el('span', 'rh-live', 'на связи'));
+  main.appendChild(nameLine);
+  const proto = c.type === 'ftp' ? 'FTP' : c.type === 'sftp' ? 'SFTP' : 'SSH';
+  const defPort = c.type === 'ftp' ? 21 : 22;
+  const sub = `${proto} · ${c.user ? c.user + '@' : ''}${c.host || '—'}:${c.port || defPort}${c.auth && c.auth !== 'password' ? ' · без пароля' : ''}${c.keepalive && c.type !== 'ftp' ? ' · keepalive ' + (c.keepaliveSeconds || 30) + 'с' : ''}`;
+  main.appendChild(el('span', 'drow-sub', sub));
+  row.appendChild(main);
+  const acts = el('div', 'drow-acts');
+  const browse = iconBtn('drow-act', 'folder', 'Файлы (просмотр)', 14); browse.onclick = (e) => { e.stopPropagation(); rhOpenFiles(c); };
+  const edit = iconBtn('drow-act', 'pencil', 'Изменить', 13); edit.onclick = (e) => { e.stopPropagation(); rhConnModal(c); };
+  const del = iconBtn('drow-act danger', 'trash', 'Удалить', 13);
+  del.onclick = (e) => { e.stopPropagation(); showConfirm('Удалить подключение?', `«${c.name}» удалится из списка.`, 'Удалить', async () => { await lite.rh.delete(c.id); renderRhPanel(); }); };
+  acts.append(browse, edit, del); row.appendChild(acts);
+  // один клик: SSH → терминал, SFTP/FTP → файлы (терминала у них нет)
+  row.addEventListener('click', () => { if (c.type === 'ftp' || c.type === 'sftp') rhOpenFiles(c); else rhConnect(c); });
+  return row;
+}
+
+// ---- add/edit connection modal (SSH, безопасно: пароль/ключ/passphrase, keepalive)
+function rhConnModal(existing) {
+  const c = existing ? { ...existing } : { type: 'ssh', auth: 'password', category: 'Все', port: 22, keepalive: true, keepaliveSeconds: 30 };
+  const { m, close } = makeModal(`<h2>${existing ? 'Изменить' : 'Новое'} подключение</h2><div id="rhf" class="db-form"></div>`);
+  m.classList.add('db-modal');
+  const f = m.querySelector('#rhf');
+  const field = (label, node) => { const w = el('div', 'db-field'); w.appendChild(el('label', null, label)); w.appendChild(node); f.appendChild(w); return node; };
+  const mk = (lbl, node) => { const w = el('div', 'db-field'); w.appendChild(el('label', null, lbl)); w.appendChild(node); return w; };
+  const inp = (val, ph, type) => { const i = el('input'); i.type = type || 'text'; if (val != null) i.value = val; if (ph) i.placeholder = ph; return i; };
+
+  const name = field('Имя', inp(c.name, 'Мой сервер'));
+  const cat = field('Категория', inp(c.category || 'Все', 'Все'));
+  // protocol
+  const typeSel = el('select');
+  for (const [k, v] of [['ssh', 'SSH — терминал + файлы (SFTP)'], ['sftp', 'SFTP — только файлы'], ['ftp', 'FTP — только файлы']]) { const o = document.createElement('option'); o.value = k; o.textContent = v; if (k === (c.type || 'ssh')) o.selected = true; typeSel.appendChild(o); }
+  field('Протокол', typeSel);
+  // host group
+  const hostWrap = el('div', 'db-group');
+  const host = inp(c.host || '', 'example.com или IP');
+  const port = inp(c.port || 22, '22', 'number');
+  const user = inp(c.user || '', 'root');
+  hostWrap.append(mk('Хост', host), mk('Порт', port), mk('Пользователь', user));
+  f.appendChild(hostWrap);
+  // auth method (SSH/SFTP — пароль или ключ; FTP — только пароль)
+  const authSel = el('select');
+  for (const [k, v] of [['password', 'Пароль'], ['agent', 'Без пароля (SSH-ключ из системы)']]) { const o = document.createElement('option'); o.value = k; o.textContent = v; if (k === (c.auth || 'password')) o.selected = true; authSel.appendChild(o); }
+  const authWrap = el('div', 'db-field'); authWrap.append(el('label', null, 'Аутентификация'), authSel); f.appendChild(authWrap);
+  // password (режим «Пароль»)
+  const passWrap = el('div', 'db-group');
+  const pass = inp('', existing && c.hasPass ? '(сохранён — оставь пустым)' : 'пароль', 'password');
+  passWrap.append(mk('Пароль', pass));
+  f.appendChild(passWrap);
+  // agent hint (режим «Без пароля») — ничего вводить не нужно
+  const agentHint = el('div', 'rh-hint', 'Вход по SSH-ключу из системы (агент или ~/.ssh) — пароль и ключ вводить не нужно, как при `ssh user@host` в терминале.');
+  f.appendChild(agentHint);
+  // FTPS (TLS) — только для FTP
+  const ftps = el('input'); ftps.type = 'checkbox'; ftps.checked = !!c.ftps;
+  const ftpsLabel = el('label', 'db-check'); ftpsLabel.append(ftps, document.createTextNode(' FTPS — шифровать соединение (TLS)'));
+  f.appendChild(ftpsLabel);
+  const ftpsIns = el('input'); ftpsIns.type = 'checkbox'; ftpsIns.checked = !!c.ftpsInsecure;
+  const ftpsInsLabel = el('label', 'db-check db-check-warn'); ftpsInsLabel.append(ftpsIns, document.createTextNode(' Доверять самоподписанному сертификату (небезопасно)'));
+  f.appendChild(ftpsInsLabel);
+  // keepalive (как в phpStorm: галочка + интервал) — для SSH/SFTP
+  const kaOn = el('input'); kaOn.type = 'checkbox'; kaOn.checked = c.keepalive !== false;
+  const kaLabel = el('label', 'db-check'); kaLabel.append(kaOn, document.createTextNode(' Держать соединение живым (keepalive)'));
+  f.appendChild(kaLabel);
+  const kaWrap = el('div', 'db-group');
+  const kaSec = inp(c.keepaliveSeconds || 30, '30', 'number');
+  kaWrap.append(mk('Слать запрос каждые, сек', kaSec));
+  f.appendChild(kaWrap);
+
+  const syncType = () => {
+    const isFtp = typeSel.value === 'ftp';
+    const isAgent = !isFtp && authSel.value === 'agent';
+    authWrap.style.display = isFtp ? 'none' : '';      // FTP — только пароль
+    passWrap.style.display = isAgent ? 'none' : '';
+    agentHint.style.display = isAgent ? '' : 'none';
+    ftpsLabel.style.display = isFtp ? '' : 'none';
+    ftpsInsLabel.style.display = (isFtp && ftps.checked) ? '' : 'none';
+    kaLabel.style.display = isFtp ? 'none' : '';        // FTP keepalive не нужен
+    kaWrap.style.display = (!isFtp && kaOn.checked) ? '' : 'none';
+  };
+  typeSel.onchange = () => { const def = typeSel.value === 'ftp' ? 21 : 22; if (!port.value || port.value == 21 || port.value == 22) port.value = def; syncType(); };
+  authSel.onchange = syncType; kaOn.onchange = syncType; ftps.onchange = syncType; syncType();
+
+  const collect = () => {
+    const isFtp = typeSel.value === 'ftp';
+    const o = { id: c.id, name: name.value.trim(), category: cat.value.trim() || 'Все', type: typeSel.value, host: host.value.trim(), port: +port.value || (isFtp ? 21 : 22), user: user.value.trim(), auth: isFtp ? 'password' : authSel.value, keepalive: !isFtp && kaOn.checked, keepaliveSeconds: Math.max(2, +kaSec.value || 30) };
+    if (isFtp) { o.ftps = ftps.checked; o.ftpsInsecure = ftps.checked && ftpsIns.checked; }
+    if (o.auth === 'password' && pass.value) o.password = pass.value;
+    return o;
+  };
+  const row = el('div', 'gm-actions'); row.style.marginTop = '12px';
+  const status = el('span', 'db-test-status');
+  const test = el('button', 'btn', 'Тест');
+  test.onclick = async () => { const o = collect(); if (!o.host) { status.textContent = '✕ укажи хост'; status.className = 'db-test-status err'; return; } status.textContent = 'Проверяю…'; status.className = 'db-test-status'; const r = await lite.rh.test(o); if (r.ok) { status.textContent = '✓ подключение успешно'; status.classList.add('ok'); } else { status.textContent = '✕ ' + (r.error || 'не удалось'); status.classList.add('err'); } };
+  const save = el('button', 'btn primary', 'Сохранить');
+  save.onclick = async () => { const o = collect(); if (!o.name) { toast('Введи имя', { kind: 'err' }); return; } if (!o.host) { toast('Введи хост', { kind: 'err' }); return; } const r = await lite.rh.save(o); if (r && r.error) { toast(r.error, { kind: 'err' }); return; } close(); renderRhPanel(); };
+  const cancel = el('button', 'btn', 'Отмена'); cancel.onclick = close;
+  row.append(test, save, cancel); f.appendChild(row); f.appendChild(status);
+}
+
+// ---- sessions (live SSH terminals as tabs)
+async function rhConnect(c) {
+  const sessionId = 'rh::' + c.id + '::t' + (++rhSeq);
+  const rec = createRhTerminal(sessionId, c.name || c.host, c.id);
+  rhSessions.push(sessionId);
+  rhActiveSession = sessionId;
+  rhView = 'session';
+  renderRhPanel();
+  rec.term.write(`\x1b[90mПодключение к ${c.user ? c.user + '@' : ''}${c.host}:${c.port || 22}…\x1b[0m\r\n`);
+  const r = await lite.rh.open(sessionId, c.id, rec.term.cols, rec.term.rows);
+  if (r && r.error) rec.term.write(`\r\n\x1b[31m${r.error}\x1b[0m\r\n`);
+}
+function createRhTerminal(sessionId, name, connId) {
+  const container = el('div', 'term-instance');
+  $('#rh-term').appendChild(container);
+  const term = new Terminal({
+    fontFamily: '"JetBrains Mono", "Fira Code", "Cascadia Code", Consolas, monospace',
+    fontSize: settings.fontSize, cursorBlink: true, allowProposedApi: true, theme: termTheme(), scrollback: 8000,
+  });
+  const fit = new FitAddon();
+  const search = new SearchAddon();
+  term.loadAddon(fit);
+  term.loadAddon(search);
+  term.loadAddon(new WebLinksAddon((_e, uri) => lite.openExternal(uri)));
+  applyUnicode11(term);
+  term.open(container);
+  loadFastRenderer(term);
+  fit.fit();
+  term.onData((data) => lite.rh.write(sessionId, data));
+  term.onResize(({ cols, rows }) => lite.rh.resize(sessionId, cols, rows));
+  term.attachCustomKeyEventHandler((e) => {
+    if (e.type !== 'keydown') return true;
+    if (e.ctrlKey && e.shiftKey && e.code === 'KeyW') { closeRhSession(rhActiveSession); return false; }
+    if (e.ctrlKey && (e.key === 'PageDown' || e.key === 'PageUp')) { cycleRhTab(e.key === 'PageDown' ? 1 : -1); return false; }
+    if (e.ctrlKey && !e.shiftKey && !e.altKey && e.code === 'KeyC') return !copySelection(term);
+    if (e.ctrlKey && !e.shiftKey && !e.altKey && e.code === 'KeyV') { e.preventDefault(); pasteRh(sessionId); return false; }
+    return true;
+  });
+  const rec = { term, fit, search, container, name: name || 'SSH', connId };
+  rhTerms.set(sessionId, rec);
+  return rec;
+}
+async function pasteRh(sessionId) {
+  const text = await lite.readClipboard();
+  if (text) lite.rh.write(sessionId, text);
+  const rec = rhTerms.get(sessionId); if (rec) { try { rec.term.focus(); } catch (_) {} }
+}
+function renderRhTabs() {
+  const bar = $('#rh-tabs'); if (!bar) return;
+  bar.style.display = rhSessions.length ? 'flex' : 'none';
+  bar.innerHTML = '';
+  rhSessions.forEach((sid) => {
+    const rec = rhTerms.get(sid); if (!rec) return;
+    const tab = el('div', 'tab' + (sid === rhActiveSession && rhView === 'session' ? ' active' : ''));
+    tab.appendChild(el('span', 'rh-tab-dot'));
+    tab.appendChild(el('span', 'tab-name', rec.name));
+    const x = iconBtn('tab-close', 'x', 'Закрыть сессию (Ctrl+Shift+W)', 12);
+    x.addEventListener('click', (e) => { e.stopPropagation(); closeRhSession(sid); });
+    tab.appendChild(x);
+    tab.addEventListener('click', () => switchRhTab(sid));
+    bar.appendChild(tab);
+  });
+  const add = iconBtn('tab-add', 'plus', 'Подключиться к другому хосту', 15);
+  add.addEventListener('click', () => rhGoList());
+  bar.appendChild(add);
+}
+function switchRhTab(sid) { if (!rhTerms.has(sid)) return; rhActiveSession = sid; rhView = 'session'; renderRhPanel(); }
+function showActiveRhSession() {
+  for (const [sid, rec] of rhTerms) rec.container.style.display = sid === rhActiveSession ? 'block' : 'none';
+  refitRhSession(true);
+}
+function refitRhSession(focusIt) {
+  if (!rhOpen || rhView !== 'session' || !rhActiveSession) return;
+  const rec = rhTerms.get(rhActiveSession); if (!rec) return;
+  requestAnimationFrame(() => { try { rec.fit.fit(); lite.rh.resize(rhActiveSession, rec.term.cols, rec.term.rows); if (focusIt) rec.term.focus(); } catch (_) {} });
+}
+function cycleRhTab(dir) {
+  if (rhSessions.length < 2) return;
+  let i = rhSessions.indexOf(rhActiveSession) + dir;
+  if (i < 0) i = rhSessions.length - 1; if (i >= rhSessions.length) i = 0;
+  switchRhTab(rhSessions[i]);
+}
+function closeRhSession(sid) {
+  if (!sid) return;
+  lite.rh.close(sid);
+  const rec = rhTerms.get(sid);
+  if (rec) { try { rec.term.dispose(); } catch (_) {} rec.container.remove(); rhTerms.delete(sid); }
+  const i = rhSessions.indexOf(sid); if (i >= 0) rhSessions.splice(i, 1);
+  if (rhActiveSession === sid) rhActiveSession = rhSessions[Math.max(0, i - 1)] || null;
+  if (!rhSessions.length || !rhActiveSession) rhView = 'list';
+  renderRhPanel();
+}
+
+// ---- file browser (read-only): SFTP (ssh/sftp) или FTP
+function rhHumanSize(n) { if (!n && n !== 0) return ''; if (n < 1024) return n + ' B'; if (n < 1048576) return (n / 1024).toFixed(1) + ' KB'; if (n < 1073741824) return (n / 1048576).toFixed(1) + ' MB'; return (n / 1073741824).toFixed(1) + ' GB'; }
+function rhJoin(base, name) {
+  if (name === '..') { const b = String(base).replace(/\/+$/, ''); const i = b.lastIndexOf('/'); return i <= 0 ? '/' : b.slice(0, i); }
+  return (base === '/' ? '' : String(base).replace(/\/+$/, '')) + '/' + name;
+}
+async function rhOpenFiles(c) {
+  rhFiles = { connId: c.id, name: c.name || c.host, type: c.type || 'ssh', path: '~', entries: null, loading: true, file: null, error: null };
+  rhView = 'files';
+  renderRhPanel();
+  await rhLoadDir('~');
+}
+async function rhLoadDir(p) {
+  if (!rhFiles) return;
+  const connId = rhFiles.connId;
+  rhFiles.loading = true; rhFiles.file = null; rhFiles.error = null; renderRhFiles();
+  const r = await lite.rh.fsList(connId, p);
+  if (!rhFiles || rhFiles.connId !== connId || rhView !== 'files') return;
+  rhFiles.loading = false;
+  if (r.error) rhFiles.error = r.error;
+  else { rhFiles.path = r.path; rhFiles.entries = r.entries; }
+  renderRhFiles();
+}
+async function rhOpenFile(name) {
+  if (!rhFiles) return;
+  const connId = rhFiles.connId;
+  const full = rhJoin(rhFiles.path, name);
+  rhFiles.loading = true; renderRhFiles();
+  const r = await lite.rh.fsRead(connId, full);
+  if (!rhFiles || rhFiles.connId !== connId || rhView !== 'files') return;
+  rhFiles.loading = false;
+  rhFiles.file = { name, path: full, error: r.error, binary: r.binary, content: r.content, size: r.size };
+  renderRhFiles();
+}
+function renderRhFiles() {
+  if (!rhFiles) return;
+  $('#rh-title').textContent = rhFiles.name;
+  $('#rh-back').style.display = '';
+  const body = $('#rh-conns');
+  body.innerHTML = '';
+  const bar = el('div', 'rh-fbar');
+  const up = iconBtn('drow-act', 'chevron-up', 'Вверх', 14); up.onclick = () => rhLoadDir(rhJoin(rhFiles.path, '..'));
+  const pathEl = el('span', 'rh-fpath', rhFiles.path || ''); pathEl.title = rhFiles.path || '';
+  const refresh = iconBtn('drow-act', 'refresh', 'Обновить', 14); refresh.onclick = () => rhLoadDir(rhFiles.path);
+  bar.append(up, pathEl, refresh);
+  body.appendChild(bar);
+  if (rhFiles.file) { renderRhFileContent(body); return; }
+  if (rhFiles.loading) { body.appendChild(el('div', 'git-loading', 'Загрузка…')); return; }
+  if (rhFiles.error) { body.appendChild(el('div', 'db-warn', '⚠ ' + rhFiles.error)); return; }
+  const list = el('div', 'rh-flist');
+  if (!rhFiles.entries || !rhFiles.entries.length) list.appendChild(el('div', 'docker-empty', 'Пусто'));
+  for (const e of (rhFiles.entries || [])) {
+    const r = el('div', 'rh-frow');
+    r.appendChild(icon(e.dir ? 'folder' : 'file', 15));
+    r.appendChild(el('span', 'rh-fname', e.name));
+    if (!e.dir) r.appendChild(el('span', 'rh-fsize', rhHumanSize(e.size)));
+    r.onclick = () => e.dir ? rhLoadDir(rhJoin(rhFiles.path, e.name)) : rhOpenFile(e.name);
+    list.appendChild(r);
+  }
+  body.appendChild(list);
+}
+function renderRhFileContent(body) {
+  const f = rhFiles.file;
+  const head = el('div', 'rh-fchead');
+  const back = iconBtn('drow-act', 'chevron-left', 'К списку файлов', 14); back.onclick = () => { rhFiles.file = null; renderRhFiles(); };
+  head.append(back, icon('file', 14), el('span', 'rh-fcname', f.name));
+  if (f.size != null) head.appendChild(el('span', 'rh-fsize', rhHumanSize(f.size)));
+  body.appendChild(head);
+  if (rhFiles.loading) { body.appendChild(el('div', 'git-loading', 'Загрузка…')); return; }
+  if (f.error) { body.appendChild(el('div', 'db-warn', '⚠ ' + f.error)); return; }
+  if (f.binary) { body.appendChild(el('div', 'docker-empty', 'Бинарный файл — просмотр недоступен')); return; }
+  const pre = el('pre', 'rh-fview'); pre.textContent = f.content || '';
+  body.appendChild(pre);
+}
+
 // ---------------------------------------------------------------- font size
 let watchedRoot = null; // we live-watch only the active project to limit inotify use
 function applyFontSize() {
   for (const rec of terms.values()) { rec.term.options.fontSize = settings.fontSize; try { rec.fit.fit(); } catch (_) {} }
   for (const rec of scratchTerms.values()) { rec.term.options.fontSize = settings.fontSize; try { rec.fit.fit(); } catch (_) {} }
+  for (const rec of rhTerms.values()) { rec.term.options.fontSize = settings.fontSize; try { rec.fit.fit(); } catch (_) {} }
   document.documentElement.style.setProperty('--editor-fs', settings.fontSize + 'px');
   refitActiveTerminal();
 }
@@ -2365,6 +2732,29 @@ function languageFor(file) {
   const make = LANGS[extOf(file)];
   return make ? make() : [];
 }
+// Миникарта (VSCode-стиль): уменьшенная копия кода справа с индикатором области и кликом-прыжком.
+const minimapExt = showMinimap.compute([], () => ({
+  create: () => ({ dom: document.createElement('div') }),
+  displayText: 'blocks',     // быстрый блочный рендер вместо посимвольного
+  showOverlay: 'always',     // всегда показывать рамку текущей области
+}));
+const minimapComp = new Compartment(); // вкл/выкл миникарты без пересоздания редактора
+function toggleMinimap() {
+  settings.minimap = !settings.minimap;
+  saveSettings();
+  if (editor) {
+    editor.dispatch({ effects: minimapComp.reconfigure(settings.minimap ? minimapExt : []) });
+    // При включении миникарта пустая, пока редактор не пере-замерит геометрию. Сработать заставляет только
+    // реальное изменение размера панели вивера (ResizeObserver редактора) — повторяем это: на миг дёргаем
+    // ширину панели на 1px и возвращаем (визуально незаметно).
+    if (settings.minimap) {
+      const pane = $('#viewer-pane'); const base = layout.viewer;
+      pane.style.flexBasis = (base + 1) + 'px';
+      setTimeout(() => { pane.style.flexBasis = base + 'px'; }, 60);
+    }
+  }
+  $('#viewer-minimap').classList.toggle('on', settings.minimap);
+}
 function makeEditor() {
   const state = EditorState.create({
     doc: '',
@@ -2372,6 +2762,7 @@ function makeEditor() {
       lineNumbers(), highlightActiveLine(), drawSelection(), history(),
       indentOnInput(), bracketMatching(), highlightSelectionMatches(), search({ top: true }),
       syntaxHighlighting(defaultHighlightStyle, { fallback: true }), oneDark,
+      minimapComp.of(settings.minimap ? minimapExt : []),
       langComp.of([]),
       keymap.of([
         { key: 'Mod-s', preventDefault: true, run: () => { saveCurrent(); return true; } },
@@ -2596,10 +2987,19 @@ function clearViewer() {
 }
 // Re-render the tree for the active project; viewer starts empty (no auto-reopen).
 // Switching/opening a project always gives a clean viewer — open files from the tree.
+// В режиме чата OpenRouter (activeOrId !== null) «выбранного проекта» нет → показываем заглушку.
 async function refreshViewerForActive() {
-  const p = activeProject();
-  if (!p) return;
+  const p = (activeOrId === null) ? activeProject() : null;
+  if (!p) { showViewerPlaceholder(); return; }
   await renderTree(p);
+  clearViewer();
+}
+// Заглушка вивера, когда нет выбранного проекта (открыта категория/чат OpenRouter).
+function showViewerPlaceholder() {
+  $('#tree-title').textContent = 'ДЕРЕВО';
+  const root = $('#tree');
+  root.innerHTML = '';
+  root.appendChild(el('div', 'tree-empty', 'Нужно выбрать проект для отображения файлов'));
   clearViewer();
 }
 
@@ -2610,7 +3010,7 @@ function setViewerOpen(open, opts = {}) {
     return;
   }
   // Right slot holds one module — opening the viewer closes the others (chat is separate).
-  if (open) { if (gitOpen) setGitOpen(false); if (dockerOpen) setDockerOpen(false); if (dbOpen) setDbOpen(false); if (scratchOpen) setScratchOpen(false); }
+  if (open) { if (gitOpen) setGitOpen(false); if (dockerOpen) setDockerOpen(false); if (dbOpen) setDbOpen(false); if (scratchOpen) setScratchOpen(false); if (rhOpen) setRhOpen(false); }
   const delta = layout.viewer + layout.tree + GUTTER * 2;
   viewerOpen = open;
   $('#viewer-pane').classList.toggle('hidden', !open);
@@ -2633,6 +3033,7 @@ function openModule(id) {
   else if (id === 'git') setGitOpen(true);
   else if (id === 'docker') setDockerOpen(true);
   else if (id === 'db') setDbOpen(true);
+  else if (id === 'rh') setRhOpen(true);
   else if (id === 'scratch') setScratchOpen(true);
 }
 
@@ -2641,7 +3042,7 @@ function setGitOpen(open, opts = {}) {
   if (open && !activeProject() && !opts.allowEmpty) { toast('Сначала открой проект'); return; }
   if (open === gitOpen) { if (open) renderGitPanel(activeProject()); return; }
   // Right slot holds one module — opening Git closes the others (chat is separate).
-  if (open) { if (viewerOpen) setViewerOpen(false); if (dockerOpen) setDockerOpen(false); if (dbOpen) setDbOpen(false); if (scratchOpen) setScratchOpen(false); }
+  if (open) { if (viewerOpen) setViewerOpen(false); if (dockerOpen) setDockerOpen(false); if (dbOpen) setDbOpen(false); if (scratchOpen) setScratchOpen(false); if (rhOpen) setRhOpen(false); }
   const delta = layout.git + GUTTER;
   gitOpen = open;
   $('#git-pane').classList.toggle('hidden', !open);
@@ -2887,7 +3288,7 @@ function setDockerOpen(open, opts = {}) {
   if (open === dockerOpen) { if (open) renderDockerPanel(); return; }
   if (!open) { closeDockerDetail(); dockerView = 'list'; } // tear down logs/exec on close
   // Right slot holds one module — opening Docker closes the others (chat is separate).
-  if (open) { if (viewerOpen) setViewerOpen(false); if (gitOpen) setGitOpen(false); if (dbOpen) setDbOpen(false); if (scratchOpen) setScratchOpen(false); }
+  if (open) { if (viewerOpen) setViewerOpen(false); if (gitOpen) setGitOpen(false); if (dbOpen) setDbOpen(false); if (scratchOpen) setScratchOpen(false); if (rhOpen) setRhOpen(false); }
   const delta = layout.docker + GUTTER;
   dockerOpen = open;
   $('#docker-pane').classList.toggle('hidden', !open);
@@ -3243,7 +3644,7 @@ const DB_DEF_PORT = { postgres: 5432, mysql: 3306, sqlite: 0 };
 
 function setDbOpen(open, opts = {}) {
   if (open === dbOpen) { if (open) renderDbPanel(); return; }
-  if (open) { if (viewerOpen) setViewerOpen(false); if (gitOpen) setGitOpen(false); if (dockerOpen) setDockerOpen(false); if (scratchOpen) setScratchOpen(false); }
+  if (open) { if (viewerOpen) setViewerOpen(false); if (gitOpen) setGitOpen(false); if (dockerOpen) setDockerOpen(false); if (scratchOpen) setScratchOpen(false); if (rhOpen) setRhOpen(false); }
   else dbDispose();
   const delta = layout.db + GUTTER;
   dbOpen = open;
@@ -3891,9 +4292,11 @@ function buildSettingsMenu(dd) {
 }
 // «Модули» — функциональные панели справа от терминала (терминалы и OpenRouter-чат — НЕ модули).
 function buildModulesMenu(dd) {
+  dd.appendChild(menuRow('eye', 'Вивер — файлы выбранного проекта', () => { closeMenus(); openModule('files'); }));
   dd.appendChild(menuRow('git', 'Git — выбранного проекта', () => { closeMenus(); openModule('git'); }));
   dd.appendChild(menuRow('box', 'Контейнеры — Docker / Podman', () => { closeMenus(); openModule('docker'); }));
   dd.appendChild(menuRow('database', 'Базы данных — Postgres / MySQL / SQLite', () => { closeMenus(); openModule('db'); }));
+  dd.appendChild(menuRow('globe', 'Удалённые хосты — SSH-сессии к серверам', () => { closeMenus(); openModule('rh'); }));
   dd.appendChild(el('div', 'menu-sep'));
   dd.appendChild(menuRow('terminal', 'Системный терминал (вне проектов)', () => { closeMenus(); openModule('scratch'); }));
 }
@@ -4379,6 +4782,9 @@ function init() {
     if (rec) rec.term.write('\r\n\x1b[90m[процесс завершён — закрой и переоткрой проект]\x1b[0m\r\n');
     setProjState(id, 'quiet');
   });
+  // RemoteHost — SSH-сессии (отдельный канал, не PTY): пишем вывод в соответствующий xterm.
+  lite.rh.onData(({ id, data }) => { const rec = rhTerms.get(id); if (rec) rec.term.write(data); });
+  lite.rh.onExit(({ id }) => { const rec = rhTerms.get(id); if (rec) rec.term.write('\r\n\x1b[90m[соединение закрыто — закрой вкладку или подключись заново]\x1b[0m\r\n'); });
   // Пульт задал размер сессии → зеркалим его сетку на ПК (letterbox), не навязываем свою.
   try { if (lite.pty.onRemoteSize) lite.pty.onRemoteSize(({ id, cols, rows }) => { try { applyRemoteTermSize(id, cols, rows); } catch (_) {} }); } catch (_) {}
   // Пульт отключился → ПК возвращает себе размер (обычный fit всех сессий).
@@ -4424,6 +4830,8 @@ function init() {
   $('#viewer-diff').addEventListener('click', toggleDiff);
   $('#viewer-preview').addEventListener('click', togglePreview);
   $('#viewer-full').addEventListener('click', togglePreviewFull);
+  $('#viewer-minimap').addEventListener('click', toggleMinimap);
+  $('#viewer-minimap').classList.toggle('on', settings.minimap);
   $('#viewer-close').addEventListener('click', () => setViewerOpen(false));
   $('#git-close').addEventListener('click', () => setGitOpen(false));
   $('#git-refresh').addEventListener('click', () => { if (gitOpen) renderGitPanel(activeProject()); });
@@ -4431,6 +4839,9 @@ function init() {
   $('#docker-refresh').addEventListener('click', () => { dockerDetect = null; if (dockerOpen) renderDockerPanel(); });
   $('#db-close').addEventListener('click', () => setDbOpen(false));
   $('#db-refresh').addEventListener('click', () => { dbSchema = null; if (dbOpen) renderDbPanel(); });
+  $('#rh-close').addEventListener('click', () => setRhOpen(false));
+  $('#rh-refresh').addEventListener('click', () => { if (rhOpen) renderRhPanel(); });
+  $('#rh-back').addEventListener('click', () => rhGoList());
   $('#tree-refresh').addEventListener('click', () => { const p = activeProject(); if (p) renderTree(p); });
   $('#tree-new').addEventListener('click', (e) => { const p = activeProject(); if (p) showTreeMenu(e.clientX, e.clientY, { name: p.name, path: p.path, dir: true, root: true }); });
   $('#tree').addEventListener('contextmenu', (e) => {
@@ -4516,6 +4927,7 @@ function init() {
   new ResizeObserver(() => { clearTimeout(rezTimer); rezTimer = setTimeout(() => refitActiveTerminal(), 80); }).observe($('#terminal-pane'));
   let scratchRezTimer;
   new ResizeObserver(() => { clearTimeout(scratchRezTimer); scratchRezTimer = setTimeout(() => refitScratch(), 80); }).observe($('#scratch-pane'));
+  let rhRezTimer; new ResizeObserver(() => { clearTimeout(rhRezTimer); rhRezTimer = setTimeout(() => refitRhSession(), 80); }).observe($('#rh-pane'));
 
   applyFontSize();
   projects = loadProjectsFromDisk();
@@ -4533,6 +4945,7 @@ function init() {
   if (ui.gitOpen && !viewerOpen && !scratchOpen) setGitOpen(true, { grow: false, allowEmpty: true });
   if (ui.dockerOpen && !viewerOpen && !scratchOpen && !gitOpen) setDockerOpen(true, { grow: false });
   if (ui.dbOpen && !viewerOpen && !scratchOpen && !gitOpen && !dockerOpen) setDbOpen(true, { grow: false });
+  if (ui.rhOpen && !viewerOpen && !scratchOpen && !gitOpen && !dockerOpen && !dbOpen) setRhOpen(true, { grow: false });
 
   scanProjects();          // add subfolders of settings.scanDirs (non-blocking)
   checkProjectsExistence();

@@ -132,6 +132,23 @@ contextBridge.exposeInMainWorld('lite', {
     saveText: (defaultName, text) => ipcRenderer.invoke('db:saveText', { defaultName, text }),
     openText: () => ipcRenderer.invoke('db:openText'),
   },
+  // RemoteHost module — SSH connection profiles + live shell sessions.
+  rh: {
+    list: () => ipcRenderer.invoke('rh:list'),
+    save: (conn) => ipcRenderer.invoke('rh:save', { conn }),
+    delete: (id) => ipcRenderer.invoke('rh:delete', { id }),
+    test: (conn) => ipcRenderer.invoke('rh:test', { conn }),
+    pickKey: () => ipcRenderer.invoke('rh:pickKey'),
+    open: (sessionId, id, cols, rows) => ipcRenderer.invoke('rh:open', { sessionId, id, cols, rows }),
+    write: (sessionId, data) => ipcRenderer.send('rh:write', { sessionId, data }),
+    resize: (sessionId, cols, rows) => ipcRenderer.send('rh:resize', { sessionId, cols, rows }),
+    close: (sessionId) => ipcRenderer.send('rh:close', { sessionId }),
+    onData: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('rh:data', h); return () => ipcRenderer.removeListener('rh:data', h); },
+    onExit: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('rh:exit', h); return () => ipcRenderer.removeListener('rh:exit', h); },
+    fsList: (id, path) => ipcRenderer.invoke('rh:fsList', { id, path }),
+    fsRead: (id, path) => ipcRenderer.invoke('rh:fsRead', { id, path }),
+    fsClose: (id) => ipcRenderer.send('rh:fsClose', { id }),
+  },
 
   pty: {
     create: (opts) => ipcRenderer.invoke('pty:create', opts),
