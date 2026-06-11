@@ -233,7 +233,7 @@ const dbApi = dbBackend.registerDbIpc({
 // «RemoteHost» backend (интерактивные SSH-сессии + safeStorage-секреты) — lib/remotehost.js.
 // send() лениво ссылается на mainWindow (создаётся позже), вызывается только при живой сессии.
 const rhApi = rhBackend.registerRemoteIpc({
-  ipcMain, safeStorage, dialog,
+  ipcMain, safeStorage,
   send: (ch, payload) => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(ch, payload); },
   getConnections: () => readStoreKey('rhConnections'),
   setConnections: (v) => writeStoreKey('rhConnections', v),

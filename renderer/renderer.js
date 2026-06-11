@@ -29,7 +29,7 @@ import { sql, PostgreSQL, MySQL, SQLite } from '@codemirror/lang-sql';
 import { showMinimap } from '@replit/codemirror-minimap';
 import { initTextProc } from './textproc.js';
 
-const APP_VERSION = 'alpha v1.0.111';
+const APP_VERSION = 'alpha v1.0.112';
 const GUTTER = 5;
 const SCRATCH_ID = '__scratch__'; // префикс id системных терминалов (домашняя папка), не привязаны к проектам
 const isScratch = (id) => typeof id === 'string' && id.startsWith(SCRATCH_ID);
