@@ -575,10 +575,8 @@ html, body {
 /* dev-терминал папки модуля: занимает всё тело панели */
 .ext-body .ext-term { height: 100%; padding: 4px; box-sizing: border-box; overflow: hidden; }
 .ext-body .ext-term .xterm { height: 100%; }
-/* меню «Мои модули»: статус + тумблер питания справа в строке */
+/* меню «Мои модули»: индикатор статуса (ошибка/сломан) справа в строке */
 .menu-row .ext-state { margin-left: auto; font-size: 11px; color: var(--warn); }
-.menu-row .ext-toggle { margin-left: 8px; opacity: .5; }
-.menu-row .ext-toggle.on { opacity: 1; color: var(--green); }
 /* мастер «Создать модуль» */
 .ext-wizard { display: flex; flex-direction: column; gap: 10px; padding: 14px; color: var(--text); }
 .ext-wizard input[type="text"], .ext-wizard textarea { background: var(--bg-input); color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; font: inherit; outline: none; width: 100%; box-sizing: border-box; }

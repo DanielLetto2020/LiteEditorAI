@@ -230,18 +230,12 @@ export function initExtensions(host) {
       const click = rec.error ? null : async () => {
         host.closeMenus();
         if (rec.status === 'broken') await reload(rec.id);
-        else if (!isEnabled(rec.id)) await toggle(rec.id, true);
         else if (rec.status === 'off') await loadModule(rec);
         if (rec.status === 'on') openExt(rec.id);
       };
       const row = host.menuRow('layers', modName(rec), click, rec.error ? 'disabled' : '');
       if (rec.error) { row.appendChild(el('span', 'ext-state', '⚠ ошибка')); row.title = rec.error; }
-      else {
-        if (rec.status === 'broken') { row.appendChild(el('span', 'ext-state', '⚠ сломан')); row.title = rec.error; }
-        const tg = iconBtn('ext-toggle' + (isEnabled(rec.id) ? ' on' : ''), 'power', isEnabled(rec.id) ? 'Выключить' : 'Включить');
-        tg.addEventListener('click', (e) => { e.stopPropagation(); host.closeMenus(); toggle(rec.id, !isEnabled(rec.id)); });
-        row.appendChild(tg);
-      }
+      else if (rec.status === 'broken') { row.appendChild(el('span', 'ext-state', '⚠ сломан')); row.title = rec.error; }
       dd.appendChild(row);
     }
     dd.appendChild(el('div', 'menu-sep'));
