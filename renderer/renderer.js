@@ -35,7 +35,7 @@ import { initNotes } from './modules/notes.js';
 import { initOpenRouter } from './modules/openrouter.js';
 import { initExtensions } from './modules/extensions.js';
 
-const APP_VERSION = 'alpha v1.0.130';
+const APP_VERSION = 'alpha v1.0.131';
 const GUTTER = 5;
 const SCRATCH_ID = '__scratch__'; // префикс id системных терминалов (домашняя папка), не привязаны к проектам
 const isScratch = (id) => typeof id === 'string' && id.startsWith(SCRATCH_ID);
@@ -926,14 +926,16 @@ async function openProjectDialog() {
   if (picked) openByPath(picked.path, picked.name);
 }
 
-// Мастер модулей: открыть папку модуля как проект и запустить в её терминале команду агента.
-// Команда уходит с задержкой — PTY новой вкладки должен успеть поднять шелл.
+// Мастер модулей: открыть папку модуля как проект; подсказанную команду агента
+// предвпечатываем в терминал БЕЗ Enter — агента запускает сам пользователь (его
+// настройки/модель/флаги), инструкции подхватятся из CLAUDE.md/AGENTS.md/TASK.md.
+// Задержка — PTY новой вкладки должен успеть поднять шелл.
 function openModuleDev(dir, name, cmd) {
   openByPath(dir, name);
   if (!cmd) return;
   setTimeout(() => {
     const sid = (tabsByProj.get(activeId) || {}).active;
-    if (sid) lite.pty.write(sid, cmd + '\r');
+    if (sid) lite.pty.write(sid, cmd); // без '\r' — пользователь правит/жмёт Enter сам
   }, 1500);
 }
 

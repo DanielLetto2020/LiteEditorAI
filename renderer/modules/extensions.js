@@ -239,26 +239,22 @@ export function initExtensions(host) {
   }
 
   // ------------------------------------------------------------ мастер «Создать модуль»
-  // Скаффолд раскладывает main (заготовка + GUIDE/CLAUDE.md/AGENTS.md из приложения),
-  // затем папка модуля открывается как проект и в её терминале стартует ЛИЧНЫЙ агент
-  // пользователя (claude/codex) с заданием. Никаких ключей/сети со стороны редактора.
-  const wizState = () => (host.STORE.extData || {}).__wizard || {};
-  const saveWiz = (patch) => host.persist('extData', { ...(host.STORE.extData || {}), __wizard: { ...wizState(), ...patch } });
+  // Скаффолд раскладывает main (заготовка + GUIDE/CLAUDE.md/AGENTS.md + TASK.md с заданием),
+  // папка модуля открывается как проект — а агента пользователь запускает в её терминале
+  // САМ (любого: claude, codex, …, со своими настройками/моделью). Инструкции агент
+  // подхватывает из файлов: CLAUDE.md/AGENTS.md → GUIDE.md (спека) + TASK.md (задание).
+  // В терминал лишь предвпечатывается подсказанная команда БЕЗ Enter.
+  let agentsInfo = null; // {claude, codex} — детект из ext:agents, кэш на сессию мастера
 
-  function shellQuote(s) {
-    if (lite.platform === 'win32') return '"' + String(s).replace(/"/g, "'") + '"';
-    return "'" + String(s).replace(/'/g, "'\\''") + "'";
-  }
-  function agentCmd(agent, prompt) {
-    return (agent === 'codex' ? 'codex ' : 'claude ') + shellQuote(prompt);
-  }
-  function runAgent(dir, name, task, agent, isNew) {
-    const prompt = 'Прочитай файл GUIDE.md в текущей папке — это полная спецификация модуля LiteEditor. ' +
-      (isNew ? 'Реализуй модуль: ' : 'Доработай существующий модуль: ') + task +
-      '. Весь код — в index.js (activate/deactivate). Когда закончишь — сообщи, что модуль готов: ' +
-      'пользователь проверит его через меню «Модули → Пересканировать».';
-    host.openModuleDev(dir, 'Модуль: ' + name, agentCmd(agent, prompt));
-    toast('Открываю терминал модуля и запускаю агента…');
+  const suggestedCmd = () => (agentsInfo && agentsInfo.claude) ? 'claude' : (agentsInfo && agentsInfo.codex) ? 'codex' : '';
+  const taskMd = (task) => '# Задание для агента\n\n' + task + '\n\n---\n' +
+    'Перед работой прочитай GUIDE.md в этой папке — полная спецификация модулей LiteEditor.\n' +
+    'Код модуля — index.js (activate/deactivate). Когда закончишь — сообщи: пользователь\n' +
+    'проверит через меню «Модули → Перезагрузить».\n';
+
+  function devTerminal(dir, name) {
+    host.openModuleDev(dir, 'Модуль: ' + name, suggestedCmd());
+    toast('Терминал модуля открыт — запустите своего агента (задание уже в TASK.md)');
   }
   // Транслит для авто-id из русского названия (слаг можно поправить руками).
   const TR = { а:'a',б:'b',в:'v',г:'g',д:'d',е:'e',ё:'e',ж:'zh',з:'z',и:'i',й:'i',к:'k',л:'l',м:'m',н:'n',о:'o',п:'p',р:'r',с:'s',т:'t',у:'u',ф:'f',х:'h',ц:'c',ч:'ch',ш:'sh',щ:'sch',ъ:'',ы:'y',ь:'',э:'e',ю:'yu',я:'ya' };
@@ -291,8 +287,9 @@ export function initExtensions(host) {
         row.appendChild(el('span', 'ext-wiz-name', modName(rec)));
         const dev = el('button', 'btn', 'Доработать');
         dev.addEventListener('click', () => {
-          showPrompt('Доработка «' + modName(rec) + '»', 'Что изменить или добавить?', '', (v) => {
-            runAgent(rec.dir, modName(rec), v, wizState().agent || 'claude', false);
+          showPrompt('Доработка «' + modName(rec) + '»', 'Что изменить или добавить?', '', async (v) => {
+            await lite.fs.writeFile(rec.dir + '/TASK.md', taskMd(v)).catch(() => {});
+            devTerminal(rec.dir, modName(rec));
           });
         });
         const fold = iconBtn('', 'folder', 'Открыть папку модуля');
@@ -310,43 +307,32 @@ export function initExtensions(host) {
     let idTouched = false;
     idIn.addEventListener('input', () => { idTouched = true; });
     nameIn.addEventListener('input', () => { if (!idTouched) idIn.value = slugify(nameIn.value); });
-    const descIn = el('textarea'); descIn.placeholder = 'Что должен делать модуль? Опишите одной-двумя фразами — это задание для агента.'; descIn.spellcheck = false;
+    const descIn = el('textarea'); descIn.placeholder = 'Что должен делать модуль? Задание ляжет в TASK.md для вашего агента (можно оставить пустым и объяснить агенту прямо в терминале).'; descIn.spellcheck = false;
     w.appendChild(nameIn); w.appendChild(idIn); w.appendChild(descIn);
 
-    // -- выбор агента
-    const ag = await lite.ext.agents().catch(() => ({ claude: false, codex: false }));
-    const agents = el('div', 'ext-wiz-agents');
-    let agent = wizState().agent || (ag.claude ? 'claude' : (ag.codex ? 'codex' : 'claude'));
-    if (agent === 'claude' && !ag.claude && ag.codex) agent = 'codex';
-    for (const [key, label, ok] of [['claude', 'Claude Code', ag.claude], ['codex', 'Codex CLI', ag.codex]]) {
-      const lab = el('label', ok ? '' : 'off');
-      const r = el('input'); r.type = 'radio'; r.name = 'ext-agent'; r.value = key; r.disabled = !ok; r.checked = agent === key && ok;
-      r.addEventListener('change', () => { agent = key; saveWiz({ agent: key }); });
-      lab.appendChild(r);
-      lab.appendChild(el('span', null, label + (ok ? '' : ' (не найден в PATH)')));
-      agents.appendChild(lab);
-    }
-    w.appendChild(agents);
+    // -- какие агенты видны в PATH (информационно — запуск целиком за пользователем)
+    agentsInfo = await lite.ext.agents().catch(() => ({ claude: false, codex: false }));
+    const found = [agentsInfo.claude && 'Claude Code', agentsInfo.codex && 'Codex CLI'].filter(Boolean);
+    w.appendChild(el('div', 'ext-wiz-agents',
+      found.length ? 'Агенты в PATH: ' + found.join(', ') : 'claude/codex в PATH не найдены — подойдёт любой ваш CLI-агент'));
 
-    const anyAgent = ag.claude || ag.codex;
     w.appendChild(el('div', 'ext-wiz-warn',
-      '⚠ Мастер запустит ВАШ локальный агент в терминале от вашего имени — будет использована ' +
-      'ваша подписка/токены этого агента. Редактор лишь создаёт заготовку модуля и передаёт задание.'));
+      'Агента запускаете вы сами в терминале модуля — любого (claude, codex, …) и со своими ' +
+      'настройками/моделью/версией. Задание ляжет в TASK.md; инструкции и спецификацию агент ' +
+      'подхватит из CLAUDE.md / AGENTS.md / GUIDE.md автоматически.'));
 
-    const btn = el('button', 'btn primary', anyAgent ? 'Создать и запустить агента' : 'Создать заготовку (агенты не найдены)');
+    const btn = el('button', 'btn primary', 'Создать модуль и открыть терминал');
     btn.addEventListener('click', async () => {
       const name = nameIn.value.trim();
       const id = (idIn.value.trim() || slugify(name));
       const desc = descIn.value.trim();
       if (!name) { toast('Укажите название модуля', { kind: 'error' }); return; }
       if (!/^[a-z0-9-]+$/.test(id)) { toast('id — только латиница a-z, цифры и дефис', { kind: 'error' }); return; }
-      if (anyAgent && !desc) { toast('Опишите, что должен делать модуль — это задание для агента', { kind: 'error' }); return; }
       btn.disabled = true;
       const r = await lite.ext.scaffold({ id, name, desc }).catch((e) => ({ error: String(e) }));
       if (!r || r.error) { btn.disabled = false; toast('Не удалось создать модуль: ' + ((r && r.error) || 'ошибка'), { kind: 'error' }); return; }
       await rescan(true); // заготовка валидна — модуль сразу появляется в списке
-      if (anyAgent) runAgent(r.dir, name, desc, agent, true);
-      else { toast('Заготовка создана: ' + r.dir); lite.openInFileManager(r.dir); }
+      devTerminal(r.dir, name);
       openWizard(); // перерисовать список «Мои модули»
     });
     w.appendChild(btn);
