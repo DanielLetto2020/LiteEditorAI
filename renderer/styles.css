@@ -633,6 +633,9 @@ body.resizing { cursor: col-resize; user-select: none; }
 }
 .modal {
   width: 460px; max-width: 90vw;
+  /* Высокая модалка (Настройки и т.п.) не должна вылезать за вьюпорт: при flex-центрировании
+     переполнение уходит за ОБА края и верх недостижим. Ограничиваем и скроллим внутри. */
+  max-height: 88vh; overflow-y: auto;
   background: var(--modal);
   border: 1px solid var(--border-strong); border-radius: 16px;
   box-shadow: 0 30px 90px rgba(0,0,0,0.7); padding: 22px 24px;

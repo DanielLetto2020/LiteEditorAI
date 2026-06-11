@@ -76,6 +76,9 @@ export function initRh(host) {
     const cats = Object.keys(groups).sort((a, b) => (a === 'Все' ? -1 : b === 'Все' ? 1 : a.localeCompare(b)));
     for (const cat of cats) body.appendChild(rhCatBlock(cat, groups[cat]));
   }
+  // Цвет категории по имени — копия dbCatHue из db.js (модули изолированы, общих импортов нет;
+  // при выносе модуля хелпер остался приватным в db.js → ReferenceError при рендере категорий).
+  function dbCatHue(name) { let h = 0; for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) % 360; return h; }
   function rhCatBlock(cat, list) {
     const block = el('div', 'docker-group-block');
     const head = el('div', 'docker-group-head');

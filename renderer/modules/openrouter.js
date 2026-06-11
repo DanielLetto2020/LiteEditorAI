@@ -13,7 +13,7 @@ const $ = (sel) => document.querySelector(sel);
 const lite = window.lite;
 
 export function initOpenRouter(host) {
-  const { STORE, persist, settings, isCollapsed, setCollapsed, guardDirty, renderProjects, showActiveTerminal, refreshViewerForActive, isViewerOpen, getActiveOrId, setActiveOrId, clearActiveDoc, closePanelsForChat } = host;
+  const { STORE, persist, settings, isCollapsed, setCollapsed, guardDirty, renderProjects, showActiveTerminal, refreshViewerForActive, isViewerOpen, getActiveOrId, setActiveOrId, clearActiveDoc, closePanelsForChat, closeMenus } = host;
 
   // orCards: persisted list of {id, name, key, model, contextN}. Each renders as a card in
   // its own «OpenRouter» section; clicking one shows the chat (instead of the terminal).

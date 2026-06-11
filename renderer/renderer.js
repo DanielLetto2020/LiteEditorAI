@@ -34,7 +34,7 @@ import { initRh } from './modules/remotehost.js';
 import { initNotes } from './modules/notes.js';
 import { initOpenRouter } from './modules/openrouter.js';
 
-const APP_VERSION = 'alpha v1.0.126';
+const APP_VERSION = 'alpha v1.0.127';
 const GUTTER = 5;
 const SCRATCH_ID = '__scratch__'; // префикс id системных терминалов (домашняя папка), не привязаны к проектам
 const isScratch = (id) => typeof id === 'string' && id.startsWith(SCRATCH_ID);
@@ -82,6 +82,7 @@ let activeOrId = null;        // id of the OpenRouter card whose chat is shown (
 const Or = initOpenRouter({
   STORE, persist, settings, isCollapsed, setCollapsed, guardDirty,
   renderProjects, showActiveTerminal, refreshViewerForActive,
+  closeMenus: () => closeMenus(),   // модалка ключей закрывает открытые дропдауны ядра
   isViewerOpen: () => viewerOpen, getActiveOrId: () => activeOrId,
   setActiveOrId: (v) => { activeOrId = v; }, clearActiveDoc: () => { activeDocId = null; },
   // чат закрывает проектные модули правого слота; rh исторически не трогает (1:1)
