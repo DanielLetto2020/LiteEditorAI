@@ -178,7 +178,7 @@ function connect() {
     else if (m.t === 'peer' && m.role === 'app' && m.event === 'leave') { pultRemove(m.device); }
     else if (m.t === 'hello') { pultUpsert(m.device, { name: m.name, ver: m.ver }); sendState(); }
     else if (m.t === 'sysinfo') {
-      try { onSysInfo({ device: m.device || '', info: m.info || '', loc: m.loc || null }); } catch (_) {}
+      try { onSysInfo({ device: m.device || '', what: m.what || '', info: m.info || '', loc: m.loc || null }); } catch (_) {}
     }
     else if (m.t === 'select' && typeof m.sid === 'string') {
       activeSid = m.sid;

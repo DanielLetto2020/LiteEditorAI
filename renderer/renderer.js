@@ -34,7 +34,7 @@ import { initRh } from './modules/remotehost.js';
 import { initNotes } from './modules/notes.js';
 import { initOpenRouter } from './modules/openrouter.js';
 
-const APP_VERSION = 'alpha v1.0.125';
+const APP_VERSION = 'alpha v1.0.126';
 const GUTTER = 5;
 const SCRATCH_ID = '__scratch__'; // префикс id системных терминалов (домашняя папка), не привязаны к проектам
 const isScratch = (id) => typeof id === 'string' && id.startsWith(SCRATCH_ID);
@@ -632,8 +632,7 @@ function showPults() {
       actions.style.cssText = 'display:flex;gap:6px;margin-top:8px;flex-wrap:wrap;align-items:center';
       const isBlocked = blocked.includes(device);
       if (isOnline) {
-        const si = el('button', 'btn', 'Сисинфо и гео');
-        si.onclick = () => {
+        const ask = (what, label) => {
           let pre = sysBoxes[device];
           if (!pre) {
             pre = document.createElement('pre');
@@ -642,10 +641,14 @@ function showPults() {
             r.appendChild(pre);
             sysBoxes[device] = pre;
           }
-          pre.textContent = 'Запрошено, ждём ответ пульта…';
-          lite.remote.pultSysInfo(device);
+          pre.textContent = label + ': запрошено, ждём ответ пульта…';
+          lite.remote.pultSysInfo(device, what);
         };
-        actions.appendChild(si);
+        const si = el('button', 'btn', 'Сисинфо');
+        si.onclick = () => ask('info', 'Сисинфо');           // без запроса геолокации — на пульте не всплывёт пермишен
+        const ge = el('button', 'btn', 'Гео');
+        ge.onclick = () => ask('geo', 'Гео');
+        actions.appendChild(si); actions.appendChild(ge);
       }
       const tg = el('button', 'btn' + (isBlocked ? ' primary' : ''), isBlocked ? 'Вернуть доступ' : 'Отключить');
       tg.onclick = async () => {
@@ -681,7 +684,7 @@ function showPults() {
       } else if (loc && loc.error) {
         txt += 'Гео: ' + loc.error + '\n\n';
       }
-      pre.textContent = txt + (msg.info || '');
+      pre.textContent = (txt + (msg.info || '')).trim() || 'Пульт прислал пустой ответ.';
     }) : null;
   m.querySelector('#plt-close').onclick = () => { try { offPults && offPults(); offSys && offSys(); } catch (_) {} close(); };
   render();

@@ -24,8 +24,8 @@ android {
         applicationId = "com.liteeditor.pult"
         minSdk = 24
         targetSdk = 34
-        versionCode = 48
-        versionName = "0.52.0"
+        versionCode = 49
+        versionName = "0.53.0"
 
         buildConfigField("String", "RELAY_URL", "\"$relayUrl\"")
         buildConfigField("String", "ROOM", "\"$room\"")

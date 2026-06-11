@@ -53,8 +53,6 @@ const ptys = new Map();     // projectId -> IPty
 const ptySize = new Map();  // sessionId -> { cols, rows } — текущий размер PTY (для пульта)
 const mirrors = new Map();  // sessionId -> { term: HeadlessTerminal } — теневой терминал для пульта
 const MIRROR_SCROLLBACK = 20000;
-const transcripts = new Map(); // sessionId -> plain text transcript for the pult "История"
-const TRANSCRIPT_MAX_CHARS = 4 * 1024 * 1024;
 
 // --- Теневой терминал сессии (источник кадров «проекции экрана» для пульта) -----
 function mirrorCreate(id, cols, rows) {
@@ -89,33 +87,23 @@ function mirrorScreen(id) {
     };
   } catch (_) { return null; }
 }
-function stripAnsiForTranscript(data) {
-  return String(data || '')
-    .replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g, '')      // OSC
-    .replace(/\x1b[PX^_][\s\S]*?\x1b\\/g, '')           // DCS/SOS/PM/APC
-    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '')            // CSI
-    .replace(/\x1b[@-Z\\-_]/g, '')                      // 2-char ESC
-    .replace(/\x07/g, '');
-}
-function transcriptAppend(id, data) {
-  let out = transcripts.get(id) || '';
-  const text = stripAnsiForTranscript(data);
-  for (let i = 0; i < text.length; i++) {
-    const ch = text[i];
-    if (ch === '\r') {
-      const j = out.lastIndexOf('\n');
-      out = j >= 0 ? out.slice(0, j + 1) : '';
-    } else if (ch === '\b' || ch === '\x7f') {
-      const j = out.lastIndexOf('\n');
-      if (out.length > (j + 1)) out = out.slice(0, -1);
-    } else if (ch === '\n' || ch === '\t' || ch >= ' ') {
-      out += ch;
+// История для пульта = SCROLLBACK теневого терминала (строки, ушедшие выше видимого
+// экрана normal-буфера). Раньше историю лепил stripped-ANSI транскрипт из сырого потока —
+// у TUI-агентов каждая перерисовка добавлялась заново («кривые повторяющиеся символы»).
+// Scrollback эмулирован честно: это ровно то, что видно при скролле в настоящем терминале.
+function mirrorScrollback(id) {
+  const m = mirrors.get(id);
+  if (!m) return '';
+  try {
+    const buf = m.term.buffer.normal;
+    const lines = [];
+    for (let y = 0; y < buf.baseY; y++) {
+      const line = buf.getLine(y);
+      lines.push(line ? line.translateToString(true) : '');
     }
-  }
-  if (out.length > TRANSCRIPT_MAX_CHARS) out = out.slice(out.length - TRANSCRIPT_MAX_CHARS);
-  transcripts.set(id, out);
+    return lines.join('\n');
+  } catch (_) { return ''; }
 }
-function transcriptGet(id) { return transcripts.get(id) || ''; }
 const watchers = new Map(); // project root path -> { watcher, timer, pending:Set }
 
 // Resolve a shell that actually exists. $SHELL can point at a shell that was
@@ -901,7 +889,7 @@ function remoteOpenProject(projId) {
 // транскрипта ДО смещения before размером size; в begin/end кладём start/total,
 // чтобы пульт знал, откуда продолжать и когда транскрипт кончился (start=0).
 function remoteHistoryGet(reqId, sid, before, size) {
-  const text = transcriptGet(sid);
+  const text = mirrorScrollback(sid);
   const total = text.length;
   let end = total;
   if (typeof before === 'number' && isFinite(before)) end = Math.max(0, Math.min(Math.floor(before), total));
@@ -1039,9 +1027,10 @@ ipcMain.handle('remote:pultUnblock', (_e, { device } = {}) => {
   if (device) writeStoreKey('pultBlocked', getPultBlocked().filter((d) => d !== device));
   return { list: remote.pultList(), blocked: getPultBlocked() };
 });
-// Запрос сисинфо/гео у конкретного пульта; ответ прилетит событием remote:sysinfo.
-ipcMain.on('remote:pultSysInfo', (_e, { device } = {}) => {
-  try { remote.send({ t: 'sysinfo:get', device: String(device || '') }); } catch (_) {}
+// Запрос у конкретного пульта; what: 'info' (диагностика) | 'geo' (местоположение).
+// Ответ прилетит событием remote:sysinfo (c тем же what).
+ipcMain.on('remote:pultSysInfo', (_e, { device, what } = {}) => {
+  try { remote.send({ t: 'sysinfo:get', device: String(device || ''), what: String(what || '') }); } catch (_) {}
 });
 
 // Pairing: пользователь на ПК одобрил/отклонил устройство пульта → шлём решение релею.
@@ -1159,12 +1148,10 @@ function spawnPtyFor(id, cwd, cols, rows) {
     return { error: String(err.message || err) };
   }
   logger.log('info', 'pty', `spawned pid=${proc.pid}`);
-  transcripts.set(id, '');
   mirrorCreate(id, cols, rows);   // свежий теневой терминал (сбрасывает scrollback при рестарте PTY)
   proc.onData((data) => {
     if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('pty:data', { id, data });
     mirrorWrite(id, data);                         // сначала в теневой терминал (кадр всегда консистентен)
-    transcriptAppend(id, data);
     try { remote.screenTouch(id); } catch (_) {}   // потом будим диффер кадров (debounce внутри)
   });
   proc.onExit(() => {
@@ -1199,7 +1186,6 @@ ipcMain.on('pty:resize', (_e, { id, cols, rows }) => {
 ipcMain.on('pty:kill', (_e, { id }) => {
   const p = ptys.get(id);
   if (p) { try { p.kill(); } catch (_) {} ptys.delete(id); }
-  transcripts.delete(id);
 });
 // 'shell' | 'running' | 'waiting' | null — see foregroundKind().
 ipcMain.handle('pty:foregroundState', (_e, { id }) => {

@@ -609,16 +609,14 @@ function initScreen() {
 }
 // Косметика строк агентского TUI на узком экране: полноширинные линейки/рамки
 // (130 символов «─») при pre-wrap превращаются в 3 строки каждая. Схлопываем
-// повторяющийся «штрих» до короткого, правую границу рамки (хвост из пробелов
-// и «│») срезаем. Строки НЕ удаляются и не меняются местами — индексы (курсор) живут.
+// ЛЮБОЙ длинный прогон одинакового «штриха» до 24 — где бы он ни стоял в строке
+// (раньше требовали «вся строка — линейка», и рамки с заголовком/стыками не
+// схлопывались — над полем ввода оставались 3 полосы). Правую границу рамки
+// (хвост из пробелов и «│») срезаем. Строки НЕ удаляются — индексы курсора живут.
 function frameLineView(ln) {
   let s = ln;
   s = s.replace(/\s{2,}[│|]\s*$/, '');   // '│ > текст      │' → '│ > текст'
-  const m = /^(\s*)([╭╰╔╚┌└├]?)([─━═╌┄┅┈┉=_~‐‒–—-])\3{7,}([╮╯╗╝┐┘┤]?)\s*$/.exec(s);
-  if (m) {
-    const runLen = s.replace(/\s+$/, '').length - m[1].length - m[2].length - m[4].length;
-    s = m[1] + m[2] + m[3].repeat(Math.min(24, runLen)) + m[4];   // только укорачиваем, не растягиваем
-  }
+  s = s.replace(/([─━═╌┄┅┈┉=_~‐‒–—-])\1{23,}/g, (run, ch) => ch.repeat(24));
   return s;
 }
 function renderScreen() {
@@ -629,7 +627,7 @@ function renderScreen() {
     if (!screenEl) return;
     if (!frame) { screenEl.textContent = selected ? 'Ожидание экрана…' : 'Выбери терминал слева'; return; }
     const stick = screenFollow || screenAtBottom();
-    const lines = frame.lines.slice();
+    let lines = frame.lines.slice();
     const c = frame.cursor || [0, 0];
     const cx = c[0], cy = c[1];
     if (cy >= 0 && cy < lines.length) {   // курсор — подмена символа строки
@@ -638,6 +636,12 @@ function renderScreen() {
         ? ln.slice(0, cx) + '▌' + ln.slice(cx + 1)
         : ln + ' '.repeat(Math.max(0, cx - ln.length)) + '▌';
     }
+    // Пустой хвост кадра обрезаем (но строку с курсором сохраняем): у свежего шелла
+    // промпт на 1-й строке, а 40+ пустых строк ниже прижимали его за верх экрана
+    // («не видно имя:путь» при прилипании к низу).
+    let last = lines.length - 1;
+    while (last > 0 && !(lines[last] || '').trim()) last--;
+    lines = lines.slice(0, Math.max(last, cy) + 1);
     for (let i = 0; i < lines.length; i++) lines[i] = frameLineView(lines[i]);
     // Сборка: [история] + кадр; строка с курсором — отдельным <span> (подсветка
     // поля ввода агента). Только текстовые узлы — XSS-поверхности нет.
@@ -1087,11 +1091,15 @@ function showKicked() {
   b.appendChild(t); b.appendChild(go);
   showOverlay('Доступ отключён', b);
 }
-// Ответ на запрос сисинфо с ПК: диагностика + (по возможности) геолокация.
-function replySysInfo() {
-  const info = diagnosticsText();
+// Ответ на запрос с ПК. what='info' — только диагностика (без запроса геолокации и
+// её пермишена); what='geo' — только местоположение; пусто — и то и другое (совместимость).
+function replySysInfo(what) {
+  const wantInfo = what !== 'geo';
+  const wantGeo = what !== 'info';
+  const info = wantInfo ? diagnosticsText() : '';
   let sent = false;
-  const done = (loc) => { if (sent) return; sent = true; send({ t: 'sysinfo', device: deviceId(), info, loc }); };
+  const done = (loc) => { if (sent) return; sent = true; send({ t: 'sysinfo', device: deviceId(), what: what || '', info, loc }); };
+  if (!wantGeo) { done(null); return; }
   try {
     if (!navigator.geolocation) { done({ error: 'геолокация недоступна' }); return; }
     navigator.geolocation.getCurrentPosition(
@@ -1241,7 +1249,7 @@ function connect() {
     }
     else if (m.t === 'sysinfo:get') {
       // Адресный запрос: отвечает только устройство с совпадающим id (релей шлёт всем).
-      if (!m.device || m.device === deviceId()) replySysInfo();
+      if (!m.device || m.device === deviceId()) replySysInfo(m.what || '');
     }
     else if (m.t === 'kick') {
       if (!m.device || m.device === deviceId()) showKicked();
@@ -1337,6 +1345,12 @@ function start(config) {
     token = lsGet('lite_token') || '';
     if (token) enterApp(); else showLogin('');
     connect();           // с токеном → авторизуемся; без → пред-авторизованный сокет для входа
+    // Вотчдог кадра: раз в секунду. Если сессия выбрана, а кадра нет (ПК перезапускался,
+    // PTY ещё не поднялся, select потерялся в сети) — сами перезапрашиваем полный кадр,
+    // пока не получим (requestFullFrame троттлит до 1 запроса/сек).
+    setInterval(() => {
+      if (ws && ws.readyState === 1 && token && selected && !frame) requestFullFrame();
+    }, 1000);
     sendReport('boot', 'app started v' + (window.PULT_VER || ''), diagnosticsText());
   } catch (e) {
     showLogin('');

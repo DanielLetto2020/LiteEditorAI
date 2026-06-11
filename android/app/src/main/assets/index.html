@@ -20,7 +20,7 @@
       } catch (e) {}
     }
     window.__report = report;
-    window.PULT_VER = '0.52.0';
+    window.PULT_VER = '0.53.0';
     window.onerror = function (m, src, line, col, err) {
       report('page-error', m, (err && err.stack) || (src + ':' + line));
       var b = document.getElementById('fatal') || document.createElement('div');
@@ -30,7 +30,7 @@
       if (document.body) document.body.appendChild(b);
       return false;
     };
-    report('page-loaded', 'index.html v0.52.0', navigator.userAgent);
+    report('page-loaded', 'index.html v0.53.0', navigator.userAgent);
   })();
   </script>
   <link rel="stylesheet" href="./app.css" />
@@ -106,9 +106,13 @@
     #dropmenu button:active { background: #1c2530; }
 
     #main { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
-    #termbar { display: flex; flex-wrap: wrap; gap: 6px; padding: 5px 6px; background: #11161d; border-bottom: 1px solid #1f2630; flex: 0 0 auto; }
+    /* Тулбар в два ряда: первый — три главные кнопки во всю ширину поровну,
+       второй — спецклавиши (переносятся при нехватке места). */
+    #termbar { display: flex; flex-direction: column; gap: 4px; padding: 5px 6px; background: #11161d; border-bottom: 1px solid #1f2630; flex: 0 0 auto; }
+    .tb-row { display: flex; flex-wrap: wrap; gap: 6px; }
     .tk { background: #1c2530; color: #cfe3ee; border: 1px solid #2a323d; border-radius: 6px; padding: 6px 11px; font-size: 12px; white-space: nowrap; flex: 0 0 auto; }
     .tk:active { background: #27323f; }
+    .tk-big { flex: 1 1 0; padding: 9px 6px; font-size: 13px; text-align: center; }
     #term { flex: 1; min-height: 0; padding: 4px; overflow: hidden; }
     /* Поверхность «проекции экрана»: кадр с ПК — простой текст. Широкая сетка ПК
        переносится (pre-wrap) и кадр выше экрана планшета → локальный скролл с
@@ -172,7 +176,7 @@
       <div id="lg-err"></div>
       <button id="lg-go">Войти</button>
       <div class="login-note">Регистрация аккаунта — в редакторе на ПК (меню «Пульт»).</div>
-      <div class="login-note" id="login-ver" style="opacity:.6">пульт v0.52.0</div>
+      <div class="login-note" id="login-ver" style="opacity:.6">пульт v0.53.0</div>
     </div>
   </div>
 
@@ -191,17 +195,21 @@
     </div>
     <div id="main">
       <div id="termbar">
-        <button class="tk" data-key="side" title="Проекты и терминалы">📁</button>
-        <button class="tk" data-key="kbd" title="Клавиатура">⌨</button>
-        <button class="tk" data-key="refresh" title="Обновить экран (свежий кадр с ПК)">⟳</button>
-        <button class="tk" data-key="pgup" title="Прокрутка вверх (TUI)">PgUp</button>
-        <button class="tk" data-key="pgdn" title="Прокрутка вниз (TUI)">PgDn</button>
-        <button class="tk" data-key="c-c">Ctrl+C</button>
-        <button class="tk" data-key="esc">Esc</button>
-        <button class="tk" data-key="tab">Tab</button>
-        <button class="tk" data-key="up">↑</button>
-        <button class="tk" data-key="down">↓</button>
-        <button class="tk" data-key="enter">⏎</button>
+        <div class="tb-row">
+          <button class="tk tk-big" data-key="side" title="Проекты и терминалы">📁 Проекты</button>
+          <button class="tk tk-big" data-key="kbd" title="Клавиатура">⌨ Клава</button>
+          <button class="tk tk-big" data-key="refresh" title="Обновить экран (свежий кадр с ПК)">⟳ Обновить</button>
+        </div>
+        <div class="tb-row">
+          <button class="tk" data-key="pgup" title="Прокрутка вверх (TUI)">PgUp</button>
+          <button class="tk" data-key="pgdn" title="Прокрутка вниз (TUI)">PgDn</button>
+          <button class="tk" data-key="c-c">Ctrl+C</button>
+          <button class="tk" data-key="esc">Esc</button>
+          <button class="tk" data-key="tab">Tab</button>
+          <button class="tk" data-key="up">↑</button>
+          <button class="tk" data-key="down">↓</button>
+          <button class="tk" data-key="enter">⏎</button>
+        </div>
       </div>
       <div id="term"></div>
     </div>

@@ -93,7 +93,7 @@ contextBridge.exposeInMainWorld('lite', {
     pults: () => ipcRenderer.invoke('remote:pults'),
     pultBlock: (device) => ipcRenderer.invoke('remote:pultBlock', { device }),
     pultUnblock: (device) => ipcRenderer.invoke('remote:pultUnblock', { device }),
-    pultSysInfo: (device) => ipcRenderer.send('remote:pultSysInfo', { device }),   // ответ — событием onSysInfo
+    pultSysInfo: (device, what) => ipcRenderer.send('remote:pultSysInfo', { device, what }),   // what: 'info'|'geo'; ответ — событием onSysInfo
     onPults: (cb) => { const h = (_e, p) => cb(p || {}); ipcRenderer.on('remote:pults', h); return () => ipcRenderer.removeListener('remote:pults', h); },
     onSysInfo: (cb) => { const h = (_e, p) => cb(p || {}); ipcRenderer.on('remote:sysinfo', h); return () => ipcRenderer.removeListener('remote:sysinfo', h); },
   },
