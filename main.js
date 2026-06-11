@@ -553,12 +553,6 @@ ipcMain.handle('ext:scan', () => {
   }
   return { dir: extModulesDir, modules: out, apiVersion: EXT_API_VERSION };
 });
-// Детект локальных агентов для мастера создания модулей (тот же PATH-фикс, что у tp:run).
-ipcMain.handle('ext:agents', async () => {
-  const which = process.platform === 'win32' ? 'where' : 'which';
-  const check = (cmd) => new Promise((res) => { try { execFile(which, [cmd], { env: tpEnv() }, (err) => res(!err)); } catch (_) { res(false); } });
-  return { claude: await check('claude'), codex: await check('codex') };
-});
 // Скаффолд нового модуля: заготовка кода + GUIDE/CLAUDE.md/AGENTS.md из module-kit ПРИЛОЖЕНИЯ —
 // гайд гарантированно совпадает с apiVersion запущенного редактора (никаких клонирований из сети).
 const EXT_STUB = `// Стартовая заготовка модуля LiteEditor. Спецификация API — в GUIDE.md рядом.
@@ -929,7 +923,6 @@ function pultStoreGetZip(reqId, p) {
 // Удалённый пульт (Android). Поднимается только при LITE_REMOTE=1 — отдаёт пульту
 // список вкладок-сессий (метка = имя проекта · seq), зеркалит вывод PTY и пишет
 // ввод/промпт с пульта в нужный PTY. См. remote.js.
-let remoteSeq = 0;
 let remoteActiveSid = '';   // активная вкладка десктопа (репортит рендерер) — для синка с пультом
 // Состояние для пульта: открытые сессии-терминалы + все проекты (с категориями).
 function buildRemoteState() {

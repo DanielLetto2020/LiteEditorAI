@@ -42,11 +42,9 @@ contextBridge.exposeInMainWorld('lite', {
     read: (name) => ipcRenderer.invoke('logs:read', name),
   },
 
-  // Пользовательские модули (расширения): скан папки ~/.LiteEditorAI/modules,
-  // скаффолд нового модуля, детект локальных агентов (claude/codex) для мастера.
+  // Пользовательские модули (расширения): скан папки ~/.LiteEditorAI/modules + скаффолд нового модуля.
   ext: {
     scan: () => ipcRenderer.invoke('ext:scan'),
-    agents: () => ipcRenderer.invoke('ext:agents'),
     scaffold: (opts) => ipcRenderer.invoke('ext:scaffold', opts),
   },
 
@@ -187,19 +185,6 @@ contextBridge.exposeInMainWorld('lite', {
       const h = (_e, payload) => cb(payload);
       ipcRenderer.on('pty:exit', h);
       return () => ipcRenderer.removeListener('pty:exit', h);
-    },
-    // Пульт «владеет» размером сессии, пока подключён: ПК зеркалит его сетку (letterbox),
-    // а не навязывает свою → терминал на ПК не «сыпется». remoteSize — пульт задал размер;
-    // remoteRelease — пульт отключился, ПК возвращает свой fit.
-    onRemoteSize: (cb) => {
-      const h = (_e, payload) => cb(payload);
-      ipcRenderer.on('pty:remoteSize', h);
-      return () => ipcRenderer.removeListener('pty:remoteSize', h);
-    },
-    onRemoteRelease: (cb) => {
-      const h = (_e, payload) => cb(payload);
-      ipcRenderer.on('pty:remoteRelease', h);
-      return () => ipcRenderer.removeListener('pty:remoteRelease', h);
     },
   },
 

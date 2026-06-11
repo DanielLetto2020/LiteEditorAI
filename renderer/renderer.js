@@ -35,7 +35,7 @@ import { initNotes } from './modules/notes.js';
 import { initOpenRouter } from './modules/openrouter.js';
 import { initExtensions } from './modules/extensions.js';
 
-const APP_VERSION = 'alpha v1.0.136';
+const APP_VERSION = 'alpha v1.0.137';
 const GUTTER = 5;
 const SCRATCH_ID = '__scratch__'; // префикс id системных терминалов (домашняя папка), не привязаны к проектам
 const isScratch = (id) => typeof id === 'string' && id.startsWith(SCRATCH_ID);
@@ -1199,7 +1199,7 @@ function createSession(proj, name) {
   lite.pty.create({ id, cwd: proj.path, cols: term.cols, rows: term.rows });
   term.onData((data) => {
     const r = terms.get(id);
-    if (r) { r.lastInputAt = Date.now(); if (r.remoteSized) reclaimTermSize(id); }   // печатаю на ПК → забираю владение размером у пульта
+    if (r) r.lastInputAt = Date.now();
     lite.pty.write(id, data);
   });
   term.onResize(({ cols, rows }) => lite.pty.resize(id, cols, rows));
@@ -1222,7 +1222,7 @@ function createSession(proj, name) {
     return true;
   });
   container.addEventListener('contextmenu', (e) => { e.preventDefault(); showTermMenu(e.clientX, e.clientY, term, id); });
-  const rec = { term, fit, search, container, projId: proj.id, name, idleTimer: null, sawBell: false, tail: '', busyStart: 0, lastInputAt: 0, activitySeq: 0, remoteSized: false };
+  const rec = { term, fit, search, container, projId: proj.id, name, idleTimer: null, sawBell: false, tail: '', busyStart: 0, lastInputAt: 0, activitySeq: 0 };
   terms.set(id, rec);
   tabsByProj.get(proj.id).sessions.push(id);
   return id;
@@ -1410,26 +1410,9 @@ function refitActiveTerminal(focusIt) {
   const asid = activeSessionId();
   const rec = asid ? terms.get(asid) : null;
   if (!rec) return;
-  // Пульт владеет размером этой сессии (подключён и задал свою сетку): ПК зеркалит её
-  // (letterbox) и НЕ навязывает свой fit, иначе PTY дёргается туда-сюда и пульт «сыпется».
-  if (rec.remoteSized) { if (focusIt) { try { rec.term.focus(); } catch (_) {} } return; }
   requestAnimationFrame(() => {
     try { rec.fit.fit(); lite.pty.resize(asid, rec.term.cols, rec.term.rows); if (focusIt) rec.term.focus(); } catch (_) {}
   });
-}
-// Пульт задал размер сессии → ПК подгоняет свой xterm под ту же сетку (без пере-фита).
-function applyRemoteTermSize(id, cols, rows) {
-  const rec = terms.get(id);
-  if (!rec || !cols || !rows) return;
-  rec.remoteSized = true;
-  try { if (rec.term.cols !== cols || rec.term.rows !== rows) rec.term.resize(cols, rows); } catch (_) {}
-}
-// ПК забирает владение размером назад (пульт отключился ИЛИ юзер печатает на ПК) → обычный fit.
-function reclaimTermSize(id) {
-  const rec = id ? terms.get(id) : null;
-  if (id && rec) rec.remoteSized = false;
-  else for (const r of terms.values()) r.remoteSized = false;
-  refitActiveTerminal();
 }
 function clearTerminal(id) {
   if (isScratch(id)) { const r = scratchTerms.get(id) || scratchTerms.get(scratchActiveId); if (r) { try { r.term.clear(); } catch (_) {} r.term.focus(); } return; }
@@ -2796,11 +2779,6 @@ function init() {
   });
   // RemoteHost — SSH-сессии (отдельный канал, не PTY): пишем вывод в соответствующий xterm.
   Rh.bindEvents(); // поток данных/закрытие SSH-сессий → xterm-вкладки модуля
-  // Пульт задал размер сессии → зеркалим его сетку на ПК (letterbox), не навязываем свою.
-  try { if (lite.pty.onRemoteSize) lite.pty.onRemoteSize(({ id, cols, rows }) => { try { applyRemoteTermSize(id, cols, rows); } catch (_) {} }); } catch (_) {}
-  // Пульт отключился → ПК возвращает себе размер (обычный fit всех сессий).
-  try { if (lite.pty.onRemoteRelease) lite.pty.onRemoteRelease(() => { try { reclaimTermSize(); } catch (_) {} }); } catch (_) {}
-
   // Пульт выбрал вкладку → синхронизируем активную на десктопе.
   try { if (lite.remote && lite.remote.onSelect) lite.remote.onSelect((sid) => { try { handleRemoteSelect(sid); } catch (_) {} }); } catch (_) {}
   // Пульт открыл терминал проекта → создаём вкладку на десктопе.
