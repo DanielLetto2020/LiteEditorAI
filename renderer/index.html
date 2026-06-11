@@ -133,6 +133,39 @@
         <div id="git-body" class="git-body"></div>
       </section>
 
+      <!-- «Контекст» module: per-project граф контекста агента (канва как n8n) -->
+      <div id="gutter-ctx" class="gutter hidden" data-resize="ctx"></div>
+      <section id="ctx-pane" class="hidden">
+        <div class="pane-head">
+          <span id="ctx-title">Контекст</span>
+          <span id="ctx-stale" class="ctx-stale" title="Граф изменён — собери контекст (▶), подействует на новые сессии" hidden>●</span>
+          <div class="drag-space-static"></div>
+          <button id="ctx-add" class="icon-btn" title="Добавить блок" data-icon="plus"></button>
+          <button id="ctx-split" class="icon-btn" title="Распилить CLAUDE.md на блоки (локальным агентом)" data-icon="scissors"></button>
+          <button id="ctx-apply" class="icon-btn" title="Собрать контекст → CLAUDE.local.md / AGENTS.md (с бекапом)" data-icon="play"></button>
+          <button id="ctx-settings" class="icon-btn" title="Настройки (бекапы, автосборка)" data-icon="sliders"></button>
+          <button id="ctx-close" class="icon-btn" title="Закрыть" data-icon="x"></button>
+        </div>
+        <div id="ctx-stats" class="ctx-stats"></div>
+        <div id="ctx-canvas" class="ctx-canvas">
+          <div id="ctx-world" class="ctx-world">
+            <svg id="ctx-wires" class="ctx-wires"></svg>
+            <div id="ctx-nodes"></div>
+          </div>
+          <div id="ctx-empty" class="ctx-empty" hidden>
+            <div class="hint-card">
+              <div class="hint-title">Канва пуста</div>
+              <div class="hint-text">Блоки слева — контекст, группы — переключаемые профили, справа — агенты.<br>
+                Провод напрямую в выход = постоянный контекст, через группу = ситуативный.</div>
+              <div class="ctx-empty-actions">
+                <button id="ctx-empty-add" class="btn">+ Блок</button>
+                <button id="ctx-empty-split" class="btn primary">✂ Распилить CLAUDE.md</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
       <!-- Containers module (docker/podman): system-wide, opens to the right -->
       <div id="gutter-docker" class="gutter hidden" data-resize="docker"></div>
       <section id="docker-pane" class="hidden">

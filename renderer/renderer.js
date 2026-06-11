@@ -28,6 +28,7 @@ import { showMinimap } from '@replit/codemirror-minimap';
 import { initTextProc } from './modules/textproc.js';
 import { el, svgEl, icon, iconBtn, hydrateIcons, toast, renderDiffInto, makeModal, showConfirm, showPrompt, baseName, ICONS } from './ui.js';
 import { initGit } from './modules/git.js';
+import { initCtx } from './modules/contextgraph.js';
 import { initContainers } from './modules/containers.js';
 import { initDb } from './modules/db.js';
 import { initRh } from './modules/remotehost.js';
@@ -35,7 +36,7 @@ import { initNotes } from './modules/notes.js';
 import { initOpenRouter } from './modules/openrouter.js';
 import { initExtensions } from './modules/extensions.js';
 
-const APP_VERSION = 'alpha v1.0.137';
+const APP_VERSION = 'alpha v1.0.138';
 const GUTTER = 5;
 const SCRATCH_ID = '__scratch__'; // префикс id системных терминалов (домашняя папка), не привязаны к проектам
 const isScratch = (id) => typeof id === 'string' && id.startsWith(SCRATCH_ID);
@@ -233,7 +234,7 @@ let editor = null;
 let loadingDoc = false;
 const langComp = new Compartment();
 
-const DEFAULT_LAYOUT = { sidebar: 240, viewer: 520, tree: 240, scratch: 420, git: 360, docker: 460, db: 560, rh: 520, ext: 420 };
+const DEFAULT_LAYOUT = { sidebar: 240, viewer: 520, tree: 240, scratch: 420, git: 360, ctx: 740, docker: 460, db: 560, rh: 520, ext: 420 };
 let layout = loadLayout();
 let lastParent = STORE.lastParent || '';
 
@@ -279,13 +280,14 @@ function loadLayout() { return { ...DEFAULT_LAYOUT, ...(STORE.layout || {}) }; }
 function saveLayout() { persist('layout', layout); }
 // Whether the viewer / system terminal panes are open — part of the backed-up state,
 // restored on startup (and on import) so the window reopens the way it was left.
-function saveUiState() { persist('uiState', { viewerOpen, scratchOpen, gitOpen: Git.isOpen(), dockerOpen: Containers.isOpen(), dbOpen: Db.isOpen(), rhOpen: Rh.isOpen() }); }
+function saveUiState() { persist('uiState', { viewerOpen, scratchOpen, gitOpen: Git.isOpen(), ctxOpen: Ctx.isOpen(), dockerOpen: Containers.isOpen(), dbOpen: Db.isOpen(), rhOpen: Rh.isOpen() }); }
 function applyLayout() {
   $('#sidebar').style.flexBasis = layout.sidebar + 'px';
   $('#viewer-pane').style.flexBasis = layout.viewer + 'px';
   $('#tree-pane').style.flexBasis = layout.tree + 'px';
   $('#scratch-pane').style.flexBasis = layout.scratch + 'px';
   $('#git-pane').style.flexBasis = layout.git + 'px';
+  $('#ctx-pane').style.flexBasis = layout.ctx + 'px';
   $('#docker-pane').style.flexBasis = layout.docker + 'px';
   $('#db-pane').style.flexBasis = layout.db + 'px';
   $('#rh-pane').style.flexBasis = layout.rh + 'px';
@@ -1225,6 +1227,9 @@ function createSession(proj, name) {
   const rec = { term, fit, search, container, projId: proj.id, name, idleTimer: null, sawBell: false, tail: '', busyStart: 0, lastInputAt: 0, activitySeq: 0 };
   terms.set(id, rec);
   tabsByProj.get(proj.id).sessions.push(id);
+  // «Контекст»: тихая автосборка несобранных изменений графа — новая сессия агента
+  // должна стартовать со свежим CLAUDE.local.md/AGENTS.md (try — Ctx создаётся позже по коду).
+  try { Ctx.autoApply(proj); } catch (_) {}
   return id;
 }
 // Ensure a project's sessions exist (restoring saved tab names on first open).
@@ -1661,6 +1666,7 @@ function doSetActive(id) {
   applyFontSize();
   if (viewerOpen) refreshViewerForActive();
   if (Git.isOpen()) Git.renderPanel(proj); // Git module follows the active project
+  try { Ctx.onProjectChange(proj); } catch (_) {} // канва «Контекста» следует за активным проектом
   try { Ext.notifyActiveProject(activeId); } catch (_) {} // пользовательские модули: ctx.projects.onChange
 }
 
@@ -1959,7 +1965,7 @@ function setViewerOpen(open, opts = {}) {
 // Реестр панелей: каждая setXxxOpen знает только себя, взаимоисключение — closeOtherPanels.
 // Порядок закрытия фиксирован (он же — порядок старых inline-цепочек во всех setXxxOpen).
 const panels = new Map(); // id -> { isOpen(), setOpen(open, opts) }
-const PANEL_ORDER = ['files', 'git', 'docker', 'db', 'scratch', 'rh'];
+const PANEL_ORDER = ['files', 'git', 'ctx', 'docker', 'db', 'scratch', 'rh'];
 function registerPanel(id, api) { panels.set(id, api); }
 function closeOtherPanels(selfId) {
   for (const id of PANEL_ORDER) {
@@ -1976,6 +1982,12 @@ const Git = initGit({
   activeProject, getActiveId: () => activeId, refreshTree, closeOtherPanels,
 });
 registerPanel('git', { isOpen: Git.isOpen, setOpen: Git.setOpen });
+// «Контекст» — граф контекста агента (renderer/modules/contextgraph.js, канва как n8n).
+const Ctx = initCtx({
+  layout, GUTTER, saveUiState, refitActiveTerminal,
+  activeProject, getActiveId: () => activeId, closeOtherPanels,
+});
+registerPanel('ctx', { isOpen: Ctx.isOpen, setOpen: Ctx.setOpen });
 const Containers = initContainers({
   STORE, persist, settings, layout, GUTTER, saveUiState, refitActiveTerminal,
   closeOtherPanels, termTheme, applyUnicode11, loadFastRenderer,
@@ -2327,6 +2339,7 @@ function buildModulesMenu(dd) {
   dd.appendChild(el('div', 'menu-label', 'Встроенные'));
   dd.appendChild(menuRow('eye', 'Вивер — файлы выбранного проекта', () => { closeMenus(); openModule('files'); }));
   dd.appendChild(menuRow('git', 'Git — выбранного проекта', () => { closeMenus(); openModule('git'); }));
+  dd.appendChild(menuRow('graph', 'Контекст — граф контекста агента', () => { closeMenus(); openModule('ctx'); }));
   dd.appendChild(menuRow('box', 'Контейнеры — Docker / Podman', () => { closeMenus(); openModule('docker'); }));
   dd.appendChild(menuRow('database', 'Базы данных — Postgres / MySQL / SQLite', () => { closeMenus(); openModule('db'); }));
   dd.appendChild(menuRow('globe', 'Удалённые хосты — SSH-сессии к серверам', () => { closeMenus(); openModule('rh'); }));
@@ -2615,6 +2628,8 @@ function paletteActions() {
   acts.push({ label: 'Создать папку…', run: showCreateFolder });
   acts.push({ label: viewerOpen ? 'Закрыть вивер' : 'Открыть вивер', run: () => setViewerOpen(!viewerOpen) });
   acts.push({ label: Git.isOpen() ? 'Закрыть Git' : 'Открыть Git', run: Git.toggle });
+  acts.push({ label: Ctx.isOpen() ? 'Закрыть контекст' : 'Контекст — граф контекста агента', run: Ctx.toggle });
+  if (Ctx.isOpen()) acts.push({ label: 'Контекст: собрать (▶ CLAUDE.local.md / AGENTS.md)', run: () => Ctx.applyCompile() });
   acts.push({ label: Containers.isOpen() ? 'Закрыть контейнеры' : 'Контейнеры (Docker / Podman)', run: Containers.toggle });
   acts.push({ label: Db.isOpen() ? 'Закрыть базы данных' : 'Базы данных (Postgres / MySQL / SQLite)', run: Db.toggle });
   acts.push({ label: 'Режим «один терминал»', run: toggleSingle });
@@ -2902,10 +2917,10 @@ function init() {
   // Right-slot modules are mutually exclusive — restore at most one, first-true-wins
   // (приоритет — порядок старых if-цепочек: viewer, scratch, git, docker, db, rh).
   // allowEmpty so Git returns even before a project is active — matching the viewer, so window width fits.
-  const RESTORE_ORDER = [['files', 'viewerOpen'], ['scratch', 'scratchOpen'], ['git', 'gitOpen'], ['docker', 'dockerOpen'], ['db', 'dbOpen'], ['rh', 'rhOpen']];
+  const RESTORE_ORDER = [['files', 'viewerOpen'], ['scratch', 'scratchOpen'], ['git', 'gitOpen'], ['ctx', 'ctxOpen'], ['docker', 'dockerOpen'], ['db', 'dbOpen'], ['rh', 'rhOpen']];
   for (const [id, key] of RESTORE_ORDER) {
     if (!ui[key]) continue;
-    panels.get(id).setOpen(true, id === 'git' ? { grow: false, allowEmpty: true } : { grow: false });
+    panels.get(id).setOpen(true, (id === 'git' || id === 'ctx') ? { grow: false, allowEmpty: true } : { grow: false });
     break;
   }
 

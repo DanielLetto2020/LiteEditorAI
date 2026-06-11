@@ -69,6 +69,28 @@ contextBridge.exposeInMainWorld('lite', {
     onError: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('tp:error', h); return () => ipcRenderer.removeListener('tp:error', h); },
   },
 
+  // «Контекст» — граф контекста агента (renderer/modules/contextgraph.js).
+  ctx: {
+    load: (projId) => ipcRenderer.invoke('ctx:load', { projId }),
+    save: (projId, graph) => ipcRenderer.invoke('ctx:save', { projId, graph }),
+    blockRead: (projId, projPath, node) => ipcRenderer.invoke('ctx:blockRead', { projId, projPath, node }),
+    blockWrite: (projId, projPath, node, text) => ipcRenderer.invoke('ctx:blockWrite', { projId, projPath, node, text }),
+    blockDelete: (projId, projPath, node) => ipcRenderer.invoke('ctx:blockDelete', { projId, projPath, node }),
+    runCmd: (projPath, cmd, timeout) => ipcRenderer.invoke('ctx:runCmd', { projPath, cmd, timeout }),
+    agent: (agent, prompt) => ipcRenderer.invoke('ctx:agent', { agent, prompt }),
+    compile: (opts) => ipcRenderer.invoke('ctx:compile', opts),
+    seenRead: (projId, nodeId) => ipcRenderer.invoke('ctx:seenRead', { projId, nodeId }),
+    slotSeen: (projId, projPath, nodeId) => ipcRenderer.invoke('ctx:slotSeen', { projId, projPath, nodeId }),
+    watchSlots: (projId, projPath) => ipcRenderer.send('ctx:watchSlots', { projId, projPath }),
+    unwatchSlots: (projId) => ipcRenderer.send('ctx:unwatchSlots', { projId }),
+    onSlotChanged: (cb) => { const h = (_e, p) => cb(p || {}); ipcRenderer.on('ctx:slotChanged', h); return () => ipcRenderer.removeListener('ctx:slotChanged', h); },
+    libList: () => ipcRenderer.invoke('ctx:libList'),
+    libSave: (opts) => ipcRenderer.invoke('ctx:libSave', opts),
+    libUsage: (libId) => ipcRenderer.invoke('ctx:libUsage', { libId }),
+    libDelete: (libId) => ipcRenderer.invoke('ctx:libDelete', { libId }),
+    backupDir: (projId, dir) => ipcRenderer.invoke('ctx:backupDir', { projId, dir }),
+  },
+
   update: {
     check: () => ipcRenderer.invoke('update:check'), // latest GitHub release → {tag,name,notes,url} | {error}
   },

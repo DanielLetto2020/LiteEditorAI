@@ -514,6 +514,292 @@ ipcMain.on('tp:abort', (_e, { reqId } = {}) => {
   if (c) { tpReqs.delete(reqId); try { c.kill(); } catch (_) {} }
 });
 
+// ---------------------------------------------------------------- «Контекст» (граф контекста агента)
+// Модуль renderer/modules/contextgraph.js: per-project граф блоков контекста (канва как n8n).
+// Хранение: ~/.LiteEditorAI/contextgraph/{projects/<projId>/graph.json + blocks/*.md + seen-*.md,
+// library/*.md + library.json}. Слоты агента — В ПРОЕКТЕ (<proj>/.lite/ctx-slot-<id>.md), агенту
+// нужен прямой путь для записи. Компиляция: включённая часть графа → CLAUDE.local.md (Claude) /
+// AGENTS.md (Codex) в корне проекта; существующий файл бекапится (папка/глубина — в настройках
+// графа), чужой файл (без нашей шапки) без force не перезаписывается.
+const ctxDir = path.join(storeDir, 'contextgraph');
+const ctxSafe = (s) => String(s).replace(/[^\w.-]/g, '_');
+const ctxProjDir = (projId) => path.join(ctxDir, 'projects', ctxSafe(projId));
+const ctxLibDir = path.join(ctxDir, 'library');
+const ctxLibIndexFile = path.join(ctxLibDir, 'library.json');
+const CTX_MARKER = '<!-- LiteEditorAI:contextgraph';
+const CTX_TARGETS = { claude: 'CLAUDE.local.md', codex: 'AGENTS.md' };
+const CTX_CMD_MAX = 256 * 1024; // потолок вывода cmd-блока — защита от «cat огромного лога»
+
+function ctxGraphFile(projId) { return path.join(ctxProjDir(projId), 'graph.json'); }
+// Где лежит контент ноды-источника. text → blocks/<id>.md (или библиотека при ref 'lib:<id>'),
+// slot → файл в проекте, file → путь относительно корня проекта (абсолютный тоже работает).
+function ctxNodeFile(projId, projPath, node) {
+  if (!node) return null;
+  if (node.type === 'slot') return path.join(projPath, '.lite', 'ctx-slot-' + ctxSafe(node.id) + '.md');
+  if (node.type === 'file') return node.ref ? path.resolve(projPath, String(node.ref)) : null;
+  if (node.type === 'text') {
+    if (node.ref && String(node.ref).startsWith('lib:')) return path.join(ctxLibDir, ctxSafe(String(node.ref).slice(4)) + '.md');
+    return path.join(ctxProjDir(projId), 'blocks', ctxSafe(node.id) + '.md');
+  }
+  return null;
+}
+function ctxReadFileSafe(f) { try { return fs.readFileSync(f, 'utf8'); } catch (_) { return null; } }
+
+ipcMain.handle('ctx:load', (_e, { projId } = {}) => {
+  if (!projId) return { error: 'no projId' };
+  // битый/отсутствующий graph.json → null: канва стартует с чистого графа, не роняя панель
+  try { return { graph: JSON.parse(fs.readFileSync(ctxGraphFile(projId), 'utf8')) }; } catch (_) { return { graph: null }; }
+});
+ipcMain.handle('ctx:save', (_e, { projId, graph } = {}) => {
+  if (!projId || !graph) return { error: 'bad args' };
+  try { fs.mkdirSync(ctxProjDir(projId), { recursive: true }); atomicWriteSync(ctxGraphFile(projId), JSON.stringify(graph)); return { ok: true }; }
+  catch (e) { return { error: String(e.message || e) }; }
+});
+ipcMain.handle('ctx:blockRead', (_e, { projId, projPath, node } = {}) => {
+  const f = ctxNodeFile(projId, projPath, node);
+  if (!f) return { error: 'bad node' };
+  const text = ctxReadFileSafe(f);
+  return { text: text == null ? '' : text, exists: text != null, chars: text ? text.length : 0, file: f };
+});
+ipcMain.handle('ctx:blockWrite', (_e, { projId, projPath, node, text } = {}) => {
+  const f = ctxNodeFile(projId, projPath, node);
+  if (!f) return { error: 'bad node' };
+  try {
+    fs.mkdirSync(path.dirname(f), { recursive: true });
+    atomicWriteSync(f, String(text == null ? '' : text));
+    return { ok: true, chars: String(text == null ? '' : text).length };
+  } catch (e) { return { error: String(e.message || e) }; }
+});
+ipcMain.handle('ctx:blockDelete', (_e, { projId, projPath, node } = {}) => {
+  // удаляем только СВОИ файлы (локальный блок/слот); file-ноды и библиотеку не трогаем
+  const own = node && ((node.type === 'text' && !String(node.ref || '').startsWith('lib:')) || node.type === 'slot');
+  if (own) { try { fs.rmSync(ctxNodeFile(projId, projPath, node), { force: true }); } catch (_) {} }
+  return { ok: true };
+});
+
+// shell-команда cmd-блока: превью из модалки и резолв при компиляции — одна функция
+function ctxRunCmd(projPath, cmd, timeoutMs) {
+  return new Promise((resolve) => {
+    let child;
+    const t0 = Date.now();
+    try { child = spawn(String(cmd), [], { shell: true, cwd: projPath, env: tpEnv(), windowsHide: true }); }
+    catch (e) { resolve({ out: '', error: String(e.message || e), ms: 0 }); return; }
+    let out = '', err = '', done = false;
+    const fin = (error) => { if (done) return; done = true; resolve({ out: out.slice(0, CTX_CMD_MAX), error: error || null, ms: Date.now() - t0 }); };
+    const to = setTimeout(() => { try { child.kill('SIGKILL'); } catch (_) {} fin('таймаут команды'); }, Math.max(1000, Math.min(60000, parseInt(timeoutMs, 10) || 10000)));
+    child.stdout.on('data', (c) => { if (out.length < CTX_CMD_MAX) out += c.toString('utf8'); });
+    child.stderr.on('data', (c) => { if (err.length < 8192) err += c.toString('utf8'); });
+    child.on('error', (e) => { clearTimeout(to); fin(String(e.message || e)); });
+    child.on('close', (code) => { clearTimeout(to); fin((out.trim() || code === 0) ? null : (err.trim() || ('код ' + code))); });
+  });
+}
+ipcMain.handle('ctx:runCmd', async (_e, { projPath, cmd, timeout } = {}) => {
+  if (!projPath || !cmd) return { error: 'bad args' };
+  const r = await ctxRunCmd(projPath, cmd, timeout);
+  return { ...r, chars: (r.out || '').length };
+});
+
+// Локальный агент в headless-режиме (как tp:run, но invoke — удобнее для разовой «Распилить CLAUDE.md»)
+ipcMain.handle('ctx:agent', (_e, { agent, prompt } = {}) => new Promise((resolve) => {
+  const conf = TP_AGENTS[agent] || TP_AGENTS.claude;
+  const args = conf.via === 'arg' ? [...conf.args, prompt || ''] : [...conf.args];
+  let child;
+  try { child = spawn(conf.cmd, args, { cwd: os.homedir(), env: tpEnv() }); }
+  catch (err) { resolve({ error: 'не запустить «' + conf.cmd + '»: ' + (err.message || err) }); return; }
+  let out = '', errOut = '', done = false;
+  const fin = (v) => { if (!done) { done = true; resolve(v); } };
+  const to = setTimeout(() => { try { child.kill(); } catch (_) {} fin({ error: 'таймаут (агент не ответил за 4 минуты)' }); }, 240000);
+  child.stdout.on('data', (c) => { out += c.toString('utf8'); });
+  child.stderr.on('data', (c) => { errOut += c.toString('utf8'); });
+  child.on('error', (err) => { clearTimeout(to); fin({ error: 'агент «' + conf.cmd + '» не найден/не запустился: ' + (err.message || err) }); });
+  child.on('close', (code) => { clearTimeout(to); const text = out.trim(); fin(text ? { text } : { error: errOut.trim() || ('агент завершился с кодом ' + code) }); });
+  if (conf.via === 'stdin') { try { child.stdin.write(prompt || ''); child.stdin.end(); } catch (_) {} }
+}));
+
+// Контрибьюторы выхода: обратный обход по рёбрам через включённые ноды (группы вкладываются),
+// порядок склейки = вертикальный порядок на канве (y, при равенстве x), дубли отбрасываются.
+function ctxContributors(graph, outId) {
+  const byId = new Map((graph.nodes || []).map((n) => [n.id, n]));
+  const seen = new Set();
+  const stack = [outId];
+  const found = [];
+  while (stack.length) {
+    const cur = stack.pop();
+    if (seen.has(cur)) continue;
+    seen.add(cur);
+    for (const e of (graph.edges || [])) {
+      if (e.to !== cur) continue;
+      const src = byId.get(e.from);
+      if (!src || !src.enabled) continue;
+      if (src.type === 'group') stack.push(src.id);
+      else found.push(src);
+    }
+  }
+  found.sort((a, b) => (a.y - b.y) || (a.x - b.x));
+  const ids = new Set();
+  return found.filter((n) => { if (ids.has(n.id)) return false; ids.add(n.id); return true; });
+}
+// Бекап существующего целевого файла перед перезаписью + прунинг (держим keep свежих на имя)
+function ctxBackup(file, settings, projId) {
+  const dir = (settings && settings.backupDir) ? String(settings.backupDir) : path.join(ctxDir, 'backups', ctxSafe(projId));
+  const keep = Math.max(1, Math.min(100, parseInt(settings && settings.backupKeep, 10) || 10));
+  fs.mkdirSync(dir, { recursive: true });
+  const name = path.basename(file);
+  const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+  const dst = path.join(dir, name + '.' + ts + '.bak');
+  fs.copyFileSync(file, dst);
+  const all = fs.readdirSync(dir).filter((f) => f.startsWith(name + '.') && f.endsWith('.bak'))
+    .map((f) => { try { return { f, m: fs.statSync(path.join(dir, f)).mtimeMs }; } catch (_) { return null; } })
+    .filter(Boolean).sort((a, b) => b.m - a.m);
+  for (const o of all.slice(keep)) { try { fs.rmSync(path.join(dir, o.f), { force: true }); } catch (_) {} }
+  return dst;
+}
+ipcMain.handle('ctx:compile', async (_e, { projId, projPath, force } = {}) => {
+  if (!projId || !projPath) return { error: 'bad args' };
+  let graph;
+  try { graph = JSON.parse(fs.readFileSync(ctxGraphFile(projId), 'utf8')); } catch (_) { return { error: 'граф не найден — сначала сохраните канву' }; }
+  const settings = graph.settings || {};
+  const results = [], conflicts = [], errors = [];
+  const charsByNode = {};
+  const resolveNode = async (n) => {
+    if (n.type === 'cmd') {
+      const r = await ctxRunCmd(projPath, n.cmd || '', n.timeout);
+      charsByNode[n.id] = (r.out || '').length;
+      if (r.error && !r.out) { errors.push(`«${n.title}»: ${r.error}`); return `<!-- блок «${n.title}»: ошибка команды (${r.error}) -->`; }
+      return (r.out || '').trim();
+    }
+    const f = ctxNodeFile(projId, projPath, n);
+    const text = f ? ctxReadFileSafe(f) : null;
+    if (text == null) {
+      charsByNode[n.id] = 0;
+      if (n.type === 'file') { errors.push(`«${n.title}»: файл не найден (${n.ref || '—'})`); return `<!-- блок «${n.title}»: файл не найден: ${n.ref || '—'} -->`; }
+      return '';
+    }
+    charsByNode[n.id] = text.length;
+    let body = text.trim();
+    if (n.type === 'slot' && n.instruct !== false) {
+      body += (body ? '\n\n' : '') + 'Веди память проекта: важные решения, договорённости и выводы по ходу работы кратко дописывай (append, маркдаун-список) в файл `.lite/ctx-slot-' + n.id + '.md`.';
+    }
+    return body;
+  };
+  const cache = new Map(); // блок может идти в оба выхода — резолвим (и выполняем cmd) один раз
+  for (const [key, fname] of Object.entries(CTX_TARGETS)) {
+    const outNode = (graph.nodes || []).find((n) => n.type === 'out' && n.out === key);
+    if (!outNode || !outNode.enabled) continue;
+    const contrib = ctxContributors(graph, outNode.id);
+    if (!contrib.length) continue; // пустой выход — файл не трогаем (ничего не удаляем молча)
+    const parts = [];
+    for (const n of contrib) {
+      if (!cache.has(n.id)) cache.set(n.id, await resolveNode(n));
+      const t = cache.get(n.id);
+      if (t) parts.push(`<!-- ── блок: ${n.title || n.type} ── -->\n${t}`);
+    }
+    const content = CTX_MARKER + ' v1 · собрано модулем «Контекст» LiteEditor — не редактируйте вручную, файл перезаписывается при сборке -->\n\n' + parts.join('\n\n') + '\n';
+    const target = path.join(projPath, fname);
+    const existing = ctxReadFileSafe(target);
+    if (existing != null && existing === content) { results.push({ out: key, file: fname, chars: content.length, wrote: false }); continue; }
+    if (existing != null && !existing.startsWith(CTX_MARKER) && !force) { conflicts.push(fname); continue; }
+    let backup = null;
+    if (existing != null) { try { backup = ctxBackup(target, settings, projId); } catch (e) { errors.push('бекап не записан: ' + (e.message || e)); } }
+    try { atomicWriteSync(target, content); results.push({ out: key, file: fname, chars: content.length, wrote: true, backup: backup ? path.basename(backup) : null }); }
+    catch (e) { errors.push(fname + ': ' + (e.message || e)); }
+  }
+  for (const n of (graph.nodes || [])) if (charsByNode[n.id] != null) n.chars = charsByNode[n.id];
+  if (!conflicts.length) { graph.dirty = false; graph.compiledAt = Date.now(); }
+  try { fs.mkdirSync(ctxProjDir(projId), { recursive: true }); atomicWriteSync(ctxGraphFile(projId), JSON.stringify(graph)); } catch (_) {}
+  return { ok: true, results, conflicts, errors, graph };
+});
+
+// Слот агента: снапшот «последнее просмотренное» (для бейджа/диффа «что нового»)
+ipcMain.handle('ctx:seenRead', (_e, { projId, nodeId } = {}) => {
+  const t = ctxReadFileSafe(path.join(ctxProjDir(projId), 'seen-' + ctxSafe(nodeId) + '.md'));
+  return { text: t == null ? '' : t };
+});
+ipcMain.handle('ctx:slotSeen', (_e, { projId, projPath, nodeId } = {}) => {
+  try {
+    const cur = ctxReadFileSafe(ctxNodeFile(projId, projPath, { type: 'slot', id: nodeId })) || '';
+    fs.mkdirSync(ctxProjDir(projId), { recursive: true });
+    atomicWriteSync(path.join(ctxProjDir(projId), 'seen-' + ctxSafe(nodeId) + '.md'), cur);
+    return { ok: true };
+  } catch (e) { return { error: String(e.message || e) }; }
+});
+// Живой бейдж: следим за <proj>/.lite (агент дописал слот → событие в рендерер).
+const ctxWatchers = new Map(); // projId -> { watcher, timers: Map<nodeId, timeout> }
+ipcMain.on('ctx:watchSlots', (e, { projId, projPath } = {}) => {
+  if (!projId || !projPath || ctxWatchers.has(projId)) return;
+  const dir = path.join(projPath, '.lite');
+  try { fs.mkdirSync(dir, { recursive: true }); } catch (_) {}
+  let watcher;
+  try {
+    watcher = fs.watch(dir, (_ev, fname) => {
+      const m = /^ctx-slot-(.+)\.md$/.exec(String(fname || ''));
+      if (!m) return;
+      const rec = ctxWatchers.get(projId);
+      if (!rec) return;
+      clearTimeout(rec.timers.get(m[1]));
+      rec.timers.set(m[1], setTimeout(() => safeSend(e.sender, 'ctx:slotChanged', { projId, nodeId: m[1] }), 400));
+    });
+  } catch (_) { return; }
+  ctxWatchers.set(projId, { watcher, timers: new Map() });
+});
+ipcMain.on('ctx:unwatchSlots', (_e, { projId } = {}) => {
+  const rec = ctxWatchers.get(projId);
+  if (!rec) return;
+  try { rec.watcher.close(); } catch (_) {}
+  for (const t of rec.timers.values()) clearTimeout(t);
+  ctxWatchers.delete(projId);
+});
+
+// Библиотека блоков (общие между проектами, на канве — значок 📚)
+function ctxLibIndex() { try { return JSON.parse(fs.readFileSync(ctxLibIndexFile, 'utf8')); } catch (_) { return []; } }
+function ctxLibSaveIndex(ix) { fs.mkdirSync(ctxLibDir, { recursive: true }); atomicWriteSync(ctxLibIndexFile, JSON.stringify(ix)); }
+ipcMain.handle('ctx:libList', () => ({
+  items: ctxLibIndex().map((b) => {
+    const t = ctxReadFileSafe(path.join(ctxLibDir, ctxSafe(b.id) + '.md'));
+    return { id: b.id, title: b.title, chars: t ? t.length : 0 };
+  }),
+}));
+ipcMain.handle('ctx:libSave', (_e, { id, title, text } = {}) => {
+  try {
+    const ix = ctxLibIndex();
+    const bid = id || ('L' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6));
+    fs.mkdirSync(ctxLibDir, { recursive: true });
+    if (text != null) atomicWriteSync(path.join(ctxLibDir, ctxSafe(bid) + '.md'), String(text));
+    const cur = ix.find((b) => b.id === bid);
+    if (cur) { if (title) cur.title = title; } else ix.push({ id: bid, title: title || 'Блок' });
+    ctxLibSaveIndex(ix);
+    return { ok: true, id: bid };
+  } catch (e) { return { error: String(e.message || e) }; }
+});
+ipcMain.handle('ctx:libUsage', (_e, { libId } = {}) => {
+  const ref = 'lib:' + libId;
+  let count = 0;
+  const projIds = [];
+  try {
+    for (const d of fs.readdirSync(path.join(ctxDir, 'projects'))) {
+      try {
+        const g = JSON.parse(fs.readFileSync(path.join(ctxDir, 'projects', d, 'graph.json'), 'utf8'));
+        const n = (g.nodes || []).filter((x) => x.ref === ref).length;
+        if (n) { count += n; projIds.push(d); }
+      } catch (_) {}
+    }
+  } catch (_) {}
+  return { count, projIds };
+});
+ipcMain.handle('ctx:libDelete', (_e, { libId } = {}) => {
+  try {
+    fs.rmSync(path.join(ctxLibDir, ctxSafe(libId) + '.md'), { force: true });
+    ctxLibSaveIndex(ctxLibIndex().filter((b) => b.id !== libId));
+    return { ok: true };
+  } catch (e) { return { error: String(e.message || e) }; }
+});
+// Папка бекапов для модалки настроек («открыть папку»): резолв дефолта + mkdir
+ipcMain.handle('ctx:backupDir', (_e, { projId, dir } = {}) => {
+  const d = dir ? String(dir) : path.join(ctxDir, 'backups', ctxSafe(projId || ''));
+  try { fs.mkdirSync(d, { recursive: true }); } catch (_) {}
+  return { dir: d };
+});
+
 // ---------------------------------------------------------------- user modules (extensions)
 // Пользовательские модули: ~/.LiteEditorAI/modules/<id>/ = manifest.json + index.js.
 // main только сканит/валидирует и отдаёт file:// URL главного файла — загрузка и весь
