@@ -34,7 +34,7 @@ import { initRh } from './modules/remotehost.js';
 import { initNotes } from './modules/notes.js';
 import { initOpenRouter } from './modules/openrouter.js';
 
-const APP_VERSION = 'alpha v1.0.124';
+const APP_VERSION = 'alpha v1.0.125';
 const GUTTER = 5;
 const SCRATCH_ID = '__scratch__'; // префикс id системных терминалов (домашняя папка), не привязаны к проектам
 const isScratch = (id) => typeof id === 'string' && id.startsWith(SCRATCH_ID);
@@ -1536,13 +1536,11 @@ function setScratchOpen(open, opts = {}) {
   scratchOpen = open;
   $('#scratch-pane').classList.toggle('hidden', !open);
   $('#gutter-scratch').classList.toggle('hidden', !open);
-  $('#btn-scratch').classList.toggle('on', open);
   if (opts.grow !== false) lite.win.growBy(open ? delta : -delta); // grow:false on restore — saved width already counts this pane
   saveUiState();
   if (open) { ensureScratch(); setTimeout(() => showActiveScratch(), 60); }
   setTimeout(refitActiveTerminal, 160);
 }
-function toggleScratch() { setScratchOpen(!scratchOpen); }
 function restartScratch(id) {
   const sid = (id && scratchTerms.has(id)) ? id : scratchActiveId;
   const rec = scratchTerms.get(sid); if (!rec) return;
@@ -2764,7 +2762,6 @@ function init() {
   });
 
   $('#btn-single').addEventListener('click', toggleSingle);
-  $('#btn-scratch').addEventListener('click', toggleScratch);
   $('#scratch-restart').addEventListener('click', () => restartScratch());
   $('#scratch-close').addEventListener('click', () => setScratchOpen(false));
   $('#viewer-save').addEventListener('click', saveCurrent);

@@ -367,7 +367,6 @@ html, body {
 .tree-row.dir .tree-name { color: var(--text); font-weight: 500; }
 
 /* ---------------- system/scratch terminal ---------------- */
-#btn-scratch.on { color: var(--green); border-color: var(--border-accent); }
 #scratch-pane { flex: 0 0 420px; min-width: 240px; border-left: 1px solid var(--border); display: flex; flex-direction: column; background: var(--ink-2); }
 #scratch-term { flex: 1; position: relative; overflow: hidden; }
 .scratch-tabs { flex: 0 0 auto; min-width: 0; display: flex; align-items: flex-end; gap: 3px; padding: 4px 8px 0; overflow-x: auto; overflow-y: hidden; border-bottom: 1px solid var(--border); }
