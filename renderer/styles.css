@@ -567,6 +567,31 @@ html, body {
 .rh-fcname { flex: 1; min-width: 0; font-size: 13px; font-weight: 600; color: var(--green-bright); overflow: hidden; text-overflow: ellipsis; }
 .rh-fview { flex: 1; min-height: 0; overflow: auto; margin: 0; padding: 8px 4px; font-family: "JetBrains Mono", monospace; font-size: 11.5px; line-height: 1.5; color: var(--text-dim); white-space: pre; }
 
+/* ---------------- user modules (extensions): общая панель правого слота ---------------- */
+#ext-pane { flex: 0 0 420px; min-width: 280px; border-left: 1px solid var(--border); display: flex; flex-direction: column; background: var(--panel); }
+#ext-title { color: var(--green-bright); font-size: 12px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ext-body { flex: 1; min-height: 0; overflow: auto; position: relative; }
+.ext-body .ext-mod { height: 100%; }
+/* dev-терминал папки модуля: занимает всё тело панели */
+.ext-body .ext-term { height: 100%; padding: 4px; box-sizing: border-box; overflow: hidden; }
+.ext-body .ext-term .xterm { height: 100%; }
+/* меню «Мои модули»: индикатор статуса (ошибка/сломан) справа в строке */
+.menu-row .ext-state { margin-left: auto; font-size: 11px; color: var(--warn); }
+/* мастер «Создать модуль» */
+.ext-wizard { display: flex; flex-direction: column; gap: 10px; padding: 14px; color: var(--text); }
+.ext-wizard input[type="text"], .ext-wizard textarea { background: var(--bg-input); color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; font: inherit; outline: none; width: 100%; box-sizing: border-box; }
+.ext-wizard input[type="text"]:focus, .ext-wizard textarea:focus { border-color: var(--border-accent); }
+.ext-wizard textarea { min-height: 84px; resize: vertical; }
+.ext-wiz-label { font-size: 11px; letter-spacing: .08em; color: var(--text-mute); text-transform: uppercase; }
+.ext-wiz-mod { display: flex; align-items: center; gap: 8px; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 7px 10px; }
+.ext-wiz-mod .ext-wiz-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ext-wiz-mod .ext-del:hover { color: var(--danger); }
+.ext-wiz-sep { border-top: 1px solid var(--border); margin: 4px 0; }
+.ext-wiz-hint { font-size: 11.5px; color: var(--text-mute); font-family: "JetBrains Mono", monospace; min-height: 14px; }
+.ext-wiz-new { display: flex; gap: 8px; align-items: stretch; }
+.ext-wiz-new input[type="text"] { flex: 1; min-width: 0; }
+.ext-wiz-create { flex: 0 0 auto; white-space: nowrap; padding: 8px 12px; font-size: 12.5px; }
+
 /* ---------------- gutters (resize) ---------------- */
 .gutter { flex: 0 0 5px; cursor: col-resize; background: transparent; position: relative; z-index: 5; }
 .gutter::after { content: ""; position: absolute; inset: 0 2px; background: transparent; transition: background .12s; }
@@ -581,6 +606,7 @@ body.resizing { cursor: col-resize; user-select: none; }
 #app.single #docker-pane,
 #app.single #db-pane,
 #app.single #rh-pane,
+#app.single #ext-pane,
 #app.single .gutter { display: none !important; }
 #app.single #btn-single { color: var(--green); border-color: var(--border-accent); }
 

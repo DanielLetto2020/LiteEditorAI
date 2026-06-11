@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta http-equiv="Content-Security-Policy"
-        content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data: file: https: http:; frame-src 'self' file:;" />
+        content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' file: blob:; img-src 'self' data: file: https: http:; frame-src 'self' file:;" />
   <title>LiteEditorAI</title>
   <link rel="stylesheet" href="dist/bundle.css" />
   <link rel="stylesheet" href="styles.css" />
@@ -171,6 +171,19 @@
         <div id="rh-tabs" class="term-tabs rh-tabs" style="display:none"></div>
         <div id="rh-conns" class="db-body"></div>
         <div id="rh-term" style="display:none"></div>
+      </section>
+
+      <!-- User modules (extensions): общая панель правого слота, один пользовательский модуль за раз -->
+      <div id="gutter-ext" class="gutter hidden" data-resize="ext"></div>
+      <section id="ext-pane" class="hidden">
+        <div class="pane-head">
+          <button id="ext-back" class="icon-btn" title="Назад к модулям" data-icon="chevron-left" style="display:none"></button>
+          <span id="ext-title">Модуль</span>
+          <div class="drag-space-static"></div>
+          <button id="ext-reload" class="icon-btn" title="Перезагрузить модуль (после правок кода)" data-icon="refresh"></button>
+          <button id="ext-close" class="icon-btn" title="Закрыть" data-icon="x"></button>
+        </div>
+        <div id="ext-body" class="ext-body"></div>
       </section>
 
       <div class="gutter gutter-v hidden" data-resize="viewer"></div>

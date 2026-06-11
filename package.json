@@ -1,6 +1,6 @@
 {
   "name": "liteeditor-ai",
-  "version": "1.0.128-alpha",
+  "version": "1.0.135-alpha",
   "description": "Lightweight editor for working with AI coding agents in the terminal",
   "main": "main.js",
   "author": "Максим Кузьминский <i@m-letto.ru>",
@@ -87,6 +87,8 @@
       "renderer/dist/**",
       "assets/icon.png",
       "assets/icon.svg",
+      "module-kit/GUIDE.md",
+      "module-kit/ai/**",
       "!**/*.pdb"
     ],
     "linux": {

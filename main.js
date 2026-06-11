@@ -9,6 +9,7 @@ const os = require('os');
 const { execFile, spawn } = require('child_process');
 const https = require('https');
 const net = require('net');
+const { pathToFileURL } = require('url');
 const pty = require('node-pty');
 // Headless-xterm: на каждую сессию держим «теневой» терминал, который потребляет тот же
 // поток PTY. Пульту по сети идёт НЕ байтовый ANSI-стрим, а «проекция экрана» (принцип mosh):
@@ -175,7 +176,7 @@ try {
   const legacy = path.join(os.homedir(), '.LiteEditor');
   if (!fs.existsSync(storeDir) && fs.existsSync(legacy)) fs.cpSync(legacy, storeDir, { recursive: true });
 } catch (_) {}
-const STORE_KEYS = ['projects', 'settings', 'layout', 'recents', 'lastParent', 'categories', 'sectionOrder', 'accordions', 'dismissed', 'uiState', 'projTabs', 'openrouter', 'remote', 'shares', 'pultBlocked', 'dockerUi', 'dbConnections', 'dbUi', 'rhConnections', 'rhUi', 'textproc', 'tpPrompts'];
+const STORE_KEYS = ['projects', 'settings', 'layout', 'recents', 'lastParent', 'categories', 'sectionOrder', 'accordions', 'dismissed', 'uiState', 'projTabs', 'openrouter', 'remote', 'shares', 'pultBlocked', 'dockerUi', 'dbConnections', 'dbUi', 'rhConnections', 'rhUi', 'textproc', 'tpPrompts', 'extData', 'extEnabled'];
 // Папка-«стор» для шаринга с пультом (агент кладёт сюда файлы; в PTY доступна как $LITE_STORE).
 const pultStoreDir = path.join(storeDir, 'store');
 try { fs.mkdirSync(pultStoreDir, { recursive: true }); } catch (_) {}
@@ -511,6 +512,81 @@ ipcMain.on('tp:run', (e, { reqId, agent, prompt } = {}) => {
 ipcMain.on('tp:abort', (_e, { reqId } = {}) => {
   const c = tpReqs.get(reqId);
   if (c) { tpReqs.delete(reqId); try { c.kill(); } catch (_) {} }
+});
+
+// ---------------------------------------------------------------- user modules (extensions)
+// Пользовательские модули: ~/.LiteEditorAI/modules/<id>/ = manifest.json + index.js.
+// main только сканит/валидирует и отдаёт file:// URL главного файла — загрузка и весь
+// рантайм (динамический import, ctx, панель) живут в renderer/extensions.js.
+const extModulesDir = path.join(storeDir, 'modules');
+const EXT_API_VERSION = 1;
+function extEnsureDir() {
+  try {
+    if (fs.existsSync(extModulesDir)) return;
+    fs.mkdirSync(extModulesDir, { recursive: true });
+    fs.writeFileSync(path.join(extModulesDir, 'README.md'),
+      '# Модули LiteEditor\n\nСюда устанавливаются пользовательские модули: одна папка = один модуль\n' +
+      '(manifest.json + index.js). Проще всего создать свой через меню «Модули → Создать модуль…».\n' +
+      'Спецификация: https://github.com/DanielLetto2020/LiteEditorAI/tree/main/module-kit\n');
+  } catch (_) {}
+}
+ipcMain.handle('ext:scan', () => {
+  extEnsureDir();
+  const out = [];
+  let entries = [];
+  try { entries = fs.readdirSync(extModulesDir, { withFileTypes: true }); } catch (_) {}
+  for (const ent of entries) {
+    if (!ent.isDirectory()) continue;
+    const dir = path.join(extModulesDir, ent.name);
+    if (!fs.existsSync(path.join(dir, 'manifest.json'))) continue; // служебные папки молча пропускаем
+    let manifest = null, error = '';
+    try { manifest = JSON.parse(fs.readFileSync(path.join(dir, 'manifest.json'), 'utf8')); }
+    catch (e) { error = 'manifest.json не парсится: ' + (e.message || e); }
+    if (manifest && !error) {
+      if (!manifest.id || !/^[a-z0-9-]+$/.test(manifest.id)) error = 'некорректный id в манифесте (только a-z, 0-9, дефис)';
+      else if (manifest.id !== ent.name) error = `id «${manifest.id}» не совпадает с именем папки «${ent.name}»`;
+      else if (Number(manifest.apiVersion) !== EXT_API_VERSION) error = `apiVersion ${manifest.apiVersion} не поддерживается (редактор: ${EXT_API_VERSION})`;
+    }
+    const mainFile = path.join(dir, (manifest && typeof manifest.main === 'string' && manifest.main) || 'index.js');
+    if (!error && !fs.existsSync(mainFile)) error = 'нет главного файла: ' + path.basename(mainFile);
+    out.push({ id: ent.name, dir, manifest, error, mainUrl: error ? '' : pathToFileURL(mainFile).href, mainFile });
+  }
+  return { dir: extModulesDir, modules: out, apiVersion: EXT_API_VERSION };
+});
+// Детект локальных агентов для мастера создания модулей (тот же PATH-фикс, что у tp:run).
+ipcMain.handle('ext:agents', async () => {
+  const which = process.platform === 'win32' ? 'where' : 'which';
+  const check = (cmd) => new Promise((res) => { try { execFile(which, [cmd], { env: tpEnv() }, (err) => res(!err)); } catch (_) { res(false); } });
+  return { claude: await check('claude'), codex: await check('codex') };
+});
+// Скаффолд нового модуля: заготовка кода + GUIDE/CLAUDE.md/AGENTS.md из module-kit ПРИЛОЖЕНИЯ —
+// гайд гарантированно совпадает с apiVersion запущенного редактора (никаких клонирований из сети).
+const EXT_STUB = `// Стартовая заготовка модуля LiteEditor. Спецификация API — в GUIDE.md рядом.
+export function activate(ctx) {
+  const root = ctx.ui.el('div', 'ext-' + ctx.id);
+  root.style.cssText = 'padding:14px;color:var(--text);display:flex;flex-direction:column;gap:8px;';
+  root.appendChild(ctx.ui.el('div', null, 'Модуль «' + ctx.id + '» создан.'));
+  root.appendChild(ctx.ui.el('div', null, 'Опишите агенту, что здесь должно быть — он перепишет index.js.'));
+  ctx.panel.element.appendChild(root);
+}
+export function deactivate() {}
+`;
+ipcMain.handle('ext:scaffold', (_e, { id, name, desc } = {}) => {
+  try {
+    if (!id || !/^[a-z0-9-]+$/.test(String(id))) return { error: 'некорректный id (только a-z, 0-9, дефис)' };
+    extEnsureDir();
+    const dir = path.join(extModulesDir, String(id));
+    if (fs.existsSync(dir)) return { error: 'модуль с таким id уже существует: ' + dir };
+    fs.mkdirSync(dir, { recursive: true });
+    const manifest = { id: String(id), name: String(name || id), version: '0.1.0', apiVersion: EXT_API_VERSION, main: 'index.js', description: String(desc || ''), author: '', repo: '', capabilities: [] };
+    fs.writeFileSync(path.join(dir, 'manifest.json'), JSON.stringify(manifest, null, 2) + '\n');
+    fs.writeFileSync(path.join(dir, 'index.js'), EXT_STUB);
+    const kit = path.join(__dirname, 'module-kit');
+    for (const [src, dst] of [['GUIDE.md', 'GUIDE.md'], [path.join('ai', 'CLAUDE.md'), 'CLAUDE.md'], [path.join('ai', 'AGENTS.md'), 'AGENTS.md']]) {
+      try { fs.copyFileSync(path.join(kit, src), path.join(dir, dst)); } catch (e) { console.warn('ext:scaffold copy failed', src, String(e.message || e)); }
+    }
+    return { dir };
+  } catch (e) { return { error: String(e.message || e) }; }
 });
 
 // ---------------------------------------------------------------- settings backup (export / import)
