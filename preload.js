@@ -42,6 +42,14 @@ contextBridge.exposeInMainWorld('lite', {
     read: (name) => ipcRenderer.invoke('logs:read', name),
   },
 
+  // Пользовательские модули (расширения): скан папки ~/.LiteEditorAI/modules,
+  // скаффолд нового модуля, детект локальных агентов (claude/codex) для мастера.
+  ext: {
+    scan: () => ipcRenderer.invoke('ext:scan'),
+    agents: () => ipcRenderer.invoke('ext:agents'),
+    scaffold: (opts) => ipcRenderer.invoke('ext:scaffold', opts),
+  },
+
   openrouter: {
     models: (key) => ipcRenderer.invoke('openrouter:models', { key }),
     keyInfo: (key) => ipcRenderer.invoke('openrouter:keyInfo', { key }),
