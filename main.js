@@ -187,7 +187,7 @@ try {
   const legacy = path.join(os.homedir(), '.LiteEditor');
   if (!fs.existsSync(storeDir) && fs.existsSync(legacy)) fs.cpSync(legacy, storeDir, { recursive: true });
 } catch (_) {}
-const STORE_KEYS = ['projects', 'settings', 'layout', 'recents', 'lastParent', 'categories', 'sectionOrder', 'accordions', 'dismissed', 'uiState', 'projTabs', 'openrouter', 'remote', 'shares', 'dockerUi', 'dbConnections', 'dbUi', 'rhConnections', 'rhUi', 'textproc', 'tpPrompts'];
+const STORE_KEYS = ['projects', 'settings', 'layout', 'recents', 'lastParent', 'categories', 'sectionOrder', 'accordions', 'dismissed', 'uiState', 'projTabs', 'openrouter', 'remote', 'shares', 'pultBlocked', 'dockerUi', 'dbConnections', 'dbUi', 'rhConnections', 'rhUi', 'textproc', 'tpPrompts'];
 // Папка-«стор» для шаринга с пультом (агент кладёт сюда файлы; в PTY доступна как $LITE_STORE).
 const pultStoreDir = path.join(storeDir, 'store');
 try { fs.mkdirSync(pultStoreDir, { recursive: true }); } catch (_) {}
@@ -937,6 +937,10 @@ function startRemotePult() {
       onPultPresence: (connected) => { logger.log('info', 'remote', connected ? 'pult connected' : 'pult disconnected'); },
       // Пульт просит одобрить устройство → показать модалку в редакторе.
       onPairRequest: (info) => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('remote:pairRequest', info); },
+      // Учёт подключённых пультов (бейдж у версии) + блок-лист (доступ выключаем, не удаляя).
+      isBlocked: (device) => getPultBlocked().includes(device),
+      onPultsChanged: (list) => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('remote:pults', { list, blocked: getPultBlocked() }); },
+      onSysInfo: (m) => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('remote:sysinfo', m); },
     });
     const r = readStoreKey('remote') || {};
     if (r.token) {
@@ -1012,6 +1016,34 @@ ipcMain.handle('remote:setEnabled', (_e, { enabled } = {}) => {
   remote.apply({ enabled: !!enabled });
   return remoteStoreState();
 });
+// --- Пульты: список подключённых, блок-лист, запрос сисинфо/гео ----------------
+// «Отключить» НЕ удаляет устройство: device id кладётся в pultBlocked (стор) и пульту
+// шлётся адресный kick; при каждом следующем появлении заблокированного устройства
+// remote.js кикает его снова. «Вернуть» — убрать из списка, пульт подключится сам.
+function getPultBlocked() {
+  const v = readStoreKey('pultBlocked');
+  return Array.isArray(v) ? v : [];
+}
+ipcMain.handle('remote:pults', () => ({ list: remote.pultList(), blocked: getPultBlocked() }));
+ipcMain.handle('remote:pultBlock', (_e, { device } = {}) => {
+  device = String(device || '').trim();
+  if (device) {
+    const b = getPultBlocked();
+    if (!b.includes(device)) writeStoreKey('pultBlocked', b.concat([device]));
+    try { remote.kick(device); } catch (_) {}
+  }
+  return { list: remote.pultList(), blocked: getPultBlocked() };
+});
+ipcMain.handle('remote:pultUnblock', (_e, { device } = {}) => {
+  device = String(device || '').trim();
+  if (device) writeStoreKey('pultBlocked', getPultBlocked().filter((d) => d !== device));
+  return { list: remote.pultList(), blocked: getPultBlocked() };
+});
+// Запрос сисинфо/гео у конкретного пульта; ответ прилетит событием remote:sysinfo.
+ipcMain.on('remote:pultSysInfo', (_e, { device } = {}) => {
+  try { remote.send({ t: 'sysinfo:get', device: String(device || '') }); } catch (_) {}
+});
+
 // Pairing: пользователь на ПК одобрил/отклонил устройство пульта → шлём решение релею.
 ipcMain.on('remote:pairApprove', (_e, { device } = {}) => {
   try { remote.send({ t: 'pair:approve', device: String(device || ''), pubkey: '' }); } catch (_) {}

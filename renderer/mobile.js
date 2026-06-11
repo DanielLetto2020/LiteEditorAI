@@ -242,23 +242,49 @@ function showSystemInfo() {
   b.appendChild(pre); b.appendChild(row);
   showOverlay('Система', b);
 }
-// ☰ → оверлей-меню группами (как менюбар ПК-редактора: Аккаунт / Файл / Логи).
+// --- Верхние панели: шторка-фон, проекты (top sheet) и бургер-дропдаун ---------
+// Шторка общая: тап мимо панели закрывает её. Сами экраны (стор/аккаунт/логи)
+// остаются оверлеями showOverlay — выпадающим сделано только само меню.
+function setShade(on) { const sh = $('shade'); if (sh) sh.style.display = on ? 'block' : 'none'; }
+function closeTopPanels() {
+  const pm = $('projmodal'); if (pm) pm.style.display = 'none';
+  const dm = $('dropmenu'); if (dm) dm.style.display = 'none';
+  setShade(false);
+}
+function wireTopPanels() {
+  const sh = $('shade'); if (sh) sh.onclick = closeTopPanels;
+  const x = $('pm-x'); if (x) x.onclick = closeTopPanels;
+}
+function showProjects() {
+  const pm = $('projmodal'); if (!pm) return;
+  const dm = $('dropmenu'); if (dm) dm.style.display = 'none';
+  renderTree();
+  setShade(true);
+  pm.style.display = 'flex';
+}
+// ☰ → выпадающий вниз список под шапкой (те же пункты, что были в модалке).
 function openMenu() {
-  const b = document.createElement('div');
-  const sect = (title) => { const s = document.createElement('div'); s.textContent = title; s.style.cssText = 'font-size:10px;letter-spacing:.6px;text-transform:uppercase;color:#7fdbca;margin:10px 2px 6px'; b.appendChild(s); };
+  const dm = $('dropmenu'); if (!dm) return;
+  if (dm.style.display === 'block') { closeTopPanels(); return; }   // повторный тап — закрыть
+  const pm = $('projmodal'); if (pm) pm.style.display = 'none';
+  dm.innerHTML = '';
+  const sect = (title) => { const s = document.createElement('div'); s.className = 'dm-sect'; s.textContent = title; dm.appendChild(s); };
   const mk = (label, fn) => {
     const x = document.createElement('button');
     x.textContent = label;
-    x.style.cssText = 'display:block;width:100%;text-align:left;background:#161c24;color:#d6deeb;border:1px solid #2a323d;border-radius:8px;padding:12px 14px;font-size:15px;margin-bottom:6px';
-    x.onclick = () => { const ov = $('overlay'); if (ov) ov.style.display = 'none'; fn(); };
-    b.appendChild(x);
+    x.onclick = () => { closeTopPanels(); fn(); };
+    dm.appendChild(x);
   };
   sect('Аккаунт'); mk('Информация', showAccount);
   sect('Устройство'); mk('🔗 Подключить это устройство', startPairing);
   sect('Файл'); mk('📁 Стор — файлы с ПК', showStore); mk('Создать папку', showNewFolder);
   sect('Редактор (ПК)'); mk('⟲ Перезапустить редактор', showRestartPC);
   sect('Диагностика'); mk('Система', showSystemInfo); mk('Логи', showLogs);
-  showOverlay('Меню', b);
+  // Прижать к низу шапки (высота шапки зависит от устройства/масштаба).
+  const tb = $('topbar');
+  if (tb) dm.style.top = Math.round(tb.getBoundingClientRect().bottom + 4) + 'px';
+  setShade(true);
+  dm.style.display = 'block';
 }
 
 // ----------------------------------------------------------------- стор (файлы с ПК)
@@ -714,20 +740,11 @@ function pageScroll(up) {
     screenFollow = screenAtBottom();
   }
 }
-// Свернуть/развернуть панель проектов: на телефоне даёт терминалу полную ширину
-// (больше колонок). Состояние переживает перезапуск пульта.
-function toggleSidebar(force) {
-  const c = $('content'); if (!c) return;
-  const collapsed = (force == null) ? c.classList.toggle('side-collapsed') : c.classList.toggle('side-collapsed', !!force);
-  lsSet('side_collapsed', collapsed ? '1' : '');
-  const tk = document.querySelector('.tk[data-key="side"]'); if (tk) tk.classList.toggle('on', collapsed);
-  // Текст кадра переуложится сам (pre-wrap) — пере-фит не нужен.
-}
 function wireTermbar() {
   for (const b of document.querySelectorAll('.tk')) {
     b.onclick = (e) => {
       e.preventDefault();
-      if (b.dataset.key === 'side') { toggleSidebar(); return; }
+      if (b.dataset.key === 'side') { showProjects(); return; }   // проекты — верхней шторкой
       if (b.dataset.key === 'refresh') { refreshScreen(); return; }
       if (b.dataset.key === 'kbd') { toggleKbd(); return; }
       if (b.dataset.key === 'pgup') { pageScroll(true); return; }
@@ -735,7 +752,6 @@ function wireTermbar() {
       const seq = TKEYS[b.dataset.key]; if (seq != null) sendInput(seq);
     };
   }
-  if (lsGet('side_collapsed')) toggleSidebar(true);   // восстановить свёрнутое состояние
 }
 
 // ---------------------------------------------------- своя экранная клавиатура
@@ -951,7 +967,7 @@ function renderTree() {
     t.className = 'tab' + (s.sid === selected ? ' active' : '');
     const nm = document.createElement('span');
     nm.className = 'tab-name'; nm.textContent = s.tab || s.label || s.sid;
-    nm.onclick = () => selectSession(s.sid);
+    nm.onclick = () => { closeTopPanels(); selectSession(s.sid); };
     t.appendChild(nm);
     // Крестик — только если у проекта 2+ терминала (последний закрывать нельзя).
     if (canClose) {
@@ -962,17 +978,30 @@ function renderTree() {
     }
     box.appendChild(t);
   };
+  // Вкладка-плейсхолдер: у проекта ещё нет PTY на ПК, но визуально вкладка ЕСТЬ
+  // (как в редакторе — у проекта минимум один терминал). Тап = открыть на ПК и
+  // автоматически выбрать, когда сессия появится в state (pendingOpenProj).
+  const addGhost = (p) => {
+    const t = document.createElement('div');
+    t.className = 'tab ghost';
+    const nm = document.createElement('span');
+    nm.className = 'tab-name'; nm.textContent = 'Терминал 1';
+    nm.onclick = () => { openProjTerminal(p.id); };
+    t.appendChild(nm);
+    box.appendChild(t);
+  };
   const addProj = (p) => {
     const pr = document.createElement('div');
     pr.className = 'proj';
     const nm = document.createElement('span'); nm.className = 'proj-name'; nm.textContent = p.name;
-    const plus = document.createElement('button'); plus.className = 'add-term'; plus.title = 'Открыть терминал';
+    const plus = document.createElement('button'); plus.className = 'add-term'; plus.title = 'Открыть ещё терминал';
     plus.innerHTML = ADD_SVG;   // статичная SVG-иконка (без пользовательских данных)
-    plus.onclick = (e) => { e.stopPropagation(); send({ t: 'open', projId: p.id }); };
+    plus.onclick = (e) => { e.stopPropagation(); openProjTerminal(p.id); };
     pr.appendChild(nm); pr.appendChild(plus);
     box.appendChild(pr);
     const list = byProj[p.id] || [];
-    for (const s of list) addSession(s, list.length > 1);
+    if (list.length) { for (const s of list) addSession(s, list.length > 1); }
+    else addGhost(p);
   };
 
   for (const g of groups) {
@@ -994,6 +1023,21 @@ function selectSession(sid) {
   send({ t: 'select', sid });   // ПК ответит немедленным полным кадром
   renderTree();
 }
+// Открыть терминал проекта на ПК (＋ или тап по вкладке-плейсхолдеру). Новая сессия
+// прилетит в state — запоминаем проект, чтобы выбрать её автоматически.
+let pendingOpenProj = '';
+function openProjTerminal(projId) {
+  pendingOpenProj = projId;
+  send({ t: 'open', projId });
+  closeTopPanels();
+  setStatus('Открываю терминал…', 'wait');
+  setTimeout(() => {
+    if (pendingOpenProj !== projId) return;   // успели открыть/переключить
+    pendingOpenProj = '';
+    const online = ws && ws.readyState === 1;
+    setStatus(online ? '● На связи' : 'Нет связи', online ? 'ok' : 'wait');
+  }, 8000);
+}
 function sendInput(data) { if (selected) send({ t: 'input', sid: selected, data }); }
 function send(obj) { if (ws && ws.readyState === 1) { try { ws.send(JSON.stringify(obj)); } catch (_) {} } }
 
@@ -1014,6 +1058,50 @@ function resyncTerminal() {
 }
 
 // ----------------------------------------------------------------- соединение
+// hello несёт идентичность устройства: ПК ведёт список подключённых пультов
+// (бейдж у версии в редакторе) и может адресно запросить сисинфо или кикнуть.
+function sendHello() {
+  send({ t: 'hello', device: deviceId(), name: deviceName(), ver: window.PULT_VER || '' });
+}
+// ПК отключил доступ этому устройству (модалка «Пульты»). Не удаление: токен храним,
+// реконнект останавливаем до явного «Повторить» (если доступ вернули — подключимся).
+let kicked = false;
+function showKicked() {
+  kicked = true;
+  try { ws && ws.close(); } catch (_) {}
+  ws = null;
+  setStatus('Доступ отключён', 'bad');
+  const b = document.createElement('div');
+  const t = document.createElement('div');
+  t.style.cssText = 'color:#e0af68;font-size:14px;line-height:1.5;margin-bottom:14px';
+  t.textContent = 'Доступ этого устройства отключён в редакторе на ПК (лейбл «Пульты» у версии). Включите доступ обратно и нажмите «Повторить».';
+  const go = document.createElement('button');
+  go.textContent = 'Повторить подключение';
+  go.style.cssText = 'background:#1f6feb;color:#fff;border:0;border-radius:8px;padding:12px 14px;font-size:15px;width:100%';
+  go.onclick = () => {
+    kicked = false;
+    const ov = $('overlay'); if (ov) ov.style.display = 'none';
+    setStatus('Подключение…', 'wait');
+    connect();
+  };
+  b.appendChild(t); b.appendChild(go);
+  showOverlay('Доступ отключён', b);
+}
+// Ответ на запрос сисинфо с ПК: диагностика + (по возможности) геолокация.
+function replySysInfo() {
+  const info = diagnosticsText();
+  let sent = false;
+  const done = (loc) => { if (sent) return; sent = true; send({ t: 'sysinfo', device: deviceId(), info, loc }); };
+  try {
+    if (!navigator.geolocation) { done({ error: 'геолокация недоступна' }); return; }
+    navigator.geolocation.getCurrentPosition(
+      (p) => done({ lat: p.coords.latitude, lon: p.coords.longitude, acc: p.coords.accuracy }),
+      (e) => done({ error: (e && e.message) || 'нет доступа к геолокации' }),
+      { enableHighAccuracy: false, timeout: 8000, maximumAge: 60000 }
+    );
+    setTimeout(() => done({ error: 'таймаут геолокации' }), 10000);   // страховка: ответ уходит всегда
+  } catch (e) { done({ error: String((e && e.message) || e) }); }
+}
 function connect() {
   const url = `${relayUrl}?token=${encodeURIComponent(token)}&role=app&device=${encodeURIComponent(deviceId())}`;
   if (token) setStatus('Подключение…', 'wait');
@@ -1021,7 +1109,7 @@ function connect() {
 
   ws.onopen = () => {
     pairingShown = false;   // новое соединение → разрешаем заново показать пайринг при need_pairing
-    if (token) { setStatus('● На связи', 'ok'); resyncTerm = true; send({ t: 'hello' }); }   // (пере)подключились → перезапросить терминал
+    if (token) { setStatus('● На связи', 'ok'); resyncTerm = true; sendHello(); }   // (пере)подключились → перезапросить терминал
     else if (authPending) { flushAuth(); }
   };
   ws.onmessage = (ev) => {
@@ -1032,11 +1120,21 @@ function connect() {
       setAuthBusy(false);
       enterApp();
       setStatus('● На связи', 'ok');
-      send({ t: 'hello' });
+      sendHello();
     } else if (m.t === 'auth_err') {
       authError(m.error || 'Ошибка входа');
     } else if (m.t === 'state') {
       lastSessions = m.sessions || []; lastProjects = m.projects || []; renderTree();
+      // Ждали открытия терминала проекта (тап по плейсхолдеру/＋) → выбрать новую сессию.
+      if (pendingOpenProj) {
+        const list = lastSessions.filter((s) => s.projId === pendingOpenProj);
+        if (list.length) {
+          pendingOpenProj = '';
+          setStatus('● На связи', 'ok');
+          selectSession(list[list.length - 1].sid);   // новый PTY — последний в списке проекта
+          return;
+        }
+      }
       const exists = selected && lastSessions.some((s) => s.sid === selected);
       const target = m.active || (lastSessions[0] && lastSessions[0].sid);
       if (resyncTerm) {                       // после рестарта/возврата ПК — перезапросить свежий кадр
@@ -1117,7 +1215,7 @@ function connect() {
       pairingShown = false;
       const ov = $('overlay'); if (ov) ov.style.display = 'none';
       setStatus('Устройство одобрено ✓', 'ok');
-      resyncTerm = true; send({ t: 'hello' });   // одобрено → перезапросить терминал
+      resyncTerm = true; sendHello();   // одобрено → перезапросить терминал
     }
     else if (m.t === 'pair:denied') {
       pairingShown = false;
@@ -1131,7 +1229,7 @@ function connect() {
     }
     else if (m.t === 'restarted') {
       awaitingRestart = false; restartGraceUntil = Date.now() + 8000; resyncTerm = true;
-      setStatus('Редактор перезапущен ✓', 'ok'); send({ t: 'hello' });
+      setStatus('Редактор перезапущен ✓', 'ok'); sendHello();
     }
     else if (m.t === 'peer' && m.role === 'pc' && m.event === 'leave') {
       // во время/сразу после перезапуска уход старой копии — ожидаемый шум: статус НЕ трогаем
@@ -1139,13 +1237,21 @@ function connect() {
     }
     else if (m.t === 'peer' && m.role === 'pc' && m.event === 'join') {
       awaitingRestart = false; restartGraceUntil = 0; resyncTerm = true;
-      setStatus('● На связи', 'ok'); send({ t: 'hello' });
+      setStatus('● На связи', 'ok'); sendHello();
+    }
+    else if (m.t === 'sysinfo:get') {
+      // Адресный запрос: отвечает только устройство с совпадающим id (релей шлёт всем).
+      if (!m.device || m.device === deviceId()) replySysInfo();
+    }
+    else if (m.t === 'kick') {
+      if (!m.device || m.device === deviceId()) showKicked();
     }
   };
   ws.onclose = () => { ws = null; scheduleReconnect(); };
   ws.onerror = () => { try { ws.close(); } catch (_) {} };
 }
 function scheduleReconnect() {
+  if (kicked) return;   // доступ отключён с ПК — ждём явного «Повторить»
   if (reconnectTimer) return;
   reconnectTimer = setTimeout(() => { reconnectTimer = null; if (!ws) connect(); }, 3000);
 }
@@ -1154,7 +1260,7 @@ function scheduleReconnect() {
 function enterApp() {
   $('login').style.display = 'none';
   $('app').style.display = 'flex';
-  if (!termInited) { termInited = true; initScreen(); wireTermbar(); }
+  if (!termInited) { termInited = true; initScreen(); wireTermbar(); wireTopPanels(); }
   const w = $('whoami'); if (w) w.textContent = lsGet('lite_login') || '';
 }
 

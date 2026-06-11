@@ -34,7 +34,7 @@ import { initRh } from './modules/remotehost.js';
 import { initNotes } from './modules/notes.js';
 import { initOpenRouter } from './modules/openrouter.js';
 
-const APP_VERSION = 'alpha v1.0.122';
+const APP_VERSION = 'alpha v1.0.123';
 const GUTTER = 5;
 const SCRATCH_ID = '__scratch__'; // префикс id системных терминалов (домашняя папка), не привязаны к проектам
 const isScratch = (id) => typeof id === 'string' && id.startsWith(SCRATCH_ID);
@@ -578,6 +578,114 @@ function showRemote() {
   }
   const timer = setInterval(tick, 2500);
   tick();
+}
+
+// --- Подключённые пульты: бейдж у версии + модалка управления ------------------
+// Список живёт в main (remote.js считает устройства по peer/hello); сюда прилетает
+// push-событием remote:pults. «Отключить» = device id в блок-листе (стор pultBlocked)
+// + адресный kick — устройство не удаляется, доступ возвращается кнопкой.
+let pultsState = { list: [], blocked: [] };
+function updatePultBadge() {
+  const b = $('#pult-badge'); if (!b) return;
+  const n = (pultsState.list || []).length;
+  const blocked = (pultsState.blocked || []).length;
+  b.textContent = '📱 ' + n;
+  b.classList.toggle('on', n > 0);
+  b.hidden = n === 0 && blocked === 0;
+  b.title = n ? ('Подключено пультов: ' + n) : 'Пульты (есть отключённые устройства)';
+}
+async function refreshPults() {
+  try { const st = await lite.remote.pults(); if (st) pultsState = st; } catch (_) {}
+  updatePultBadge();
+}
+function showPults() {
+  const { m, close } = makeModal(`
+    <h2><span style="color:var(--green-bright)">📱</span> Пульты</h2>
+    <div class="about-desc">Устройства, подключённые к редактору. «Отключить» выключает доступ,
+      не удаляя устройство — доступ можно вернуть здесь же. Сисинфо и местоположение пульт
+      присылает по запросу (гео — с разрешения на устройстве).</div>
+    <div class="or-add" id="plt-body"></div>
+    <div class="modal-actions"><button class="btn" id="plt-close">Закрыть</button></div>`);
+  const body = m.querySelector('#plt-body');
+  const sysBoxes = {};   // device → <pre> под ответ сисинфо/гео
+
+  function fmtSince(ts) { try { return new Date(ts).toLocaleTimeString(); } catch (_) { return ''; } }
+  function render() {
+    body.innerHTML = '';
+    const blocked = pultsState.blocked || [];
+    const online = pultsState.list || [];
+    if (!online.length && !blocked.length) { body.appendChild(el('div', 'about-desc', 'Сейчас ни один пульт не подключён.')); return; }
+    const row = (device, info, isOnline) => {
+      const r = el('div', '');
+      r.style.cssText = 'border:1px solid var(--border);border-radius:10px;padding:10px;margin:8px 0';
+      const head = el('div', '');
+      head.style.cssText = 'display:flex;align-items:center;gap:8px;flex-wrap:wrap';
+      const dot = el('span', '', isOnline ? '●' : '○');
+      dot.style.color = isOnline ? 'var(--green-bright)' : 'var(--text-mute)';
+      const nm = el('b', '', (info && info.name) || 'Пульт');
+      const meta = el('span', '', (info && info.ver ? 'v' + info.ver + ' · ' : '')
+        + String(device).slice(0, 10) + '…'
+        + (isOnline && info && info.since ? ' · на связи с ' + fmtSince(info.since) : ''));
+      meta.style.cssText = 'color:var(--text-mute);font-size:11px';
+      head.appendChild(dot); head.appendChild(nm); head.appendChild(meta);
+      const actions = el('div', '');
+      actions.style.cssText = 'display:flex;gap:6px;margin-top:8px;flex-wrap:wrap;align-items:center';
+      const isBlocked = blocked.includes(device);
+      if (isOnline) {
+        const si = el('button', 'btn', 'Сисинфо и гео');
+        si.onclick = () => {
+          let pre = sysBoxes[device];
+          if (!pre) {
+            pre = document.createElement('pre');
+            pre.style.cssText = 'margin:8px 0 0;white-space:pre-wrap;word-break:break-word;font-size:11px;'
+              + 'max-height:240px;overflow:auto;border:1px solid var(--border);border-radius:8px;padding:8px;color:var(--text-mute)';
+            r.appendChild(pre);
+            sysBoxes[device] = pre;
+          }
+          pre.textContent = 'Запрошено, ждём ответ пульта…';
+          lite.remote.pultSysInfo(device);
+        };
+        actions.appendChild(si);
+      }
+      const tg = el('button', 'btn' + (isBlocked ? ' primary' : ''), isBlocked ? 'Вернуть доступ' : 'Отключить');
+      tg.onclick = async () => {
+        try {
+          const st = await (isBlocked ? lite.remote.pultUnblock(device) : lite.remote.pultBlock(device));
+          if (st) pultsState = st;
+        } catch (_) {}
+        updatePultBadge(); render();
+      };
+      actions.appendChild(tg);
+      if (isBlocked) {
+        const bb = el('span', '', 'доступ отключён');
+        bb.style.cssText = 'color:var(--warn);font-size:11px';
+        actions.appendChild(bb);
+      }
+      r.appendChild(head); r.appendChild(actions);
+      body.appendChild(r);
+    };
+    for (const p of online) row(p.device, p, true);
+    for (const d of blocked) { if (!online.some((p) => p.device === d)) row(d, null, false); }
+  }
+  // Живое обновление, пока модалка открыта (подключения/отключения и ответы сисинфо).
+  const offPults = (lite.remote && lite.remote.onPults)
+    ? lite.remote.onPults((st) => { if (st) pultsState = st; updatePultBadge(); render(); }) : null;
+  const offSys = (lite.remote && lite.remote.onSysInfo)
+    ? lite.remote.onSysInfo((msg) => {
+      const pre = sysBoxes[msg.device]; if (!pre) return;
+      let txt = '';
+      const loc = msg.loc;
+      if (loc && typeof loc.lat === 'number') {
+        txt += 'Гео: ' + loc.lat.toFixed(5) + ', ' + loc.lon.toFixed(5) + ' (±' + Math.round(loc.acc || 0) + ' м)\n'
+          + 'https://maps.google.com/?q=' + loc.lat + ',' + loc.lon + '\n\n';
+      } else if (loc && loc.error) {
+        txt += 'Гео: ' + loc.error + '\n\n';
+      }
+      pre.textContent = txt + (msg.info || '');
+    }) : null;
+  m.querySelector('#plt-close').onclick = () => { try { offPults && offPults(); offSys && offSys(); } catch (_) {} close(); };
+  render();
+  refreshPults().then(render).catch(() => {});
 }
 
 function toggleFavorite(id) {
@@ -2629,6 +2737,12 @@ function init() {
   try { if (lite.remote && lite.remote.onNewFolder) lite.remote.onNewFolder((name) => { try { handleRemoteNewFolder(name); } catch (_) {} }); } catch (_) {}
   // Пульт просит одобрить устройство (pairing) → модалка одобрения.
   try { if (lite.remote && lite.remote.onPairRequest) lite.remote.onPairRequest((info) => { try { handleRemotePairRequest(info); } catch (_) {} }); } catch (_) {}
+  // Бейдж «подключённые пульты» у версии: живёт на push-событиях из main + стартовый снимок.
+  try {
+    if (lite.remote && lite.remote.onPults) lite.remote.onPults((st) => { try { pultsState = st || pultsState; updatePultBadge(); } catch (_) {} });
+    const pb = $('#pult-badge'); if (pb) pb.onclick = () => { try { showPults(); } catch (_) {} };
+    if (lite.remote && lite.remote.pults) setTimeout(() => { refreshPults().catch(() => {}); }, 1500);
+  } catch (_) {}
 
   // OpenRouter streaming → SSE-события маршрутизирует модуль (по reqId).
   Or.bindStream();

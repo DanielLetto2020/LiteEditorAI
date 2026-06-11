@@ -89,6 +89,13 @@ contextBridge.exposeInMainWorld('lite', {
     onPairRequest: (cb) => { const h = (_e, p) => cb(p || {}); ipcRenderer.on('remote:pairRequest', h); return () => ipcRenderer.removeListener('remote:pairRequest', h); },
     pairApprove: (device) => ipcRenderer.send('remote:pairApprove', { device }),
     pairDeny: (device) => ipcRenderer.send('remote:pairDeny', { device }),
+    // Подключённые пульты: список/блок-лист (бейдж у версии + модалка «Пульты»).
+    pults: () => ipcRenderer.invoke('remote:pults'),
+    pultBlock: (device) => ipcRenderer.invoke('remote:pultBlock', { device }),
+    pultUnblock: (device) => ipcRenderer.invoke('remote:pultUnblock', { device }),
+    pultSysInfo: (device) => ipcRenderer.send('remote:pultSysInfo', { device }),   // ответ — событием onSysInfo
+    onPults: (cb) => { const h = (_e, p) => cb(p || {}); ipcRenderer.on('remote:pults', h); return () => ipcRenderer.removeListener('remote:pults', h); },
+    onSysInfo: (cb) => { const h = (_e, p) => cb(p || {}); ipcRenderer.on('remote:sysinfo', h); return () => ipcRenderer.removeListener('remote:sysinfo', h); },
   },
 
   git: {

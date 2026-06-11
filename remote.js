@@ -34,8 +34,37 @@ let onStoreGetZip = () => {};
 let onStoreCancel = () => {};
 let onPultPresence = () => {};   // (connected:boolean) — пульт подключился/отключился
 let onPairRequest = () => {};    // ({device,name,pubkey,code}) — пульт просит одобрить устройство
+let onPultsChanged = () => {};   // (list) — состав подключённых пультов изменился (для бейджа в UI)
+let onSysInfo = () => {};        // ({device,info,loc}) — пульт прислал системную инфу/гео
+let isBlocked = () => false;     // (device) → доступ устройству отключён в редакторе
 
 let appConnected = false;        // есть ли сейчас хотя бы один пульт (role=app) на связи
+
+// --- Подключённые пульты (по device id из peer/hello) --------------------------
+const pults = new Map();         // device → {device, name, ver, since}
+
+function pultList() { return Array.from(pults.values()); }
+function kick(device) { send({ t: 'kick', device: String(device || '') }); }
+function pultUpsert(device, info) {
+  device = String(device || '').trim();
+  if (!device) return;
+  const cur = pults.get(device) || { device, name: '', ver: '', since: Date.now() };
+  if (info && info.name) cur.name = String(info.name).slice(0, 80);
+  if (info && info.ver) cur.ver = String(info.ver).slice(0, 24);
+  pults.set(device, cur);
+  // Заблокированное устройство выкидываем сразу при появлении (kick адресный — по device).
+  let blocked = false;
+  try { blocked = !!isBlocked(device); } catch (_) {}
+  if (blocked) kick(device);
+  pultsChanged();
+}
+function pultRemove(device) {
+  if (pults.delete(String(device || '').trim())) pultsChanged();
+}
+function pultsChanged() {
+  setPultPresence(pults.size > 0);
+  try { onPultsChanged(pultList()); } catch (_) {}
+}
 
 let host = 'lite.codecopy.ru';
 let token = '';
@@ -145,9 +174,12 @@ function connect() {
   });
   ws.on('message', (raw) => {
     let m; try { m = JSON.parse(raw.toString()); } catch (_) { return; }
-    if (m.t === 'peer' && m.role === 'app' && m.event === 'join') { setPultPresence(true); sendState(); }
-    else if (m.t === 'peer' && m.role === 'app' && m.event === 'leave') { setPultPresence(false); }
-    else if (m.t === 'hello') { setPultPresence(true); sendState(); }
+    if (m.t === 'peer' && m.role === 'app' && m.event === 'join') { pultUpsert(m.device); sendState(); }
+    else if (m.t === 'peer' && m.role === 'app' && m.event === 'leave') { pultRemove(m.device); }
+    else if (m.t === 'hello') { pultUpsert(m.device, { name: m.name, ver: m.ver }); sendState(); }
+    else if (m.t === 'sysinfo') {
+      try { onSysInfo({ device: m.device || '', info: m.info || '', loc: m.loc || null }); } catch (_) {}
+    }
     else if (m.t === 'select' && typeof m.sid === 'string') {
       activeSid = m.sid;
       lastFrame = null;          // новый зритель/сессия → следующий кадр полный
@@ -179,7 +211,7 @@ function connect() {
     }
   });
   ws.on('pong', () => { isAlive = true; });
-  ws.on('close', () => { stopHeartbeat(); ws = null; setPultPresence(false); scheduleReconnect(); });
+  ws.on('close', () => { stopHeartbeat(); ws = null; pults.clear(); pultsChanged(); scheduleReconnect(); });
   ws.on('error', (e) => { logger.log('warn', 'remote', 'ws error', e && e.message); try { ws.close(); } catch (_) {} });
 }
 
@@ -216,6 +248,9 @@ function init(opts = {}) {
   if (opts.onStoreCancel) onStoreCancel = opts.onStoreCancel;
   if (opts.onPultPresence) onPultPresence = opts.onPultPresence;
   if (opts.onPairRequest) onPairRequest = opts.onPairRequest;
+  if (opts.onPultsChanged) onPultsChanged = opts.onPultsChanged;
+  if (opts.onSysInfo) onSysInfo = opts.onSysInfo;
+  if (opts.isBlocked) isBlocked = opts.isBlocked;
 }
 
 // Применить конфиг (host/token/enabled). Поднимает или гасит соединение.
@@ -243,7 +278,8 @@ function stop() {
   lastFrame = null;
   try { ws && ws.close(); } catch (_) {}
   ws = null;
-  setPultPresence(false);
+  pults.clear();
+  pultsChanged();
 }
 
 function status() {
@@ -258,4 +294,4 @@ function notifyState() { sendState(); }
 // Для стора: прямая отправка пульту + объём неотправленного (бэкпрешер при стриме файлов).
 function bufferedAmount() { return (ws && typeof ws.bufferedAmount === 'number') ? ws.bufferedAmount : 0; }
 
-module.exports = { init, apply, stop, status, screenTouch, exit, notifyState, send, bufferedAmount };
+module.exports = { init, apply, stop, status, screenTouch, exit, notifyState, send, bufferedAmount, pultList, kick };
