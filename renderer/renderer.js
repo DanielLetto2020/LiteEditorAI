@@ -25,7 +25,7 @@ import { html } from '@codemirror/lang-html';
 import { css } from '@codemirror/lang-css';
 import { sql, PostgreSQL, MySQL, SQLite } from '@codemirror/lang-sql';
 import { showMinimap } from '@replit/codemirror-minimap';
-import { initTextProc } from './textproc.js';
+import { initTextProc } from './modules/textproc.js';
 import { el, svgEl, icon, iconBtn, hydrateIcons, toast, renderDiffInto, makeModal, showConfirm, showPrompt, baseName } from './ui.js';
 import { initGit } from './modules/git.js';
 import { initContainers } from './modules/containers.js';
@@ -34,7 +34,7 @@ import { initRh } from './modules/remotehost.js';
 import { initNotes } from './modules/notes.js';
 import { initOpenRouter } from './modules/openrouter.js';
 
-const APP_VERSION = 'alpha v1.0.120';
+const APP_VERSION = 'alpha v1.0.121';
 const GUTTER = 5;
 const SCRATCH_ID = '__scratch__'; // префикс id системных терминалов (домашняя папка), не привязаны к проектам
 const isScratch = (id) => typeof id === 'string' && id.startsWith(SCRATCH_ID);
