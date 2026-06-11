@@ -20,7 +20,7 @@
       } catch (e) {}
     }
     window.__report = report;
-    window.PULT_VER = '0.44.0';
+    window.PULT_VER = '0.51.0';
     window.onerror = function (m, src, line, col, err) {
       report('page-error', m, (err && err.stack) || (src + ':' + line));
       var b = document.getElementById('fatal') || document.createElement('div');
@@ -30,7 +30,7 @@
       if (document.body) document.body.appendChild(b);
       return false;
     };
-    report('page-loaded', 'index.html v0.44.0', navigator.userAgent);
+    report('page-loaded', 'index.html v0.51.0', navigator.userAgent);
   })();
   </script>
   <link rel="stylesheet" href="./app.css" />
@@ -85,19 +85,23 @@
     .tab-x:active { color: #f7768e; }
     .tab-empty { padding: 12px; font-size: 11px; color: #5a6675; }
     #main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
-    #termbar { display: flex; gap: 6px; padding: 5px 6px; background: #11161d; border-bottom: 1px solid #1f2630; overflow-x: auto; flex: 0 0 auto; }
+    #termbar { display: flex; flex-wrap: wrap; gap: 6px; padding: 5px 6px; background: #11161d; border-bottom: 1px solid #1f2630; flex: 0 0 auto; }
     .tk { background: #1c2530; color: #cfe3ee; border: 1px solid #2a323d; border-radius: 6px; padding: 6px 11px; font-size: 12px; white-space: nowrap; flex: 0 0 auto; }
     .tk:active { background: #27323f; }
     #term { flex: 1; min-height: 0; padding: 4px; overflow: hidden; }
-    #term .term-reader { margin: 0; width: 100%; height: 100%; overflow: auto; white-space: pre-wrap;
+    /* Поверхность «проекции экрана»: кадр с ПК — простой текст. Широкая сетка ПК
+       переносится (pre-wrap) и кадр выше экрана планшета → локальный скролл с
+       прилипанием к низу (низ кадра = поле ввода агента, оно важнее всего).
+       Прокрутка СОДЕРЖИМОГО агента (его транскрипт в TUI) — кнопки PgUp/PgDn. */
+    #term .screen { margin: 0; width: 100%; height: 100%; overflow-y: auto; white-space: pre-wrap;
       word-break: break-word; overflow-wrap: anywhere; color: #d6deeb; background: #0d1117;
-      font: 12px/1.45 ui-monospace, 'Roboto Mono', 'Droid Sans Mono', monospace; padding: 7px; touch-action: pan-y; }
+      font: 12px/1.35 ui-monospace, 'Roboto Mono', 'Droid Sans Mono', monospace; padding: 7px; touch-action: pan-y; }
+    #term .screen::-webkit-scrollbar { width: 8px; }
+    #term .screen::-webkit-scrollbar-thumb { background: #2a3a4a; border-radius: 6px; }
+    #term .screen::-webkit-scrollbar-track { background: transparent; }
+    /* Строка с курсором (поле ввода агента) — выделяем цветом, чтобы глаз сразу находил. */
+    #term .screen .cur-line { background: #16243a; color: #eaf2fb; border-radius: 3px; }
     .tk.on { background: #1f6feb; color: #fff; border-color: #1f6feb; }
-
-    /* Видимый боковой скролл в терминале (доп. способ листать историю на планшете). */
-    #term .xterm-viewport::-webkit-scrollbar { width: 8px; }
-    #term .xterm-viewport::-webkit-scrollbar-thumb { background: #2a3a4a; border-radius: 6px; }
-    #term .xterm-viewport::-webkit-scrollbar-track { background: transparent; }
 
     /* Своя экранная клавиатура — ПЛАВАЮЩЕЕ перетаскиваемое окно (не ужимает терминал,
        поэтому шрифт терминала остаётся крупным). Компактное: ширина ~320px, мелкие клавиши. */
@@ -152,7 +156,7 @@
       <div id="lg-err"></div>
       <button id="lg-go">Войти</button>
       <div class="login-note">Регистрация аккаунта — в редакторе на ПК (меню «Пульт»).</div>
-      <div class="login-note" id="login-ver" style="opacity:.6">пульт v0.44.0</div>
+      <div class="login-note" id="login-ver" style="opacity:.6">пульт v0.51.0</div>
     </div>
   </div>
 
@@ -177,16 +181,15 @@
         <div id="termbar">
           <button class="tk" data-key="side" title="Показать/скрыть проекты">📁</button>
           <button class="tk" data-key="kbd" title="Клавиатура">⌨</button>
-          <button class="tk" data-key="refresh" title="Пересобрать терминал">⟳</button>
-          <button class="tk" data-key="pgup" title="Прокрутка вверх">PgUp</button>
-          <button class="tk" data-key="pgdn" title="Прокрутка вниз">PgDn</button>
+          <button class="tk" data-key="refresh" title="Обновить экран (свежий кадр с ПК)">⟳</button>
+          <button class="tk" data-key="pgup" title="Прокрутка вверх (TUI)">PgUp</button>
+          <button class="tk" data-key="pgdn" title="Прокрутка вниз (TUI)">PgDn</button>
           <button class="tk" data-key="c-c">Ctrl+C</button>
           <button class="tk" data-key="esc">Esc</button>
           <button class="tk" data-key="tab">Tab</button>
           <button class="tk" data-key="up">↑</button>
           <button class="tk" data-key="down">↓</button>
           <button class="tk" data-key="enter">⏎</button>
-          <button class="tk" data-key="c-d">Ctrl+D</button>
         </div>
         <div id="term"></div>
       </div>

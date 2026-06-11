@@ -12,25 +12,27 @@
 let WebSocket = null;
 try { WebSocket = require('ws'); } catch (_) { /* ws не установлен — фича не поднимется */ }
 
-const BUF_LIMIT = 16 * 1024; // короткий «хвост» вывода на сессию (не копим большую историю)
-const SNAP_CHUNK = 32 * 1024; // большие snapshot'ы режем, чтобы не давить релей/WebView одним JSON
+// «Проекция экрана» (принцип mosh): пульту по сети идёт не ANSI-стрим, а видимый экран
+// активной сессии как текст — полный кадр на select и line-диффы с debounce дальше.
+// Шторм перерисовок TUI-агента схлопывается в пару маленьких кадров в секунду, а ресинк
+// после обрыва мобильной сети стоит один кадр ~5КБ вместо мегабайтного снапшота.
+const FRAME_MS = 200;       // минимальный интервал между кадрами (trailing debounce)
 
 let logger = { log() {} };
 let getSessions = () => ({ sessions: [], projects: [] });
-let snapshot = () => '';   // чистый снапшот сессии (serialize теневого xterm) — задаётся из main
+let screenFrame = () => null;  // (sid) → {cols,rows,lines[],cursor:[x,y],alt} — задаётся из main
 let writeInput = () => {};
 let openProject = () => {};
 let onSelect = () => {};
 let onClose = () => {};
 let onNewFolder = () => {};
 let onRestartApp = () => {};
-let onResize = () => {};
 let onHistoryGet = () => {};
 let onStoreList = () => {};
 let onStoreGet = () => {};
 let onStoreGetZip = () => {};
 let onStoreCancel = () => {};
-let onPultPresence = () => {};   // (connected:boolean) — пульт подключился/отключился (для уступки размера PTY)
+let onPultPresence = () => {};   // (connected:boolean) — пульт подключился/отключился
 let onPairRequest = () => {};    // ({device,name,pubkey,code}) — пульт просит одобрить устройство
 
 let appConnected = false;        // есть ли сейчас хотя бы один пульт (role=app) на связи
@@ -44,7 +46,48 @@ let stopped = true;
 let announceRestart = !!process.env.LITE_HEIR_PORT;   // запущены как наследник горячего перезапуска
 let reconnectTimer = null;
 let activeSid = null;
-const buffers = new Map();
+
+// --- Кадры экрана ------------------------------------------------------------
+let lastFrame = null;     // последний отправленный кадр {sid,cols,rows,lines,cursor,alt}
+let frameSeq = 0;         // монотонный номер кадра — пульт ловит дыры и перезапрашивает full
+let frameTimer = null;
+let lastFlushAt = 0;
+
+// PTY активной сессии что-то вывел → запланировать кадр (не чаще FRAME_MS).
+// Без подключённого пульта кадры не шлём (сокет ПК↔релей живёт всегда — не гоняем
+// JSON в пустоту); вернувшийся пульт сам пришлёт select и получит полный кадр.
+function screenTouch(sid) {
+  if (!appConnected || sid !== activeSid || !ws || ws.readyState !== 1) return;
+  if (frameTimer) return;
+  const wait = Math.max(0, FRAME_MS - (Date.now() - lastFlushAt));
+  frameTimer = setTimeout(() => { frameTimer = null; flushScreen(false); }, wait);
+}
+
+function flushScreen(forceFull) {
+  lastFlushAt = Date.now();
+  const sid = activeSid;
+  if (!sid) return;
+  let f = null;
+  try { f = screenFrame(sid); } catch (_) {}
+  if (!f || !Array.isArray(f.lines)) return;
+  const full = forceFull || !lastFrame || lastFrame.sid !== sid
+    || lastFrame.cols !== f.cols || lastFrame.rows !== f.rows;
+  if (full) {
+    frameSeq++;
+    send({ t: 'screen', sid, seq: frameSeq, full: true, cols: f.cols, rows: f.rows, alt: !!f.alt, cursor: f.cursor, lines: f.lines });
+  } else {
+    const diff = [];
+    for (let i = 0; i < f.lines.length; i++) {
+      if (f.lines[i] !== lastFrame.lines[i]) diff.push([i, f.lines[i]]);
+    }
+    const cursorMoved = !lastFrame.cursor || f.cursor[0] !== lastFrame.cursor[0]
+      || f.cursor[1] !== lastFrame.cursor[1] || !!f.alt !== !!lastFrame.alt;
+    if (!diff.length && !cursorMoved) return;   // экран не изменился — кадр не нужен
+    frameSeq++;
+    send({ t: 'screen', sid, seq: frameSeq, alt: !!f.alt, cursor: f.cursor, diff });
+  }
+  lastFrame = { sid, cols: f.cols, rows: f.rows, lines: f.lines, cursor: f.cursor, alt: !!f.alt };
+}
 
 // --- Heartbeat (детект «half-open» соединения) -------------------------------
 // Релей/NAT/прокси может молча отбросить соединение (особенно при автозапуске на
@@ -79,13 +122,6 @@ function wsUrl() { return `wss://${host}/ws`; }
 function send(obj) {
   if (ws && ws.readyState === 1) { try { ws.send(JSON.stringify(obj)); } catch (_) {} }
 }
-function sendData(sid, data) {
-  data = String(data || '');
-  if (!data) return;
-  for (let i = 0; i < data.length; i += SNAP_CHUNK) {
-    send({ t: 'data', sid, data: data.slice(i, i + SNAP_CHUNK) });
-  }
-}
 
 function sendState() {
   let s = {};
@@ -114,23 +150,13 @@ function connect() {
     else if (m.t === 'hello') { setPultPresence(true); sendState(); }
     else if (m.t === 'select' && typeof m.sid === 'string') {
       activeSid = m.sid;
-      if (m.snapshot !== false) {
-        // Чистый снапшот теневого терминала (scrollback + alt-screen + modes) — валидное
-        // состояние, которое пульт восстанавливает записью в свежий xterm. Фолбэк — сырой
-        // хвост (если теневого терминала нет, напр. legacy-сессия). Снапшот синхронен с
-        // потоком broadcast: все байты уже записаны в теневой xterm в proc.onData до сюда.
-        let snap = '';
-        try { snap = snapshot(m.sid) || ''; } catch (_) {}
-        if (!snap) snap = buffers.get(m.sid) || '';
-        if (snap) sendData(m.sid, snap);
-      }
+      lastFrame = null;          // новый зритель/сессия → следующий кадр полный
+      flushScreen(true);         // немедленный full-кадр (~5КБ) — пульт рисует мгновенно
       try { onSelect(m.sid); } catch (_) {}   // пульт выбрал → переключить десктоп
     } else if (m.t === 'input' && typeof m.sid === 'string') {
       try { writeInput(m.sid, m.data || ''); } catch (_) {}
-    } else if (m.t === 'resize' && typeof m.sid === 'string') {
-      try { onResize(m.sid, m.cols, m.rows); } catch (_) {}
     } else if (m.t === 'history:get' && typeof m.sid === 'string') {
-      try { onHistoryGet(m.reqId, m.sid); } catch (_) {}
+      try { onHistoryGet(m.reqId, m.sid, m.before, m.size); } catch (_) {}
     } else if (m.t === 'open' && typeof m.projId === 'string') {
       try { openProject(m.projId); } catch (_) {}
     } else if (m.t === 'close' && typeof m.sid === 'string') {
@@ -176,14 +202,13 @@ function scheduleReconnect() {
 function init(opts = {}) {
   if (opts.logger) logger = opts.logger;
   if (opts.getSessions) getSessions = opts.getSessions;
-  if (opts.snapshot) snapshot = opts.snapshot;
+  if (opts.screenFrame) screenFrame = opts.screenFrame;
   if (opts.writeInput) writeInput = opts.writeInput;
   if (opts.openProject) openProject = opts.openProject;
   if (opts.onSelect) onSelect = opts.onSelect;
   if (opts.onClose) onClose = opts.onClose;
   if (opts.onNewFolder) onNewFolder = opts.onNewFolder;
   if (opts.onRestartApp) onRestartApp = opts.onRestartApp;
-  if (opts.onResize) onResize = opts.onResize;
   if (opts.onHistoryGet) onHistoryGet = opts.onHistoryGet;
   if (opts.onStoreList) onStoreList = opts.onStoreList;
   if (opts.onStoreGet) onStoreGet = opts.onStoreGet;
@@ -214,6 +239,8 @@ function stop() {
   stopped = true;
   stopHeartbeat();
   if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+  if (frameTimer) { clearTimeout(frameTimer); frameTimer = null; }
+  lastFrame = null;
   try { ws && ws.close(); } catch (_) {}
   ws = null;
   setPultPresence(false);
@@ -223,16 +250,12 @@ function status() {
   return { enabled, hasToken: !!token, host, connected: !!(ws && ws.readyState === 1) };
 }
 
-function broadcast(sid, data) {
-  let buf = (buffers.get(sid) || '') + data;
-  if (buf.length > BUF_LIMIT) buf = buf.slice(buf.length - BUF_LIMIT);
-  buffers.set(sid, buf);
-  if (sid === activeSid) send({ t: 'data', sid, data });
+function exit(sid) {
+  if (sid === activeSid && lastFrame) lastFrame = null;
+  send({ t: 'exit', sid });
 }
-
-function exit(sid) { buffers.delete(sid); send({ t: 'exit', sid }); }
 function notifyState() { sendState(); }
 // Для стора: прямая отправка пульту + объём неотправленного (бэкпрешер при стриме файлов).
 function bufferedAmount() { return (ws && typeof ws.bufferedAmount === 'number') ? ws.bufferedAmount : 0; }
 
-module.exports = { init, apply, stop, status, broadcast, exit, notifyState, send, bufferedAmount };
+module.exports = { init, apply, stop, status, screenTouch, exit, notifyState, send, bufferedAmount };
