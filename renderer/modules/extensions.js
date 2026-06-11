@@ -239,7 +239,7 @@ export function initExtensions(host) {
       dd.appendChild(row);
     }
     dd.appendChild(el('div', 'menu-sep'));
-    dd.appendChild(host.menuRow('plus', 'Создать модуль…', () => { host.closeMenus(); openWizard(); }));
+    dd.appendChild(host.menuRow('plus', 'Создать модуль… (менеджер пользовательских модулей)', () => { host.closeMenus(); openWizard(); }));
     dd.appendChild(host.menuRow('folder', 'Открыть папку модулей', () => { host.closeMenus(); if (extDirPath) lite.openInFileManager(extDirPath); }));
     dd.appendChild(host.menuRow('refresh', 'Пересканировать', () => { host.closeMenus(); rescan(); }));
   }
