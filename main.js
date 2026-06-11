@@ -549,7 +549,7 @@ ipcMain.handle('ext:scan', () => {
     }
     const mainFile = path.join(dir, (manifest && typeof manifest.main === 'string' && manifest.main) || 'index.js');
     if (!error && !fs.existsSync(mainFile)) error = 'нет главного файла: ' + path.basename(mainFile);
-    out.push({ id: ent.name, dir, manifest, error, mainUrl: error ? '' : pathToFileURL(mainFile).href });
+    out.push({ id: ent.name, dir, manifest, error, mainUrl: error ? '' : pathToFileURL(mainFile).href, mainFile });
   }
   return { dir: extModulesDir, modules: out, apiVersion: EXT_API_VERSION };
 });

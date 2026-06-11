@@ -33,8 +33,9 @@ import { initDb } from './modules/db.js';
 import { initRh } from './modules/remotehost.js';
 import { initNotes } from './modules/notes.js';
 import { initOpenRouter } from './modules/openrouter.js';
+import { initExtensions } from './modules/extensions.js';
 
-const APP_VERSION = 'alpha v1.0.129';
+const APP_VERSION = 'alpha v1.0.130';
 const GUTTER = 5;
 const SCRATCH_ID = '__scratch__'; // префикс id системных терминалов (домашняя папка), не привязаны к проектам
 const isScratch = (id) => typeof id === 'string' && id.startsWith(SCRATCH_ID);
@@ -226,7 +227,7 @@ let editor = null;
 let loadingDoc = false;
 const langComp = new Compartment();
 
-const DEFAULT_LAYOUT = { sidebar: 240, viewer: 520, tree: 240, scratch: 420, git: 360, docker: 460, db: 560, rh: 520 };
+const DEFAULT_LAYOUT = { sidebar: 240, viewer: 520, tree: 240, scratch: 420, git: 360, docker: 460, db: 560, rh: 520, ext: 420 };
 let layout = loadLayout();
 let lastParent = STORE.lastParent || '';
 
@@ -259,6 +260,7 @@ function applyTheme() {
   for (const rec of terms.values()) { try { rec.term.options.theme = termTheme(); } catch (_) {} }
   for (const rec of scratchTerms.values()) { try { rec.term.options.theme = termTheme(); } catch (_) {} }
   Containers.applyTermTheme(); // exec-терминал контейнера красится тем же termTheme
+  try { Ext.notifyTheme(name); } catch (_) {} // пользовательские модули: ctx.theme.onChange
 }
 
 const activeProject = () => projects.find((p) => p.id === activeId);
@@ -280,6 +282,7 @@ function applyLayout() {
   $('#docker-pane').style.flexBasis = layout.docker + 'px';
   $('#db-pane').style.flexBasis = layout.db + 'px';
   $('#rh-pane').style.flexBasis = layout.rh + 'px';
+  $('#ext-pane').style.flexBasis = layout.ext + 'px';
 }
 function loadRecents() { return Array.isArray(STORE.recents) ? STORE.recents : []; }
 function pushRecent(p) {
@@ -921,6 +924,17 @@ function renderMiniRail() {
 async function openProjectDialog() {
   const picked = await lite.openProject();
   if (picked) openByPath(picked.path, picked.name);
+}
+
+// Мастер модулей: открыть папку модуля как проект и запустить в её терминале команду агента.
+// Команда уходит с задержкой — PTY новой вкладки должен успеть поднять шелл.
+function openModuleDev(dir, name, cmd) {
+  openByPath(dir, name);
+  if (!cmd) return;
+  setTimeout(() => {
+    const sid = (tabsByProj.get(activeId) || {}).active;
+    if (sid) lite.pty.write(sid, cmd + '\r');
+  }, 1500);
 }
 
 function openByPath(p, name) {
@@ -1625,6 +1639,7 @@ function doSetActive(id) {
   applyFontSize();
   if (viewerOpen) refreshViewerForActive();
   if (Git.isOpen()) Git.renderPanel(proj); // Git module follows the active project
+  try { Ext.notifyActiveProject(activeId); } catch (_) {} // пользовательские модули: ctx.projects.onChange
 }
 
 // ---------------------------------------------------------------- viewer (CodeMirror)
@@ -1952,6 +1967,19 @@ const Rh = initRh({
   closeOtherPanels, termTheme, applyUnicode11, loadFastRenderer, copySelection,
 });
 registerPanel('rh', { isOpen: Rh.isOpen, setOpen: Rh.setOpen });
+// Пользовательские модули (extensions): загрузчик + общая панель правого слота.
+// renderer/modules/extensions.js; публичный API ctx v1 — спека в module-kit/GUIDE.md.
+const Ext = initExtensions({
+  STORE, persist, layout, GUTTER, refitActiveTerminal, closeOtherPanels,
+  getProjects: () => projects.map((p) => ({ id: p.id, name: p.name, path: p.path })),
+  getActiveId: () => activeId,
+  getTheme: () => (THEMES[settings.theme] ? settings.theme : DEFAULT_THEME),
+  closeMenus: () => closeMenus(),
+  menuRow: (glyph, text, onClick, cls) => menuRow(glyph, text, onClick, cls),
+  openModuleDev,
+});
+registerPanel('ext', { isOpen: Ext.isOpen, setOpen: Ext.setOpen });
+PANEL_ORDER.push('ext');
 // Entry point used by the «Модули» menu.
 function openModule(id) {
   const p = panels.get(id);
@@ -2274,6 +2302,7 @@ function buildSettingsMenu(dd) {
 }
 // «Модули» — функциональные панели справа от терминала (терминалы и OpenRouter-чат — НЕ модули).
 function buildModulesMenu(dd) {
+  dd.appendChild(el('div', 'menu-label', 'Встроенные'));
   dd.appendChild(menuRow('eye', 'Вивер — файлы выбранного проекта', () => { closeMenus(); openModule('files'); }));
   dd.appendChild(menuRow('git', 'Git — выбранного проекта', () => { closeMenus(); openModule('git'); }));
   dd.appendChild(menuRow('box', 'Контейнеры — Docker / Podman', () => { closeMenus(); openModule('docker'); }));
@@ -2281,6 +2310,7 @@ function buildModulesMenu(dd) {
   dd.appendChild(menuRow('globe', 'Удалённые хосты — SSH-сессии к серверам', () => { closeMenus(); openModule('rh'); }));
   dd.appendChild(el('div', 'menu-sep'));
   dd.appendChild(menuRow('terminal', 'Системный терминал (вне проектов)', () => { closeMenus(); openModule('scratch'); }));
+  Ext.buildMenuSection(dd); // «Мои модули» + создать/папка/пересканировать
 }
 
 // terminal right-click menu
@@ -2573,6 +2603,7 @@ function paletteActions() {
   if (currentFile) acts.push({ label: 'Показать дифф файла', run: toggleDiff });
   if (currentFile) acts.push({ label: 'Поиск в файле', run: () => { if (viewerOpen && !previewMode) openSearchPanel(editor); } });
   if (previewKind(currentFile || '')) acts.push({ label: 'Превью файла (вкл/выкл)', run: togglePreview });
+  for (const a of Ext.paletteActions()) acts.push(a); // команды пользовательских модулей (ctx.commands)
   return acts;
 }
 function showPalette() {
