@@ -30,7 +30,7 @@ import { showMinimap } from '@replit/codemirror-minimap';
 import { initTextProc } from './textproc.js';
 import { el, svgEl, icon, iconBtn, hydrateIcons, toast, renderDiffInto, makeModal, showConfirm, showPrompt } from './ui.js';
 
-const APP_VERSION = 'alpha v1.0.113';
+const APP_VERSION = 'alpha v1.0.114';
 const GUTTER = 5;
 const SCRATCH_ID = '__scratch__'; // префикс id системных терминалов (домашняя папка), не привязаны к проектам
 const isScratch = (id) => typeof id === 'string' && id.startsWith(SCRATCH_ID);
@@ -2256,8 +2256,8 @@ function refitScratch(focusIt) {
 }
 function setScratchOpen(open, opts = {}) {
   if (open === scratchOpen) { if (open) refitScratch(true); return; }
-  // System terminals are a right-slot module now → mutually exclusive with viewer/git/docker/db/rh.
-  if (open) { if (viewerOpen) setViewerOpen(false); if (gitOpen) setGitOpen(false); if (dockerOpen) setDockerOpen(false); if (dbOpen) setDbOpen(false); if (rhOpen) setRhOpen(false); }
+  // System terminals are a right-slot module now → mutually exclusive with the rest.
+  if (open) closeOtherPanels('scratch');
   const delta = layout.scratch + GUTTER;
   scratchOpen = open;
   $('#scratch-pane').classList.toggle('hidden', !open);
@@ -2284,7 +2284,7 @@ function restartScratch(id) {
 function setRhOpen(open, opts = {}) {
   if (open === rhOpen) { if (open) renderRhPanel(); return; }
   // Right slot holds one module — opening RemoteHost closes the others (chat is separate).
-  if (open) { if (viewerOpen) setViewerOpen(false); if (gitOpen) setGitOpen(false); if (dockerOpen) setDockerOpen(false); if (dbOpen) setDbOpen(false); if (scratchOpen) setScratchOpen(false); }
+  if (open) closeOtherPanels('rh');
   if (!open && rhFiles) { try { lite.rh.fsClose(rhFiles.connId); } catch (_) {} rhFiles = null; if (rhView === 'files') rhView = rhSessions.length ? 'session' : 'list'; }
   const delta = layout.rh + GUTTER;
   rhOpen = open;
@@ -2971,7 +2971,7 @@ function setViewerOpen(open, opts = {}) {
     return;
   }
   // Right slot holds one module — opening the viewer closes the others (chat is separate).
-  if (open) { if (gitOpen) setGitOpen(false); if (dockerOpen) setDockerOpen(false); if (dbOpen) setDbOpen(false); if (scratchOpen) setScratchOpen(false); if (rhOpen) setRhOpen(false); }
+  if (open) closeOtherPanels('files');
   const delta = layout.viewer + layout.tree + GUTTER * 2;
   viewerOpen = open;
   $('#viewer-pane').classList.toggle('hidden', !open);
@@ -2987,15 +2987,29 @@ function setViewerOpen(open, opts = {}) {
 // ================================================================ right module slot
 // One module open at a time in the right slot. NOT modules: terminals (project + scratch ~)
 // and the OpenRouter chat (it replaces the terminal, its cards live in the project column).
-// Modules: 'files' (viewer), 'git'. Mutual exclusion is enforced at each module's open path.
+// Реестр панелей: каждая setXxxOpen знает только себя, взаимоисключение — closeOtherPanels.
+// Порядок закрытия фиксирован (он же — порядок старых inline-цепочек во всех setXxxOpen).
+const panels = new Map(); // id -> { isOpen(), setOpen(open, opts) }
+const PANEL_ORDER = ['files', 'git', 'docker', 'db', 'scratch', 'rh'];
+function registerPanel(id, api) { panels.set(id, api); }
+function closeOtherPanels(selfId) {
+  for (const id of PANEL_ORDER) {
+    if (id === selfId) continue;
+    const p = panels.get(id);
+    if (p && p.isOpen()) p.setOpen(false);
+  }
+}
+// 'files': повторное открытие — no-op (как старое `if (!viewerOpen) setViewerOpen(true)` в openModule).
+registerPanel('files', { isOpen: () => viewerOpen, setOpen: (open, opts) => { if (open && viewerOpen) return; setViewerOpen(open, opts); } });
+registerPanel('git', { isOpen: () => gitOpen, setOpen: setGitOpen });
+registerPanel('docker', { isOpen: () => dockerOpen, setOpen: setDockerOpen });
+registerPanel('db', { isOpen: () => dbOpen, setOpen: setDbOpen });
+registerPanel('scratch', { isOpen: () => scratchOpen, setOpen: setScratchOpen });
+registerPanel('rh', { isOpen: () => rhOpen, setOpen: setRhOpen });
 // Entry point used by the «Модули» menu.
 function openModule(id) {
-  if (id === 'files') { if (!viewerOpen) setViewerOpen(true); }
-  else if (id === 'git') setGitOpen(true);
-  else if (id === 'docker') setDockerOpen(true);
-  else if (id === 'db') setDbOpen(true);
-  else if (id === 'rh') setRhOpen(true);
-  else if (id === 'scratch') setScratchOpen(true);
+  const p = panels.get(id);
+  if (p) p.setOpen(true);
 }
 
 // ---------------------------------------------------------------- Git module (right pane)
@@ -3003,7 +3017,7 @@ function setGitOpen(open, opts = {}) {
   if (open && !activeProject() && !opts.allowEmpty) { toast('Сначала открой проект'); return; }
   if (open === gitOpen) { if (open) renderGitPanel(activeProject()); return; }
   // Right slot holds one module — opening Git closes the others (chat is separate).
-  if (open) { if (viewerOpen) setViewerOpen(false); if (dockerOpen) setDockerOpen(false); if (dbOpen) setDbOpen(false); if (scratchOpen) setScratchOpen(false); if (rhOpen) setRhOpen(false); }
+  if (open) closeOtherPanels('git');
   const delta = layout.git + GUTTER;
   gitOpen = open;
   $('#git-pane').classList.toggle('hidden', !open);
@@ -3235,7 +3249,7 @@ function setDockerOpen(open, opts = {}) {
   if (open === dockerOpen) { if (open) renderDockerPanel(); return; }
   if (!open) { closeDockerDetail(); dockerView = 'list'; } // tear down logs/exec on close
   // Right slot holds one module — opening Docker closes the others (chat is separate).
-  if (open) { if (viewerOpen) setViewerOpen(false); if (gitOpen) setGitOpen(false); if (dbOpen) setDbOpen(false); if (scratchOpen) setScratchOpen(false); if (rhOpen) setRhOpen(false); }
+  if (open) closeOtherPanels('docker');
   const delta = layout.docker + GUTTER;
   dockerOpen = open;
   $('#docker-pane').classList.toggle('hidden', !open);
@@ -3591,7 +3605,7 @@ const DB_DEF_PORT = { postgres: 5432, mysql: 3306, sqlite: 0 };
 
 function setDbOpen(open, opts = {}) {
   if (open === dbOpen) { if (open) renderDbPanel(); return; }
-  if (open) { if (viewerOpen) setViewerOpen(false); if (gitOpen) setGitOpen(false); if (dockerOpen) setDockerOpen(false); if (scratchOpen) setScratchOpen(false); if (rhOpen) setRhOpen(false); }
+  if (open) closeOtherPanels('db');
   else dbDispose();
   const delta = layout.db + GUTTER;
   dbOpen = open;
@@ -4819,14 +4833,15 @@ function init() {
   // Restore which panes were open last time (viewer / system terminal). grow:false —
   // the saved window width already includes them, so reveal in place without resizing.
   const ui = STORE.uiState || {};
-  // Right-slot modules are mutually exclusive — restore at most one (saved state has ≤1 open).
-  if (ui.viewerOpen) setViewerOpen(true, { grow: false });
-  if (ui.scratchOpen && !viewerOpen) setScratchOpen(true, { grow: false });
+  // Right-slot modules are mutually exclusive — restore at most one, first-true-wins
+  // (приоритет — порядок старых if-цепочек: viewer, scratch, git, docker, db, rh).
   // allowEmpty so Git returns even before a project is active — matching the viewer, so window width fits.
-  if (ui.gitOpen && !viewerOpen && !scratchOpen) setGitOpen(true, { grow: false, allowEmpty: true });
-  if (ui.dockerOpen && !viewerOpen && !scratchOpen && !gitOpen) setDockerOpen(true, { grow: false });
-  if (ui.dbOpen && !viewerOpen && !scratchOpen && !gitOpen && !dockerOpen) setDbOpen(true, { grow: false });
-  if (ui.rhOpen && !viewerOpen && !scratchOpen && !gitOpen && !dockerOpen && !dbOpen) setRhOpen(true, { grow: false });
+  const RESTORE_ORDER = [['files', 'viewerOpen'], ['scratch', 'scratchOpen'], ['git', 'gitOpen'], ['docker', 'dockerOpen'], ['db', 'dbOpen'], ['rh', 'rhOpen']];
+  for (const [id, key] of RESTORE_ORDER) {
+    if (!ui[key]) continue;
+    panels.get(id).setOpen(true, id === 'git' ? { grow: false, allowEmpty: true } : { grow: false });
+    break;
+  }
 
   scanProjects();          // add subfolders of settings.scanDirs (non-blocking)
   checkProjectsExistence();
