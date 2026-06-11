@@ -13,7 +13,9 @@ import android.os.Environment
 import android.provider.MediaStore
 import android.util.Base64
 import android.view.ViewGroup
+import android.webkit.GeolocationPermissions
 import android.webkit.JavascriptInterface
+import android.webkit.WebChromeClient
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.Toast
@@ -44,6 +46,9 @@ class MainActivity : Activity() {
     private lateinit var web: WebView
     private var usableHeightPrev = 0
     private var keyboardOpen = false
+    // Отложенный grant геолокации WebView: ждём ответа на runtime-разрешение Android.
+    private var geoOrigin: String? = null
+    private var geoCallback: GeolocationPermissions.Callback? = null
 
     @SuppressLint("SetJavaScriptEnabled", "ClickableViewAccessibility")
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -61,6 +66,7 @@ class MainActivity : Activity() {
         @Suppress("DEPRECATION")
         web.settings.databaseEnabled = true   // localStorage на file:// надёжнее
         web.settings.allowFileAccess = true
+        web.settings.setGeolocationEnabled(true)   // местоположение по запросу с ПК (модалка «Пульты»)
         web.isVerticalScrollBarEnabled = false
         web.overScrollMode = WebView.OVER_SCROLL_NEVER
         WebView.setWebContentsDebuggingEnabled(true)
@@ -94,7 +100,31 @@ class MainActivity : Activity() {
             }
         }
 
+        // Геолокация из JS (navigator.geolocation): WebView спрашивает нас; если runtime-разрешения
+        // ещё нет — запрашиваем у системы и отвечаем WebView после ответа пользователя.
+        web.webChromeClient = object : WebChromeClient() {
+            override fun onGeolocationPermissionsShowPrompt(origin: String?, callback: GeolocationPermissions.Callback?) {
+                if (origin == null || callback == null) return
+                val granted = checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
+                    checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
+                if (granted) { callback.invoke(origin, true, false); return }
+                geoOrigin = origin; geoCallback = callback
+                try {
+                    requestPermissions(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION), 2)
+                } catch (_: Exception) { callback.invoke(origin, false, false); geoOrigin = null; geoCallback = null }
+            }
+        }
+
         web.loadUrl("file:///android_asset/index.html")
+    }
+
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == 2) {
+            val ok = grantResults.any { it == PackageManager.PERMISSION_GRANTED }
+            geoCallback?.invoke(geoOrigin, ok, false)
+            geoOrigin = null; geoCallback = null
+        }
     }
 
     private fun onLayoutChanged() {

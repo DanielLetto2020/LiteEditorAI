@@ -89,6 +89,13 @@ contextBridge.exposeInMainWorld('lite', {
     onPairRequest: (cb) => { const h = (_e, p) => cb(p || {}); ipcRenderer.on('remote:pairRequest', h); return () => ipcRenderer.removeListener('remote:pairRequest', h); },
     pairApprove: (device) => ipcRenderer.send('remote:pairApprove', { device }),
     pairDeny: (device) => ipcRenderer.send('remote:pairDeny', { device }),
+    // Подключённые пульты: список/блок-лист (бейдж у версии + модалка «Пульты»).
+    pults: () => ipcRenderer.invoke('remote:pults'),
+    pultBlock: (device) => ipcRenderer.invoke('remote:pultBlock', { device }),
+    pultUnblock: (device) => ipcRenderer.invoke('remote:pultUnblock', { device }),
+    pultSysInfo: (device, what) => ipcRenderer.send('remote:pultSysInfo', { device, what }),   // what: 'info'|'geo'; ответ — событием onSysInfo
+    onPults: (cb) => { const h = (_e, p) => cb(p || {}); ipcRenderer.on('remote:pults', h); return () => ipcRenderer.removeListener('remote:pults', h); },
+    onSysInfo: (cb) => { const h = (_e, p) => cb(p || {}); ipcRenderer.on('remote:sysinfo', h); return () => ipcRenderer.removeListener('remote:sysinfo', h); },
   },
 
   git: {
@@ -134,10 +141,8 @@ contextBridge.exposeInMainWorld('lite', {
     delete: (id) => ipcRenderer.invoke('db:delete', { id }),
     test: (conn) => ipcRenderer.invoke('db:test', { conn }),
     schema: (id) => ipcRenderer.invoke('db:schema', { id }),
-    columns: (id, schema, table) => ipcRenderer.invoke('db:columns', { id, schema, table }),
     tableData: (id, schema, table, opts) => ipcRenderer.invoke('db:tableData', { id, schema, table, ...(opts || {}) }),
     query: (id, sql) => ipcRenderer.invoke('db:query', { id, sql }),
-    close: (id) => ipcRenderer.invoke('db:close', { id }),
     saveText: (defaultName, text) => ipcRenderer.invoke('db:saveText', { defaultName, text }),
     openText: () => ipcRenderer.invoke('db:openText'),
   },
@@ -147,7 +152,6 @@ contextBridge.exposeInMainWorld('lite', {
     save: (conn) => ipcRenderer.invoke('rh:save', { conn }),
     delete: (id) => ipcRenderer.invoke('rh:delete', { id }),
     test: (conn) => ipcRenderer.invoke('rh:test', { conn }),
-    pickKey: () => ipcRenderer.invoke('rh:pickKey'),
     open: (sessionId, id, cols, rows) => ipcRenderer.invoke('rh:open', { sessionId, id, cols, rows }),
     write: (sessionId, data) => ipcRenderer.send('rh:write', { sessionId, data }),
     resize: (sessionId, cols, rows) => ipcRenderer.send('rh:resize', { sessionId, cols, rows }),

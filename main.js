@@ -10,13 +10,12 @@ const { execFile, spawn } = require('child_process');
 const https = require('https');
 const net = require('net');
 const pty = require('node-pty');
-// Headless-xterm + SerializeAddon: на каждую сессию держим «теневой» терминал, который
-// потребляет тот же поток PTY. При подключении пульта отдаём serialize() — чистый снапшот
-// состояния (scrollback + alt-screen + modes) вместо сырого байтового хвоста, который рвался
-// по середине ESC-последовательности и терял вход в alt-screen (отсюда «застревания» и кривой
-// скрол у TUI-агентов). Пакеты — pure-JS, нативных зависимостей нет, в main-процессе работают.
+// Headless-xterm: на каждую сессию держим «теневой» терминал, который потребляет тот же
+// поток PTY. Пульту по сети идёт НЕ байтовый ANSI-стрим, а «проекция экрана» (принцип mosh):
+// видимый экран теневого терминала как простой текст + line-диффы (см. mirrorScreen и
+// движок кадров в remote.js). Сколько бы перерисовок ни делал TUI-агент, по сети уходит
+// только итоговое состояние. Пакет — pure-JS, нативных зависимостей нет.
 const { Terminal: HeadlessTerminal } = require('@xterm/headless');
-const { SerializeAddon } = require('@xterm/addon-serialize');
 const logger = require('./logger');
 const remote = require('./remote'); // удалённый пульт (вкл. только при env LITE_REMOTE=1)
 const { safeChildName } = require('./lib/safe-name'); // анти-traversal для имён (в т.ч. с пульта)
@@ -52,54 +51,59 @@ let growDesiredWidth = null;
 let growAppliedWidth = null;
 const ptys = new Map();     // projectId -> IPty
 const ptySize = new Map();  // sessionId -> { cols, rows } — текущий размер PTY (для пульта)
-const mirrors = new Map();  // sessionId -> { term: HeadlessTerminal, serialize: SerializeAddon } — теневой терминал для пульта
+const mirrors = new Map();  // sessionId -> { term: HeadlessTerminal } — теневой терминал для пульта
 const MIRROR_SCROLLBACK = 20000;
-const transcripts = new Map(); // sessionId -> plain text transcript for the pult "История"
-const TRANSCRIPT_MAX_CHARS = 4 * 1024 * 1024;
 
-// --- Теневой терминал сессии (для чистого снапшота на пульт) --------------------
+// --- Теневой терминал сессии (источник кадров «проекции экрана» для пульта) -----
 function mirrorCreate(id, cols, rows) {
   mirrorDispose(id);
   try {
     const term = new HeadlessTerminal({
       cols: cols || 80, rows: rows || 24, scrollback: MIRROR_SCROLLBACK, allowProposedApi: true,
     });
-    const serialize = new SerializeAddon();
-    term.loadAddon(serialize);
-    mirrors.set(id, { term, serialize });
+    mirrors.set(id, { term });
   } catch (e) { logger.log('warn', 'mirror', 'create failed', e && e.message); }
 }
 function mirrorWrite(id, data) { const m = mirrors.get(id); if (m) { try { m.term.write(data); } catch (_) {} } }
 function mirrorResize(id, cols, rows) { const m = mirrors.get(id); if (m && cols > 0 && rows > 0) { try { m.term.resize(cols, rows); } catch (_) {} } }
 function mirrorDispose(id) { const m = mirrors.get(id); if (m) { try { m.term.dispose(); } catch (_) {} mirrors.delete(id); } }
-function mirrorSnapshot(id) { const m = mirrors.get(id); if (!m) return ''; try { return m.serialize.serialize({ scrollback: MIRROR_SCROLLBACK }) || ''; } catch (_) { return ''; } }
-function stripAnsiForTranscript(data) {
-  return String(data || '')
-    .replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g, '')      // OSC
-    .replace(/\x1b[PX^_][\s\S]*?\x1b\\/g, '')           // DCS/SOS/PM/APC
-    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '')            // CSI
-    .replace(/\x1b[@-Z\\-_]/g, '')                      // 2-char ESC
-    .replace(/\x07/g, '');
-}
-function transcriptAppend(id, data) {
-  let out = transcripts.get(id) || '';
-  const text = stripAnsiForTranscript(data);
-  for (let i = 0; i < text.length; i++) {
-    const ch = text[i];
-    if (ch === '\r') {
-      const j = out.lastIndexOf('\n');
-      out = j >= 0 ? out.slice(0, j + 1) : '';
-    } else if (ch === '\b' || ch === '\x7f') {
-      const j = out.lastIndexOf('\n');
-      if (out.length > (j + 1)) out = out.slice(0, -1);
-    } else if (ch === '\n' || ch === '\t' || ch >= ' ') {
-      out += ch;
+// Видимый экран сессии как простой текст: массив строк + курсор + флаг alt-буфера.
+// Это весь «снапшот», который нужен пульту, — ~5КБ вместо мегабайтного serialize().
+function mirrorScreen(id) {
+  const m = mirrors.get(id);
+  if (!m) return null;
+  try {
+    const term = m.term;
+    const buf = term.buffer.active;
+    const lines = [];
+    for (let y = 0; y < term.rows; y++) {
+      const line = buf.getLine(buf.baseY + y);
+      lines.push(line ? line.translateToString(true) : '');
     }
-  }
-  if (out.length > TRANSCRIPT_MAX_CHARS) out = out.slice(out.length - TRANSCRIPT_MAX_CHARS);
-  transcripts.set(id, out);
+    return {
+      cols: term.cols, rows: term.rows, lines,
+      cursor: [buf.cursorX, buf.cursorY],
+      alt: buf.type === 'alternate',
+    };
+  } catch (_) { return null; }
 }
-function transcriptGet(id) { return transcripts.get(id) || ''; }
+// История для пульта = SCROLLBACK теневого терминала (строки, ушедшие выше видимого
+// экрана normal-буфера). Раньше историю лепил stripped-ANSI транскрипт из сырого потока —
+// у TUI-агентов каждая перерисовка добавлялась заново («кривые повторяющиеся символы»).
+// Scrollback эмулирован честно: это ровно то, что видно при скролле в настоящем терминале.
+function mirrorScrollback(id) {
+  const m = mirrors.get(id);
+  if (!m) return '';
+  try {
+    const buf = m.term.buffer.normal;
+    const lines = [];
+    for (let y = 0; y < buf.baseY; y++) {
+      const line = buf.getLine(y);
+      lines.push(line ? line.translateToString(true) : '');
+    }
+    return lines.join('\n');
+  } catch (_) { return ''; }
+}
 const watchers = new Map(); // project root path -> { watcher, timer, pending:Set }
 
 // Resolve a shell that actually exists. $SHELL can point at a shell that was
@@ -171,7 +175,7 @@ try {
   const legacy = path.join(os.homedir(), '.LiteEditor');
   if (!fs.existsSync(storeDir) && fs.existsSync(legacy)) fs.cpSync(legacy, storeDir, { recursive: true });
 } catch (_) {}
-const STORE_KEYS = ['projects', 'settings', 'layout', 'recents', 'lastParent', 'categories', 'sectionOrder', 'accordions', 'dismissed', 'uiState', 'projTabs', 'openrouter', 'remote', 'shares', 'dockerUi', 'dbConnections', 'dbUi', 'rhConnections', 'rhUi', 'textproc', 'tpPrompts'];
+const STORE_KEYS = ['projects', 'settings', 'layout', 'recents', 'lastParent', 'categories', 'sectionOrder', 'accordions', 'dismissed', 'uiState', 'projTabs', 'openrouter', 'remote', 'shares', 'pultBlocked', 'dockerUi', 'dbConnections', 'dbUi', 'rhConnections', 'rhUi', 'textproc', 'tpPrompts'];
 // Папка-«стор» для шаринга с пультом (агент кладёт сюда файлы; в PTY доступна как $LITE_STORE).
 const pultStoreDir = path.join(storeDir, 'store');
 try { fs.mkdirSync(pultStoreDir, { recursive: true }); } catch (_) {}
@@ -233,7 +237,7 @@ const dbApi = dbBackend.registerDbIpc({
 // «RemoteHost» backend (интерактивные SSH-сессии + safeStorage-секреты) — lib/remotehost.js.
 // send() лениво ссылается на mainWindow (создаётся позже), вызывается только при живой сессии.
 const rhApi = rhBackend.registerRemoteIpc({
-  ipcMain, safeStorage, dialog,
+  ipcMain, safeStorage,
   send: (ch, payload) => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(ch, payload); },
   getConnections: () => readStoreKey('rhConnections'),
   setConnections: (v) => writeStoreKey('rhConnections', v),
@@ -881,29 +885,23 @@ function buildRemoteState() {
 function remoteOpenProject(projId) {
   if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('remote:openProject', { projId });
 }
-function remoteResizePty(sid, cols, rows) {
-  cols = Math.max(40, Math.min(220, parseInt(cols, 10) || 0));
-  rows = Math.max(12, Math.min(90, parseInt(rows, 10) || 0));
-  if (!sid || !cols || !rows) return;
-  const p = ptys.get(sid);
-  if (!p) return;
-  try { p.resize(cols, rows); } catch (_) {}
-  ptySize.set(sid, { cols, rows });
-  mirrorResize(sid, cols, rows);
-  // ПК зеркалит сетку пульта (letterbox), а не навязывает свою — иначе терминал на ПК «сыпется»
-  // (PTY уже под сетку пульта, а xterm ПК рисует под старую). Рендерер ресайзит свой xterm и
-  // перестаёт авто-фитить эту сессию, пока пульт владеет размером.
-  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('pty:remoteSize', { id: sid, cols, rows });
-  try { remote.notifyState(); } catch (_) {}
-}
-function remoteHistoryGet(reqId, sid) {
-  const text = transcriptGet(sid);
+// История — ОКНОМ (ленивая подгрузка при скролле вверх на пульте): отдаём кусок
+// транскрипта ДО смещения before размером size; в begin/end кладём start/total,
+// чтобы пульт знал, откуда продолжать и когда транскрипт кончился (start=0).
+function remoteHistoryGet(reqId, sid, before, size) {
+  const text = mirrorScrollback(sid);
+  const total = text.length;
+  let end = total;
+  if (typeof before === 'number' && isFinite(before)) end = Math.max(0, Math.min(Math.floor(before), total));
+  const want = (typeof size === 'number' && size > 0) ? Math.min(Math.floor(size), 256 * 1024) : total;
+  const start = Math.max(0, end - want);
+  const slice = text.slice(start, end);
   const CH = 32 * 1024;
-  remote.send({ t: 'history:begin', reqId, sid, size: text.length });
-  for (let i = 0, seq = 0; i < text.length; i += CH, seq++) {
-    remote.send({ t: 'history:chunk', reqId, sid, seq, data: text.slice(i, i + CH) });
+  remote.send({ t: 'history:begin', reqId, sid, size: slice.length, start, total });
+  for (let i = 0, seq = 0; i < slice.length; i += CH, seq++) {
+    remote.send({ t: 'history:chunk', reqId, sid, seq, data: slice.slice(i, i + CH) });
   }
-  remote.send({ t: 'history:end', reqId, sid });
+  remote.send({ t: 'history:end', reqId, sid, start, total });
 }
 const REMOTE_DEFAULT_HOST = 'lite.codecopy.ru';
 function startRemotePult() {
@@ -911,25 +909,26 @@ function startRemotePult() {
     remote.init({
       logger,
       getSessions: buildRemoteState,
-      snapshot: (sid) => mirrorSnapshot(sid),   // чистый снапшот сессии для пульта (вместо сырого хвоста)
+      screenFrame: (sid) => mirrorScreen(sid),  // видимый экран сессии (проекция для пульта)
       writeInput: (sid, data) => { const p = ptys.get(sid); if (p) p.write(data); },
       openProject: remoteOpenProject,
       onSelect: (sid) => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('remote:select', { sid }); },
       onClose: (sid) => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('remote:closeTab', { sid }); },
       onNewFolder: (name) => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('remote:newFolder', { name }); },
       onRestartApp: () => { restartAppSafely(); },
-      onResize: (sid, cols, rows) => remoteResizePty(sid, cols, rows),
-      onHistoryGet: (reqId, sid) => remoteHistoryGet(reqId, sid),
+      onHistoryGet: (reqId, sid, before, size) => remoteHistoryGet(reqId, sid, before, size),
       onStoreList: (reqId, p) => pultStoreList(reqId, p),
       onStoreGet: (reqId, p) => pultStoreGet(reqId, p),
       onStoreGetZip: (reqId, p) => pultStoreGetZip(reqId, p),
       onStoreCancel: (reqId) => { storeCancelled.add(reqId); },
-      // Пульт отключился → ПК возвращает себе владение размером терминалов (свой fit).
-      onPultPresence: (connected) => {
-        if (!connected && mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('pty:remoteRelease', {});
-      },
+      // Пульт смотрит «проекцию экрана» и размером PTY не владеет — на presence только лог.
+      onPultPresence: (connected) => { logger.log('info', 'remote', connected ? 'pult connected' : 'pult disconnected'); },
       // Пульт просит одобрить устройство → показать модалку в редакторе.
       onPairRequest: (info) => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('remote:pairRequest', info); },
+      // Учёт подключённых пультов (бейдж у версии) + блок-лист (доступ выключаем, не удаляя).
+      isBlocked: (device) => getPultBlocked().includes(device),
+      onPultsChanged: (list) => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('remote:pults', { list, blocked: getPultBlocked() }); },
+      onSysInfo: (m) => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('remote:sysinfo', m); },
     });
     const r = readStoreKey('remote') || {};
     if (r.token) {
@@ -1005,6 +1004,35 @@ ipcMain.handle('remote:setEnabled', (_e, { enabled } = {}) => {
   remote.apply({ enabled: !!enabled });
   return remoteStoreState();
 });
+// --- Пульты: список подключённых, блок-лист, запрос сисинфо/гео ----------------
+// «Отключить» НЕ удаляет устройство: device id кладётся в pultBlocked (стор) и пульту
+// шлётся адресный kick; при каждом следующем появлении заблокированного устройства
+// remote.js кикает его снова. «Вернуть» — убрать из списка, пульт подключится сам.
+function getPultBlocked() {
+  const v = readStoreKey('pultBlocked');
+  return Array.isArray(v) ? v : [];
+}
+ipcMain.handle('remote:pults', () => ({ list: remote.pultList(), blocked: getPultBlocked() }));
+ipcMain.handle('remote:pultBlock', (_e, { device } = {}) => {
+  device = String(device || '').trim();
+  if (device) {
+    const b = getPultBlocked();
+    if (!b.includes(device)) writeStoreKey('pultBlocked', b.concat([device]));
+    try { remote.kick(device); } catch (_) {}
+  }
+  return { list: remote.pultList(), blocked: getPultBlocked() };
+});
+ipcMain.handle('remote:pultUnblock', (_e, { device } = {}) => {
+  device = String(device || '').trim();
+  if (device) writeStoreKey('pultBlocked', getPultBlocked().filter((d) => d !== device));
+  return { list: remote.pultList(), blocked: getPultBlocked() };
+});
+// Запрос у конкретного пульта; what: 'info' (диагностика) | 'geo' (местоположение).
+// Ответ прилетит событием remote:sysinfo (c тем же what).
+ipcMain.on('remote:pultSysInfo', (_e, { device, what } = {}) => {
+  try { remote.send({ t: 'sysinfo:get', device: String(device || ''), what: String(what || '') }); } catch (_) {}
+});
+
 // Pairing: пользователь на ПК одобрил/отклонил устройство пульта → шлём решение релею.
 ipcMain.on('remote:pairApprove', (_e, { device } = {}) => {
   try { remote.send({ t: 'pair:approve', device: String(device || ''), pubkey: '' }); } catch (_) {}
@@ -1120,13 +1148,11 @@ function spawnPtyFor(id, cwd, cols, rows) {
     return { error: String(err.message || err) };
   }
   logger.log('info', 'pty', `spawned pid=${proc.pid}`);
-  transcripts.set(id, '');
   mirrorCreate(id, cols, rows);   // свежий теневой терминал (сбрасывает scrollback при рестарте PTY)
   proc.onData((data) => {
     if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('pty:data', { id, data });
-    mirrorWrite(id, data);                         // сначала в теневой терминал (снапшот всегда консистентен)
-    transcriptAppend(id, data);
-    try { remote.broadcast(id, data); } catch (_) {} // потом зеркалим вывод на удалённый пульт
+    mirrorWrite(id, data);                         // сначала в теневой терминал (кадр всегда консистентен)
+    try { remote.screenTouch(id); } catch (_) {}   // потом будим диффер кадров (debounce внутри)
   });
   proc.onExit(() => {
     if (ptys.get(id) && ptys.get(id) !== proc) return; // replaced by a restart — suppress stale exit
@@ -1160,7 +1186,6 @@ ipcMain.on('pty:resize', (_e, { id, cols, rows }) => {
 ipcMain.on('pty:kill', (_e, { id }) => {
   const p = ptys.get(id);
   if (p) { try { p.kill(); } catch (_) {} ptys.delete(id); }
-  transcripts.delete(id);
 });
 // 'shell' | 'running' | 'waiting' | null — see foregroundKind().
 ipcMain.handle('pty:foregroundState', (_e, { id }) => {

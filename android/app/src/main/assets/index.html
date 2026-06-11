@@ -20,7 +20,7 @@
       } catch (e) {}
     }
     window.__report = report;
-    window.PULT_VER = '0.44.0';
+    window.PULT_VER = '0.53.0';
     window.onerror = function (m, src, line, col, err) {
       report('page-error', m, (err && err.stack) || (src + ':' + line));
       var b = document.getElementById('fatal') || document.createElement('div');
@@ -30,7 +30,7 @@
       if (document.body) document.body.appendChild(b);
       return false;
     };
-    report('page-loaded', 'index.html v0.44.0', navigator.userAgent);
+    report('page-loaded', 'index.html v0.53.0', navigator.userAgent);
   })();
   </script>
   <link rel="stylesheet" href="./app.css" />
@@ -63,41 +63,70 @@
     #top-status { font-size: 11px; color: #b7c2d0; }
     #top-status.ok { color: #7fdbca; } #top-status.wait { color: #e0af68; } #top-status.bad { color: #f7768e; }
     #top-ver { font-size: 10px; color: #5a6675; }
-    #content { flex: 1; display: flex; min-height: 0; }
-    #sidebar { width: 158px; min-width: 158px; background: #0e131a; border-right: 1px solid #1f2630;
-      display: flex; flex-direction: column; }
-    #tabs { flex: 1; overflow-y: auto; padding: 4px 6px; }
-    .cat { display: flex; align-items: center; gap: 6px; padding: 7px 9px; margin: 5px 0 2px; font-size: 11px;
+    /* Шторка-фон для верхних панелей (проекты / меню). */
+    #shade { display: none; position: fixed; top: 0; right: 0; bottom: 0; left: 0; z-index: 65;
+      background: rgba(0,0,0,.45); }
+
+    /* Проекты и терминалы — ВЕРХНЯЯ ШТОРКА (top sheet) вместо бокового сайдбара:
+       вертикальный экран узкий, сайдбар съедал ширину терминала. */
+    #projmodal { display: none; position: fixed; top: 0; left: 0; right: 0; z-index: 70;
+      background: #0e131a; border-bottom: 1px solid #2a3a4a; border-radius: 0 0 14px 14px;
+      box-shadow: 0 14px 40px rgba(0,0,0,.6); max-height: 78vh; flex-direction: column; }
+    #projmodal .pm-head { display: flex; align-items: center; justify-content: space-between;
+      padding: 10px 12px 6px; flex: 0 0 auto; }
+    #projmodal .pm-title { font-size: 13px; color: #7fdbca; font-weight: 600; }
+    #projmodal .pm-x { background: none; border: 0; color: #9fb0c0; font-size: 18px; padding: 0 6px; }
+    #tabs { overflow-y: auto; padding: 2px 10px 12px; min-height: 0; }
+    .cat { display: flex; align-items: center; gap: 6px; padding: 8px 10px; margin: 6px 0 2px; font-size: 11px;
       color: #e3edf5; text-transform: uppercase; letter-spacing: .5px; cursor: pointer;
       border-left: 3px solid #7fdbca; border-radius: 0 7px 7px 0; }
     .cat .chev { font-size: 9px; opacity: .85; transition: transform .15s; }
     .cat.collapsed .chev { transform: rotate(-90deg); }
     .cat .cat-lbl { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .proj { display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 5px 4px 5px 12px; }
-    .proj-name { font-size: 12px; color: #9fb0c0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .add-term { background: none; border: 0; color: #5f86c7; width: 26px; height: 26px; flex: 0 0 auto;
+    .proj { display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 6px 4px 6px 12px; }
+    .proj-name { font-size: 13px; color: #9fb0c0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .add-term { background: none; border: 0; color: #5f86c7; width: 30px; height: 30px; flex: 0 0 auto;
       display: flex; align-items: center; justify-content: center; border-radius: 6px; padding: 0; }
     .add-term:active { background: #1c2530; color: #8fb4ff; }
-    .tab { display: flex; align-items: center; gap: 2px; padding: 6px 4px 6px 24px; font-size: 12px; border-bottom: 1px solid #141a22; color: #b7c2d0; }
+    .tab { display: flex; align-items: center; gap: 2px; padding: 9px 4px 9px 26px; font-size: 13px; border-bottom: 1px solid #141a22; color: #b7c2d0; }
     .tab.active { background: #1c2530; color: #7fdbca; border-left: 3px solid #7fdbca; }
+    .tab.ghost { opacity: .7; }   /* терминал ещё не открыт на ПК — откроется по тапу */
     .tab-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .tab-x { background: none; border: 0; color: #6a7a8c; font-size: 16px; width: 22px; flex: 0 0 auto; }
+    .tab-x { background: none; border: 0; color: #6a7a8c; font-size: 16px; width: 26px; flex: 0 0 auto; }
     .tab-x:active { color: #f7768e; }
     .tab-empty { padding: 12px; font-size: 11px; color: #5a6675; }
-    #main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
-    #termbar { display: flex; gap: 6px; padding: 5px 6px; background: #11161d; border-bottom: 1px solid #1f2630; overflow-x: auto; flex: 0 0 auto; }
+
+    /* Бургер-меню — выпадающий список под шапкой (вместо центральной модалки). */
+    #dropmenu { display: none; position: fixed; top: 42px; left: 6px; z-index: 80; width: 280px; max-width: 92vw;
+      max-height: 80vh; overflow-y: auto; background: #11161d; border: 1px solid #2a3a4a; border-radius: 10px;
+      box-shadow: 0 12px 36px rgba(0,0,0,.6); padding: 6px; }
+    #dropmenu .dm-sect { font-size: 10px; letter-spacing: .6px; text-transform: uppercase; color: #7fdbca; margin: 8px 6px 3px; }
+    #dropmenu button { display: block; width: 100%; text-align: left; background: none; color: #d6deeb;
+      border: 0; border-radius: 8px; padding: 10px; font-size: 14px; }
+    #dropmenu button:active { background: #1c2530; }
+
+    #main { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+    /* Тулбар в два ряда: первый — три главные кнопки во всю ширину поровну,
+       второй — спецклавиши (переносятся при нехватке места). */
+    #termbar { display: flex; flex-direction: column; gap: 4px; padding: 5px 6px; background: #11161d; border-bottom: 1px solid #1f2630; flex: 0 0 auto; }
+    .tb-row { display: flex; flex-wrap: wrap; gap: 6px; }
     .tk { background: #1c2530; color: #cfe3ee; border: 1px solid #2a323d; border-radius: 6px; padding: 6px 11px; font-size: 12px; white-space: nowrap; flex: 0 0 auto; }
     .tk:active { background: #27323f; }
+    .tk-big { flex: 1 1 0; padding: 9px 6px; font-size: 13px; text-align: center; }
     #term { flex: 1; min-height: 0; padding: 4px; overflow: hidden; }
-    #term .term-reader { margin: 0; width: 100%; height: 100%; overflow: auto; white-space: pre-wrap;
+    /* Поверхность «проекции экрана»: кадр с ПК — простой текст. Широкая сетка ПК
+       переносится (pre-wrap) и кадр выше экрана планшета → локальный скролл с
+       прилипанием к низу (низ кадра = поле ввода агента, оно важнее всего).
+       Прокрутка СОДЕРЖИМОГО агента (его транскрипт в TUI) — кнопки PgUp/PgDn. */
+    #term .screen { margin: 0; width: 100%; height: 100%; overflow-y: auto; white-space: pre-wrap;
       word-break: break-word; overflow-wrap: anywhere; color: #d6deeb; background: #0d1117;
-      font: 12px/1.45 ui-monospace, 'Roboto Mono', 'Droid Sans Mono', monospace; padding: 7px; touch-action: pan-y; }
+      font: 12px/1.35 ui-monospace, 'Roboto Mono', 'Droid Sans Mono', monospace; padding: 7px; touch-action: pan-y; }
+    #term .screen::-webkit-scrollbar { width: 8px; }
+    #term .screen::-webkit-scrollbar-thumb { background: #2a3a4a; border-radius: 6px; }
+    #term .screen::-webkit-scrollbar-track { background: transparent; }
+    /* Строка с курсором (поле ввода агента) — выделяем цветом, чтобы глаз сразу находил. */
+    #term .screen .cur-line { background: #16243a; color: #eaf2fb; border-radius: 3px; }
     .tk.on { background: #1f6feb; color: #fff; border-color: #1f6feb; }
-
-    /* Видимый боковой скролл в терминале (доп. способ листать историю на планшете). */
-    #term .xterm-viewport::-webkit-scrollbar { width: 8px; }
-    #term .xterm-viewport::-webkit-scrollbar-thumb { background: #2a3a4a; border-radius: 6px; }
-    #term .xterm-viewport::-webkit-scrollbar-track { background: transparent; }
 
     /* Своя экранная клавиатура — ПЛАВАЮЩЕЕ перетаскиваемое окно (не ужимает терминал,
        поэтому шрифт терминала остаётся крупным). Компактное: ширина ~320px, мелкие клавиши. */
@@ -121,12 +150,8 @@
     .kb-key.kb-wide { flex: 1.5; font-size: calc(11px * var(--kbs)); }
     .kb-key.kb-space { flex: 4; font-size: calc(11px * var(--kbs)); color: #9fb0c0; }
 
-    /* Сворачивание панели проектов → терминал на всю ширину (актуально на телефоне). */
-    #content.side-collapsed #sidebar { display: none; }
-    .tk[data-key="side"].on { background: #1f6feb; color: #fff; border-color: #1f6feb; }
-
-    /* Компактный «хром» на низких/альбомных экранах (телефон в ландшафте ~339px высоты):
-       отвоёвываем вертикаль под терминал (≈ +2 строки). Планшет (высота ≥480px) не трогаем. */
+    /* Компактный «хром» на низких экранах (ориентация залочена в портрет, но на всякий
+       случай — маленькие устройства): отвоёвываем вертикаль под терминал. */
     @media (max-height: 480px) {
       #topbar { padding: 2px 8px; }
       #top-title { flex-direction: row; align-items: baseline; gap: 6px; }
@@ -138,7 +163,6 @@
       #termbar { padding: 2px 4px; gap: 4px; }
       .tk { padding: 4px 7px; font-size: 11px; }
       #term { padding: 2px; }
-      #sidebar { width: 130px; min-width: 130px; }
     }
   </style>
 </head>
@@ -152,7 +176,7 @@
       <div id="lg-err"></div>
       <button id="lg-go">Войти</button>
       <div class="login-note">Регистрация аккаунта — в редакторе на ПК (меню «Пульт»).</div>
-      <div class="login-note" id="login-ver" style="opacity:.6">пульт v0.44.0</div>
+      <div class="login-note" id="login-ver" style="opacity:.6">пульт v0.53.0</div>
     </div>
   </div>
 
@@ -169,28 +193,33 @@
         <span id="top-ver"></span>
       </div>
     </div>
-    <div id="content">
-      <div id="sidebar">
-        <div id="tabs"></div>
-      </div>
-      <div id="main">
-        <div id="termbar">
-          <button class="tk" data-key="side" title="Показать/скрыть проекты">📁</button>
-          <button class="tk" data-key="kbd" title="Клавиатура">⌨</button>
-          <button class="tk" data-key="refresh" title="Пересобрать терминал">⟳</button>
-          <button class="tk" data-key="pgup" title="Прокрутка вверх">PgUp</button>
-          <button class="tk" data-key="pgdn" title="Прокрутка вниз">PgDn</button>
+    <div id="main">
+      <div id="termbar">
+        <div class="tb-row">
+          <button class="tk tk-big" data-key="side" title="Проекты и терминалы">📁 Проекты</button>
+          <button class="tk tk-big" data-key="kbd" title="Клавиатура">⌨ Клава</button>
+          <button class="tk tk-big" data-key="refresh" title="Обновить экран (свежий кадр с ПК)">⟳ Обновить</button>
+        </div>
+        <div class="tb-row">
+          <button class="tk" data-key="pgup" title="Прокрутка вверх (TUI)">PgUp</button>
+          <button class="tk" data-key="pgdn" title="Прокрутка вниз (TUI)">PgDn</button>
           <button class="tk" data-key="c-c">Ctrl+C</button>
           <button class="tk" data-key="esc">Esc</button>
           <button class="tk" data-key="tab">Tab</button>
           <button class="tk" data-key="up">↑</button>
           <button class="tk" data-key="down">↓</button>
           <button class="tk" data-key="enter">⏎</button>
-          <button class="tk" data-key="c-d">Ctrl+D</button>
         </div>
-        <div id="term"></div>
       </div>
+      <div id="term"></div>
     </div>
+    <!-- Шторка-фон + верхняя шторка проектов + выпадающее бургер-меню. -->
+    <div id="shade"></div>
+    <div id="projmodal">
+      <div class="pm-head"><span class="pm-title">Проекты и терминалы</span><button class="pm-x" id="pm-x">✕</button></div>
+      <div id="tabs"></div>
+    </div>
+    <div id="dropmenu"></div>
     <!-- Плавающее перетаскиваемое окно своей клавиатуры (поверх всего, с крестиком). -->
     <div id="kbd">
       <div id="kbd-head">

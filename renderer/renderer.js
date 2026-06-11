@@ -17,8 +17,6 @@ import { syntaxHighlighting, defaultHighlightStyle, indentOnInput, bracketMatchi
 import { search, searchKeymap, highlightSelectionMatches, openSearchPanel } from '@codemirror/search';
 import { oneDark } from '@codemirror/theme-one-dark';
 import { marked } from 'marked';
-import hljs from 'highlight.js/lib/common';
-import 'highlight.js/styles/atom-one-dark.css';
 import { javascript } from '@codemirror/lang-javascript';
 import { python } from '@codemirror/lang-python';
 import { json } from '@codemirror/lang-json';
@@ -27,95 +25,23 @@ import { html } from '@codemirror/lang-html';
 import { css } from '@codemirror/lang-css';
 import { sql, PostgreSQL, MySQL, SQLite } from '@codemirror/lang-sql';
 import { showMinimap } from '@replit/codemirror-minimap';
-import { initTextProc } from './textproc.js';
+import { initTextProc } from './modules/textproc.js';
+import { el, svgEl, icon, iconBtn, hydrateIcons, toast, renderDiffInto, makeModal, showConfirm, showPrompt, baseName, ICONS } from './ui.js';
+import { initGit } from './modules/git.js';
+import { initContainers } from './modules/containers.js';
+import { initDb } from './modules/db.js';
+import { initRh } from './modules/remotehost.js';
+import { initNotes } from './modules/notes.js';
+import { initOpenRouter } from './modules/openrouter.js';
 
-const APP_VERSION = 'alpha v1.0.109';
+const APP_VERSION = 'alpha v1.0.128';
 const GUTTER = 5;
 const SCRATCH_ID = '__scratch__'; // префикс id системных терминалов (домашняя папка), не привязаны к проектам
 const isScratch = (id) => typeof id === 'string' && id.startsWith(SCRATCH_ID);
 
 const lite = window.lite;
 const $ = (sel) => document.querySelector(sel);
-function el(tag, cls, text) {
-  const e = document.createElement(tag);
-  if (cls) e.className = cls;
-  if (text != null) e.textContent = text;
-  return e;
-}
-function svgEl(html) {
-  const t = document.createElement('template');
-  t.innerHTML = html.trim();
-  return t.content.firstChild;
-}
-// ---------------------------------------------------------------- icon set
-// One consistent line-icon family (Lucide-ish): 24-grid, currentColor stroke, rounded.
-// Inner markup only; icon() wraps it. Fill-based glyphs set their own fill/stroke.
-const ICONS = {
-  star: '<path d="M12 3.2l2.6 5.27 5.82.85-4.21 4.1.99 5.79L12 16.48 6.8 19.21l.99-5.79-4.21-4.1 5.82-.85z"/>',
-  'dots-v': '<circle cx="12" cy="5" r="1.5" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.5" fill="currentColor" stroke="none"/><circle cx="12" cy="19" r="1.5" fill="currentColor" stroke="none"/>',
-  'chevron-right': '<path d="M9 5l7 7-7 7"/>',
-  'chevron-down': '<path d="M5 9l7 7 7-7"/>',
-  'chevron-up': '<path d="M5 15l7-7 7 7"/>',
-  'chevron-left': '<path d="M15 5l-7 7 7 7"/>',
-  pencil: '<path d="M4 20h4L18.5 9.5a2 2 0 0 0-2.83-2.83L5 17v3z"/><path d="M13.5 6.5l4 4"/>',
-  eye: '<path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="3"/>',
-  note: '<path d="M5.5 3.5h8L19 9v10.5a1 1 0 0 1-1 1H5.5a1 1 0 0 1-1-1v-15a1 1 0 0 1 1-1z"/><path d="M13 3.5V9h5.5"/><path d="M8 13h7M8 16.5h4.5"/>',
-  git: '<circle cx="6.5" cy="6" r="2.3"/><circle cx="6.5" cy="18" r="2.3"/><circle cx="17.5" cy="9" r="2.3"/><path d="M6.5 8.3v7.4M17.5 11.3c0 3.2-3.3 3.9-6.4 3.9"/>',
-  folder: '<path d="M3.5 7.5a2 2 0 0 1 2-2h3.6l2 2H18.5a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5.5a2 2 0 0 1-2-2z"/>',
-  palette: '<path d="M12 3a9 9 0 1 0 0 18c1.2 0 2-.9 2-2 0-.6-.3-1-.6-1.4-.3-.4-.6-.8-.6-1.3 0-.9.7-1.6 1.6-1.6H16a5 5 0 0 0 5-5c0-3.6-3.6-6.7-9-6.7z"/><circle cx="7.5" cy="11" r="1" fill="currentColor" stroke="none"/><circle cx="11" cy="7.5" r="1" fill="currentColor" stroke="none"/><circle cx="15.5" cy="8.5" r="1" fill="currentColor" stroke="none"/>',
-  'arrow-right': '<path d="M4 12h15M13 6l6 6-6 6"/>',
-  archive: '<rect x="3.5" y="4.5" width="17" height="4" rx="1"/><path d="M5 8.5v10a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-10M10 12h4"/>',
-  x: '<path d="M6 6l12 12M18 6L6 18"/>',
-  plus: '<path d="M12 5v14M5 12h14"/>',
-  refresh: '<path d="M20 11.5a8 8 0 1 0-2.1 6.1"/><path d="M20 4.5v6h-6"/>',
-  save: '<path d="M5.5 4.5h10L20 9v10.5a1 1 0 0 1-1 1H5.5a1 1 0 0 1-1-1v-14a1 1 0 0 1 1-1z"/><path d="M8 4.5v4.5h7M8 20v-5.5h8V20"/>',
-  diff: '<path d="M12 4.5v7M8.5 8h7M6 19h12"/>',
-  maximize: '<path d="M4 9V5.5a1 1 0 0 1 1-1H9M20 9V5.5a1 1 0 0 0-1-1H15M4 15v3.5a1 1 0 0 0 1 1H9M20 15v3.5a1 1 0 0 1-1 1H15"/>',
-  terminal: '<rect x="3" y="4.5" width="18" height="15" rx="2"/><path d="M7 10l3 2.5-3 2.5M13 15h4"/>',
-  columns: '<rect x="3.5" y="4.5" width="17" height="15" rx="2"/><path d="M13 4.5v15"/>',
-  eraser: '<path d="M15.5 5l3.5 3.5a1.8 1.8 0 0 1 0 2.6L12 18.5H7l-2.5-2.5a1.8 1.8 0 0 1 0-2.6l8.4-8.4a1.8 1.8 0 0 1 2.6 0z"/><path d="M8.5 11.5l4 4M5 20.5h14"/>',
-  trash: '<path d="M4.5 7h15M9.5 7V4.8a1 1 0 0 1 1-1h3a1 1 0 0 1 1 1V7M6.5 7l.8 12.2a1 1 0 0 0 1 .95h7.4a1 1 0 0 0 1-.95L18.5 7"/>',
-  search: '<circle cx="11" cy="11" r="6.3"/><path d="M20 20l-3.8-3.8"/>',
-  check: '<path d="M5 12.5l4.2 4.2L19 7"/>',
-  download: '<path d="M12 4v10.5M8 11l4 4 4-4M5 19.5h14"/>',
-  upload: '<path d="M12 20V9.5M8 13l4-4 4 4M5 4.5h14"/>',
-  sliders: '<path d="M4 8h9M17 8h3M4 16h3M11 16h9"/><circle cx="15" cy="8" r="2.1"/><circle cx="9" cy="16" r="2.1"/>',
-  grid: '<rect x="4" y="4" width="7" height="7" rx="1.5"/><rect x="13" y="4" width="7" height="7" rx="1.5"/><rect x="4" y="13" width="7" height="7" rx="1.5"/><rect x="13" y="13" width="7" height="7" rx="1.5"/>',
-  copy: '<rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5.5a2 2 0 0 1 2-2H16"/>',
-  play: '<path d="M7 5l12 7-12 7z" fill="currentColor" stroke="none"/>',
-  warning: '<path d="M12 4l9 16H3z"/><path d="M12 10v4M12 17h.01"/>',
-  file: '<path d="M6 3.5h7L18.5 9v10.5a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1v-15a1 1 0 0 1 1-1z"/><path d="M12.5 3.5V9H18"/>',
-  globe: '<circle cx="12" cy="12" r="8.5"/><path d="M3.5 12h17M12 3.5c2.6 2.4 2.6 14.6 0 17M12 3.5c-2.6 2.4-2.6 14.6 0 17"/>',
-  clipboard: '<rect x="6" y="4.5" width="12" height="16" rx="2"/><rect x="9" y="3" width="6" height="3.4" rx="1"/>',
-  chat: '<path d="M4.5 5.5h15a1 1 0 0 1 1 1v8.5a1 1 0 0 1-1 1H9.5L5 19.5V16a1 1 0 0 1-1-1V6.5a1 1 0 0 1 .5-1z"/><path d="M8 9.5h8M8 12.5h5"/>',
-  key: '<circle cx="8" cy="15" r="3.5"/><path d="M10.5 12.5L19 4M16 7l2.5 2.5M14 9l2.5 2.5"/>',
-  stop: '<rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor" stroke="none"/>',
-  pause: '<rect x="7" y="5" width="3.4" height="14" rx="1" fill="currentColor" stroke="none"/><rect x="13.6" y="5" width="3.4" height="14" rx="1" fill="currentColor" stroke="none"/>',
-  box: '<path d="M12 2.8l8.2 4.6v9.2L12 21.2 3.8 16.6V7.4z"/><path d="M3.8 7.4l8.2 4.6 8.2-4.6M12 12v9.2"/>',
-  layers: '<path d="M12 3l8.5 4.5L12 12 3.5 7.5z"/><path d="M3.5 12L12 16.5 20.5 12M3.5 16.5L12 21l8.5-4.5"/>',
-  database: '<ellipse cx="12" cy="6" rx="7" ry="3"/><path d="M5 6v12c0 1.66 3.13 3 7 3s7-1.34 7-3V6"/><path d="M5 12c0 1.66 3.13 3 7 3s7-1.34 7-3"/>',
-  power: '<path d="M12 4v8"/><path d="M7.5 7.5a6.5 6.5 0 1 0 9 0"/>',
-  flag: '<path d="M6 21V4.5h11l-2 4 2 4H6"/>',
-};
-function icon(name, size = 16) {
-  return svgEl(`<svg class="ic" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name] || ''}</svg>`);
-}
-// Button carrying a single icon (replaces the old emoji-in-textContent buttons).
-function iconBtn(cls, name, title, size) {
-  const b = el('button', cls);
-  b.appendChild(icon(name, size));
-  if (title) b.title = title;
-  return b;
-}
-// Fill the static [data-icon] buttons defined in index.html (titlebar / pane toolbars).
-function hydrateIcons(root = document) {
-  root.querySelectorAll('[data-icon]').forEach((node) => {
-    if (node.querySelector('svg.ic')) return; // already done
-    node.appendChild(icon(node.dataset.icon, +node.dataset.iconSize || 16));
-  });
-}
-// basename that survives both POSIX and Windows separators (for the Windows build).
-function baseName(p) { return String(p).split(/[\\/]/).filter(Boolean).pop() || String(p); }
+// el/svgEl/иконки/тосты/модалки/baseName переехали в ui.js (этап «модульный рефакторинг»).
 
 // ---------------------------------------------------------------- global store (~/.LiteEditor)
 // Synchronous snapshot loaded once; reads are in-memory, writes go through to disk.
@@ -150,20 +76,18 @@ const projState = new Map(); // sessionId -> 'quiet' | 'busy' | 'waiting'
 const missing = new Set();   // ids of projects whose folder no longer exists on disk
 const expandedDirs = new Set(); // tree dir paths currently expanded (survives live refresh)
 let gitFiles = {};           // active project: abs path -> git short status code
-let noteCounts = STORE.noteCounts || {}; // project id -> number of notes (card badge)
 
 // ---------------------------------------------------------------- OpenRouter chat state
-// orCards: persisted list of {id, name, key, model, contextN}. Each renders as a card in
-// its own «OpenRouter» section; clicking one shows the chat (instead of the terminal).
-let orCards = Array.isArray(STORE.openrouter) ? STORE.openrouter : [];
 let activeOrId = null;        // id of the OpenRouter card whose chat is shown (null → terminal mode)
-const orChats = new Map();    // cardId -> { messages:[{role,content}], loaded, streaming, reqId }
-const orModelsByKey = new Map(); // apiKey -> [{id,name}] (fetched once, cached for the session)
-const orUsageByKey = new Map();  // apiKey -> {usage,limit,limit_remaining,label} | {loading} | {error}
-const pendingOr = new Map();  // reqId -> { chunk, done, error } stream handlers
-let orReqSeq = 0;
-const OR_KEY = '__openrouter__'; // accordion/section key for the OpenRouter group
-
+const Or = initOpenRouter({
+  STORE, persist, settings, isCollapsed, setCollapsed, guardDirty,
+  renderProjects, showActiveTerminal, refreshViewerForActive,
+  closeMenus: () => closeMenus(),   // модалка ключей закрывает открытые дропдауны ядра
+  isViewerOpen: () => viewerOpen, getActiveOrId: () => activeOrId,
+  setActiveOrId: (v) => { activeOrId = v; }, clearActiveDoc: () => { activeDocId = null; },
+  // чат закрывает проектные модули правого слота; rh исторически не трогает (1:1)
+  closePanelsForChat: () => { if (Git.isOpen()) Git.setOpen(false); if (Containers.isOpen()) Containers.setOpen(false); if (Db.isOpen()) Db.setOpen(false); if (scratchOpen) setScratchOpen(false); },
+});
 // ---------------------------------------------------------------- Text processing (изолированный модуль)
 // Документ-плашка открывается ВМЕСТО терминала (как чат OpenRouter). Вся логика — в
 // renderer/textproc.js; связь только через host-контракт (см. модуль). activeDocId ≠ null
@@ -177,158 +101,6 @@ const TextProc = initTextProc({
   deactivate: () => { activeDocId = null; renderProjects(); showActiveTerminal(); },
   refresh: () => renderProjects(),
 });
-function saveOrCards() { persist('openrouter', orCards); }
-function activeOrCard() { return orCards.find((c) => c.id === activeOrId) || null; }
-function newOrId() { return 'or' + Date.now().toString(36) + Math.floor(Math.random() * 1e5).toString(36); }
-function maskKey(k) { k = String(k || ''); return k.length <= 12 ? k : k.slice(0, 8) + '…' + k.slice(-4); }
-function clamp(n, lo, hi) { n = parseInt(n, 10); if (!Number.isFinite(n)) n = lo; return Math.max(lo, Math.min(hi, n)); }
-// Each card holds N sessions (separate conversations); a session = { id, name, messages }.
-// Runtime st: { loaded, sessions:[], active:sessionId, streaming, reqId }. Persisted to
-// orchats/<cardId>.json as { sessions, active } (legacy plain-array files migrate to one session).
-function newSessId() { return 's' + Date.now().toString(36) + Math.floor(Math.random() * 1e4).toString(36); }
-function blankSession(name, contextN) { return { id: newSessId(), name: name || 'Сессия 1', messages: [], contextN: clamp(contextN || 10, 1, 100) }; }
-function syncCtxInput() { const s = activeSession(); const i = $('#chat-ctx-input'); if (i) i.value = s ? clamp(s.contextN || 10, 1, 100) : 10; }
-function getOrChat(id) {
-  let st = orChats.get(id);
-  if (!st) { st = { loaded: false, sessions: [], active: null, streaming: false, reqId: null }; orChats.set(id, st); }
-  return st;
-}
-function ensureSession(st) {
-  if (!st.sessions.length) { const s = blankSession('Сессия 1'); st.sessions.push(s); st.active = s.id; }
-  if (!st.sessions.find((s) => s.id === st.active)) st.active = st.sessions[0].id;
-  return st.sessions.find((s) => s.id === st.active);
-}
-function activeSession() {
-  const c = activeOrCard(); if (!c) return null;
-  const st = orChats.get(c.id); if (!st) return null;
-  return st.sessions.find((s) => s.id === st.active) || null;
-}
-function saveOrHist(cardId) {
-  const st = orChats.get(cardId); if (!st) return;
-  lite.openrouter.histSet(cardId, { sessions: st.sessions, active: st.active });
-}
-// model cost/size formatting (pricing is USD per token → show per 1M tokens)
-function fmtCtx(n) { n = parseInt(n, 10); if (!n) return ''; return n >= 1000 ? Math.round(n / 1000) + 'k' : String(n); }
-function fmtPrice(p) {
-  const v = parseFloat(p); if (!Number.isFinite(v)) return null;
-  if (v === 0) return 'free';
-  const per = v * 1e6;
-  return '$' + (per >= 1 ? per.toFixed(2) : per.toPrecision(2));
-}
-function fmtUsd(v) { const n = Number(v); return '$' + (Number.isFinite(n) ? n : 0).toFixed(2); }
-function usageText(key) {
-  const u = orUsageByKey.get(key);
-  if (!u || u.loading) return 'баланс: загрузка…';
-  if (u.error) return 'баланс: —';
-  const used = fmtUsd(u.usage);
-  if (u.limit == null) return `израсходовано ${used} · лимит ∞`;
-  return `${used} / ${fmtUsd(u.limit)}`;
-}
-function cssEsc(s) { return (window.CSS && CSS.escape) ? CSS.escape(s) : String(s); }
-function updateUsageDom(key) {
-  const esc = cssEsc(key);
-  document.querySelectorAll(`.or-usage-text[data-key="${esc}"]`).forEach((s) => { s.textContent = usageText(key); });
-  const loading = (orUsageByKey.get(key) || {}).loading;
-  document.querySelectorAll(`.or-refresh[data-key="${esc}"]`).forEach((b) => b.classList.toggle('spinning', !!loading));
-}
-async function fetchKeyInfo(key, force) {
-  const cur = orUsageByKey.get(key);
-  if (!force && cur) return;            // already have data (or loading) — auto-load runs once
-  if (cur && cur.loading) return;       // a request is already in flight
-  orUsageByKey.set(key, { loading: true });
-  updateUsageDom(key);
-  let r; try { r = await lite.openrouter.keyInfo(key); } catch (e) { r = { error: String(e) }; }
-  if (r && !r.error) orUsageByKey.set(key, { usage: r.usage, limit: r.limit, limit_remaining: r.limit_remaining, label: r.label });
-  else orUsageByKey.set(key, { error: (r && r.error) || 'ошибка' });
-  updateUsageDom(key);
-}
-function modelMetaText(card) {
-  const mm = card.modelMeta; if (!mm) return card.model || '';
-  const parts = [card.model];
-  const ctx = fmtCtx(mm.context); if (ctx) parts.push(ctx + ' ctx');
-  const pin = fmtPrice(mm.pricing && mm.pricing.prompt); if (pin) parts.push('вход ' + pin + '/1M');
-  const pout = fmtPrice(mm.pricing && mm.pricing.completion); if (pout) parts.push('выход ' + pout + '/1M');
-  return parts.join(' · ');
-}
-function escapeHtml(s) { return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
-// Render assistant markdown to sanitized HTML (CSP already blocks scripts; we still strip
-// dangerous tags / on*-handlers / javascript: urls as defense-in-depth).
-function mdToSafeHtml(src) {
-  let html;
-  try { html = marked.parse(String(src || ''), { gfm: true, breaks: true }); } catch (_) { return escapeHtml(src); }
-  const tpl = document.createElement('template');
-  tpl.innerHTML = html;
-  tpl.content.querySelectorAll('script,style,iframe,object,embed,link,meta,form').forEach((n) => n.remove());
-  tpl.content.querySelectorAll('*').forEach((n) => {
-    [...n.attributes].forEach((a) => {
-      const name = a.name.toLowerCase();
-      if (name.startsWith('on')) { n.removeAttribute(a.name); return; }
-      if (name === 'href' || name === 'src') {
-        // allowlist URL schemes: links → http(s)/mailto; img src → http(s)/data. Drop the rest.
-        let proto = '';
-        try { proto = new URL(a.value, location.href).protocol; } catch (_) { n.removeAttribute(a.name); return; }
-        const ok = (name === 'src') ? ['http:', 'https:', 'data:'] : ['http:', 'https:', 'mailto:'];
-        if (!ok.includes(proto)) n.removeAttribute(a.name);
-      }
-    });
-  });
-  return tpl.innerHTML;
-}
-function enhanceCodeBlocks(container) {
-  container.querySelectorAll('pre').forEach((pre) => {
-    if (pre.querySelector('.code-copy')) return;
-    const code = pre.querySelector('code');
-    if (code) { // syntax highlight (highlight.js); keep the raw text for copy below
-      const raw = code.textContent;
-      const langCls = (code.className.match(/language-([\w+#-]+)/) || [])[1];
-      try {
-        const res = (langCls && hljs.getLanguage(langCls))
-          ? hljs.highlight(raw, { language: langCls, ignoreIllegals: true })
-          : hljs.highlightAuto(raw);
-        code.innerHTML = res.value; // hljs returns sanitized HTML (no raw user HTML survives)
-      } catch (_) {}
-      code.classList.add('hljs');
-    }
-    const btn = el('button', 'code-copy', 'Копировать');
-    btn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      lite.copyText(code ? code.textContent : pre.textContent); // textContent = original code, not highlighted markup
-      btn.textContent = 'Скопировано'; setTimeout(() => { btn.textContent = 'Копировать'; }, 1000);
-    });
-    pre.appendChild(btn);
-  });
-}
-function renderMsgContent(bubble, role, text) {
-  bubble.classList.remove('err');
-  if (role === 'assistant') { bubble.innerHTML = mdToSafeHtml(text); enhanceCodeBlocks(bubble); }
-  else bubble.textContent = text || '';
-}
-// Fullscreen image viewer with a download button (for generated/markdown images).
-function openImageLightbox(src) {
-  const ov = el('div', 'img-lightbox');
-  const img = el('img', 'img-lb-img'); img.src = src;
-  const bar = el('div', 'img-lb-bar');
-  const dl = el('button', 'btn primary', 'Скачать');
-  dl.addEventListener('click', (e) => { e.stopPropagation(); downloadImage(src); });
-  const cl = el('button', 'btn', 'Закрыть');
-  const close = () => { ov.remove(); document.removeEventListener('keydown', onKey); };
-  const onKey = (e) => { if (e.key === 'Escape') close(); };
-  cl.addEventListener('click', (e) => { e.stopPropagation(); close(); });
-  bar.appendChild(dl); bar.appendChild(cl);
-  ov.appendChild(img); ov.appendChild(bar);
-  ov.addEventListener('click', (e) => { if (e.target === ov) close(); }); // click backdrop to dismiss
-  document.addEventListener('keydown', onKey);
-  document.body.appendChild(ov);
-}
-function downloadImage(src) {
-  try {
-    const a = document.createElement('a');
-    a.href = src;
-    const ext = (src.match(/^data:image\/(\w+)/) || [])[1] || 'png';
-    a.download = 'openrouter-image-' + Date.now() + '.' + ext;
-    document.body.appendChild(a); a.click(); a.remove();
-  } catch (_) {}
-}
 
 // ---------------------------------------------------------------- notes auto-queue
 // Per-project queue that fires notes one-by-one: dispatch a note (text + Enter, so it
@@ -440,24 +212,12 @@ function queueNotifyArmed(id) {
   } catch (_) {}
 }
 let viewerOpen = false;
-let gitOpen = false;         // Git-модуль справа открыт (показывает активный проект)
-let dockerOpen = false;      // модуль контейнеров (docker/podman) справа открыт
-let dbOpen = false;          // модуль баз данных справа открыт
 let scratchOpen = false;     // системный терминал справа открыт
 const scratchTerms = new Map(); // scratchId -> { term, fit, search, container, name }
 let scratchSessions = [];        // ordered scratch ids (tabs)
 let scratchActiveId = null;
 let scratchSeq = 0;
 // RemoteHost-модуль (SSH-сессии к серверам): список профилей + живые сессии-вкладки
-let rhOpen = false;
-let rhConnsList = [], rhSecure = true;
-let rhView = 'list';             // 'list' (менеджер подключений) | 'session' (открытый терминал)
-const rhTerms = new Map();       // sessionId -> { term, fit, search, container, name, connId }
-let rhSessions = [];             // ordered session ids (вкладки)
-let rhActiveSession = null;
-let rhSeq = 0, rhRenderSeq = 0;
-let rhFiles = null;              // активный браузер файлов: { connId, name, type, path, entries, loading, file, error }
-let rhUi = (STORE.rhUi && typeof STORE.rhUi === 'object') ? STORE.rhUi : {}; // { catCollapsed }
 let currentFile = null;
 let dirty = false;
 let diffMode = false;        // viewer showing a git diff instead of the file
@@ -498,7 +258,7 @@ function applyTheme() {
   document.body.dataset.theme = name; // always set; index.html ships data-theme too so there's no flash
   for (const rec of terms.values()) { try { rec.term.options.theme = termTheme(); } catch (_) {} }
   for (const rec of scratchTerms.values()) { try { rec.term.options.theme = termTheme(); } catch (_) {} }
-  if (dockerExecTerm) { try { dockerExecTerm.options.theme = termTheme(); } catch (_) {} }
+  Containers.applyTermTheme(); // exec-терминал контейнера красится тем же termTheme
 }
 
 const activeProject = () => projects.find((p) => p.id === activeId);
@@ -510,7 +270,7 @@ function loadLayout() { return { ...DEFAULT_LAYOUT, ...(STORE.layout || {}) }; }
 function saveLayout() { persist('layout', layout); }
 // Whether the viewer / system terminal panes are open — part of the backed-up state,
 // restored on startup (and on import) so the window reopens the way it was left.
-function saveUiState() { persist('uiState', { viewerOpen, scratchOpen, gitOpen, dockerOpen, dbOpen, rhOpen }); }
+function saveUiState() { persist('uiState', { viewerOpen, scratchOpen, gitOpen: Git.isOpen(), dockerOpen: Containers.isOpen(), dbOpen: Db.isOpen(), rhOpen: Rh.isOpen() }); }
 function applyLayout() {
   $('#sidebar').style.flexBasis = layout.sidebar + 'px';
   $('#viewer-pane').style.flexBasis = layout.viewer + 'px';
@@ -587,68 +347,12 @@ function renderProjects() {
   box.innerHTML = '';
   const sections = buildSections();
   sections.forEach((s, i) => box.appendChild(renderSection(s, i, sections)));
-  box.appendChild(renderOrSection()); // always shown (even with 0 keys) — own «интеграции» strip
+  box.appendChild(Or.renderSection()); // always shown (even with 0 keys) — own «интеграции» strip
   box.appendChild(TextProc.renderSection()); // «Обработка текста» — изолированный модуль
   renderMiniRail();
 }
 // OpenRouter section — fixed group (no reorder arrows), like a special category.
 // Cards here aren't real projects: deletion lives only in the OpenRouter modal.
-function renderOrSection() {
-  const sec = el('div', 'pgroup or-group');
-  sec.appendChild(el('div', 'or-divider', 'ИНТЕГРАЦИИ')); // visual strip separating it from project categories
-  const collapsed = isCollapsed(OR_KEY);
-  const head = el('div', 'pgroup-head');
-  const chev = el('span', 'pgroup-chev');
-  chev.appendChild(icon(collapsed ? 'chevron-right' : 'chevron-down', 15));
-  head.appendChild(chev);
-  head.appendChild(el('span', 'pgroup-name', 'OpenRouter'));
-  head.appendChild(el('span', 'pgroup-count', String(orCards.length)));
-  const tools = el('div', 'pgroup-tools');
-  const cog = iconBtn('pgroup-arrow', 'sliders', 'Управление ключами');
-  cog.style.opacity = '1';
-  cog.addEventListener('click', (e) => { e.stopPropagation(); showOpenRouter(); });
-  tools.appendChild(cog);
-  head.appendChild(tools);
-  const body = el('div', 'pgroup-body');
-  if (collapsed) body.style.display = 'none';
-  head.addEventListener('click', () => {
-    const now = !isCollapsed(OR_KEY); setCollapsed(OR_KEY, now);
-    body.style.display = now ? 'none' : 'block';
-    chev.replaceChildren(icon(now ? 'chevron-right' : 'chevron-down', 15));
-  });
-  for (const c of orCards) body.appendChild(makeOrCard(c));
-  sec.appendChild(head); sec.appendChild(body);
-  return sec;
-}
-function makeOrCard(c) {
-  const card = el('div', 'card or-card');
-  card.dataset.orid = c.id;
-  if (c.id === activeOrId) card.classList.add('active');
-  const head = el('div', 'card-head');
-  const ind = el('span', 'or-ind');
-  ind.appendChild(icon('chat', 15));
-  const title = el('span', 'card-title', c.name);
-  title.title = c.name;
-  head.appendChild(ind); head.appendChild(title); // no kebab — управление через ⚙ в шапке секции
-  card.appendChild(head);
-  const sub = el('div', 'or-key-row');
-  sub.appendChild(icon('key', 12));
-  sub.appendChild(el('span', 'or-key', maskKey(c.key)));
-  if (c.model) { const mm = el('span', 'or-model', c.model); mm.title = c.model; sub.appendChild(mm); }
-  card.appendChild(sub);
-  // balance row: spent / limit + refresh
-  const usage = el('div', 'or-usage');
-  const uText = el('span', 'or-usage-text', usageText(c.key)); uText.dataset.key = c.key;
-  const refresh = iconBtn('or-refresh', 'refresh', 'Обновить баланс ключа', 13); refresh.dataset.key = c.key;
-  if ((orUsageByKey.get(c.key) || {}).loading) refresh.classList.add('spinning');
-  refresh.addEventListener('click', (e) => { e.stopPropagation(); fetchKeyInfo(c.key, true); });
-  usage.appendChild(uText); usage.appendChild(refresh);
-  card.appendChild(usage);
-  if (!orUsageByKey.has(c.key)) fetchKeyInfo(c.key, false); // lazy auto-load once per key
-  card.addEventListener('click', () => openChat(c.id));
-  card.addEventListener('contextmenu', (e) => { e.preventDefault(); showOpenRouter(); });
-  return card;
-}
 function renderSection(s, index, sections) {
   const total = sections.length;
   const { label, key, list, pinned } = s;
@@ -710,13 +414,13 @@ function makeCard(p) {
     else { setActive(p.id); setViewerOpen(true); }
   });
   const notesBtn = iconBtn('card-act', 'note', 'Заметки', 15);
-  const nc = noteCounts[p.id] || 0;
+  const nc = Notes.count(p.id);
   if (nc) notesBtn.appendChild(el('span', 'act-badge', String(nc)));
-  notesBtn.addEventListener('click', (e) => { e.stopPropagation(); showNotes(p); });
-  const gitBtn = iconBtn('card-act' + (p.id === activeId && gitOpen ? ' on' : ''), 'git', 'Git — ветки, изменения, коммиты', 15);
+  notesBtn.addEventListener('click', (e) => { e.stopPropagation(); Notes.show(p); });
+  const gitBtn = iconBtn('card-act' + (p.id === activeId && Git.isOpen() ? ' on' : ''), 'git', 'Git — ветки, изменения, коммиты', 15);
   gitBtn.addEventListener('click', (e) => {
     e.stopPropagation();
-    if (activeId === p.id && gitOpen) setGitOpen(false);
+    if (activeId === p.id && Git.isOpen()) Git.setOpen(false);
     else openGitForProject(p.id);
   });
   const kebab = iconBtn('card-kebab', 'dots-v', 'Меню проекта', 18);
@@ -727,7 +431,7 @@ function makeCard(p) {
   const qbadge = el('button', 'card-qbadge' + (qtxt ? ' show' : '') + (qb && qb.running ? ' running' : ''), qtxt);
   qbadge.dataset.id = p.id;
   qbadge.title = 'Авто-очередь заметок';
-  qbadge.addEventListener('click', (e) => { e.stopPropagation(); showNotes(p); });
+  qbadge.addEventListener('click', (e) => { e.stopPropagation(); Notes.show(p); });
   const acts = el('div', 'card-acts');
   acts.append(qbadge, star, openViewer, notesBtn, gitBtn, kebab);
   // в покое — свёрнутая стрелка; по наведению на карточку кнопки выезжают, стрелка прячется
@@ -759,325 +463,7 @@ function focusProject(id) {
 }
 
 // ---------------------------------------------------------------- OpenRouter chat UI
-// Open an OpenRouter card's chat in place of the terminal. Guards unsaved viewer edits
-// (same as switching projects), loads the persisted history once, and shows the pane.
-function openChat(id) {
-  const card = orCards.find((c) => c.id === id);
-  if (!card) return;
-  guardDirty(async () => {
-    // Opening the OpenRouter chat hides project-specific right modules — chat takes over.
-    // Вивер оставляем открытым: он покажет заглушку «нет выбранного проекта» (см. refreshViewerForActive).
-    if (gitOpen) setGitOpen(false);
-    if (dockerOpen) setDockerOpen(false);
-    if (dbOpen) setDbOpen(false);
-    if (scratchOpen) setScratchOpen(false);
-    activeOrId = id;
-    activeDocId = null; // чат и документ «Обработки текста» взаимоисключающи
-    const st = getOrChat(id);
-    renderProjects();        // refresh card highlights (active OR card, deselect projects)
-    if (viewerOpen) refreshViewerForActive(); // chat mode → вивер показывает заглушку
-    showActiveTerminal();    // single source of pane visibility → reveals #chat-pane
-    $('#chat-title').textContent = card.name;
-    $('#chat-model-btn').textContent = card.model || 'Выбрать модель…';
-    $('#chat-model-btn').title = card.model ? modelMetaText(card) : '';
-    $('#chat-model-pop').classList.add('hidden');
-    $('#chat-session-pop').classList.add('hidden');
-    setChatSending(st.streaming);
-    if (!st.loaded) { // pull history from disk on first open of this card
-      let doc = null;
-      try { doc = await lite.openrouter.histGet(id); } catch (_) {}
-      if (Array.isArray(doc)) st.sessions = doc.length ? [{ id: newSessId(), name: 'Сессия 1', messages: doc }] : []; // legacy
-      else if (doc && Array.isArray(doc.sessions)) { st.sessions = doc.sessions; st.active = doc.active; }
-      // backfill per-session contextN (older data kept it per-card) so the setting binds to the session
-      for (const s of st.sessions) if (s.contextN == null) s.contextN = clamp(card.contextN || 10, 1, 100);
-      st.loaded = true;
-    }
-    if (activeOrId !== id) return; // user switched away during the async load
-    ensureSession(st);
-    updateSessionBtn();
-    syncCtxInput();
-    renderChatLog();
-    setTimeout(() => { const ta = $('#chat-input'); if (ta) ta.focus(); }, 30);
-  });
-}
-function updateSessionBtn() { const s = activeSession(); const b = $('#chat-session-btn'); if (b) b.textContent = '☰ ' + (s ? s.name : 'Сессия'); }
-function renderChatLog() {
-  const log = $('#chat-log');
-  log.innerHTML = '';
-  const sess = activeSession();
-  if (!sess || !sess.messages.length) {
-    log.appendChild(el('div', 'chat-empty', 'Выбери модель вверху и напиши первое сообщение.'));
-    return;
-  }
-  for (const msg of sess.messages) appendChatMsg(msg.role, msg.content);
-  scrollChat();
-}
-function appendChatMsg(role, text, streaming) {
-  const log = $('#chat-log');
-  const empty = log.querySelector('.chat-empty'); if (empty) empty.remove();
-  const wrap = el('div', 'chat-msg ' + (role === 'user' ? 'me' : 'bot'));
-  wrap.dataset.raw = text || ''; // raw source (markdown for assistant) — what the copy button yields
-  // sticky header so the copy button stays in view while a long message scrolls
-  const head = el('div', 'chat-msg-head');
-  head.appendChild(el('span', 'msg-role', role === 'user' ? 'Вы' : 'Ассистент'));
-  const copy = iconBtn('msg-copy', 'copy', 'Копировать сообщение', 15);
-  copy.addEventListener('click', (e) => {
-    e.stopPropagation();
-    lite.copyText(wrap.dataset.raw || '');
-    copy.replaceChildren(icon('check', 15)); setTimeout(() => copy.replaceChildren(icon('copy', 15)), 900);
-  });
-  head.appendChild(copy);
-  const bubble = el('div', 'chat-bubble');
-  if (streaming) bubble.textContent = text || ''; // plain while streaming; finalized to markdown on done
-  else renderMsgContent(bubble, role, text);
-  wrap.appendChild(head);
-  wrap.appendChild(bubble);
-  log.appendChild(wrap);
-  scrollChat();
-  return wrap;
-}
-function scrollChat() { const log = $('#chat-log'); if (log) log.scrollTop = log.scrollHeight; }
-function setChatSending(on) {
-  const btn = $('#chat-send'); if (!btn) return;
-  btn.textContent = on ? '■' : '▶';
-  btn.classList.toggle('sending', on);
-  btn.title = on ? 'Остановить' : 'Отправить';
-}
-function onSendClick() {
-  const card = activeOrCard(); if (!card) return;
-  const st = orChats.get(card.id);
-  if (st && st.streaming) { if (st.reqId) lite.openrouter.chatAbort(st.reqId); return; }
-  sendChat();
-}
-function sendChat() {
-  const card = activeOrCard(); if (!card) return;
-  if (!card.model) { toast('Сначала выбери модель вверху'); return; }
-  const ta = $('#chat-input');
-  const text = ta.value.trim();
-  if (!text) return;
-  const st = getOrChat(card.id);
-  if (st.streaming) return;
-  const sess = ensureSession(st);
-  ta.value = ''; ta.style.height = 'auto';
-  sess.messages.push({ role: 'user', content: text });
-  appendChatMsg('user', text);
-  saveOrHist(card.id);
-  const n = clamp(sess.contextN || 10, 1, 100); // context window is per-session
-  const ctx = sess.messages.slice(-n).map((m) => ({ role: m.role, content: m.content }));
-  const wrap = appendChatMsg('assistant', '…', true);
-  const bubble = wrap.querySelector('.chat-bubble');
-  const reqId = 'orq' + (++orReqSeq);
-  st.streaming = true; st.reqId = reqId;
-  setChatSending(true);
-  let acc = '';
-  let rich = false; // once an image arrives, render markdown live (don't dump the data: URL as text)
-  const finish = (errMsg) => {
-    pendingOr.delete(reqId);
-    st.streaming = false; st.reqId = null;
-    wrap.dataset.raw = acc;
-    renderMsgContent(bubble, 'assistant', acc || (errMsg ? '' : '(пустой ответ)'));
-    if (errMsg) { bubble.classList.add('err'); bubble.appendChild(el('div', 'chat-err', '⚠ Ошибка: ' + errMsg)); }
-    if (acc) { sess.messages.push({ role: 'assistant', content: acc }); saveOrHist(card.id); }
-    if (activeOrId === card.id) setChatSending(false);
-    scrollChat();
-  };
-  pendingOr.set(reqId, {
-    chunk: (d) => {
-      acc += d;
-      if (!rich && d.includes('![image](')) rich = true;
-      if (rich) renderMsgContent(bubble, 'assistant', acc); else bubble.textContent = acc;
-      scrollChat();
-    },
-    done: () => finish(null),
-    error: (msg) => finish(msg),
-  });
-  lite.openrouter.chatStart({ reqId, key: card.key, model: card.model, messages: ctx });
-}
-// ---------------------------------------------------------------- chat sessions (per key)
-function toggleSessionPop() {
-  const pop = $('#chat-session-pop');
-  if (!pop.classList.contains('hidden')) { pop.classList.add('hidden'); return; }
-  renderSessionList();
-  pop.classList.remove('hidden');
-}
-function renderSessionList() {
-  const pop = $('#chat-session-pop'); pop.innerHTML = '';
-  const card = activeOrCard(); if (!card) return;
-  const st = getOrChat(card.id);
-  const add = el('div', 'sess-row sess-add');
-  add.appendChild(icon('plus', 14)); add.appendChild(el('span', null, 'Новая сессия'));
-  add.addEventListener('click', () => newSession(card.id));
-  pop.appendChild(add);
-  for (const s of st.sessions) {
-    const row = el('div', 'sess-row' + (s.id === st.active ? ' on' : ''));
-    row.appendChild(el('span', 'sess-name', s.name));
-    const ren = iconBtn('sess-mini', 'pencil', 'Переименовать', 12);
-    ren.addEventListener('click', (e) => { e.stopPropagation(); renameSession(card.id, s.id); });
-    row.appendChild(ren);
-    if (st.sessions.length > 1) {
-      const del = iconBtn('sess-mini', 'trash', 'Удалить сессию', 12);
-      del.addEventListener('click', (e) => { e.stopPropagation(); deleteSession(card.id, s.id); });
-      row.appendChild(del);
-    }
-    row.addEventListener('click', () => switchSession(card.id, s.id));
-    pop.appendChild(row);
-  }
-}
-function newSession(cardId) {
-  const st = getOrChat(cardId);
-  const cur = st.sessions.find((s) => s.id === st.active); // inherit the current session's context size
-  const s = blankSession('Сессия ' + (st.sessions.length + 1), cur ? cur.contextN : 10);
-  st.sessions.push(s); st.active = s.id; saveOrHist(cardId);
-  $('#chat-session-pop').classList.add('hidden');
-  updateSessionBtn(); syncCtxInput(); renderChatLog();
-  setTimeout(() => { const ta = $('#chat-input'); if (ta) ta.focus(); }, 20);
-}
-function switchSession(cardId, sid) {
-  const st = getOrChat(cardId); if (!st.sessions.find((s) => s.id === sid)) return;
-  st.active = sid; saveOrHist(cardId);
-  $('#chat-session-pop').classList.add('hidden');
-  updateSessionBtn(); syncCtxInput(); renderChatLog();
-}
-function renameSession(cardId, sid) {
-  const st = getOrChat(cardId); const s = st.sessions.find((x) => x.id === sid); if (!s) return;
-  showPrompt('Переименовать сессию', 'Название', s.name, (v) => {
-    const t = (v || '').trim(); if (!t) return;
-    s.name = t; saveOrHist(cardId); renderSessionList(); updateSessionBtn();
-  });
-}
-function deleteSession(cardId, sid) {
-  const st = getOrChat(cardId); if (st.sessions.length <= 1) return; // keep ≥1
-  showConfirm('Удалить сессию?', 'История этой сессии будет удалена без возможности восстановления.', 'Удалить', () => {
-    const wasActive = st.active === sid;
-    st.sessions = st.sessions.filter((s) => s.id !== sid);
-    if (wasActive) st.active = st.sessions[0].id;
-    saveOrHist(cardId);
-    renderSessionList(); updateSessionBtn();
-    if (wasActive) renderChatLog();
-  });
-}
-// Model picker dropdown — fetched once per key, filtered by the search box.
-async function toggleModelPop() {
-  const pop = $('#chat-model-pop');
-  if (!pop.classList.contains('hidden')) { pop.classList.add('hidden'); return; }
-  const card = activeOrCard(); if (!card) return;
-  pop.classList.remove('hidden');
-  const search = $('#chat-model-search');
-  search.value = ''; search.focus();
-  const list = $('#chat-model-list');
-  list.innerHTML = '<div class="chat-model-loading">Загрузка моделей…</div>';
-  let models = orModelsByKey.get(card.key);
-  if (!models) {
-    const r = await lite.openrouter.models(card.key);
-    if (r.error) { list.innerHTML = ''; list.appendChild(el('div', 'chat-model-loading', 'Ошибка: ' + r.error)); return; }
-    models = r.models || []; orModelsByKey.set(card.key, models);
-  }
-  if (activeOrId !== card.id || pop.classList.contains('hidden')) return;
-  renderModelList('');
-}
-function renderModelList(filter) {
-  const card = activeOrCard(); if (!card) return;
-  const list = $('#chat-model-list');
-  const models = orModelsByKey.get(card.key) || [];
-  const q = (filter || '').toLowerCase();
-  const shown = (q ? models.filter((m) => (m.id + ' ' + m.name).toLowerCase().includes(q)) : models).slice(0, 300);
-  list.innerHTML = '';
-  if (!shown.length) { list.appendChild(el('div', 'chat-model-loading', 'Ничего не найдено')); return; }
-  for (const m of shown) {
-    const row = el('div', 'chat-model-row' + (m.id === card.model ? ' on' : ''));
-    row.appendChild(el('div', 'cm-name', m.name));
-    row.appendChild(el('div', 'cm-id', m.id));
-    const meta = el('div', 'cm-meta');
-    const ctx = fmtCtx(m.context); if (ctx) meta.appendChild(el('span', 'cm-chip', ctx + ' ctx'));
-    const pin = fmtPrice(m.pricing && m.pricing.prompt); if (pin) meta.appendChild(el('span', 'cm-chip', 'вход ' + pin + '/1M'));
-    const pout = fmtPrice(m.pricing && m.pricing.completion); if (pout) meta.appendChild(el('span', 'cm-chip', 'выход ' + pout + '/1M'));
-    if (meta.childNodes.length) row.appendChild(meta);
-    row.addEventListener('click', () => {
-      card.model = m.id;
-      card.modelMeta = { context: m.context, pricing: m.pricing };
-      saveOrCards();
-      $('#chat-model-btn').textContent = m.id;
-      $('#chat-model-btn').title = modelMetaText(card);
-      $('#chat-model-pop').classList.add('hidden');
-      renderProjects(); // model shown on the card
-    });
-    list.appendChild(row);
-  }
-}
-// ---------------------------------------------------------------- OpenRouter keys modal
-function deleteOrCard(id) {
-  const st = orChats.get(id);
-  if (st && st.streaming && st.reqId) { try { lite.openrouter.chatAbort(st.reqId); } catch (_) {} pendingOr.delete(st.reqId); }
-  orCards = orCards.filter((c) => c.id !== id);
-  saveOrCards();
-  orChats.delete(id);
-  try { lite.openrouter.histSet(id, []); } catch (_) {}
-  if (activeOrId === id) { activeOrId = null; showActiveTerminal(); }
-  renderProjects();
-}
-function showOpenRouter() {
-  closeMenus();
-  const { m, close } = makeModal(`
-    <h2><span style="color:var(--green-bright)">🔑</span> OpenRouter</h2>
-    <div class="about-desc or-intro">
-      Добавь свой API-ключ OpenRouter — он появится отдельной плашкой в колонке слева
-      (категория «OpenRouter»). Клик по плашке открывает чат вместо терминала: вверху
-      выбираешь любую модель из OpenRouter, ниже — общаешься как в обычном чате.<br><br>
-      Купить ключ и следить за балансом удобно на <a href="#" id="or-site">apisell.ru</a>
-      или через телеграм-бота <a href="#" id="or-bot">@openrouter_store_bot</a>.
-    </div>
-    <div class="or-list" id="or-list"></div>
-    <div class="or-add">
-      <div class="field"><label>API-ключ OpenRouter</label>
-        <input type="text" id="or-key" placeholder="sk-or-v1-…" autocomplete="off" spellcheck="false"></div>
-      <div class="field"><label>Название (как подписать плашку)</label>
-        <input type="text" id="or-name" placeholder="например: Рабочий ключ" autocomplete="off" spellcheck="false"></div>
-      <div class="err" id="or-err"></div>
-    </div>
-    <div class="modal-actions">
-      <button class="btn" id="or-close">Закрыть</button>
-      <button class="btn primary" id="or-add">Добавить ключ</button>
-    </div>`);
-  m.querySelector('#or-site').onclick = (e) => { e.preventDefault(); lite.openExternal('https://apisell.ru'); };
-  m.querySelector('#or-bot').onclick = (e) => { e.preventDefault(); lite.openExternal('https://t.me/openrouter_store_bot'); };
-  const listBox = m.querySelector('#or-list');
-  const err = m.querySelector('#or-err');
-  function renderList() {
-    listBox.innerHTML = '';
-    if (!orCards.length) { listBox.appendChild(el('div', 'or-empty', 'Пока нет ключей — добавь первый ниже.')); return; }
-    for (const c of orCards) {
-      const row = el('div', 'or-row');
-      const info = el('div', 'or-row-info');
-      info.appendChild(el('div', 'or-row-name', c.name));
-      info.appendChild(el('div', 'or-row-key', maskKey(c.key) + (c.model ? '  ·  ' + c.model : '')));
-      row.appendChild(info);
-      const ren = iconBtn('icon-btn', 'pencil', 'Переименовать');
-      ren.addEventListener('click', () => showPrompt('Название ключа', 'Название', c.name, (v) => {
-        const t = (v || '').trim(); if (!t) return;
-        c.name = t; saveOrCards(); renderList(); renderProjects();
-        if (activeOrId === c.id) $('#chat-title').textContent = t;
-      }));
-      const del = iconBtn('icon-btn', 'trash', 'Удалить ключ');
-      del.addEventListener('click', () => showConfirm('Удалить ключ?',
-        `Плашка «${c.name}» и история её чата будут удалены без возможности восстановления.`,
-        'Удалить', () => { deleteOrCard(c.id); renderList(); }));
-      row.appendChild(ren); row.appendChild(del);
-      listBox.appendChild(row);
-    }
-  }
-  renderList();
-  m.querySelector('#or-close').onclick = close;
-  m.querySelector('#or-add').onclick = () => {
-    const key = m.querySelector('#or-key').value.trim();
-    const name = m.querySelector('#or-name').value.trim();
-    if (!key) { err.textContent = 'Вставь API-ключ OpenRouter'; return; }
-    orCards.push({ id: newOrId(), name: name || ('Ключ ' + (orCards.length + 1)), key, model: '', contextN: 10 });
-    saveOrCards();
-    m.querySelector('#or-key').value = ''; m.querySelector('#or-name').value = ''; err.textContent = '';
-    renderList(); renderProjects();
-  };
-  setTimeout(() => m.querySelector('#or-key').focus(), 30);
-}
+// Вынесен в renderer/modules/openrouter.js (const Or — у блока состояния чата выше).
 // ---------------------------------------------------------------- remote pult modal
 function showRemote() {
   closeMenus();
@@ -1195,6 +581,117 @@ function showRemote() {
   tick();
 }
 
+// --- Подключённые пульты: бейдж у версии + модалка управления ------------------
+// Список живёт в main (remote.js считает устройства по peer/hello); сюда прилетает
+// push-событием remote:pults. «Отключить» = device id в блок-листе (стор pultBlocked)
+// + адресный kick — устройство не удаляется, доступ возвращается кнопкой.
+let pultsState = { list: [], blocked: [] };
+function updatePultBadge() {
+  const b = $('#pult-badge'); if (!b) return;
+  const n = (pultsState.list || []).length;
+  const blocked = (pultsState.blocked || []).length;
+  b.textContent = '📱 ' + n;
+  b.classList.toggle('on', n > 0);
+  b.hidden = n === 0 && blocked === 0;
+  b.title = n ? ('Подключено пультов: ' + n) : 'Пульты (есть отключённые устройства)';
+}
+async function refreshPults() {
+  try { const st = await lite.remote.pults(); if (st) pultsState = st; } catch (_) {}
+  updatePultBadge();
+}
+function showPults() {
+  const { m, close } = makeModal(`
+    <h2><span style="color:var(--green-bright)">📱</span> Пульты</h2>
+    <div class="about-desc">Устройства, подключённые к редактору. «Отключить» выключает доступ,
+      не удаляя устройство — доступ можно вернуть здесь же. Сисинфо и местоположение пульт
+      присылает по запросу (гео — с разрешения на устройстве).</div>
+    <div class="or-add" id="plt-body"></div>
+    <div class="modal-actions"><button class="btn" id="plt-close">Закрыть</button></div>`);
+  const body = m.querySelector('#plt-body');
+  const sysBoxes = {};   // device → <pre> под ответ сисинфо/гео
+
+  function fmtSince(ts) { try { return new Date(ts).toLocaleTimeString(); } catch (_) { return ''; } }
+  function render() {
+    body.innerHTML = '';
+    const blocked = pultsState.blocked || [];
+    const online = pultsState.list || [];
+    if (!online.length && !blocked.length) { body.appendChild(el('div', 'about-desc', 'Сейчас ни один пульт не подключён.')); return; }
+    const row = (device, info, isOnline) => {
+      const r = el('div', '');
+      r.style.cssText = 'border:1px solid var(--border);border-radius:10px;padding:10px;margin:8px 0';
+      const head = el('div', '');
+      head.style.cssText = 'display:flex;align-items:center;gap:8px;flex-wrap:wrap';
+      const dot = el('span', '', isOnline ? '●' : '○');
+      dot.style.color = isOnline ? 'var(--green-bright)' : 'var(--text-mute)';
+      const nm = el('b', '', (info && info.name) || 'Пульт');
+      const meta = el('span', '', (info && info.ver ? 'v' + info.ver + ' · ' : '')
+        + String(device).slice(0, 10) + '…'
+        + (isOnline && info && info.since ? ' · на связи с ' + fmtSince(info.since) : ''));
+      meta.style.cssText = 'color:var(--text-mute);font-size:11px';
+      head.appendChild(dot); head.appendChild(nm); head.appendChild(meta);
+      const actions = el('div', '');
+      actions.style.cssText = 'display:flex;gap:6px;margin-top:8px;flex-wrap:wrap;align-items:center';
+      const isBlocked = blocked.includes(device);
+      if (isOnline) {
+        const ask = (what, label) => {
+          let pre = sysBoxes[device];
+          if (!pre) {
+            pre = document.createElement('pre');
+            pre.style.cssText = 'margin:8px 0 0;white-space:pre-wrap;word-break:break-word;font-size:11px;'
+              + 'max-height:240px;overflow:auto;border:1px solid var(--border);border-radius:8px;padding:8px;color:var(--text-mute)';
+            r.appendChild(pre);
+            sysBoxes[device] = pre;
+          }
+          pre.textContent = label + ': запрошено, ждём ответ пульта…';
+          lite.remote.pultSysInfo(device, what);
+        };
+        const si = el('button', 'btn', 'Сисинфо');
+        si.onclick = () => ask('info', 'Сисинфо');           // без запроса геолокации — на пульте не всплывёт пермишен
+        const ge = el('button', 'btn', 'Гео');
+        ge.onclick = () => ask('geo', 'Гео');
+        actions.appendChild(si); actions.appendChild(ge);
+      }
+      const tg = el('button', 'btn' + (isBlocked ? ' primary' : ''), isBlocked ? 'Вернуть доступ' : 'Отключить');
+      tg.onclick = async () => {
+        try {
+          const st = await (isBlocked ? lite.remote.pultUnblock(device) : lite.remote.pultBlock(device));
+          if (st) pultsState = st;
+        } catch (_) {}
+        updatePultBadge(); render();
+      };
+      actions.appendChild(tg);
+      if (isBlocked) {
+        const bb = el('span', '', 'доступ отключён');
+        bb.style.cssText = 'color:var(--warn);font-size:11px';
+        actions.appendChild(bb);
+      }
+      r.appendChild(head); r.appendChild(actions);
+      body.appendChild(r);
+    };
+    for (const p of online) row(p.device, p, true);
+    for (const d of blocked) { if (!online.some((p) => p.device === d)) row(d, null, false); }
+  }
+  // Живое обновление, пока модалка открыта (подключения/отключения и ответы сисинфо).
+  const offPults = (lite.remote && lite.remote.onPults)
+    ? lite.remote.onPults((st) => { if (st) pultsState = st; updatePultBadge(); render(); }) : null;
+  const offSys = (lite.remote && lite.remote.onSysInfo)
+    ? lite.remote.onSysInfo((msg) => {
+      const pre = sysBoxes[msg.device]; if (!pre) return;
+      let txt = '';
+      const loc = msg.loc;
+      if (loc && typeof loc.lat === 'number') {
+        txt += 'Гео: ' + loc.lat.toFixed(5) + ', ' + loc.lon.toFixed(5) + ' (±' + Math.round(loc.acc || 0) + ' м)\n'
+          + 'https://maps.google.com/?q=' + loc.lat + ',' + loc.lon + '\n\n';
+      } else if (loc && loc.error) {
+        txt += 'Гео: ' + loc.error + '\n\n';
+      }
+      pre.textContent = (txt + (msg.info || '')).trim() || 'Пульт прислал пустой ответ.';
+    }) : null;
+  m.querySelector('#plt-close').onclick = () => { try { offPults && offPults(); offSys && offSys(); } catch (_) {} close(); };
+  render();
+  refreshPults().then(render).catch(() => {});
+}
+
 function toggleFavorite(id) {
   const p = projects.find((x) => x.id === id);
   if (!p) return;
@@ -1227,7 +724,7 @@ function buildCardMenuMain(dd, p) {
   dd.innerHTML = '';
   dd.appendChild(menuRow('folder', 'Открыть в проводнике', () => { closeMenus(); lite.openInFileManager(p.path); }));
   dd.appendChild(menuRow('git', 'Git', () => { closeMenus(); openGitForProject(p.id); }));
-  dd.appendChild(menuRow('note', 'Заметки', () => { closeMenus(); showNotes(p); }));
+  dd.appendChild(menuRow('note', 'Заметки', () => { closeMenus(); Notes.show(p); }));
   dd.appendChild(menuRow('copy', 'Копировать путь', () => { closeMenus(); lite.copyText(p.path); toast('Путь скопирован'); }));
   dd.appendChild(menuRow('star', p.favorite ? 'Убрать из избранного' : 'В избранное', () => { closeMenus(); toggleFavorite(p.id); }));
   dd.appendChild(el('div', 'menu-sep'));
@@ -1389,260 +886,11 @@ function applyLayoutSwap(ta) {
 }
 
 // ---------------------------------------------------------------- notes / prompt cards (#4)
-// Статусы и важность задачи (TODO-модель поверх старых заметок {id,text}).
-const TODO_STATUS = ['todo', 'doing', 'done']; // цикл по клику
-const TODO_STATUS_LABEL = { todo: 'К выполнению', doing: 'В работе', done: 'Выполнено' };
-const TODO_PRIO_LABEL = ['Обычная', 'Важная', 'Срочная'];
-async function showNotes(p) {
-  let notes = await lite.store.notesGet(p.id);
-  if (!Array.isArray(notes)) notes = [];
-  // Миграция без потери данных: старым заметкам {id,text} проставляем дефолты status/prio.
-  notes.forEach((n) => { if (!TODO_STATUS.includes(n.status)) n.status = 'todo'; if (typeof n.prio !== 'number') n.prio = 0; });
-  const q = getQueue(p.id);
-  // Порядок отображения: ручной (как в массиве) либо сортировка по важности/статусу.
-  // Операции над задачами идут по note (id), а не по индексу показа — сортировка ничего не ломает.
-  const sortedView = () => {
-    const mode = settings.notesSort || 'manual';
-    if (mode === 'manual') return notes.slice();
-    const rank = { todo: 0, doing: 1, done: 2 };
-    return notes.map((n, idx) => ({ n, idx })).sort((a, b) =>
-      mode === 'prio' ? (b.n.prio - a.n.prio) || (a.idx - b.idx)
-        : (rank[a.n.status] - rank[b.n.status]) || (b.n.prio - a.n.prio) || (a.idx - b.idx)
-    ).map((x) => x.n);
-  };
-  // Detach the live-update callback on ANY close (button/Esc/backdrop) so the dismissed
-  // modal + its listeners don't linger in memory until the next queue event fires.
-  const { m, close } = makeModal(`
-    <h2>✅ Задачи — <span class="nm-proj"></span></h2>
-    <div class="nm-tabs">
-      <button class="nm-tab active" data-tab="notes">Задачи</button>
-      <button class="nm-tab" data-tab="queue">▶ Очередь<span class="nm-qbadge" id="nm-qbadge"></span></button>
-    </div>
-    <div class="nm-pane" id="nm-pane-notes">
-      <div class="nm-toolbar">
-        <label class="nm-sort">Сортировка
-          <select id="nm-sort">
-            <option value="manual">Вручную</option>
-            <option value="prio">По важности</option>
-            <option value="status">По статусу</option>
-          </select>
-        </label>
-        <button class="btn nm-add" id="nm-add">＋ Новая задача</button>
-      </div>
-      <div class="nm-hint">Слева — статус (клик меняет: ☐ к выполнению → ◐ в работе → ☑ готово) и важность (флажок). Задачи не удаляются при отметке «готово» — просто помечаются. «➤» — в терминал, «→» — в авто-очередь.</div>
-      <div class="nm-list" id="nm-list"></div>
-    </div>
-    <div class="nm-pane" id="nm-pane-queue" hidden></div>
-    <div class="modal-actions"><button class="btn primary" id="nm-close">Готово</button></div>`,
-    () => { q.onChange = null; });
-  m.classList.add('notes-modal');
-  m.querySelector('.nm-proj').textContent = p.name;
-  const list = m.querySelector('#nm-list');
-  const qpane = m.querySelector('#nm-pane-queue');
-  const updateTabBadge = () => {
-    const b = m.querySelector('#nm-qbadge');
-    b.textContent = q.items.length ? String(q.items.length) : '';
-    b.classList.toggle('show', q.items.length > 0);
-  };
-  // Persist notes; keep queued snapshots in sync with edits and drop queued items
-  // whose underlying note was deleted (queue references notes by id).
-  const save = () => {
-    lite.store.notesSet(p.id, notes); noteCounts[p.id] = notes.filter((n) => n.status !== 'done').length;
-    // Capture the running queue's cursor BY ID before refiltering, so deleting a note
-    // mid-run can't shift q.pos onto the wrong item (which would skip a note or make
-    // queueOnSettled finish early). doneIds = items already sent (before the cursor).
-    const running = q.running && q.pos >= 0 && q.pos < q.items.length;
-    const curId = running ? q.items[q.pos].noteId : null;
-    const doneIds = running ? new Set(q.items.slice(0, q.pos).map((it) => it.noteId)) : null;
-    q.items = q.items
-      .filter((it) => notes.some((n) => n.id === it.noteId))
-      .map((it) => ({ noteId: it.noteId, text: (notes.find((n) => n.id === it.noteId) || {}).text || '' }));
-    if (running) {
-      const ci = q.items.findIndex((it) => it.noteId === curId);
-      // current survived → its new index; current was deleted → sit just before the first
-      // remaining pending item so the next advance dispatches it instead of skipping it.
-      q.pos = ci >= 0 ? ci : q.items.filter((it) => doneIds.has(it.noteId)).length - 1;
-    }
-    updateTabBadge();
-    renderProjects();
-  };
-  let dragFrom = null;
-  let editing = null; // { note, ta } — открытый редактор карточки
-  // Снять текст из открытого редактора в заметку (для авто-сохранения по «Готово»).
-  const flushEdit = () => { if (editing) { editing.note.text = editing.ta.value; editing = null; save(); } };
-  // Переставить карточку: свап с соседом (стрелки ▲/▼). flushEdit — не потерять правку при перерисовке.
-  const moveNote = (i, dir) => {
-    const j = i + dir;
-    if (j < 0 || j >= notes.length) return;
-    flushEdit();
-    [notes[i], notes[j]] = [notes[j], notes[i]];
-    save(); render();
-  };
-
-  function editNote(row, note) {
-    row.innerHTML = '';
-    row.classList.add('editing');
-    const ta = el('textarea', 'note-edit'); ta.value = note.text || '';
-    editing = { note, ta };
-    const acts = el('div', 'note-acts');
-    const layout = el('button', 'note-btn', '⇄ Раскладка');
-    layout.title = 'Сменить раскладку EN⇄РУ по позиции клавиш (или только выделенное)';
-    layout.addEventListener('click', () => applyLayoutSwap(ta));
-    const ok = el('button', 'note-btn', '✓ Сохранить');
-    ok.addEventListener('click', () => { note.text = ta.value; save(); render(); });
-    const cancel = el('button', 'note-btn', 'Отмена');
-    cancel.addEventListener('click', render);
-    acts.append(layout, ok, cancel);
-    row.append(ta, acts);
-    ta.focus();
-  }
-  function render() {
-    editing = null; // перерисовка закрывает любой открытый редактор
-    list.innerHTML = '';
-    const manual = (settings.notesSort || 'manual') === 'manual';
-    sortedView().forEach((note) => {
-      const realIdx = notes.indexOf(note); // индекс в массиве (для ручного порядка/перетаскивания)
-      const row = el('div', 'todo-row st-' + note.status + ' pr-' + note.prio + (note.status === 'done' ? ' done' : ''));
-      row.dataset.id = note.id;
-      if (manual) { row.draggable = true; row.dataset.i = String(realIdx); }
-      // статус: клик циклит ☐ к выполнению → ◐ в работе → ☑ готово
-      const chk = el('button', 'todo-check st-' + note.status);
-      chk.title = 'Статус: ' + TODO_STATUS_LABEL[note.status] + ' (клик — сменить)';
-      if (note.status === 'done') chk.appendChild(icon('check', 13));
-      chk.addEventListener('click', () => { flushEdit(); note.status = TODO_STATUS[(TODO_STATUS.indexOf(note.status) + 1) % TODO_STATUS.length]; save(); render(); });
-      // важность: клик циклит обычная → важная → срочная
-      const flag = el('button', 'todo-flag pr-' + note.prio);
-      flag.title = 'Важность: ' + TODO_PRIO_LABEL[note.prio] + ' (клик — сменить)';
-      flag.appendChild(icon('flag', 13));
-      flag.addEventListener('click', () => { flushEdit(); note.prio = (note.prio + 1) % 3; save(); render(); });
-      // текст задачи
-      const txt = el('div', 'todo-text', note.text || '(пусто)');
-      txt.title = 'Двойной клик — редактировать';
-      txt.addEventListener('dblclick', () => editNote(row, note));
-      // действия — иконки-кнопки в стиле плашек проекта, всегда видимые
-      const acts = el('div', 'todo-acts');
-      const qi = q.items.findIndex((it) => it.noteId === note.id);
-      const queued = qi >= 0;
-      const qBtn = iconBtn('todo-act' + (queued ? ' on' : ''), 'arrow-right', '', 14);
-      qBtn.disabled = q.running;
-      qBtn.title = q.running ? 'Очередь выполняется — состав менять нельзя' : (queued ? `В авто-очереди · ${qi + 1} (клик — убрать)` : 'Добавить в авто-очередь');
-      qBtn.addEventListener('click', () => {
-        if (q.running) return;
-        flushEdit();
-        const idx = q.items.findIndex((it) => it.noteId === note.id);
-        if (idx >= 0) q.items.splice(idx, 1); else q.items.push({ noteId: note.id, text: note.text || '' });
-        queueChanged(q); updateTabBadge(); render();
-      });
-      const send = iconBtn('todo-act', 'terminal', 'В терминал (без Enter)', 14);
-      send.addEventListener('click', () => { flushEdit(); sendNoteToTerminal(p, note.text); close(); });
-      const edit = iconBtn('todo-act', 'pencil', 'Редактировать', 14);
-      edit.addEventListener('click', () => editNote(row, note));
-      const del = iconBtn('todo-act danger', 'trash', 'Удалить задачу', 14);
-      del.addEventListener('click', () => { showConfirm('Удалить задачу?', 'Удалить совсем (а не пометить выполненной)?', 'Удалить', () => { const ix = notes.indexOf(note); if (ix >= 0) notes.splice(ix, 1); save(); render(); }); });
-      acts.append(qBtn, send, edit, del);
-      if (manual) { // перестановка только в ручном режиме (в сортировках индексы показа не равны порядку)
-        const up = iconBtn('todo-act', 'chevron-up', 'Выше', 14); up.disabled = realIdx === 0; up.addEventListener('click', () => moveNote(realIdx, -1));
-        const down = iconBtn('todo-act', 'chevron-down', 'Ниже', 14); down.disabled = realIdx === notes.length - 1; down.addEventListener('click', () => moveNote(realIdx, +1));
-        acts.append(up, down);
-      }
-      row.append(chk, flag, txt, acts);
-      if (manual) {
-        row.addEventListener('dragstart', () => { dragFrom = realIdx; row.classList.add('dragging'); });
-        row.addEventListener('dragend', () => row.classList.remove('dragging'));
-        row.addEventListener('dragover', (e) => e.preventDefault());
-        row.addEventListener('drop', (e) => { e.preventDefault(); if (dragFrom == null || dragFrom === realIdx) return; const [moved] = notes.splice(dragFrom, 1); notes.splice(realIdx, 0, moved); dragFrom = null; save(); render(); });
-      }
-      list.appendChild(row);
-    });
-    if (!notes.length) list.appendChild(el('div', 'nm-empty', 'Пока пусто — добавь задачу кнопкой «＋ Новая задача».'));
-  }
-  const sortSel = m.querySelector('#nm-sort');
-  sortSel.value = settings.notesSort || 'manual';
-  sortSel.addEventListener('change', () => { settings.notesSort = sortSel.value; saveSettings(); render(); });
-  m.querySelector('#nm-add').addEventListener('click', () => {
-    const note = { id: 'n' + Date.now().toString(36), text: '', status: 'todo', prio: 0 };
-    notes.push(note); save(); render();
-    const row = list.querySelector(`.todo-row[data-id="${note.id}"]`);
-    if (row) editNote(row, note);
-  });
-
-  // ---- Queue tab ----
-  function swapQueue(i, j) {
-    if (j < 0 || j >= q.items.length) return;
-    [q.items[i], q.items[j]] = [q.items[j], q.items[i]];
-    queueChanged(q); renderQueue();
-  }
-  function renderQueue() {
-    qpane.innerHTML = '';
-    const bar = el('div', 'q-bar');
-    const status = el('div', 'q-status');
-    const next = Math.min(q.pos + 2, q.items.length);
-    if (!q.items.length) status.textContent = 'Очередь пуста — добавь карточки кнопкой «＋ в очередь».';
-    else if (q.armed) { status.textContent = `▶ Агент ждёт — нажми «Дальше» для заметки ${next} из ${q.items.length}`; status.classList.add('armed'); }
-    else if (q.running) { status.textContent = `Выполняется ${Math.min(q.pos + 1, q.items.length)} из ${q.items.length} — ждём, пока агент закончит ход…`; status.classList.add('run'); }
-    else status.textContent = `${q.items.length} в очереди — нажми «Старт».`;
-    bar.appendChild(status);
-    const ctrls = el('div', 'q-ctrls');
-    if (!q.running) {
-      const start = el('button', 'note-btn primary', '▶ Старт'); start.disabled = !q.items.length;
-      start.addEventListener('click', () => { queueStart(p.id); renderQueue(); });
-      ctrls.appendChild(start);
-    } else {
-      const adv = el('button', 'note-btn primary' + (q.armed ? ' armed' : ''), '▶ Дальше');
-      adv.title = 'Отправить следующую заметку (Ctrl+Shift+Enter)';
-      adv.addEventListener('click', () => { queueAdvance(p.id); renderQueue(); });
-      const stop = el('button', 'note-btn danger', '⏹ Стоп');
-      stop.addEventListener('click', () => { queueStop(p.id); renderQueue(); });
-      ctrls.append(adv, stop);
-    }
-    const clear = el('button', 'note-btn', '🗑 Очистить'); clear.disabled = !q.items.length;
-    clear.addEventListener('click', () => { q.items = []; q.running = false; q.pos = -1; q.awaitingBusy = false; q.armed = false; queueChanged(q); updateTabBadge(); renderQueue(); });
-    ctrls.appendChild(clear);
-    bar.appendChild(ctrls);
-    qpane.appendChild(bar);
-    qpane.appendChild(el('div', 'nm-hint', 'Первая карточка уходит сразу при старте (с Enter). Следующая — НЕ автоматически: когда агент закончит ход и индикатор станет янтарным, прилетит уведомление, а тут загорится «▶ Дальше» (или Ctrl+Shift+Enter в активном проекте). Так агент успевает задать вопрос, а ты решаешь, слать ли следующую.'));
-    const qlist = el('div', 'nm-list');
-    q.items.forEach((it, i) => {
-      let cls = 'pending';
-      if (q.running) { if (i < q.pos) cls = 'done'; else if (i === q.pos) cls = 'current'; }
-      const row = el('div', 'q-card q-' + cls);
-      const num = el('span', 'q-num', cls === 'done' ? '✓' : cls === 'current' ? '▶' : String(i + 1));
-      const txt = el('div', 'q-text', it.text || '(пусто)');
-      const acts = el('div', 'note-acts');
-      const up = el('button', 'note-btn nudge', '▲'); up.title = 'Выше'; up.disabled = i === 0 || q.running;
-      up.addEventListener('click', () => swapQueue(i, i - 1));
-      const down = el('button', 'note-btn nudge', '▼'); down.title = 'Ниже'; down.disabled = i === q.items.length - 1 || q.running;
-      down.addEventListener('click', () => swapQueue(i, i + 1));
-      const rm = el('button', 'note-btn danger', '✕'); rm.title = 'Убрать из очереди'; rm.disabled = q.running;
-      rm.addEventListener('click', () => { q.items.splice(i, 1); queueChanged(q); updateTabBadge(); renderQueue(); });
-      acts.append(up, down, rm);
-      row.append(num, txt, acts);
-      qlist.appendChild(row);
-    });
-    if (!q.items.length) qlist.appendChild(el('div', 'nm-empty', 'Пусто.'));
-    qpane.appendChild(qlist);
-  }
-
-  // ---- tabs + live sync ----
-  const panes = { notes: m.querySelector('#nm-pane-notes'), queue: qpane };
-  const tabs = m.querySelectorAll('.nm-tab');
-  function setTab(name) {
-    tabs.forEach((t) => t.classList.toggle('active', t.dataset.tab === name));
-    Object.entries(panes).forEach(([k, pane]) => { pane.hidden = k !== name; });
-    if (name === 'queue') renderQueue(); else render();
-  }
-  tabs.forEach((t) => t.addEventListener('click', () => setTab(t.dataset.tab)));
-  // Background auto-advance keeps the open modal live (and detaches itself once closed).
-  q.onChange = () => {
-    if (!m.isConnected) { q.onChange = null; return; }
-    updateTabBadge();
-    if (!qpane.hidden) renderQueue();
-  };
-
-  m.querySelector('#nm-close').onclick = () => { flushEdit(); close(); }; // close() nulls q.onChange via onClose
-  updateTabBadge();
-  render();
-}
+// Вынесены в renderer/modules/notes.js (const Notes ниже); здесь — только sendNoteToTerminal.
+const Notes = initNotes({
+  STORE, settings, saveSettings, renderProjects, applyLayoutSwap,
+  getQueue, queueChanged, queueStart, queueStop, queueAdvance, sendNoteToTerminal,
+});
 function sendNoteToTerminal(p, text) {
   if (!text) return;
   const proj = projects.find((x) => x.id === p.id);
@@ -1651,52 +899,6 @@ function sendNoteToTerminal(p, text) {
   setActive(proj.id);
   const sid = (tabsByProj.get(proj.id) || {}).active;
   if (sid) lite.pty.write(sid, text); // no trailing newline — review, then press Enter yourself
-}
-
-// ---------------------------------------------------------------- light git panel (#3)
-function gitCodeClass(code) {
-  if (code === '?' || code.includes('A')) return 'g-add';
-  if (code.includes('D')) return 'g-del';
-  return 'g-mod';
-}
-// Branch manager (JetBrains-style): per branch — checkout · update WITHOUT switching · new branch from it.
-async function showBranches(body, p, back) {
-  const info = await lite.git.info(p.path);
-  body.innerHTML = '';
-  const head = el('div', 'gm-branch');
-  head.appendChild(el('span', 'gm-branchname', 'Ветки'));
-  head.appendChild(el('span', 'gm-track', 'текущая: ' + info.branch));
-  body.appendChild(head);
-
-  const list = el('div', 'gm-branches');
-  for (const b of (info.branches || [])) {
-    const cur = b === info.branch;
-    const row = el('div', 'gm-brow');
-    row.appendChild(el('span', 'gm-brname' + (cur ? ' cur' : ''), (cur ? '• ' : '') + b));
-    const acts = el('div', 'gm-bacts');
-    if (!cur) {
-      const co = el('button', 'gm-mini', '⤳'); co.title = 'Переключиться';
-      co.onclick = async () => { const r = await lite.git.checkout(p.path, b); toast(r.ok ? 'Ветка: ' + b : (r.error || 'не вышло'), { kind: r.ok ? undefined : 'err', ttl: 7000 }); renderProjects(); showBranches(body, p, back); };
-      acts.appendChild(co);
-    }
-    const up = el('button', 'gm-mini', '↻'); up.title = cur ? 'Обновить (pull --ff-only)' : 'Обновить из удалёнки БЕЗ переключения';
-    up.onclick = async () => { const r = await lite.git.branchUpdate(p.path, b, cur); toast(r.ok ? ('Обновлено: ' + b) : (r.error || 'не fast-forward / нет upstream'), { kind: r.ok ? undefined : 'err', ttl: 8000 }); showBranches(body, p, back); };
-    acts.appendChild(up);
-    const nb = el('button', 'gm-mini', '＋'); nb.title = 'Новая ветка от «' + b + '»';
-    nb.onclick = () => showPrompt('Новая ветка от «' + b + '»', 'Имя ветки (создастся и перейдём на неё)', '', async (name) => {
-      const r = await lite.git.branchCreate(p.path, name, b, true);
-      if (r.ok) { toast('Создана и перешёл: ' + name); renderProjects(); back(); } return r;
-    });
-    acts.appendChild(nb);
-    row.appendChild(acts);
-    list.appendChild(row);
-  }
-  body.appendChild(list);
-
-  const footer = el('div', 'gm-actions');
-  const b1 = el('button', 'btn', '‹ Назад к git'); b1.onclick = back;
-  footer.appendChild(b1);
-  body.appendChild(footer);
 }
 
 // Compact project switcher for single-terminal mode: indicator + name, click switches.
@@ -2190,7 +1392,7 @@ function handleRemoteClose(sid) {
   closeTab(sid);
 }
 function refitActiveTerminal(focusIt) {
-  if (dockerExecFit && dockerView === 'detail' && dockerDetailTab === 'term') { try { dockerExecFit.fit(); } catch (_) {} }
+  Containers.refitExec(); // exec-терминал контейнера тоже подгоняется под новый размер
   const asid = activeSessionId();
   const rec = asid ? terms.get(asid) : null;
   if (!rec) return;
@@ -2332,19 +1534,17 @@ function refitScratch(focusIt) {
 }
 function setScratchOpen(open, opts = {}) {
   if (open === scratchOpen) { if (open) refitScratch(true); return; }
-  // System terminals are a right-slot module now → mutually exclusive with viewer/git/docker/db/rh.
-  if (open) { if (viewerOpen) setViewerOpen(false); if (gitOpen) setGitOpen(false); if (dockerOpen) setDockerOpen(false); if (dbOpen) setDbOpen(false); if (rhOpen) setRhOpen(false); }
+  // System terminals are a right-slot module now → mutually exclusive with the rest.
+  if (open) closeOtherPanels('scratch');
   const delta = layout.scratch + GUTTER;
   scratchOpen = open;
   $('#scratch-pane').classList.toggle('hidden', !open);
   $('#gutter-scratch').classList.toggle('hidden', !open);
-  $('#btn-scratch').classList.toggle('on', open);
   if (opts.grow !== false) lite.win.growBy(open ? delta : -delta); // grow:false on restore — saved width already counts this pane
   saveUiState();
   if (open) { ensureScratch(); setTimeout(() => showActiveScratch(), 60); }
   setTimeout(refitActiveTerminal, 160);
 }
-function toggleScratch() { setScratchOpen(!scratchOpen); }
 function restartScratch(id) {
   const sid = (id && scratchTerms.has(id)) ? id : scratchActiveId;
   const rec = scratchTerms.get(sid); if (!rec) return;
@@ -2354,358 +1554,14 @@ function restartScratch(id) {
 }
 
 // ================================================================ RemoteHost module (SSH)
-// Менеджер профилей подключений + живые SSH-сессии-вкладки (ssh2 shell ↔ xterm).
-// Два вида внутри панели: 'list' (список хостов) и 'session' (открытый терминал). Вкладки
-// сессий живут поверх обоих видов; «+» возвращает к списку для нового подключения.
-function setRhOpen(open, opts = {}) {
-  if (open === rhOpen) { if (open) renderRhPanel(); return; }
-  // Right slot holds one module — opening RemoteHost closes the others (chat is separate).
-  if (open) { if (viewerOpen) setViewerOpen(false); if (gitOpen) setGitOpen(false); if (dockerOpen) setDockerOpen(false); if (dbOpen) setDbOpen(false); if (scratchOpen) setScratchOpen(false); }
-  if (!open && rhFiles) { try { lite.rh.fsClose(rhFiles.connId); } catch (_) {} rhFiles = null; if (rhView === 'files') rhView = rhSessions.length ? 'session' : 'list'; }
-  const delta = layout.rh + GUTTER;
-  rhOpen = open;
-  $('#rh-pane').classList.toggle('hidden', !open);
-  $('#gutter-rh').classList.toggle('hidden', !open);
-  if (opts.grow !== false) lite.win.growBy(open ? delta : -delta); // grow:false on restore — saved width already counts this pane
-  saveUiState();
-  if (open) renderRhPanel();
-  setTimeout(refitActiveTerminal, 150);
-}
-function saveRhUi() { persist('rhUi', rhUi); }
-
-async function renderRhPanel() {
-  const seq = ++rhRenderSeq;
-  renderRhTabs(); // вкладки терминал-сессий видны во всех видах
-  $('#rh-back').style.display = (rhView !== 'list') ? '' : 'none';
-  const showSession = rhView === 'session' && rhActiveSession && rhTerms.has(rhActiveSession);
-  $('#rh-conns').style.display = showSession ? 'none' : '';
-  $('#rh-term').style.display = showSession ? 'block' : 'none';
-  if (showSession) { $('#rh-title').textContent = rhTerms.get(rhActiveSession).name; showActiveRhSession(); return; }
-  if (rhView === 'files' && rhFiles) { renderRhFiles(); return; }
-  $('#rh-title').textContent = 'Удалённые хосты';
-  const body = $('#rh-conns');
-  body.innerHTML = '<div class="git-loading">Загрузка подключений…</div>';
-  try { const r = await lite.rh.list(); rhConnsList = r.connections || []; rhSecure = r.secure !== false; }
-  catch (_) { rhConnsList = []; }
-  if (seq !== rhRenderSeq || !rhOpen) return;
-  renderRhConnections(body);
-}
-// Вернуться к списку хостов; если был открыт браузер файлов — закрыть его соединение.
-function rhGoList() { if (rhFiles) { try { lite.rh.fsClose(rhFiles.connId); } catch (_) {} rhFiles = null; } rhView = 'list'; renderRhPanel(); }
-function renderRhConnections(body) {
-  body.innerHTML = '';
-  const top = el('div', 'db-topbar');
-  top.appendChild(el('span', 'db-topbar-title', 'Подключения'));
-  const add = iconBtn('drow-act', 'plus', 'Новое подключение', 16); add.onclick = () => rhConnModal(null);
-  top.appendChild(add);
-  body.appendChild(top);
-  if (!rhSecure) body.appendChild(el('div', 'db-warn', '⚠ Системное хранилище ключей недоступно — секреты шифруются слабее (base64).'));
-  if (!rhConnsList.length) { body.appendChild(el('div', 'docker-empty', 'Нет подключений. Добавь сервер по кнопке +')); return; }
-  const groups = {};
-  for (const c of rhConnsList) { const g = c.category || 'Все'; (groups[g] = groups[g] || []).push(c); }
-  const cats = Object.keys(groups).sort((a, b) => (a === 'Все' ? -1 : b === 'Все' ? 1 : a.localeCompare(b)));
-  for (const cat of cats) body.appendChild(rhCatBlock(cat, groups[cat]));
-}
-function rhCatBlock(cat, list) {
-  const block = el('div', 'docker-group-block');
-  const head = el('div', 'docker-group-head');
-  const hue = dbCatHue(cat);
-  head.style.background = `linear-gradient(90deg, hsla(${hue},55%,50%,.22), hsla(${hue},55%,50%,.05) 55%, transparent)`;
-  head.style.borderLeft = `3px solid hsl(${hue},60%,55%)`;
-  const collapsed = !!(rhUi.catCollapsed && rhUi.catCollapsed[cat]);
-  const chev = icon(collapsed ? 'chevron-right' : 'chevron-down', 13); chev.classList.add('dgrp-chev');
-  head.append(chev, el('span', 'dgrp-name', cat), el('span', 'dgrp-count', String(list.length)));
-  const bodyEl = el('div', 'docker-group-body');
-  if (collapsed) bodyEl.style.display = 'none';
-  for (const c of list) bodyEl.appendChild(rhConnRow(c));
-  head.onclick = () => {
-    rhUi.catCollapsed = rhUi.catCollapsed || {}; rhUi.catCollapsed[cat] = !rhUi.catCollapsed[cat]; saveRhUi();
-    const col = rhUi.catCollapsed[cat]; bodyEl.style.display = col ? 'none' : '';
-    const nc = icon(col ? 'chevron-right' : 'chevron-down', 13); nc.classList.add('dgrp-chev'); head.replaceChild(nc, head.firstChild);
-  };
-  block.append(head, bodyEl);
-  return block;
-}
-function rhConnRow(c) {
-  const row = el('div', 'db-conn-row clickable');
-  row.appendChild(icon('globe', 16));
-  const main = el('div', 'drow-main');
-  const nameLine = el('div', 'rh-name-line');
-  nameLine.appendChild(el('span', 'drow-name', c.name || '(без имени)'));
-  if (rhSessions.some((sid) => { const r = rhTerms.get(sid); return r && r.connId === c.id; })) nameLine.appendChild(el('span', 'rh-live', 'на связи'));
-  main.appendChild(nameLine);
-  const proto = c.type === 'ftp' ? 'FTP' : c.type === 'sftp' ? 'SFTP' : 'SSH';
-  const defPort = c.type === 'ftp' ? 21 : 22;
-  const sub = `${proto} · ${c.user ? c.user + '@' : ''}${c.host || '—'}:${c.port || defPort}${c.auth && c.auth !== 'password' ? ' · без пароля' : ''}${c.keepalive && c.type !== 'ftp' ? ' · keepalive ' + (c.keepaliveSeconds || 30) + 'с' : ''}`;
-  main.appendChild(el('span', 'drow-sub', sub));
-  row.appendChild(main);
-  const acts = el('div', 'drow-acts');
-  const browse = iconBtn('drow-act', 'folder', 'Файлы (просмотр)', 14); browse.onclick = (e) => { e.stopPropagation(); rhOpenFiles(c); };
-  const edit = iconBtn('drow-act', 'pencil', 'Изменить', 13); edit.onclick = (e) => { e.stopPropagation(); rhConnModal(c); };
-  const del = iconBtn('drow-act danger', 'trash', 'Удалить', 13);
-  del.onclick = (e) => { e.stopPropagation(); showConfirm('Удалить подключение?', `«${c.name}» удалится из списка.`, 'Удалить', async () => { await lite.rh.delete(c.id); renderRhPanel(); }); };
-  acts.append(browse, edit, del); row.appendChild(acts);
-  // один клик: SSH → терминал, SFTP/FTP → файлы (терминала у них нет)
-  row.addEventListener('click', () => { if (c.type === 'ftp' || c.type === 'sftp') rhOpenFiles(c); else rhConnect(c); });
-  return row;
-}
-
-// ---- add/edit connection modal (SSH, безопасно: пароль/ключ/passphrase, keepalive)
-function rhConnModal(existing) {
-  const c = existing ? { ...existing } : { type: 'ssh', auth: 'password', category: 'Все', port: 22, keepalive: true, keepaliveSeconds: 30 };
-  const { m, close } = makeModal(`<h2>${existing ? 'Изменить' : 'Новое'} подключение</h2><div id="rhf" class="db-form"></div>`);
-  m.classList.add('db-modal');
-  const f = m.querySelector('#rhf');
-  const field = (label, node) => { const w = el('div', 'db-field'); w.appendChild(el('label', null, label)); w.appendChild(node); f.appendChild(w); return node; };
-  const mk = (lbl, node) => { const w = el('div', 'db-field'); w.appendChild(el('label', null, lbl)); w.appendChild(node); return w; };
-  const inp = (val, ph, type) => { const i = el('input'); i.type = type || 'text'; if (val != null) i.value = val; if (ph) i.placeholder = ph; return i; };
-
-  const name = field('Имя', inp(c.name, 'Мой сервер'));
-  const cat = field('Категория', inp(c.category || 'Все', 'Все'));
-  // protocol
-  const typeSel = el('select');
-  for (const [k, v] of [['ssh', 'SSH — терминал + файлы (SFTP)'], ['sftp', 'SFTP — только файлы'], ['ftp', 'FTP — только файлы']]) { const o = document.createElement('option'); o.value = k; o.textContent = v; if (k === (c.type || 'ssh')) o.selected = true; typeSel.appendChild(o); }
-  field('Протокол', typeSel);
-  // host group
-  const hostWrap = el('div', 'db-group');
-  const host = inp(c.host || '', 'example.com или IP');
-  const port = inp(c.port || 22, '22', 'number');
-  const user = inp(c.user || '', 'root');
-  hostWrap.append(mk('Хост', host), mk('Порт', port), mk('Пользователь', user));
-  f.appendChild(hostWrap);
-  // auth method (SSH/SFTP — пароль или ключ; FTP — только пароль)
-  const authSel = el('select');
-  for (const [k, v] of [['password', 'Пароль'], ['agent', 'Без пароля (SSH-ключ из системы)']]) { const o = document.createElement('option'); o.value = k; o.textContent = v; if (k === (c.auth || 'password')) o.selected = true; authSel.appendChild(o); }
-  const authWrap = el('div', 'db-field'); authWrap.append(el('label', null, 'Аутентификация'), authSel); f.appendChild(authWrap);
-  // password (режим «Пароль»)
-  const passWrap = el('div', 'db-group');
-  const pass = inp('', existing && c.hasPass ? '(сохранён — оставь пустым)' : 'пароль', 'password');
-  passWrap.append(mk('Пароль', pass));
-  f.appendChild(passWrap);
-  // agent hint (режим «Без пароля») — ничего вводить не нужно
-  const agentHint = el('div', 'rh-hint', 'Вход по SSH-ключу из системы (агент или ~/.ssh) — пароль и ключ вводить не нужно, как при `ssh user@host` в терминале.');
-  f.appendChild(agentHint);
-  // FTPS (TLS) — только для FTP
-  const ftps = el('input'); ftps.type = 'checkbox'; ftps.checked = !!c.ftps;
-  const ftpsLabel = el('label', 'db-check'); ftpsLabel.append(ftps, document.createTextNode(' FTPS — шифровать соединение (TLS)'));
-  f.appendChild(ftpsLabel);
-  const ftpsIns = el('input'); ftpsIns.type = 'checkbox'; ftpsIns.checked = !!c.ftpsInsecure;
-  const ftpsInsLabel = el('label', 'db-check db-check-warn'); ftpsInsLabel.append(ftpsIns, document.createTextNode(' Доверять самоподписанному сертификату (небезопасно)'));
-  f.appendChild(ftpsInsLabel);
-  // keepalive (как в phpStorm: галочка + интервал) — для SSH/SFTP
-  const kaOn = el('input'); kaOn.type = 'checkbox'; kaOn.checked = c.keepalive !== false;
-  const kaLabel = el('label', 'db-check'); kaLabel.append(kaOn, document.createTextNode(' Держать соединение живым (keepalive)'));
-  f.appendChild(kaLabel);
-  const kaWrap = el('div', 'db-group');
-  const kaSec = inp(c.keepaliveSeconds || 30, '30', 'number');
-  kaWrap.append(mk('Слать запрос каждые, сек', kaSec));
-  f.appendChild(kaWrap);
-
-  const syncType = () => {
-    const isFtp = typeSel.value === 'ftp';
-    const isAgent = !isFtp && authSel.value === 'agent';
-    authWrap.style.display = isFtp ? 'none' : '';      // FTP — только пароль
-    passWrap.style.display = isAgent ? 'none' : '';
-    agentHint.style.display = isAgent ? '' : 'none';
-    ftpsLabel.style.display = isFtp ? '' : 'none';
-    ftpsInsLabel.style.display = (isFtp && ftps.checked) ? '' : 'none';
-    kaLabel.style.display = isFtp ? 'none' : '';        // FTP keepalive не нужен
-    kaWrap.style.display = (!isFtp && kaOn.checked) ? '' : 'none';
-  };
-  typeSel.onchange = () => { const def = typeSel.value === 'ftp' ? 21 : 22; if (!port.value || port.value == 21 || port.value == 22) port.value = def; syncType(); };
-  authSel.onchange = syncType; kaOn.onchange = syncType; ftps.onchange = syncType; syncType();
-
-  const collect = () => {
-    const isFtp = typeSel.value === 'ftp';
-    const o = { id: c.id, name: name.value.trim(), category: cat.value.trim() || 'Все', type: typeSel.value, host: host.value.trim(), port: +port.value || (isFtp ? 21 : 22), user: user.value.trim(), auth: isFtp ? 'password' : authSel.value, keepalive: !isFtp && kaOn.checked, keepaliveSeconds: Math.max(2, +kaSec.value || 30) };
-    if (isFtp) { o.ftps = ftps.checked; o.ftpsInsecure = ftps.checked && ftpsIns.checked; }
-    if (o.auth === 'password' && pass.value) o.password = pass.value;
-    return o;
-  };
-  const row = el('div', 'gm-actions'); row.style.marginTop = '12px';
-  const status = el('span', 'db-test-status');
-  const test = el('button', 'btn', 'Тест');
-  test.onclick = async () => { const o = collect(); if (!o.host) { status.textContent = '✕ укажи хост'; status.className = 'db-test-status err'; return; } status.textContent = 'Проверяю…'; status.className = 'db-test-status'; const r = await lite.rh.test(o); if (r.ok) { status.textContent = '✓ подключение успешно'; status.classList.add('ok'); } else { status.textContent = '✕ ' + (r.error || 'не удалось'); status.classList.add('err'); } };
-  const save = el('button', 'btn primary', 'Сохранить');
-  save.onclick = async () => { const o = collect(); if (!o.name) { toast('Введи имя', { kind: 'err' }); return; } if (!o.host) { toast('Введи хост', { kind: 'err' }); return; } const r = await lite.rh.save(o); if (r && r.error) { toast(r.error, { kind: 'err' }); return; } close(); renderRhPanel(); };
-  const cancel = el('button', 'btn', 'Отмена'); cancel.onclick = close;
-  row.append(test, save, cancel); f.appendChild(row); f.appendChild(status);
-}
-
-// ---- sessions (live SSH terminals as tabs)
-async function rhConnect(c) {
-  const sessionId = 'rh::' + c.id + '::t' + (++rhSeq);
-  const rec = createRhTerminal(sessionId, c.name || c.host, c.id);
-  rhSessions.push(sessionId);
-  rhActiveSession = sessionId;
-  rhView = 'session';
-  renderRhPanel();
-  rec.term.write(`\x1b[90mПодключение к ${c.user ? c.user + '@' : ''}${c.host}:${c.port || 22}…\x1b[0m\r\n`);
-  const r = await lite.rh.open(sessionId, c.id, rec.term.cols, rec.term.rows);
-  if (r && r.error) rec.term.write(`\r\n\x1b[31m${r.error}\x1b[0m\r\n`);
-}
-function createRhTerminal(sessionId, name, connId) {
-  const container = el('div', 'term-instance');
-  $('#rh-term').appendChild(container);
-  const term = new Terminal({
-    fontFamily: '"JetBrains Mono", "Fira Code", "Cascadia Code", Consolas, monospace',
-    fontSize: settings.fontSize, cursorBlink: true, allowProposedApi: true, theme: termTheme(), scrollback: 8000,
-  });
-  const fit = new FitAddon();
-  const search = new SearchAddon();
-  term.loadAddon(fit);
-  term.loadAddon(search);
-  term.loadAddon(new WebLinksAddon((_e, uri) => lite.openExternal(uri)));
-  applyUnicode11(term);
-  term.open(container);
-  loadFastRenderer(term);
-  fit.fit();
-  term.onData((data) => lite.rh.write(sessionId, data));
-  term.onResize(({ cols, rows }) => lite.rh.resize(sessionId, cols, rows));
-  term.attachCustomKeyEventHandler((e) => {
-    if (e.type !== 'keydown') return true;
-    if (e.ctrlKey && e.shiftKey && e.code === 'KeyW') { closeRhSession(rhActiveSession); return false; }
-    if (e.ctrlKey && (e.key === 'PageDown' || e.key === 'PageUp')) { cycleRhTab(e.key === 'PageDown' ? 1 : -1); return false; }
-    if (e.ctrlKey && !e.shiftKey && !e.altKey && e.code === 'KeyC') return !copySelection(term);
-    if (e.ctrlKey && !e.shiftKey && !e.altKey && e.code === 'KeyV') { e.preventDefault(); pasteRh(sessionId); return false; }
-    return true;
-  });
-  const rec = { term, fit, search, container, name: name || 'SSH', connId };
-  rhTerms.set(sessionId, rec);
-  return rec;
-}
-async function pasteRh(sessionId) {
-  const text = await lite.readClipboard();
-  if (text) lite.rh.write(sessionId, text);
-  const rec = rhTerms.get(sessionId); if (rec) { try { rec.term.focus(); } catch (_) {} }
-}
-function renderRhTabs() {
-  const bar = $('#rh-tabs'); if (!bar) return;
-  bar.style.display = rhSessions.length ? 'flex' : 'none';
-  bar.innerHTML = '';
-  rhSessions.forEach((sid) => {
-    const rec = rhTerms.get(sid); if (!rec) return;
-    const tab = el('div', 'tab' + (sid === rhActiveSession && rhView === 'session' ? ' active' : ''));
-    tab.appendChild(el('span', 'rh-tab-dot'));
-    tab.appendChild(el('span', 'tab-name', rec.name));
-    const x = iconBtn('tab-close', 'x', 'Закрыть сессию (Ctrl+Shift+W)', 12);
-    x.addEventListener('click', (e) => { e.stopPropagation(); closeRhSession(sid); });
-    tab.appendChild(x);
-    tab.addEventListener('click', () => switchRhTab(sid));
-    bar.appendChild(tab);
-  });
-  const add = iconBtn('tab-add', 'plus', 'Подключиться к другому хосту', 15);
-  add.addEventListener('click', () => rhGoList());
-  bar.appendChild(add);
-}
-function switchRhTab(sid) { if (!rhTerms.has(sid)) return; rhActiveSession = sid; rhView = 'session'; renderRhPanel(); }
-function showActiveRhSession() {
-  for (const [sid, rec] of rhTerms) rec.container.style.display = sid === rhActiveSession ? 'block' : 'none';
-  refitRhSession(true);
-}
-function refitRhSession(focusIt) {
-  if (!rhOpen || rhView !== 'session' || !rhActiveSession) return;
-  const rec = rhTerms.get(rhActiveSession); if (!rec) return;
-  requestAnimationFrame(() => { try { rec.fit.fit(); lite.rh.resize(rhActiveSession, rec.term.cols, rec.term.rows); if (focusIt) rec.term.focus(); } catch (_) {} });
-}
-function cycleRhTab(dir) {
-  if (rhSessions.length < 2) return;
-  let i = rhSessions.indexOf(rhActiveSession) + dir;
-  if (i < 0) i = rhSessions.length - 1; if (i >= rhSessions.length) i = 0;
-  switchRhTab(rhSessions[i]);
-}
-function closeRhSession(sid) {
-  if (!sid) return;
-  lite.rh.close(sid);
-  const rec = rhTerms.get(sid);
-  if (rec) { try { rec.term.dispose(); } catch (_) {} rec.container.remove(); rhTerms.delete(sid); }
-  const i = rhSessions.indexOf(sid); if (i >= 0) rhSessions.splice(i, 1);
-  if (rhActiveSession === sid) rhActiveSession = rhSessions[Math.max(0, i - 1)] || null;
-  if (!rhSessions.length || !rhActiveSession) rhView = 'list';
-  renderRhPanel();
-}
-
-// ---- file browser (read-only): SFTP (ssh/sftp) или FTP
-function rhHumanSize(n) { if (!n && n !== 0) return ''; if (n < 1024) return n + ' B'; if (n < 1048576) return (n / 1024).toFixed(1) + ' KB'; if (n < 1073741824) return (n / 1048576).toFixed(1) + ' MB'; return (n / 1073741824).toFixed(1) + ' GB'; }
-function rhJoin(base, name) {
-  if (name === '..') { const b = String(base).replace(/\/+$/, ''); const i = b.lastIndexOf('/'); return i <= 0 ? '/' : b.slice(0, i); }
-  return (base === '/' ? '' : String(base).replace(/\/+$/, '')) + '/' + name;
-}
-async function rhOpenFiles(c) {
-  rhFiles = { connId: c.id, name: c.name || c.host, type: c.type || 'ssh', path: '~', entries: null, loading: true, file: null, error: null };
-  rhView = 'files';
-  renderRhPanel();
-  await rhLoadDir('~');
-}
-async function rhLoadDir(p) {
-  if (!rhFiles) return;
-  const connId = rhFiles.connId;
-  rhFiles.loading = true; rhFiles.file = null; rhFiles.error = null; renderRhFiles();
-  const r = await lite.rh.fsList(connId, p);
-  if (!rhFiles || rhFiles.connId !== connId || rhView !== 'files') return;
-  rhFiles.loading = false;
-  if (r.error) rhFiles.error = r.error;
-  else { rhFiles.path = r.path; rhFiles.entries = r.entries; }
-  renderRhFiles();
-}
-async function rhOpenFile(name) {
-  if (!rhFiles) return;
-  const connId = rhFiles.connId;
-  const full = rhJoin(rhFiles.path, name);
-  rhFiles.loading = true; renderRhFiles();
-  const r = await lite.rh.fsRead(connId, full);
-  if (!rhFiles || rhFiles.connId !== connId || rhView !== 'files') return;
-  rhFiles.loading = false;
-  rhFiles.file = { name, path: full, error: r.error, binary: r.binary, content: r.content, size: r.size };
-  renderRhFiles();
-}
-function renderRhFiles() {
-  if (!rhFiles) return;
-  $('#rh-title').textContent = rhFiles.name;
-  $('#rh-back').style.display = '';
-  const body = $('#rh-conns');
-  body.innerHTML = '';
-  const bar = el('div', 'rh-fbar');
-  const up = iconBtn('drow-act', 'chevron-up', 'Вверх', 14); up.onclick = () => rhLoadDir(rhJoin(rhFiles.path, '..'));
-  const pathEl = el('span', 'rh-fpath', rhFiles.path || ''); pathEl.title = rhFiles.path || '';
-  const refresh = iconBtn('drow-act', 'refresh', 'Обновить', 14); refresh.onclick = () => rhLoadDir(rhFiles.path);
-  bar.append(up, pathEl, refresh);
-  body.appendChild(bar);
-  if (rhFiles.file) { renderRhFileContent(body); return; }
-  if (rhFiles.loading) { body.appendChild(el('div', 'git-loading', 'Загрузка…')); return; }
-  if (rhFiles.error) { body.appendChild(el('div', 'db-warn', '⚠ ' + rhFiles.error)); return; }
-  const list = el('div', 'rh-flist');
-  if (!rhFiles.entries || !rhFiles.entries.length) list.appendChild(el('div', 'docker-empty', 'Пусто'));
-  for (const e of (rhFiles.entries || [])) {
-    const r = el('div', 'rh-frow');
-    r.appendChild(icon(e.dir ? 'folder' : 'file', 15));
-    r.appendChild(el('span', 'rh-fname', e.name));
-    if (!e.dir) r.appendChild(el('span', 'rh-fsize', rhHumanSize(e.size)));
-    r.onclick = () => e.dir ? rhLoadDir(rhJoin(rhFiles.path, e.name)) : rhOpenFile(e.name);
-    list.appendChild(r);
-  }
-  body.appendChild(list);
-}
-function renderRhFileContent(body) {
-  const f = rhFiles.file;
-  const head = el('div', 'rh-fchead');
-  const back = iconBtn('drow-act', 'chevron-left', 'К списку файлов', 14); back.onclick = () => { rhFiles.file = null; renderRhFiles(); };
-  head.append(back, icon('file', 14), el('span', 'rh-fcname', f.name));
-  if (f.size != null) head.appendChild(el('span', 'rh-fsize', rhHumanSize(f.size)));
-  body.appendChild(head);
-  if (rhFiles.loading) { body.appendChild(el('div', 'git-loading', 'Загрузка…')); return; }
-  if (f.error) { body.appendChild(el('div', 'db-warn', '⚠ ' + f.error)); return; }
-  if (f.binary) { body.appendChild(el('div', 'docker-empty', 'Бинарный файл — просмотр недоступен')); return; }
-  const pre = el('pre', 'rh-fview'); pre.textContent = f.content || '';
-  body.appendChild(pre);
-}
+// Вынесен в renderer/modules/remotehost.js (const Rh — у реестра панелей).
 
 // ---------------------------------------------------------------- font size
 let watchedRoot = null; // we live-watch only the active project to limit inotify use
 function applyFontSize() {
   for (const rec of terms.values()) { rec.term.options.fontSize = settings.fontSize; try { rec.fit.fit(); } catch (_) {} }
   for (const rec of scratchTerms.values()) { rec.term.options.fontSize = settings.fontSize; try { rec.fit.fit(); } catch (_) {} }
-  for (const rec of rhTerms.values()) { rec.term.options.fontSize = settings.fontSize; try { rec.fit.fit(); } catch (_) {} }
+  Rh.applyFontSize(); // SSH-терминалы модуля «Удалённые хосты»
   document.documentElement.style.setProperty('--editor-fs', settings.fontSize + 'px');
   refitActiveTerminal();
 }
@@ -2768,7 +1624,7 @@ function doSetActive(id) {
   showActiveTerminal();
   applyFontSize();
   if (viewerOpen) refreshViewerForActive();
-  if (gitOpen) renderGitPanel(proj); // Git module follows the active project
+  if (Git.isOpen()) Git.renderPanel(proj); // Git module follows the active project
 }
 
 // ---------------------------------------------------------------- viewer (CodeMirror)
@@ -3015,18 +1871,6 @@ function dirGitClass(dirPath) {
 }
 
 // ---------------------------------------------------------------- toasts
-function toast(msg, opts = {}) {
-  const t = el('div', 'toast' + (opts.kind ? ' ' + opts.kind : ''));
-  t.appendChild(el('span', 'toast-msg', msg));
-  if (opts.actionLabel) {
-    const b = el('button', 'toast-act', opts.actionLabel);
-    b.onclick = () => { t.remove(); opts.action && opts.action(); };
-    t.appendChild(b);
-  }
-  $('#toasts').appendChild(t);
-  requestAnimationFrame(() => t.classList.add('show'));
-  setTimeout(() => { t.classList.remove('show'); setTimeout(() => t.remove(), 250); }, opts.ttl || 4000);
-}
 function clearViewer() {
   currentFile = null;
   setEditorText('', []);
@@ -3059,7 +1903,7 @@ function setViewerOpen(open, opts = {}) {
     return;
   }
   // Right slot holds one module — opening the viewer closes the others (chat is separate).
-  if (open) { if (gitOpen) setGitOpen(false); if (dockerOpen) setDockerOpen(false); if (dbOpen) setDbOpen(false); if (scratchOpen) setScratchOpen(false); if (rhOpen) setRhOpen(false); }
+  if (open) closeOtherPanels('files');
   const delta = layout.viewer + layout.tree + GUTTER * 2;
   viewerOpen = open;
   $('#viewer-pane').classList.toggle('hidden', !open);
@@ -3075,945 +1919,58 @@ function setViewerOpen(open, opts = {}) {
 // ================================================================ right module slot
 // One module open at a time in the right slot. NOT modules: terminals (project + scratch ~)
 // and the OpenRouter chat (it replaces the terminal, its cards live in the project column).
-// Modules: 'files' (viewer), 'git'. Mutual exclusion is enforced at each module's open path.
+// Реестр панелей: каждая setXxxOpen знает только себя, взаимоисключение — closeOtherPanels.
+// Порядок закрытия фиксирован (он же — порядок старых inline-цепочек во всех setXxxOpen).
+const panels = new Map(); // id -> { isOpen(), setOpen(open, opts) }
+const PANEL_ORDER = ['files', 'git', 'docker', 'db', 'scratch', 'rh'];
+function registerPanel(id, api) { panels.set(id, api); }
+function closeOtherPanels(selfId) {
+  for (const id of PANEL_ORDER) {
+    if (id === selfId) continue;
+    const p = panels.get(id);
+    if (p && p.isOpen()) p.setOpen(false);
+  }
+}
+// 'files': повторное открытие — no-op (как старое `if (!viewerOpen) setViewerOpen(true)` в openModule).
+registerPanel('files', { isOpen: () => viewerOpen, setOpen: (open, opts) => { if (open && viewerOpen) return; setViewerOpen(open, opts); } });
+// Git — первый вынесенный модуль (renderer/modules/git.js, host-контракт по образцу textproc).
+const Git = initGit({
+  layout, GUTTER, saveUiState, renderProjects, refitActiveTerminal,
+  activeProject, getActiveId: () => activeId, refreshTree, closeOtherPanels,
+});
+registerPanel('git', { isOpen: Git.isOpen, setOpen: Git.setOpen });
+const Containers = initContainers({
+  STORE, persist, settings, layout, GUTTER, saveUiState, refitActiveTerminal,
+  closeOtherPanels, termTheme, applyUnicode11, loadFastRenderer,
+});
+registerPanel('docker', { isOpen: Containers.isOpen, setOpen: Containers.setOpen });
+const Db = initDb({ STORE, persist, layout, GUTTER, saveUiState, refitActiveTerminal, closeOtherPanels });
+registerPanel('db', { isOpen: Db.isOpen, setOpen: Db.setOpen });
+registerPanel('scratch', { isOpen: () => scratchOpen, setOpen: setScratchOpen });
+const Rh = initRh({
+  STORE, persist, settings, layout, GUTTER, saveUiState, refitActiveTerminal,
+  closeOtherPanels, termTheme, applyUnicode11, loadFastRenderer, copySelection,
+});
+registerPanel('rh', { isOpen: Rh.isOpen, setOpen: Rh.setOpen });
 // Entry point used by the «Модули» menu.
 function openModule(id) {
-  if (id === 'files') { if (!viewerOpen) setViewerOpen(true); }
-  else if (id === 'git') setGitOpen(true);
-  else if (id === 'docker') setDockerOpen(true);
-  else if (id === 'db') setDbOpen(true);
-  else if (id === 'rh') setRhOpen(true);
-  else if (id === 'scratch') setScratchOpen(true);
+  const p = panels.get(id);
+  if (p) p.setOpen(true);
 }
 
 // ---------------------------------------------------------------- Git module (right pane)
-function setGitOpen(open, opts = {}) {
-  if (open && !activeProject() && !opts.allowEmpty) { toast('Сначала открой проект'); return; }
-  if (open === gitOpen) { if (open) renderGitPanel(activeProject()); return; }
-  // Right slot holds one module — opening Git closes the others (chat is separate).
-  if (open) { if (viewerOpen) setViewerOpen(false); if (dockerOpen) setDockerOpen(false); if (dbOpen) setDbOpen(false); if (scratchOpen) setScratchOpen(false); if (rhOpen) setRhOpen(false); }
-  const delta = layout.git + GUTTER;
-  gitOpen = open;
-  $('#git-pane').classList.toggle('hidden', !open);
-  $('#gutter-git').classList.toggle('hidden', !open);
-  if (opts.grow !== false) lite.win.growBy(open ? delta : -delta); // grow:false on restore — saved width already counts this pane
-  saveUiState();
-  renderProjects();
-  if (open) renderGitPanel(activeProject());
-  setTimeout(refitActiveTerminal, 150);
-}
-function toggleGit() { setGitOpen(!gitOpen); }
+// Вынесен в renderer/modules/git.js (const Git выше, у реестра панелей).
 // Open Git for a specific project: guard unsaved viewer edits, switch project FIRST, then
-// open — so setGitOpen never runs against the old activeId while a save-prompt is up.
+// open — so Git.setOpen never runs against the old activeId while a save-prompt is up.
 function openGitForProject(id) {
-  guardDirty(() => { if (id !== activeId || activeOrId !== null) doSetActive(id); setGitOpen(true); });
-}
-
-// Render a unified diff string into a container, line-classed like the viewer's diff.
-function renderDiffInto(view, text) {
-  view.innerHTML = '';
-  if (!text || !text.trim()) { view.appendChild(el('div', 'diff-empty', 'Нет изменений относительно HEAD.')); return; }
-  for (const ln of text.split('\n')) {
-    let cls = '';
-    if (ln.startsWith('@@')) cls = 'hunk';
-    else if (ln.startsWith('+++') || ln.startsWith('---') || ln.startsWith('diff ') || ln.startsWith('index ')) cls = 'meta';
-    else if (ln.startsWith('+')) cls = 'add';
-    else if (ln.startsWith('-')) cls = 'del';
-    view.appendChild(el('div', 'diff-line ' + cls, ln || ' '));
-  }
-}
-
-// PhpStorm-style Git panel for project `p`. Bound to the active project; re-rendered on
-// project switch (see doSetActive). Reuses lite.git.* — no new backend except git:log.
-let gitRenderSeq = 0; // bumped on every render; a stale render (older seq) bails after its awaits
-// Compact pill button for the Git toolbar (icon + optional label). Variants: 'primary' | 'ico' | 'danger'.
-function gitTool(iconName, label, title, variant) {
-  const b = el('button', 'git-tool' + (variant ? ' ' + variant : ''));
-  b.appendChild(icon(iconName, 14));
-  if (label) b.appendChild(el('span', null, label));
-  if (title) b.title = title;
-  return b;
-}
-async function renderGitPanel(p) {
-  const body = $('#git-body');
-  $('#git-proj').textContent = p ? `⎇ ${p.name}` : 'Git';
-  if (!p) { body.innerHTML = ''; return; }
-  const reqPath = p.path;
-  const seq = ++gitRenderSeq;
-  // Bail if a newer render started, Git closed, or the active project changed during an await.
-  const stale = () => seq !== gitRenderSeq || !gitOpen || activeProject()?.path !== reqPath;
-  body.innerHTML = '<div class="git-loading">Загрузка…</div>';
-  const info = await lite.git.info(p.path);
-  if (stale()) return;
-  body.innerHTML = '';
-
-  if (!info.repo) { // not a git repo → init / clone (same as the old modal)
-    body.appendChild(el('div', 'gm-norepo', 'Это не git-репозиторий.'));
-    const row = el('div', 'gm-actions');
-    const init = el('button', 'btn primary', '⎇ git init');
-    init.onclick = async () => {
-      const r = await lite.git.init(p.path);
-      if (r.ok) { toast('git init готов'); renderGitPanel(p); renderProjects(); }
-      else toast(r.error || 'ошибка init', { kind: 'err', ttl: 7000 });
-    };
-    row.append(init); body.appendChild(row);
-    body.appendChild(el('div', 'gm-or', 'или клонировать репозиторий в эту папку'));
-    const cloneRow = el('div', 'gm-actions');
-    const url = el('input', 'gm-cloneurl'); url.type = 'text';
-    url.placeholder = 'URL репозитория (https://… или git@…)';
-    const clone = el('button', 'btn', '⬇ git clone');
-    const doClone = async () => {
-      const u = url.value.trim();
-      if (!u) { toast('Введи URL репозитория', { kind: 'err' }); return; }
-      clone.disabled = true; const lbl = clone.textContent; clone.textContent = 'Клонирую…';
-      const r = await lite.git.clone(p.path, u);
-      clone.disabled = false; clone.textContent = lbl;
-      if (r.ok) { toast('Репозиторий склонирован'); renderGitPanel(p); renderProjects(); if (p.id === activeId) refreshTree(); }
-      else toast(r.error || 'ошибка clone', { kind: 'err', ttl: 9000 });
-    };
-    clone.onclick = doClone;
-    url.addEventListener('keydown', (e) => { if (e.key === 'Enter') doClone(); });
-    cloneRow.append(url, clone); body.appendChild(cloneRow);
-    return;
-  }
-
-  // --- Branch row: switch + manager + ahead/behind
-  const head = el('div', 'gm-branch');
-  const sel = el('select', 'gm-branchsel');
-  const brs = info.branches && info.branches.length ? info.branches : [info.branch];
-  for (const b of brs) { const o = document.createElement('option'); o.value = b; o.textContent = '⎇ ' + b; if (b === info.branch) o.selected = true; sel.appendChild(o); }
-  sel.onchange = async () => {
-    const r = await lite.git.checkout(p.path, sel.value);
-    if (r.ok) toast('Ветка: ' + sel.value); else toast(r.error || 'не удалось переключить', { kind: 'err', ttl: 8000 });
-    renderGitPanel(p); renderProjects();
-  };
-  head.appendChild(sel);
-  const mgr = el('button', 'gm-mini', '⎇'); mgr.title = 'Ветки: переключить · обновить без перехода · новая от ветки';
-  mgr.onclick = () => showBranches(body, p, () => renderGitPanel(p));
-  head.appendChild(mgr);
-  if (info.upstream && (info.ahead || info.behind)) head.appendChild(el('span', 'gm-track', `↑${info.ahead} ↓${info.behind}`));
-  body.appendChild(head);
-
-  // --- Changes section (click a file → inline diff)
-  const st = await lite.git.status(p.path);
-  if (stale()) return;
-  const files = (st && st.files) ? st.files : {};
-  const keys = Object.keys(files);
-  const chHead = el('div', 'git-sec git-sec-row');
-  chHead.appendChild(el('span', null, 'Изменения' + (keys.length ? ` · ${keys.length}` : '')));
-  if (keys.length) {
-    const discAll = gitTool('eraser', null, 'Откатить все правки (git checkout -- .)', 'ico danger');
-    discAll.onclick = () => showConfirm('Откатить все правки?', 'Изменения во всех отслеживаемых файлах будут отменены. Новые (неотслеживаемые) файлы останутся на месте.', 'Откатить всё', async () => {
-      const rr = await lite.git.discardAll(p.path);
-      if (rr.ok) { toast('Правки откачены'); renderGitPanel(p); renderProjects(); } else toast(rr.error || 'не удалось', { kind: 'err' });
-    });
-    chHead.appendChild(discAll);
-  }
-  body.appendChild(chHead);
-  const diffView = el('div', 'git-diff'); diffView.style.display = 'none';
-  const changes = el('div', 'gm-changes');
-  if (!keys.length) changes.appendChild(el('div', 'gm-clean', '✓ Рабочее дерево чистое.'));
-  else for (const f of keys) {
-    const r = el('div', 'gm-file'); r.title = f;
-    r.appendChild(el('span', 'gm-code ' + gitCodeClass(files[f]), files[f]));
-    const name = el('span', 'gm-fname', baseName(f)); r.appendChild(name);
-    const disc = el('button', 'gm-mini gm-disc', '↩'); disc.title = 'Откатить изменения файла';
-    disc.onclick = (e) => { e.stopPropagation(); showConfirm('Откатить файл?', `Изменения в «${baseName(f)}» будут отменены (git checkout --).`, 'Откатить', async () => {
-      const rr = await lite.git.discardFile(p.path, f);
-      if (rr.ok) { renderGitPanel(p); renderProjects(); } else toast(rr.error || 'не удалось', { kind: 'err' });
-    }); };
-    r.appendChild(disc);
-    r.addEventListener('click', async () => {
-      const wasOpen = r.classList.contains('open');
-      changes.querySelectorAll('.gm-file.open').forEach((x) => x.classList.remove('open'));
-      if (wasOpen) { diffView.style.display = 'none'; return; }
-      r.classList.add('open');
-      diffView.style.display = 'block';
-      diffView.innerHTML = '<div class="git-loading">Загрузка диффа…</div>';
-      const d = await lite.git.fileDiff(p.path, f);
-      renderDiffInto(diffView, d && d.diff);
-    });
-    changes.appendChild(r);
-  }
-  body.appendChild(changes);
-  body.appendChild(diffView);
-
-  // --- Commit box
-  const msg = el('textarea', 'gm-msg'); msg.placeholder = 'Сообщение коммита…';
-  body.appendChild(msg);
-  // commit row: compact primary + push variant
-  const commitRow = el('div', 'git-tools');
-  const commit = gitTool('check', 'Commit', 'Закоммитить все изменения', 'primary');
-  const commitPush = gitTool('upload', 'Commit & Push', 'Закоммитить и сразу запушить');
-  commit.disabled = !keys.length; commitPush.disabled = !keys.length;
-  const doCommit = async (withPush) => {
-    const message = msg.value.trim();
-    if (!message) { toast('Введи сообщение коммита', { kind: 'err' }); return; }
-    const r = await lite.git.commit(p.path, message, withPush);
-    if (r.ok) { toast(withPush ? 'Закоммичено и запушено' : 'Закоммичено'); msg.value = ''; renderGitPanel(p); renderProjects(); }
-    else toast(r.error || 'ошибка коммита', { kind: 'err', ttl: 8000 });
-  };
-  commit.onclick = () => doCommit(false);
-  commitPush.onclick = () => doCommit(true);
-  commitRow.append(commit, commitPush);
-  body.appendChild(commitRow);
-
-  // sync row: fetch / pull / push, then stash group — neat icon pills
-  const syncRow = el('div', 'git-tools');
-  const fetchBtn = gitTool('refresh', 'Fetch', 'git fetch --all --prune');
-  const pull = gitTool('download', 'Pull', 'git pull --ff-only');
-  const push = gitTool('upload', 'Push', 'git push');
-  const stash = gitTool('layers', 'Stash', 'Спрятать все изменения (git stash -u)');
-  const stashPop = gitTool('archive', 'Pop', 'Вернуть последний stash (git stash pop)');
-  stash.disabled = !keys.length;
-  fetchBtn.onclick = async () => { const r = await lite.git.fetch(p.path); toast(r.ok ? 'Fetch готов' : (r.error || 'fetch не прошёл'), { kind: r.ok ? undefined : 'err', ttl: 8000 }); renderGitPanel(p); };
-  push.onclick = async () => { const r = await lite.git.push(p.path); toast(r.ok ? 'Запушено' : (r.error || 'push не прошёл'), { kind: r.ok ? undefined : 'err', ttl: 8000 }); renderGitPanel(p); };
-  pull.onclick = async () => { const r = await lite.git.pull(p.path); toast(r.ok ? 'Pull готов' : (r.error || 'pull не прошёл'), { kind: r.ok ? undefined : 'err', ttl: 8000 }); renderGitPanel(p); renderProjects(); };
-  stash.onclick = async () => { const r = await lite.git.stash(p.path); toast(r.ok ? 'Изменения спрятаны в stash' : (r.error || 'stash не прошёл'), { kind: r.ok ? undefined : 'err', ttl: 8000 }); renderGitPanel(p); renderProjects(); };
-  stashPop.onclick = async () => { const r = await lite.git.stashPop(p.path); toast(r.ok ? 'Stash возвращён' : (r.error || 'нет stash или конфликт'), { kind: r.ok ? undefined : 'err', ttl: 8000 }); renderGitPanel(p); renderProjects(); };
-  syncRow.append(fetchBtn, pull, push, el('span', 'git-tsep'), stash, stashPop);
-  body.appendChild(syncRow);
-
-  // --- Commit history log (git:log)
-  body.appendChild(el('div', 'git-sec', 'История'));
-  const logBox = el('div', 'git-log');
-  logBox.appendChild(el('div', 'git-loading', 'Загрузка истории…'));
-  body.appendChild(logBox);
-  const lg = await lite.git.log(p.path, 40);
-  if (stale()) return;
-  logBox.innerHTML = '';
-  const commits = (lg && lg.commits) ? lg.commits : [];
-  if (!commits.length) logBox.appendChild(el('div', 'gm-clean', 'Пока нет коммитов.'));
-  else for (const c of commits) {
-    const cr = el('div', 'git-commit'); cr.title = `${c.subject}\n${c.hash} · клик — скопировать хеш`;
-    cr.appendChild(el('span', 'gm-hash', c.hash));
-    cr.appendChild(el('span', 'git-csubj', c.subject));
-    cr.appendChild(el('span', 'gm-meta', `${c.when} · ${c.author}`));
-    if (c.refs) cr.appendChild(el('span', 'git-refs', c.refs));
-    cr.addEventListener('click', () => { lite.copyText(c.hash); toast('Хеш скопирован: ' + c.hash); });
-    logBox.appendChild(cr);
-  }
+  guardDirty(() => { if (id !== activeId || activeOrId !== null) doSetActive(id); Git.setOpen(true); });
 }
 
 // ================================================================ Containers module (docker/podman)
-// System-wide (not per-project) right-pane manager: tabs Docker|Podman, accordion sections for
-// containers (grouped by compose project), pods (podman), images, volumes, with lifecycle actions.
-let dockerEngine = 'docker';   // active tab
-let dockerDetect = null;        // cached {docker:{cli,compose,composePlugin}, podman:{...}}
-let dockerRenderSeq = 0;        // stale-render guard
-const dockerAcc = { containers: true, pods: true, images: false, volumes: false }; // accordion open state
-// Persisted per-engine group order + collapse: { order:{engine:[names]}, collapsed:{'engine:name':bool} }
-let dockerUi = (STORE.dockerUi && typeof STORE.dockerUi === 'object') ? STORE.dockerUi : {};
-let dockerView = 'list';        // 'list' | 'detail'
-let dockerDetail = null;        // { id, name, engine, state } when viewing one container
-let dockerDetailTab = 'logs';   // 'logs' | 'term'
-let dockerLogId = null, dockerExecId = null, dockerExecTerm = null, dockerExecFit = null;
-const dockerDetailUnsub = [];   // IPC listener cleanups for the open detail view
-
-function dockerGroupOrder(engine, names) { // saved order first, new groups appended (alpha)
-  const saved = (dockerUi.order && dockerUi.order[engine]) || [];
-  const head = saved.filter((n) => names.includes(n));
-  const tail = names.filter((n) => !head.includes(n)).sort((a, b) => a.localeCompare(b));
-  return [...head, ...tail];
-}
-function moveDockerGroup(engine, name, dir, allNames) {
-  const order = dockerGroupOrder(engine, allNames);
-  const i = order.indexOf(name), j = i + dir;
-  if (i < 0 || j < 0 || j >= order.length) return;
-  [order[i], order[j]] = [order[j], order[i]];
-  dockerUi.order = dockerUi.order || {}; dockerUi.order[engine] = order; persist('dockerUi', dockerUi);
-  renderDockerPanel();
-}
-function dockerGroupCollapsed(engine, name) { return !!(dockerUi.collapsed && dockerUi.collapsed[engine + ':' + name]); }
-function toggleDockerGroup(engine, name) {
-  dockerUi.collapsed = dockerUi.collapsed || {}; const k = engine + ':' + name;
-  dockerUi.collapsed[k] = !dockerUi.collapsed[k]; persist('dockerUi', dockerUi);
-}
-function dockerGroupHue(name) { let h = 0; for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) % 360; return h; }
-// Strip ANSI/OSC so container logs render cleanly in a <pre>.
-function stripAnsiSeq(s) { return String(s).replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '').replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, ''); }
-
-function setDockerOpen(open, opts = {}) {
-  if (open === dockerOpen) { if (open) renderDockerPanel(); return; }
-  if (!open) { closeDockerDetail(); dockerView = 'list'; } // tear down logs/exec on close
-  // Right slot holds one module — opening Docker closes the others (chat is separate).
-  if (open) { if (viewerOpen) setViewerOpen(false); if (gitOpen) setGitOpen(false); if (dbOpen) setDbOpen(false); if (scratchOpen) setScratchOpen(false); if (rhOpen) setRhOpen(false); }
-  const delta = layout.docker + GUTTER;
-  dockerOpen = open;
-  $('#docker-pane').classList.toggle('hidden', !open);
-  $('#gutter-docker').classList.toggle('hidden', !open);
-  if (opts.grow !== false) lite.win.growBy(open ? delta : -delta); // grow:false on restore — saved width already counts this pane
-  saveUiState();
-  if (open) renderDockerPanel();
-  setTimeout(refitActiveTerminal, 150);
-}
-function toggleDocker() { setDockerOpen(!dockerOpen); }
-
-function renderDockerTabs() {
-  const t = $('#docker-tabs'); t.innerHTML = '';
-  for (const e of ['docker', 'podman']) {
-    const installed = dockerDetect ? !!(dockerDetect[e] && dockerDetect[e].cli) : true;
-    const tab = el('button', 'docker-tab' + (e === dockerEngine ? ' on' : '') + (installed ? '' : ' off'));
-    tab.appendChild(icon('box', 15));
-    tab.appendChild(el('span', null, e === 'docker' ? 'Docker' : 'Podman'));
-    tab.onclick = () => { if (e !== dockerEngine) { dockerEngine = e; renderDockerPanel(); } };
-    t.appendChild(tab);
-  }
-}
-// Versions strip for the active engine: cli + compose plugin (no dash) + legacy compose (dash).
-function renderDockerEnv(eng) {
-  const box = el('div', 'docker-env');
-  const rows = dockerEngine === 'docker'
-    ? [['docker', eng.cli], ['docker compose', eng.composePlugin], ['docker-compose', eng.compose]]
-    : [['podman', eng.cli], ['podman compose', eng.composePlugin], ['podman-compose', eng.compose]];
-  for (const [label, ver] of rows) {
-    const r = el('div', 'docker-env-row');
-    r.appendChild(el('span', 'denv-k', label));
-    r.appendChild(el('span', 'denv-v' + (ver ? '' : ' missing'), ver || 'не установлено'));
-    box.appendChild(r);
-  }
-  return box;
-}
-function dStateClass(s) {
-  s = String(s || '').toLowerCase();
-  if (s.includes('run')) return 'run';
-  if (s.includes('paus')) return 'pause';
-  if (s.includes('dead')) return 'dead';
-  return 'stop';
-}
-// Collapsible section with a count badge; `fill(inner)` populates the body.
-function dockerAccordion(key, iconName, title, count, fill) {
-  const sec = el('div', 'docker-sec');
-  const head = el('button', 'docker-sec-head');
-  const chev = icon(dockerAcc[key] ? 'chevron-down' : 'chevron-right', 14); chev.classList.add('dsec-chev');
-  head.appendChild(chev);
-  head.appendChild(icon(iconName, 15));
-  head.appendChild(el('span', 'dsec-title', title));
-  head.appendChild(el('span', 'dsec-count', String(count)));
-  const inner = el('div', 'docker-sec-body');
-  if (!dockerAcc[key]) inner.style.display = 'none';
-  fill(inner);
-  head.onclick = () => {
-    dockerAcc[key] = !dockerAcc[key];
-    inner.style.display = dockerAcc[key] ? '' : 'none';
-    const nc = icon(dockerAcc[key] ? 'chevron-down' : 'chevron-right', 14); nc.classList.add('dsec-chev');
-    head.replaceChild(nc, head.firstChild);
-  };
-  sec.append(head, inner);
-  return sec;
-}
-async function dockerDo(kind, action, id, label) {
-  let r;
-  try { r = await lite.containers.action(dockerEngine, kind, action, id); } catch (e) { r = { ok: false, error: String(e) }; }
-  if (r && r.ok) { toast((label || 'Готово') + ' ✓'); renderDockerPanel(); }
-  else toast((r && r.error) || 'Команда не выполнена', { kind: 'err', ttl: 8000 });
-}
-function dActBtn(kind, action, iconName, title, id, size) {
-  const b = iconBtn('drow-act', iconName, title, size || 14);
-  b.onclick = (e) => { e.stopPropagation(); dockerDo(kind, action, id, title); };
-  return b;
-}
-function dRemoveBtn(kind, id, label, force, extra) {
-  const b = iconBtn('drow-act danger', 'trash', 'Удалить', 14);
-  b.onclick = (e) => { e.stopPropagation(); showConfirm('Удалить?', `«${label}» будет удалён${force ? ' (принудительно — объект запущен)' : ''}.${extra || ''}`, 'Удалить', () => dockerDo(kind, 'remove', id, 'Удаление')); };
-  return b;
-}
-function dockerContainerRow(c) {
-  const row = el('div', 'docker-row');
-  const dot = el('span', 'dstate dstate-' + dStateClass(c.state)); dot.title = c.status || c.state || '';
-  row.appendChild(dot);
-  const main = el('div', 'drow-main');
-  main.appendChild(el('span', 'drow-name', c.service || c.name || String(c.id).slice(0, 12)));
-  main.appendChild(el('span', 'drow-sub', [c.image, c.ports].filter(Boolean).join('   ·   ')));
-  row.appendChild(main);
-  const acts = el('div', 'drow-acts');
-  const running = c.state === 'running', paused = c.state === 'paused';
-  if (running) {
-    acts.appendChild(dActBtn('container', 'pause', 'pause', 'Пауза', c.id));
-    acts.appendChild(dActBtn('container', 'restart', 'refresh', 'Перезапуск', c.id));
-    acts.appendChild(dActBtn('container', 'stop', 'stop', 'Стоп', c.id));
-  } else if (paused) {
-    acts.appendChild(dActBtn('container', 'unpause', 'play', 'Возобновить', c.id));
-    acts.appendChild(dActBtn('container', 'stop', 'stop', 'Стоп', c.id));
-  } else {
-    acts.appendChild(dActBtn('container', 'start', 'play', 'Старт', c.id));
-  }
-  acts.appendChild(dRemoveBtn('container', c.id, c.service || c.name || c.id, running));
-  row.appendChild(acts);
-  row.classList.add('clickable'); row.title = 'Открыть: логи и терминал';
-  row.addEventListener('click', () => openDockerDetail(c));
-  return row;
-}
-function dockerPodRow(p) {
-  const row = el('div', 'docker-row');
-  const dot = el('span', 'dstate dstate-' + dStateClass(p.status)); dot.title = p.status || '';
-  row.appendChild(dot);
-  const main = el('div', 'drow-main');
-  main.appendChild(el('span', 'drow-name', p.name || String(p.id).slice(0, 12)));
-  main.appendChild(el('span', 'drow-sub', `${p.containers} контейнер(ов)   ·   ${p.status || ''}`));
-  row.appendChild(main);
-  const acts = el('div', 'drow-acts');
-  const running = p.status === 'running' || p.status === 'degraded';
-  if (running) acts.appendChild(dActBtn('pod', 'stop', 'stop', 'Стоп пода', p.id));
-  else acts.appendChild(dActBtn('pod', 'start', 'play', 'Старт пода', p.id));
-  acts.appendChild(dRemoveBtn('pod', p.id, p.name || p.id, running));
-  row.appendChild(acts);
-  return row;
-}
-function dockerImageRow(im) {
-  const row = el('div', 'docker-row');
-  row.appendChild(icon('layers', 15));
-  const main = el('div', 'drow-main');
-  main.appendChild(el('span', 'drow-name', (im.repo || '<none>') + (im.tag ? ':' + im.tag : '')));
-  main.appendChild(el('span', 'drow-sub', [im.size, im.created].filter(Boolean).join('   ·   ')));
-  row.appendChild(main);
-  const acts = el('div', 'drow-acts');
-  acts.appendChild(dRemoveBtn('image', im.id, (im.repo || '<none>') + (im.tag ? ':' + im.tag : ''), false));
-  row.appendChild(acts);
-  return row;
-}
-function dockerVolumeRow(vo) {
-  const row = el('div', 'docker-row');
-  row.appendChild(icon('database', 15));
-  const main = el('div', 'drow-main');
-  main.appendChild(el('span', 'drow-name', vo.name));
-  main.appendChild(el('span', 'drow-sub', vo.driver || ''));
-  row.appendChild(main);
-  const acts = el('div', 'drow-acts');
-  acts.appendChild(dRemoveBtn('volume', vo.name, vo.name, false, ' Данные тома будут потеряны.'));
-  row.appendChild(acts);
-  return row;
-}
-function dockerSectionList(box, payload, iconName, title, key, rowFn, emptyText) {
-  const items = (payload && payload.items) || [];
-  box.appendChild(dockerAccordion(key, iconName, title, items.length, (inner) => {
-    if (payload && payload.error) { inner.appendChild(el('div', 'docker-err', payload.error)); return; }
-    if (!items.length) { inner.appendChild(el('div', 'docker-empty', emptyText)); return; }
-    for (const it of items) inner.appendChild(rowFn(it));
-  }));
-}
-async function dockerBulk(engine, action, ids, label) {
-  if (!ids.length) return;
-  let r; try { r = await lite.containers.bulk(engine, action, ids); } catch (e) { r = { ok: false, error: String(e) }; }
-  if (r && r.ok) { toast((label || 'Готово') + ' ✓'); renderDockerPanel(); }
-  else toast((r && r.error) || 'Не выполнено', { kind: 'err', ttl: 9000 });
-}
-function dGroupAct(action, iconName, title, engine, ids) {
-  const b = iconBtn('drow-act', iconName, title, 13);
-  b.onclick = (e) => { e.stopPropagation(); dockerBulk(engine, action, ids, title); };
-  return b;
-}
-// One compose group: gradient header (collapsible) + bulk actions + sort arrows + container rows.
-function dockerGroupBlock(engine, name, list, allNames) {
-  const block = el('div', 'docker-group-block');
-  const head = el('div', 'docker-group-head');
-  const hue = dockerGroupHue(name || 'misc');
-  head.style.background = `linear-gradient(90deg, hsla(${hue},55%,50%,.22), hsla(${hue},55%,50%,.05) 55%, transparent)`;
-  head.style.borderLeft = `3px solid hsl(${hue},60%,55%)`;
-  const chev = icon(dockerGroupCollapsed(engine, name) ? 'chevron-right' : 'chevron-down', 13); chev.classList.add('dgrp-chev');
-  head.appendChild(chev);
-  head.appendChild(el('span', 'dgrp-name', name || 'Без группы'));
-  head.appendChild(el('span', 'dgrp-count', String(list.length)));
-  const acts = el('div', 'dgrp-acts');
-  const ids = list.map((c) => c.id);
-  acts.appendChild(dGroupAct('start', 'play', 'Старт всех', engine, ids));
-  acts.appendChild(dGroupAct('pause', 'pause', 'Пауза всех', engine, ids));
-  acts.appendChild(dGroupAct('stop', 'stop', 'Стоп всех', engine, ids));
-  const rm = iconBtn('drow-act danger', 'trash', 'Удалить всю группу', 13);
-  rm.onclick = (e) => { e.stopPropagation(); showConfirm('Удалить группу?', `Все контейнеры группы «${name || 'без группы'}» (${list.length} шт.) будут удалены принудительно.`, 'Удалить', () => dockerBulk(engine, 'remove', ids, 'Удаление группы')); };
-  acts.appendChild(rm);
-  if (name) { // sort arrows only for real compose groups (ungrouped stays last)
-    const up = iconBtn('drow-act', 'chevron-up', 'Поднять группу', 13); up.onclick = (e) => { e.stopPropagation(); moveDockerGroup(engine, name, -1, allNames); };
-    const dn = iconBtn('drow-act', 'chevron-down', 'Опустить группу', 13); dn.onclick = (e) => { e.stopPropagation(); moveDockerGroup(engine, name, 1, allNames); };
-    acts.append(up, dn);
-  }
-  head.appendChild(acts);
-  const body = el('div', 'docker-group-body');
-  if (dockerGroupCollapsed(engine, name)) body.style.display = 'none';
-  for (const c of list) body.appendChild(dockerContainerRow(c));
-  head.onclick = () => {
-    toggleDockerGroup(engine, name);
-    const col = dockerGroupCollapsed(engine, name);
-    body.style.display = col ? 'none' : '';
-    const nc = icon(col ? 'chevron-right' : 'chevron-down', 13); nc.classList.add('dgrp-chev');
-    head.replaceChild(nc, head.firstChild);
-  };
-  block.append(head, body);
-  return block;
-}
-function renderDockerDisk(df) {
-  const box = el('div', 'docker-disk');
-  box.appendChild(icon('database', 13));
-  const parts = [['Образы', df.images], ['Контейнеры', df.containers], ['Тома', df.volumes], ['Кэш', df.cache]].filter((p) => p[1]);
-  if (!parts.length) { box.appendChild(el('span', 'ddisk-k', 'диск: н/д')); return box; }
-  for (const [k, v] of parts) { const seg = el('span', 'ddisk-seg'); seg.appendChild(el('span', 'ddisk-k', k)); seg.appendChild(el('span', 'ddisk-v', v)); box.appendChild(seg); }
-  return box;
-}
-function renderDockerSections(box, data) {
-  if (data.df && !data.df.error) box.appendChild(renderDockerDisk(data.df));
-  const cont = (data.containers && data.containers.items) || [];
-  box.appendChild(dockerAccordion('containers', 'box', 'Контейнеры', cont.length, (inner) => {
-    if (data.containers && data.containers.error) { inner.appendChild(el('div', 'docker-err', data.containers.error)); return; }
-    if (!cont.length) { inner.appendChild(el('div', 'docker-empty', 'Нет контейнеров.')); return; }
-    const groups = {};
-    for (const c of cont) { const g = c.project || ''; (groups[g] = groups[g] || []).push(c); }
-    const named = Object.keys(groups).filter((g) => g);
-    const order = dockerGroupOrder(dockerEngine, named);
-    for (const g of order) inner.appendChild(dockerGroupBlock(dockerEngine, g, groups[g], order));
-    if (groups['']) inner.appendChild(dockerGroupBlock(dockerEngine, '', groups[''], order)); // ungrouped last
-  }));
-  if (dockerEngine === 'podman') dockerSectionList(box, data.pods, 'grid', 'Поды', 'pods', dockerPodRow, 'Нет подов.');
-  dockerSectionList(box, data.images, 'layers', 'Образы', 'images', dockerImageRow, 'Нет образов.');
-  dockerSectionList(box, data.volumes, 'database', 'Тома', 'volumes', dockerVolumeRow, 'Нет томов.');
-}
-// --- container detail view (live logs + interactive exec terminal), inside the module pane
-function openDockerDetail(c) {
-  closeDockerDetail();
-  dockerDetail = { id: c.id, name: c.service || c.name || String(c.id).slice(0, 12), engine: dockerEngine, state: c.state };
-  dockerView = 'detail';
-  dockerDetailTab = 'logs';
-  renderDockerDetail();
-}
-function closeDockerDetail() { // stop streams, kill exec PTY, dispose xterm, drop listeners
-  for (const u of dockerDetailUnsub.splice(0)) { try { u(); } catch (_) {} }
-  if (dockerLogId) { try { lite.containers.logsStop(dockerLogId); } catch (_) {} dockerLogId = null; }
-  if (dockerExecId) { try { lite.containers.execKill(dockerExecId); } catch (_) {} dockerExecId = null; }
-  if (dockerExecTerm) { try { dockerExecTerm.dispose(); } catch (_) {} dockerExecTerm = null; dockerExecFit = null; }
-  dockerDetail = null;
-}
-function backToDockerList() { closeDockerDetail(); dockerView = 'list'; renderDockerPanel(); }
-function startDockerLogs(view) {
-  view.innerHTML = '';
-  const pre = el('pre', 'docker-logs'); view.appendChild(pre);
-  const d = dockerDetail; if (!d) return;
-  const sid = 'log' + (++dockerRenderSeq) + Date.now().toString(36); dockerLogId = sid;
-  const unData = lite.containers.onLogsData((p) => {
-    if (p.streamId !== sid) return;
-    const atBottom = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 40;
-    pre.appendChild(document.createTextNode(stripAnsiSeq(p.data)));
-    while (pre.childNodes.length > 3000) pre.removeChild(pre.firstChild);
-    if (atBottom) pre.scrollTop = pre.scrollHeight;
-  });
-  const unExit = lite.containers.onLogsExit((p) => { if (p.streamId === sid) pre.appendChild(document.createTextNode('\n— поток логов завершён —\n')); });
-  dockerDetailUnsub.push(unData, unExit);
-  lite.containers.logsStart(d.engine, d.id, sid, 800).then((r) => { if (r && r.error) pre.appendChild(document.createTextNode('[ошибка: ' + r.error + ']')); });
-}
-function startDockerExec(view) {
-  view.innerHTML = '';
-  const wrap = el('div', 'docker-term'); view.appendChild(wrap);
-  const d = dockerDetail; if (!d) return;
-  const term = new Terminal({ fontFamily: '"JetBrains Mono", "Fira Code", "Cascadia Code", Consolas, monospace', fontSize: settings.fontSize, cursorBlink: true, allowProposedApi: true, theme: termTheme(), scrollback: 3000 });
-  const fit = new FitAddon(); term.loadAddon(fit);
-  applyUnicode11(term);
-  term.open(wrap);
-  loadFastRenderer(term);
-  try { fit.fit(); } catch (_) {}
-  dockerExecTerm = term; dockerExecFit = fit;
-  const xid = 'cx' + (++dockerRenderSeq) + Date.now().toString(36); dockerExecId = xid;
-  const unData = lite.containers.onExecData((p) => { if (p.execId === xid) term.write(p.data); });
-  const unExit = lite.containers.onExecExit((p) => { if (p.execId === xid) term.write('\r\n\x1b[33m— сеанс завершён —\x1b[0m\r\n'); });
-  dockerDetailUnsub.push(unData, unExit);
-  term.onData((data) => lite.containers.execWrite(xid, data));
-  term.onResize(({ cols, rows }) => lite.containers.execResize(xid, cols, rows));
-  lite.containers.execStart(d.engine, d.id, xid, term.cols, term.rows).then((r) => { if (r && r.error) term.write('\r\n\x1b[31m' + r.error + '\x1b[0m\r\n'); });
-  setTimeout(() => { try { fit.fit(); term.focus(); } catch (_) {} }, 40);
-}
-function renderDockerDetail() {
-  const d = dockerDetail; if (!d) { dockerView = 'list'; renderDockerPanel(); return; }
-  $('#docker-tabs').style.display = 'none';
-  const body = $('#docker-body'); body.innerHTML = '';
-  const head = el('div', 'docker-detail-head');
-  const back = iconBtn('drow-act', 'chevron-left', 'Назад к списку', 16);
-  back.onclick = backToDockerList;
-  head.appendChild(back);
-  head.appendChild(el('span', 'dstate dstate-' + dStateClass(d.state)));
-  head.appendChild(el('span', 'docker-detail-name', d.name));
-  body.appendChild(head);
-  const tabsEl = el('div', 'docker-subtabs');
-  const logsView = el('div', 'docker-detail-view');
-  const termView = el('div', 'docker-detail-view');
-  let logsStarted = false, execStarted = false;
-  const show = (k) => {
-    dockerDetailTab = k;
-    tabsEl.querySelectorAll('.docker-subtab').forEach((b) => b.classList.toggle('on', b.dataset.k === k));
-    logsView.style.display = k === 'logs' ? '' : 'none';
-    termView.style.display = k === 'term' ? '' : 'none';
-    if (k === 'logs' && !logsStarted) { logsStarted = true; startDockerLogs(logsView); }
-    else if (k === 'term' && !execStarted) { execStarted = true; startDockerExec(termView); }
-    else if (k === 'term' && dockerExecFit) setTimeout(() => { try { dockerExecFit.fit(); dockerExecTerm && dockerExecTerm.focus(); } catch (_) {} }, 30);
-  };
-  for (const [k, label] of [['logs', 'Логи'], ['term', 'Терминал']]) {
-    const t = el('button', 'docker-subtab'); t.dataset.k = k; t.textContent = label; t.onclick = () => show(k); tabsEl.appendChild(t);
-  }
-  body.append(tabsEl, logsView, termView);
-  show(dockerDetailTab || 'logs');
-}
-async function renderDockerPanel() {
-  if (dockerView === 'detail') { closeDockerDetail(); dockerView = 'list'; }
-  $('#docker-tabs').style.display = '';
-  const seq = ++dockerRenderSeq;
-  const body = $('#docker-body');
-  if (!dockerDetect) { // probe both engines once (cached; ⟳ resets it)
-    body.innerHTML = '<div class="git-loading">Поиск Docker / Podman…</div>';
-    try { dockerDetect = await lite.containers.detect(); } catch (_) { dockerDetect = { docker: {}, podman: {} }; }
-    if (seq !== dockerRenderSeq || !dockerOpen) return;
-  }
-  renderDockerTabs();
-  const eng = dockerDetect[dockerEngine] || {};
-  body.innerHTML = '';
-  body.appendChild(renderDockerEnv(eng));
-  if (!eng.cli) { // engine CLI not found
-    const notice = el('div', 'docker-notice');
-    notice.appendChild(icon('warning', 26));
-    notice.appendChild(el('div', 'docker-notice-t', (dockerEngine === 'docker' ? 'Docker' : 'Podman') + ' не установлен'));
-    notice.appendChild(el('div', 'docker-notice-s', 'CLI не найден в системе. Установи и нажми ⟳ для повторной проверки.'));
-    body.appendChild(notice);
-    return;
-  }
-  const listBox = el('div', 'docker-list');
-  listBox.appendChild(el('div', 'git-loading', 'Считываю объекты…'));
-  body.appendChild(listBox);
-  let data;
-  try { data = await lite.containers.list(dockerEngine); } catch (e) { data = { containers: { error: String(e) } }; }
-  if (seq !== dockerRenderSeq || !dockerOpen) return;
-  listBox.innerHTML = '';
-  if (data.error) { listBox.appendChild(el('div', 'docker-err', data.error)); return; }
-  renderDockerSections(listBox, data);
-}
+// Вынесен в renderer/modules/containers.js (const Containers — у реестра панелей).
 
 // ================================================================ Database module (Postgres/MySQL/SQLite)
-// Right-pane lightweight DB client: connections grouped by category, schema tree, table data
-// grid, SQL console (CodeMirror) and CSV/JSON/SQL export. Drivers live in main (lib/db.js).
-let dbConnsList = [], dbSecure = true;
-let dbActiveId = null, dbActiveConn = null, dbSchema = null;
-let dbWsTab = 'tree', dbTableSel = null, dbSqlEditor = null, dbLastResult = null, dbRenderSeq = 0;
-let dbUi = (STORE.dbUi && typeof STORE.dbUi === 'object') ? STORE.dbUi : {}; // {catCollapsed, treeOpen, lastSql}
-const DB_TYPES = { postgres: 'PostgreSQL', mysql: 'MySQL / MariaDB', sqlite: 'SQLite' };
-const DB_DEF_PORT = { postgres: 5432, mysql: 3306, sqlite: 0 };
-
-function setDbOpen(open, opts = {}) {
-  if (open === dbOpen) { if (open) renderDbPanel(); return; }
-  if (open) { if (viewerOpen) setViewerOpen(false); if (gitOpen) setGitOpen(false); if (dockerOpen) setDockerOpen(false); if (scratchOpen) setScratchOpen(false); if (rhOpen) setRhOpen(false); }
-  else dbDispose();
-  const delta = layout.db + GUTTER;
-  dbOpen = open;
-  $('#db-pane').classList.toggle('hidden', !open);
-  $('#gutter-db').classList.toggle('hidden', !open);
-  if (opts.grow !== false) lite.win.growBy(open ? delta : -delta);
-  saveUiState();
-  if (open) renderDbPanel();
-  setTimeout(refitActiveTerminal, 150);
-}
-function toggleDb() { setDbOpen(!dbOpen); }
-function dbDispose() { if (dbSqlEditor) { try { dbSqlEditor.destroy(); } catch (_) {} dbSqlEditor = null; } }
-function saveDbUi() { persist('dbUi', dbUi); }
-function dbCatHue(name) { let h = 0; for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) % 360; return h; }
-
-async function renderDbPanel() {
-  const seq = ++dbRenderSeq;
-  const body = $('#db-body');
-  if (!dbActiveId) {
-    body.innerHTML = '<div class="git-loading">Загрузка подключений…</div>';
-    try { const r = await lite.db.list(); dbConnsList = r.connections || []; dbSecure = r.secure !== false; }
-    catch (_) { dbConnsList = []; }
-    if (seq !== dbRenderSeq || !dbOpen) return;
-    renderDbConnections(body);
-  } else {
-    renderDbWorkspace(body);
-  }
-}
-
-// ---- connections list (grouped by category, accordion + gradient, default «Все»)
-function renderDbConnections(body) {
-  body.innerHTML = '';
-  const top = el('div', 'db-topbar');
-  top.appendChild(el('span', 'db-topbar-title', 'Подключения'));
-  const add = iconBtn('drow-act', 'plus', 'Новое подключение', 16); add.onclick = () => dbConnModal(null);
-  top.appendChild(add);
-  body.appendChild(top);
-  if (!dbSecure) body.appendChild(el('div', 'db-warn', '⚠ Системное хранилище ключей недоступно — пароли шифруются слабее.'));
-  if (!dbConnsList.length) { body.appendChild(el('div', 'docker-empty', 'Нет подключений. Добавь первое кнопкой ＋.')); return; }
-  const groups = {};
-  for (const c of dbConnsList) { const g = c.category || 'Все'; (groups[g] = groups[g] || []).push(c); }
-  const cats = Object.keys(groups).sort((a, b) => (a === 'Все' ? -1 : b === 'Все' ? 1 : a.localeCompare(b)));
-  for (const cat of cats) body.appendChild(dbCatBlock(cat, groups[cat]));
-}
-function dbCatBlock(cat, list) {
-  const block = el('div', 'docker-group-block');
-  const head = el('div', 'docker-group-head');
-  const hue = dbCatHue(cat);
-  head.style.background = `linear-gradient(90deg, hsla(${hue},55%,50%,.22), hsla(${hue},55%,50%,.05) 55%, transparent)`;
-  head.style.borderLeft = `3px solid hsl(${hue},60%,55%)`;
-  const collapsed = !!(dbUi.catCollapsed && dbUi.catCollapsed[cat]);
-  const chev = icon(collapsed ? 'chevron-right' : 'chevron-down', 13); chev.classList.add('dgrp-chev');
-  head.append(chev, el('span', 'dgrp-name', cat), el('span', 'dgrp-count', String(list.length)));
-  const bodyEl = el('div', 'docker-group-body');
-  if (collapsed) bodyEl.style.display = 'none';
-  for (const c of list) bodyEl.appendChild(dbConnRow(c));
-  head.onclick = () => {
-    dbUi.catCollapsed = dbUi.catCollapsed || {}; dbUi.catCollapsed[cat] = !dbUi.catCollapsed[cat]; saveDbUi();
-    const col = dbUi.catCollapsed[cat]; bodyEl.style.display = col ? 'none' : '';
-    const nc = icon(col ? 'chevron-right' : 'chevron-down', 13); nc.classList.add('dgrp-chev'); head.replaceChild(nc, head.firstChild);
-  };
-  block.append(head, bodyEl);
-  return block;
-}
-function dbConnRow(c) {
-  const row = el('div', 'db-conn-row clickable');
-  row.appendChild(icon('database', 16));
-  const main = el('div', 'drow-main');
-  main.appendChild(el('span', 'drow-name', c.name || '(без имени)'));
-  const sub = c.type === 'sqlite' ? (c.file || c.database || 'файл не задан')
-    : `${DB_TYPES[c.type] || c.type} · ${c.host || 'localhost'}:${c.port || DB_DEF_PORT[c.type] || ''}${c.sshEnabled ? ' · SSH' : ''}${c.readOnly ? ' · RO' : ''}`;
-  main.appendChild(el('span', 'drow-sub', sub));
-  row.appendChild(main);
-  const acts = el('div', 'drow-acts');
-  const edit = iconBtn('drow-act', 'pencil', 'Изменить', 13); edit.onclick = (e) => { e.stopPropagation(); dbConnModal(c); };
-  const del = iconBtn('drow-act danger', 'trash', 'Удалить', 13);
-  del.onclick = (e) => { e.stopPropagation(); showConfirm('Удалить подключение?', `«${c.name}» удалится из списка (сама БД не трогается).`, 'Удалить', async () => { await lite.db.delete(c.id); renderDbPanel(); }); };
-  acts.append(edit, del); row.appendChild(acts);
-  row.addEventListener('click', () => { dbActiveId = c.id; dbActiveConn = c; dbSchema = null; dbTableSel = null; dbWsTab = 'tree'; renderDbPanel(); });
-  return row;
-}
-
-// ---- add/edit connection modal (host + SSH, безопасно)
-function dbConnModal(existing) {
-  const c = existing ? { ...existing } : { type: 'postgres', category: 'Все', port: 5432 };
-  const { m, close } = makeModal(`<h2>${existing ? 'Изменить' : 'Новое'} подключение</h2><div id="dbf" class="db-form"></div>`);
-  m.classList.add('db-modal');
-  const f = m.querySelector('#dbf');
-  const field = (label, node) => { const w = el('div', 'db-field'); w.appendChild(el('label', null, label)); w.appendChild(node); f.appendChild(w); return node; };
-  const inp = (val, ph, type) => { const i = el('input'); i.type = type || 'text'; if (val != null) i.value = val; if (ph) i.placeholder = ph; return i; };
-  const name = field('Имя', inp(c.name, 'Моя база'));
-  const typeSel = el('select'); for (const [k, v] of Object.entries(DB_TYPES)) { const o = document.createElement('option'); o.value = k; o.textContent = v; if (k === c.type) o.selected = true; typeSel.appendChild(o); }
-  field('Тип', typeSel);
-  const cat = field('Категория', inp(c.category || 'Все', 'Все'));
-  // host group
-  const hostWrap = el('div', 'db-group');
-  const host = inp(c.host || '', 'localhost'); const port = inp(c.port || DB_DEF_PORT[c.type] || '', '5432', 'number');
-  const user = inp(c.user || '', 'пользователь'); const pass = inp('', existing ? '(без изменений)' : 'пароль', 'password');
-  const database = inp(c.database || '', 'имя базы (опц.)');
-  const ssl = el('input'); ssl.type = 'checkbox'; ssl.checked = !!c.ssl;
-  const sslIns = el('input'); sslIns.type = 'checkbox'; sslIns.checked = !!c.sslInsecure;
-  const mk = (lbl, node) => { const w = el('div', 'db-field'); w.appendChild(el('label', null, lbl)); w.appendChild(node); return w; };
-  const sslLabel = (() => { const w = el('label', 'db-check'); w.append(ssl, document.createTextNode(' Использовать SSL/TLS')); return w; })();
-  const sslInsLabel = (() => { const w = el('label', 'db-check db-check-warn'); w.append(sslIns, document.createTextNode(' Доверять самоподписанному сертификату (небезопасно)')); return w; })();
-  ssl.onchange = () => { sslInsLabel.style.display = ssl.checked ? '' : 'none'; };
-  hostWrap.append(mk('Хост', host), mk('Порт', port), mk('Пользователь', user), mk('Пароль', pass), mk('База', database), sslLabel, sslInsLabel);
-  f.appendChild(hostWrap);
-  // sqlite group
-  const sqliteWrap = el('div', 'db-group');
-  const file = inp(c.file || c.database || '', '/путь/к/базе.sqlite');
-  sqliteWrap.append(mk('Файл БД', file));
-  f.appendChild(sqliteWrap);
-  // SSH group
-  const sshOn = el('input'); sshOn.type = 'checkbox'; sshOn.checked = !!c.sshEnabled;
-  const sshLabel = el('label', 'db-check'); sshLabel.append(sshOn, document.createTextNode(' Подключаться через SSH-туннель'));
-  f.appendChild(sshLabel);
-  const sshWrap = el('div', 'db-group');
-  const sshHost = inp(c.sshHost || '', 'ssh-хост'); const sshPort = inp(c.sshPort || 22, '22', 'number');
-  const sshUser = inp(c.sshUser || '', 'ssh-пользователь'); const sshPass = inp('', existing ? '(без изменений)' : 'пароль/passphrase', 'password');
-  sshWrap.append(mk('SSH хост', sshHost), mk('SSH порт', sshPort), mk('SSH пользователь', sshUser), mk('SSH пароль', sshPass));
-  f.appendChild(sshWrap);
-  // read-only
-  const ro = el('input'); ro.type = 'checkbox'; ro.checked = !!c.readOnly;
-  const roLabel = el('label', 'db-check'); roLabel.append(ro, document.createTextNode(' Только чтение (запрет изменяющих запросов)'));
-  f.appendChild(roLabel);
-  // visibility by type
-  const syncType = () => {
-    const t = typeSel.value;
-    hostWrap.style.display = t === 'sqlite' ? 'none' : '';
-    sqliteWrap.style.display = t === 'sqlite' ? '' : 'none';
-    sshLabel.style.display = t === 'sqlite' ? 'none' : '';
-    sshWrap.style.display = (t !== 'sqlite' && sshOn.checked) ? '' : 'none';
-    sslInsLabel.style.display = (t !== 'sqlite' && ssl.checked) ? '' : 'none';
-  };
-  typeSel.onchange = () => { if (!port.value || port.value == DB_DEF_PORT[c.type]) port.value = DB_DEF_PORT[typeSel.value] || ''; syncType(); };
-  sshOn.onchange = syncType; syncType();
-  // collect form → conn object (passwords only if typed)
-  const collect = () => {
-    const o = { id: c.id, name: name.value.trim(), type: typeSel.value, category: cat.value.trim() || 'Все', readOnly: ro.checked };
-    if (typeSel.value === 'sqlite') { o.file = file.value.trim(); o.database = o.file; }
-    else { o.host = host.value.trim(); o.port = +port.value || DB_DEF_PORT[typeSel.value]; o.user = user.value.trim(); o.database = database.value.trim(); o.ssl = ssl.checked; o.sslInsecure = sslIns.checked; o.sshEnabled = sshOn.checked; o.sshHost = sshHost.value.trim(); o.sshPort = +sshPort.value || 22; o.sshUser = sshUser.value.trim(); if (sshPass.value) o.sshPassword = sshPass.value; }
-    if (pass.value) o.password = pass.value;
-    return o;
-  };
-  // buttons
-  const row = el('div', 'gm-actions'); row.style.marginTop = '12px';
-  const status = el('span', 'db-test-status');
-  const test = el('button', 'btn', 'Тест');
-  test.onclick = async () => { status.textContent = 'Проверяю…'; status.className = 'db-test-status'; const r = await lite.db.test(collect()); if (r.ok) { status.textContent = '✓ ' + (r.version || 'подключение успешно'); status.classList.add('ok'); } else { status.textContent = '✕ ' + (r.error || 'не удалось'); status.classList.add('err'); } };
-  const save = el('button', 'btn primary', 'Сохранить');
-  save.onclick = async () => { const o = collect(); if (!o.name) { toast('Введи имя', { kind: 'err' }); return; } const r = await lite.db.save(o); if (r && r.error) { toast(r.error, { kind: 'err' }); return; } close(); renderDbPanel(); };
-  const cancel = el('button', 'btn', 'Отмена'); cancel.onclick = close;
-  row.append(test, save, cancel); f.appendChild(row); f.appendChild(status);
-}
-
-// ---- workspace (active connection): tabs «Объекты» / «SQL»
-function renderDbWorkspace(body) {
-  body.innerHTML = '';
-  const head = el('div', 'db-ws-head');
-  const back = iconBtn('drow-act', 'chevron-left', 'К подключениям', 16);
-  back.onclick = () => { dbActiveId = null; dbActiveConn = null; dbSchema = null; dbTableSel = null; dbDispose(); renderDbPanel(); };
-  head.append(back, icon('database', 15), el('span', 'db-ws-name', dbActiveConn.name));
-  if (dbActiveConn.readOnly) head.appendChild(el('span', 'db-ro-badge', 'только чтение'));
-  body.appendChild(head);
-  const tabs = el('div', 'docker-subtabs');
-  for (const [k, label] of [['tree', 'Объекты'], ['sql', 'SQL']]) {
-    const t = el('button', 'docker-subtab' + (dbWsTab === k ? ' on' : '')); t.textContent = label;
-    t.onclick = () => { if (dbWsTab !== k) { dbWsTab = k; renderDbWorkspace(body); } };
-    tabs.appendChild(t);
-  }
-  body.appendChild(tabs);
-  const view = el('div', 'db-ws-view'); body.appendChild(view);
-  if (dbWsTab === 'tree') renderDbTree(view); else renderDbSql(view);
-}
-
-async function renderDbTree(view) {
-  dbDispose(); // no SQL editor needed on the objects tab — release the lingering CodeMirror
-  if (dbTableSel) { renderDbTableView(view); return; }
-  const seq = ++dbRenderSeq;
-  view.innerHTML = '<div class="git-loading">Чтение схемы…</div>';
-  if (!dbSchema) { const r = await lite.db.schema(dbActiveId); if (seq !== dbRenderSeq) return; if (r.error) { view.innerHTML = ''; view.appendChild(el('div', 'docker-err', r.error)); return; } dbSchema = r; }
-  view.innerHTML = '';
-  if (!dbSchema.schemas || !dbSchema.schemas.length) { view.appendChild(el('div', 'docker-empty', 'Нет таблиц.')); return; }
-  for (const sch of dbSchema.schemas) view.appendChild(dbSchemaBlock(sch));
-}
-function dbSchemaBlock(sch) {
-  const block = el('div', 'docker-sec');
-  const k = dbActiveId + ':' + sch.name;
-  const open = !(dbUi.treeOpen && dbUi.treeOpen[k] === false); // default open
-  const head = el('button', 'docker-sec-head');
-  const chev = icon(open ? 'chevron-down' : 'chevron-right', 13); chev.classList.add('dsec-chev');
-  head.append(chev, icon('grid', 14), el('span', 'dsec-title', sch.name), el('span', 'dsec-count', String(sch.tables.length)));
-  const list = el('div', 'docker-sec-body'); if (!open) list.style.display = 'none';
-  for (const t of sch.tables) {
-    const r = el('div', 'db-table-row clickable');
-    r.append(icon(t.view ? 'eye' : 'box', 13), el('span', 'db-table-name', t.name));
-    r.onclick = () => { dbTableSel = { schema: sch.name, table: t.name, view: t.view, page: 0 }; renderDbPanel(); };
-    list.appendChild(r);
-  }
-  head.onclick = () => {
-    dbUi.treeOpen = dbUi.treeOpen || {}; const cur = !(dbUi.treeOpen[k] === false); dbUi.treeOpen[k] = !cur; saveDbUi();
-    list.style.display = dbUi.treeOpen[k] ? '' : 'none';
-    const nc = icon(dbUi.treeOpen[k] ? 'chevron-down' : 'chevron-right', 13); nc.classList.add('dsec-chev'); head.replaceChild(nc, head.firstChild);
-  };
-  block.append(head, list);
-  return block;
-}
-
-const DB_PAGE = 200;
-async function renderDbTableView(view) {
-  const sel = dbTableSel;
-  view.innerHTML = '';
-  const bar = el('div', 'db-tablebar');
-  const back = iconBtn('drow-act', 'chevron-left', 'К объектам', 15); back.onclick = () => { dbTableSel = null; renderDbPanel(); };
-  bar.append(back, el('span', 'db-table-title', sel.table));
-  bar.appendChild(dbExportBar(() => dbLastResult, sel.table));
-  view.appendChild(bar);
-  const grid = el('div', 'db-grid-wrap'); grid.innerHTML = '<div class="git-loading">Загрузка…</div>'; view.appendChild(grid);
-  const pager = el('div', 'db-pager'); view.appendChild(pager);
-  const seq = ++dbRenderSeq;
-  const r = await lite.db.tableData(dbActiveId, sel.schema, sel.table, { limit: DB_PAGE, offset: sel.page * DB_PAGE });
-  if (seq !== dbRenderSeq) return;
-  grid.innerHTML = '';
-  if (r.error) { grid.appendChild(el('div', 'docker-err', r.error)); return; }
-  dbLastResult = r;
-  grid.appendChild(dbGrid(r.columns, r.rows));
-  const total = r.total != null && !Number.isNaN(r.total) ? r.total : '?';
-  pager.appendChild(el('span', 'db-pageinfo', `${r.rows.length ? sel.page * DB_PAGE + 1 : 0}–${sel.page * DB_PAGE + r.rows.length} из ${total}`));
-  const prev = iconBtn('drow-act', 'chevron-left', 'Назад', 13); prev.disabled = sel.page <= 0; prev.onclick = () => { if (sel.page > 0) { sel.page--; renderDbPanel(); } };
-  const next = iconBtn('drow-act', 'chevron-right', 'Вперёд', 13); next.disabled = r.rows.length < DB_PAGE; next.onclick = () => { sel.page++; renderDbPanel(); };
-  pager.append(prev, next);
-}
-
-function dbGrid(columns, rows) {
-  const wrap = el('div', 'db-grid');
-  const tbl = document.createElement('table');
-  const thead = document.createElement('thead'); const htr = document.createElement('tr');
-  for (const c of columns) { const th = document.createElement('th'); th.textContent = c; htr.appendChild(th); }
-  thead.appendChild(htr); tbl.appendChild(thead);
-  const tb = document.createElement('tbody');
-  for (const rowv of rows) {
-    const tr = document.createElement('tr');
-    for (const v of rowv) {
-      const td = document.createElement('td');
-      if (v === null || v === undefined) { td.textContent = 'NULL'; td.className = 'db-null'; }
-      else { let s = typeof v === 'object' ? JSON.stringify(v) : String(v); if (s.length > 400) s = s.slice(0, 400) + '…'; td.textContent = s; td.title = s; }
-      tr.appendChild(td);
-    }
-    tb.appendChild(tr);
-  }
-  tbl.appendChild(tb); wrap.appendChild(tbl);
-  return wrap;
-}
-
-// ---- SQL console (CodeMirror + run + results + export/import)
-function dbDialect() { return dbActiveConn.type === 'mysql' ? MySQL : dbActiveConn.type === 'sqlite' ? SQLite : PostgreSQL; }
-function renderDbSql(view) {
-  view.innerHTML = '';
-  const edWrap = el('div', 'db-sql-editor'); view.appendChild(edWrap);
-  const bar = el('div', 'db-sql-bar');
-  const run = el('button', 'btn primary db-run', '▶ Выполнить'); run.title = 'Ctrl+Enter'; run.onclick = dbRunSql;
-  bar.appendChild(run);
-  const imp = el('button', 'btn db-imp', '⬇ Импорт'); imp.title = 'Загрузить SQL-файл в редактор';
-  imp.onclick = async () => { const r = await lite.db.openText(); if (r && r.ok && dbSqlEditor) dbSqlEditor.dispatch({ changes: { from: 0, to: dbSqlEditor.state.doc.length, insert: r.content } }); else if (r && r.error) toast(r.error, { kind: 'err' }); };
-  bar.appendChild(imp);
-  bar.appendChild(dbExportBar(() => dbLastResult, 'query'));
-  view.appendChild(bar);
-  const res = el('div', 'db-sql-result'); res.id = 'db-sql-result'; view.appendChild(res);
-  if (dbSqlEditor) { try { dbSqlEditor.destroy(); } catch (_) {} dbSqlEditor = null; }
-  const initial = (dbUi.lastSql && dbUi.lastSql[dbActiveId]) || '';
-  const state = EditorState.create({
-    doc: initial,
-    extensions: [
-      lineNumbers(), history(), drawSelection(), indentOnInput(), bracketMatching(),
-      syntaxHighlighting(defaultHighlightStyle), sql({ dialect: dbDialect() }), oneDark,
-      keymap.of([{ key: 'Ctrl-Enter', run: () => { dbRunSql(); return true; } }, indentWithTab, ...defaultKeymap, ...historyKeymap]),
-      EditorView.updateListener.of((u) => { if (u.docChanged) { dbUi.lastSql = dbUi.lastSql || {}; dbUi.lastSql[dbActiveId] = u.state.doc.toString(); } }),
-    ],
-  });
-  dbSqlEditor = new EditorView({ state, parent: edWrap });
-}
-async function dbRunSql() {
-  if (!dbSqlEditor) return;
-  const text = dbSqlEditor.state.doc.toString().trim();
-  if (!text) return;
-  saveDbUi();
-  const res = $('#db-sql-result'); if (!res) return;
-  res.innerHTML = '<div class="git-loading">Выполняю…</div>';
-  const seq = ++dbRenderSeq;
-  const r = await lite.db.query(dbActiveId, text);
-  if (seq !== dbRenderSeq || !document.getElementById('db-sql-result')) return;
-  res.innerHTML = '';
-  if (r.error) { res.appendChild(el('div', 'docker-err', r.error)); return; }
-  dbLastResult = r;
-  if (r.columns && r.columns.length) { res.appendChild(el('div', 'db-result-info', `${r.rows.length} строк`)); res.appendChild(dbGrid(r.columns, r.rows)); dbSchema = null; }
-  else { res.appendChild(el('div', 'db-result-info', `Готово${r.rowCount != null ? ` · затронуто строк: ${r.rowCount}` : ''}`)); dbSchema = null; }
-}
-
-// ---- export (CSV / JSON / SQL) — three small buttons
-function dbExportBar(getResult, name) {
-  const wrap = el('div', 'db-export');
-  for (const fmt of ['csv', 'json', 'sql']) {
-    const b = el('button', 'db-exp-btn', fmt.toUpperCase());
-    b.title = 'Экспорт в ' + fmt.toUpperCase();
-    b.onclick = (e) => { e.stopPropagation(); dbDoExport(getResult(), name, fmt); };
-    wrap.appendChild(b);
-  }
-  return wrap;
-}
-async function dbDoExport(result, name, fmt) {
-  if (!result || !result.columns || !result.columns.length) { toast('Нет данных для экспорта'); return; }
-  const { columns, rows } = result;
-  let text = '', ext = fmt;
-  if (fmt === 'csv') { const esc = (v) => v == null ? '' : /[",\n]/.test(String(v)) ? '"' + String(v).replace(/"/g, '""') + '"' : String(v); text = [columns.join(','), ...rows.map((r) => r.map(esc).join(','))].join('\n'); }
-  else if (fmt === 'json') { text = JSON.stringify(rows.map((r) => Object.fromEntries(columns.map((c, i) => [c, r[i]]))), null, 2); }
-  else { const qv = (v) => v == null ? 'NULL' : typeof v === 'number' ? String(v) : "'" + String(v).replace(/'/g, "''") + "'"; text = rows.map((r) => `INSERT INTO ${name} (${columns.join(', ')}) VALUES (${r.map(qv).join(', ')});`).join('\n'); }
-  const r = await lite.db.saveText(`${name}.${ext}`, text);
-  if (r && r.ok) toast('Сохранено: ' + r.path, { ttl: 7000 });
-  else if (r && r.error) toast(r.error, { kind: 'err' });
-}
+// Вынесен в renderer/modules/db.js (const Db — у реестра панелей).
 
 // ---------------------------------------------------------------- file tree
 const EXT_COLORS = {
@@ -4101,30 +2058,6 @@ function cssEscape(s) { return (window.CSS && CSS.escape) ? CSS.escape(s) : s.re
 const dirName = (p) => { const i = p.search(/[\\/][^\\/]*$/); return i >= 0 ? p.slice(0, i) : p; };
 // absolute fs path → file:// URL (Windows C:\x → file:///C:/x), for preview resources
 function fileUrl(p) { let u = String(p).replace(/\\/g, '/'); if (!u.startsWith('/')) u = '/' + u; return 'file://' + encodeURI(u); }
-
-// small single-input prompt modal; onOk(value) may return {error} to keep the dialog open
-function showPrompt(title, label, initial, onOk) {
-  const { m, close } = makeModal(`
-    <h2></h2>
-    <div class="field"><label></label><input type="text" id="pr-in" autocomplete="off" spellcheck="false"></div>
-    <div class="err" id="pr-err"></div>
-    <div class="modal-actions"><button class="btn" id="pr-cancel">Отмена</button><button class="btn primary" id="pr-ok">Ок</button></div>`);
-  m.querySelector('h2').textContent = title;
-  m.querySelector('label').textContent = label;
-  const inp = m.querySelector('#pr-in'); inp.value = initial || '';
-  const err = m.querySelector('#pr-err');
-  setTimeout(() => { inp.focus(); inp.select(); }, 30);
-  m.querySelector('#pr-cancel').onclick = close;
-  const ok = async () => {
-    const v = inp.value.trim();
-    if (!v) { err.textContent = 'Введи имя'; return; }
-    const res = await onOk(v);
-    if (res && res.error) { err.textContent = res.error; return; }
-    close();
-  };
-  m.querySelector('#pr-ok').onclick = ok;
-  m.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); ok(); } });
-}
 
 // ---------------------------------------------------------------- tree file operations (#6)
 async function refreshTree() { const p = activeProject(); if (p) await renderTree(p); }
@@ -4370,49 +2303,7 @@ function showTermMenu(x, y, term, projId) {
 }
 
 // ---------------------------------------------------------------- modals
-// onClose runs on EVERY close path (button, Esc, overlay-click) exactly once — so
-// callers can release listeners/refs they attached (e.g. a queue's onChange) without
-// leaking when the user dismisses via Esc or backdrop instead of the explicit button.
-function makeModal(innerHtml, onClose) {
-  const overlay = el('div', 'modal-overlay');
-  const m = el('div', 'modal');
-  m.innerHTML = innerHtml;
-  overlay.appendChild(m);
-  $('#modal-root').appendChild(overlay);
-  let closed = false;
-  const close = () => {
-    if (closed) return;
-    closed = true;
-    $('#modal-root').innerHTML = '';
-    if (onClose) { try { onClose(); } catch (_) {} }
-  };
-  overlay.addEventListener('mousedown', (e) => { if (e.target === overlay) close(); });
-  m.addEventListener('keydown', (e) => { if (e.key === 'Escape') close(); });
-  return { overlay, m, close };
-}
-// Optional middle button (altLabel/onAlt) turns this into a 3-way prompt
-// (e.g. Save / Don't save / Cancel).
-function showConfirm(title, text, yesLabel, onYes, altLabel, onAlt) {
-  const { m, close } = makeModal(`
-    <h2 class="cm-title"></h2>
-    <div class="about-desc cm-text"></div>
-    <div class="modal-actions">
-      <button class="btn" id="cm-no">Отмена</button>
-      <button class="btn" id="cm-alt" style="display:none"></button>
-      <button class="btn primary" id="cm-yes"></button>
-    </div>`);
-  m.querySelector('.cm-title').textContent = title;
-  m.querySelector('.cm-text').textContent = text;
-  m.querySelector('#cm-yes').textContent = yesLabel;
-  m.querySelector('#cm-no').onclick = close;
-  m.querySelector('#cm-yes').onclick = () => { close(); onYes(); };
-  if (altLabel) {
-    const alt = m.querySelector('#cm-alt');
-    alt.style.display = ''; alt.textContent = altLabel;
-    alt.onclick = () => { close(); onAlt && onAlt(); };
-  }
-  setTimeout(() => m.querySelector('#cm-yes').focus(), 30);
-}
+// makeModal/showConfirm/showPrompt живут в ui.js; здесь остались только предметные модалки.
 function showAbout() {
   closeMenus();
   const { m, close } = makeModal(`
@@ -4671,9 +2562,9 @@ function paletteActions() {
   acts.push({ label: 'Открыть папку…', run: openProjectDialog });
   acts.push({ label: 'Создать папку…', run: showCreateFolder });
   acts.push({ label: viewerOpen ? 'Закрыть вивер' : 'Открыть вивер', run: () => setViewerOpen(!viewerOpen) });
-  acts.push({ label: gitOpen ? 'Закрыть Git' : 'Открыть Git', run: toggleGit });
-  acts.push({ label: dockerOpen ? 'Закрыть контейнеры' : 'Контейнеры (Docker / Podman)', run: toggleDocker });
-  acts.push({ label: dbOpen ? 'Закрыть базы данных' : 'Базы данных (Postgres / MySQL / SQLite)', run: toggleDb });
+  acts.push({ label: Git.isOpen() ? 'Закрыть Git' : 'Открыть Git', run: Git.toggle });
+  acts.push({ label: Containers.isOpen() ? 'Закрыть контейнеры' : 'Контейнеры (Docker / Podman)', run: Containers.toggle });
+  acts.push({ label: Db.isOpen() ? 'Закрыть базы данных' : 'Базы данных (Postgres / MySQL / SQLite)', run: Db.toggle });
   acts.push({ label: 'Режим «один терминал»', run: toggleSingle });
   acts.push({ label: 'Поиск в терминале', run: openTermSearch });
   acts.push({ label: 'Очистить терминал', run: () => clearTerminal() });
@@ -4832,8 +2723,7 @@ function init() {
     setProjState(id, 'quiet');
   });
   // RemoteHost — SSH-сессии (отдельный канал, не PTY): пишем вывод в соответствующий xterm.
-  lite.rh.onData(({ id, data }) => { const rec = rhTerms.get(id); if (rec) rec.term.write(data); });
-  lite.rh.onExit(({ id }) => { const rec = rhTerms.get(id); if (rec) rec.term.write('\r\n\x1b[90m[соединение закрыто — закрой вкладку или подключись заново]\x1b[0m\r\n'); });
+  Rh.bindEvents(); // поток данных/закрытие SSH-сессий → xterm-вкладки модуля
   // Пульт задал размер сессии → зеркалим его сетку на ПК (letterbox), не навязываем свою.
   try { if (lite.pty.onRemoteSize) lite.pty.onRemoteSize(({ id, cols, rows }) => { try { applyRemoteTermSize(id, cols, rows); } catch (_) {} }); } catch (_) {}
   // Пульт отключился → ПК возвращает себе размер (обычный fit всех сессий).
@@ -4849,11 +2739,15 @@ function init() {
   try { if (lite.remote && lite.remote.onNewFolder) lite.remote.onNewFolder((name) => { try { handleRemoteNewFolder(name); } catch (_) {} }); } catch (_) {}
   // Пульт просит одобрить устройство (pairing) → модалка одобрения.
   try { if (lite.remote && lite.remote.onPairRequest) lite.remote.onPairRequest((info) => { try { handleRemotePairRequest(info); } catch (_) {} }); } catch (_) {}
+  // Бейдж «подключённые пульты» у версии: живёт на push-событиях из main + стартовый снимок.
+  try {
+    if (lite.remote && lite.remote.onPults) lite.remote.onPults((st) => { try { pultsState = st || pultsState; updatePultBadge(); } catch (_) {} });
+    const pb = $('#pult-badge'); if (pb) pb.onclick = () => { try { showPults(); } catch (_) {} };
+    if (lite.remote && lite.remote.pults) setTimeout(() => { refreshPults().catch(() => {}); }, 1500);
+  } catch (_) {}
 
-  // OpenRouter streaming → route SSE events to the live request's handlers (by reqId).
-  lite.openrouter.onChunk(({ reqId, delta }) => { const h = pendingOr.get(reqId); if (h) h.chunk(delta); });
-  lite.openrouter.onDone(({ reqId }) => { const h = pendingOr.get(reqId); if (h) h.done(); });
-  lite.openrouter.onError(({ reqId, error }) => { const h = pendingOr.get(reqId); if (h) h.error(error); });
+  // OpenRouter streaming → SSE-события маршрутизирует модуль (по reqId).
+  Or.bindStream();
 
   // Live disk changes for the active project: refresh tree (keeping expansion)
   // and reload the open file — or warn if you have unsaved edits.
@@ -4872,7 +2766,6 @@ function init() {
   });
 
   $('#btn-single').addEventListener('click', toggleSingle);
-  $('#btn-scratch').addEventListener('click', toggleScratch);
   $('#scratch-restart').addEventListener('click', () => restartScratch());
   $('#scratch-close').addEventListener('click', () => setScratchOpen(false));
   $('#viewer-save').addEventListener('click', saveCurrent);
@@ -4882,15 +2775,15 @@ function init() {
   $('#viewer-minimap').addEventListener('click', toggleMinimap);
   $('#viewer-minimap').classList.toggle('on', settings.minimap);
   $('#viewer-close').addEventListener('click', () => setViewerOpen(false));
-  $('#git-close').addEventListener('click', () => setGitOpen(false));
-  $('#git-refresh').addEventListener('click', () => { if (gitOpen) renderGitPanel(activeProject()); });
-  $('#docker-close').addEventListener('click', () => setDockerOpen(false));
-  $('#docker-refresh').addEventListener('click', () => { dockerDetect = null; if (dockerOpen) renderDockerPanel(); });
-  $('#db-close').addEventListener('click', () => setDbOpen(false));
-  $('#db-refresh').addEventListener('click', () => { dbSchema = null; if (dbOpen) renderDbPanel(); });
-  $('#rh-close').addEventListener('click', () => setRhOpen(false));
-  $('#rh-refresh').addEventListener('click', () => { if (rhOpen) renderRhPanel(); });
-  $('#rh-back').addEventListener('click', () => rhGoList());
+  $('#git-close').addEventListener('click', () => Git.setOpen(false));
+  $('#git-refresh').addEventListener('click', () => { if (Git.isOpen()) Git.renderPanel(activeProject()); });
+  $('#docker-close').addEventListener('click', () => Containers.setOpen(false));
+  $('#docker-refresh').addEventListener('click', () => Containers.refresh());
+  $('#db-close').addEventListener('click', () => Db.setOpen(false));
+  $('#db-refresh').addEventListener('click', () => Db.refresh());
+  $('#rh-close').addEventListener('click', () => Rh.setOpen(false));
+  $('#rh-refresh').addEventListener('click', () => { if (Rh.isOpen()) Rh.renderPanel(); });
+  $('#rh-back').addEventListener('click', () => Rh.goList());
   $('#tree-refresh').addEventListener('click', () => { const p = activeProject(); if (p) renderTree(p); });
   $('#tree-new').addEventListener('click', (e) => { const p = activeProject(); if (p) showTreeMenu(e.clientX, e.clientY, { name: p.name, path: p.path, dir: true, root: true }); });
   $('#tree').addEventListener('contextmenu', (e) => {
@@ -4915,38 +2808,7 @@ function init() {
   $('#term-search-prev').addEventListener('click', () => runTermSearch(-1));
   $('#term-search-close').addEventListener('click', closeTermSearch);
 
-  // OpenRouter chat controls
-  $('#chat-send').addEventListener('click', onSendClick);
-  $('#chat-model-btn').addEventListener('click', (e) => { e.stopPropagation(); toggleModelPop(); });
-  $('#chat-model-search').addEventListener('input', (e) => renderModelList(e.target.value));
-  $('#chat-model-pop').addEventListener('click', (e) => e.stopPropagation());
-  $('#chat-session-btn').addEventListener('click', (e) => { e.stopPropagation(); toggleSessionPop(); });
-  $('#chat-session-pop').addEventListener('click', (e) => e.stopPropagation());
-  $('#chat-log').addEventListener('click', (e) => {
-    const img = e.target.closest('img'); // generated/markdown image → open in a lightbox
-    if (img && img.src) { e.preventDefault(); openImageLightbox(img.src); return; }
-    const a = e.target.closest('a[href]'); if (!a) return; // links in messages open in the system browser
-    e.preventDefault();
-    // model output is untrusted — only open http(s); never file:/custom schemes via openExternal
-    try { const u = new URL(a.getAttribute('href'), location.href); if (u.protocol === 'http:' || u.protocol === 'https:') lite.openExternal(u.href); } catch (_) {}
-  });
-  $('#chat-ctx-input').addEventListener('change', (e) => {
-    const card = activeOrCard(); if (!card) return;
-    const s = activeSession(); if (!s) return;
-    const v = clamp(e.target.value, 1, 100); e.target.value = v; s.contextN = v; // bind to the active session
-    saveOrHist(card.id);
-  });
-  const chatInput = $('#chat-input');
-  chatInput.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendChat(); } // Enter sends; sendChat no-ops while streaming (use ■ to stop)
-  });
-  chatInput.addEventListener('input', () => { // auto-grow the textarea up to a cap
-    chatInput.style.height = 'auto';
-    chatInput.style.height = Math.min(chatInput.scrollHeight, 160) + 'px';
-  });
-  document.addEventListener('click', () => {
-    for (const sel of ['#chat-model-pop', '#chat-session-pop']) { const p = $(sel); if (p && !p.classList.contains('hidden')) p.classList.add('hidden'); }
-  });
+  Or.bindControls(); // OpenRouter chat controls — слушатели панели чата (модуль)
 
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && document.body.classList.contains('preview-full')) { e.preventDefault(); exitPreviewFull(); return; }
@@ -4976,7 +2838,7 @@ function init() {
   new ResizeObserver(() => { clearTimeout(rezTimer); rezTimer = setTimeout(() => refitActiveTerminal(), 80); }).observe($('#terminal-pane'));
   let scratchRezTimer;
   new ResizeObserver(() => { clearTimeout(scratchRezTimer); scratchRezTimer = setTimeout(() => refitScratch(), 80); }).observe($('#scratch-pane'));
-  let rhRezTimer; new ResizeObserver(() => { clearTimeout(rhRezTimer); rhRezTimer = setTimeout(() => refitRhSession(), 80); }).observe($('#rh-pane'));
+  let rhRezTimer; new ResizeObserver(() => { clearTimeout(rhRezTimer); rhRezTimer = setTimeout(() => Rh.refitSession(), 80); }).observe($('#rh-pane'));
 
   applyFontSize();
   projects = loadProjectsFromDisk();
@@ -4987,14 +2849,15 @@ function init() {
   // Restore which panes were open last time (viewer / system terminal). grow:false —
   // the saved window width already includes them, so reveal in place without resizing.
   const ui = STORE.uiState || {};
-  // Right-slot modules are mutually exclusive — restore at most one (saved state has ≤1 open).
-  if (ui.viewerOpen) setViewerOpen(true, { grow: false });
-  if (ui.scratchOpen && !viewerOpen) setScratchOpen(true, { grow: false });
+  // Right-slot modules are mutually exclusive — restore at most one, first-true-wins
+  // (приоритет — порядок старых if-цепочек: viewer, scratch, git, docker, db, rh).
   // allowEmpty so Git returns even before a project is active — matching the viewer, so window width fits.
-  if (ui.gitOpen && !viewerOpen && !scratchOpen) setGitOpen(true, { grow: false, allowEmpty: true });
-  if (ui.dockerOpen && !viewerOpen && !scratchOpen && !gitOpen) setDockerOpen(true, { grow: false });
-  if (ui.dbOpen && !viewerOpen && !scratchOpen && !gitOpen && !dockerOpen) setDbOpen(true, { grow: false });
-  if (ui.rhOpen && !viewerOpen && !scratchOpen && !gitOpen && !dockerOpen && !dbOpen) setRhOpen(true, { grow: false });
+  const RESTORE_ORDER = [['files', 'viewerOpen'], ['scratch', 'scratchOpen'], ['git', 'gitOpen'], ['docker', 'dockerOpen'], ['db', 'dbOpen'], ['rh', 'rhOpen']];
+  for (const [id, key] of RESTORE_ORDER) {
+    if (!ui[key]) continue;
+    panels.get(id).setOpen(true, id === 'git' ? { grow: false, allowEmpty: true } : { grow: false });
+    break;
+  }
 
   scanProjects();          // add subfolders of settings.scanDirs (non-blocking)
   checkProjectsExistence();

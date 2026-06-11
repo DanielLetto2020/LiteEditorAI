@@ -7,12 +7,8 @@
 //     ждём {t:"auth_ok",token} | {t:"auth_err",error}.
 // Любая JS-ошибка шлётся на сервер ({t:"report"}) и показывается баннером — чтобы
 // «чёрный экран»/«тишину» можно было диагностировать удалённо (таблица reports).
-// Терминал на пульте держим на том же xterm 5-стеке, что и редактор: это критично
-// для одинаковой ширины Unicode/emoji/box-drawing символов между ПК и Android WebView.
-import { Terminal } from '@xterm/xterm';
-import { FitAddon } from '@xterm/addon-fit';
-import { Unicode11Addon } from '@xterm/addon-unicode11';
-import '@xterm/xterm/css/xterm.css';
+// Терминала-эмулятора на пульте НЕТ: ПК шлёт «проекцию экрана» (текстовые кадры
+// с теневого headless-xterm, см. remote.js на ПК), пульт лишь рисует их в <pre>.
 
 let ws = null;
 let relayUrl = 'wss://lite.codecopy.ru/ws';
@@ -178,8 +174,6 @@ function collectDiagnostics() {
   const host = $('term');
   let lsOk = false;
   try { localStorage.setItem('__lite_diag', '1'); localStorage.removeItem('__lite_diag'); lsOk = true; } catch (_) {}
-  let alt = false;
-  try { alt = inAltBuffer(); } catch (_) {}
   return {
     time: new Date().toISOString(),
     pultVersion: window.PULT_VER || '',
@@ -211,24 +205,12 @@ function collectDiagnostics() {
     },
     terminal: {
       inited: termInited,
-      ok: termOk,
-      mode: termMode,
-      readerLoading,
-      readerTextLength: readerText.length,
       selected,
-      cols: term && term.cols,
-      rows: term && term.rows,
-      fontSize: termFontSize(),
-      altBuffer: alt,
-      queueLength: outputQueue.length,
-      writing: outputWriting,
+      frame: frame ? {
+        seq: frame.seq, lines: frame.lines.length, cols: frame.cols, rows: frame.rows, alt: frame.alt,
+      } : null,
       hostWidth: host && host.clientWidth,
       hostHeight: host && host.clientHeight,
-      hostScrollTop: host && host.scrollTop,
-      mobileGrid: host ? mobileGridForHost(host) : null,
-      fitProposed: (() => { try { return fit && fit.proposeDimensions ? fit.proposeDimensions() : null; } catch (_) { return null; } })(),
-      dom: measureTermDom(),
-      sessionSize: selected ? termSizeOf(selected) : null,
       sessions: (lastSessions || []).length,
       projects: (lastProjects || []).length,
     },
@@ -260,23 +242,49 @@ function showSystemInfo() {
   b.appendChild(pre); b.appendChild(row);
   showOverlay('Система', b);
 }
-// ☰ → оверлей-меню группами (как менюбар ПК-редактора: Аккаунт / Файл / Логи).
+// --- Верхние панели: шторка-фон, проекты (top sheet) и бургер-дропдаун ---------
+// Шторка общая: тап мимо панели закрывает её. Сами экраны (стор/аккаунт/логи)
+// остаются оверлеями showOverlay — выпадающим сделано только само меню.
+function setShade(on) { const sh = $('shade'); if (sh) sh.style.display = on ? 'block' : 'none'; }
+function closeTopPanels() {
+  const pm = $('projmodal'); if (pm) pm.style.display = 'none';
+  const dm = $('dropmenu'); if (dm) dm.style.display = 'none';
+  setShade(false);
+}
+function wireTopPanels() {
+  const sh = $('shade'); if (sh) sh.onclick = closeTopPanels;
+  const x = $('pm-x'); if (x) x.onclick = closeTopPanels;
+}
+function showProjects() {
+  const pm = $('projmodal'); if (!pm) return;
+  const dm = $('dropmenu'); if (dm) dm.style.display = 'none';
+  renderTree();
+  setShade(true);
+  pm.style.display = 'flex';
+}
+// ☰ → выпадающий вниз список под шапкой (те же пункты, что были в модалке).
 function openMenu() {
-  const b = document.createElement('div');
-  const sect = (title) => { const s = document.createElement('div'); s.textContent = title; s.style.cssText = 'font-size:10px;letter-spacing:.6px;text-transform:uppercase;color:#7fdbca;margin:10px 2px 6px'; b.appendChild(s); };
+  const dm = $('dropmenu'); if (!dm) return;
+  if (dm.style.display === 'block') { closeTopPanels(); return; }   // повторный тап — закрыть
+  const pm = $('projmodal'); if (pm) pm.style.display = 'none';
+  dm.innerHTML = '';
+  const sect = (title) => { const s = document.createElement('div'); s.className = 'dm-sect'; s.textContent = title; dm.appendChild(s); };
   const mk = (label, fn) => {
     const x = document.createElement('button');
     x.textContent = label;
-    x.style.cssText = 'display:block;width:100%;text-align:left;background:#161c24;color:#d6deeb;border:1px solid #2a323d;border-radius:8px;padding:12px 14px;font-size:15px;margin-bottom:6px';
-    x.onclick = () => { const ov = $('overlay'); if (ov) ov.style.display = 'none'; fn(); };
-    b.appendChild(x);
+    x.onclick = () => { closeTopPanels(); fn(); };
+    dm.appendChild(x);
   };
   sect('Аккаунт'); mk('Информация', showAccount);
   sect('Устройство'); mk('🔗 Подключить это устройство', startPairing);
   sect('Файл'); mk('📁 Стор — файлы с ПК', showStore); mk('Создать папку', showNewFolder);
   sect('Редактор (ПК)'); mk('⟲ Перезапустить редактор', showRestartPC);
   sect('Диагностика'); mk('Система', showSystemInfo); mk('Логи', showLogs);
-  showOverlay('Меню', b);
+  // Прижать к низу шапки (высота шапки зависит от устройства/масштаба).
+  const tb = $('topbar');
+  if (tb) dm.style.top = Math.round(tb.getBoundingClientRect().bottom + 4) + 'px';
+  setShade(true);
+  dm.style.display = 'block';
 }
 
 // ----------------------------------------------------------------- стор (файлы с ПК)
@@ -394,38 +402,11 @@ function requestHistory(sid, opts) {
     onTimeout: opts.onTimeout,
   };
   if (bound) bound._historyReqId = reqId;
-  send({ t: 'history:get', reqId, sid });
+  const msg = { t: 'history:get', reqId, sid };
+  if (typeof opts.before === 'number') msg.before = opts.before;   // окно: кусок ДО смещения
+  if (typeof opts.size === 'number') msg.size = opts.size;         // размер куска
+  send(msg);
   return reqId;
-}
-
-function showHistory() {
-  const b = document.createElement('div');
-  const head = document.createElement('div');
-  head.style.cssText = 'font-size:12px;color:#9fb0c0;margin-bottom:8px;line-height:1.4';
-  head.textContent = selected ? ('Сессия: ' + selected) : 'Сессия не выбрана';
-  const pre = document.createElement('pre');
-  pre.style.cssText = 'margin:0;white-space:pre-wrap;word-break:break-word;color:#d6deeb;background:#0d1117;border:1px solid #2a323d;border-radius:8px;padding:10px;font:12px/1.45 monospace;max-height:62vh;overflow:auto';
-  pre.textContent = selected ? 'Загрузка истории…' : 'Нет активной сессии';
-  const row = document.createElement('div'); row.style.cssText = 'margin-top:10px;display:flex;gap:8px;flex-wrap:wrap';
-  const refresh = document.createElement('button'); refresh.textContent = 'Обновить';
-  refresh.style.cssText = 'background:#1f6feb;color:#fff;border:0;border-radius:6px;padding:8px 12px';
-  const copy = document.createElement('button'); copy.textContent = 'Копировать';
-  copy.style.cssText = 'background:#1c2530;color:#d6deeb;border:1px solid #2a323d;border-radius:6px;padding:8px 12px';
-  copy.onclick = () => { try { navigator.clipboard.writeText(pre.textContent || ''); } catch (_) {} };
-  const load = () => {
-    if (!selected) return;
-    pre.textContent = 'Загрузка истории…';
-    requestHistory(selected, {
-      pre,
-      bindTo: pre,
-      timeoutText: 'История не ответила.\n\nПерезапусти редактор на ПК из текущей версии проекта: старая ПК-сторона не умеет отдавать полную текстовую историю.',
-    });
-  };
-  refresh.onclick = load;
-  row.appendChild(refresh); row.appendChild(copy);
-  b.appendChild(head); b.appendChild(pre); b.appendChild(row);
-  showOverlay('История', b);
-  load();
 }
 
 // Перезапуск редактора на ПК с пульта. Действие разрушительное (рвёт открытые терминалы
@@ -549,506 +530,202 @@ function logout() {
   connect(); // пред-авторизованный сокет для нового входа
 }
 
-// ------------------------------------------------------------ терминал
-// Основной рендерер — @xterm/xterm 5 с теми же Unicode-таблицами, что desktop/headless.
-// Это убирает рассинхрон ширины символов между редактором и Android WebView.
-// Если упадёт — текстовый фолбэк. Ширина подстраивается под планшет: fit + ресайз PTY на ПК.
-let term = null;
-let fit = null;
-let termOk = false;
+// ------------------------------------------------ терминал: проекция экрана (mosh-принцип)
+// На пульте НЕТ эмулятора терминала. ПК держит теневой headless-xterm каждой сессии и
+// шлёт сюда ВИДИМЫЙ ЭКРАН простым текстом: полный кадр (~5КБ) на select/реконнект,
+// дальше — line-диффы с debounce ~200мс. Сколько бы перерисовок ни делал TUI-агент,
+// по сети идёт итоговое состояние, а не процесс рисования. Рендер — обычный <pre>;
+// никакого фита сетки и ресайза PTY: PTY всегда живёт в родной сетке ПК, поэтому
+// переключение пульт↔редактор мгновенно и ничего не ломает.
+let screenEl = null;        // <pre class="screen"> — поверхность кадра
+let frame = null;           // {sid, seq, lines[], cursor:[x,y], alt, cols, rows}
 let termInited = false;
 let termHostWired = false;
 let viewportWired = false;
-let relayoutTimer = null;
-let delayedRelayoutTimer = null;
-let rebuildTimer = null;
-let outputEpoch = 0;
-let outputWriting = false;
-let outputQueue = [];
-const OUTPUT_CHUNK = 8192;
-const MOBILE_SCROLLBACK = 20000;
-const PULT_MIN_COLS = 50;
-const PULT_MAX_COLS = 120;
-const PULT_MIN_ROWS = 16;
-const PULT_MAX_ROWS = 48;
-const TEXT_SCROLLBACK_MAX_CHARS = 4 * 1024 * 1024;
-let lastSentSize = { sid: '', cols: 0, rows: 0 };
-// Дефолт — полноценный xterm (TUI Claude/vim рисуются). Текстовый ридер остаётся
-// только ручным фолбэком (кнопка «Текст»). Ключ term_mode2 — чтобы старое сохранённое
-// 'text' (был дефолтом во время отладки) не залипало на этой версии.
-let termMode = lsGet('term_mode2') || 'xterm';
-let readerPre = null;
-let readerText = '';
-let readerSid = '';
-let readerLoading = false;
-let readerLiveText = '';
-let readerFollow = true;
+let renderQueued = false;
+let fullReqAt = 0;
+let screenFollow = true;    // прилипание к низу кадра (низ = поле ввода агента)
 
-function setTermFontSize(size) {
-  try {
-    if (term && term.options) term.options.fontSize = size;
-    else if (term && term.setOption) term.setOption('fontSize', size);
-  } catch (_) {}
+// --- Ленивая история над кадром (как лента маркетплейса, только вверх) ---------
+// Скролл подошёл к верху → подгружаем ещё кусок транскрипта с ПК и пришиваем СВЕРХУ
+// (позиция глаз сохраняется через якорь по scrollHeight). Вернулись в самый низ →
+// выгружаем всю подгруженную историю (память не копим; понадобится — подгрузим снова).
+let histText = '';          // подгруженный кусок транскрипта (выше живого кадра)
+let histStart = -1;         // смещение начала histText в транскрипте ПК; 0 = упёрлись в начало; -1 = не грузили
+let histLoading = false;
+let histAnchor = null;      // {top, height} — восстановить позицию после пришивания сверху
+const HIST_CHUNK = 48 * 1024;
+const HIST_SEP = '\n┄┄┄┄┄┄┄┄ выше — история ┄┄┄┄┄┄┄┄\n';
+
+function resetHistory() { histText = ''; histStart = -1; histLoading = false; histAnchor = null; }
+function maybeLoadHistory() {
+  if (!selected || histLoading || histStart === 0) return;
+  histLoading = true;
+  const sid = selected;
+  requestHistory(sid, {
+    before: histStart >= 0 ? histStart : undefined,
+    size: HIST_CHUNK,
+    timeoutMs: 10000,
+    onEnd: (text, h, m) => {
+      histLoading = false;
+      if (selected !== sid) return;
+      histStart = (m && typeof m.start === 'number') ? m.start : 0;
+      if (text) {
+        if (screenEl) histAnchor = { top: screenEl.scrollTop, height: screenEl.scrollHeight };
+        histText = text + histText;
+        renderScreen();
+      }
+    },
+    onError: () => { histLoading = false; },
+    onTimeout: () => { histLoading = false; },
+  });
 }
-function termFontSize() {
-  try {
-    if (term && term.options) return term.options.fontSize;
-    if (term && term.getOption) return term.getOption('fontSize');
-  } catch (_) {}
-  return null;
+
+// Широкая сетка ПК переносится pre-wrap'ом → кадр выше экрана планшета. Скролл
+// локальный (нативный pan), но по умолчанию прилипаем к низу: там промпт агента.
+// Пользователь свайпнул вверх читать — не дёргаем; вернулся к низу — липнем снова.
+function screenAtBottom() {
+  if (!screenEl) return true;
+  return screenEl.scrollTop + screenEl.clientHeight >= screenEl.scrollHeight - 24;
 }
-function isTextMode() { return termMode === 'text'; }
-function updateTermModeButton() {
-  const b = document.querySelector('.tk[data-key="mode"]');
-  if (!b) return;
-  b.textContent = isTextMode() ? 'Текст' : 'TTY';
-  b.title = isTextMode() ? 'Стабильный текстовый режим' : 'Полный xterm-режим';
-  b.classList.toggle('on', isTextMode());
-}
-function disposeXterm() {
-  resetOutputQueue();
-  if (term) { try { term.dispose(); } catch (_) {} }
-  term = null; fit = null; termOk = false;
-}
-function stripAnsiForReader(data) {
-  return String(data || '')
-    .replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g, '')
-    .replace(/\x1b[PX^_][\s\S]*?\x1b\\/g, '')
-    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '')
-    .replace(/\x1b[@-Z\\-_]/g, '')
-    .replace(/\x07/g, '');
-}
-function appendTranscriptText(out, data) {
-  out = String(out || '');
-  const text = stripAnsiForReader(data);
-  for (let i = 0; i < text.length; i++) {
-    const ch = text[i];
-    if (ch === '\r') {
-      const j = out.lastIndexOf('\n');
-      out = j >= 0 ? out.slice(0, j + 1) : '';
-    } else if (ch === '\b' || ch === '\x7f') {
-      const j = out.lastIndexOf('\n');
-      if (out.length > (j + 1)) out = out.slice(0, -1);
-    } else if (ch === '\n' || ch === '\t' || ch >= ' ') {
-      out += ch;
-    }
-  }
-  if (out.length > TEXT_SCROLLBACK_MAX_CHARS) out = out.slice(out.length - TEXT_SCROLLBACK_MAX_CHARS);
-  return out;
-}
-function readerAtBottom() {
-  if (!readerPre) return true;
-  return readerPre.scrollTop + readerPre.clientHeight >= readerPre.scrollHeight - 16;
-}
-function renderReader(text) {
-  if (!readerPre) return;
-  const stick = readerFollow || readerAtBottom();
-  readerPre.textContent = text != null ? String(text) : (readerText || '');
-  if (stick) readerPre.scrollTop = readerPre.scrollHeight;
-}
-function initReader() {
-  disposeXterm();
+function initScreen() {
   const host = $('term');
   if (!host) return;
   host.innerHTML = '';
-  readerPre = document.createElement('pre');
-  readerPre.className = 'term-reader';
-  readerPre.textContent = 'Выбери терминал слева';
-  readerPre.addEventListener('scroll', () => { readerFollow = readerAtBottom(); }, { passive: true });
-  host.appendChild(readerPre);
-  readerText = ''; readerSid = ''; readerLoading = false; readerLiveText = ''; readerFollow = true;
+  screenEl = document.createElement('pre');
+  screenEl.className = 'screen';
+  screenEl.textContent = 'Выбери терминал слева';
+  screenEl.addEventListener('scroll', () => {
+    const atB = screenAtBottom();
+    screenFollow = atB;
+    if (atB) {
+      if (histText) { resetHistory(); renderScreen(); }   // вернулись вниз → чистим историю из памяти
+    } else if (screenEl.scrollTop < 200) {
+      maybeLoadHistory();                                  // подошли к верху → ещё кусок истории
+    }
+  }, { passive: true });
+  host.appendChild(screenEl);
+  wireTermHost(host);
 }
-function initOutputSurface() {
-  if (isTextMode()) initReader();
-  else initTerm();
-  updateTermModeButton();
+// Косметика строк агентского TUI на узком экране: полноширинные линейки/рамки
+// (130 символов «─») при pre-wrap превращаются в 3 строки каждая. Схлопываем
+// ЛЮБОЙ длинный прогон одинакового «штриха» до 24 — где бы он ни стоял в строке
+// (раньше требовали «вся строка — линейка», и рамки с заголовком/стыками не
+// схлопывались — над полем ввода оставались 3 полосы). Правую границу рамки
+// (хвост из пробелов и «│») срезаем. Строки НЕ удаляются — индексы курсора живут.
+function frameLineView(ln) {
+  let s = ln;
+  s = s.replace(/\s{2,}[│|]\s*$/, '');   // '│ > текст      │' → '│ > текст'
+  s = s.replace(/([─━═╌┄┅┈┉=_~‐‒–—-])\1{23,}/g, (run, ch) => ch.repeat(24));
+  return s;
 }
-function clearReader() {
-  readerText = ''; readerLiveText = ''; readerLoading = false; readerFollow = true;
-  renderReader(selected ? 'Загрузка истории…' : 'Нет активной сессии');
-}
-function appendReaderLive(data) {
-  if (!readerPre) initReader();
-  if (readerLoading) {
-    readerLiveText = appendTranscriptText(readerLiveText, data);
-    return;
-  }
-  readerFollow = readerAtBottom();
-  readerText = appendTranscriptText(readerText, data);
-  renderReader();
-}
-function requestReaderHistory() {
-  if (!selected || !isTextMode()) return;
-  const sid = selected;
-  readerSid = sid;
-  readerLoading = true;
-  readerLiveText = '';
-  readerFollow = true;
-  renderReader('Загрузка истории…');
-  requestHistory(sid, {
-    timeoutText: 'История не ответила. Перезапусти редактор на ПК из текущей версии проекта.',
-    onBegin: (h) => { if (selected === sid && isTextMode()) renderReader('Загрузка истории 0%'); },
-    onProgress: (h) => { if (selected === sid && isTextMode() && h.size) renderReader('Загрузка истории ' + Math.min(100, Math.floor(h.got * 100 / h.size)) + '%'); },
-    onEnd: (text) => {
-      if (selected !== sid || !isTextMode()) return;
-      readerLoading = false;
-      readerText = String(text || '') + readerLiveText;
-      if (readerText.length > TEXT_SCROLLBACK_MAX_CHARS) readerText = readerText.slice(readerText.length - TEXT_SCROLLBACK_MAX_CHARS);
-      readerLiveText = '';
-      readerFollow = true;
-      renderReader(readerText || 'История пока пустая.');
-    },
-    onError: (err) => {
-      if (selected !== sid || !isTextMode()) return;
-      readerLoading = false;
-      renderReader('Ошибка истории: ' + (err || ''));
-    },
-    onTimeout: () => {
-      if (selected !== sid || !isTextMode()) return;
-      readerLoading = false;
-      renderReader('История не ответила. Перезапусти редактор на ПК из текущей версии проекта.');
-    },
+function renderScreen() {
+  if (renderQueued) return;
+  renderQueued = true;
+  requestAnimationFrame(() => {
+    renderQueued = false;
+    if (!screenEl) return;
+    if (!frame) { screenEl.textContent = selected ? 'Ожидание экрана…' : 'Выбери терминал слева'; return; }
+    const stick = screenFollow || screenAtBottom();
+    let lines = frame.lines.slice();
+    const c = frame.cursor || [0, 0];
+    const cx = c[0], cy = c[1];
+    if (cy >= 0 && cy < lines.length) {   // курсор — подмена символа строки
+      const ln = lines[cy] || '';
+      lines[cy] = cx < ln.length
+        ? ln.slice(0, cx) + '▌' + ln.slice(cx + 1)
+        : ln + ' '.repeat(Math.max(0, cx - ln.length)) + '▌';
+    }
+    // Пустой хвост кадра обрезаем (но строку с курсором сохраняем): у свежего шелла
+    // промпт на 1-й строке, а 40+ пустых строк ниже прижимали его за верх экрана
+    // («не видно имя:путь» при прилипании к низу).
+    let last = lines.length - 1;
+    while (last > 0 && !(lines[last] || '').trim()) last--;
+    lines = lines.slice(0, Math.max(last, cy) + 1);
+    for (let i = 0; i < lines.length; i++) lines[i] = frameLineView(lines[i]);
+    // Сборка: [история] + кадр; строка с курсором — отдельным <span> (подсветка
+    // поля ввода агента). Только текстовые узлы — XSS-поверхности нет.
+    screenEl.textContent = '';
+    if (histText) screenEl.appendChild(document.createTextNode(histText + HIST_SEP));
+    if (cy >= 0 && cy < lines.length) {
+      if (cy > 0) screenEl.appendChild(document.createTextNode(lines.slice(0, cy).join('\n') + '\n'));
+      const cur = document.createElement('span');
+      cur.className = 'cur-line';
+      cur.textContent = lines[cy];
+      screenEl.appendChild(cur);
+      if (cy < lines.length - 1) screenEl.appendChild(document.createTextNode('\n' + lines.slice(cy + 1).join('\n')));
+    } else {
+      screenEl.appendChild(document.createTextNode(lines.join('\n')));
+    }
+    if (histAnchor) {   // пришили историю сверху → вернуть глаза на то же место
+      screenEl.scrollTop = histAnchor.top + (screenEl.scrollHeight - histAnchor.height);
+      histAnchor = null;
+    } else if (stick) {
+      screenEl.scrollTop = screenEl.scrollHeight;
+    }
   });
 }
-function toggleTermMode() {
-  termMode = isTextMode() ? 'xterm' : 'text';
-  lsSet('term_mode2', termMode);
-  initOutputSurface();
-  if (selected) selectSession(selected);
-  else updateTermModeButton();
-}
-
-function initTerm() {
-  try {
-    term = new Terminal({
-      allowProposedApi: true,
-      fontSize: 12,
-      fontFamily: '"Droid Sans Mono", "Roboto Mono", monospace',
-      cursorBlink: true,
-      scrollback: MOBILE_SCROLLBACK,
-      customGlyphs: true,
-      theme: { background: '#0d1117', foreground: '#d6deeb', cursor: '#7fdbca' },
-    });
-    fit = new FitAddon();
-    term.loadAddon(fit);
-    try {
-      term.loadAddon(new Unicode11Addon());
-      term.unicode.activeVersion = '11';
-    } catch (e) {
-      sendReport('xterm-unicode11', (e && e.message) || String(e), (e && e.stack) || '');
+// Кадр с ПК: full — заменить экран целиком; diff — точечно изменившиеся строки.
+// Дыра в seq (реконнект/потерянный кадр) → перезапросить полный кадр.
+function applyScreenMsg(m) {
+  if (!m || m.sid !== selected) return;
+  if (m.full) {
+    frame = {
+      sid: m.sid, seq: m.seq || 0, lines: (m.lines || []).slice(),
+      cursor: m.cursor || [0, 0], alt: !!m.alt, cols: m.cols || 0, rows: m.rows || 0,
+    };
+  } else {
+    if (!frame || frame.sid !== m.sid || m.seq !== frame.seq + 1) { requestFullFrame(); return; }
+    const diff = m.diff || [];
+    for (let i = 0; i < diff.length; i++) {
+      const d = diff[i];
+      if (d && d.length === 2 && d[0] >= 0) frame.lines[d[0]] = d[1];
     }
-    const host = $('term');
-    term.open(host);
-    // РЕНДЕРЕР: DOM (по умолчанию в xterm 4), НЕ Canvas. На планшетах дробный
-    // devicePixelRatio (напр. 1.33) ломал замер ячейки в canvas-рендерере xterm 4
-    // → текст уезжал за экран и кривой скрол. DOM-рендерер меряет ячейку из реального
-    // DOM-элемента и работает корректно при любом DPR (см. xterm.js #2662, фикс в 5.0).
-    term.onData((d) => sendInput(d));   // ввод (если подключена физическая/BT-клавиатура)
-    // Глушим СИСТЕМНУЮ экранную клавиатуру: на старом Android-WebView она двигает UI и
-    // рвёт скрол. inputmode=none не даёт ей всплывать; ввод идёт со своей клавиатуры (#kbd).
-    const ta = host.querySelector('textarea');
-    if (ta) { ta.setAttribute('inputmode', 'none'); ta.setAttribute('autocapitalize', 'off'); ta.setAttribute('autocorrect', 'off'); ta.setAttribute('autocomplete', 'off'); }
-    wireTermHost(host);
-    termOk = true;
-    scheduleTermRelayout('init', 40);
-  } catch (e) {
-    termOk = false;
-    sendReport('xterm-init', (e && e.message) || String(e), (e && e.stack) || '');
-    initPre();
+    frame.seq = m.seq;
+    if (m.cursor) frame.cursor = m.cursor;
+    frame.alt = !!m.alt;
   }
+  renderScreen();
+}
+// Запрос полного кадра ({t:'select'} на ПК сбрасывает диффер). Троттлим: поток
+// устаревших диффов после реконнекта не должен превращаться в шквал select'ов.
+function requestFullFrame(force) {
+  if (!selected) return;
+  const now = Date.now();
+  if (!force && now - fullReqAt < 1000) return;
+  fullReqAt = now;
+  send({ t: 'select', sid: selected });
+}
+// Кнопка «⟳» в тулбаре: сброс кадра + свежий полный кадр с ПК.
+function refreshScreen() {
+  frame = null;
+  screenFollow = true;
+  resetHistory();
+  renderScreen();
+  requestFullFrame(true);
 }
 function wireTermHost(host) {
   if (!host || termHostWired) return;
   termHostWired = true;
   host.addEventListener('click', () => { if (!kbdShown) showKbd(true); });   // тап по терминалу → своя клавиатура
-  attachTouchScroll(host);            // независимый скрол истории жестом на планшете
 }
 function wireViewportEvents() {
   if (viewportWired) return;
   viewportWired = true;
-  window.addEventListener('resize', () => scheduleTermRelayout('window-resize', 80));
-  window.addEventListener('orientationchange', () => {
-    hardResetScroll();
-    scheduleTerminalRebuild('orientation');
-    scheduleTermRelayout('orientation-early', 80);
-    scheduleTermRelayout('orientation-mid', 260);
-    scheduleTermRelayout('orientation-late', 700);
-  });
+  // Текст в <pre> переуложится сам (pre-wrap); следим только за плавающей клавиатурой.
+  window.addEventListener('resize', () => keepKbdInViewport());
+  window.addEventListener('orientationchange', () => { hardResetScroll(); });
 }
-// Показываем сетку ТОГО ЖЕ размера, что на ПК (PTY), и масштабируем шрифт под ширину
-// планшета — НЕ трогаем размер PTY (иначе на ПК сыпется). Высота клавиатуры на число
-// колонок не влияет, поэтому открытие клавиатуры терминал не ломает.
-function termSizeOf(sid) {
-  const s = (lastSessions || []).find((x) => x.sid === sid);
-  return { cols: (s && s.cols) || 80, rows: (s && s.rows) || 24 };
-}
-// Реальная высота строки моноширинного шрифта (в долях fontSize) — замеряем один раз.
-// Угадывание коэффициента приводило
-// к переоценке высоты сетки и вылезанию терминала за нижнюю границу.
-let _lineRatio = 0;
-function lineRatio() {
-  if (_lineRatio) return _lineRatio;
-  try {
-    const p = document.createElement('div');
-    p.style.cssText = 'position:absolute;left:-9999px;top:0;visibility:hidden;font-family:monospace;font-size:100px;line-height:normal;white-space:pre';
-    p.textContent = 'Mg|';
-    document.body.appendChild(p);
-    _lineRatio = (p.offsetHeight / 100) || 1.2;
-    document.body.removeChild(p);
-  } catch (_) { _lineRatio = 1.2; }
-  return _lineRatio;
-}
-function clampNum(n, lo, hi) { return Math.max(lo, Math.min(hi, n)); }
-function mobileGridForHost(host) {
-  const w = Math.max(0, (host && host.clientWidth) || 0) - 8;
-  const h = Math.max(0, (host && host.clientHeight) || 0) - 8;
-  if (w < 120 || h < 120) return null;
-  // Пульт должен быть читаемым. Не наследуем desktop-сетку 130x50+, а выбираем
-  // собственный grid под экран и затем ресайзим PTY на ПК под этот grid.
-  const targetFont = w < 620 ? 11 : 12;
-  const ratio = lineRatio();
-  let cols = Math.floor(w / (targetFont * 0.62));
-  let rows = Math.floor(h / (targetFont * ratio));
-  cols = clampNum(cols, PULT_MIN_COLS, PULT_MAX_COLS);
-  rows = clampNum(rows, PULT_MIN_ROWS, PULT_MAX_ROWS);
-  let font = Math.min(
-    targetFont,
-    Math.floor(w / cols / 0.62),
-    Math.floor(h / rows / ratio)
-  );
-  font = clampNum(font || targetFont, 9, 14);
-  return { cols, rows, font };
-}
-function reportMobileResize(cols, rows) {
-  if (!selected || !cols || !rows) return;
-  if (lastSentSize.sid === selected && lastSentSize.cols === cols && lastSentSize.rows === rows) return;
-  lastSentSize = { sid: selected, cols, rows };
-  send({ t: 'resize', sid: selected, cols, rows });
-}
-function measureTermDom() {
-  const host = $('term');
-  if (!host) return null;
-  const screenEl = host.querySelector('.xterm-screen');
-  const rowsEl = host.querySelector('.xterm-rows');
-  const viewportEl = host.querySelector('.xterm-viewport');
-  return {
-    screenWidth: screenEl ? screenEl.offsetWidth : 0,
-    screenHeight: screenEl ? screenEl.offsetHeight : 0,
-    rowsWidth: rowsEl ? rowsEl.offsetWidth : 0,
-    rowsHeight: rowsEl ? rowsEl.offsetHeight : 0,
-    viewportWidth: viewportEl ? viewportEl.offsetWidth : 0,
-    viewportHeight: viewportEl ? viewportEl.offsetHeight : 0,
-  };
-}
-function enforceTermFit(cols, rows) {
-  const host = $('term');
-  if (!termOk || !term || !host) return;
-  requestAnimationFrame(() => {
-    const m = measureTermDom();
-    if (!m) return;
-    let nextRows = rows;
-    let nextCols = cols;
-    if (m.screenHeight > host.clientHeight + 2 && rows > PULT_MIN_ROWS) {
-      const rowPx = Math.max(1, m.screenHeight / rows);
-      nextRows = Math.max(PULT_MIN_ROWS, rows - Math.ceil((m.screenHeight - host.clientHeight) / rowPx) - 1);
-    }
-    if (m.screenWidth > host.clientWidth + 2 && cols > PULT_MIN_COLS) {
-      const colPx = Math.max(1, m.screenWidth / cols);
-      nextCols = Math.max(PULT_MIN_COLS, cols - Math.ceil((m.screenWidth - host.clientWidth) / colPx) - 1);
-    }
-    if (nextCols !== cols || nextRows !== rows) {
-      try { term.resize(nextCols, nextRows); term.scrollToBottom(); } catch (_) {}
-      reportMobileResize(nextCols, nextRows);
-    }
-  });
-}
-// Сетку терминала на планшете выбираем ПОД ПЛАНШЕТ (как ttyd/wetty/VS Code в браузере):
-// ставим читаемый шрифт → FitAddon делит вьюпорт на ЗАМЕРЕННУЮ ячейку → получаем
-// cols/rows, при которых текст ГАРАНТИРОВАННО влезает (не уезжает за экран). Затем
-// ресайзим PTY на ПК под эту сетку (пульт «владеет» размером, пока подключён; ПК
-// зеркалит ту же сетку — см. pty:remoteSize на стороне ПК). Раньше мы зеркалили
-// широкую сетку ПК (134 кол.) и ужимали шрифт до 7px — нечитаемо и с переполнением.
-function applyTermSize() {
-  if (isTextMode()) return;
-  if (!termOk || !selected) return;
-  const host = $('term');
-  if (!host) return;
-  if ((host.clientWidth || 0) < 120 || (host.clientHeight || 0) < 120) {
-    scheduleTermRelayout('host-not-ready', 160);
-    return;
-  }
-  // Читаемый шрифт под ширину экрана (телефон/планшет). FitAddon сам подберёт число колонок.
-  const w = host.clientWidth;
-  const fontPx = w < 560 ? 12 : (w < 900 ? 13 : 14);
-  setTermFontSize(fontPx);
-  requestAnimationFrame(() => {
-    try { if (fit) fit.fit(); }
-    catch (e) { sendReport('xterm-fit', (e && e.message) || String(e), (e && e.stack) || ''); }
-    // Подстраховка границами (на очень узких/широких экранах FitAddon может выйти за рамки).
-    const cols = clampNum(term.cols || 80, PULT_MIN_COLS, PULT_MAX_COLS);
-    const rows = clampNum(term.rows || 24, PULT_MIN_ROWS, PULT_MAX_ROWS);
-    if (cols !== term.cols || rows !== term.rows) { try { term.resize(cols, rows); } catch (_) {} }
-    // Страховка по ШИРИНЕ: на узких экранах видимый скроллбар/субпиксель иногда подрезает
-    // последнюю колонку («не влезает по ширине»). Пока контент (.xterm-screen) шире области
-    // прокрутки (.xterm-viewport без скроллбара) — ужимаем на колонку. Чтение offsetWidth
-    // форсит reflow, поэтому замер в цикле актуален; guard — от зацикливания.
-    try {
-      const vp = host.querySelector('.xterm-viewport');
-      const screen = host.querySelector('.xterm-screen');
-      let guard = 0;
-      while (vp && screen && term.cols > PULT_MIN_COLS && screen.offsetWidth > vp.clientWidth + 1 && guard++ < 8) {
-        term.resize(term.cols - 1, term.rows);
-      }
-    } catch (_) {}
-    try {
-      term.scrollToBottom();
-      if (term.refresh) term.refresh(0, Math.max(0, (term.rows || 1) - 1));
-    } catch (_) {}
-    reportMobileResize(term.cols, term.rows);   // планшет диктует размер PTY на ПК
-    keepKbdInViewport();
-  });
-}
-function scheduleTermRelayout(_reason, delay) {
-  clearTimeout(relayoutTimer);
-  relayoutTimer = setTimeout(() => {
-    relayoutTimer = null;
-    try { window.scrollTo(0, 0); } catch (_) {}
-    try { if (document.documentElement) document.documentElement.scrollTop = 0; } catch (_) {}
-    try { if (document.body) document.body.scrollTop = 0; } catch (_) {}
-    keepKbdInViewport();
-    applyTermSize();
-    clearTimeout(delayedRelayoutTimer);
-    delayedRelayoutTimer = setTimeout(() => {
-      try { window.scrollTo(0, 0); } catch (_) {}
-      try { if (document.documentElement) document.documentElement.scrollTop = 0; } catch (_) {}
-      try { if (document.body) document.body.scrollTop = 0; } catch (_) {}
-      keepKbdInViewport();
-      applyTermSize();
-    }, 220);
-  }, delay == null ? 80 : delay);
-}
-function scheduleTerminalRebuild(reason) {
-  if (!termInited) return;
-  clearTimeout(rebuildTimer);
-  rebuildTimer = setTimeout(() => {
-    rebuildTimer = null;
-    if (!selected) { scheduleTermRelayout(reason || 'rebuild-no-session', 80); return; }
-    refreshTerm(reason || 'rebuild');
-  }, 360);
-}
-function resetOutputQueue() {
-  outputEpoch++;
-  outputQueue = [];
-  outputWriting = false;
-}
-function chunkTerminalData(data, epoch) {
-  data = String(data || '');
-  for (let i = 0; i < data.length; i += OUTPUT_CHUNK) {
-    let end = Math.min(data.length, i + OUTPUT_CHUNK);
-    const c = data.charCodeAt(end - 1);
-    // Do not split UTF-16 surrogate pairs between writes.
-    if (end < data.length && c >= 0xD800 && c <= 0xDBFF) end--;
-    if (end <= i) end = Math.min(data.length, i + OUTPUT_CHUNK);
-    outputQueue.push({ epoch, data: data.slice(i, end) });
-    i = end - OUTPUT_CHUNK;
-  }
-}
-function pumpOutputQueue() {
-  if (outputWriting || !termOk || !term) return;
-  while (outputQueue.length && outputQueue[0].epoch !== outputEpoch) outputQueue.shift();
-  const item = outputQueue.shift();
-  if (!item) return;
-  outputWriting = true;
-  try {
-    term.write(item.data, () => {
-      outputWriting = false;
-      if (item.epoch === outputEpoch) pumpOutputQueue();
-    });
-  } catch (e) {
-    outputWriting = false;
-    sendReport('xterm-write', (e && e.message) || '', (e && e.stack) || '');
-    termOk = false;
-    initPre();
-    appendPre(item.data);
-  }
-}
-function writeOut(data) {
-  if (isTextMode()) { appendReaderLive(data); return; }
-  if (termOk && term) {
-    const epoch = outputEpoch;
-    chunkTerminalData(data, epoch);
-    pumpOutputQueue();
-    return;
-  }
-  appendPre(data);
-}
-function clearOut() {
-  resetOutputQueue();
-  if (isTextMode()) { clearReader(); return; }
-  if (termOk) { try { term.reset(); } catch (_) {} return; }
-  lineBuf = ['']; curRow = 0; curCol = 0; if (pre) pre.textContent = '';
-}
-function focusOut() { if (!isTextMode() && termOk) { try { term.focus(); } catch (_) {} } }
-
-// Кнопка «⟳» в тулбаре: после ресайза под клавиатуру xterm иногда «осыпается»
-// (строки DOM-рендерера съезжают). Полностью пересобираем терминал с нуля и
-// перезапрашиваем буфер сессии у ПК (на {t:'select'} он шлёт весь буфер заново) —
-// вёрстка собирается чисто.
-function refreshTerm(reason) {
-  resetOutputQueue();
-  _lineRatio = 0; // orientation/font metrics can change after Android WebView relayout
-  const host = $('term');
-  if (isTextMode()) {
-    initReader();
-    if (selected) {
-      send({ t: 'select', sid: selected, snapshot: false });
-      requestReaderHistory();
-    }
-    return;
-  }
-  if (term) { try { term.dispose(); } catch (_) {} }
-  term = null; fit = null; termOk = false;
-  if (host) host.innerHTML = '';
-  initTerm();              // создаёт свежий xterm в #term
-  scheduleTermRelayout(reason || 'refresh', 80);         // подгоняем сетку/шрифт под текущую ширину
-  if (selected) setTimeout(() => { clearOut(); send({ t: 'select', sid: selected }); }, 240);  // после resize ПК перешлёт snapshot → перерисовка
-  // НЕ фокусируем — ввод идёт со своей клавиатуры, системную не поднимаем.
-}
-
-// Скрол истории терминала жестом. В обычном буфере листаем локальный scrollback xterm.
-// В alternate-buffer/TUI локального scrollback нет — шлём «колесо» в PTY, чтобы листался
-// сам агент/less/vim/Claude Code. Это ключевое отличие от desktop-мыши на планшете.
-function attachTouchScroll(host) {
-  let ty = null;
-  host.addEventListener('touchstart', (e) => { if (e.touches.length === 1) ty = e.touches[0].clientY; }, { passive: true });
-  host.addEventListener('touchmove', (e) => {
-    if (ty === null || e.touches.length !== 1 || !termOk) return;
-    const y = e.touches[0].clientY;
-    const lineH = Math.max(8, host.clientHeight / (term.rows || 24));
-    const lines = Math.trunc((ty - y) / lineH);
-    if (lines !== 0) {
-      if (inAltBuffer()) wheelScroll(lines < 0, Math.min(8, Math.abs(lines)));
-      else { try { term.scrollLines(lines); } catch (_) {} }
-      ty = y;
-      e.preventDefault();
-    }
-  }, { passive: false });
-  host.addEventListener('touchend', () => { ty = null; }, { passive: true });
-  host.addEventListener('touchcancel', () => { ty = null; }, { passive: true });
-}
+// Жест по кадру — НАТИВНЫЙ локальный скролл <pre> (кадр выше экрана из-за переносов):
+// листает сам кадр, прилипание к низу — в renderScreen. Прокрутка СОДЕРЖИМОГО агента
+// (транскрипт TUI на ПК) — кнопками PgUp/PgDn (шлют колесо в PTY). Кастомный
+// touch-обработчик не нужен.
 
 // Тонкий тулбар над терминалом (для стилуса): спецклавиши.
-const TKEYS = { 'c-c': '\x03', 'esc': '\x1b', 'tab': '\t', 'up': '\x1b[A', 'down': '\x1b[B', 'enter': '\r', 'c-d': '\x04' };
-// Терминал в alternate-буфере? (полноэкранный TUI — Claude/vim/less): у него НЕТ scrollback,
-// локальный скрол истории не работает, прокручивать надо само приложение на ПК (колесом мыши).
-function inAltBuffer() {
-  try {
-    if (!term || !term.buffer) return false;
-    if (term.buffer.active && term.buffer.active.type) return term.buffer.active.type === 'alternate';
-    return !!(term.buffer.alternate && term.buffer.active === term.buffer.alternate);
-  }
-  catch (_) { return false; }
-}
+const TKEYS = { 'c-c': '\x03', 'esc': '\x1b', 'tab': '\t', 'up': '\x1b[A', 'down': '\x1b[B', 'enter': '\r' };
+// Терминал в alternate-буфере? (полноэкранный TUI — Claude/vim/less). Флаг приходит
+// с ПК в каждом кадре: прокручивать надо само приложение на ПК (колесом мыши).
+function inAltBuffer() { return !!(frame && frame.alt); }
 // Послать на ПК-PTY N «щелчков» колеса (SGR-режим мыши 1006: 64 — вверх, 65 — вниз; в углу 1;1).
 // Claude/vim/less/htop включают mouse-tracking → прокручивают свою область. Для обычного шелла
 // (мышь не включена) кнопки идут другой веткой (локальный скрол истории), сюда не попадают.
@@ -1058,39 +735,27 @@ function wheelScroll(up, notches) {
   for (let i = 0; i < notches; i++) s += '\x1b[<' + code + ';1;1M';
   sendInput(s);
 }
-// Прокрутка на страницу: в TUI — колесо на ПК, в обычном буфере — локальная история xterm.
+// Прокрутка на страницу: в TUI — колесо на ПК (листается транскрипт агента);
+// в обычном буфере — локальный скролл кадра (прошлое за кадром — через «Историю»).
 function pageScroll(up) {
-  if (isTextMode()) {
-    if (readerPre) readerPre.scrollTop += (up ? -1 : 1) * Math.max(120, Math.floor(readerPre.clientHeight * 0.88));
-    return;
-  }
   if (inAltBuffer()) { wheelScroll(up, 3); return; }
-  try { term.scrollPages(up ? -1 : 1); } catch (_) {}
-}
-// Свернуть/развернуть панель проектов: на телефоне даёт терминалу полную ширину
-// (больше колонок). Состояние переживает перезапуск пульта.
-function toggleSidebar(force) {
-  const c = $('content'); if (!c) return;
-  const collapsed = (force == null) ? c.classList.toggle('side-collapsed') : c.classList.toggle('side-collapsed', !!force);
-  lsSet('side_collapsed', collapsed ? '1' : '');
-  const tk = document.querySelector('.tk[data-key="side"]'); if (tk) tk.classList.toggle('on', collapsed);
-  scheduleTermRelayout('sidebar-toggle', 60);   // ширина терминала изменилась → пере-фит сетки/PTY
+  if (screenEl) {
+    screenEl.scrollTop += (up ? -1 : 1) * Math.max(120, Math.floor(screenEl.clientHeight * 0.85));
+    screenFollow = screenAtBottom();
+  }
 }
 function wireTermbar() {
   for (const b of document.querySelectorAll('.tk')) {
     b.onclick = (e) => {
       e.preventDefault();
-      if (b.dataset.key === 'side') { toggleSidebar(); return; }
-      if (b.dataset.key === 'refresh') { refreshTerm(); return; }
-      if (b.dataset.key === 'mode') { toggleTermMode(); return; }
+      if (b.dataset.key === 'side') { showProjects(); return; }   // проекты — верхней шторкой
+      if (b.dataset.key === 'refresh') { refreshScreen(); return; }
       if (b.dataset.key === 'kbd') { toggleKbd(); return; }
-      if (b.dataset.key === 'hist') { showHistory(); return; }
       if (b.dataset.key === 'pgup') { pageScroll(true); return; }
       if (b.dataset.key === 'pgdn') { pageScroll(false); return; }
       const seq = TKEYS[b.dataset.key]; if (seq != null) sendInput(seq);
     };
   }
-  if (lsGet('side_collapsed')) toggleSidebar(true);   // восстановить свёрнутое состояние
 }
 
 // ---------------------------------------------------- своя экранная клавиатура
@@ -1250,62 +915,6 @@ function wireKbd() {
   window.addEventListener('mouseup', end);
 }
 
-// --- текстовый фолбэк (если xterm не завёлся) ---
-let pre = null;
-let lineBuf = [''];
-let curRow = 0;
-let curCol = 0;
-function initPre() {
-  const host = $('term'); host.innerHTML = '';
-  pre = document.createElement('pre');
-  pre.style.cssText = 'margin:0;height:100%;overflow:auto;white-space:pre-wrap;word-break:break-word;color:#d6deeb;font:12px/1.4 monospace;padding:6px';
-  host.appendChild(pre);
-  lineBuf = ['']; curRow = 0; curCol = 0;
-}
-function renderPre() {
-  if (lineBuf.length > 500) { const drop = lineBuf.length - 400; lineBuf = lineBuf.slice(drop); curRow = Math.max(0, curRow - drop); }
-  pre.textContent = lineBuf.join('\n');
-  pre.scrollTop = pre.scrollHeight;
-}
-function putChar(ch) {
-  let line = lineBuf[curRow] || '';
-  if (curCol > line.length) line = line + ' '.repeat(curCol - line.length);
-  lineBuf[curRow] = line.slice(0, curCol) + ch + line.slice(curCol + 1);
-  curCol++;
-}
-function appendPre(data) {
-  if (!pre) return;
-  data = String(data);
-  for (let i = 0; i < data.length; i++) {
-    const ch = data[i];
-    if (ch === '\x1b') {
-      if (data[i + 1] === '[') {
-        let j = i + 2;
-        while (j < data.length && !/[@-~]/.test(data[j])) j++;
-        const fin = data[j], params = data.slice(i + 2, j);
-        if (fin === 'K') {
-          const line = lineBuf[curRow] || '';
-          if (params === '2') lineBuf[curRow] = '';
-          else if (params !== '1') lineBuf[curRow] = line.slice(0, curCol);
-        } else if (fin === 'J' && (params === '2' || params === '3')) { lineBuf = ['']; curRow = 0; curCol = 0; }
-        i = j; continue;
-      } else if (data[i + 1] === ']') {
-        let j = i + 2;
-        while (j < data.length && data[j] !== '\x07' && data[j] !== '\x1b') j++;
-        if (data[j] === '\x1b') j++;
-        i = j; continue;
-      } else { i++; continue; }
-    }
-    if (ch === '\r') { curCol = 0; continue; }
-    if (ch === '\n') { curRow++; curCol = 0; if (lineBuf[curRow] === undefined) lineBuf[curRow] = ''; continue; }
-    if (ch === '\b') { if (curCol > 0) curCol--; continue; }
-    if (ch === '\t') { putChar(' '); while (curCol % 4 !== 0) putChar(' '); continue; }
-    if (ch < ' ') continue;
-    putChar(ch);
-  }
-  renderPre();
-}
-
 // Дерево вкладок: проекты по категориям (как сайдбар редактора), под каждым —
 // открытые терминалы. Категории сворачиваются (по дефолту открыто только «Избранное»),
 // у каждой — свой цвет-градиент для быстрого различения глазами.
@@ -1362,7 +971,7 @@ function renderTree() {
     t.className = 'tab' + (s.sid === selected ? ' active' : '');
     const nm = document.createElement('span');
     nm.className = 'tab-name'; nm.textContent = s.tab || s.label || s.sid;
-    nm.onclick = () => selectSession(s.sid);
+    nm.onclick = () => { closeTopPanels(); selectSession(s.sid); };
     t.appendChild(nm);
     // Крестик — только если у проекта 2+ терминала (последний закрывать нельзя).
     if (canClose) {
@@ -1373,17 +982,30 @@ function renderTree() {
     }
     box.appendChild(t);
   };
+  // Вкладка-плейсхолдер: у проекта ещё нет PTY на ПК, но визуально вкладка ЕСТЬ
+  // (как в редакторе — у проекта минимум один терминал). Тап = открыть на ПК и
+  // автоматически выбрать, когда сессия появится в state (pendingOpenProj).
+  const addGhost = (p) => {
+    const t = document.createElement('div');
+    t.className = 'tab ghost';
+    const nm = document.createElement('span');
+    nm.className = 'tab-name'; nm.textContent = 'Терминал 1';
+    nm.onclick = () => { openProjTerminal(p.id); };
+    t.appendChild(nm);
+    box.appendChild(t);
+  };
   const addProj = (p) => {
     const pr = document.createElement('div');
     pr.className = 'proj';
     const nm = document.createElement('span'); nm.className = 'proj-name'; nm.textContent = p.name;
-    const plus = document.createElement('button'); plus.className = 'add-term'; plus.title = 'Открыть терминал';
+    const plus = document.createElement('button'); plus.className = 'add-term'; plus.title = 'Открыть ещё терминал';
     plus.innerHTML = ADD_SVG;   // статичная SVG-иконка (без пользовательских данных)
-    plus.onclick = (e) => { e.stopPropagation(); send({ t: 'open', projId: p.id }); };
+    plus.onclick = (e) => { e.stopPropagation(); openProjTerminal(p.id); };
     pr.appendChild(nm); pr.appendChild(plus);
     box.appendChild(pr);
     const list = byProj[p.id] || [];
-    for (const s of list) addSession(s, list.length > 1);
+    if (list.length) { for (const s of list) addSession(s, list.length > 1); }
+    else addGhost(p);
   };
 
   for (const g of groups) {
@@ -1398,34 +1020,96 @@ function renderTree() {
 }
 function selectSession(sid) {
   selected = sid;
-  clearOut();
-  if (isTextMode()) {
-    send({ t: 'select', sid, snapshot: false });
-    requestReaderHistory();
-    renderTree();
-    return;
-  }
-  applyTermSize();     // выбрать читаемый grid планшета и ресайзить под него PTY на ПК
-  setTimeout(() => send({ t: 'select', sid }), 180); // сначала resize PTY, потом snapshot под новый grid
+  frame = null;
+  screenFollow = true;
+  resetHistory();
+  renderScreen();
+  send({ t: 'select', sid });   // ПК ответит немедленным полным кадром
   renderTree();
-  focusOut();
+}
+// Открыть терминал проекта на ПК (＋ или тап по вкладке-плейсхолдеру). Новая сессия
+// прилетит в state — запоминаем проект, чтобы выбрать её автоматически.
+let pendingOpenProj = '';
+function openProjTerminal(projId) {
+  pendingOpenProj = projId;
+  send({ t: 'open', projId });
+  closeTopPanels();
+  setStatus('Открываю терминал…', 'wait');
+  setTimeout(() => {
+    if (pendingOpenProj !== projId) return;   // успели открыть/переключить
+    pendingOpenProj = '';
+    const online = ws && ws.readyState === 1;
+    setStatus(online ? '● На связи' : 'Нет связи', online ? 'ok' : 'wait');
+  }, 8000);
 }
 function sendInput(data) { if (selected) send({ t: 'input', sid: selected, data }); }
 function send(obj) { if (ws && ws.readyState === 1) { try { ws.send(JSON.stringify(obj)); } catch (_) {} } }
 
 // После перезапуска/возврата ПК sessionId может совпасть со старым (он детерминирован),
-// поэтому обычная проверка «сессия существует» не перезапрашивает буфер нового PTY.
-// Здесь принудительно пересобираем терминал и тянем буфер заново (как кнопка ⟳).
+// поэтому обычная проверка «сессия существует» не перезапрашивает экран нового PTY.
+// Здесь принудительно сбрасываем кадр и тянем свежий полный (стоит ~5КБ — дёшево).
 function resyncTerminal() {
   const sid = (selected && lastSessions.some((s) => s.sid === selected)) ? selected
             : (lastSessions[0] && lastSessions[0].sid);
   if (!sid) return false;       // вкладок ещё нет (ПК не успел поднять) — попробуем на следующем state
-  selected = sid; renderTree(); refreshTerm();
-  if (isTextMode()) requestReaderHistory();
+  selected = sid; renderTree();
+  frame = null;
+  screenFollow = true;
+  resetHistory();
+  renderScreen();
+  requestFullFrame(true);
   return true;
 }
 
 // ----------------------------------------------------------------- соединение
+// hello несёт идентичность устройства: ПК ведёт список подключённых пультов
+// (бейдж у версии в редакторе) и может адресно запросить сисинфо или кикнуть.
+function sendHello() {
+  send({ t: 'hello', device: deviceId(), name: deviceName(), ver: window.PULT_VER || '' });
+}
+// ПК отключил доступ этому устройству (модалка «Пульты»). Не удаление: токен храним,
+// реконнект останавливаем до явного «Повторить» (если доступ вернули — подключимся).
+let kicked = false;
+function showKicked() {
+  kicked = true;
+  try { ws && ws.close(); } catch (_) {}
+  ws = null;
+  setStatus('Доступ отключён', 'bad');
+  const b = document.createElement('div');
+  const t = document.createElement('div');
+  t.style.cssText = 'color:#e0af68;font-size:14px;line-height:1.5;margin-bottom:14px';
+  t.textContent = 'Доступ этого устройства отключён в редакторе на ПК (лейбл «Пульты» у версии). Включите доступ обратно и нажмите «Повторить».';
+  const go = document.createElement('button');
+  go.textContent = 'Повторить подключение';
+  go.style.cssText = 'background:#1f6feb;color:#fff;border:0;border-radius:8px;padding:12px 14px;font-size:15px;width:100%';
+  go.onclick = () => {
+    kicked = false;
+    const ov = $('overlay'); if (ov) ov.style.display = 'none';
+    setStatus('Подключение…', 'wait');
+    connect();
+  };
+  b.appendChild(t); b.appendChild(go);
+  showOverlay('Доступ отключён', b);
+}
+// Ответ на запрос с ПК. what='info' — только диагностика (без запроса геолокации и
+// её пермишена); what='geo' — только местоположение; пусто — и то и другое (совместимость).
+function replySysInfo(what) {
+  const wantInfo = what !== 'geo';
+  const wantGeo = what !== 'info';
+  const info = wantInfo ? diagnosticsText() : '';
+  let sent = false;
+  const done = (loc) => { if (sent) return; sent = true; send({ t: 'sysinfo', device: deviceId(), what: what || '', info, loc }); };
+  if (!wantGeo) { done(null); return; }
+  try {
+    if (!navigator.geolocation) { done({ error: 'геолокация недоступна' }); return; }
+    navigator.geolocation.getCurrentPosition(
+      (p) => done({ lat: p.coords.latitude, lon: p.coords.longitude, acc: p.coords.accuracy }),
+      (e) => done({ error: (e && e.message) || 'нет доступа к геолокации' }),
+      { enableHighAccuracy: false, timeout: 8000, maximumAge: 60000 }
+    );
+    setTimeout(() => done({ error: 'таймаут геолокации' }), 10000);   // страховка: ответ уходит всегда
+  } catch (e) { done({ error: String((e && e.message) || e) }); }
+}
 function connect() {
   const url = `${relayUrl}?token=${encodeURIComponent(token)}&role=app&device=${encodeURIComponent(deviceId())}`;
   if (token) setStatus('Подключение…', 'wait');
@@ -1433,7 +1117,7 @@ function connect() {
 
   ws.onopen = () => {
     pairingShown = false;   // новое соединение → разрешаем заново показать пайринг при need_pairing
-    if (token) { setStatus('● На связи', 'ok'); resyncTerm = true; send({ t: 'hello' }); }   // (пере)подключились → перезапросить терминал
+    if (token) { setStatus('● На связи', 'ok'); resyncTerm = true; sendHello(); }   // (пере)подключились → перезапросить терминал
     else if (authPending) { flushAuth(); }
   };
   ws.onmessage = (ev) => {
@@ -1444,21 +1128,32 @@ function connect() {
       setAuthBusy(false);
       enterApp();
       setStatus('● На связи', 'ok');
-      send({ t: 'hello' });
+      sendHello();
     } else if (m.t === 'auth_err') {
       authError(m.error || 'Ошибка входа');
     } else if (m.t === 'state') {
       lastSessions = m.sessions || []; lastProjects = m.projects || []; renderTree();
+      // Ждали открытия терминала проекта (тап по плейсхолдеру/＋) → выбрать новую сессию.
+      if (pendingOpenProj) {
+        const list = lastSessions.filter((s) => s.projId === pendingOpenProj);
+        if (list.length) {
+          pendingOpenProj = '';
+          setStatus('● На связи', 'ok');
+          selectSession(list[list.length - 1].sid);   // новый PTY — последний в списке проекта
+          return;
+        }
+      }
       const exists = selected && lastSessions.some((s) => s.sid === selected);
       const target = m.active || (lastSessions[0] && lastSessions[0].sid);
-      if (resyncTerm) {                       // после рестарта/возврата ПК — пересобрать и перезапросить буфер
+      if (resyncTerm) {                       // после рестарта/возврата ПК — перезапросить свежий кадр
         if (resyncTerminal()) resyncTerm = false;   // удалось — сброс; нет вкладок — ждём следующий state
       } else if (!exists) { selected = null; if (target) selectSession(target); }   // сессия исчезла/первый вход — выбрать валидную
-      else applyTermSize();   // НЕ следуем за активной ПК: вкладку на пульте выбирает пользователь, PC-active игнорируем
-                              // (размер сессии на ПК мог измениться — перемасштабировать шрифт)
+      // НЕ следуем за активной ПК: вкладку на пульте выбирает пользователь, PC-active игнорируем
     }
-    else if (m.t === 'data') { if (m.sid === selected) writeOut(m.data || ''); }
-    else if (m.t === 'exit') { if (m.sid === selected) writeOut('\r\n[сессия завершена]\r\n'); }
+    else if (m.t === 'screen') { applyScreenMsg(m); }
+    else if (m.t === 'exit') {
+      if (m.sid === selected) { frame = null; resetHistory(); if (screenEl) screenEl.textContent = '[сессия завершена]'; }
+    }
     else if (m.t === 'history:begin') {
       const h = historyPending[m.reqId]; if (!h) return;
       clearTimeout(h.timer);
@@ -1528,7 +1223,7 @@ function connect() {
       pairingShown = false;
       const ov = $('overlay'); if (ov) ov.style.display = 'none';
       setStatus('Устройство одобрено ✓', 'ok');
-      resyncTerm = true; send({ t: 'hello' });   // одобрено → перезапросить терминал
+      resyncTerm = true; sendHello();   // одобрено → перезапросить терминал
     }
     else if (m.t === 'pair:denied') {
       pairingShown = false;
@@ -1542,7 +1237,7 @@ function connect() {
     }
     else if (m.t === 'restarted') {
       awaitingRestart = false; restartGraceUntil = Date.now() + 8000; resyncTerm = true;
-      setStatus('Редактор перезапущен ✓', 'ok'); send({ t: 'hello' });
+      setStatus('Редактор перезапущен ✓', 'ok'); sendHello();
     }
     else if (m.t === 'peer' && m.role === 'pc' && m.event === 'leave') {
       // во время/сразу после перезапуска уход старой копии — ожидаемый шум: статус НЕ трогаем
@@ -1550,13 +1245,21 @@ function connect() {
     }
     else if (m.t === 'peer' && m.role === 'pc' && m.event === 'join') {
       awaitingRestart = false; restartGraceUntil = 0; resyncTerm = true;
-      setStatus('● На связи', 'ok'); send({ t: 'hello' });
+      setStatus('● На связи', 'ok'); sendHello();
+    }
+    else if (m.t === 'sysinfo:get') {
+      // Адресный запрос: отвечает только устройство с совпадающим id (релей шлёт всем).
+      if (!m.device || m.device === deviceId()) replySysInfo(m.what || '');
+    }
+    else if (m.t === 'kick') {
+      if (!m.device || m.device === deviceId()) showKicked();
     }
   };
   ws.onclose = () => { ws = null; scheduleReconnect(); };
   ws.onerror = () => { try { ws.close(); } catch (_) {} };
 }
 function scheduleReconnect() {
+  if (kicked) return;   // доступ отключён с ПК — ждём явного «Повторить»
   if (reconnectTimer) return;
   reconnectTimer = setTimeout(() => { reconnectTimer = null; if (!ws) connect(); }, 3000);
 }
@@ -1565,7 +1268,7 @@ function scheduleReconnect() {
 function enterApp() {
   $('login').style.display = 'none';
   $('app').style.display = 'flex';
-  if (!termInited) { termInited = true; initOutputSurface(); wireTermbar(); }
+  if (!termInited) { termInited = true; initScreen(); wireTermbar(); wireTopPanels(); }
   const w = $('whoami'); if (w) w.textContent = lsGet('lite_login') || '';
 }
 
@@ -1593,7 +1296,7 @@ function lockViewport() {
     if (window.pageYOffset || (document.documentElement && document.documentElement.scrollTop)) {
       try { window.scrollTo(0, 0); } catch (_) {}
     }
-    scheduleTermRelayout('viewport-apply', 70);
+    keepKbdInViewport();
   }
   vpApply = apply;
   function schedule() { if (!raf) raf = requestAnimationFrame ? requestAnimationFrame(apply) : (apply(), 0); }
@@ -1619,7 +1322,6 @@ function hardResetScroll() {
 }
 window.__kbChanged = function () {
   hardResetScroll();
-  scheduleTermRelayout('keyboard-change', 80);
   setTimeout(hardResetScroll, 60);
   setTimeout(hardResetScroll, 180);
   setTimeout(hardResetScroll, 360);
@@ -1643,6 +1345,12 @@ function start(config) {
     token = lsGet('lite_token') || '';
     if (token) enterApp(); else showLogin('');
     connect();           // с токеном → авторизуемся; без → пред-авторизованный сокет для входа
+    // Вотчдог кадра: раз в секунду. Если сессия выбрана, а кадра нет (ПК перезапускался,
+    // PTY ещё не поднялся, select потерялся в сети) — сами перезапрашиваем полный кадр,
+    // пока не получим (requestFullFrame троттлит до 1 запроса/сек).
+    setInterval(() => {
+      if (ws && ws.readyState === 1 && token && selected && !frame) requestFullFrame();
+    }, 1000);
     sendReport('boot', 'app started v' + (window.PULT_VER || ''), diagnosticsText());
   } catch (e) {
     showLogin('');
