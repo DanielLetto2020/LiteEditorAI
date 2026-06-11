@@ -10,6 +10,8 @@ export function el(tag, cls, text) {
   if (text != null) e.textContent = text;
   return e;
 }
+// basename that survives both POSIX and Windows separators (for the Windows build).
+export function baseName(p) { return String(p).split(/[\\/]/).filter(Boolean).pop() || String(p); }
 export function svgEl(html) {
   const t = document.createElement('template');
   t.innerHTML = html.trim();
