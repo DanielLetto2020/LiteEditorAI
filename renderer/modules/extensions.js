@@ -247,23 +247,19 @@ export function initExtensions(host) {
   // ------------------------------------------------------------ dev-терминал папки модуля
   // Терминал живёт ВНУТРИ панели (#ext-pane), cwd = папка модуля. Агента (любого, со своими
   // настройками) пользователь запускает сам; подсказанную команду лишь предвпечатываем БЕЗ Enter.
-  const PROTECTED = new Set(['calculator']); // встроенный пример — не удаляем
-  let agentsInfo = null;
-  const suggestedCmd = () => (agentsInfo && agentsInfo.claude) ? 'claude' : (agentsInfo && agentsInfo.codex) ? 'codex' : '';
+  const PROTECTED = new Set(['calculator']); // встроенный пример — не удаляем, без dev-терминала
 
-  async function openDevTerminal(rec) {
+  function openDevTerminal(rec) {
     ensurePaneOpen();
     hideViews();
     let entry = devTerms.get(rec.id);
     if (!entry) {
       const box = el('div', 'ext-term');
       $('#ext-body').appendChild(box);
+      // cwd = папка модуля; агента (любого) пользователь запускает САМ — ничего не предвпечатываем.
       const handle = host.spawnFolderTerminal(box, rec.dir);
       entry = { box, handle };
       devTerms.set(rec.id, entry);
-      if (agentsInfo === null) agentsInfo = await lite.ext.agents().catch(() => ({ claude: false }));
-      const cmd = suggestedCmd();
-      if (cmd) setTimeout(() => entry.handle.write(cmd), 1200); // без '\r' — пользователь правит/жмёт Enter сам
     }
     entry.box.style.display = '';
     setHead('term', modName(rec));
@@ -309,19 +305,22 @@ export function initExtensions(host) {
     const w = el('div', 'ext-wizard');
     wizardBox.appendChild(w);
 
-    // -- мои модули: открыть терминал / папка / удалить
+    // -- мои модули: открыть терминал / папка / удалить (встроенный калькулятор — только папка)
     if (mods.size) {
       w.appendChild(el('div', 'ext-wiz-label', 'Мои модули'));
       for (const rec of mods.values()) {
         const row = el('div', 'ext-wiz-mod');
         row.appendChild(el('span', 'ext-wiz-name', modName(rec)));
-        const dev = iconBtn('', 'terminal', 'Открыть терминал в папке модуля');
-        dev.addEventListener('click', () => openDevTerminal(rec));
-        const fold = iconBtn('', 'folder', 'Открыть папку модуля');
+        const fold = iconBtn('icon-btn', 'folder', 'Открыть папку модуля');
         fold.addEventListener('click', () => lite.openInFileManager(rec.dir));
-        row.appendChild(dev); row.appendChild(fold);
         if (!PROTECTED.has(rec.id)) {
-          const del = iconBtn('ext-del', 'trash', 'Удалить модуль');
+          const dev = iconBtn('icon-btn', 'terminal', 'Открыть терминал в папке модуля');
+          dev.addEventListener('click', () => openDevTerminal(rec));
+          row.appendChild(dev);
+        }
+        row.appendChild(fold);
+        if (!PROTECTED.has(rec.id)) {
+          const del = iconBtn('icon-btn ext-del', 'trash', 'Удалить модуль');
           del.addEventListener('click', () => deleteModule(rec));
           row.appendChild(del);
         }
@@ -330,14 +329,17 @@ export function initExtensions(host) {
       w.appendChild(el('div', 'ext-wiz-sep'));
     }
 
-    // -- новый модуль: ТОЛЬКО имя
+    // -- новый модуль: имя слева + компактная кнопка справа
     w.appendChild(el('div', 'ext-wiz-label', 'Новый модуль'));
-    const nameIn = el('input'); nameIn.type = 'text'; nameIn.placeholder = 'Имя модуля (например: Конвертер валют)'; nameIn.spellcheck = false;
+    const rowNew = el('div', 'ext-wiz-new');
+    const nameIn = el('input'); nameIn.type = 'text'; nameIn.placeholder = 'Имя модуля'; nameIn.spellcheck = false;
+    const btn = el('button', 'btn primary ext-wiz-create', 'Создать и открыть терминал');
+    rowNew.appendChild(nameIn); rowNew.appendChild(btn);
     const hint = el('div', 'ext-wiz-hint', '');
     nameIn.addEventListener('input', () => { const s = slugify(nameIn.value); hint.textContent = s ? 'папка: ' + s : ''; });
-    w.appendChild(nameIn); w.appendChild(hint);
+    nameIn.addEventListener('keydown', (e) => { if (e.key === 'Enter') btn.click(); });
+    w.appendChild(rowNew); w.appendChild(hint);
 
-    const btn = el('button', 'btn primary', 'Открыть терминал в папке модуля');
     btn.addEventListener('click', async () => {
       const name = nameIn.value.trim();
       const id = slugify(name);
@@ -351,7 +353,6 @@ export function initExtensions(host) {
       const rec = mods.get(id);
       if (rec) await openDevTerminal(rec);
     });
-    w.appendChild(btn);
   }
 
   // ------------------------------------------------------------ init

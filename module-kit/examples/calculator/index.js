@@ -112,7 +112,7 @@ export function activate(ctx) {
       histBox.appendChild(row);
     }
   };
-  const clearBtn = iconBtn('', 'trash', 'Очистить историю');
+  const clearBtn = iconBtn('icon-btn', 'trash', 'Очистить историю');
   clearBtn.addEventListener('click', () => { history = []; saveHist(); renderHist(); });
   root.querySelector('.calc-hist-head').appendChild(clearBtn);
 

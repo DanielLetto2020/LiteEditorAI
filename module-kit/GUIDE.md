@@ -107,7 +107,9 @@ ctx.panel.onClose(fn)    // fn() при закрытии панели польз
 // ---- UI-хелперы (нативный вид редактора) ----------------------------------
 ctx.ui.el(tag, cls, text)            // → HTMLElement; cls и text необязательны
 ctx.ui.icon(name, size = 16)         // → SVG-элемент встроенной иконки
-ctx.ui.iconBtn(cls, name, title, size) // → <button class="icon-btn ...">с иконкой и tooltip
+ctx.ui.iconBtn(cls, name, title, size) // → <button class=cls> с SVG-иконкой и tooltip.
+                                     //   Для нативного вида передавайте cls='icon-btn'
+                                     //   (иначе кнопка получит дефолтный белый фон браузера).
 ctx.ui.toast(msg, opts)              // всплывашка; opts: { kind: 'error', actionLabel, action }
 ctx.ui.makeModal(innerHtml, onClose) // → { overlay, m, close } — модальное окно;
                                      //   закрытие по клику мимо и по Escape уже встроено
@@ -314,7 +316,7 @@ export function activate(ctx) {
       histBox.appendChild(row);
     }
   };
-  const clearBtn = iconBtn('', 'trash', 'Очистить историю');
+  const clearBtn = iconBtn('icon-btn', 'trash', 'Очистить историю');
   clearBtn.addEventListener('click', () => { history = []; saveHist(); renderHist(); });
   root.querySelector('.calc-hist-head').appendChild(clearBtn);
 
