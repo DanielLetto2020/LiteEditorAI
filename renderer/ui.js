@@ -128,7 +128,7 @@ export function makeModal(innerHtml, onClose) {
   const close = () => {
     if (closed) return;
     closed = true;
-    $('#modal-root').innerHTML = '';
+    overlay.remove();   // только СВОЙ оверлей — иначе закрытие вложенной модалки снесло бы родителя мимо его close()/onClose (#modal-root:empty прячет контейнер сам)
     if (onClose) { try { onClose(); } catch (_) {} }
   };
   overlay.addEventListener('mousedown', (e) => { if (e.target === overlay) close(); });

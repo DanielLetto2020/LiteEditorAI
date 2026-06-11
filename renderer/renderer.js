@@ -35,7 +35,7 @@ import { initNotes } from './modules/notes.js';
 import { initOpenRouter } from './modules/openrouter.js';
 import { initExtensions } from './modules/extensions.js';
 
-const APP_VERSION = 'alpha v1.0.135';
+const APP_VERSION = 'alpha v1.0.136';
 const GUTTER = 5;
 const SCRATCH_ID = '__scratch__'; // префикс id системных терминалов (домашняя папка), не привязаны к проектам
 const isScratch = (id) => typeof id === 'string' && id.startsWith(SCRATCH_ID);
@@ -610,13 +610,16 @@ async function refreshPults() {
   updatePultBadge();
 }
 function showPults() {
+  // offPults/offSys присваиваются ниже; onClose сработает на ЛЮБОМ пути закрытия (кнопка/Esc/фон) → отписка гарантирована
+  let offPults = null, offSys = null;
   const { m, close } = makeModal(`
     <h2><span style="color:var(--green-bright)">📱</span> Пульты</h2>
     <div class="about-desc">Устройства, подключённые к редактору. «Отключить» выключает доступ,
       не удаляя устройство — доступ можно вернуть здесь же. Сисинфо и местоположение пульт
       присылает по запросу (гео — с разрешения на устройстве).</div>
     <div class="or-add" id="plt-body"></div>
-    <div class="modal-actions"><button class="btn" id="plt-close">Закрыть</button></div>`);
+    <div class="modal-actions"><button class="btn" id="plt-close">Закрыть</button></div>`,
+    () => { try { offPults && offPults(); offSys && offSys(); } catch (_) {} });
   const body = m.querySelector('#plt-body');
   const sysBoxes = {};   // device → <pre> под ответ сисинфо/гео
 
@@ -682,9 +685,9 @@ function showPults() {
     for (const d of blocked) { if (!online.some((p) => p.device === d)) row(d, null, false); }
   }
   // Живое обновление, пока модалка открыта (подключения/отключения и ответы сисинфо).
-  const offPults = (lite.remote && lite.remote.onPults)
+  offPults = (lite.remote && lite.remote.onPults)
     ? lite.remote.onPults((st) => { if (st) pultsState = st; updatePultBadge(); render(); }) : null;
-  const offSys = (lite.remote && lite.remote.onSysInfo)
+  offSys = (lite.remote && lite.remote.onSysInfo)
     ? lite.remote.onSysInfo((msg) => {
       const pre = sysBoxes[msg.device]; if (!pre) return;
       let txt = '';
@@ -697,7 +700,7 @@ function showPults() {
       }
       pre.textContent = (txt + (msg.info || '')).trim() || 'Пульт прислал пустой ответ.';
     }) : null;
-  m.querySelector('#plt-close').onclick = () => { try { offPults && offPults(); offSys && offSys(); } catch (_) {} close(); };
+  m.querySelector('#plt-close').onclick = () => close();   // отписка — в onClose модалки (срабатывает и на Esc/фон)
   render();
   refreshPults().then(render).catch(() => {});
 }
@@ -1622,7 +1625,7 @@ function bumpFont(delta) {
 
 // ---------------------------------------------------------------- terminal search
 function openTermSearch() {
-  const rec = terms.get(activeId);
+  const rec = terms.get(activeSessionId());
   if (!rec) return;
   const box = $('#term-search');
   box.classList.add('show');
@@ -1631,11 +1634,11 @@ function openTermSearch() {
 }
 function closeTermSearch() {
   $('#term-search').classList.remove('show');
-  const rec = terms.get(activeId);
+  const rec = terms.get(activeSessionId());
   if (rec) { try { rec.search.clearDecorations(); } catch (_) {} rec.term.focus(); }
 }
 function runTermSearch(dir) {
-  const rec = terms.get(activeId);
+  const rec = terms.get(activeSessionId());
   const q = $('#term-search-input').value;
   if (!rec || !q) return;
   const opts = { decorations: { matchOverviewRuler: '#e0af68', activeMatchColorOverviewRuler: '#3ddc84' } };
