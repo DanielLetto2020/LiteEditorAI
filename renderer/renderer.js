@@ -35,7 +35,7 @@ import { initNotes } from './modules/notes.js';
 import { initOpenRouter } from './modules/openrouter.js';
 import { initExtensions } from './modules/extensions.js';
 
-const APP_VERSION = 'alpha v1.0.131';
+const APP_VERSION = 'alpha v1.0.132';
 const GUTTER = 5;
 const SCRATCH_ID = '__scratch__'; // префикс id системных терминалов (домашняя папка), не привязаны к проектам
 const isScratch = (id) => typeof id === 'string' && id.startsWith(SCRATCH_ID);
@@ -218,6 +218,12 @@ const scratchTerms = new Map(); // scratchId -> { term, fit, search, container, 
 let scratchSessions = [];        // ordered scratch ids (tabs)
 let scratchActiveId = null;
 let scratchSeq = 0;
+// Терминалы dev-папок пользовательских модулей: живут ВНУТРИ панели «Модули» (#ext-pane),
+// не в области проектов и не среди скретч-вкладок. cwd = папка модуля.
+const EXT_TERM_ID = '__extterm__';
+const isExtTerm = (id) => typeof id === 'string' && id.startsWith(EXT_TERM_ID);
+const extTerms = new Map(); // ptyId -> { term, fit, search, container }
+let extTermSeq = 0;
 // RemoteHost-модуль (SSH-сессии к серверам): список профилей + живые сессии-вкладки
 let currentFile = null;
 let dirty = false;
@@ -259,6 +265,7 @@ function applyTheme() {
   document.body.dataset.theme = name; // always set; index.html ships data-theme too so there's no flash
   for (const rec of terms.values()) { try { rec.term.options.theme = termTheme(); } catch (_) {} }
   for (const rec of scratchTerms.values()) { try { rec.term.options.theme = termTheme(); } catch (_) {} }
+  for (const rec of extTerms.values()) { try { rec.term.options.theme = termTheme(); } catch (_) {} }
   Containers.applyTermTheme(); // exec-терминал контейнера красится тем же termTheme
   try { Ext.notifyTheme(name); } catch (_) {} // пользовательские модули: ctx.theme.onChange
 }
@@ -926,19 +933,6 @@ async function openProjectDialog() {
   if (picked) openByPath(picked.path, picked.name);
 }
 
-// Мастер модулей: открыть папку модуля как проект; подсказанную команду агента
-// предвпечатываем в терминал БЕЗ Enter — агента запускает сам пользователь (его
-// настройки/модель/флаги), инструкции подхватятся из CLAUDE.md/AGENTS.md/TASK.md.
-// Задержка — PTY новой вкладки должен успеть поднять шелл.
-function openModuleDev(dir, name, cmd) {
-  openByPath(dir, name);
-  if (!cmd) return;
-  setTimeout(() => {
-    const sid = (tabsByProj.get(activeId) || {}).active;
-    if (sid) lite.pty.write(sid, cmd); // без '\r' — пользователь правит/жмёт Enter сам
-  }, 1500);
-}
-
 function openByPath(p, name) {
   const dis = (STORE.dismissed || []); // re-opening clears a prior "closed" mark so scan keeps it
   if (dis.includes(p)) persist('dismissed', dis.filter((x) => x !== p));
@@ -1409,6 +1403,7 @@ function handleRemoteClose(sid) {
 }
 function refitActiveTerminal(focusIt) {
   Containers.refitExec(); // exec-терминал контейнера тоже подгоняется под новый размер
+  try { Ext.refitTerminal(); } catch (_) {} // dev-терминал модуля в #ext-pane
   const asid = activeSessionId();
   const rec = asid ? terms.get(asid) : null;
   if (!rec) return;
@@ -1569,6 +1564,44 @@ function restartScratch(id) {
   rec.term.focus();
 }
 
+// Терминал dev-папки модуля: PTY+xterm в переданном контейнере (живёт в #ext-pane).
+// Возвращает handle для extensions.js; xterm в код модуля не утекает (правило изоляции).
+function createExtTerminal(container, cwd) {
+  const id = EXT_TERM_ID + '::t' + (++extTermSeq);
+  const term = new Terminal({
+    fontFamily: '"JetBrains Mono", "Fira Code", "Cascadia Code", Consolas, monospace',
+    fontSize: settings.fontSize, cursorBlink: true, allowProposedApi: true, theme: termTheme(), scrollback: 5000,
+  });
+  const fit = new FitAddon();
+  const search = new SearchAddon();
+  term.loadAddon(fit);
+  term.loadAddon(search);
+  term.loadAddon(new WebLinksAddon((_e, uri) => lite.openExternal(uri)));
+  applyUnicode11(term);
+  term.open(container);
+  loadFastRenderer(term);
+  fit.fit();
+  lite.pty.create({ id, cwd, cols: term.cols, rows: term.rows });
+  term.onData((data) => lite.pty.write(id, data));
+  term.onResize(({ cols, rows }) => lite.pty.resize(id, cols, rows));
+  term.attachCustomKeyEventHandler((e) => {
+    if (e.type !== 'keydown') return true;
+    if (e.ctrlKey && !e.shiftKey && !e.altKey && e.code === 'KeyC') return !copySelection(term);
+    if (e.ctrlKey && !e.shiftKey && !e.altKey && e.code === 'KeyV') { e.preventDefault(); pasteInto(id); return false; }
+    if (e.ctrlKey && !e.shiftKey && !e.altKey && e.key === 'Enter') { lite.pty.write(id, lite.platform === 'win32' ? '\n' : '\\\r'); return false; }
+    return true;
+  });
+  container.addEventListener('contextmenu', (e) => { e.preventDefault(); showTermMenu(e.clientX, e.clientY, term, id); });
+  extTerms.set(id, { term, fit, search, container });
+  return {
+    id,
+    write: (s) => lite.pty.write(id, s),
+    focus: () => { try { term.focus(); } catch (_) {} },
+    refit: () => requestAnimationFrame(() => { try { fit.fit(); lite.pty.resize(id, term.cols, term.rows); } catch (_) {} }),
+    dispose: () => { lite.pty.kill(id); try { term.dispose(); } catch (_) {} extTerms.delete(id); },
+  };
+}
+
 // ================================================================ RemoteHost module (SSH)
 // Вынесен в renderer/modules/remotehost.js (const Rh — у реестра панелей).
 
@@ -1577,6 +1610,7 @@ let watchedRoot = null; // we live-watch only the active project to limit inotif
 function applyFontSize() {
   for (const rec of terms.values()) { rec.term.options.fontSize = settings.fontSize; try { rec.fit.fit(); } catch (_) {} }
   for (const rec of scratchTerms.values()) { rec.term.options.fontSize = settings.fontSize; try { rec.fit.fit(); } catch (_) {} }
+  for (const rec of extTerms.values()) { rec.term.options.fontSize = settings.fontSize; try { rec.fit.fit(); } catch (_) {} }
   Rh.applyFontSize(); // SSH-терминалы модуля «Удалённые хосты»
   document.documentElement.style.setProperty('--editor-fs', settings.fontSize + 'px');
   refitActiveTerminal();
@@ -1978,7 +2012,7 @@ const Ext = initExtensions({
   getTheme: () => (THEMES[settings.theme] ? settings.theme : DEFAULT_THEME),
   closeMenus: () => closeMenus(),
   menuRow: (glyph, text, onClick, cls) => menuRow(glyph, text, onClick, cls),
-  openModuleDev,
+  spawnFolderTerminal: (container, cwd) => createExtTerminal(container, cwd),
 });
 registerPanel('ext', { isOpen: Ext.isOpen, setOpen: Ext.setOpen });
 PANEL_ORDER.push('ext');
@@ -2743,6 +2777,7 @@ function init() {
   setTimeout(() => { checkForUpdate().catch(() => {}); }, 3000);
 
   lite.pty.onData(({ id, data }) => {
+    if (isExtTerm(id)) { const r = extTerms.get(id); if (r) r.term.write(data); return; }
     if (isScratch(id)) { const r = scratchTerms.get(id); if (r) r.term.write(data); return; }
     const rec = terms.get(id);
     if (!rec) return;
@@ -2750,6 +2785,7 @@ function init() {
     markActivity(id, data);
   });
   lite.pty.onExit(({ id }) => {
+    if (isExtTerm(id)) { const r = extTerms.get(id); if (r) r.term.write('\r\n\x1b[90m[шелл завершён]\x1b[0m\r\n'); return; }
     if (isScratch(id)) { const r = scratchTerms.get(id); if (r) r.term.write('\r\n\x1b[90m[шелл завершён — ⟳ для нового]\x1b[0m\r\n'); return; }
     const rec = terms.get(id);
     if (rec) rec.term.write('\r\n\x1b[90m[процесс завершён — закрой и переоткрой проект]\x1b[0m\r\n');

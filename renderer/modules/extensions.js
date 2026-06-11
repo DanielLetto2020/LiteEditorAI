@@ -6,7 +6,7 @@
 // Модель доверия — Obsidian-style: без песочницы, установка = доверие коду; ошибки модуля
 // изолируются (try/catch + toast), редактор живёт дальше. Спецификация — module-kit/GUIDE.md.
 // host: { STORE, persist, layout, GUTTER, refitActiveTerminal, closeOtherPanels,
-//         getProjects, getActiveId, getTheme, closeMenus, menuRow, openModuleDev }
+//         getProjects, getActiveId, getTheme, closeMenus, menuRow, spawnFolderTerminal }
 import { el, icon, iconBtn, toast, makeModal, showConfirm, showPrompt } from '../ui.js';
 
 const $ = (sel) => document.querySelector(sel);
@@ -18,6 +18,8 @@ export function initExtensions(host) {
   let activeExtId = null;   // id модуля, чей контейнер сейчас показан (null — мастер/пусто)
   let extDirPath = '';      // абсолютный путь к ~/.LiteEditorAI/modules (из ext:scan)
   let wizardBox = null;     // контейнер мастера «Создать модуль» (лениво)
+  const devTerms = new Map(); // id модуля -> { box, handle } — dev-терминал папки (живёт в панели)
+  let termView = null;      // id модуля, чей dev-терминал сейчас показан (иначе null)
 
   const isEnabled = (id) => (host.STORE.extEnabled || {})[id] !== false;
   const setEnabled = (id, on) => host.persist('extEnabled', { ...(host.STORE.extEnabled || {}), [id]: !!on });
@@ -48,19 +50,29 @@ export function initExtensions(host) {
     }
   }
 
-  function showOnly(id) { // показать контейнер одного модуля (или мастера при id === null)
-    for (const r of mods.values()) if (r.container) r.container.style.display = (r.id === id) ? '' : 'none';
-    if (wizardBox) wizardBox.style.display = (id === null) ? '' : 'none';
+  // Панель #ext-pane показывает РОВНО одну «вьюху»: контейнер загруженного модуля, мастер
+  // «Создать модуль» или dev-терминал папки модуля. hideViews() гасит все, дальше показываем нужную.
+  function hideViews() {
+    for (const r of mods.values()) if (r.container) r.container.style.display = 'none';
+    if (wizardBox) wizardBox.style.display = 'none';
+    for (const t of devTerms.values()) t.box.style.display = 'none';
   }
+  // mode: 'module' (⟳ виден), 'wizard' (ничего), 'term' (← Назад виден)
+  function setHead(mode, title) {
+    $('#ext-title').textContent = title;
+    $('#ext-reload').style.display = mode === 'module' ? '' : 'none';
+    $('#ext-back').style.display = mode === 'term' ? '' : 'none';
+  }
+  const ensurePaneOpen = () => { if (!extPaneOpen) setOpen(true); };
 
   function openExt(id) {
     const rec = mods.get(id);
     if (!rec || rec.status !== 'on') return;
-    showOnly(id);
-    $('#ext-title').textContent = rec.title || modName(rec);
-    $('#ext-reload').style.display = '';
-    activeExtId = id;
-    if (!extPaneOpen) setOpen(true);
+    ensurePaneOpen();
+    hideViews();
+    rec.container.style.display = '';
+    setHead('module', rec.title || modName(rec));
+    activeExtId = id; termView = null;
   }
 
   // ------------------------------------------------------------ ctx v1 (публичный API модуля)
@@ -238,25 +250,50 @@ export function initExtensions(host) {
     dd.appendChild(host.menuRow('refresh', 'Пересканировать', () => { host.closeMenus(); rescan(); }));
   }
 
-  // ------------------------------------------------------------ мастер «Создать модуль»
-  // Скаффолд раскладывает main (заготовка + GUIDE/CLAUDE.md/AGENTS.md + TASK.md с заданием),
-  // папка модуля открывается как проект — а агента пользователь запускает в её терминале
-  // САМ (любого: claude, codex, …, со своими настройками/моделью). Инструкции агент
-  // подхватывает из файлов: CLAUDE.md/AGENTS.md → GUIDE.md (спека) + TASK.md (задание).
-  // В терминал лишь предвпечатывается подсказанная команда БЕЗ Enter.
-  let agentsInfo = null; // {claude, codex} — детект из ext:agents, кэш на сессию мастера
-
+  // ------------------------------------------------------------ dev-терминал папки модуля
+  // Терминал живёт ВНУТРИ панели (#ext-pane), cwd = папка модуля. Агента (любого, со своими
+  // настройками) пользователь запускает сам; подсказанную команду лишь предвпечатываем БЕЗ Enter.
+  const PROTECTED = new Set(['calculator']); // встроенный пример — не удаляем
+  let agentsInfo = null;
   const suggestedCmd = () => (agentsInfo && agentsInfo.claude) ? 'claude' : (agentsInfo && agentsInfo.codex) ? 'codex' : '';
-  const taskMd = (task) => '# Задание для агента\n\n' + task + '\n\n---\n' +
-    'Перед работой прочитай GUIDE.md в этой папке — полная спецификация модулей LiteEditor.\n' +
-    'Код модуля — index.js (activate/deactivate). Когда закончишь — сообщи: пользователь\n' +
-    'проверит через меню «Модули → Перезагрузить».\n';
 
-  function devTerminal(dir, name) {
-    host.openModuleDev(dir, 'Модуль: ' + name, suggestedCmd());
-    toast('Терминал модуля открыт — запустите своего агента (задание уже в TASK.md)');
+  async function openDevTerminal(rec) {
+    ensurePaneOpen();
+    hideViews();
+    let entry = devTerms.get(rec.id);
+    if (!entry) {
+      const box = el('div', 'ext-term');
+      $('#ext-body').appendChild(box);
+      const handle = host.spawnFolderTerminal(box, rec.dir);
+      entry = { box, handle };
+      devTerms.set(rec.id, entry);
+      if (agentsInfo === null) agentsInfo = await lite.ext.agents().catch(() => ({ claude: false }));
+      const cmd = suggestedCmd();
+      if (cmd) setTimeout(() => entry.handle.write(cmd), 1200); // без '\r' — пользователь правит/жмёт Enter сам
+    }
+    entry.box.style.display = '';
+    setHead('term', modName(rec));
+    termView = rec.id; activeExtId = null;
+    setTimeout(() => { entry.handle.refit(); entry.handle.focus(); }, 80);
   }
-  // Транслит для авто-id из русского названия (слаг можно поправить руками).
+
+  function deleteModule(rec) {
+    showConfirm('Удалить модуль «' + modName(rec) + '»?',
+      'Папка модуля переместится в корзину ОС (можно восстановить). Модуль выгрузится из редактора.',
+      'Удалить', async () => {
+        unloadModule(rec, true);
+        const dt = devTerms.get(rec.id);
+        if (dt) { try { dt.handle.dispose(); } catch (_) {} dt.box.remove(); devTerms.delete(rec.id); }
+        const r = await lite.fs.trash(rec.dir).catch((e) => ({ error: String(e) }));
+        if (r && r.error) { toast('Не удалось удалить: ' + r.error, { kind: 'error' }); return; }
+        mods.delete(rec.id);
+        toast('Модуль «' + modName(rec) + '» удалён');
+        openWizard();
+      });
+  }
+
+  // ------------------------------------------------------------ мастер «Создать модуль»
+  // Транслит для имени папки/id из русского названия.
   const TR = { а:'a',б:'b',в:'v',г:'g',д:'d',е:'e',ё:'e',ж:'zh',з:'z',и:'i',й:'i',к:'k',л:'l',м:'m',н:'n',о:'o',п:'p',р:'r',с:'s',т:'t',у:'u',ф:'f',х:'h',ц:'c',ч:'ch',ш:'sh',щ:'sch',ъ:'',ы:'y',ь:'',э:'e',ю:'yu',я:'ya' };
   function slugify(s) {
     return String(s).toLowerCase().split('').map((ch) => TR[ch] != null ? TR[ch] : ch).join('')
@@ -264,76 +301,61 @@ export function initExtensions(host) {
   }
 
   function openWizard() {
-    host.closeOtherPanels('ext');
+    ensurePaneOpen();
     if (!wizardBox) { wizardBox = el('div', 'ext-mod'); $('#ext-body').appendChild(wizardBox); }
-    showOnly(null);
-    activeExtId = null;
-    $('#ext-title').textContent = 'Создать модуль';
-    $('#ext-reload').style.display = 'none';
-    if (!extPaneOpen) setOpen(true);
+    hideViews();
+    wizardBox.style.display = '';
+    setHead('wizard', 'Создать модуль');
+    activeExtId = null; termView = null;
     renderWizard();
   }
 
-  async function renderWizard() {
+  function renderWizard() {
     wizardBox.innerHTML = '';
     const w = el('div', 'ext-wizard');
     wizardBox.appendChild(w);
 
-    // -- доработка существующих
+    // -- мои модули: открыть терминал / папка / удалить
     if (mods.size) {
-      w.appendChild(el('div', 'ext-wiz-label', 'Мои модули — доработка'));
+      w.appendChild(el('div', 'ext-wiz-label', 'Мои модули'));
       for (const rec of mods.values()) {
         const row = el('div', 'ext-wiz-mod');
         row.appendChild(el('span', 'ext-wiz-name', modName(rec)));
-        const dev = el('button', 'btn', 'Доработать');
-        dev.addEventListener('click', () => {
-          showPrompt('Доработка «' + modName(rec) + '»', 'Что изменить или добавить?', '', async (v) => {
-            await lite.fs.writeFile(rec.dir + '/TASK.md', taskMd(v)).catch(() => {});
-            devTerminal(rec.dir, modName(rec));
-          });
-        });
+        const dev = iconBtn('', 'terminal', 'Открыть терминал в папке модуля');
+        dev.addEventListener('click', () => openDevTerminal(rec));
         const fold = iconBtn('', 'folder', 'Открыть папку модуля');
         fold.addEventListener('click', () => lite.openInFileManager(rec.dir));
         row.appendChild(dev); row.appendChild(fold);
+        if (!PROTECTED.has(rec.id)) {
+          const del = iconBtn('ext-del', 'trash', 'Удалить модуль');
+          del.addEventListener('click', () => deleteModule(rec));
+          row.appendChild(del);
+        }
         w.appendChild(row);
       }
       w.appendChild(el('div', 'ext-wiz-sep'));
     }
 
-    // -- новый модуль
+    // -- новый модуль: ТОЛЬКО имя
     w.appendChild(el('div', 'ext-wiz-label', 'Новый модуль'));
-    const nameIn = el('input'); nameIn.type = 'text'; nameIn.placeholder = 'Название (например: Конвертер валют)'; nameIn.spellcheck = false;
-    const idIn = el('input'); idIn.type = 'text'; idIn.placeholder = 'id (a-z, 0-9, дефис) — авто из названия'; idIn.spellcheck = false;
-    let idTouched = false;
-    idIn.addEventListener('input', () => { idTouched = true; });
-    nameIn.addEventListener('input', () => { if (!idTouched) idIn.value = slugify(nameIn.value); });
-    const descIn = el('textarea'); descIn.placeholder = 'Что должен делать модуль? Задание ляжет в TASK.md для вашего агента (можно оставить пустым и объяснить агенту прямо в терминале).'; descIn.spellcheck = false;
-    w.appendChild(nameIn); w.appendChild(idIn); w.appendChild(descIn);
+    const nameIn = el('input'); nameIn.type = 'text'; nameIn.placeholder = 'Имя модуля (например: Конвертер валют)'; nameIn.spellcheck = false;
+    const hint = el('div', 'ext-wiz-hint', '');
+    nameIn.addEventListener('input', () => { const s = slugify(nameIn.value); hint.textContent = s ? 'папка: ' + s : ''; });
+    w.appendChild(nameIn); w.appendChild(hint);
 
-    // -- какие агенты видны в PATH (информационно — запуск целиком за пользователем)
-    agentsInfo = await lite.ext.agents().catch(() => ({ claude: false, codex: false }));
-    const found = [agentsInfo.claude && 'Claude Code', agentsInfo.codex && 'Codex CLI'].filter(Boolean);
-    w.appendChild(el('div', 'ext-wiz-agents',
-      found.length ? 'Агенты в PATH: ' + found.join(', ') : 'claude/codex в PATH не найдены — подойдёт любой ваш CLI-агент'));
-
-    w.appendChild(el('div', 'ext-wiz-warn',
-      'Агента запускаете вы сами в терминале модуля — любого (claude, codex, …) и со своими ' +
-      'настройками/моделью/версией. Задание ляжет в TASK.md; инструкции и спецификацию агент ' +
-      'подхватит из CLAUDE.md / AGENTS.md / GUIDE.md автоматически.'));
-
-    const btn = el('button', 'btn primary', 'Создать модуль и открыть терминал');
+    const btn = el('button', 'btn primary', 'Открыть терминал в папке модуля');
     btn.addEventListener('click', async () => {
       const name = nameIn.value.trim();
-      const id = (idIn.value.trim() || slugify(name));
-      const desc = descIn.value.trim();
-      if (!name) { toast('Укажите название модуля', { kind: 'error' }); return; }
-      if (!/^[a-z0-9-]+$/.test(id)) { toast('id — только латиница a-z, цифры и дефис', { kind: 'error' }); return; }
+      const id = slugify(name);
+      if (!name) { toast('Укажите имя модуля', { kind: 'error' }); return; }
+      if (!id) { toast('Из имени не вышло корректное имя папки — добавьте латиницу/цифры', { kind: 'error' }); return; }
+      if (mods.has(id)) { toast('Модуль с папкой «' + id + '» уже есть', { kind: 'error' }); return; }
       btn.disabled = true;
-      const r = await lite.ext.scaffold({ id, name, desc }).catch((e) => ({ error: String(e) }));
+      const r = await lite.ext.scaffold({ id, name }).catch((e) => ({ error: String(e) }));
       if (!r || r.error) { btn.disabled = false; toast('Не удалось создать модуль: ' + ((r && r.error) || 'ошибка'), { kind: 'error' }); return; }
-      await rescan(true); // заготовка валидна — модуль сразу появляется в списке
-      devTerminal(r.dir, name);
-      openWizard(); // перерисовать список «Мои модули»
+      await rescan(true);
+      const rec = mods.get(id);
+      if (rec) await openDevTerminal(rec);
     });
     w.appendChild(btn);
   }
@@ -341,6 +363,7 @@ export function initExtensions(host) {
   // ------------------------------------------------------------ init
   $('#ext-close').addEventListener('click', () => setOpen(false));
   $('#ext-reload').addEventListener('click', () => { if (activeExtId) reload(activeExtId); });
+  $('#ext-back').addEventListener('click', () => openWizard());
   rescan(true); // стартовая загрузка включённых модулей (папки нет → main создаст + README)
 
   return {
@@ -351,5 +374,6 @@ export function initExtensions(host) {
     buildMenuSection, paletteActions,
     notifyActiveProject, notifyTheme,
     openWizard,
+    refitTerminal: () => { if (termView && devTerms.has(termView)) devTerms.get(termView).handle.refit(); },
   };
 }

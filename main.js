@@ -581,13 +581,6 @@ ipcMain.handle('ext:scaffold', (_e, { id, name, desc } = {}) => {
     const manifest = { id: String(id), name: String(name || id), version: '0.1.0', apiVersion: EXT_API_VERSION, main: 'index.js', description: String(desc || ''), author: '', repo: '', capabilities: [] };
     fs.writeFileSync(path.join(dir, 'manifest.json'), JSON.stringify(manifest, null, 2) + '\n');
     fs.writeFileSync(path.join(dir, 'index.js'), EXT_STUB);
-    // Задание — в файл: агента пользователь запускает САМ (любого, со своими настройками),
-    // а CLAUDE.md/AGENTS.md ведут его к GUIDE.md и TASK.md.
-    if (desc) fs.writeFileSync(path.join(dir, 'TASK.md'),
-      '# Задание для агента\n\n' + String(desc) + '\n\n---\n' +
-      'Перед работой прочитай GUIDE.md в этой папке — полная спецификация модулей LiteEditor.\n' +
-      'Код модуля — index.js (activate/deactivate). Когда закончишь — сообщи: пользователь\n' +
-      'проверит через меню «Модули → Перезагрузить».\n');
     const kit = path.join(__dirname, 'module-kit');
     for (const [src, dst] of [['GUIDE.md', 'GUIDE.md'], [path.join('ai', 'CLAUDE.md'), 'CLAUDE.md'], [path.join('ai', 'AGENTS.md'), 'AGENTS.md']]) {
       try { fs.copyFileSync(path.join(kit, src), path.join(dir, dst)); } catch (e) { console.warn('ext:scaffold copy failed', src, String(e.message || e)); }

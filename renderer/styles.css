@@ -572,6 +572,9 @@ html, body {
 #ext-title { color: var(--green-bright); font-size: 12px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ext-body { flex: 1; min-height: 0; overflow: auto; position: relative; }
 .ext-body .ext-mod { height: 100%; }
+/* dev-терминал папки модуля: занимает всё тело панели */
+.ext-body .ext-term { height: 100%; padding: 4px; box-sizing: border-box; overflow: hidden; }
+.ext-body .ext-term .xterm { height: 100%; }
 /* меню «Мои модули»: статус + тумблер питания справа в строке */
 .menu-row .ext-state { margin-left: auto; font-size: 11px; color: var(--warn); }
 .menu-row .ext-toggle { margin-left: 8px; opacity: .5; }
@@ -584,11 +587,9 @@ html, body {
 .ext-wiz-label { font-size: 11px; letter-spacing: .08em; color: var(--text-mute); text-transform: uppercase; }
 .ext-wiz-mod { display: flex; align-items: center; gap: 8px; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 7px 10px; }
 .ext-wiz-mod .ext-wiz-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ext-wiz-mod .ext-del:hover { color: var(--danger); }
 .ext-wiz-sep { border-top: 1px solid var(--border); margin: 4px 0; }
-.ext-wiz-warn { background: var(--surface); border: 1px solid var(--border); border-left: 3px solid var(--warn); border-radius: 8px; padding: 8px 10px; color: var(--text-dim); font-size: 12px; line-height: 1.5; }
-.ext-wiz-agents { display: flex; gap: 16px; align-items: center; }
-.ext-wiz-agents label { display: flex; gap: 6px; align-items: center; cursor: pointer; }
-.ext-wiz-agents label.off { opacity: .45; cursor: default; }
+.ext-wiz-hint { font-size: 11.5px; color: var(--text-mute); font-family: "JetBrains Mono", monospace; min-height: 14px; }
 
 /* ---------------- gutters (resize) ---------------- */
 .gutter { flex: 0 0 5px; cursor: col-resize; background: transparent; position: relative; z-index: 5; }
