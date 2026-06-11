@@ -20,7 +20,8 @@ export function svgEl(html) {
 // ---------------------------------------------------------------- icon set
 // One consistent line-icon family (Lucide-ish): 24-grid, currentColor stroke, rounded.
 // Inner markup only; icon() wraps it. Fill-based glyphs set their own fill/stroke.
-const ICONS = {
+// Exported: ядру нужен сам словарь (menuRow проверяет «glyph — имя иконки или текст?»).
+export const ICONS = {
   star: '<path d="M12 3.2l2.6 5.27 5.82.85-4.21 4.1.99 5.79L12 16.48 6.8 19.21l.99-5.79-4.21-4.1 5.82-.85z"/>',
   'dots-v': '<circle cx="12" cy="5" r="1.5" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.5" fill="currentColor" stroke="none"/><circle cx="12" cy="19" r="1.5" fill="currentColor" stroke="none"/>',
   'chevron-right': '<path d="M9 5l7 7-7 7"/>',
