@@ -21,6 +21,7 @@ const logger = require('./logger');
 const remote = require('./remote'); // удалённый пульт (вкл. только при env LITE_REMOTE=1)
 const { safeChildName } = require('./lib/safe-name'); // анти-traversal для имён (в т.ч. с пульта)
 const { resolveShell: resolveShellPure } = require('./lib/shell'); // выбор оболочки терминала
+const sgrline = require('./lib/sgrline'); // стилизованные строки кадра пульта (цвета как мини-SGR)
 
 app.setName('LiteEditorAI');
 app.setAppUserModelId('com.mletto.liteeditorai'); // Windows: имя/иконка/группировка в панели задач и уведомлениях
@@ -70,21 +71,65 @@ function mirrorResize(id, cols, rows) { const m = mirrors.get(id); if (m && cols
 function mirrorDispose(id) { const m = mirrors.get(id); if (m) { try { m.term.dispose(); } catch (_) {} mirrors.delete(id); } }
 // Видимый экран сессии как простой текст: массив строк + курсор + флаг alt-буфера.
 // Это весь «снапшот», который нужен пульту, — ~5КБ вместо мегабайтного serialize().
-function mirrorScreen(id) {
+// styled (пульт попросил в select) → строки с цветами/атрибутами как мини-SGR
+// (lib/sgrline.js; строки остаются строками — диффер в remote.js не меняется) +
+// curIdx: индекс курсора В ПЛОСКОМ ТЕКСТЕ строки курсора. cursorX — в ЯЧЕЙКАХ, а
+// wide-символы (эмодзи/CJK) занимают 2 ячейки при .length 1-2 — пульту ширины ячеек
+// не видны, поэтому индекс считаем здесь, где они известны точно.
+function mirrorScreen(id, styled) {
   const m = mirrors.get(id);
   if (!m) return null;
   try {
     const term = m.term;
     const buf = term.buffer.active;
     const lines = [];
+    if (!styled) {
+      for (let y = 0; y < term.rows; y++) {
+        const line = buf.getLine(buf.baseY + y);
+        lines.push(line ? line.translateToString(true) : '');
+      }
+      return {
+        cols: term.cols, rows: term.rows, lines,
+        cursor: [buf.cursorX, buf.cursorY],
+        alt: buf.type === 'alternate',
+      };
+    }
+    const cellObj = buf.getNullCell();
+    let curIdx = -1;
     for (let y = 0; y < term.rows; y++) {
       const line = buf.getLine(buf.baseY + y);
-      lines.push(line ? line.translateToString(true) : '');
+      if (!line) { lines.push(''); continue; }
+      const isCurY = (y === buf.cursorY);
+      const cells = [];
+      let plainLen = 0;   // длина плоского текста в JS-единицах (для curIdx)
+      for (let x = 0; x < line.length; x++) {
+        const c = line.getCell(x, cellObj);
+        if (!c) break;
+        // курсор на continuation-ячейке wide-символа → индекс ПОСЛЕ самого символа
+        if (isCurY && x === buf.cursorX) curIdx = plainLen;
+        if (c.getWidth() === 0) continue;   // continuation wide-символа — не ячейка
+        const ch = c.getChars() || ' ';
+        let fg = -1, bg = -1;
+        if (c.isFgRGB()) fg = sgrline.RGB | c.getFgColor();
+        else if (c.isFgPalette()) fg = c.getFgColor();
+        if (c.isBgRGB()) bg = sgrline.RGB | c.getBgColor();
+        else if (c.isBgPalette()) bg = c.getBgColor();
+        let fl = 0;
+        if (c.isBold()) fl |= 1;
+        if (c.isDim()) fl |= 2;
+        if (c.isItalic()) fl |= 4;
+        if (c.isUnderline()) fl |= 8;
+        if (c.isInverse()) fl |= 16;
+        cells.push({ ch, fg, bg, fl });
+        plainLen += ch.length;
+      }
+      if (isCurY && curIdx === -1) curIdx = plainLen + Math.max(0, buf.cursorX - line.length);
+      lines.push(sgrline.encodeLine(cells));
     }
     return {
       cols: term.cols, rows: term.rows, lines,
-      cursor: [buf.cursorX, buf.cursorY],
-      alt: buf.type === 'alternate',
+      cursor: [buf.cursorX, buf.cursorY], curIdx,
+      alt: buf.type === 'alternate', styled: true,
     };
   } catch (_) { return null; }
 }
@@ -1394,7 +1439,7 @@ function startRemotePult() {
     remote.init({
       logger,
       getSessions: buildRemoteState,
-      screenFrame: (sid) => mirrorScreen(sid),  // видимый экран сессии (проекция для пульта)
+      screenFrame: (sid, styled) => mirrorScreen(sid, styled),  // видимый экран сессии (проекция для пульта; styled — пульт умеет цвета)
       writeInput: (sid, data) => { const p = ptys.get(sid); if (p) p.write(data); },
       openProject: remoteOpenProject,
       onSelect: (sid) => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('remote:select', { sid }); },
