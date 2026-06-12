@@ -10,6 +10,10 @@
 // Терминала-эмулятора на пульте НЕТ: ПК шлёт «проекцию экрана» (текстовые кадры
 // с теневого headless-xterm, см. remote.js на ПК), пульт лишь рисует их в <pre>.
 
+// Кодек стилизованных строк кадра (ОБЩИЙ с ПК, см. lib/sgrline.js): ПК шлёт цвета
+// как мини-SGR внутри строк, тут parseLine разбирает их в спаны. esbuild бандлит CJS.
+const sgrline = require('../lib/sgrline.js');
+
 let ws = null;
 let relayUrl = 'wss://lite.codecopy.ru/ws';
 let token = '';
@@ -545,6 +549,8 @@ let viewportWired = false;
 let renderQueued = false;
 let fullReqAt = 0;
 let screenFollow = true;    // прилипание к низу кадра (низ = поле ввода агента)
+// Дефолтные цвета экрана (для inverse-спанов: свап с ними) — читаются из CSS в initScreen.
+let screenFg = '#d6deeb', screenBg = '#0d1117';
 
 // --- Ленивая история над кадром (как лента маркетплейса, только вверх) ---------
 // Скролл подошёл к верху → подгружаем ещё кусок транскрипта с ПК и пришиваем СВЕРХУ
@@ -605,19 +611,92 @@ function initScreen() {
     }
   }, { passive: true });
   host.appendChild(screenEl);
+  try {
+    const cs = getComputedStyle(screenEl);
+    if (cs.color) screenFg = cs.color;
+    if (cs.backgroundColor) screenBg = cs.backgroundColor;
+  } catch (_) {}
   wireTermHost(host);
+}
+// Строка кадра в работе — объект {text, spans, curIdx?}: плоский текст + спаны стилей
+// (из parseLine; у плоского кадра spans пуст). Любая резка текста идёт через cutRange,
+// который синхронно ремапит спаны и индекс курсора — геометрия не разъезжается.
+function cutRange(row, start, len) {
+  row.text = row.text.slice(0, start) + row.text.slice(start + len);
+  if (row.curIdx !== undefined && row.curIdx > start) row.curIdx = Math.max(start, row.curIdx - len);
+  if (row.spans.length) {
+    const out = [];
+    for (let i = 0; i < row.spans.length; i++) {
+      const sp = row.spans[i];
+      if (sp.s > start) sp.s = Math.max(start, sp.s - len);
+      if (sp.e > start) sp.e = Math.max(start, sp.e - len);
+      if (sp.e > sp.s) out.push(sp);
+    }
+    row.spans = out;
+  }
 }
 // Косметика строк агентского TUI на узком экране: полноширинные линейки/рамки
 // (130 символов «─») при pre-wrap превращаются в 3 строки каждая. Схлопываем
-// ЛЮБОЙ длинный прогон одинакового «штриха» до 24 — где бы он ни стоял в строке
-// (раньше требовали «вся строка — линейка», и рамки с заголовком/стыками не
-// схлопывались — над полем ввода оставались 3 полосы). Правую границу рамки
-// (хвост из пробелов и «│») срезаем. Строки НЕ удаляются — индексы курсора живут.
-function frameLineView(ln) {
-  let s = ln;
-  s = s.replace(/\s{2,}[│|]\s*$/, '');   // '│ > текст      │' → '│ > текст'
-  s = s.replace(/([─━═╌┄┅┈┉=_~‐‒–—-])\1{23,}/g, (run, ch) => ch.repeat(24));
-  return s;
+// ЛЮБОЙ длинный прогон одинакового «штриха» до 24 — где бы он ни стоял в строке.
+// Правую границу рамки (хвост из пробелов и «│») срезаем. Строки НЕ удаляются.
+function frameLineView(row) {
+  const m = /\s{2,}[│|]\s*$/.exec(row.text);   // '│ > текст      │' → '│ > текст'
+  if (m) cutRange(row, m.index, row.text.length - m.index);
+  const re = /([─━═╌┄┅┈┉=_~‐‒–—-])\1{23,}/g;
+  const cuts = [];
+  let r;
+  while ((r = re.exec(row.text))) cuts.push([r.index + 24, r[0].length - 24]);
+  for (let i = cuts.length - 1; i >= 0; i--) cutRange(row, cuts[i][0], cuts[i][1]);   // с конца — индексы не плывут
+}
+// Курсор ▌ — подменой символа по индексу в ПЛОСКОМ тексте. В styled-кадре индекс
+// прислал ПК (curIdx: там известны ширины ячеек — эмодзи/CJK левее не сдвигают
+// курсор); в плоском — cursor[0] как раньше. Вставка ПОСЛЕ схлопывания рамок
+// (cutRange уже отремапил curIdx) — символ курсора не разрезает прогон линейки.
+function insertCursor(row) {
+  const t = row.text;
+  let i = row.curIdx;
+  if (i === undefined || i < 0) i = t.length;
+  if (i >= t.length) { row.text = t + ' '.repeat(i - t.length) + '▌'; return; }
+  let len = 1;
+  const code = t.charCodeAt(i);
+  if (code >= 0xd800 && code <= 0xdbff && i + 1 < t.length) len = 2;   // суррогатная пара (эмодзи)
+  row.text = t.slice(0, i) + '▌' + t.slice(i + len);
+  const d = 1 - len;
+  if (d && row.spans.length) {
+    for (let k = 0; k < row.spans.length; k++) {
+      const sp = row.spans[k];
+      if (sp.s > i) sp.s += d;
+      if (sp.e > i) sp.e += d;
+    }
+  }
+}
+// Спан стиля → инлайн-стили DOM-спана. Цвета — палитра/RGB из colorHex; inverse —
+// свап с дефолтными цветами экрана. Только textContent — XSS-поверхности нет.
+function styleSpan(el, sp) {
+  let fg = sgrline.colorHex(sp.fg), bg = sgrline.colorHex(sp.bg);
+  if (sp.fl & 16) { const f = fg; fg = bg || screenBg; bg = f || screenFg; }
+  if (fg) el.style.color = fg;
+  if (bg) el.style.backgroundColor = bg;
+  if (sp.fl & 1) el.style.fontWeight = 'bold';
+  if (sp.fl & 2) el.style.opacity = '0.65';
+  if (sp.fl & 4) el.style.fontStyle = 'italic';
+  if (sp.fl & 8) el.style.textDecoration = 'underline';
+}
+// Строка кадра → DOM-узлы (текст + цветные спаны) внутрь parent.
+function appendRow(parent, row) {
+  const t = row.text, spans = row.spans;
+  if (!spans.length) { if (t) parent.appendChild(document.createTextNode(t)); return; }
+  let pos = 0;
+  for (let i = 0; i < spans.length; i++) {
+    const sp = spans[i];
+    if (sp.s > pos) parent.appendChild(document.createTextNode(t.slice(pos, sp.s)));
+    const el = document.createElement('span');
+    styleSpan(el, sp);
+    el.textContent = t.slice(sp.s, sp.e);
+    parent.appendChild(el);
+    pos = sp.e;
+  }
+  if (pos < t.length) parent.appendChild(document.createTextNode(t.slice(pos)));
 }
 function renderScreen() {
   if (renderQueued) return;
@@ -627,36 +706,48 @@ function renderScreen() {
     if (!screenEl) return;
     if (!frame) { screenEl.textContent = selected ? 'Ожидание экрана…' : 'Выбери терминал слева'; return; }
     const stick = screenFollow || screenAtBottom();
-    let lines = frame.lines.slice();
-    const c = frame.cursor || [0, 0];
-    const cx = c[0], cy = c[1];
-    if (cy >= 0 && cy < lines.length) {   // курсор — подмена символа строки
-      const ln = lines[cy] || '';
-      lines[cy] = cx < ln.length
-        ? ln.slice(0, cx) + '▌' + ln.slice(cx + 1)
-        : ln + ' '.repeat(Math.max(0, cx - ln.length)) + '▌';
+    const styled = !!frame.styled;
+    // 1) строки кадра → {text, spans} (styled-кадр разбираем из мини-SGR)
+    let rows = [];
+    for (let i = 0; i < frame.lines.length; i++) {
+      rows.push(styled ? sgrline.parseLine(frame.lines[i] || '') : { text: frame.lines[i] || '', spans: [] });
     }
+    const c = frame.cursor || [0, 0];
+    const cy = c[1];
     // Пустой хвост кадра обрезаем (но строку с курсором сохраняем): у свежего шелла
-    // промпт на 1-й строке, а 40+ пустых строк ниже прижимали его за верх экрана
-    // («не видно имя:путь» при прилипании к низу).
-    let last = lines.length - 1;
-    while (last > 0 && !(lines[last] || '').trim()) last--;
-    lines = lines.slice(0, Math.max(last, cy) + 1);
-    for (let i = 0; i < lines.length; i++) lines[i] = frameLineView(lines[i]);
-    // Сборка: [история] + кадр; строка с курсором — отдельным <span> (подсветка
-    // поля ввода агента). Только текстовые узлы — XSS-поверхности нет.
+    // промпт на 1-й строке, а 40+ пустых строк ниже прижимали его за верх экрана.
+    let last = rows.length - 1;
+    while (last > 0 && !(rows[last].text || '').trim()) last--;
+    rows = rows.slice(0, Math.max(last, cy) + 1);
+    // 2) индекс курсора в плоском тексте, потом схлопывание рамок, потом сам курсор
+    const hasCur = cy >= 0 && cy < rows.length;
+    if (hasCur) rows[cy].curIdx = (styled && typeof frame.curIdx === 'number' && frame.curIdx >= 0) ? frame.curIdx : c[0];
+    for (let i = 0; i < rows.length; i++) frameLineView(rows[i]);
+    if (hasCur) insertCursor(rows[cy]);
+    // 3) сборка: [история] + кадр; подряд идущие НЕстилизованные строки батчим в один
+    //    текстовый узел; строка с курсором — <span class=cur-line> (подсветка поля ввода).
     screenEl.textContent = '';
     if (histText) screenEl.appendChild(document.createTextNode(histText + HIST_SEP));
-    if (cy >= 0 && cy < lines.length) {
-      if (cy > 0) screenEl.appendChild(document.createTextNode(lines.slice(0, cy).join('\n') + '\n'));
-      const cur = document.createElement('span');
-      cur.className = 'cur-line';
-      cur.textContent = lines[cy];
-      screenEl.appendChild(cur);
-      if (cy < lines.length - 1) screenEl.appendChild(document.createTextNode('\n' + lines.slice(cy + 1).join('\n')));
-    } else {
-      screenEl.appendChild(document.createTextNode(lines.join('\n')));
+    let buf = '';
+    const flushBuf = () => { if (buf) { screenEl.appendChild(document.createTextNode(buf)); buf = ''; } };
+    for (let i = 0; i < rows.length; i++) {
+      const nl = i < rows.length - 1 ? '\n' : '';
+      if (hasCur && i === cy) {
+        flushBuf();
+        const cur = document.createElement('span');
+        cur.className = 'cur-line';
+        appendRow(cur, rows[i]);
+        screenEl.appendChild(cur);
+        buf = nl;
+      } else if (rows[i].spans.length) {
+        flushBuf();
+        appendRow(screenEl, rows[i]);
+        buf = nl;
+      } else {
+        buf += rows[i].text + nl;
+      }
     }
+    flushBuf();
     if (histAnchor) {   // пришили историю сверху → вернуть глаза на то же место
       screenEl.scrollTop = histAnchor.top + (screenEl.scrollHeight - histAnchor.height);
       histAnchor = null;
@@ -673,6 +764,9 @@ function applyScreenMsg(m) {
     frame = {
       sid: m.sid, seq: m.seq || 0, lines: (m.lines || []).slice(),
       cursor: m.cursor || [0, 0], alt: !!m.alt, cols: m.cols || 0, rows: m.rows || 0,
+      // st — кадр стилизованный (строки с мини-SGR); режим меняется ТОЛЬКО с full
+      // (флип на ПК сбрасывает диффер), поэтому в диффах st не смотрим.
+      styled: !!m.st, curIdx: (typeof m.curIdx === 'number') ? m.curIdx : -1,
     };
   } else {
     if (!frame || frame.sid !== m.sid || m.seq !== frame.seq + 1) { requestFullFrame(); return; }
@@ -683,6 +777,7 @@ function applyScreenMsg(m) {
     }
     frame.seq = m.seq;
     if (m.cursor) frame.cursor = m.cursor;
+    frame.curIdx = (typeof m.curIdx === 'number') ? m.curIdx : -1;
     frame.alt = !!m.alt;
   }
   renderScreen();
@@ -694,7 +789,7 @@ function requestFullFrame(force) {
   const now = Date.now();
   if (!force && now - fullReqAt < 1000) return;
   fullReqAt = now;
-  send({ t: 'select', sid: selected });
+  send({ t: 'select', sid: selected, styled: 1 });   // styled — просим цветные кадры (старый ПК флаг игнорирует)
 }
 // Кнопка «⟳» в тулбаре: сброс кадра + свежий полный кадр с ПК.
 function refreshScreen() {
@@ -1024,7 +1119,7 @@ function selectSession(sid) {
   screenFollow = true;
   resetHistory();
   renderScreen();
-  send({ t: 'select', sid });   // ПК ответит немедленным полным кадром
+  send({ t: 'select', sid, styled: 1 });   // ПК ответит немедленным полным кадром (styled — просим цвета)
   renderTree();
 }
 // Открыть терминал проекта на ПК (＋ или тап по вкладке-плейсхолдеру). Новая сессия

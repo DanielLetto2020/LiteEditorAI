@@ -203,6 +203,7 @@ export function initExtensions(host) {
       const on = [...mods.values()].filter((x) => x.status === 'on').length;
       toast(mods.size ? `Модули: активно ${on} из ${mods.size}` : 'Пользовательских модулей не найдено');
     }
+    if (host.modsChanged) { try { host.modsChanged(); } catch (_) {} } // квикбар ядра перерисовывает кнопки
   }
 
   // ------------------------------------------------------------ интеграция с ядром
@@ -278,6 +279,7 @@ export function initExtensions(host) {
         if (r && r.error) { toast('Не удалось удалить: ' + r.error, { kind: 'error' }); return; }
         mods.delete(rec.id);
         toast('Модуль «' + modName(rec) + '» удалён');
+        if (host.modsChanged) { try { host.modsChanged(); } catch (_) {} }
         openWizard();
       });
   }
@@ -365,6 +367,15 @@ export function initExtensions(host) {
     isOpen: () => extPaneOpen,
     setOpen,
     open: openExt,
+    // Для квикбара ядра: список модулей и открытие «как из меню» (broken — перезагрузить, off — поднять).
+    list: () => [...mods.values()].map((r) => ({ id: r.id, name: modName(r), ok: !r.error })),
+    quickOpen: async (id) => {
+      const rec = mods.get(id);
+      if (!rec || rec.error) return;
+      if (rec.status === 'broken') await reload(rec.id);
+      else if (rec.status === 'off') await loadModule(rec);
+      if (rec.status === 'on') openExt(rec.id);
+    },
     toggle, reload, rescan,
     buildMenuSection, paletteActions,
     notifyActiveProject, notifyTheme,

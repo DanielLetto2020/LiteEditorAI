@@ -106,6 +106,8 @@
           </div>
         </div>
         </div>
+        <!-- quickbar: полоса быстрого доступа к модулям (Модули → Настройка панели…) -->
+        <div id="quickbar" class="hidden"></div>
       </section>
 
       <!-- system/scratch terminal: own PTY at home dir, not tied to any project -->
@@ -131,6 +133,49 @@
           <button id="git-close" class="icon-btn" title="Закрыть Git" data-icon="x"></button>
         </div>
         <div id="git-body" class="git-body"></div>
+      </section>
+
+      <!-- «Контекст» module: per-project граф контекста агента (канва как n8n) -->
+      <div id="gutter-ctx" class="gutter hidden" data-resize="ctx"></div>
+      <section id="ctx-pane" class="hidden">
+        <div class="pane-head">
+          <span id="ctx-title">Контекст</span>
+          <span id="ctx-stale" class="ctx-stale" title="Есть неподтверждённые изменения — нажми «Подтвердить»" hidden>●</span>
+          <div class="drag-space-static"></div>
+          <button id="ctx-help" class="icon-btn" title="Как это работает?" data-icon="help"></button>
+          <button id="ctx-add" class="icon-btn" title="Добавить блок" data-icon="plus"></button>
+          <button id="ctx-split" class="icon-btn" data-icon="scissors" hidden></button><!-- показывается по детекту CLAUDE.md/AGENTS.md -->
+
+          <button id="ctx-apply" class="icon-btn" title="Подтвердить изменения: сохранить канву и собрать CLAUDE.md / AGENTS.md (с бекапом)" data-icon="check"></button>
+          <button id="ctx-reset" class="icon-btn" title="Сбросить неподтверждённые изменения — вернуть канву к последнему подтверждённому виду" data-icon="refresh" hidden></button>
+          <button id="ctx-settings" class="icon-btn" title="Настройки (бекапы, автосборка)" data-icon="sliders"></button>
+          <button id="ctx-close" class="icon-btn" title="Закрыть" data-icon="x"></button>
+        </div>
+        <div id="ctx-profiles" class="ctx-profiles"></div><!-- вкладки-профили: рендерятся в contextgraph.js -->
+        <div id="ctx-stats" class="ctx-stats"></div>
+        <div id="ctx-canvas" class="ctx-canvas">
+          <div id="ctx-world" class="ctx-world">
+            <svg id="ctx-wires" class="ctx-wires"></svg>
+            <div id="ctx-nodes"></div>
+          </div>
+          <div id="ctx-empty" class="ctx-empty" hidden>
+            <div class="hint-card">
+              <div class="hint-title">Здесь собирается контекст для агента</div>
+              <div class="hint-text">Слева — блоки с кусками контекста (текст, файл, команда, память агента),<br>
+                в середине — группы-профили с тумблерами, справа — выходы: Claude и Codex.<br>
+                По кнопке «Подтвердить» (✓) всё включённое склеивается в <b>CLAUDE.md</b> / <b>AGENTS.md</b> —<br>
+                файлы, которые агент читает при старте сессии (старый файл бекапится).<br><br>
+                Провод тянется мышкой от правой точки блока к левой точке группы/выхода.<br>
+                Напрямую в выход = постоянный контекст · через группу = включается тумблером.<br>
+                Двойной клик по блоку — редактирование · колесо — зум · Del — удалить.</div>
+              <div class="ctx-empty-actions">
+                <button id="ctx-empty-help" class="btn">? Как это работает</button>
+                <button id="ctx-empty-add" class="btn">+ Блок</button>
+                <span id="ctx-empty-splits"></span><!-- кнопки «✂ распилить …» — по детекту файлов -->
+              </div>
+            </div>
+          </div>
+        </div>
       </section>
 
       <!-- Containers module (docker/podman): system-wide, opens to the right -->

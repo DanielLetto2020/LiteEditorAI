@@ -42,11 +42,9 @@ contextBridge.exposeInMainWorld('lite', {
     read: (name) => ipcRenderer.invoke('logs:read', name),
   },
 
-  // Пользовательские модули (расширения): скан папки ~/.LiteEditorAI/modules,
-  // скаффолд нового модуля, детект локальных агентов (claude/codex) для мастера.
+  // Пользовательские модули (расширения): скан папки ~/.LiteEditorAI/modules + скаффолд нового модуля.
   ext: {
     scan: () => ipcRenderer.invoke('ext:scan'),
-    agents: () => ipcRenderer.invoke('ext:agents'),
     scaffold: (opts) => ipcRenderer.invoke('ext:scaffold', opts),
   },
 
@@ -69,6 +67,35 @@ contextBridge.exposeInMainWorld('lite', {
     abort: (reqId) => ipcRenderer.send('tp:abort', { reqId }),
     onDone: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('tp:done', h); return () => ipcRenderer.removeListener('tp:done', h); },
     onError: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('tp:error', h); return () => ipcRenderer.removeListener('tp:error', h); },
+  },
+
+  // «Контекст» — граф контекста агента (renderer/modules/contextgraph.js).
+  ctx: {
+    load: (projId, profileId) => ipcRenderer.invoke('ctx:load', { projId, profileId }),
+    save: (projId, graph, profileId) => ipcRenderer.invoke('ctx:save', { projId, graph, profileId }),
+    profiles: (projId) => ipcRenderer.invoke('ctx:profiles', { projId }),
+    profileCreate: (projId, name) => ipcRenderer.invoke('ctx:profileCreate', { projId, name }),
+    profileRename: (projId, id, name) => ipcRenderer.invoke('ctx:profileRename', { projId, id, name }),
+    profileDelete: (projId, id) => ipcRenderer.invoke('ctx:profileDelete', { projId, id }),
+    profileSetActive: (projId, id) => ipcRenderer.invoke('ctx:profileSetActive', { projId, id }),
+    blockRead: (projId, projPath, node) => ipcRenderer.invoke('ctx:blockRead', { projId, projPath, node }),
+    blockWrite: (projId, projPath, node, text) => ipcRenderer.invoke('ctx:blockWrite', { projId, projPath, node, text }),
+    blockDelete: (projId, projPath, node) => ipcRenderer.invoke('ctx:blockDelete', { projId, projPath, node }),
+    runCmd: (projPath, cmd, timeout) => ipcRenderer.invoke('ctx:runCmd', { projPath, cmd, timeout }),
+    agent: (agent, prompt) => ipcRenderer.invoke('ctx:agent', { agent, prompt }),
+    compile: (opts) => ipcRenderer.invoke('ctx:compile', opts),
+    seenRead: (projId, nodeId) => ipcRenderer.invoke('ctx:seenRead', { projId, nodeId }),
+    slotSeen: (projId, projPath, nodeId) => ipcRenderer.invoke('ctx:slotSeen', { projId, projPath, nodeId }),
+    watchSlots: (projId, projPath) => ipcRenderer.send('ctx:watchSlots', { projId, projPath }),
+    unwatchSlots: (projId) => ipcRenderer.send('ctx:unwatchSlots', { projId }),
+    onSlotChanged: (cb) => { const h = (_e, p) => cb(p || {}); ipcRenderer.on('ctx:slotChanged', h); return () => ipcRenderer.removeListener('ctx:slotChanged', h); },
+    libList: () => ipcRenderer.invoke('ctx:libList'),
+    libSave: (opts) => ipcRenderer.invoke('ctx:libSave', opts),
+    libUsage: (libId) => ipcRenderer.invoke('ctx:libUsage', { libId }),
+    libDelete: (libId) => ipcRenderer.invoke('ctx:libDelete', { libId }),
+    backupDir: (projPath, dir) => ipcRenderer.invoke('ctx:backupDir', { projPath, dir }),
+    backupFile: (projId, projPath, name, profileId) => ipcRenderer.invoke('ctx:backupFile', { projId, projPath, name, profileId }),
+    backupMove: (projPath, from, to) => ipcRenderer.invoke('ctx:backupMove', { projPath, from, to }),
   },
 
   update: {
@@ -187,19 +214,6 @@ contextBridge.exposeInMainWorld('lite', {
       const h = (_e, payload) => cb(payload);
       ipcRenderer.on('pty:exit', h);
       return () => ipcRenderer.removeListener('pty:exit', h);
-    },
-    // Пульт «владеет» размером сессии, пока подключён: ПК зеркалит его сетку (letterbox),
-    // а не навязывает свою → терминал на ПК не «сыпется». remoteSize — пульт задал размер;
-    // remoteRelease — пульт отключился, ПК возвращает свой fit.
-    onRemoteSize: (cb) => {
-      const h = (_e, payload) => cb(payload);
-      ipcRenderer.on('pty:remoteSize', h);
-      return () => ipcRenderer.removeListener('pty:remoteSize', h);
-    },
-    onRemoteRelease: (cb) => {
-      const h = (_e, payload) => cb(payload);
-      ipcRenderer.on('pty:remoteRelease', h);
-      return () => ipcRenderer.removeListener('pty:remoteRelease', h);
     },
   },
 
