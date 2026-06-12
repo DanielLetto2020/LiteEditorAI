@@ -71,8 +71,13 @@ contextBridge.exposeInMainWorld('lite', {
 
   // «Контекст» — граф контекста агента (renderer/modules/contextgraph.js).
   ctx: {
-    load: (projId) => ipcRenderer.invoke('ctx:load', { projId }),
-    save: (projId, graph) => ipcRenderer.invoke('ctx:save', { projId, graph }),
+    load: (projId, profileId) => ipcRenderer.invoke('ctx:load', { projId, profileId }),
+    save: (projId, graph, profileId) => ipcRenderer.invoke('ctx:save', { projId, graph, profileId }),
+    profiles: (projId) => ipcRenderer.invoke('ctx:profiles', { projId }),
+    profileCreate: (projId, name) => ipcRenderer.invoke('ctx:profileCreate', { projId, name }),
+    profileRename: (projId, id, name) => ipcRenderer.invoke('ctx:profileRename', { projId, id, name }),
+    profileDelete: (projId, id) => ipcRenderer.invoke('ctx:profileDelete', { projId, id }),
+    profileSetActive: (projId, id) => ipcRenderer.invoke('ctx:profileSetActive', { projId, id }),
     blockRead: (projId, projPath, node) => ipcRenderer.invoke('ctx:blockRead', { projId, projPath, node }),
     blockWrite: (projId, projPath, node, text) => ipcRenderer.invoke('ctx:blockWrite', { projId, projPath, node, text }),
     blockDelete: (projId, projPath, node) => ipcRenderer.invoke('ctx:blockDelete', { projId, projPath, node }),
@@ -89,7 +94,7 @@ contextBridge.exposeInMainWorld('lite', {
     libUsage: (libId) => ipcRenderer.invoke('ctx:libUsage', { libId }),
     libDelete: (libId) => ipcRenderer.invoke('ctx:libDelete', { libId }),
     backupDir: (projPath, dir) => ipcRenderer.invoke('ctx:backupDir', { projPath, dir }),
-    backupFile: (projId, projPath, name) => ipcRenderer.invoke('ctx:backupFile', { projId, projPath, name }),
+    backupFile: (projId, projPath, name, profileId) => ipcRenderer.invoke('ctx:backupFile', { projId, projPath, name, profileId }),
     backupMove: (projPath, from, to) => ipcRenderer.invoke('ctx:backupMove', { projPath, from, to }),
   },
 

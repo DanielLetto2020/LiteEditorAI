@@ -1,17 +1,18 @@
 // LiteEditor — модуль «Контекст»: per-project граф контекста агента (канва в духе n8n).
 // Блоки-источники (текст/файл/команда/слот агента) → группы-профили с тумблерами → ноды-выходы
-// (Claude → CLAUDE.local.md, Codex → AGENTS.md). Семантика топологии: блок, воткнутый в выход
+// (Claude → CLAUDE.md, Codex → AGENTS.md). Семантика топологии: блок, воткнутый в выход
 // напрямую — постоянный контекст; через группу — переключаемый профиль. Компиляция и бекапы —
 // в main (ctx:*), здесь только канва/модалки/оркестрация. Изолирован по канону модулей:
 // всё из ядра — через host-колбэки, UI-хелперы — прямые импорты из ui.js, бэкенд — window.lite.ctx.
-// host: { layout, GUTTER, saveUiState, refitActiveTerminal, activeProject, getActiveId, closeOtherPanels }
-import { el, icon, toast, makeModal, showConfirm } from '../ui.js';
+// host: { layout, GUTTER, saveUiState, refitActiveTerminal, activeProject, closeOtherPanels }
+import { el, icon, toast, makeModal, showConfirm, showPrompt } from '../ui.js';
 import { EditorView, keymap, lineNumbers, highlightActiveLine, drawSelection } from '@codemirror/view';
 import { EditorState } from '@codemirror/state';
 import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands';
 import { syntaxHighlighting, defaultHighlightStyle } from '@codemirror/language';
 import { oneDark } from '@codemirror/theme-one-dark';
 import { markdown } from '@codemirror/lang-markdown';
+import { marked } from 'marked';
 
 const $ = (sel) => document.querySelector(sel);
 const lite = window.lite;
@@ -25,12 +26,33 @@ const NODE_TYPES = {
   slot:  { label: 'Слот агента', icon: 'chat',     hint: 'память: файл, куда пишет сам агент' },
   group: { label: 'Группа',      icon: 'layers',   hint: 'профиль: включается/выключается целиком' },
 };
-const OUT_FILES = { claude: 'CLAUDE.local.md', codex: 'AGENTS.md' };
+const OUT_FILES = { claude: 'CLAUDE.md', codex: 'AGENTS.md' };
 const SPLIT_FILES = { claude: 'CLAUDE.md', codex: 'AGENTS.md' }; // исходники для «Распилить»
 const CTX_MARKER = '<!-- LiteEditorAI:contextgraph'; // шапка наших скомпилированных файлов (синхронно с main.js)
 const GROUP_COLORS = ['green', 'info', 'warn', 'danger'];
 
 const uid = () => 'n' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+// Markdown → безопасный HTML для превью блока. Контент может прийти из чужого CLAUDE.md («Распилить»),
+// а preload даёт мощный мост (lite.ctx.runCmd/agent, fs.*) — поэтому вычищаем активный HTML.
+// DOMPurify в проекте нет; парсим в инертный <template> (картинки не грузятся, скрипты не исполняются),
+// срезаем опасные узлы/атрибуты и переносим уже очищенные ноды в живой элемент.
+function renderSafeMarkdown(target, src) {
+  let html;
+  try { html = marked.parse(String(src || ''), { gfm: true, breaks: true }); }
+  catch (_) { target.textContent = String(src || ''); return; }
+  const tpl = document.createElement('template');
+  tpl.innerHTML = html;
+  tpl.content.querySelectorAll('script,style,iframe,object,embed,form,link,meta,base').forEach((e) => e.remove());
+  tpl.content.querySelectorAll('*').forEach((e) => {
+    for (const a of [...e.attributes]) {
+      const name = a.name.toLowerCase();
+      const val = a.value.replace(/[\u0000-\u0020\-]/g, '').toLowerCase();
+      if (name.startsWith('on') || name === 'srcset' || name === 'style') e.removeAttribute(a.name);
+      else if ((name === 'href' || name === 'src' || name === 'xlink:href') && /^(javascript|data|vbscript):/.test(val)) e.removeAttribute(a.name);
+    }
+  });
+  target.replaceChildren(...tpl.content.childNodes);
+}
 const fmtTok = (chars) => {
   const t = Math.round((chars || 0) / 4);
   return '≈' + (t >= 1000 ? (t / 1000).toFixed(1).replace(/\.0$/, '') + 'k' : t) + ' тк';
@@ -44,7 +66,10 @@ export function initCtx(host) {
   let graph = null;
   let sel = null;        // {kind:'node', id} | {kind:'edge', from, to}
   let loadSeq = 0;
-  let saveTimer = null;
+  let unsaved = false;   // канва изменена, но не «Подтверждена». Автосохранения НЕТ — правки копятся в памяти
+  let pendingDelete = []; // снимки удалённых нод со своими файлами — файлы сотрутся только при «Подтвердить»
+  let profiles = null;   // {active, list:[{id,name}]} — набор профилей проекта (метаданные, persist сразу)
+  let activeProfile = null; // id активного профиля; граф на канве — его
   const slotBadges = new Set(); // nodeId слотов с непросмотренными записями агента
   let splitSrc = { claude: false, codex: false }; // какие исходники реально есть в проекте
 
@@ -52,6 +77,7 @@ export function initCtx(host) {
   const world = $('#ctx-world');
   const wiresSvg = $('#ctx-wires');
   const nodesBox = $('#ctx-nodes');
+  const profilesBar = $('#ctx-profiles');
 
   // ---------------------------------------------------------------- граф: модель
   function newGraph() {
@@ -80,13 +106,12 @@ export function initCtx(host) {
     return g;
   }
   const nodeById = (id) => graph && graph.nodes.find((n) => n.id === id);
-  const sources = () => graph.nodes.filter((n) => n.type !== 'out' && n.type !== 'group');
+  // активный профиль не совпадает с собранным в файлах (профиль переключён, но не «Подтверждён»)
+  const appliedMismatch = () => !!(profiles && activeProfile && profiles.applied !== activeProfile);
 
-  function scheduleSave() {
-    clearTimeout(saveTimer);
-    saveTimer = setTimeout(() => { if (proj && graph) lite.ctx.save(proj.id, graph); }, 400);
-  }
-  function markDirty() { if (graph) { graph.dirty = true; scheduleSave(); updateStats(); } }
+  // Никакого автосохранения: любая правка лишь помечает канву «неподтверждённой».
+  // Запись на диск (graph.json + CLAUDE.md/AGENTS.md) — только по «Подтвердить» (applyCompile).
+  function markDirty() { if (graph) { unsaved = true; updateStats(); } }
 
   // ---------------------------------------------------------------- открытие/закрытие панели
   function setOpen(o, opts = {}) {
@@ -107,31 +132,125 @@ export function initCtx(host) {
   const toggle = () => setOpen(!open);
 
   async function loadGraph(p) {
-    if (proj && proj.id !== p.id) lite.ctx.unwatchSlots(proj.id);
+    if (proj && proj.id !== p.id) {
+      lite.ctx.unwatchSlots(proj.id);
+      if (unsaved) toast('Контекст: неподтверждённые правки прошлого проекта отброшены', { ttl: 6000 });
+    }
     proj = { id: p.id, path: p.path, name: p.name };
     const seq = ++loadSeq;
-    const r = await lite.ctx.load(p.id);
+    profiles = await lite.ctx.profiles(p.id);
+    if (seq !== loadSeq || !open) return;
+    activeProfile = profiles && profiles.active;
+    const r = await lite.ctx.load(p.id, activeProfile);
     if (seq !== loadSeq || !open) return;
     graph = normalizeGraph(r && r.graph);
     sel = null;
+    unsaved = false;
+    pendingDelete = [];
     slotBadges.clear();
     lite.ctx.watchSlots(p.id, p.path);
+    renderProfiles();
     renderAll();
     refreshLiveChars(seq); // файлы/слоты: подтянуть актуальные размеры после рендера
     detectSplitSources(); // какие кнопки «✂ распилить» показывать
   }
-  // Детект исходников: CLAUDE.md — как есть; AGENTS.md — только если он НЕ наш скомпилированный
-  // (иначе предлагали бы распилить собственную сборку). Кнопок столько, сколько файлов есть.
+  // Перезагрузить граф активного профиля (после переключения/создания) — без повторного чтения индекса.
+  async function loadActiveGraph() {
+    if (!proj) return;
+    const seq = ++loadSeq;
+    const r = await lite.ctx.load(proj.id, activeProfile);
+    if (seq !== loadSeq || !open) return;
+    graph = normalizeGraph(r && r.graph);
+    sel = null;
+    unsaved = false;
+    pendingDelete = [];
+    slotBadges.clear();
+    renderProfiles();
+    renderAll();
+    refreshLiveChars(seq);
+    detectSplitSources();
+  }
+  // ---------------------------------------------------------------- профили (вкладки над канвой)
+  function renderProfiles() {
+    if (!profilesBar) return;
+    profilesBar.innerHTML = '';
+    if (!proj || !profiles) return;
+    const multi = profiles.list.length > 1;
+    for (const pr of profiles.list) {
+      const isApplied = pr.id === profiles.applied;
+      const tab = el('div', 'ctx-ptab' + (pr.id === activeProfile ? ' on' : '') + (isApplied ? ' applied' : ''));
+      tab.title = pr.name + (isApplied ? ' · применён к файлам' : ' · не применён — нажми «Подтвердить»');
+      if (isApplied) { const d = el('span', 'ctx-ptab-dot'); d.title = 'Этот профиль собран в CLAUDE.md/AGENTS.md'; tab.appendChild(d); }
+      tab.appendChild(el('span', 'ctx-ptab-name', pr.name));
+      const ed = el('span', 'ctx-ptab-ic', '✎');
+      ed.title = 'Переименовать';
+      ed.addEventListener('click', (e) => { e.stopPropagation(); renameProfile(pr); });
+      tab.appendChild(ed);
+      if (multi) {
+        const x = el('span', 'ctx-ptab-ic ctx-ptab-x', '×');
+        x.title = 'Удалить профиль';
+        x.addEventListener('click', (e) => { e.stopPropagation(); deleteProfile(pr); });
+        tab.appendChild(x);
+      }
+      tab.addEventListener('click', () => switchProfile(pr.id));
+      profilesBar.appendChild(tab);
+    }
+    const add = el('button', 'ctx-padd', '+');
+    add.title = 'Новый профиль';
+    add.addEventListener('click', createProfile);
+    profilesBar.appendChild(add);
+  }
+  async function switchProfile(id) {
+    if (!proj || id === activeProfile) return;
+    const go = async () => {
+      const r = await lite.ctx.profileSetActive(proj.id, id);
+      if (r && r.error) { toast(r.error, { kind: 'err' }); return; }
+      profiles = r.profiles; activeProfile = id;
+      await loadActiveGraph();
+    };
+    if (unsaved) showConfirm('Переключить профиль?', 'В текущем профиле есть неподтверждённые изменения — они будут отброшены.', 'Переключить', go);
+    else go();
+  }
+  function createProfile() {
+    if (!proj) return;
+    showPrompt('Новый профиль', 'Название', '', async (name) => {
+      const r = await lite.ctx.profileCreate(proj.id, name);
+      if (r && r.error) { toast(r.error, { kind: 'err' }); return; }
+      profiles = r.profiles; activeProfile = r.id;
+      await loadActiveGraph(); // новый профиль — пустой граф (выходы создаст normalizeGraph)
+      toast('Профиль создан — настрой канву и нажми «Подтвердить»');
+    });
+  }
+  function renameProfile(pr) {
+    if (!proj) return;
+    showPrompt('Переименовать профиль', 'Название', pr.name, async (name) => {
+      const r = await lite.ctx.profileRename(proj.id, pr.id, name);
+      if (r && r.error) { toast(r.error, { kind: 'err' }); return; }
+      profiles = r.profiles; renderProfiles();
+    });
+  }
+  function deleteProfile(pr) {
+    if (!proj || !profiles || profiles.list.length <= 1) return;
+    showConfirm('Удалить профиль?', `«${pr.name}» и его канва будут удалены. Контекстные файлы (CLAUDE.md/AGENTS.md) не трогаются.`, 'Удалить', async () => {
+      const r = await lite.ctx.profileDelete(proj.id, pr.id);
+      if (r && r.error) { toast(r.error, { kind: 'err' }); return; }
+      profiles = r.profiles;
+      if (activeProfile === pr.id) { activeProfile = profiles.active; await loadActiveGraph(); }
+      else renderProfiles();
+      toast('Профиль удалён');
+    });
+  }
+  // Детект исходников: CLAUDE.md и AGENTS.md — каждый предлагаем распилить, только если он НЕ наш
+  // скомпилированный (иначе предлагали бы распилить собственную сборку — оба файла теперь и выход, и
+  // потенциальный исходник). Кнопок столько, сколько подходящих файлов есть.
   async function detectSplitSources() {
     if (!proj) { splitSrc = { claude: false, codex: false }; updateSplitUi(); return; }
-    const [cEx, aRes] = await Promise.all([
-      lite.fs.exists(proj.path + '/CLAUDE.md'),
+    const [cRes, aRes] = await Promise.all([
+      lite.fs.readFile(proj.path + '/CLAUDE.md'),
       lite.fs.readFile(proj.path + '/AGENTS.md'),
     ]);
-    splitSrc = {
-      claude: !!cEx,
-      codex: !!(aRes && !aRes.error && aRes.content && !aRes.content.startsWith(CTX_MARKER)),
-    };
+    const own = (res) => !!(res && !res.error && res.content && !res.content.startsWith(CTX_MARKER));
+    splitSrc = { claude: own(cRes), codex: own(aRes) };
     updateSplitUi();
   }
   function updateSplitUi() {
@@ -173,7 +292,7 @@ export function initCtx(host) {
       if (seq !== loadSeq) return;
       if (r && r.chars !== n.chars) { n.chars = r.chars; changed = true; }
     }
-    if (changed) { renderAll(); scheduleSave(); }
+    if (changed) renderAll(); // только освежаем счётчики ≈токенов; на диск не пишем (синк при загрузке)
   }
   function onProjectChange(p) { if (open && p) loadGraph(p); }
 
@@ -244,7 +363,7 @@ export function initCtx(host) {
   function renderAll() {
     if (!open) return;
     $('#ctx-title').textContent = proj ? `Контекст · ${proj.name}` : 'Контекст';
-    if (!proj || !graph) { nodesBox.innerHTML = ''; wiresSvg.innerHTML = ''; updateStats(); return; }
+    if (!proj || !graph) { nodesBox.innerHTML = ''; wiresSvg.innerHTML = ''; if (profilesBar) profilesBar.innerHTML = ''; updateStats(); return; }
     world.style.transform = `translate(${graph.view.x}px, ${graph.view.y}px) scale(${graph.view.z})`;
     renderNodes();
     renderWires();
@@ -300,7 +419,9 @@ export function initCtx(host) {
     }
     box.appendChild(body);
 
-    box.addEventListener('dblclick', (e) => { e.stopPropagation(); openNodeModal(n); });
+    // Двойной клик НЕ вешаем на элемент: первый клик выделяет ноду → renderAll пересоздаёт DOM,
+    // и нативный dblclick не срабатывает (второй клик уже по новому элементу). Двойной клик
+    // ловим вручную в pointerup по id ноды (см. ниже).
     return box;
   }
   function renderWires() {
@@ -316,8 +437,7 @@ export function initCtx(host) {
       if (!(eff.has(a.id) && eff.has(b.id))) cls += ' off';
       if (sel && sel.kind === 'edge' && sel.from === e.from && sel.to === e.to) cls += ' sel';
       p.setAttribute('class', cls);
-      p.addEventListener('click', (ev) => { ev.stopPropagation(); sel = { kind: 'edge', from: e.from, to: e.to }; renderAll(); });
-      p.addEventListener('dblclick', (ev) => { ev.stopPropagation(); removeEdge(e.from, e.to); });
+      p.dataset.from = e.from; p.dataset.to = e.to; // выбор/удаление провода ловим в pointerup (DOM пересоздаётся)
       wiresSvg.appendChild(p);
     }
   }
@@ -325,7 +445,10 @@ export function initCtx(host) {
     const bar = $('#ctx-stats');
     if (!bar) return;
     bar.innerHTML = '';
-    $('#ctx-stale').hidden = !(graph && graph.dirty);
+    const mismatch = appliedMismatch();
+    $('#ctx-stale').hidden = !(unsaved || mismatch);
+    { const rb = $('#ctx-reset'); if (rb) rb.hidden = !unsaved; }
+    { const ab = $('#ctx-apply'); if (ab) ab.classList.toggle('hot', unsaved || mismatch); }
     if (!graph || !proj) return;
     for (const key of ['claude', 'codex']) {
       const o = graph.nodes.find((n) => n.type === 'out' && n.out === key);
@@ -337,7 +460,8 @@ export function initCtx(host) {
       chip.title = OUT_FILES[key];
       bar.appendChild(chip);
     }
-    if (graph.dirty) bar.appendChild(el('span', 'ctx-chip warn', 'не применено — подействует на новые сессии'));
+    if (unsaved) bar.appendChild(el('span', 'ctx-chip warn', 'есть неподтверждённые изменения — нажми «Подтвердить»'));
+    else if (mismatch) bar.appendChild(el('span', 'ctx-chip warn', 'этот профиль не применён к файлам — нажми «Подтвердить»'));
   }
 
   // ---------------------------------------------------------------- мутации
@@ -372,7 +496,10 @@ export function initCtx(host) {
     graph.nodes = graph.nodes.filter((x) => x.id !== n.id);
     graph.edges = graph.edges.filter((e) => e.from !== n.id && e.to !== n.id);
     if (sel && sel.kind === 'node' && sel.id === n.id) sel = null;
-    lite.ctx.blockDelete(proj.id, proj.path, n); // свои файлы (локальный текст/слот) подчищаются
+    // ФАЙЛ блока НЕ удаляем сейчас — удаление обратимо до «Подтвердить». Свои файлы (локальный
+    // текст/слот) помечаем к удалению; реально сотрутся в applyCompile после успешной сборки.
+    const own = (n.type === 'text' && !String(n.ref || '').startsWith('lib:')) || n.type === 'slot';
+    if (own) pendingDelete.push({ ...n });
     markDirty();
     renderAll();
   }
@@ -382,9 +509,8 @@ export function initCtx(host) {
     const n = nodeById(sel.id);
     if (!n) return;
     if (n.type === 'out') { toast('Ноды-выходы удалить нельзя — их можно выключить'); return; }
-    const hasContent = ((n.type === 'text' && !String(n.ref || '').startsWith('lib:')) || n.type === 'slot') && (n.chars || 0) > 0;
-    if (hasContent) showConfirm('Удалить блок?', `«${n.title}» и его файл будут удалены безвозвратно.`, 'Удалить', () => removeNode(n));
-    else removeNode(n);
+    // удаление всегда с подтверждением, но обратимое: файл цел до «Подтвердить», вернуть — «Сбросить»
+    showConfirm('Удалить блок?', `«${n.title}» убрать с канвы. Файл не удаляется, пока не нажмёшь «Подтвердить» — до этого удаление можно откатить кнопкой «Сбросить».`, 'Удалить', () => removeNode(n));
   }
   async function duplicateSelection() {
     if (!sel || sel.kind !== 'node') return;
@@ -404,6 +530,8 @@ export function initCtx(host) {
   // ---------------------------------------------------------------- интеракции канвы
   let drag = null; // {kind:'pan'|'node'|'wire', ...}
   let tempWire = null;
+  let clickTrack = { id: null, t: 0 };     // ручной детект двойного клика по ноде (id + timeStamp)
+  let clickTrackEdge = { key: null, t: 0 }; // то же для проводов (from>to + timeStamp)
   function worldPoint(e) {
     const r = canvas.getBoundingClientRect();
     const v = graph.view;
@@ -427,6 +555,13 @@ export function initCtx(host) {
       const n = nodeById(nodeEl.dataset.id);
       if (!n) return;
       drag = { kind: 'node', id: n.id, sx: e.clientX, sy: e.clientY, nx: n.x, ny: n.y, el: nodeEl, moved: false };
+      canvas.setPointerCapture(e.pointerId);
+      e.preventDefault();
+      return;
+    }
+    const wireEl = e.target.closest('.ctx-wire');
+    if (wireEl && wireEl.dataset.from) { // клик по проводу — выбор/удаление (в pointerup)
+      drag = { kind: 'edge', from: wireEl.dataset.from, to: wireEl.dataset.to, moved: false };
       canvas.setPointerCapture(e.pointerId);
       e.preventDefault();
       return;
@@ -461,6 +596,8 @@ export function initCtx(host) {
       const hit = t && t.closest && t.closest('.ctx-port.in');
       document.querySelectorAll('.ctx-port.in.hot').forEach((x) => x.classList.remove('hot'));
       if (hit && canConnect(drag.from, hit.dataset.id)) hit.classList.add('hot');
+    } else if (drag.kind === 'edge') {
+      drag.moved = true; // потянули за провод — это не клик, ничего не делаем на отпускании
     }
   });
   canvas.addEventListener('pointerup', (e) => {
@@ -473,10 +610,33 @@ export function initCtx(host) {
       if (hit) { if (!addEdge(drag.from, hit.dataset.id)) toast('Так соединить нельзя (дубль или цикл)'); }
     } else if (drag.kind === 'node') {
       if (drag.moved) { markDirty(); renderAll(); } // порядок склейки зависит от y — это содержательное изменение
-      else { sel = { kind: 'node', id: drag.id }; renderAll(); }
+      else {
+        // чистый клик по ноде: второй клик по той же ноде за ≤350 мс — открыть модалку (ручной dblclick)
+        const now = e.timeStamp || 0;
+        if (clickTrack.id === drag.id && (now - clickTrack.t) < 350) {
+          clickTrack = { id: null, t: 0 };
+          const n = nodeById(drag.id);
+          if (n) openNodeModal(n);
+        } else {
+          clickTrack = { id: drag.id, t: now };
+          sel = { kind: 'node', id: drag.id };
+          renderAll();
+        }
+      }
+    } else if (drag.kind === 'edge') {
+      if (!drag.moved) {
+        const key = drag.from + '>' + drag.to, now = e.timeStamp || 0;
+        if (clickTrackEdge.key === key && (now - clickTrackEdge.t) < 350) {
+          clickTrackEdge = { key: null, t: 0 };
+          removeEdge(drag.from, drag.to); // двойной клик по проводу — удалить
+        } else {
+          clickTrackEdge = { key, t: now };
+          sel = { kind: 'edge', from: drag.from, to: drag.to };
+          renderAll();
+        }
+      }
     } else if (drag.kind === 'pan') {
-      if (!drag.moved) { sel = null; renderAll(); }
-      else scheduleSave();
+      if (!drag.moved) { sel = null; renderAll(); } // чистый пан — вид не пишем до «Подтвердить»
     }
     drag = null;
   });
@@ -491,8 +651,7 @@ export function initCtx(host) {
     v.x = mx - (mx - v.x) * (v.z / oldZ);
     v.y = my - (my - v.y) * (v.z / oldZ);
     world.style.transform = `translate(${v.x}px, ${v.y}px) scale(${v.z})`;
-    scheduleSave();
-  }, { passive: false });
+  }, { passive: false }); // зум — вид не пишем до «Подтвердить»
   document.addEventListener('keydown', (e) => {
     if (!open || !graph) return;
     const t = e.target;
@@ -547,10 +706,17 @@ export function initCtx(host) {
     const isLib = String(n.ref || '').startsWith('lib:');
     let editor = null;
     const md = modalShell(n, `
-      <div id="cxm-ed" class="ctx-med"></div>
-      <div class="ctx-mfoot">
+      <div class="ctx-medbar">
+        <div class="ctx-seg">
+          <button class="ctx-segbtn on" id="cxm-mode-edit">✎ Редактировать</button>
+          <button class="ctx-segbtn" id="cxm-mode-view">👁 Просмотр</button>
+        </div>
         <span id="cxm-chars" class="ctx-mchars"></span>
-        <span id="cxm-libinfo" class="ctx-mchars"></span>
+      </div>
+      <div id="cxm-ed" class="ctx-med"></div>
+      <div id="cxm-prev" class="ctx-mprev" hidden></div>
+      <div class="ctx-mfoot">
+        <span id="cxm-libinfo" class="ctx-mchars ctx-mfull"></span>
         <div class="drag-space-static"></div>
         <button class="btn" id="cxm-lib" ${isLib ? 'hidden' : ''}>📚 В библиотеку</button>
         <button class="btn danger-btn" id="cxm-del">Удалить</button>
@@ -561,6 +727,18 @@ export function initCtx(host) {
     const r = await lite.ctx.blockRead(proj.id, proj.path, n);
     editor = makeMdEditor(md.m.querySelector('#cxm-ed'), (r && r.text) || '', (len) => { charsEl.textContent = fmtTok(len); });
     charsEl.textContent = fmtTok((r && r.chars) || 0);
+    // переключатель «Редактировать ↔ Просмотр»: просмотр рендерит текущий markdown редактора в HTML
+    const edBox = md.m.querySelector('#cxm-ed');
+    const prevBox = md.m.querySelector('#cxm-prev');
+    const setMode = (view) => {
+      if (view) renderSafeMarkdown(prevBox, editor.state.doc.toString());
+      edBox.hidden = view; prevBox.hidden = !view;
+      md.m.querySelector('#cxm-mode-view').classList.toggle('on', view);
+      md.m.querySelector('#cxm-mode-edit').classList.toggle('on', !view);
+      if (!view && editor.requestMeasure) editor.requestMeasure(); // CodeMirror корректно перемерит после показа
+    };
+    md.m.querySelector('#cxm-mode-edit').onclick = () => setMode(false);
+    md.m.querySelector('#cxm-mode-view').onclick = () => setMode(true);
     if (isLib) {
       const u = await lite.ctx.libUsage(String(n.ref).slice(4));
       md.m.querySelector('#cxm-libinfo').textContent = `📚 общий блок · используется в ${u.count || 0} месте(ах) — правка применится везде`;
@@ -582,7 +760,9 @@ export function initCtx(host) {
       const title = md.titleInp.value.trim() || n.title;
       const lr = await lite.ctx.libSave({ title, text });
       if (lr && lr.error) { toast(lr.error, { kind: 'err' }); return; }
-      await lite.ctx.blockDelete(proj.id, proj.path, { ...n }); // локальный файл больше не нужен
+      // старый локальный файл НЕ удаляем сразу — иначе «Сбросить» вернул бы ноду к пустому файлу.
+      // Снимок (ещё не-библиотечный) в очередь — сотрётся на «Подтвердить».
+      pendingDelete.push({ ...n });
       n.ref = 'lib:' + lr.id;
       n.title = title;
       n.chars = text.length;
@@ -755,7 +935,7 @@ export function initCtx(host) {
         <button class="btn" id="cxs-pick">…</button><button class="btn" id="cxs-open" title="Открыть папку бекапов">📂</button></div></div>
       <div class="field"><label>Сколько бекапов хранить (на каждый файл)</label>
         <input type="number" id="cxs-keep" min="1" max="100"></div>
-      <label class="ctx-mcheck"><input type="checkbox" id="cxs-auto"> автособирать контекст при открытии новой вкладки-терминала</label>
+      <label class="ctx-mcheck"><input type="checkbox" id="cxs-auto"> при открытии новой вкладки-терминала собрать контекст, если файл-выход отсутствует</label>
       <div class="field"><label>Агент для «Распилить CLAUDE.md»</label>
         <select id="cxs-agent"><option value="claude">claude</option><option value="codex">codex</option></select></div>
       <div class="modal-actions"><button class="btn" id="cxs-cancel">Отмена</button><button class="btn primary" id="cxs-save">Сохранить</button></div>`);
@@ -771,6 +951,15 @@ export function initCtx(host) {
       if (r && r.dir) lite.openInFileManager(r.dir);
     };
     m.querySelector('#cxs-cancel').onclick = close;
+    // Настройки сохраняем СРАЗУ, но в изоляции от неподтверждённых правок канвы: читаем граф с диска,
+    // подменяем только settings и пишем обратно. Тогда «Сбросить» откатит канву, а папку/глубину
+    // бекапов и выбранного агента сохранит. На диск канвы это правки не коммитит.
+    const persistSettings = async () => {
+      const disk = await lite.ctx.load(proj.id, activeProfile);
+      const dg = normalizeGraph(disk && disk.graph);
+      dg.settings = { ...dg.settings, ...s };
+      await lite.ctx.save(proj.id, dg, activeProfile);
+    };
     m.querySelector('#cxs-save').onclick = async () => {
       const oldDir = s.backupDir || '';
       const newDir = m.querySelector('#cxs-dir').value.trim();
@@ -782,13 +971,13 @@ export function initCtx(host) {
         const mv = await lite.ctx.backupMove(proj.path, oldDir, newDir);
         if (mv && mv.error) { toast('Бекапы не перенесены: ' + mv.error, { kind: 'err', ttl: 8000 }); return; }
         s.backupDir = newDir;
-        scheduleSave();
+        await persistSettings();
         close();
         toast(mv && mv.moved ? `Настройки сохранены · перенесено бекапов: ${mv.moved} → ${mv.dir}` : 'Настройки сохранены', { ttl: 7000 });
         return;
       }
       s.backupDir = newDir;
-      scheduleSave();
+      await persistSettings();
       close();
       toast('Настройки сохранены');
     };
@@ -847,21 +1036,33 @@ export function initCtx(host) {
     }
   }
 
-  // ---------------------------------------------------------------- сборка (Применить)
+  // ---------------------------------------------------------------- Подтвердить (сохранить + собрать)
+  // Единственный путь записи на диск: фиксируем граф (graph.json) и пересобираем CLAUDE.md/AGENTS.md
+  // (со старым файлом в бекап). После успеха канва считается «подтверждённой» (unsaved=false).
   async function applyCompile(opts = {}) {
     if (!proj || !graph) return;
     const btn = $('#ctx-apply');
     btn.disabled = true;
-    clearTimeout(saveTimer);
-    await lite.ctx.save(proj.id, graph); // компилятор читает граф с диска — сначала зафиксировать
-    const r = await lite.ctx.compile({ projId: proj.id, projPath: proj.path, force: !!opts.force });
+    await lite.ctx.save(proj.id, graph, activeProfile); // компилятор читает граф с диска — сначала зафиксировать
+    const r = await lite.ctx.compile({ projId: proj.id, projPath: proj.path, force: !!opts.force, profileId: activeProfile });
     btn.disabled = false;
     if (!r || r.error) { toast((r && r.error) || 'ошибка сборки', { kind: 'err', ttl: 8000 }); return; }
     if (r.graph) { graph = normalizeGraph(r.graph); renderAll(); }
     if (r.conflicts && r.conflicts.length && !opts.force) {
       showConfirm('Файл создан не LiteEditor', `${r.conflicts.join(' и ')} уже существует и не похож на наш. Забекапить и заменить?`, 'Забекапить и заменить', () => applyCompile({ force: true }));
-      return;
+      return; // unsaved остаётся true — изменения ещё не применены полностью
     }
+    unsaved = false;
+    if (profiles) { profiles.applied = r.applied || activeProfile; renderProfiles(); } // этот профиль теперь в файлах
+    // теперь удаления применены окончательно — стираем файлы удалённых блоков и старые локальные файлы
+    // нод, ушедших в библиотеку. Удаляем, только если текущий граф больше НЕ владеет этим файлом
+    // (нода удалена ИЛИ перестала быть локальным текстом/слотом — напр. стала библиотечной).
+    const ownsFile = (x) => (x.type === 'text' && !String(x.ref || '').startsWith('lib:')) || x.type === 'slot';
+    for (const dn of pendingDelete) {
+      if (!graph.nodes.some((x) => x.id === dn.id && ownsFile(x))) { try { lite.ctx.blockDelete(proj.id, proj.path, dn); } catch (_) {} }
+    }
+    pendingDelete = [];
+    updateStats();
     const parts = r.results.map((x) => `${x.file} ${fmtTok(x.chars)}${x.wrote ? (x.backup ? ` (бекап: ${x.backup})` : '') : ' — без изменений'}`);
     if (!parts.length) parts.push('нечего собирать — подключи блоки к выходам');
     for (const err of (r.errors || [])) toast(err, { kind: 'err', ttl: 8000 });
@@ -869,16 +1070,44 @@ export function initCtx(host) {
     toast('Контекст: ' + parts.join(' · ') + (bdir ? ` · бекапы в ${bdir}` : ''), { ttl: 8000 });
     detectSplitSources(); // сборка могла перезаписать чужой AGENTS.md нашим — кнопки распила пересчитать
   }
-  // Автосборка при новой вкладке-терминала проекта (хук из createSession в ядре).
-  // Тихая: только если граф есть, autoApply включён и есть несобранные изменения.
+  // Сбросить: вернуть канву к последнему подтверждённому виду (перечитать graph.json с диска).
+  // Файлы блоков (тексты/слоты) и контекстные файлы не трогаем — откатывается только граф канвы.
+  async function resetGraph() {
+    if (!proj || !graph || !unsaved) return;
+    showConfirm('Сбросить изменения?', 'Канва вернётся к последнему подтверждённому виду. Неподтверждённые правки (расположение, добавленные/удалённые блоки и провода) будут отброшены.', 'Сбросить', async () => {
+      const r = await lite.ctx.load(proj.id, activeProfile);
+      graph = normalizeGraph(r && r.graph);
+      sel = null;
+      unsaved = false;
+      pendingDelete = []; // удаления откатываются — файлы блоков мы не трогали, они на месте
+      renderAll();
+      toast('Изменения сброшены');
+    });
+  }
+  // Хук из createSession (новая вкладка-терминала). Без автосохранения новая модель «Подтвердить»
+  // делает автосборку безопасной и узкой: собираем сам подтверждённый граф ТОЛЬКО если файла-выхода
+  // ещё нет на диске (свежий клон / файл удалён). Существующий контекст молча не перезаписываем,
+  // неподтверждённую активную канву не трогаем — иначе потеряли бы правки пользователя.
   async function autoApply(p) {
     try {
-      let g = (proj && p.id === proj.id && graph) ? graph : null;
-      if (!g) { const r = await lite.ctx.load(p.id); g = r && r.graph; }
-      if (!g || !g.dirty || (g.settings && g.settings.autoApply === false)) return;
+      if (proj && p.id === proj.id && unsaved) return; // активная канва с неподтверждёнными правками — не лезем
+      const r0 = await lite.ctx.load(p.id);
+      const g = r0 && r0.graph;
+      if (!g || (g.settings && g.settings.autoApply === false)) return;
       if (!(g.nodes || []).some((n) => n.type !== 'out')) return;
+      let needBuild = false; // есть ли включённый выход, чей файл отсутствует
+      for (const key of ['claude', 'codex']) {
+        const o = (g.nodes || []).find((n) => n.type === 'out' && n.out === key);
+        if (!o || !o.enabled) continue;
+        if (!(await lite.fs.exists(p.path + '/' + OUT_FILES[key]))) { needBuild = true; break; }
+      }
+      if (!needBuild) return;
       const r = await lite.ctx.compile({ projId: p.id, projPath: p.path });
-      if (r && r.ok && proj && p.id === proj.id && open) { graph = normalizeGraph(r.graph); renderAll(); }
+      if (r && r.ok && proj && p.id === proj.id && open && !unsaved) {
+        graph = normalizeGraph(r.graph);
+        if (profiles && r.applied) { profiles.applied = r.applied; renderProfiles(); } // индикатор «применён» — в синке
+        renderAll();
+      }
     } catch (_) {}
   }
 
@@ -888,7 +1117,7 @@ export function initCtx(host) {
       <h2>Как работает «Контекст»</h2>
       <div class="ctx-help">
         <p><b>Зачем это.</b> Агент в терминале (Claude Code, Codex) при старте сессии читает файл контекста —
-        <b>CLAUDE.local.md</b> или <b>AGENTS.md</b> в корне проекта. Этот модуль собирает такой файл из «кубиков»
+        <b>CLAUDE.md</b> или <b>AGENTS.md</b> в корне проекта. Этот модуль собирает такой файл из «кубиков»
         на канве: видно, чем кормится агент, сколько это весит в токенах, и можно одним тумблером менять набор
         под задачу — не редактируя файлы руками.</p>
         <p><b>Типы блоков</b> (кнопка «+» в шапке или на пустой канве):</p>
@@ -903,16 +1132,19 @@ export function initCtx(host) {
         Блок, подключённый к выходу <b>напрямую</b> — постоянный контекст (идёт всегда); <b>через группу</b> —
         ситуативный (идёт, пока группа включена). Тумблер выключает блок, не разрывая провод — как в n8n.
         Клик по проводу выделяет его, Del или двойной клик — удаляет.</p>
-        <p><b>Выходы.</b> Справа две ноды: <b>Claude</b> → CLAUDE.local.md, <b>Codex</b> → AGENTS.md.
+        <p><b>Выходы.</b> Справа две ноды: <b>Claude</b> → CLAUDE.md, <b>Codex</b> → AGENTS.md.
         Один блок можно провести в оба выхода. На каждом выходе видно, сколько блоков подключено и сколько
         ≈токенов получит агент. Ненужный выход можно выключить тумблером.</p>
-        <p><b>▶ Собрать.</b> Записывает файлы в корень проекта. Старый файл перед перезаписью бекапится в
-        <code>context_project_bkp</code> (папку и число хранимых копий можно сменить в ⚙). Файл, созданный
-        не модулем, без вашего подтверждения не перезаписывается. Жёлтая точка у заголовка панели = есть
-        несобранные изменения; на уже запущенного агента они не подействуют — только на новые сессии
-        (сборка происходит и автоматически при открытии новой вкладки-терминала).</p>
-        <p><b>✂ Распилить.</b> Если в проекте уже есть CLAUDE.md или AGENTS.md — локальный агент сам разложит
-        его на блоки и группы на канву. Исходный файл не меняется и дополнительно бекапится.</p>
+        <p><b>✓ Подтвердить / ↺ Сбросить.</b> Автосохранения нет — правки на канве копятся, пока вы их не
+        подтвердите. <b>«Подтвердить» (✓)</b> сохраняет канву и пересобирает <code>CLAUDE.md</code> /
+        <code>AGENTS.md</code> в корне проекта; старый файл перед перезаписью бекапится в
+        <code>context_project_bkp</code> (папку и число копий — в ⚙). Файл, созданный не модулем, без вашего
+        согласия не перезаписывается. <b>«Сбросить» (↺)</b> откатывает канву к последнему подтверждённому виду.
+        Жёлтая точка у заголовка = есть неподтверждённые изменения; на уже запущенного агента они не подействуют —
+        только на новые сессии.</p>
+        <p><b>✂ Распилить.</b> Если в проекте есть ваш <b>CLAUDE.md</b> или <b>AGENTS.md</b> (не наша сборка) —
+        локальный агент сам разложит его на блоки и группы на канву. Исходный файл не меняется и дополнительно
+        бекапится; результат появится на канве — проверьте и нажмите «Подтвердить».</p>
         <p><b>Канва.</b> Колесо — зум · перетаскивание фона — перемещение · двойной клик по блоку —
         редактирование · клик — выделить · Del — удалить · Ctrl+D — дублировать.</p>
         <p><b>📚 Библиотека.</b> В модалке текстового блока есть «В библиотеку» — блок становится общим:
@@ -949,7 +1181,7 @@ export function initCtx(host) {
     const src = await lite.fs.readFile(proj.path + '/' + srcName);
     if (!src || src.error || !src.content) { toast(srcName + ' не найден в корне проекта', { kind: 'err' }); return; }
     // бекап исходника перед распилом — сам файл мы не меняем, но пользователю спокойнее с копией
-    const bkp = await lite.ctx.backupFile(proj.id, proj.path, srcName);
+    const bkp = await lite.ctx.backupFile(proj.id, proj.path, srcName, activeProfile);
     let cancelled = false;
     const md = makeModal(`
       <h2>✂ Распилить ${srcName}</h2>
@@ -1032,11 +1264,15 @@ export function initCtx(host) {
   }
 
   // ---------------------------------------------------------------- бинды панели
-  $('#ctx-close').addEventListener('click', () => setOpen(false));
+  $('#ctx-close').addEventListener('click', () => {
+    if (unsaved) showConfirm('Закрыть «Контекст»?', 'Есть неподтверждённые изменения — они будут потеряны.', 'Закрыть', () => setOpen(false));
+    else setOpen(false);
+  });
   $('#ctx-help').addEventListener('click', showHelp);
   $('#ctx-empty-help').addEventListener('click', showHelp);
   $('#ctx-add').addEventListener('click', showAddMenu);
   $('#ctx-apply').addEventListener('click', () => applyCompile());
+  $('#ctx-reset').addEventListener('click', resetGraph);
   $('#ctx-split').addEventListener('click', splitClick);
   $('#ctx-settings').addEventListener('click', () => { if (graph) modalSettings(); });
   $('#ctx-empty-add').addEventListener('click', showAddMenu);
@@ -1045,7 +1281,8 @@ export function initCtx(host) {
     const n = graph.nodes.find((x) => x.type === 'slot' && x.id === nodeId);
     if (!n) return;
     slotBadges.add(nodeId);
-    lite.ctx.blockRead(proj.id, proj.path, n).then((r) => { if (r) { n.chars = r.chars; if (graph) { graph.dirty = true; scheduleSave(); } renderAll(); } });
+    // агент дописал слот → его содержимое попадёт в сборку только при следующем «Подтвердить»
+    lite.ctx.blockRead(proj.id, proj.path, n).then((r) => { if (r && graph) { n.chars = r.chars; unsaved = true; renderAll(); } });
   });
 
   return { isOpen: () => open, setOpen, toggle, onProjectChange, autoApply, applyCompile };

@@ -36,7 +36,7 @@ import { initNotes } from './modules/notes.js';
 import { initOpenRouter } from './modules/openrouter.js';
 import { initExtensions } from './modules/extensions.js';
 
-const APP_VERSION = 'alpha v1.0.141';
+const APP_VERSION = 'alpha v1.0.142';
 const GUTTER = 5;
 const SCRATCH_ID = '__scratch__'; // префикс id системных терминалов (домашняя папка), не привязаны к проектам
 const isScratch = (id) => typeof id === 'string' && id.startsWith(SCRATCH_ID);
@@ -1227,8 +1227,8 @@ function createSession(proj, name) {
   const rec = { term, fit, search, container, projId: proj.id, name, idleTimer: null, sawBell: false, tail: '', busyStart: 0, lastInputAt: 0, activitySeq: 0 };
   terms.set(id, rec);
   tabsByProj.get(proj.id).sessions.push(id);
-  // «Контекст»: тихая автосборка несобранных изменений графа — новая сессия агента
-  // должна стартовать со свежим CLAUDE.local.md/AGENTS.md (try — Ctx создаётся позже по коду).
+  // «Контекст»: тихая автосборка — новая сессия агента должна найти готовый CLAUDE.md/AGENTS.md,
+  // если файла-выхода ещё нет (try — Ctx создаётся позже по коду).
   try { Ctx.autoApply(proj); } catch (_) {}
   return id;
 }
@@ -2722,7 +2722,7 @@ function paletteActions() {
   acts.push({ label: viewerOpen ? 'Закрыть вивер' : 'Открыть вивер', run: () => setViewerOpen(!viewerOpen) });
   acts.push({ label: Git.isOpen() ? 'Закрыть Git' : 'Открыть Git', run: Git.toggle });
   acts.push({ label: Ctx.isOpen() ? 'Закрыть контекст' : 'Контекст — граф контекста агента', run: Ctx.toggle });
-  if (Ctx.isOpen()) acts.push({ label: 'Контекст: собрать (▶ CLAUDE.local.md / AGENTS.md)', run: () => Ctx.applyCompile() });
+  if (Ctx.isOpen()) acts.push({ label: 'Контекст: подтвердить (✓ собрать CLAUDE.md / AGENTS.md)', run: () => Ctx.applyCompile() });
   acts.push({ label: Containers.isOpen() ? 'Закрыть контейнеры' : 'Контейнеры (Docker / Podman)', run: Containers.toggle });
   acts.push({ label: Db.isOpen() ? 'Закрыть базы данных' : 'Базы данных (Postgres / MySQL / SQLite)', run: Db.toggle });
   acts.push({ label: 'Режим «один терминал»', run: toggleSingle });
