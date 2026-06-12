@@ -141,7 +141,8 @@
           <span id="ctx-stale" class="ctx-stale" title="Граф изменён — собери контекст (▶), подействует на новые сессии" hidden>●</span>
           <div class="drag-space-static"></div>
           <button id="ctx-add" class="icon-btn" title="Добавить блок" data-icon="plus"></button>
-          <button id="ctx-split" class="icon-btn" title="Распилить CLAUDE.md на блоки (локальным агентом)" data-icon="scissors"></button>
+          <button id="ctx-split" class="icon-btn" data-icon="scissors" hidden></button><!-- показывается по детекту CLAUDE.md/AGENTS.md -->
+
           <button id="ctx-apply" class="icon-btn" title="Собрать контекст → CLAUDE.local.md / AGENTS.md (с бекапом)" data-icon="play"></button>
           <button id="ctx-settings" class="icon-btn" title="Настройки (бекапы, автосборка)" data-icon="sliders"></button>
           <button id="ctx-close" class="icon-btn" title="Закрыть" data-icon="x"></button>
@@ -159,7 +160,7 @@
                 Провод напрямую в выход = постоянный контекст, через группу = ситуативный.</div>
               <div class="ctx-empty-actions">
                 <button id="ctx-empty-add" class="btn">+ Блок</button>
-                <button id="ctx-empty-split" class="btn primary">✂ Распилить CLAUDE.md</button>
+                <span id="ctx-empty-splits"></span><!-- кнопки «✂ распилить …» — по детекту файлов -->
               </div>
             </div>
           </div>

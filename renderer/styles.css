@@ -671,6 +671,14 @@ body.resizing { cursor: col-resize; user-select: none; }
 .ctx-mchars.err { color: var(--danger); }
 .ctx-mchars code { color: var(--green-bright); }
 .ctx-mcheck { display: flex; align-items: center; gap: 7px; font-size: 12px; color: var(--text-dim); margin: 8px 0; cursor: pointer; }
+.ctx-mcheck input[type="checkbox"] { width: 15px; height: 15px; accent-color: var(--green); }
+/* number/select глобально не темизированы (.modal стилизует только text/password) — иначе белый фон */
+.ctx-modal input[type="number"], .ctx-modal select {
+  background: var(--bg-input); border: 1px solid var(--border-strong); border-radius: 8px;
+  color: var(--text); padding: 7px 10px; font: inherit; outline: none; width: 100%;
+}
+.ctx-modal input[type="number"]:focus, .ctx-modal select:focus { border-color: var(--border-accent); }
+.ctx-modal select option { background: var(--bg-pop); color: var(--text); }
 .ctx-mono { font-family: "JetBrains Mono", Consolas, monospace; }
 .ctx-row { display: flex; gap: 6px; }
 .ctx-row input { flex: 1 1 auto; }

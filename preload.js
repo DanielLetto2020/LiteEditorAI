@@ -88,7 +88,9 @@ contextBridge.exposeInMainWorld('lite', {
     libSave: (opts) => ipcRenderer.invoke('ctx:libSave', opts),
     libUsage: (libId) => ipcRenderer.invoke('ctx:libUsage', { libId }),
     libDelete: (libId) => ipcRenderer.invoke('ctx:libDelete', { libId }),
-    backupDir: (projId, dir) => ipcRenderer.invoke('ctx:backupDir', { projId, dir }),
+    backupDir: (projPath, dir) => ipcRenderer.invoke('ctx:backupDir', { projPath, dir }),
+    backupFile: (projId, projPath, name) => ipcRenderer.invoke('ctx:backupFile', { projId, projPath, name }),
+    backupMove: (projPath, from, to) => ipcRenderer.invoke('ctx:backupMove', { projPath, from, to }),
   },
 
   update: {

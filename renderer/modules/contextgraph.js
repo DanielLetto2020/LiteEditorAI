@@ -26,6 +26,8 @@ const NODE_TYPES = {
   group: { label: 'Группа',      icon: 'layers',   hint: 'профиль: включается/выключается целиком' },
 };
 const OUT_FILES = { claude: 'CLAUDE.local.md', codex: 'AGENTS.md' };
+const SPLIT_FILES = { claude: 'CLAUDE.md', codex: 'AGENTS.md' }; // исходники для «Распилить»
+const CTX_MARKER = '<!-- LiteEditorAI:contextgraph'; // шапка наших скомпилированных файлов (синхронно с main.js)
 const GROUP_COLORS = ['green', 'info', 'warn', 'danger'];
 
 const uid = () => 'n' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
@@ -44,6 +46,7 @@ export function initCtx(host) {
   let loadSeq = 0;
   let saveTimer = null;
   const slotBadges = new Set(); // nodeId слотов с непросмотренными записями агента
+  let splitSrc = { claude: false, codex: false }; // какие исходники реально есть в проекте
 
   const canvas = $('#ctx-canvas');
   const world = $('#ctx-world');
@@ -115,6 +118,50 @@ export function initCtx(host) {
     lite.ctx.watchSlots(p.id, p.path);
     renderAll();
     refreshLiveChars(seq); // файлы/слоты: подтянуть актуальные размеры после рендера
+    detectSplitSources(); // какие кнопки «✂ распилить» показывать
+  }
+  // Детект исходников: CLAUDE.md — как есть; AGENTS.md — только если он НЕ наш скомпилированный
+  // (иначе предлагали бы распилить собственную сборку). Кнопок столько, сколько файлов есть.
+  async function detectSplitSources() {
+    if (!proj) { splitSrc = { claude: false, codex: false }; updateSplitUi(); return; }
+    const [cEx, aRes] = await Promise.all([
+      lite.fs.exists(proj.path + '/CLAUDE.md'),
+      lite.fs.readFile(proj.path + '/AGENTS.md'),
+    ]);
+    splitSrc = {
+      claude: !!cEx,
+      codex: !!(aRes && !aRes.error && aRes.content && !aRes.content.startsWith(CTX_MARKER)),
+    };
+    updateSplitUi();
+  }
+  function updateSplitUi() {
+    const list = Object.keys(SPLIT_FILES).filter((k) => splitSrc[k]);
+    const btn = $('#ctx-split');
+    btn.hidden = !list.length;
+    btn.title = list.length ? ('Распилить на блоки (локальным агентом): ' + list.map((k) => SPLIT_FILES[k]).join(' / ')) : '';
+    const box = $('#ctx-empty-splits');
+    box.innerHTML = '';
+    for (const k of list) {
+      const b = el('button', 'btn primary', '✂ Распилить ' + SPLIT_FILES[k]);
+      b.onclick = () => runSplit(k);
+      box.appendChild(b);
+    }
+  }
+  function splitClick() {
+    const list = Object.keys(SPLIT_FILES).filter((k) => splitSrc[k]);
+    if (!list.length) return;
+    if (list.length === 1) { runSplit(list[0]); return; }
+    const { m, close } = makeModal('<h2>✂ Что распилить?</h2><div id="cxc-list" class="ctx-addlist"></div>');
+    const box = m.querySelector('#cxc-list');
+    for (const k of list) {
+      const row = el('div', 'ctx-addrow');
+      const tx = el('div', 'ctx-addtx');
+      tx.appendChild(el('div', 'ctx-addlabel', SPLIT_FILES[k]));
+      tx.appendChild(el('div', 'ctx-addhint', 'блоки лягут на канву и подключатся к выходу ' + (k === 'claude' ? 'Claude' : 'Codex')));
+      row.appendChild(tx);
+      row.onclick = () => { close(); runSplit(k); };
+      box.appendChild(row);
+    }
   }
   // Размеры file/slot-нод честные только на момент последней сборки — освежаем при загрузке.
   async function refreshLiveChars(seq) {
@@ -703,7 +750,7 @@ export function initCtx(host) {
     const s = graph.settings;
     const { m, close } = makeModal(`
       <h2>Контекст — настройки</h2>
-      <div class="field"><label>Папка бекапов (пусто = служебная папка редактора)</label>
+      <div class="field"><label>Папка бекапов (пусто = context_project_bkp в корне проекта)</label>
         <div class="ctx-row"><input type="text" id="cxs-dir" autocomplete="off" spellcheck="false">
         <button class="btn" id="cxs-pick">…</button><button class="btn" id="cxs-open" title="Открыть папку бекапов">📂</button></div></div>
       <div class="field"><label>Сколько бекапов хранить (на каждый файл)</label>
@@ -714,20 +761,33 @@ export function initCtx(host) {
       <div class="modal-actions"><button class="btn" id="cxs-cancel">Отмена</button><button class="btn primary" id="cxs-save">Сохранить</button></div>`);
     m.classList.add('ctx-modal');
     m.querySelector('#cxs-dir').value = s.backupDir || '';
+    m.querySelector('#cxs-dir').placeholder = proj ? proj.path + '/context_project_bkp' : 'context_project_bkp';
     m.querySelector('#cxs-keep').value = s.backupKeep || 10;
     m.querySelector('#cxs-auto').checked = s.autoApply !== false;
     m.querySelector('#cxs-agent').value = s.splitAgent || 'claude';
     m.querySelector('#cxs-pick').onclick = async () => { const d = await lite.pickDir(); if (d) m.querySelector('#cxs-dir').value = d; };
     m.querySelector('#cxs-open').onclick = async () => {
-      const r = await lite.ctx.backupDir(proj.id, m.querySelector('#cxs-dir').value.trim() || null);
+      const r = await lite.ctx.backupDir(proj.path, m.querySelector('#cxs-dir').value.trim() || null);
       if (r && r.dir) lite.openInFileManager(r.dir);
     };
     m.querySelector('#cxs-cancel').onclick = close;
-    m.querySelector('#cxs-save').onclick = () => {
-      s.backupDir = m.querySelector('#cxs-dir').value.trim();
+    m.querySelector('#cxs-save').onclick = async () => {
+      const oldDir = s.backupDir || '';
+      const newDir = m.querySelector('#cxs-dir').value.trim();
       s.backupKeep = Math.max(1, Math.min(100, parseInt(m.querySelector('#cxs-keep').value, 10) || 10));
       s.autoApply = m.querySelector('#cxs-auto').checked;
       s.splitAgent = m.querySelector('#cxs-agent').value;
+      if (newDir !== oldDir) {
+        // переезд: все *.bak из старой папки (или дефолтной в проекте) — в новую, пустая старая удаляется
+        const mv = await lite.ctx.backupMove(proj.path, oldDir, newDir);
+        if (mv && mv.error) { toast('Бекапы не перенесены: ' + mv.error, { kind: 'err', ttl: 8000 }); return; }
+        s.backupDir = newDir;
+        scheduleSave();
+        close();
+        toast(mv && mv.moved ? `Настройки сохранены · перенесено бекапов: ${mv.moved} → ${mv.dir}` : 'Настройки сохранены', { ttl: 7000 });
+        return;
+      }
+      s.backupDir = newDir;
       scheduleSave();
       close();
       toast('Настройки сохранены');
@@ -802,10 +862,12 @@ export function initCtx(host) {
       showConfirm('Файл создан не LiteEditor', `${r.conflicts.join(' и ')} уже существует и не похож на наш. Забекапить и заменить?`, 'Забекапить и заменить', () => applyCompile({ force: true }));
       return;
     }
-    const parts = r.results.map((x) => `${x.file} ${fmtTok(x.chars)}${x.wrote ? (x.backup ? ' (бекап ✓)' : '') : ' — без изменений'}`);
+    const parts = r.results.map((x) => `${x.file} ${fmtTok(x.chars)}${x.wrote ? (x.backup ? ` (бекап: ${x.backup})` : '') : ' — без изменений'}`);
     if (!parts.length) parts.push('нечего собирать — подключи блоки к выходам');
     for (const err of (r.errors || [])) toast(err, { kind: 'err', ttl: 8000 });
-    toast('Контекст: ' + parts.join(' · '), { ttl: 6000 });
+    const bdir = (r.results.find((x) => x.bdir) || {}).bdir;
+    toast('Контекст: ' + parts.join(' · ') + (bdir ? ` · бекапы в ${bdir}` : ''), { ttl: 8000 });
+    detectSplitSources(); // сборка могла перезаписать чужой AGENTS.md нашим — кнопки распила пересчитать
   }
   // Автосборка при новой вкладке-терминала проекта (хук из createSession в ядре).
   // Тихая: только если граф есть, autoApply включён и есть несобранные изменения.
@@ -829,27 +891,30 @@ export function initCtx(host) {
     if (a < 0 || b <= a) return null;
     try { return JSON.parse(s.slice(a, b + 1)); } catch (_) { return null; }
   }
-  async function runSplit() {
+  async function runSplit(which) {
     if (!proj || !graph) return;
-    const src = await lite.fs.readFile(proj.path + '/CLAUDE.md');
-    if (!src || src.error || !src.content) { toast('CLAUDE.md не найден в корне проекта', { kind: 'err' }); return; }
+    const srcName = SPLIT_FILES[which] || 'CLAUDE.md';
+    const src = await lite.fs.readFile(proj.path + '/' + srcName);
+    if (!src || src.error || !src.content) { toast(srcName + ' не найден в корне проекта', { kind: 'err' }); return; }
+    // бекап исходника перед распилом — сам файл мы не меняем, но пользователю спокойнее с копией
+    const bkp = await lite.ctx.backupFile(proj.id, proj.path, srcName);
     let cancelled = false;
     const md = makeModal(`
-      <h2>✂ Распилить CLAUDE.md</h2>
-      <div class="about-desc">Локальный агент читает CLAUDE.md и раскладывает его на блоки и группы прямо на канву.
-      CLAUDE.md не меняется — это импорт-копия. Обычно занимает до минуты.</div>
+      <h2>✂ Распилить ${srcName}</h2>
+      <div class="about-desc">Локальный агент читает файл и раскладывает его на блоки и группы прямо на канву.
+      <b>${srcName} не меняется</b> — это импорт-копия, плюс уже сделан бекап в папку бекапов. Обычно занимает до минуты.</div>
       <div class="ctx-spin"><span class="ctx-spinner"></span><span id="cxp-st">Агент думает…</span></div>
       <div class="modal-actions"><button class="btn" id="cxp-cancel">Отмена</button></div>`, () => { cancelled = true; });
     md.m.querySelector('#cxp-cancel').onclick = md.close;
     const prompt = [
-      'Ты — инструмент разметки. Ниже содержимое CLAUDE.md проекта. Разбей его на тематические блоки контекста для ИИ-агента.',
+      `Ты — инструмент разметки. Ниже содержимое ${srcName} проекта. Разбей его на тематические блоки контекста для ИИ-агента.`,
       'Верни СТРОГО JSON без пояснений и без markdown-ограждений, схема:',
       '{"always":[{"title":"...","content":"..."}],"groups":[{"title":"...","blocks":[{"title":"...","content":"..."}]}]}',
       'Правила: content — дословные фрагменты исходника (markdown), ничего не сочиняй и не пересказывай;',
       '"always" — то, что агенту нужно всегда (общие правила, команды, стиль кода);',
       'каждая группа — ситуативная тема (релиз, отдельная подсистема, деплой и т.п.);',
       'всего 4–12 блоков, названия короткие (1–4 слова).',
-      '', '=== CLAUDE.md ===', src.content,
+      '', `=== ${srcName} ===`, src.content,
     ].join('\n');
     const r = await lite.ctx.agent(graph.settings.splitAgent || 'claude', prompt);
     if (cancelled) return;
@@ -857,7 +922,8 @@ export function initCtx(host) {
     if (!r || r.error) { toast('Агент не справился: ' + ((r && r.error) || '?'), { kind: 'err', ttl: 9000 }); return; }
     const data = extractJson(r.text);
     if (!data || (!Array.isArray(data.always) && !Array.isArray(data.groups))) { toast('Агент вернул не-JSON — попробуй ещё раз', { kind: 'err', ttl: 8000 }); return; }
-    const outs = graph.nodes.filter((n) => n.type === 'out');
+    // блоки подключаются к «своему» выходу (CLAUDE.md → Claude, AGENTS.md → Codex); провода в другой — руками
+    const outs = graph.nodes.filter((n) => n.type === 'out' && n.out === which);
     let y = 40;
     const addText = async (b, x) => {
       const n = { id: uid(), type: 'text', title: String(b.title || 'Блок').slice(0, 60), enabled: true, x, y, chars: 0 };
@@ -887,17 +953,17 @@ export function initCtx(host) {
     }
     markDirty();
     renderAll();
-    toast(`Готово: ${made} блок(ов), ${(data.groups || []).length} групп(ы). Проверь канву и нажми ▶`, { ttl: 8000 });
+    const bkpNote = (bkp && bkp.ok) ? ` Бекап исходника: ${bkp.backup} → ${bkp.dir}.` : '';
+    toast(`Готово: ${made} блок(ов), ${(data.groups || []).length} групп(ы).${bkpNote} Проверь канву и нажми ▶`, { ttl: 10000 });
   }
 
   // ---------------------------------------------------------------- бинды панели
   $('#ctx-close').addEventListener('click', () => setOpen(false));
   $('#ctx-add').addEventListener('click', showAddMenu);
   $('#ctx-apply').addEventListener('click', () => applyCompile());
-  $('#ctx-split').addEventListener('click', runSplit);
+  $('#ctx-split').addEventListener('click', splitClick);
   $('#ctx-settings').addEventListener('click', () => { if (graph) modalSettings(); });
   $('#ctx-empty-add').addEventListener('click', showAddMenu);
-  $('#ctx-empty-split').addEventListener('click', runSplit);
   lite.ctx.onSlotChanged(({ projId, nodeId }) => {
     if (!proj || projId !== proj.id || !graph) return;
     const n = graph.nodes.find((x) => x.type === 'slot' && x.id === nodeId);

@@ -639,9 +639,14 @@ function ctxContributors(graph, outId) {
   const ids = new Set();
   return found.filter((n) => { if (ids.has(n.id)) return false; ids.add(n.id); return true; });
 }
-// Бекап существующего целевого файла перед перезаписью + прунинг (держим keep свежих на имя)
-function ctxBackup(file, settings, projId) {
-  const dir = (settings && settings.backupDir) ? String(settings.backupDir) : path.join(ctxDir, 'backups', ctxSafe(projId));
+// Бекап существующего файла перед перезаписью/распилом + прунинг (держим keep свежих на имя).
+// Дефолтная папка — В ПРОЕКТЕ: <proj>/context_project_bkp (пользователь может сменить в настройках).
+const CTX_BKP_DEFAULT = 'context_project_bkp';
+function ctxBackupDirFor(projPath, settings) {
+  return (settings && settings.backupDir) ? String(settings.backupDir) : path.join(projPath, CTX_BKP_DEFAULT);
+}
+function ctxBackup(file, settings, projPath) {
+  const dir = ctxBackupDirFor(projPath, settings);
   const keep = Math.max(1, Math.min(100, parseInt(settings && settings.backupKeep, 10) || 10));
   fs.mkdirSync(dir, { recursive: true });
   const name = path.basename(file);
@@ -700,8 +705,8 @@ ipcMain.handle('ctx:compile', async (_e, { projId, projPath, force } = {}) => {
     if (existing != null && existing === content) { results.push({ out: key, file: fname, chars: content.length, wrote: false }); continue; }
     if (existing != null && !existing.startsWith(CTX_MARKER) && !force) { conflicts.push(fname); continue; }
     let backup = null;
-    if (existing != null) { try { backup = ctxBackup(target, settings, projId); } catch (e) { errors.push('бекап не записан: ' + (e.message || e)); } }
-    try { atomicWriteSync(target, content); results.push({ out: key, file: fname, chars: content.length, wrote: true, backup: backup ? path.basename(backup) : null }); }
+    if (existing != null) { try { backup = ctxBackup(target, settings, projPath); } catch (e) { errors.push('бекап не записан: ' + (e.message || e)); } }
+    try { atomicWriteSync(target, content); results.push({ out: key, file: fname, chars: content.length, wrote: true, backup: backup ? path.basename(backup) : null, bdir: backup ? path.dirname(backup) : null }); }
     catch (e) { errors.push(fname + ': ' + (e.message || e)); }
   }
   for (const n of (graph.nodes || [])) if (charsByNode[n.id] != null) n.chars = charsByNode[n.id];
@@ -794,10 +799,42 @@ ipcMain.handle('ctx:libDelete', (_e, { libId } = {}) => {
   } catch (e) { return { error: String(e.message || e) }; }
 });
 // Папка бекапов для модалки настроек («открыть папку»): резолв дефолта + mkdir
-ipcMain.handle('ctx:backupDir', (_e, { projId, dir } = {}) => {
-  const d = dir ? String(dir) : path.join(ctxDir, 'backups', ctxSafe(projId || ''));
+ipcMain.handle('ctx:backupDir', (_e, { projPath, dir } = {}) => {
+  if (!projPath && !dir) return { error: 'bad args' };
+  const d = ctxBackupDirFor(projPath || '', { backupDir: dir });
   try { fs.mkdirSync(d, { recursive: true }); } catch (_) {}
   return { dir: d };
+});
+// Бекап произвольного файла проекта (исходник перед «Распилить») — настройки берём из графа
+ipcMain.handle('ctx:backupFile', (_e, { projId, projPath, name } = {}) => {
+  if (!projId || !projPath || !name || /[\\/]/.test(String(name))) return { error: 'bad args' };
+  const file = path.join(projPath, String(name));
+  if (ctxReadFileSafe(file) == null) return { error: 'файл не найден: ' + name };
+  let settings = {};
+  try { settings = (JSON.parse(fs.readFileSync(ctxGraphFile(projId), 'utf8')).settings) || {}; } catch (_) {}
+  try { const b = ctxBackup(file, settings, projPath); return { ok: true, backup: path.basename(b), dir: path.dirname(b) }; }
+  catch (e) { return { error: String(e.message || e) }; }
+});
+// Смена папки бекапов: все *.bak переезжают в новую папку без потерь, пустая старая удаляется
+ipcMain.handle('ctx:backupMove', (_e, { projPath, from, to } = {}) => {
+  if (!projPath) return { error: 'bad args' };
+  const src = ctxBackupDirFor(projPath, { backupDir: from });
+  const dst = ctxBackupDirFor(projPath, { backupDir: to });
+  if (path.resolve(src) === path.resolve(dst)) return { ok: true, moved: 0, dir: dst };
+  let moved = 0;
+  try {
+    if (fs.existsSync(src)) {
+      fs.mkdirSync(dst, { recursive: true });
+      for (const f of fs.readdirSync(src)) {
+        if (!f.endsWith('.bak')) continue;
+        const a = path.join(src, f), b = path.join(dst, f);
+        try { fs.renameSync(a, b); } catch (_) { fs.copyFileSync(a, b); fs.rmSync(a, { force: true }); } // cross-device
+        moved++;
+      }
+      try { fs.rmdirSync(src); } catch (_) {} // удалится только если опустела — чужие файлы не теряем
+    }
+    return { ok: true, moved, dir: dst };
+  } catch (e) { return { error: String(e.message || e), moved }; }
 });
 
 // ---------------------------------------------------------------- user modules (extensions)
