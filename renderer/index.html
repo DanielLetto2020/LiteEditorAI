@@ -106,6 +106,8 @@
           </div>
         </div>
         </div>
+        <!-- quickbar: полоса быстрого доступа к модулям (Модули → Настройка панели…) -->
+        <div id="quickbar" class="hidden"></div>
       </section>
 
       <!-- system/scratch terminal: own PTY at home dir, not tied to any project -->
@@ -138,13 +140,14 @@
       <section id="ctx-pane" class="hidden">
         <div class="pane-head">
           <span id="ctx-title">Контекст</span>
-          <span id="ctx-stale" class="ctx-stale" title="Граф изменён — собери контекст (▶), подействует на новые сессии" hidden>●</span>
+          <span id="ctx-stale" class="ctx-stale" title="Есть неподтверждённые изменения — нажми «Подтвердить»" hidden>●</span>
           <div class="drag-space-static"></div>
           <button id="ctx-help" class="icon-btn" title="Как это работает?" data-icon="help"></button>
           <button id="ctx-add" class="icon-btn" title="Добавить блок" data-icon="plus"></button>
           <button id="ctx-split" class="icon-btn" data-icon="scissors" hidden></button><!-- показывается по детекту CLAUDE.md/AGENTS.md -->
 
-          <button id="ctx-apply" class="icon-btn" title="Собрать контекст → CLAUDE.local.md / AGENTS.md (с бекапом)" data-icon="play"></button>
+          <button id="ctx-apply" class="icon-btn" title="Подтвердить изменения: сохранить канву и собрать CLAUDE.md / AGENTS.md (с бекапом)" data-icon="check"></button>
+          <button id="ctx-reset" class="icon-btn" title="Сбросить неподтверждённые изменения — вернуть канву к последнему подтверждённому виду" data-icon="refresh" hidden></button>
           <button id="ctx-settings" class="icon-btn" title="Настройки (бекапы, автосборка)" data-icon="sliders"></button>
           <button id="ctx-close" class="icon-btn" title="Закрыть" data-icon="x"></button>
         </div>
@@ -159,8 +162,8 @@
               <div class="hint-title">Здесь собирается контекст для агента</div>
               <div class="hint-text">Слева — блоки с кусками контекста (текст, файл, команда, память агента),<br>
                 в середине — группы-профили с тумблерами, справа — выходы: Claude и Codex.<br>
-                По кнопке ▶ всё включённое склеивается в <b>CLAUDE.local.md</b> / <b>AGENTS.md</b> —<br>
-                файлы, которые агент читает при старте сессии.<br><br>
+                По кнопке «Подтвердить» (✓) всё включённое склеивается в <b>CLAUDE.md</b> / <b>AGENTS.md</b> —<br>
+                файлы, которые агент читает при старте сессии (старый файл бекапится).<br><br>
                 Провод тянется мышкой от правой точки блока к левой точке группы/выхода.<br>
                 Напрямую в выход = постоянный контекст · через группу = включается тумблером.<br>
                 Двойной клик по блоку — редактирование · колесо — зум · Del — удалить.</div>

@@ -36,7 +36,7 @@ import { initNotes } from './modules/notes.js';
 import { initOpenRouter } from './modules/openrouter.js';
 import { initExtensions } from './modules/extensions.js';
 
-const APP_VERSION = 'alpha v1.0.140';
+const APP_VERSION = 'alpha v1.0.141';
 const GUTTER = 5;
 const SCRATCH_ID = '__scratch__'; // префикс id системных терминалов (домашняя папка), не привязаны к проектам
 const isScratch = (id) => typeof id === 'string' && id.startsWith(SCRATCH_ID);
@@ -2011,6 +2011,7 @@ const Ext = initExtensions({
   closeMenus: () => closeMenus(),
   menuRow: (glyph, text, onClick, cls) => menuRow(glyph, text, onClick, cls),
   spawnFolderTerminal: (container, cwd) => createExtTerminal(container, cwd),
+  modsChanged: () => renderQuickbar(), // состав пользовательских модулей изменился → перерисовать квикбар
 });
 registerPanel('ext', { isOpen: Ext.isOpen, setOpen: Ext.setOpen });
 PANEL_ORDER.push('ext');
@@ -2019,6 +2020,96 @@ function openModule(id) {
   const p = panels.get(id);
   if (p) p.setOpen(true);
 }
+
+// ---------------------------------------------------------------- quickbar (панель быстрого доступа)
+// Полоса кнопок-иконок ПОД терминалом (#quickbar в #terminal-pane): клик открывает модуль.
+// Состав и порядок — STORE.quickbar (массив id; пользовательские модули — 'ext:<id>').
+// Настройка — «Модули → Настройка панели…». Пустой список → полоса скрыта целиком.
+const QUICK_BUILTIN = [
+  { id: 'files',   icon: 'eye',      label: 'Вивер — файлы выбранного проекта' },
+  { id: 'git',     icon: 'git',      label: 'Git — выбранного проекта' },
+  { id: 'ctx',     icon: 'graph',    label: 'Контекст — граф контекста агента' },
+  { id: 'docker',  icon: 'box',      label: 'Контейнеры — Docker / Podman' },
+  { id: 'db',      icon: 'database', label: 'Базы данных — Postgres / MySQL / SQLite' },
+  { id: 'rh',      icon: 'globe',    label: 'Удалённые хосты — SSH-сессии' },
+  { id: 'scratch', icon: 'terminal', label: 'Системный терминал (вне проектов)' },
+];
+function quickAllModules() {
+  const all = QUICK_BUILTIN.map((m) => ({ ...m, open: () => openModule(m.id) }));
+  for (const m of Ext.list()) if (m.ok)
+    all.push({ id: 'ext:' + m.id, icon: 'layers', label: m.name, open: () => Ext.quickOpen(m.id) });
+  return all;
+}
+function renderQuickbar() {
+  const bar = $('#quickbar');
+  if (!bar) return;
+  const all = new Map(quickAllModules().map((m) => [m.id, m]));
+  bar.innerHTML = '';
+  let shown = 0;
+  for (const id of (Array.isArray(STORE.quickbar) ? STORE.quickbar : [])) {
+    const m = all.get(id);
+    if (!m) continue; // модуль пропал (удалён пользовательский) — кнопку не рисуем, выбор в сторе не трогаем
+    const b = el('button', 'icon-btn qb-btn');
+    b.title = m.label;
+    b.appendChild(icon(m.icon, 16));
+    b.onclick = m.open;
+    bar.appendChild(b);
+    shown++;
+  }
+  const wasHidden = bar.classList.contains('hidden');
+  bar.classList.toggle('hidden', !shown);
+  if (wasHidden !== !shown) setTimeout(refitActiveTerminal, 60); // высота терминала изменилась
+}
+function showPanelSetup() {
+  const { m, close } = makeModal(`
+    <h2>Настройка панели</h2>
+    <div class="qb-hint">Клик по модулю слева выносит его кнопку на панель под терминалом,
+      клик справа — убирает. Стрелки ▲▼ меняют порядок кнопок.</div>
+    <div class="qb-cols">
+      <div class="qb-col"><div class="qb-col-title">Все модули</div><div class="qb-list" id="qb-all"></div></div>
+      <div class="qb-col"><div class="qb-col-title">На панели</div><div class="qb-list" id="qb-sel"></div></div>
+    </div>
+    <div class="modal-actions"><button class="btn primary" id="qb-ok">Готово</button></div>`);
+  m.style.width = '560px';
+  const allBox = m.querySelector('#qb-all');
+  const selBox = m.querySelector('#qb-sel');
+  const save = (ids) => { persist('quickbar', ids); renderQuickbar(); };
+  const mkItem = (mod, onClick) => {
+    const row = el('div', 'qb-item');
+    const ic = el('span', 'qb-ic'); ic.appendChild(icon(mod.icon, 16));
+    row.appendChild(ic);
+    row.appendChild(el('span', 'qb-name', mod.label));
+    row.onclick = onClick;
+    return row;
+  };
+  const render = () => {
+    const mods = quickAllModules();
+    const byId = new Map(mods.map((x) => [x.id, x]));
+    const sel = (Array.isArray(STORE.quickbar) ? STORE.quickbar : []).filter((id) => byId.has(id));
+    allBox.innerHTML = ''; selBox.innerHTML = '';
+    const free = mods.filter((x) => !sel.includes(x.id));
+    if (!free.length) allBox.appendChild(el('div', 'qb-empty', '— все уже на панели —'));
+    for (const mod of free) allBox.appendChild(mkItem(mod, () => { save([...sel, mod.id]); render(); }));
+    if (!sel.length) selBox.appendChild(el('div', 'qb-empty', '— пусто, панель скрыта —'));
+    sel.forEach((id, i) => {
+      const row = mkItem(byId.get(id), () => { save(sel.filter((x) => x !== id)); render(); });
+      const move = (d) => (e) => {
+        e.stopPropagation();
+        const j = i + d;
+        if (j < 0 || j >= sel.length) return;
+        const ids = sel.slice(); [ids[i], ids[j]] = [ids[j], ids[i]];
+        save(ids); render();
+      };
+      const up = el('button', 'qb-mv', '▲'); up.title = 'Левее на панели'; up.onclick = move(-1); up.disabled = i === 0;
+      const dn = el('button', 'qb-mv', '▼'); dn.title = 'Правее на панели'; dn.onclick = move(1); dn.disabled = i === sel.length - 1;
+      row.appendChild(up); row.appendChild(dn);
+      selBox.appendChild(row);
+    });
+  };
+  render();
+  m.querySelector('#qb-ok').onclick = close;
+}
+renderQuickbar(); // стартовая отрисовка (пользовательские модули доедут через modsChanged после скана)
 
 // ---------------------------------------------------------------- Git module (right pane)
 // Вынесен в renderer/modules/git.js (const Git выше, у реестра панелей).
@@ -2346,6 +2437,8 @@ function buildModulesMenu(dd) {
   dd.appendChild(el('div', 'menu-sep'));
   dd.appendChild(menuRow('terminal', 'Системный терминал (вне проектов)', () => { closeMenus(); openModule('scratch'); }));
   Ext.buildMenuSection(dd); // «Мои модули» + создать/папка/пересканировать
+  dd.appendChild(el('div', 'menu-sep'));
+  dd.appendChild(menuRow('sliders', 'Настройка панели — быстрый доступ под терминалом', () => { closeMenus(); showPanelSetup(); }));
 }
 
 // terminal right-click menu
