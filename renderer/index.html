@@ -140,6 +140,7 @@
           <span id="ctx-title">Контекст</span>
           <span id="ctx-stale" class="ctx-stale" title="Граф изменён — собери контекст (▶), подействует на новые сессии" hidden>●</span>
           <div class="drag-space-static"></div>
+          <button id="ctx-help" class="icon-btn" title="Как это работает?" data-icon="help"></button>
           <button id="ctx-add" class="icon-btn" title="Добавить блок" data-icon="plus"></button>
           <button id="ctx-split" class="icon-btn" data-icon="scissors" hidden></button><!-- показывается по детекту CLAUDE.md/AGENTS.md -->
 
@@ -155,10 +156,16 @@
           </div>
           <div id="ctx-empty" class="ctx-empty" hidden>
             <div class="hint-card">
-              <div class="hint-title">Канва пуста</div>
-              <div class="hint-text">Блоки слева — контекст, группы — переключаемые профили, справа — агенты.<br>
-                Провод напрямую в выход = постоянный контекст, через группу = ситуативный.</div>
+              <div class="hint-title">Здесь собирается контекст для агента</div>
+              <div class="hint-text">Слева — блоки с кусками контекста (текст, файл, команда, память агента),<br>
+                в середине — группы-профили с тумблерами, справа — выходы: Claude и Codex.<br>
+                По кнопке ▶ всё включённое склеивается в <b>CLAUDE.local.md</b> / <b>AGENTS.md</b> —<br>
+                файлы, которые агент читает при старте сессии.<br><br>
+                Провод тянется мышкой от правой точки блока к левой точке группы/выхода.<br>
+                Напрямую в выход = постоянный контекст · через группу = включается тумблером.<br>
+                Двойной клик по блоку — редактирование · колесо — зум · Del — удалить.</div>
               <div class="ctx-empty-actions">
+                <button id="ctx-empty-help" class="btn">? Как это работает</button>
                 <button id="ctx-empty-add" class="btn">+ Блок</button>
                 <span id="ctx-empty-splits"></span><!-- кнопки «✂ распилить …» — по детекту файлов -->
               </div>

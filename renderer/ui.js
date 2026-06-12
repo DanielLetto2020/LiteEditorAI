@@ -68,6 +68,7 @@ export const ICONS = {
   power: '<path d="M12 4v8"/><path d="M7.5 7.5a6.5 6.5 0 1 0 9 0"/>',
   flag: '<path d="M6 21V4.5h11l-2 4 2 4H6"/>',
   graph: '<rect x="3" y="4" width="6" height="5" rx="1.5"/><rect x="3" y="15" width="6" height="5" rx="1.5"/><rect x="15" y="9.5" width="6" height="5" rx="1.5"/><path d="M9 6.5h2.5a1.5 1.5 0 0 1 1.5 1.5v2.5M9 17.5h2.5a1.5 1.5 0 0 0 1.5-1.5v-2.5M13 12h2"/>',
+  help: '<circle cx="12" cy="12" r="8.5"/><path d="M9.5 9.3a2.6 2.6 0 1 1 3.6 2.4c-.85.35-1.1 1-1.1 1.8"/><circle cx="12" cy="16.7" r="1" fill="currentColor" stroke="none"/>',
   scissors: '<circle cx="6" cy="6.5" r="2.4"/><circle cx="6" cy="17.5" r="2.4"/><path d="M8.1 7.9L20 18M8.1 16.1L20 6M13.5 12.4l-1.8 1.6"/>',
 };
 export function icon(name, size = 16) {
