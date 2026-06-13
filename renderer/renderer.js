@@ -36,7 +36,7 @@ import { initNotes } from './modules/notes.js';
 import { initOpenRouter } from './modules/openrouter.js';
 import { initExtensions } from './modules/extensions.js';
 
-const APP_VERSION = 'alpha v1.0.143';
+const APP_VERSION = 'alpha v1.0.144';
 const GUTTER = 5;
 const SCRATCH_ID = '__scratch__'; // префикс id системных терминалов (домашняя папка), не привязаны к проектам
 const isScratch = (id) => typeof id === 'string' && id.startsWith(SCRATCH_ID);
@@ -63,7 +63,7 @@ function persist(key, value) { STORE[key] = value; lite.store.set(key, value); }
 function projId(p) { let h = 5381; for (let i = 0; i < p.length; i++) h = ((h << 5) + h + p.charCodeAt(i)) >>> 0; return 'p' + h.toString(36); }
 
 // ---------------------------------------------------------------- settings (tiny on purpose)
-const DEFAULT_SETTINGS = { notifications: true, sound: false, idleMs: 1200, fontSize: 13, workingDir: '', scanDirs: [], theme: 'neumorphism', onboarded: false, shell: '', minimap: true, notesSort: 'manual' };
+const DEFAULT_SETTINGS = { notifications: true, sound: false, idleMs: 1200, fontSize: 13, workingDir: '', scanDirs: [], theme: 'neumorphism', onboarded: false, shell: '', minimap: true, notesTab: 'project' };
 function loadSettings() { return { ...DEFAULT_SETTINGS, ...(STORE.settings || {}) }; }
 let settings = loadSettings();
 function saveSettings() { persist('settings', settings); }
@@ -88,7 +88,7 @@ const Or = initOpenRouter({
   isViewerOpen: () => viewerOpen, getActiveOrId: () => activeOrId,
   setActiveOrId: (v) => { activeOrId = v; }, clearActiveDoc: () => { activeDocId = null; },
   // чат закрывает проектные модули правого слота; rh исторически не трогает (1:1)
-  closePanelsForChat: () => { if (Git.isOpen()) Git.setOpen(false); if (Containers.isOpen()) Containers.setOpen(false); if (Db.isOpen()) Db.setOpen(false); if (scratchOpen) setScratchOpen(false); },
+  closePanelsForChat: () => { if (Git.isOpen()) Git.setOpen(false); if (Containers.isOpen()) Containers.setOpen(false); if (Db.isOpen()) Db.setOpen(false); if (Notes.isOpen()) Notes.setOpen(false); if (scratchOpen) setScratchOpen(false); },
 });
 // ---------------------------------------------------------------- Text processing (изолированный модуль)
 // Документ-плашка открывается ВМЕСТО терминала (как чат OpenRouter). Вся логика — в
@@ -104,115 +104,6 @@ const TextProc = initTextProc({
   refresh: () => renderProjects(),
 });
 
-// ---------------------------------------------------------------- notes auto-queue
-// Per-project queue that fires notes one-by-one: dispatch a note (text + Enter, so it
-// actually submits — unlike the manual «В терминал»), then wait for the agent to finish
-// its turn. The advance trigger is busy→waiting (янтарный): the agent is alive and back
-// to waiting on your input. Runtime-only — survives the modal closing, not an app restart.
-const queues = new Map(); // id -> { id, items:[{noteId,text}], running, pos, awaitingBusy, armed, onChange }
-function getQueue(id) {
-  let q = queues.get(id);
-  if (!q) { q = { id, items: [], running: false, pos: -1, awaitingBusy: false, armed: false, onChange: null }; queues.set(id, q); }
-  return q;
-}
-function queueBadgeText(q) {
-  if (!q || !q.items.length) return '';
-  if (!q.running) return `☰ ${q.items.length}`;
-  return q.armed ? '▶ ждёт' : `▶ ${Math.min(q.pos + 1, q.items.length)}/${q.items.length}`;
-}
-function updateQueueBadge(id) {
-  const q = queues.get(id);
-  const txt = queueBadgeText(q);
-  document.querySelectorAll(`.card-qbadge[data-id="${id}"]`).forEach((b) => {
-    b.textContent = txt;
-    b.classList.toggle('show', !!txt);
-    b.classList.toggle('running', !!(q && q.running));
-    b.classList.toggle('armed', !!(q && q.armed));
-  });
-}
-// Notify any open modal + refresh the card badge after a queue state change.
-function queueChanged(q) { try { q.onChange && q.onChange(); } catch (_) {} updateQueueBadge(q.id); }
-
-function queueDispatchNext(id) {
-  const q = queues.get(id);
-  if (!q || !q.running) return;
-  q.armed = false;
-  q.pos += 1;
-  if (q.pos >= q.items.length) { // reached the end → done
-    q.running = false; q.pos = q.items.length; q.awaitingBusy = false;
-    queueChanged(q);
-    const p = projects.find((x) => x.id === id);
-    toast(`✓ Очередь выполнена${p ? ' — ' + p.name : ''}`);
-    return;
-  }
-  const proj = projects.find((x) => x.id === id);
-  if (!proj) { q.running = false; queueChanged(q); return; }
-  ensureProjectTabs(proj);
-  const sid = (tabsByProj.get(id) || {}).active;
-  q.sessionId = sid; // remember which tab the queue drives, so only its activity advances it
-  lite.pty.write(sid, (q.items[q.pos].text || '') + '\r'); // '\r' = Enter → submits the prompt
-  q.awaitingBusy = true; // ignore «waiting» until the agent actually starts working on this note
-  queueChanged(q);
-}
-function queueStart(id) {
-  const q = getQueue(id);
-  if (!q.items.length) return;
-  const proj = projects.find((x) => x.id === id);
-  if (!proj) return;
-  ensureProjectTabs(proj);
-  setActive(id); // bring this project's terminal to the front when the run begins
-  q.running = true; q.pos = -1; q.awaitingBusy = false; q.armed = false;
-  queueDispatchNext(id); // first note goes immediately; the rest wait for «▶ Дальше»
-}
-function queueStop(id) {
-  const q = queues.get(id);
-  if (!q) return;
-  q.running = false; q.awaitingBusy = false; q.armed = false;
-  queueChanged(q);
-}
-// User-confirmed advance (semi-auto): «▶ Дальше» button, the armed notification's
-// click, or the Ctrl+Shift+Enter hotkey all route here.
-function queueAdvance(id) {
-  const q = queues.get(id);
-  if (!q || !q.running) return;
-  queueDispatchNext(id);
-}
-// Called from settleProject. Amber (waiting) is ambiguous — the agent could be done OR
-// asking a question / awaiting a permission. We can't tell from process state, so we DON'T
-// auto-send: we «arm» the queue (surface «▶ Дальше» + a notification) and let the user decide.
-function queueOnSettled(id, state) {
-  const q = queues.get(id);
-  if (!q || !q.running || q.awaitingBusy || q.armed) return;
-  if (state !== 'waiting') return;
-  // Complete when the last note's turn ended — OR when the queue was emptied mid-run.
-  // The length check is essential: without it an empty q.items makes the comparison
-  // `q.pos >= -1` (always true), so the queue would "complete" having sent nothing.
-  if (!q.items.length || q.pos >= q.items.length - 1) {
-    q.running = false; q.pos = q.items.length; q.armed = false;
-    queueChanged(q);
-    const p = projects.find((x) => x.id === id);
-    toast(`✓ Очередь выполнена${p ? ' — ' + p.name : ''}`);
-    return;
-  }
-  q.armed = true;
-  queueChanged(q);
-  queueNotifyArmed(id);
-}
-let lastQueueNotifyAt = 0;
-function queueNotifyArmed(id) {
-  const q = queues.get(id);
-  const p = projects.find((x) => x.id === id);
-  if (!q || !p) return;
-  const next = Math.min(q.pos + 2, q.items.length); // 1-based number of the note «▶ Дальше» will send
-  toast(`▶ ${p.name}: агент ждёт. Открой «Очередь» и нажми «Дальше» — заметка ${next}/${q.items.length}.`);
-  if (!settings.notifications || Date.now() - lastQueueNotifyAt < 1200) return;
-  if (id === activeId && document.hasFocus()) return; // foreground: toast + armed button is enough
-  lastQueueNotifyAt = Date.now();
-  try {
-    const n = new Notification(`▶ ${p.name} — очередь ждёт`, { body: `Готов отправить заметку ${next} из ${q.items.length}. Клик — отправить.`, silent: !settings.sound, tag: 'lite-q-' + id });
-    n.onclick = () => { lite.win.show(); setActive(id); queueAdvance(id); };
-  } catch (_) {}
-}
 let viewerOpen = false;
 let scratchOpen = false;     // системный терминал справа открыт
 const scratchTerms = new Map(); // scratchId -> { term, fit, search, container, name }
@@ -234,7 +125,7 @@ let editor = null;
 let loadingDoc = false;
 const langComp = new Compartment();
 
-const DEFAULT_LAYOUT = { sidebar: 240, viewer: 520, tree: 240, scratch: 420, git: 360, ctx: 740, docker: 460, db: 560, rh: 520, ext: 420 };
+const DEFAULT_LAYOUT = { sidebar: 240, viewer: 520, tree: 240, scratch: 420, git: 360, ctx: 740, docker: 460, db: 560, rh: 520, ext: 420, notes: 480 };
 let layout = loadLayout();
 let lastParent = STORE.lastParent || '';
 
@@ -280,7 +171,7 @@ function loadLayout() { return { ...DEFAULT_LAYOUT, ...(STORE.layout || {}) }; }
 function saveLayout() { persist('layout', layout); }
 // Whether the viewer / system terminal panes are open — part of the backed-up state,
 // restored on startup (and on import) so the window reopens the way it was left.
-function saveUiState() { persist('uiState', { viewerOpen, scratchOpen, gitOpen: Git.isOpen(), ctxOpen: Ctx.isOpen(), dockerOpen: Containers.isOpen(), dbOpen: Db.isOpen(), rhOpen: Rh.isOpen() }); }
+function saveUiState() { persist('uiState', { viewerOpen, scratchOpen, gitOpen: Git.isOpen(), ctxOpen: Ctx.isOpen(), dockerOpen: Containers.isOpen(), dbOpen: Db.isOpen(), rhOpen: Rh.isOpen(), notesOpen: Notes.isOpen() }); }
 function applyLayout() {
   $('#sidebar').style.flexBasis = layout.sidebar + 'px';
   $('#viewer-pane').style.flexBasis = layout.viewer + 'px';
@@ -292,6 +183,7 @@ function applyLayout() {
   $('#db-pane').style.flexBasis = layout.db + 'px';
   $('#rh-pane').style.flexBasis = layout.rh + 'px';
   $('#ext-pane').style.flexBasis = layout.ext + 'px';
+  $('#notes-pane').style.flexBasis = layout.notes + 'px';
 }
 function loadRecents() { return Array.isArray(STORE.recents) ? STORE.recents : []; }
 function pushRecent(p) {
@@ -418,40 +310,13 @@ function makeCard(p) {
   title.title = p.path;
   const star = iconBtn('card-star' + (p.favorite ? ' on' : ''), 'star', p.favorite ? 'Убрать из избранного' : 'В избранное', 15);
   star.addEventListener('click', (e) => { e.stopPropagation(); toggleFavorite(p.id); });
-  // module toggles (бывший футер) — компактные иконки сразу после «избранного», чтобы карточка была ниже
-  const openViewer = iconBtn('card-act' + (p.id === activeId && viewerOpen ? ' on' : ''), 'eye', 'Открыть/закрыть вивер', 15);
-  openViewer.addEventListener('click', (e) => {
-    e.stopPropagation();
-    if (activeId === p.id && viewerOpen) setViewerOpen(false);
-    else { setActive(p.id); setViewerOpen(true); }
-  });
-  const notesBtn = iconBtn('card-act', 'note', 'Заметки', 15);
-  const nc = Notes.count(p.id);
-  if (nc) notesBtn.appendChild(el('span', 'act-badge', String(nc)));
-  notesBtn.addEventListener('click', (e) => { e.stopPropagation(); Notes.show(p); });
-  const gitBtn = iconBtn('card-act' + (p.id === activeId && Git.isOpen() ? ' on' : ''), 'git', 'Git — ветки, изменения, коммиты', 15);
-  gitBtn.addEventListener('click', (e) => {
-    e.stopPropagation();
-    if (activeId === p.id && Git.isOpen()) Git.setOpen(false);
-    else openGitForProject(p.id);
-  });
+  // Вивер/Git/задачи и пр. модули — в квикбаре под терминалом; на карточке только ★ и ⋮ (всегда видимы).
   const kebab = iconBtn('card-kebab', 'dots-v', 'Меню проекта', 18);
   kebab.addEventListener('click', (e) => { e.stopPropagation(); showCardMenu(e.clientX, e.clientY, p); });
-  // авто-очередь заметок: бейдж в той же строке (виден только когда в очереди что-то есть)
-  const qb = queues.get(p.id);
-  const qtxt = queueBadgeText(qb);
-  const qbadge = el('button', 'card-qbadge' + (qtxt ? ' show' : '') + (qb && qb.running ? ' running' : ''), qtxt);
-  qbadge.dataset.id = p.id;
-  qbadge.title = 'Авто-очередь заметок';
-  qbadge.addEventListener('click', (e) => { e.stopPropagation(); Notes.show(p); });
   const acts = el('div', 'card-acts');
-  acts.append(qbadge, star, openViewer, notesBtn, gitBtn, kebab);
-  // в покое — свёрнутая стрелка; по наведению на карточку кнопки выезжают, стрелка прячется
-  const reveal = el('span', 'card-reveal');
-  reveal.appendChild(icon('chevron-left', 15));
-  reveal.title = 'Действия проекта';
+  acts.append(star, kebab);
   const tail = el('div', 'card-tail');
-  tail.append(reveal, acts);
+  tail.append(acts);
   head.append(ind, title, tail);
   card.appendChild(head);
 
@@ -738,8 +603,6 @@ function showCardMenu(x, y, p) {
 function buildCardMenuMain(dd, p) {
   dd.innerHTML = '';
   dd.appendChild(menuRow('folder', 'Открыть в проводнике', () => { closeMenus(); lite.openInFileManager(p.path); }));
-  dd.appendChild(menuRow('git', 'Git', () => { closeMenus(); openGitForProject(p.id); }));
-  dd.appendChild(menuRow('note', 'Заметки', () => { closeMenus(); Notes.show(p); }));
   dd.appendChild(menuRow('copy', 'Копировать путь', () => { closeMenus(); lite.copyText(p.path); toast('Путь скопирован'); }));
   dd.appendChild(menuRow('star', p.favorite ? 'Убрать из избранного' : 'В избранное', () => { closeMenus(); toggleFavorite(p.id); }));
   dd.appendChild(el('div', 'menu-sep'));
@@ -903,8 +766,9 @@ function applyLayoutSwap(ta) {
 // ---------------------------------------------------------------- notes / prompt cards (#4)
 // Вынесены в renderer/modules/notes.js (const Notes ниже); здесь — только sendNoteToTerminal.
 const Notes = initNotes({
-  STORE, settings, saveSettings, renderProjects, applyLayoutSwap,
-  getQueue, queueChanged, queueStart, queueStop, queueAdvance, sendNoteToTerminal,
+  STORE, settings, saveSettings, applyLayoutSwap, sendNoteToTerminal,
+  layout, GUTTER, saveUiState, refitActiveTerminal, activeProject, closeOtherPanels,
+  getProjects: () => projects.map((p) => ({ id: p.id, name: p.name, path: p.path })),
 });
 function sendNoteToTerminal(p, text) {
   if (!text) return;
@@ -1036,7 +900,6 @@ function markActivity(id, data) {
   rec.tail = stripAnsi((rec.tail || '') + (data || '')).slice(-400);
   rec.activitySeq = (rec.activitySeq || 0) + 1; // lets a pending settle detect that new output arrived
   if (projState.get(id) !== 'busy') { rec.busyStart = Date.now(); setProjState(id, 'busy'); }
-  const q = queues.get(rec.projId); if (q && q.running && q.sessionId === id) q.awaitingBusy = false; // dispatched note now running
   clearTimeout(rec.idleTimer);
   rec.idleTimer = setTimeout(() => settleProject(id), settings.idleMs);
 }
@@ -1064,11 +927,8 @@ async function settleProject(id) {
   rec.sawBell = false;
   setProjState(id, waiting ? 'waiting' : 'quiet');
   const pid = rec.projId;
-  const q = queues.get(pid);
-  const qTargets = !!(q && q.running && q.sessionId === id); // this session is the queue's target tab
-  if (qTargets) queueOnSettled(pid, waiting ? 'waiting' : 'quiet');
-  // a running queue posts its own «Дальше» notification; notify per project on a non-visible tab
-  if (!qTargets && worked && (id !== activeSessionId() || !document.hasFocus())) notifyAgent(pid, waiting ? 'waiting' : 'quiet');
+  // notify per project when its turn ended on a non-visible tab (or app unfocused)
+  if (worked && (id !== activeSessionId() || !document.hasFocus())) notifyAgent(pid, waiting ? 'waiting' : 'quiet');
 }
 
 let lastNotifyAt = 0;
@@ -1217,10 +1077,6 @@ function createSession(proj, name) {
     if (e.ctrlKey && !e.altKey && e.code === 'KeyF') { openTermSearch(); return false; }
     // Ctrl+Enter — перенос строки в вводе (продолжение команды), а не выполнение: \ + CR для bash/zsh, LF для ConPTY/PSReadLine (Win)
     if (e.ctrlKey && !e.shiftKey && !e.altKey && e.key === 'Enter') { lite.pty.write(id, lite.platform === 'win32' ? '\n' : '\\\r'); return false; }
-    if (e.ctrlKey && e.shiftKey && e.key === 'Enter') {
-      const q = queues.get(proj.id);
-      if (q && q.running) { queueAdvance(proj.id); return false; }
-    }
     return true;
   });
   container.addEventListener('contextmenu', (e) => { e.preventDefault(); showTermMenu(e.clientX, e.clientY, term, id); });
@@ -1666,6 +1522,7 @@ function doSetActive(id) {
   applyFontSize();
   if (viewerOpen) refreshViewerForActive();
   if (Git.isOpen()) Git.renderPanel(proj); // Git module follows the active project
+  if (Notes.isOpen()) Notes.renderPanel(proj); // панель задач следует за активным проектом
   try { Ctx.onProjectChange(proj); } catch (_) {} // канва «Контекста» следует за активным проектом
   try { Ext.notifyActiveProject(activeId); } catch (_) {} // пользовательские модули: ctx.projects.onChange
 }
@@ -1965,7 +1822,7 @@ function setViewerOpen(open, opts = {}) {
 // Реестр панелей: каждая setXxxOpen знает только себя, взаимоисключение — closeOtherPanels.
 // Порядок закрытия фиксирован (он же — порядок старых inline-цепочек во всех setXxxOpen).
 const panels = new Map(); // id -> { isOpen(), setOpen(open, opts) }
-const PANEL_ORDER = ['files', 'git', 'ctx', 'docker', 'db', 'scratch', 'rh'];
+const PANEL_ORDER = ['files', 'git', 'ctx', 'docker', 'db', 'scratch', 'rh', 'notes'];
 function registerPanel(id, api) { panels.set(id, api); }
 function closeOtherPanels(selfId) {
   for (const id of PANEL_ORDER) {
@@ -2001,6 +1858,8 @@ const Rh = initRh({
   closeOtherPanels, termTheme, applyUnicode11, loadFastRenderer, copySelection,
 });
 registerPanel('rh', { isOpen: Rh.isOpen, setOpen: Rh.setOpen });
+// Задачи/заметки — панель правого слота (renderer/modules/notes.js); следует за активным проектом.
+registerPanel('notes', { isOpen: Notes.isOpen, setOpen: Notes.setOpen });
 // Пользовательские модули (extensions): загрузчик + общая панель правого слота.
 // renderer/modules/extensions.js; публичный API ctx v1 — спека в module-kit/GUIDE.md.
 const Ext = initExtensions({
@@ -2010,6 +1869,7 @@ const Ext = initExtensions({
   getTheme: () => (THEMES[settings.theme] ? settings.theme : DEFAULT_THEME),
   closeMenus: () => closeMenus(),
   menuRow: (glyph, text, onClick, cls) => menuRow(glyph, text, onClick, cls),
+  moduleRow: (glyph, title, desc, onClick) => moduleRow(glyph, title, desc, onClick),
   spawnFolderTerminal: (container, cwd) => createExtTerminal(container, cwd),
   modsChanged: () => renderQuickbar(), // состав пользовательских модулей изменился → перерисовать квикбар
 });
@@ -2025,6 +1885,8 @@ function openModule(id) {
 // Полоса кнопок-иконок ПОД терминалом (#quickbar в #terminal-pane): клик открывает модуль.
 // Состав и порядок — STORE.quickbar (массив id; пользовательские модули — 'ext:<id>').
 // Настройка — «Модули → Настройка панели…». Пустой список → полоса скрыта целиком.
+// Спец-элемент '|' — вертикальный разделитель (можно ставить сколько угодно, в любое место).
+const QUICK_SEP = '|';
 const QUICK_BUILTIN = [
   { id: 'files',   icon: 'eye',      label: 'Вивер — файлы выбранного проекта' },
   { id: 'git',     icon: 'git',      label: 'Git — выбранного проекта' },
@@ -2032,6 +1894,7 @@ const QUICK_BUILTIN = [
   { id: 'docker',  icon: 'box',      label: 'Контейнеры — Docker / Podman' },
   { id: 'db',      icon: 'database', label: 'Базы данных — Postgres / MySQL / SQLite' },
   { id: 'rh',      icon: 'globe',    label: 'Удалённые хосты — SSH-сессии' },
+  { id: 'notes',   icon: 'note',     label: 'Задачи — заметки проекта' },
   { id: 'scratch', icon: 'terminal', label: 'Системный терминал (вне проектов)' },
 ];
 function quickAllModules() {
@@ -2047,6 +1910,7 @@ function renderQuickbar() {
   bar.innerHTML = '';
   let shown = 0;
   for (const id of (Array.isArray(STORE.quickbar) ? STORE.quickbar : [])) {
+    if (id === QUICK_SEP) { bar.appendChild(el('span', 'qb-sep')); continue; } // вертикальный разделитель
     const m = all.get(id);
     if (!m) continue; // модуль пропал (удалён пользовательский) — кнопку не рисуем, выбор в сторе не трогаем
     const b = el('button', 'icon-btn qb-btn');
@@ -2057,14 +1921,15 @@ function renderQuickbar() {
     shown++;
   }
   const wasHidden = bar.classList.contains('hidden');
-  bar.classList.toggle('hidden', !shown);
+  bar.classList.toggle('hidden', !shown); // только разделители (без кнопок) панель не показывают
   if (wasHidden !== !shown) setTimeout(refitActiveTerminal, 60); // высота терминала изменилась
 }
 function showPanelSetup() {
   const { m, close } = makeModal(`
     <h2>Настройка панели</h2>
     <div class="qb-hint">Клик по модулю слева выносит его кнопку на панель под терминалом,
-      клик справа — убирает. Стрелки ▲▼ меняют порядок кнопок.</div>
+      клик справа — убирает. «Разделитель │» можно добавлять сколько угодно и ставить в любое место.
+      Стрелки ▲▼ меняют порядок.</div>
     <div class="qb-cols">
       <div class="qb-col"><div class="qb-col-title">Все модули</div><div class="qb-list" id="qb-all"></div></div>
       <div class="qb-col"><div class="qb-col-title">На панели</div><div class="qb-list" id="qb-sel"></div></div>
@@ -2074,9 +1939,11 @@ function showPanelSetup() {
   const allBox = m.querySelector('#qb-all');
   const selBox = m.querySelector('#qb-sel');
   const save = (ids) => { persist('quickbar', ids); renderQuickbar(); };
+  const SEP_MOD = { id: QUICK_SEP, label: 'Разделитель' };
   const mkItem = (mod, onClick) => {
-    const row = el('div', 'qb-item');
-    const ic = el('span', 'qb-ic'); ic.appendChild(icon(mod.icon, 16));
+    const row = el('div', 'qb-item' + (mod.id === QUICK_SEP ? ' qb-item-sep' : ''));
+    const ic = el('span', 'qb-ic');
+    if (mod.id === QUICK_SEP) ic.textContent = '│'; else ic.appendChild(icon(mod.icon, 16));
     row.appendChild(ic);
     row.appendChild(el('span', 'qb-name', mod.label));
     row.onclick = onClick;
@@ -2085,14 +1952,18 @@ function showPanelSetup() {
   const render = () => {
     const mods = quickAllModules();
     const byId = new Map(mods.map((x) => [x.id, x]));
-    const sel = (Array.isArray(STORE.quickbar) ? STORE.quickbar : []).filter((id) => byId.has(id));
+    // в выбранном держим и разделители ('|'), и существующие модули (пропавшие — отсеиваем)
+    const sel = (Array.isArray(STORE.quickbar) ? STORE.quickbar : []).filter((id) => id === QUICK_SEP || byId.has(id));
     allBox.innerHTML = ''; selBox.innerHTML = '';
     const free = mods.filter((x) => !sel.includes(x.id));
-    if (!free.length) allBox.appendChild(el('div', 'qb-empty', '— все уже на панели —'));
     for (const mod of free) allBox.appendChild(mkItem(mod, () => { save([...sel, mod.id]); render(); }));
+    // разделитель всегда доступен — добавляем в конец (потом двигаем стрелками куда нужно)
+    allBox.appendChild(mkItem(SEP_MOD, () => { save([...sel, QUICK_SEP]); render(); }));
     if (!sel.length) selBox.appendChild(el('div', 'qb-empty', '— пусто, панель скрыта —'));
+    // операции по ИНДЕКСУ (разделителей может быть несколько — удалять/двигать по значению нельзя)
     sel.forEach((id, i) => {
-      const row = mkItem(byId.get(id), () => { save(sel.filter((x) => x !== id)); render(); });
+      const mod = id === QUICK_SEP ? SEP_MOD : byId.get(id);
+      const row = mkItem(mod, () => { const ids = sel.slice(); ids.splice(i, 1); save(ids); render(); });
       const move = (d) => (e) => {
         e.stopPropagation();
         const j = i + d;
@@ -2113,11 +1984,6 @@ renderQuickbar(); // стартовая отрисовка (пользовате
 
 // ---------------------------------------------------------------- Git module (right pane)
 // Вынесен в renderer/modules/git.js (const Git выше, у реестра панелей).
-// Open Git for a specific project: guard unsaved viewer edits, switch project FIRST, then
-// open — so Git.setOpen never runs against the old activeId while a save-prompt is up.
-function openGitForProject(id) {
-  guardDirty(() => { if (id !== activeId || activeOrId !== null) doSetActive(id); Git.setOpen(true); });
-}
 
 // ================================================================ Containers module (docker/podman)
 // Вынесен в renderer/modules/containers.js (const Containers — у реестра панелей).
@@ -2359,6 +2225,19 @@ function menuRow(glyph, text, onClick, cls) {
   if (onClick) row.addEventListener('click', onClick);
   return row;
 }
+// Двухстрочный пункт: название (1-я строка) + описание (2-я строка, мельче и приглушённо).
+function moduleRow(glyph, title, desc, onClick) {
+  const row = el('div', 'menu-row menu-row2');
+  const ic = el('span', 'menu-ic');
+  if (glyph && ICONS[glyph]) ic.appendChild(icon(glyph, 16));
+  else if (glyph) ic.textContent = glyph;
+  const txt = el('div', 'mr2-text');
+  txt.appendChild(el('span', 'mr2-title', title));
+  if (desc) txt.appendChild(el('span', 'mr2-desc', desc));
+  row.append(ic, txt);
+  if (onClick) row.addEventListener('click', onClick);
+  return row;
+}
 // Back up the whole editor state to one JSON file, then offer to open its folder.
 async function exportSettings() {
   closeMenus();
@@ -2426,19 +2305,57 @@ function buildSettingsMenu(dd) {
   dd.appendChild(menuRow('globe', 'Пульт (Android)', () => { closeMenus(); showRemote(); }));
 }
 // «Модули» — функциональные панели справа от терминала (терминалы и OpenRouter-чат — НЕ модули).
+// Группировка: «Встроенные» и «Мои модули» — flyout-подменю (раскрываются вправо по наведению),
+// «Настройка панели» — отдельный пункт. Так верхнее меню остаётся коротким и растёт вглубь.
 function buildModulesMenu(dd) {
-  dd.appendChild(el('div', 'menu-label', 'Встроенные'));
-  dd.appendChild(menuRow('eye', 'Вивер — файлы выбранного проекта', () => { closeMenus(); openModule('files'); }));
-  dd.appendChild(menuRow('git', 'Git — выбранного проекта', () => { closeMenus(); openModule('git'); }));
-  dd.appendChild(menuRow('graph', 'Контекст — граф контекста агента', () => { closeMenus(); openModule('ctx'); }));
-  dd.appendChild(menuRow('box', 'Контейнеры — Docker / Podman', () => { closeMenus(); openModule('docker'); }));
-  dd.appendChild(menuRow('database', 'Базы данных — Postgres / MySQL / SQLite', () => { closeMenus(); openModule('db'); }));
-  dd.appendChild(menuRow('globe', 'Удалённые хосты — SSH-сессии к серверам', () => { closeMenus(); openModule('rh'); }));
+  let openSub = null, openParent = null, closeT = null;
+  const closeSub = () => {
+    if (openSub) { openSub.remove(); openSub = null; }
+    if (openParent) { openParent.classList.remove('sub-open'); openParent = null; }
+  };
+  const schedClose = () => { clearTimeout(closeT); closeT = setTimeout(closeSub, 240); };
+  // Пункт-флайаут: двухстрочный заголовок + стрелка; подменю строится `build(sub)` по наведению.
+  const flyout = (glyph, title, desc, build) => {
+    const row = moduleRow(glyph, title, desc, null);
+    row.classList.add('menu-flyout');
+    const arr = el('span', 'menu-arrow'); arr.appendChild(icon('chevron-right', 15)); row.appendChild(arr);
+    const open = () => {
+      clearTimeout(closeT);
+      if (openParent === row) return;
+      closeSub();
+      const sub = el('div', 'menu-dropdown menu-sub');
+      build(sub);
+      sub.addEventListener('click', (e) => e.stopPropagation());
+      sub.addEventListener('mouseenter', () => clearTimeout(closeT));
+      sub.addEventListener('mouseleave', schedClose);
+      $('#menu-layer').appendChild(sub);
+      const rr = row.getBoundingClientRect();
+      sub.style.top = rr.top + 'px';
+      sub.style.left = (rr.right - 4) + 'px';
+      const sr = sub.getBoundingClientRect();
+      if (sr.right > window.innerWidth - 8) sub.style.left = Math.max(8, rr.left - sr.width + 4) + 'px'; // не влезло вправо → влево
+      if (sr.bottom > window.innerHeight - 8) sub.style.top = Math.max(8, window.innerHeight - 8 - sr.height) + 'px';
+      openSub = sub; openParent = row; row.classList.add('sub-open');
+    };
+    row.addEventListener('mouseenter', open);
+    row.addEventListener('mouseleave', schedClose);
+    dd.appendChild(row);
+  };
+
+  flyout('grid', 'Встроенные', 'панели редактора', (sub) => {
+    sub.appendChild(moduleRow('eye', 'Вивер', 'файлы выбранного проекта', () => { closeMenus(); openModule('files'); }));
+    sub.appendChild(moduleRow('git', 'Git', 'ветки, изменения, коммиты', () => { closeMenus(); openModule('git'); }));
+    sub.appendChild(moduleRow('graph', 'Контекст', 'граф контекста агента', () => { closeMenus(); openModule('ctx'); }));
+    sub.appendChild(moduleRow('box', 'Контейнеры', 'Docker / Podman', () => { closeMenus(); openModule('docker'); }));
+    sub.appendChild(moduleRow('database', 'Базы данных', 'Postgres · MySQL · SQLite', () => { closeMenus(); openModule('db'); }));
+    sub.appendChild(moduleRow('globe', 'Удалённые хосты', 'SSH-сессии к серверам', () => { closeMenus(); openModule('rh'); }));
+    sub.appendChild(moduleRow('note', 'Задачи', 'заметки проекта и общие', () => { closeMenus(); openModule('notes'); }));
+    sub.appendChild(el('div', 'menu-sep'));
+    sub.appendChild(moduleRow('terminal', 'Системный терминал', 'вне проектов', () => { closeMenus(); openModule('scratch'); }));
+  });
+  flyout('layers', 'Мои модули', 'пользовательские плагины', (sub) => Ext.buildMenuSection(sub, { bare: true }));
   dd.appendChild(el('div', 'menu-sep'));
-  dd.appendChild(menuRow('terminal', 'Системный терминал (вне проектов)', () => { closeMenus(); openModule('scratch'); }));
-  Ext.buildMenuSection(dd); // «Мои модули» + создать/папка/пересканировать
-  dd.appendChild(el('div', 'menu-sep'));
-  dd.appendChild(menuRow('sliders', 'Настройка панели — быстрый доступ под терминалом', () => { closeMenus(); showPanelSetup(); }));
+  dd.appendChild(moduleRow('sliders', 'Настройка панели', 'быстрый доступ под терминалом', () => { closeMenus(); showPanelSetup(); }));
 }
 
 // terminal right-click menu
@@ -2725,6 +2642,7 @@ function paletteActions() {
   if (Ctx.isOpen()) acts.push({ label: 'Контекст: подтвердить (✓ собрать CLAUDE.md / AGENTS.md)', run: () => Ctx.applyCompile() });
   acts.push({ label: Containers.isOpen() ? 'Закрыть контейнеры' : 'Контейнеры (Docker / Podman)', run: Containers.toggle });
   acts.push({ label: Db.isOpen() ? 'Закрыть базы данных' : 'Базы данных (Postgres / MySQL / SQLite)', run: Db.toggle });
+  acts.push({ label: Notes.isOpen() ? 'Закрыть задачи' : 'Задачи — заметки проекта', run: Notes.toggle });
   acts.push({ label: 'Режим «один терминал»', run: toggleSingle });
   acts.push({ label: 'Поиск в терминале', run: openTermSearch });
   acts.push({ label: 'Очистить терминал', run: () => clearTerminal() });
@@ -2935,6 +2853,9 @@ function init() {
   $('#viewer-close').addEventListener('click', () => setViewerOpen(false));
   $('#git-close').addEventListener('click', () => Git.setOpen(false));
   $('#git-refresh').addEventListener('click', () => { if (Git.isOpen()) Git.renderPanel(activeProject()); });
+  $('#notes-close').addEventListener('click', () => Notes.setOpen(false));
+  $('#notes-export').addEventListener('click', () => Notes.exportMenu());
+  $('#notes-import').addEventListener('click', () => Notes.importNotes());
   $('#docker-close').addEventListener('click', () => Containers.setOpen(false));
   $('#docker-refresh').addEventListener('click', () => Containers.refresh());
   $('#db-close').addEventListener('click', () => Db.setOpen(false));
@@ -3010,10 +2931,10 @@ function init() {
   // Right-slot modules are mutually exclusive — restore at most one, first-true-wins
   // (приоритет — порядок старых if-цепочек: viewer, scratch, git, docker, db, rh).
   // allowEmpty so Git returns even before a project is active — matching the viewer, so window width fits.
-  const RESTORE_ORDER = [['files', 'viewerOpen'], ['scratch', 'scratchOpen'], ['git', 'gitOpen'], ['ctx', 'ctxOpen'], ['docker', 'dockerOpen'], ['db', 'dbOpen'], ['rh', 'rhOpen']];
+  const RESTORE_ORDER = [['files', 'viewerOpen'], ['scratch', 'scratchOpen'], ['git', 'gitOpen'], ['ctx', 'ctxOpen'], ['docker', 'dockerOpen'], ['db', 'dbOpen'], ['rh', 'rhOpen'], ['notes', 'notesOpen']];
   for (const [id, key] of RESTORE_ORDER) {
     if (!ui[key]) continue;
-    panels.get(id).setOpen(true, (id === 'git' || id === 'ctx') ? { grow: false, allowEmpty: true } : { grow: false });
+    panels.get(id).setOpen(true, (id === 'git' || id === 'ctx' || id === 'notes') ? { grow: false, allowEmpty: true } : { grow: false });
     break;
   }
 

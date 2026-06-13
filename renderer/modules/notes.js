@@ -1,270 +1,397 @@
-// LiteEditor — модуль «Задачи/заметки» (TODO-модалка карточки проекта + бейдж количества).
-// Изолирован по образцу textproc.js: всё из ядра — через host, UI-хелперы — из ui.js.
-// Очередь-движок (queues) живёт в ядре — он сцеплен с PTY/индикатором; модулю отдан её API.
-// host: { STORE, settings, saveSettings, renderProjects, applyLayoutSwap,
-//         getQueue, queueChanged, queueStart, queueStop, queueAdvance, sendNoteToTerminal }
-import { el, icon, iconBtn, makeModal, showConfirm } from '../ui.js';
+// LiteEditor — модуль «Задачи»: панель правого слота с двумя вкладками.
+//   • «Проект» — задачи активного проекта (notes/<projId>.json), следует за активным проектом, как Git;
+//   • «Общие» — задачи вне проектов (notes/__global__.json).
+// Последняя выбранная вкладка запоминается в settings.notesTab (переживает перезапуск).
+// Изолирован по образцу git.js: всё из ядра — через host, UI-хелперы — из ui.js.
+// Модель задачи: { id, text, status:'todo'|'doing'|'done', prio:0|1|2 }.
+// host: { STORE, settings, saveSettings, applyLayoutSwap, sendNoteToTerminal,
+//         layout, GUTTER, saveUiState, refitActiveTerminal, activeProject, closeOtherPanels }
+import { el, icon, iconBtn, makeModal, showConfirm, toast } from '../ui.js';
 
+const $ = (sel) => document.querySelector(sel);
 const lite = window.lite;
 
-// Статусы и важность задачи (TODO-модель поверх старых заметок {id,text}).
+const GLOBAL_ID = '__global__';                    // отдельный файл для «общих» задач
+const STATUS = ['todo', 'doing', 'done'];          // цикл по клику
+const STATUS_LABEL = { todo: 'К выполнению', doing: 'В работе', done: 'Выполнено' };
+const PRIO_LABEL = ['Обычная', 'Важная', 'Срочная'];
+
 export function initNotes(host) {
-  const { STORE, settings, saveSettings, renderProjects, applyLayoutSwap, getQueue, queueChanged, queueStart, queueStop, queueAdvance, sendNoteToTerminal } = host;
+  const { STORE, settings, saveSettings, applyLayoutSwap, sendNoteToTerminal,
+    layout, GUTTER, saveUiState, refitActiveTerminal, activeProject, closeOtherPanels, getProjects } = host;
 
-  let noteCounts = STORE.noteCounts || {}; // project id -> number of notes (card badge)
-  const TODO_STATUS = ['todo', 'doing', 'done']; // цикл по клику
-  const TODO_STATUS_LABEL = { todo: 'К выполнению', doing: 'В работе', done: 'Выполнено' };
-  const TODO_PRIO_LABEL = ['Обычная', 'Важная', 'Срочная'];
-  async function showNotes(p) {
-    let notes = await lite.store.notesGet(p.id);
-    if (!Array.isArray(notes)) notes = [];
+  let noteCounts = STORE.noteCounts || {};
+  let notesOpen = false;
+  let tab = (settings.notesTab === 'global') ? 'global' : 'project'; // последняя вкладка
+  let filter = 'active';     // 'active' | 'all' | 'done'
+  let notes = [];            // загруженный список текущей вкладки
+  let loadedId = null;       // id списка, который сейчас в `notes`
+  let loadSeq = 0;           // защита от гонки async-загрузки
+
+  // Куда смотрит активная вкладка: проект (активный) или общий список.
+  function currentTarget() {
+    if (tab === 'global') return { kind: 'global', id: GLOBAL_ID, name: 'Общие заметки' };
+    const p = activeProject();
+    return p ? { kind: 'project', id: p.id, name: p.name, proj: p } : null;
+  }
+  // Терминал, куда уходит «В терминал»: для общих задач — терминал активного проекта.
+  function termProject(target) { return target && target.kind === 'project' ? target.proj : activeProject(); }
+
+  // ---------------- данные ----------------
+  async function load(id) {
+    const seq = ++loadSeq;
+    let arr = await lite.store.notesGet(id);
+    if (seq !== loadSeq) return false; // более новая загрузка уже идёт
+    if (!Array.isArray(arr)) arr = [];
     // Миграция без потери данных: старым заметкам {id,text} проставляем дефолты status/prio.
-    notes.forEach((n) => { if (!TODO_STATUS.includes(n.status)) n.status = 'todo'; if (typeof n.prio !== 'number') n.prio = 0; });
-    const q = getQueue(p.id);
-    // Порядок отображения: ручной (как в массиве) либо сортировка по важности/статусу.
-    // Операции над задачами идут по note (id), а не по индексу показа — сортировка ничего не ломает.
-    const sortedView = () => {
-      const mode = settings.notesSort || 'manual';
-      if (mode === 'manual') return notes.slice();
-      const rank = { todo: 0, doing: 1, done: 2 };
-      return notes.map((n, idx) => ({ n, idx })).sort((a, b) =>
-        mode === 'prio' ? (b.n.prio - a.n.prio) || (a.idx - b.idx)
-          : (rank[a.n.status] - rank[b.n.status]) || (b.n.prio - a.n.prio) || (a.idx - b.idx)
-      ).map((x) => x.n);
-    };
-    // Detach the live-update callback on ANY close (button/Esc/backdrop) so the dismissed
-    // modal + its listeners don't linger in memory until the next queue event fires.
-    const { m, close } = makeModal(`
-      <h2>✅ Задачи — <span class="nm-proj"></span></h2>
-      <div class="nm-tabs">
-        <button class="nm-tab active" data-tab="notes">Задачи</button>
-        <button class="nm-tab" data-tab="queue">▶ Очередь<span class="nm-qbadge" id="nm-qbadge"></span></button>
-      </div>
-      <div class="nm-pane" id="nm-pane-notes">
-        <div class="nm-toolbar">
-          <label class="nm-sort">Сортировка
-            <select id="nm-sort">
-              <option value="manual">Вручную</option>
-              <option value="prio">По важности</option>
-              <option value="status">По статусу</option>
-            </select>
-          </label>
-          <button class="btn nm-add" id="nm-add">＋ Новая задача</button>
-        </div>
-        <div class="nm-hint">Слева — статус (клик меняет: ☐ к выполнению → ◐ в работе → ☑ готово) и важность (флажок). Задачи не удаляются при отметке «готово» — просто помечаются. «➤» — в терминал, «→» — в авто-очередь.</div>
-        <div class="nm-list" id="nm-list"></div>
-      </div>
-      <div class="nm-pane" id="nm-pane-queue" hidden></div>
-      <div class="modal-actions"><button class="btn primary" id="nm-close">Готово</button></div>`,
-      () => { q.onChange = null; });
-    m.classList.add('notes-modal');
-    m.querySelector('.nm-proj').textContent = p.name;
-    const list = m.querySelector('#nm-list');
-    const qpane = m.querySelector('#nm-pane-queue');
-    const updateTabBadge = () => {
-      const b = m.querySelector('#nm-qbadge');
-      b.textContent = q.items.length ? String(q.items.length) : '';
-      b.classList.toggle('show', q.items.length > 0);
-    };
-    // Persist notes; keep queued snapshots in sync with edits and drop queued items
-    // whose underlying note was deleted (queue references notes by id).
-    const save = () => {
-      lite.store.notesSet(p.id, notes); noteCounts[p.id] = notes.filter((n) => n.status !== 'done').length;
-      // Capture the running queue's cursor BY ID before refiltering, so deleting a note
-      // mid-run can't shift q.pos onto the wrong item (which would skip a note or make
-      // queueOnSettled finish early). doneIds = items already sent (before the cursor).
-      const running = q.running && q.pos >= 0 && q.pos < q.items.length;
-      const curId = running ? q.items[q.pos].noteId : null;
-      const doneIds = running ? new Set(q.items.slice(0, q.pos).map((it) => it.noteId)) : null;
-      q.items = q.items
-        .filter((it) => notes.some((n) => n.id === it.noteId))
-        .map((it) => ({ noteId: it.noteId, text: (notes.find((n) => n.id === it.noteId) || {}).text || '' }));
-      if (running) {
-        const ci = q.items.findIndex((it) => it.noteId === curId);
-        // current survived → its new index; current was deleted → sit just before the first
-        // remaining pending item so the next advance dispatches it instead of skipping it.
-        q.pos = ci >= 0 ? ci : q.items.filter((it) => doneIds.has(it.noteId)).length - 1;
-      }
-      updateTabBadge();
-      renderProjects();
-    };
-    let dragFrom = null;
-    let editing = null; // { note, ta } — открытый редактор карточки
-    // Снять текст из открытого редактора в заметку (для авто-сохранения по «Готово»).
-    const flushEdit = () => { if (editing) { editing.note.text = editing.ta.value; editing = null; save(); } };
-    // Переставить карточку: свап с соседом (стрелки ▲/▼). flushEdit — не потерять правку при перерисовке.
-    const moveNote = (i, dir) => {
-      const j = i + dir;
-      if (j < 0 || j >= notes.length) return;
-      flushEdit();
-      [notes[i], notes[j]] = [notes[j], notes[i]];
-      save(); render();
-    };
-
-    function editNote(row, note) {
-      row.innerHTML = '';
-      row.classList.add('editing');
-      const ta = el('textarea', 'note-edit'); ta.value = note.text || '';
-      editing = { note, ta };
-      const acts = el('div', 'note-acts');
-      const layout = el('button', 'note-btn', '⇄ Раскладка');
-      layout.title = 'Сменить раскладку EN⇄РУ по позиции клавиш (или только выделенное)';
-      layout.addEventListener('click', () => applyLayoutSwap(ta));
-      const ok = el('button', 'note-btn', '✓ Сохранить');
-      ok.addEventListener('click', () => { note.text = ta.value; save(); render(); });
-      const cancel = el('button', 'note-btn', 'Отмена');
-      cancel.addEventListener('click', render);
-      acts.append(layout, ok, cancel);
-      row.append(ta, acts);
-      ta.focus();
-    }
-    function render() {
-      editing = null; // перерисовка закрывает любой открытый редактор
-      list.innerHTML = '';
-      const manual = (settings.notesSort || 'manual') === 'manual';
-      sortedView().forEach((note) => {
-        const realIdx = notes.indexOf(note); // индекс в массиве (для ручного порядка/перетаскивания)
-        const row = el('div', 'todo-row st-' + note.status + ' pr-' + note.prio + (note.status === 'done' ? ' done' : ''));
-        row.dataset.id = note.id;
-        if (manual) { row.draggable = true; row.dataset.i = String(realIdx); }
-        // статус: клик циклит ☐ к выполнению → ◐ в работе → ☑ готово
-        const chk = el('button', 'todo-check st-' + note.status);
-        chk.title = 'Статус: ' + TODO_STATUS_LABEL[note.status] + ' (клик — сменить)';
-        if (note.status === 'done') chk.appendChild(icon('check', 13));
-        chk.addEventListener('click', () => { flushEdit(); note.status = TODO_STATUS[(TODO_STATUS.indexOf(note.status) + 1) % TODO_STATUS.length]; save(); render(); });
-        // важность: клик циклит обычная → важная → срочная
-        const flag = el('button', 'todo-flag pr-' + note.prio);
-        flag.title = 'Важность: ' + TODO_PRIO_LABEL[note.prio] + ' (клик — сменить)';
-        flag.appendChild(icon('flag', 13));
-        flag.addEventListener('click', () => { flushEdit(); note.prio = (note.prio + 1) % 3; save(); render(); });
-        // текст задачи
-        const txt = el('div', 'todo-text', note.text || '(пусто)');
-        txt.title = 'Двойной клик — редактировать';
-        txt.addEventListener('dblclick', () => editNote(row, note));
-        // действия — иконки-кнопки в стиле плашек проекта, всегда видимые
-        const acts = el('div', 'todo-acts');
-        const qi = q.items.findIndex((it) => it.noteId === note.id);
-        const queued = qi >= 0;
-        const qBtn = iconBtn('todo-act' + (queued ? ' on' : ''), 'arrow-right', '', 14);
-        qBtn.disabled = q.running;
-        qBtn.title = q.running ? 'Очередь выполняется — состав менять нельзя' : (queued ? `В авто-очереди · ${qi + 1} (клик — убрать)` : 'Добавить в авто-очередь');
-        qBtn.addEventListener('click', () => {
-          if (q.running) return;
-          flushEdit();
-          const idx = q.items.findIndex((it) => it.noteId === note.id);
-          if (idx >= 0) q.items.splice(idx, 1); else q.items.push({ noteId: note.id, text: note.text || '' });
-          queueChanged(q); updateTabBadge(); render();
-        });
-        const send = iconBtn('todo-act', 'terminal', 'В терминал (без Enter)', 14);
-        send.addEventListener('click', () => { flushEdit(); sendNoteToTerminal(p, note.text); close(); });
-        const edit = iconBtn('todo-act', 'pencil', 'Редактировать', 14);
-        edit.addEventListener('click', () => editNote(row, note));
-        const del = iconBtn('todo-act danger', 'trash', 'Удалить задачу', 14);
-        del.addEventListener('click', () => { showConfirm('Удалить задачу?', 'Удалить совсем (а не пометить выполненной)?', 'Удалить', () => { const ix = notes.indexOf(note); if (ix >= 0) notes.splice(ix, 1); save(); render(); }); });
-        acts.append(qBtn, send, edit, del);
-        if (manual) { // перестановка только в ручном режиме (в сортировках индексы показа не равны порядку)
-          const up = iconBtn('todo-act', 'chevron-up', 'Выше', 14); up.disabled = realIdx === 0; up.addEventListener('click', () => moveNote(realIdx, -1));
-          const down = iconBtn('todo-act', 'chevron-down', 'Ниже', 14); down.disabled = realIdx === notes.length - 1; down.addEventListener('click', () => moveNote(realIdx, +1));
-          acts.append(up, down);
-        }
-        row.append(chk, flag, txt, acts);
-        if (manual) {
-          row.addEventListener('dragstart', () => { dragFrom = realIdx; row.classList.add('dragging'); });
-          row.addEventListener('dragend', () => row.classList.remove('dragging'));
-          row.addEventListener('dragover', (e) => e.preventDefault());
-          row.addEventListener('drop', (e) => { e.preventDefault(); if (dragFrom == null || dragFrom === realIdx) return; const [moved] = notes.splice(dragFrom, 1); notes.splice(realIdx, 0, moved); dragFrom = null; save(); render(); });
-        }
-        list.appendChild(row);
-      });
-      if (!notes.length) list.appendChild(el('div', 'nm-empty', 'Пока пусто — добавь задачу кнопкой «＋ Новая задача».'));
-    }
-    const sortSel = m.querySelector('#nm-sort');
-    sortSel.value = settings.notesSort || 'manual';
-    sortSel.addEventListener('change', () => { settings.notesSort = sortSel.value; saveSettings(); render(); });
-    m.querySelector('#nm-add').addEventListener('click', () => {
-      const note = { id: 'n' + Date.now().toString(36), text: '', status: 'todo', prio: 0 };
-      notes.push(note); save(); render();
-      const row = list.querySelector(`.todo-row[data-id="${note.id}"]`);
-      if (row) editNote(row, note);
-    });
-
-    // ---- Queue tab ----
-    function swapQueue(i, j) {
-      if (j < 0 || j >= q.items.length) return;
-      [q.items[i], q.items[j]] = [q.items[j], q.items[i]];
-      queueChanged(q); renderQueue();
-    }
-    function renderQueue() {
-      qpane.innerHTML = '';
-      const bar = el('div', 'q-bar');
-      const status = el('div', 'q-status');
-      const next = Math.min(q.pos + 2, q.items.length);
-      if (!q.items.length) status.textContent = 'Очередь пуста — добавь карточки кнопкой «＋ в очередь».';
-      else if (q.armed) { status.textContent = `▶ Агент ждёт — нажми «Дальше» для заметки ${next} из ${q.items.length}`; status.classList.add('armed'); }
-      else if (q.running) { status.textContent = `Выполняется ${Math.min(q.pos + 1, q.items.length)} из ${q.items.length} — ждём, пока агент закончит ход…`; status.classList.add('run'); }
-      else status.textContent = `${q.items.length} в очереди — нажми «Старт».`;
-      bar.appendChild(status);
-      const ctrls = el('div', 'q-ctrls');
-      if (!q.running) {
-        const start = el('button', 'note-btn primary', '▶ Старт'); start.disabled = !q.items.length;
-        start.addEventListener('click', () => { queueStart(p.id); renderQueue(); });
-        ctrls.appendChild(start);
-      } else {
-        const adv = el('button', 'note-btn primary' + (q.armed ? ' armed' : ''), '▶ Дальше');
-        adv.title = 'Отправить следующую заметку (Ctrl+Shift+Enter)';
-        adv.addEventListener('click', () => { queueAdvance(p.id); renderQueue(); });
-        const stop = el('button', 'note-btn danger', '⏹ Стоп');
-        stop.addEventListener('click', () => { queueStop(p.id); renderQueue(); });
-        ctrls.append(adv, stop);
-      }
-      const clear = el('button', 'note-btn', '🗑 Очистить'); clear.disabled = !q.items.length;
-      clear.addEventListener('click', () => { q.items = []; q.running = false; q.pos = -1; q.awaitingBusy = false; q.armed = false; queueChanged(q); updateTabBadge(); renderQueue(); });
-      ctrls.appendChild(clear);
-      bar.appendChild(ctrls);
-      qpane.appendChild(bar);
-      qpane.appendChild(el('div', 'nm-hint', 'Первая карточка уходит сразу при старте (с Enter). Следующая — НЕ автоматически: когда агент закончит ход и индикатор станет янтарным, прилетит уведомление, а тут загорится «▶ Дальше» (или Ctrl+Shift+Enter в активном проекте). Так агент успевает задать вопрос, а ты решаешь, слать ли следующую.'));
-      const qlist = el('div', 'nm-list');
-      q.items.forEach((it, i) => {
-        let cls = 'pending';
-        if (q.running) { if (i < q.pos) cls = 'done'; else if (i === q.pos) cls = 'current'; }
-        const row = el('div', 'q-card q-' + cls);
-        const num = el('span', 'q-num', cls === 'done' ? '✓' : cls === 'current' ? '▶' : String(i + 1));
-        const txt = el('div', 'q-text', it.text || '(пусто)');
-        const acts = el('div', 'note-acts');
-        const up = el('button', 'note-btn nudge', '▲'); up.title = 'Выше'; up.disabled = i === 0 || q.running;
-        up.addEventListener('click', () => swapQueue(i, i - 1));
-        const down = el('button', 'note-btn nudge', '▼'); down.title = 'Ниже'; down.disabled = i === q.items.length - 1 || q.running;
-        down.addEventListener('click', () => swapQueue(i, i + 1));
-        const rm = el('button', 'note-btn danger', '✕'); rm.title = 'Убрать из очереди'; rm.disabled = q.running;
-        rm.addEventListener('click', () => { q.items.splice(i, 1); queueChanged(q); updateTabBadge(); renderQueue(); });
-        acts.append(up, down, rm);
-        row.append(num, txt, acts);
-        qlist.appendChild(row);
-      });
-      if (!q.items.length) qlist.appendChild(el('div', 'nm-empty', 'Пусто.'));
-      qpane.appendChild(qlist);
-    }
-
-    // ---- tabs + live sync ----
-    const panes = { notes: m.querySelector('#nm-pane-notes'), queue: qpane };
-    const tabs = m.querySelectorAll('.nm-tab');
-    function setTab(name) {
-      tabs.forEach((t) => t.classList.toggle('active', t.dataset.tab === name));
-      Object.entries(panes).forEach(([k, pane]) => { pane.hidden = k !== name; });
-      if (name === 'queue') renderQueue(); else render();
-    }
-    tabs.forEach((t) => t.addEventListener('click', () => setTab(t.dataset.tab)));
-    // Background auto-advance keeps the open modal live (and detaches itself once closed).
-    q.onChange = () => {
-      if (!m.isConnected) { q.onChange = null; return; }
-      updateTabBadge();
-      if (!qpane.hidden) renderQueue();
-    };
-
-    m.querySelector('#nm-close').onclick = () => { flushEdit(); close(); }; // close() nulls q.onChange via onClose
-    updateTabBadge();
-    render();
+    arr.forEach((n) => { if (!STATUS.includes(n.status)) n.status = 'todo'; if (typeof n.prio !== 'number') n.prio = 0; });
+    notes = arr; loadedId = id;
+    return true;
+  }
+  function save() {
+    if (!loadedId) return;
+    lite.store.notesSet(loadedId, notes);
+    if (loadedId !== GLOBAL_ID) noteCounts[loadedId] = notes.filter((n) => n.status !== 'done').length;
+  }
+  function counts() {
+    const done = notes.filter((n) => n.status === 'done').length;
+    return { all: notes.length, done, active: notes.length - done };
+  }
+  // Видимый срез (фильтр; порядок — ручной = порядок массива). Операции идут по note, не по индексу.
+  function visible() {
+    if (filter === 'active') return notes.filter((n) => n.status !== 'done');
+    if (filter === 'done') return notes.filter((n) => n.status === 'done');
+    return notes.slice();
+  }
+  // Переставить задачу относительно соседа в ВИДИМОМ порядке (свап в массиве).
+  function move(note, dir) {
+    const vis = visible();
+    const sib = vis[vis.indexOf(note) + dir];
+    if (!sib) return;
+    const a = notes.indexOf(note), b = notes.indexOf(sib);
+    if (a < 0 || b < 0) return;
+    [notes[a], notes[b]] = [notes[b], notes[a]];
+    save(); renderList();
   }
 
-  return { show: showNotes, count: (id) => noteCounts[id] || 0 };
+  // ---------------- модалка задачи (новая / правка) ----------------
+  function openTaskModal(note) {
+    const isNew = !note;
+    const { m, close } = makeModal(`
+      <h2>${isNew ? 'Новая задача' : 'Редактировать задачу'}</h2>
+      <textarea class="nt-modal-ta" placeholder="Описание задачи…"></textarea>
+      <div class="nt-modal-hint">Ctrl+Enter — сохранить · Esc — отмена</div>
+      <div class="modal-actions">
+        <button class="btn nt-modal-swap" data-swap>⇄ Раскладка</button>
+        <button class="btn" data-cancel>Отмена</button>
+        <button class="btn primary" data-ok>${isNew ? 'Добавить' : 'Сохранить'}</button>
+      </div>`);
+    m.classList.add('nt-modal');
+    const ta = m.querySelector('.nt-modal-ta');
+    ta.value = note ? (note.text || '') : '';
+    const commit = () => {
+      const text = ta.value.trim();
+      if (!text) { close(); return; }
+      if (isNew) { notes.unshift({ id: 'n' + Date.now().toString(36), text, status: 'todo', prio: 0 }); if (filter === 'done') filter = 'active'; }
+      else note.text = text;
+      save(); close(); renderList();
+    };
+    m.querySelector('[data-swap]').onclick = () => applyLayoutSwap(ta);
+    m.querySelector('[data-cancel]').onclick = () => close();
+    m.querySelector('[data-ok]').onclick = commit;
+    ta.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); commit(); }
+      else if (e.key === 'Escape') { e.preventDefault(); close(); }
+    });
+    setTimeout(() => ta.focus(), 0);
+  }
+
+  // ---------------- рендер ----------------
+  // Полная перерисовка тела панели: вкладки + кнопка добавления + фильтры + список.
+  // (Нет фокус-чувствительных полей в шапке — добавление/правка идут через модалку.)
+  function renderList() {
+    const body = $('#notes-body');
+    if (!body) return;
+    const target = currentTarget();
+    const title = $('#notes-proj');
+    if (title) title.textContent = tab === 'global' ? 'Общие заметки' : (target ? ('Задачи — ' + target.name) : 'Задачи проекта');
+
+    const c = target ? counts() : { all: 0, done: 0, active: 0 };
+    body.innerHTML = `
+      <div class="nt-tabs">
+        <button class="nt-tab${tab === 'project' ? ' active' : ''}" data-tab="project"><span>Проект</span></button>
+        <button class="nt-tab${tab === 'global' ? ' active' : ''}" data-tab="global"><span>Общие</span></button>
+      </div>
+      <button class="nt-addbig" data-add ${target ? '' : 'disabled'}>＋ Новая задача</button>
+      <div class="nt-chips">
+        <button class="nt-chip${filter === 'active' ? ' active' : ''}" data-f="active">Активные <span class="nt-cnt">${c.active || ''}</span></button>
+        <button class="nt-chip${filter === 'all' ? ' active' : ''}" data-f="all">Все <span class="nt-cnt">${c.all || ''}</span></button>
+        <button class="nt-chip${filter === 'done' ? ' active' : ''}" data-f="done">Готово <span class="nt-cnt">${c.done || ''}</span></button>
+      </div>
+      <div class="nt-list" data-list></div>`;
+
+    // Однотипные иконки вкладок из общего набора (folder / globe) — без эмодзи-разнобоя.
+    const tabIcon = { project: 'folder', global: 'globe' };
+    body.querySelectorAll('.nt-tab').forEach((t) => {
+      t.prepend(icon(tabIcon[t.dataset.tab], 15));
+      t.addEventListener('click', () => switchTab(t.dataset.tab));
+    });
+    body.querySelectorAll('.nt-chip').forEach((ch) => ch.addEventListener('click', () => { filter = ch.dataset.f; renderList(); }));
+    const addBtn = body.querySelector('[data-add]');
+    if (addBtn) addBtn.addEventListener('click', () => openTaskModal(null));
+
+    const list = body.querySelector('[data-list]');
+    if (!target) { list.appendChild(el('div', 'nt-empty', 'Откройте проект слева, чтобы вести его задачи. Либо переключитесь на вкладку «Общие».')); return; }
+    const rows = visible();
+    rows.forEach((note) => list.appendChild(noteCard(note, target, rows)));
+    if (!rows.length) {
+      const msg = filter === 'done' ? 'Выполненных задач пока нет.'
+        : filter === 'active' ? 'Активных задач нет — добавьте новую кнопкой выше.'
+          : 'Пусто — добавьте первую задачу.';
+      list.appendChild(el('div', 'nt-empty', msg));
+    }
+  }
+
+  // Карточка: строка 1 — статус + текст; строка 2 — важность + ↑↓ + правка + удалить;
+  // строка 3 — «В терминал» / «В терминал и удалить».
+  function noteCard(note, target, vis) {
+    const card = el('div', 'nt-card st-' + note.status + ' pr-' + note.prio + (note.status === 'done' ? ' done' : ''));
+
+    const top = el('div', 'nt-top');
+    const st = el('button', 'nt-status st-' + note.status);
+    st.title = 'Статус: ' + STATUS_LABEL[note.status] + ' (клик — сменить)';
+    if (note.status === 'done') st.appendChild(icon('check', 13));
+    st.addEventListener('click', () => { note.status = STATUS[(STATUS.indexOf(note.status) + 1) % 3]; save(); renderList(); });
+    const txt = el('div', 'nt-text', note.text || '(пусто)');
+    txt.title = 'Двойной клик — редактировать';
+    txt.addEventListener('dblclick', () => openTaskModal(note));
+    top.append(st, txt);
+
+    const meta = el('div', 'nt-meta');
+    const flag = el('button', 'nt-flag pr-' + note.prio);
+    flag.appendChild(icon('flag', 13));
+    if (note.prio > 0) flag.appendChild(el('span', 'nt-flag-lbl', PRIO_LABEL[note.prio]));
+    flag.title = 'Важность: ' + PRIO_LABEL[note.prio] + ' (клик — сменить)';
+    flag.addEventListener('click', () => { note.prio = (note.prio + 1) % 3; save(); renderList(); });
+    const vi = vis.indexOf(note);
+    const up = iconBtn('nt-act', 'chevron-up', 'Выше', 14); up.disabled = vi <= 0; up.addEventListener('click', () => move(note, -1));
+    const down = iconBtn('nt-act', 'chevron-down', 'Ниже', 14); down.disabled = vi >= vis.length - 1; down.addEventListener('click', () => move(note, 1));
+    const edit = iconBtn('nt-act', 'pencil', 'Редактировать', 14); edit.addEventListener('click', () => openTaskModal(note));
+    const del = iconBtn('nt-act danger', 'trash', 'Удалить задачу', 14);
+    del.addEventListener('click', () => showConfirm('Удалить задачу?', 'Удалить совсем (а не пометить выполненной)?', 'Удалить', () => {
+      const ix = notes.indexOf(note); if (ix >= 0) notes.splice(ix, 1); save(); renderList();
+    }));
+    meta.append(flag, el('span', 'nt-spacer'), up, down, edit, del);
+
+    const acts = el('div', 'nt-acts');
+    const send = el('button', 'nt-sendbtn');
+    send.append(icon('terminal', 14), el('span', null, 'В терминал'));
+    send.title = 'Вставить текст в терминал проекта (без Enter — проверь и отправь сам)';
+    send.addEventListener('click', () => sendToTerminal(note, target, false));
+    const sendDel = el('button', 'nt-sendbtn');
+    sendDel.append(icon('terminal', 14), el('span', null, 'В терминал и удалить'));
+    sendDel.title = 'Вставить в терминал и удалить задачу из списка';
+    sendDel.addEventListener('click', () => sendToTerminal(note, target, true));
+    // Перенос между списками: из проекта → в общие, из общих → в активный проект.
+    const toGlobal = target.kind === 'project';
+    const moveBtn = el('button', 'nt-sendbtn nt-move');
+    moveBtn.append(icon(toGlobal ? 'globe' : 'folder', 14), el('span', null, toGlobal ? 'В общие' : 'В проект'));
+    moveBtn.title = toGlobal ? 'Перенести задачу в общие заметки' : 'Перенести задачу в активный проект';
+    moveBtn.addEventListener('click', () => moveToOtherList(note, target));
+    acts.append(send, sendDel, moveBtn);
+
+    card.append(top, meta, acts);
+    return card;
+  }
+
+  // Перенести задачу в другой список (cut): проект↔общие. Пишем в файл назначения, убираем из текущего.
+  async function moveToOtherList(note, target) {
+    let destId, destName;
+    if (target.kind === 'project') { destId = GLOBAL_ID; destName = 'Общие'; }
+    else { const p = activeProject(); if (!p) { toast('Нет активного проекта — некуда перенести'); return; } destId = p.id; destName = p.name; }
+    let dest = await lite.store.notesGet(destId);
+    if (!Array.isArray(dest)) dest = [];
+    dest.unshift({ id: note.id, text: note.text, status: note.status, prio: note.prio });
+    await lite.store.notesSet(destId, dest);
+    if (destId !== GLOBAL_ID) noteCounts[destId] = dest.filter((n) => n.status !== 'done').length;
+    const ix = notes.indexOf(note); if (ix >= 0) notes.splice(ix, 1); // убрать из исходного списка
+    save(); renderList();
+    toast('Перенесено в «' + destName + '»');
+  }
+
+  function sendToTerminal(note, target, alsoDelete) {
+    const proj = termProject(target);
+    if (!proj) { toast('Нет активного проекта — некуда отправить'); return; }
+    if (!note.text) { toast('Задача пустая'); return; }
+    sendNoteToTerminal(proj, note.text);
+    if (alsoDelete) { const ix = notes.indexOf(note); if (ix >= 0) notes.splice(ix, 1); save(); renderList(); }
+  }
+
+  // ---------------- экспорт / импорт (JSON) ----------------
+  // Единый формат: { _format, version, exportedAt, global?:[…], projects?:{ <id>:{name,path,notes:[…]} } }.
+  function exportMenu() {
+    const curName = tab === 'global' ? 'общие' : (activeProject() ? activeProject().name : 'проект');
+    const { m, close } = makeModal(`
+      <h2>Экспорт заметок</h2>
+      <div class="nt-exp">
+        <button class="btn" data-scope="current">Этот список — ${curName}</button>
+        <button class="btn" data-scope="all">Все заметки — все проекты + общие</button>
+      </div>
+      <div class="modal-actions"><button class="btn" data-cancel>Отмена</button></div>`);
+    m.querySelector('[data-scope="current"]').onclick = () => { close(); doExport('current'); };
+    m.querySelector('[data-scope="all"]').onclick = () => { close(); doExport('all'); };
+    m.querySelector('[data-cancel]').onclick = () => close();
+  }
+
+  async function doExport(scope) {
+    const out = { _format: 'lite-notes', version: 1, exportedAt: new Date().toISOString() };
+    let nameBase;
+    if (scope === 'all') {
+      out.projects = {};
+      for (const p of (getProjects ? getProjects() : [])) {
+        const arr = await lite.store.notesGet(p.id);
+        if (Array.isArray(arr) && arr.length) out.projects[p.id] = { name: p.name, path: p.path, notes: arr };
+      }
+      const g = await lite.store.notesGet(GLOBAL_ID);
+      out.global = Array.isArray(g) ? g : [];
+      nameBase = 'lite-notes-all';
+    } else {
+      const target = currentTarget();
+      if (!target) { toast('Откройте проект или вкладку «Общие»'); return; }
+      if (target.kind === 'global') { out.global = notes.slice(); nameBase = 'lite-notes-global'; }
+      else { out.projects = { [target.id]: { name: target.name, path: target.proj.path, notes: notes.slice() } }; nameBase = 'lite-notes-' + target.name; }
+    }
+    const r = await lite.store.notesExport(JSON.stringify(out, null, 2), nameBase);
+    if (!r || r.canceled) return;
+    if (r.error) { toast('Ошибка экспорта: ' + r.error, { kind: 'err' }); return; }
+    toast('Экспортировано в файл');
+  }
+
+  // Мердж без потери: дописываем задачи, которых ещё нет (по id), идемпотентно при повторном импорте.
+  async function mergeInto(id, incoming) {
+    if (!Array.isArray(incoming)) return 0;
+    let cur = await lite.store.notesGet(id);
+    if (!Array.isArray(cur)) cur = [];
+    const seen = new Set(cur.map((n) => n.id));
+    let added = 0;
+    for (const n of incoming) {
+      if (!n || typeof n.text !== 'string') continue;
+      const nid = (n.id && !seen.has(n.id)) ? n.id : ('n' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6));
+      if (seen.has(nid)) continue; // такая задача уже есть → пропускаем (без дублей)
+      seen.add(nid);
+      cur.push({ id: nid, text: n.text, status: STATUS.includes(n.status) ? n.status : 'todo', prio: typeof n.prio === 'number' ? n.prio : 0 });
+      added++;
+    }
+    if (added) { await lite.store.notesSet(id, cur); if (id !== GLOBAL_ID) noteCounts[id] = cur.filter((x) => x.status !== 'done').length; }
+    return added;
+  }
+
+  // Режим «Заменить»: затереть список данными из файла (нормализуем входные задачи).
+  function normalizeNotes(incoming) {
+    return (Array.isArray(incoming) ? incoming : [])
+      .filter((n) => n && typeof n.text === 'string')
+      .map((n) => ({ id: n.id || ('n' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6)), text: n.text, status: STATUS.includes(n.status) ? n.status : 'todo', prio: typeof n.prio === 'number' ? n.prio : 0 }));
+  }
+  async function replaceInto(id, incoming) {
+    const arr = normalizeNotes(incoming);
+    await lite.store.notesSet(id, arr);
+    if (id !== GLOBAL_ID) noteCounts[id] = arr.filter((x) => x.status !== 'done').length;
+    return arr.length;
+  }
+
+  async function importNotes() {
+    const r = await lite.store.notesImport();
+    if (!r || r.canceled) return;
+    if (r.error) { toast('Ошибка импорта: ' + r.error, { kind: 'err' }); return; }
+    let data; try { data = JSON.parse(r.content); } catch { toast('Файл не является JSON', { kind: 'err' }); return; }
+    if (!data || data._format !== 'lite-notes') { toast('Это не файл заметок LiteEditor', { kind: 'err' }); return; }
+    chooseImportMode(data);
+  }
+
+  // Спросить режим: «Заменить» (по умолчанию, разрушительно) или «Добавить» (мердж без потерь).
+  function chooseImportMode(data) {
+    const hasGlobal = Array.isArray(data.global);
+    const projCount = (data.projects && typeof data.projects === 'object') ? Object.keys(data.projects).length : 0;
+    const scope = [hasGlobal ? 'общие' : null, projCount ? ('проектов: ' + projCount) : null].filter(Boolean).join(' · ') || 'нет данных';
+    const { m, close } = makeModal(`
+      <h2>Импорт заметок</h2>
+      <div class="nt-modal-hint">В файле: ${scope}.</div>
+      <div class="nt-imp-warn">⚠ <b>Заменить</b> (по умолчанию) — затрёт эти списки данными из файла, текущие задачи в них пропадут.<br><b>Добавить</b> — допишет недостающие, ничего не теряя.</div>
+      <div class="nt-exp">
+        <button class="btn primary" data-mode="replace">Заменить (по умолчанию)</button>
+        <button class="btn" data-mode="merge">Добавить к существующим</button>
+      </div>
+      <div class="modal-actions"><button class="btn" data-cancel>Отмена</button></div>`);
+    m.querySelector('[data-mode="replace"]').onclick = () => { close(); applyImport(data, 'replace'); };
+    m.querySelector('[data-mode="merge"]').onclick = () => { close(); applyImport(data, 'merge'); };
+    m.querySelector('[data-cancel]').onclick = () => close();
+    setTimeout(() => m.querySelector('[data-mode="replace"]').focus(), 0); // фокус на дефолтном режиме
+  }
+
+  async function applyImport(data, mode) {
+    let lists = 0, total = 0;
+    const handle = async (id, arr) => {
+      if (!Array.isArray(arr)) return;
+      lists++;
+      total += await (mode === 'replace' ? replaceInto(id, arr) : mergeInto(id, arr));
+    };
+    if (Array.isArray(data.global)) await handle(GLOBAL_ID, data.global);
+    if (data.projects && typeof data.projects === 'object') {
+      for (const [pid, entry] of Object.entries(data.projects)) {
+        await handle(pid, entry && Array.isArray(entry.notes) ? entry.notes : (Array.isArray(entry) ? entry : null));
+      }
+    }
+    loadedId = null; await renderPanel(); // перечитать текущий список
+    if (mode === 'replace') toast(`Заменено списков: ${lists} (${total} задач(и))`);
+    else toast(total ? `Добавлено задач: ${total} в ${lists} список(ов)` : 'Новых задач не найдено — всё уже есть');
+  }
+
+  // ---------------- вкладки ----------------
+  function switchTab(name) {
+    if (name === tab) return;
+    tab = name;
+    settings.notesTab = name; saveSettings(); // запомнить выбор между перезапусками
+    loadedId = null;                           // форсировать перезагрузку под новую вкладку
+    renderPanel();
+  }
+
+  // ---------------- панель правого слота ----------------
+  async function renderPanel() {
+    if (!notesOpen) return;
+    const target = currentTarget();
+    if (target && target.id !== loadedId) {
+      const ok = await load(target.id);
+      if (!ok || !notesOpen) return; // устаревшая загрузка / панель закрыли за время await
+    } else if (!target) {
+      notes = []; loadedId = null;
+    }
+    renderList();
+  }
+
+  function setNotesOpen(open, opts = {}) {
+    // Общие задачи доступны всегда; требовать проект только для вкладки «Проект» при открытии.
+    if (open && tab === 'project' && !activeProject() && !opts.allowEmpty) { toast('Сначала открой проект'); return; }
+    if (open === notesOpen) { if (open) renderPanel(); return; }
+    if (open) closeOtherPanels('notes'); // правый слот держит один модуль
+    const delta = layout.notes + GUTTER;
+    notesOpen = open;
+    $('#notes-pane').classList.toggle('hidden', !open);
+    $('#gutter-notes').classList.toggle('hidden', !open);
+    if (opts.grow !== false) lite.win.growBy(open ? delta : -delta); // grow:false на restore — ширина уже учтена
+    saveUiState();
+    if (open) renderPanel();
+    else { loadedId = null; }
+    setTimeout(refitActiveTerminal, 150);
+  }
+  function toggleNotes() { setNotesOpen(!notesOpen); }
+
+  return {
+    isOpen: () => notesOpen,
+    setOpen: setNotesOpen,
+    toggle: toggleNotes,
+    exportMenu,
+    importNotes,
+    // вызывается ядром при смене активного проекта; для вкладки «Общие» список не зависит от проекта
+    renderPanel: () => renderPanel(),
+  };
 }

@@ -223,9 +223,11 @@ export function initExtensions(host) {
   }
 
   // Секция «Мои модули» в меню «Модули» (ядро зовёт из buildModulesMenu).
-  function buildMenuSection(dd) {
-    dd.appendChild(el('div', 'menu-sep'));
-    dd.appendChild(el('div', 'menu-label', 'Мои модули'));
+  function buildMenuSection(dd, opts = {}) {
+    if (!opts.bare) { // bare: вызвано из flyout-подменю — свой заголовок не нужен
+      dd.appendChild(el('div', 'menu-sep'));
+      dd.appendChild(el('div', 'menu-label', 'Мои модули'));
+    }
     if (!mods.size) dd.appendChild(el('div', 'menu-row disabled', '— пока нет —'));
     for (const rec of mods.values()) {
       const click = rec.error ? null : async () => {
@@ -240,9 +242,10 @@ export function initExtensions(host) {
       dd.appendChild(row);
     }
     dd.appendChild(el('div', 'menu-sep'));
-    dd.appendChild(host.menuRow('plus', 'Создать модуль… (менеджер пользовательских модулей)', () => { host.closeMenus(); openWizard(); }));
-    dd.appendChild(host.menuRow('folder', 'Открыть папку модулей', () => { host.closeMenus(); if (extDirPath) lite.openInFileManager(extDirPath); }));
-    dd.appendChild(host.menuRow('refresh', 'Пересканировать', () => { host.closeMenus(); rescan(); }));
+    const mrow = host.moduleRow || ((g, t, _d, fn) => host.menuRow(g, t, fn)); // двухстрочный пункт, если ядро его дало
+    dd.appendChild(mrow('plus', 'Создать модуль…', 'менеджер пользовательских модулей', () => { host.closeMenus(); openWizard(); }));
+    dd.appendChild(mrow('folder', 'Открыть папку модулей', '~/.LiteEditorAI/modules', () => { host.closeMenus(); if (extDirPath) lite.openInFileManager(extDirPath); }));
+    dd.appendChild(mrow('refresh', 'Пересканировать', 'перечитать список модулей с диска', () => { host.closeMenus(); rescan(); }));
   }
 
   // ------------------------------------------------------------ dev-терминал папки модуля
