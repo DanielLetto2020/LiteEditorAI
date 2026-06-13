@@ -178,6 +178,19 @@
         </div>
       </section>
 
+      <!-- Notes/tasks module: per-project задачи + авто-очередь, opens to the right -->
+      <div id="gutter-notes" class="gutter hidden" data-resize="notes"></div>
+      <section id="notes-pane" class="hidden">
+        <div class="pane-head">
+          <span id="notes-proj">Задачи</span>
+          <div class="drag-space-static"></div>
+          <button id="notes-export" class="icon-btn" title="Экспорт заметок в JSON" data-icon="download"></button>
+          <button id="notes-import" class="icon-btn" title="Импорт заметок из JSON" data-icon="upload"></button>
+          <button id="notes-close" class="icon-btn" title="Закрыть" data-icon="x"></button>
+        </div>
+        <div id="notes-body" class="notes-body"></div>
+      </section>
+
       <!-- Containers module (docker/podman): system-wide, opens to the right -->
       <div id="gutter-docker" class="gutter hidden" data-resize="docker"></div>
       <section id="docker-pane" class="hidden">

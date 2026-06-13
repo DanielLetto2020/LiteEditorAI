@@ -35,6 +35,8 @@ contextBridge.exposeInMainWorld('lite', {
     set: (key, value) => ipcRenderer.send('store:set', { key, value }),
     notesGet: (id) => ipcRenderer.invoke('store:notesGet', id),
     notesSet: (id, notes) => ipcRenderer.invoke('store:notesSet', { id, notes }),
+    notesExport: (json, name) => ipcRenderer.invoke('notes:exportFile', { json, name }), // → {ok,file}|{canceled}|{error}
+    notesImport: () => ipcRenderer.invoke('notes:importFile'),                            // → {ok,content}|{canceled}|{error}
   },
 
   logs: {

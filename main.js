@@ -221,7 +221,7 @@ try {
   const legacy = path.join(os.homedir(), '.LiteEditor');
   if (!fs.existsSync(storeDir) && fs.existsSync(legacy)) fs.cpSync(legacy, storeDir, { recursive: true });
 } catch (_) {}
-const STORE_KEYS = ['projects', 'settings', 'layout', 'recents', 'lastParent', 'categories', 'sectionOrder', 'accordions', 'dismissed', 'uiState', 'projTabs', 'openrouter', 'remote', 'shares', 'pultBlocked', 'dockerUi', 'dbConnections', 'dbUi', 'rhConnections', 'rhUi', 'textproc', 'tpPrompts', 'extData', 'extEnabled'];
+const STORE_KEYS = ['projects', 'settings', 'layout', 'recents', 'lastParent', 'categories', 'sectionOrder', 'accordions', 'dismissed', 'uiState', 'projTabs', 'openrouter', 'remote', 'shares', 'pultBlocked', 'dockerUi', 'dbConnections', 'dbUi', 'rhConnections', 'rhUi', 'textproc', 'tpPrompts', 'extData', 'extEnabled', 'quickbar'];
 // Папка-«стор» для шаринга с пультом (агент кладёт сюда файлы; в PTY доступна как $LITE_STORE).
 const pultStoreDir = path.join(storeDir, 'store');
 try { fs.mkdirSync(pultStoreDir, { recursive: true }); } catch (_) {}
@@ -1089,6 +1089,38 @@ ipcMain.handle('settings:export', async () => {
     saveState({ lastOpenDir: path.dirname(res.filePath) });
     return { ok: true, file: res.filePath, dir: path.dirname(res.filePath) };
   } catch (e) { return { error: String(e.message || e) }; }
+});
+// Notes export/import: generic JSON file save/open (assembly + merge happen in the renderer,
+// which owns the project list and notesGet/notesSet). Mirrors the settings handlers above.
+ipcMain.handle('notes:exportFile', async (_e, { json, name }) => {
+  const safe = String(name || 'lite-notes').replace(/[\/\\:*?"<>|]+/g, '_').slice(0, 80);
+  const last = loadState().lastOpenDir;
+  const res = await dialog.showSaveDialog(mainWindow, {
+    title: 'Экспорт заметок',
+    defaultPath: path.join(last && fs.existsSync(last) ? last : os.homedir(), `${safe}_${backupStamp()}.json`),
+    filters: [{ name: 'JSON', extensions: ['json'] }],
+  });
+  if (res.canceled || !res.filePath) return { canceled: true };
+  try {
+    atomicWriteSync(res.filePath, String(json));
+    saveState({ lastOpenDir: path.dirname(res.filePath) });
+    return { ok: true, file: res.filePath };
+  } catch (e) { return { error: String(e.message || e) }; }
+});
+ipcMain.handle('notes:importFile', async () => {
+  const res = await dialog.showOpenDialog(mainWindow, {
+    title: 'Импорт заметок', properties: ['openFile'],
+    filters: [{ name: 'JSON', extensions: ['json'] }], ...lastDirOpts(),
+  });
+  if (res.canceled || res.filePaths.length === 0) return { canceled: true };
+  const file = res.filePaths[0];
+  try {
+    const stat = fs.statSync(file);
+    if (stat.size > IMPORT_MAX_BYTES) return { error: `Файл слишком большой (${Math.round(stat.size / 1024)} КБ)` };
+    const content = fs.readFileSync(file, 'utf8');
+    saveState({ lastOpenDir: path.dirname(file) });
+    return { ok: true, content };
+  } catch (e) { return { error: 'Не удалось прочитать файл: ' + String(e.message || e) }; }
 });
 ipcMain.handle('settings:import', async () => {
   const res = await dialog.showOpenDialog(mainWindow, {

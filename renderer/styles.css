@@ -178,7 +178,7 @@ html, body {
 
 /* shared icon glyph + icon-button centering */
 .ic { display: block; flex: 0 0 auto; }
-.icon-btn, .tt-btn, .ts-btn, .gm-mini, .scan-del, .card-star, .card-kebab, .card-copy, .pgroup-arrow, .card-act, .card-qbadge {
+.icon-btn, .tt-btn, .ts-btn, .gm-mini, .scan-del, .card-star, .card-kebab, .card-copy, .pgroup-arrow {
   display: inline-flex; align-items: center; justify-content: center;
 }
 .menu-ic { width: 16px; flex: 0 0 16px; display: inline-flex; align-items: center; justify-content: center; color: inherit; opacity: .85; }
@@ -271,33 +271,8 @@ html, body {
 
 /* правый «хвост» карточки: в покое — свёрнутая стрелка, по наведению на карточку выезжают кнопки */
 .card-tail { display: flex; align-items: center; gap: 0; flex: 0 0 auto; }
-.card-reveal {
-  display: inline-flex; align-items: center; justify-content: center;
-  flex: 0 0 auto; width: 24px; height: 24px; color: var(--text-mute);
-  max-width: 24px; opacity: .55; overflow: hidden;
-  transition: max-width .16s ease, opacity .16s ease;
-}
-.card-tail:hover .card-reveal { max-width: 0; opacity: 0; }
-.card-acts {
-  display: flex; align-items: center; gap: 5px; flex: 0 0 auto;
-  max-width: 0; opacity: 0; overflow: hidden; padding: 2px 0;
-  transition: max-width .18s ease, opacity .16s ease;
-}
-.card-tail:hover .card-acts { max-width: 240px; opacity: 1; }
-.card-act {
-  position: relative; flex: 0 0 auto; width: 24px; height: 24px; padding: 0; border-radius: 6px;
-  background: transparent; border: 0; color: var(--text-mute); cursor: pointer;
-  transition: color .12s, background .12s;
-}
-.card-act:hover { color: var(--text); background: var(--hover); }
-.card-act.on { color: var(--green); background: var(--accent-soft); }
-.act-badge {
-  position: absolute; top: -2px; right: -2px; min-width: 13px; height: 13px; padding: 0 3px;
-  display: flex; align-items: center; justify-content: center;
-  border-radius: 7px; background: var(--green); color: var(--accent-contrast);
-  font-size: 9px; font-weight: 700; line-height: 1;
-}
-.card-acts .card-qbadge { margin-right: 3px; }
+/* ★ и ⋮ — всегда видимы (ховер-раскрывашка убрана; модули — в квикбаре под терминалом) */
+.card-acts { display: flex; align-items: center; gap: 5px; flex: 0 0 auto; }
 
 .card-add { text-align: center; color: var(--green); border-style: dashed; background: transparent; font-weight: 600; }
 .card-add:hover { background: var(--hover); }
@@ -342,6 +317,7 @@ html, body {
 #quickbar.hidden { display: none; }
 #quickbar::-webkit-scrollbar { height: 0; }
 .qb-btn { flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 26px; }
+.qb-sep { flex: 0 0 auto; width: 1px; height: 18px; margin: 0 5px; background: var(--border-strong); align-self: center; }
 
 /* модалка «Настройка панели» */
 .qb-hint { font-size: 12px; color: var(--text-dim); margin: -6px 0 10px; line-height: 1.45; }
@@ -352,6 +328,8 @@ html, body {
 .qb-item { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 7px; cursor: pointer; font-size: 12.5px; color: var(--text); }
 .qb-item:hover { background: var(--hover); }
 .qb-ic { flex: 0 0 auto; display: inline-flex; color: var(--text-dim); }
+.qb-item-sep .qb-ic { font-weight: 700; color: var(--text-mute); width: 16px; justify-content: center; }
+.qb-item-sep .qb-name { color: var(--text-dim); }
 .qb-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .qb-mv { flex: 0 0 auto; width: 20px; height: 20px; border: 0; background: none; color: var(--text-mute); border-radius: 5px; font-size: 10px; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; }
 .qb-mv:hover:not(:disabled) { background: var(--hover-2); color: var(--text); }
@@ -418,6 +396,85 @@ html, body {
 .git-csubj { flex: 1; overflow: hidden; text-overflow: ellipsis; color: var(--text); }
 .git-commit .gm-meta { color: var(--text-mute); font-size: 11px; flex: 0 0 auto; }
 .git-refs { color: var(--warn); font-size: 11px; }
+
+/* ---------------- Notes/tasks panel (right slot) ----------------
+   Вкладки (Проект/Общие) + кнопка добавления + фильтры фиксированы сверху, список скроллится. */
+#notes-pane { flex: 0 0 480px; min-width: 300px; border-left: 1px solid var(--border); display: flex; flex-direction: column; background: var(--panel); }
+#notes-proj { color: var(--green-bright); font-size: 12px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; }
+.notes-body { flex: 1; min-height: 0; overflow: hidden; padding: 10px 12px; display: flex; flex-direction: column; gap: 10px; }
+
+/* вкладки Проект / Общие */
+.nt-tabs { display: flex; gap: 6px; flex: 0 0 auto; border-bottom: 1px solid var(--border); }
+.nt-tab { display: inline-flex; align-items: center; gap: 6px; padding: 7px 12px; background: transparent; border: 0; border-bottom: 2px solid transparent; color: var(--text-dim); cursor: pointer; font-size: 13px; margin-bottom: -1px; }
+.nt-tab:hover { color: var(--text); }
+.nt-tab.active { color: var(--green-bright); border-bottom-color: var(--green); }
+
+/* кнопка добавления (открывает модалку с textarea) */
+.nt-addbig { flex: 0 0 auto; width: 100%; padding: 9px 12px; border-radius: 9px; border: 1px dashed var(--green-dim); background: var(--accent-soft); color: var(--green-bright); cursor: pointer; font-size: 13px; font-weight: 600; transition: background .12s, border-color .12s; }
+.nt-addbig:hover:not(:disabled) { background: var(--green); color: var(--accent-contrast); border-style: solid; border-color: var(--green); }
+.nt-addbig:disabled { opacity: .4; cursor: default; }
+
+/* фильтр-чипы */
+.nt-chips { display: flex; gap: 4px; flex: 0 0 auto; }
+.nt-chip { display: inline-flex; align-items: center; gap: 5px; padding: 4px 10px; border-radius: 20px; border: 1px solid var(--border); background: transparent; color: var(--text-dim); cursor: pointer; font-size: 12px; white-space: nowrap; transition: color .12s, border-color .12s, background .12s; }
+.nt-chip:hover { color: var(--text); border-color: var(--border-strong); }
+.nt-chip.active { color: var(--accent-contrast); background: var(--green); border-color: var(--green); font-weight: 600; }
+.nt-cnt { font-size: 10.5px; opacity: .8; }
+
+/* список задач */
+.nt-list { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; padding-right: 2px; }
+.nt-empty { color: var(--text-mute); text-align: center; padding: 24px 12px; font-size: 12.5px; line-height: 1.5; }
+
+/* карточка: строка 1 — статус+текст, строка 2 — важность+↑↓+правка+удалить, строка 3 — в терминал */
+.nt-card { background: var(--surface); border: 1px solid var(--border); border-left-width: 3px; border-left-color: var(--border); border-radius: 11px; padding: 9px 11px; display: flex; flex-direction: column; gap: 9px; transition: border-color .12s, box-shadow .12s; }
+.nt-card:hover { border-color: var(--border-strong); box-shadow: 0 2px 10px rgba(0,0,0,0.16); }
+.nt-card.pr-1 { border-left-color: var(--warn); }
+.nt-card.pr-2 { border-left-color: var(--danger); }
+.nt-card.done { opacity: .62; }
+.nt-card.done .nt-text { text-decoration: line-through; color: var(--text-mute); }
+
+.nt-top { display: flex; align-items: flex-start; gap: 10px; }
+.nt-status { flex: 0 0 auto; width: 20px; height: 20px; margin-top: 1px; border-radius: 6px; border: 2px solid var(--border-strong); background: transparent; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; padding: 0; color: var(--accent-contrast); transition: background .12s, border-color .12s; }
+.nt-status:hover { border-color: var(--text-dim); }
+.nt-status.st-doing { border-color: var(--warn); }
+.nt-status.st-doing::after { content: ''; width: 9px; height: 9px; border-radius: 3px; background: var(--warn); }
+.nt-status.st-done { background: var(--green); border-color: var(--green); }
+.nt-text { flex: 1; min-width: 0; white-space: pre-wrap; word-break: break-word; color: var(--text); font-size: 13px; line-height: 1.45; cursor: text; }
+
+.nt-meta { display: flex; align-items: center; gap: 4px; }
+.nt-spacer { flex: 1; }
+.nt-flag { display: inline-flex; align-items: center; gap: 5px; flex: 0 0 auto; height: 26px; padding: 0 9px; border-radius: 7px; border: 1px solid transparent; background: transparent; color: var(--text-mute); cursor: pointer; font-size: 11.5px; transition: color .12s, background .12s; }
+.nt-flag:hover { background: var(--hover); color: var(--text); }
+.nt-flag.pr-0 { opacity: .55; }
+.nt-flag.pr-1 { color: var(--warn); }
+.nt-flag.pr-1 .ic { fill: var(--warn); }
+.nt-flag.pr-2 { color: var(--danger); }
+.nt-flag.pr-2 .ic { fill: var(--danger); }
+.nt-flag-lbl { font-weight: 600; }
+.nt-act { flex: 0 0 auto; width: 28px; height: 26px; display: inline-flex; align-items: center; justify-content: center; padding: 0; border-radius: 7px; background: transparent; border: 1px solid transparent; color: var(--text-mute); cursor: pointer; transition: color .12s, background .12s; }
+.nt-act:hover:not(:disabled) { color: var(--text); background: var(--hover); }
+.nt-act.danger:hover:not(:disabled) { color: #fff; background: rgba(247,118,142,0.7); }
+.nt-act:disabled { opacity: .3; cursor: default; }
+
+/* строка действий «в терминал» */
+.nt-acts { display: flex; gap: 6px; flex-wrap: wrap; }
+.nt-sendbtn { display: inline-flex; align-items: center; gap: 6px; padding: 5px 11px; border-radius: 8px; border: 1px solid var(--green-dim); background: transparent; color: var(--green); cursor: pointer; font-size: 12px; transition: color .12s, background .12s, border-color .12s; }
+.nt-sendbtn:hover { color: var(--accent-contrast); background: var(--green); border-color: var(--green); }
+/* перенос между списками — нейтральная кнопка, отличается от «в терминал» */
+.nt-sendbtn.nt-move { color: var(--text-dim); border-color: var(--border); }
+.nt-sendbtn.nt-move:hover { color: var(--text); background: var(--hover); border-color: var(--border-strong); }
+
+/* модалка новой/редактируемой задачи */
+.nt-modal { width: 520px; }
+.nt-modal-ta { width: 100%; min-height: 160px; resize: vertical; padding: 10px 12px; border-radius: 9px; background: var(--bg-input); border: 1px solid var(--border-strong); color: var(--text); font-size: 13.5px; line-height: 1.5; outline: none; font-family: inherit; }
+.nt-modal-ta:focus { border-color: var(--border-accent); }
+.nt-modal-hint { color: var(--text-mute); font-size: 11.5px; margin: 6px 2px 0; }
+.nt-modal .modal-actions .nt-modal-swap { margin-right: auto; }
+/* модалка выбора объёма экспорта / режима импорта */
+.nt-exp { display: flex; flex-direction: column; gap: 8px; margin: 6px 0 14px; }
+.nt-exp .btn { width: 100%; text-align: left; }
+.nt-imp-warn { margin: 8px 0 4px; padding: 9px 11px; border-radius: 9px; background: var(--accent-soft); border: 1px solid var(--border); color: var(--text-dim); font-size: 12px; line-height: 1.5; }
+.nt-imp-warn b { color: var(--text); }
 
 /* Git toolbar: neat compact pill buttons (replaces the old massive .btn row) */
 .git-tools { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
@@ -792,6 +849,7 @@ body.resizing { cursor: col-resize; user-select: none; }
 #app.single #db-pane,
 #app.single #rh-pane,
 #app.single #ext-pane,
+#app.single #notes-pane,
 #app.single .gutter { display: none !important; }
 #app.single #btn-single { color: var(--green); border-color: var(--border-accent); }
 
@@ -828,6 +886,16 @@ body.resizing { cursor: col-resize; user-select: none; }
 .menu-row.danger { color: var(--danger); }
 .menu-row.danger:hover { background: rgba(247,118,142,0.14); }
 .menu-row.muted { color: var(--text-dim); }
+/* двухстрочный пункт (меню «Модули»): название + описание мельче и приглушённо */
+.menu-row2 { align-items: flex-start; }
+.menu-row2 .menu-ic { margin-top: 2px; }
+.mr2-text { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.mr2-title { color: inherit; line-height: 1.3; }
+.mr2-desc { font-size: 11px; color: var(--text-mute); line-height: 1.35; }
+/* flyout-пункт (раскрывает подменю вправо) + само подменю */
+.menu-flyout .menu-arrow { margin-left: auto; padding-left: 6px; color: var(--text-mute); display: inline-flex; align-items: center; }
+.menu-flyout.sub-open { background: var(--hover); }
+.menu-sub { position: absolute; }
 .menu-sep { height: 1px; background: var(--border); margin: 5px 6px; }
 .menu-label { padding: 6px 10px 3px; font-size: 11px; letter-spacing: .5px; color: var(--text-mute); }
 .recents { max-height: 270px; overflow: auto; }
@@ -1044,112 +1112,6 @@ body.preview-full .prev-frame { width: 100%; height: 100%; }
 .scan-del { flex: 0 0 auto; width: 20px; height: 20px; padding: 0; border: 0; border-radius: 6px; background: transparent; color: var(--text-dim); cursor: pointer; }
 .scan-del:hover { color: #fff; background: rgba(247,118,142,0.7); }
 
-/* ---------------- notes (prompt cards) ---------------- */
-.notes-modal { width: 560px; }
-.nm-hint { color: var(--text-dim); font-size: 12px; margin-bottom: 10px; line-height: 1.45; }
-.nm-list { display: flex; flex-direction: column; gap: 8px; max-height: 50vh; overflow: auto; margin-bottom: 10px; }
-.nm-empty { color: var(--text-dim); text-align: center; padding: 16px; }
-/* TODO-list: строки со статусом и важностью */
-.nm-toolbar { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
-.nm-sort { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-dim); }
-.nm-sort select { background: var(--bg-input); border: 1px solid var(--border-strong); color: var(--text); border-radius: 7px; padding: 4px 8px; font-size: 12px; font-family: inherit; outline: none; }
-.nm-toolbar .nm-add { margin-left: auto; width: auto; padding: 6px 14px; border-style: solid; }
-.todo-row { display: flex; align-items: center; gap: 9px; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 7px 10px; transition: border-color .12s; }
-.todo-row:hover { border-color: var(--border-strong); }
-.todo-row.dragging { opacity: .5; border-color: var(--border-accent); }
-.todo-row.done { opacity: .6; }
-.todo-row.done .todo-text { text-decoration: line-through; color: var(--text-mute); }
-.todo-row.pr-1 { border-left: 3px solid var(--warn); }
-.todo-row.pr-2 { border-left: 3px solid var(--danger); }
-.todo-row.editing { flex-direction: column; align-items: stretch; gap: 8px; }
-/* статус-чекбокс (☐ к выполнению → ◐ в работе → ☑ готово) */
-.todo-check { flex: 0 0 auto; width: 20px; height: 20px; border-radius: 6px; border: 2px solid var(--border-strong); background: transparent; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; padding: 0; color: var(--accent-contrast); transition: background .12s, border-color .12s; }
-.todo-check:hover { border-color: var(--text-dim); }
-.todo-check.st-doing { border-color: var(--warn); }
-.todo-check.st-doing::after { content: ''; width: 9px; height: 9px; border-radius: 3px; background: var(--warn); }
-.todo-check.st-done { background: var(--green); border-color: var(--green); }
-/* флажок важности (обычная → важная → срочная) */
-.todo-flag { flex: 0 0 auto; width: 24px; height: 24px; border-radius: 6px; border: 0; background: transparent; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; padding: 0; color: var(--text-mute); transition: color .12s, background .12s; }
-.todo-flag:hover { background: var(--hover); }
-.todo-flag.pr-0 { color: var(--text-mute); opacity: .5; }
-.todo-flag.pr-1 { color: var(--warn); }
-.todo-flag.pr-1 .ic { fill: var(--warn); }
-.todo-flag.pr-2 { color: var(--danger); }
-.todo-flag.pr-2 .ic { fill: var(--danger); }
-.todo-text { flex: 1; min-width: 0; white-space: pre-wrap; word-break: break-word; color: var(--text); font-size: 12.5px; max-height: 88px; overflow: auto; line-height: 1.4; cursor: text; }
-/* иконки-действия — в стиле плашек проекта, всегда видимые */
-.todo-acts { flex: 0 0 auto; display: flex; align-items: center; gap: 2px; }
-.todo-act { flex: 0 0 auto; width: 26px; height: 26px; padding: 0; border-radius: 7px; background: transparent; border: 0; color: var(--text-mute); cursor: pointer; transition: color .12s, background .12s; display: inline-flex; align-items: center; justify-content: center; }
-.todo-act:hover:not(:disabled) { color: var(--text); background: var(--hover); }
-.todo-act.on { color: var(--warn); background: rgba(224,175,104,0.14); }
-.todo-act.danger:hover { color: var(--danger); }
-.todo-act:disabled { opacity: .3; cursor: default; }
-.note-card { background: var(--surface); border: 1px solid var(--border); border-radius: 11px; padding: 8px 11px 10px; cursor: default; transition: border-color .12s, box-shadow .12s; }
-.note-card.dragging { opacity: 0.5; border-color: var(--border-accent); }
-.note-card:hover { border-color: var(--border-strong); box-shadow: 0 2px 10px rgba(0,0,0,0.18); }
-/* notes-tab card chrome (queue cards keep the legacy .note-btn styles) */
-.note-top { display: flex; align-items: center; gap: 8px; margin-bottom: 7px; }
-.note-grip { color: var(--text-mute); cursor: grab; font-size: 13px; letter-spacing: -2px; }
-.note-qpill { margin-left: auto; padding: 3px 11px; border-radius: 9px; border: 1px solid var(--border); background: rgba(255,255,255,0.03); color: var(--text-dim); font-size: 11px; cursor: pointer; white-space: nowrap; }
-.note-qpill:hover:not(:disabled) { color: var(--text); border-color: var(--border-strong); }
-.note-qpill.on { color: var(--warn); border-color: rgba(224,175,104,0.5); background: rgba(224,175,104,0.12); }
-.note-qpill:disabled { opacity: .4; cursor: default; }
-.note-card .note-acts { justify-content: space-between; align-items: center; flex-wrap: nowrap; }
-.note-send-group { display: flex; flex: 0 0 auto; }
-.note-send { padding: 6px 13px; border: 1px solid var(--green); border-right: 0; border-radius: 8px 0 0 8px; background: var(--green); color: var(--accent-contrast); font-weight: 600; font-size: 12px; cursor: pointer; }
-.note-send:hover { background: var(--green-bright); }
-.note-send-sub { padding: 6px 11px; border: 1px solid var(--green-dim); border-radius: 0 8px 8px 0; background: transparent; color: var(--green); font-size: 11.5px; cursor: pointer; }
-.note-send-sub:hover { background: var(--accent-soft); }
-.note-tools { display: flex; gap: 2px; }
-.note-ibtn { width: 28px; height: 28px; display: inline-flex; align-items: center; justify-content: center; border-radius: 7px; border: 1px solid transparent; background: transparent; color: var(--text-dim); cursor: pointer; }
-.note-ibtn:hover:not(:disabled) { color: var(--text); background: var(--hover); }
-.note-ibtn:disabled { opacity: .25; cursor: default; }
-.note-ibtn.danger:hover { color: var(--danger); }
-.note-text { white-space: pre-wrap; word-break: break-word; color: var(--text); font-size: 12.5px; max-height: 110px; overflow: auto; margin-bottom: 8px; }
-.note-edit { width: 100%; min-height: 70px; resize: vertical; padding: 8px 10px; border-radius: 8px; background: var(--bg-input); border: 1px solid var(--border-strong); color: var(--text); font-size: 12.5px; outline: none; margin-bottom: 8px; font-family: inherit; }
-.note-edit:focus { border-color: var(--border-accent); }
-.note-acts { display: flex; gap: 6px; flex-wrap: wrap; }
-.note-btn { padding: 5px 10px; border-radius: 7px; border: 1px solid var(--border); background: rgba(255,255,255,0.03); color: var(--text-dim); cursor: pointer; font-size: 12px; }
-.note-btn:hover:not(:disabled) { color: var(--text); border-color: var(--border-strong); }
-.note-btn.nudge { padding: 5px 8px; min-width: 28px; }
-.note-btn:disabled { opacity: .25; cursor: default; border-color: var(--border); color: var(--text-dim); }
-.note-btn.send { color: var(--green); border-color: var(--green-dim); }
-.note-btn.primary { background: var(--green); border-color: var(--green); color: var(--accent-contrast); font-weight: 600; }
-.note-btn.primary:hover { background: var(--green-bright); }
-.note-btn.danger:hover { color: #fff; background: rgba(247,118,142,0.7); border-color: transparent; }
-.nm-add { width: 100%; border-style: dashed; color: var(--green); }
-.note-btn.qtoggle.on { color: var(--warn); border-color: rgba(224,175,104,0.5); background: rgba(224,175,104,0.12); }
-
-/* tabs */
-.nm-tabs { display: flex; gap: 6px; margin-bottom: 12px; border-bottom: 1px solid var(--border); }
-.nm-tab { padding: 7px 12px; background: transparent; border: 0; border-bottom: 2px solid transparent; color: var(--text-dim); cursor: pointer; font-size: 13px; margin-bottom: -1px; }
-.nm-tab:hover { color: var(--text); }
-.nm-tab.active { color: var(--green-bright); border-bottom-color: var(--green); }
-.nm-qbadge { display: none; margin-left: 6px; padding: 1px 7px; border-radius: 9px; background: var(--hover); color: var(--text-dim); font-size: 10px; }
-.nm-qbadge.show { display: inline-block; }
-
-/* queue tab */
-.q-bar { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
-.q-status { font-size: 12.5px; color: var(--text-dim); }
-.q-status.run { color: var(--text-dim); }
-.q-status.armed { color: var(--warn); font-weight: 600; }
-.note-btn.armed { background: var(--warn); border-color: var(--warn); color: #1a1206; animation: qbadge-pulse 1.3s ease-out infinite; }
-@keyframes qbadge-pulse { 0% { box-shadow: 0 0 0 0 rgba(224,175,104,0.6); } 70% { box-shadow: 0 0 0 7px rgba(224,175,104,0); } 100% { box-shadow: 0 0 0 0 rgba(224,175,104,0); } }
-.q-ctrls { display: flex; gap: 6px; }
-.q-card { display: flex; align-items: center; gap: 10px; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 8px 10px; }
-.q-num { flex: 0 0 22px; height: 22px; display: flex; align-items: center; justify-content: center; border-radius: 50%; background: var(--hover); color: var(--text-dim); font-size: 11px; font-weight: 600; }
-.q-text { flex: 1; white-space: pre-wrap; word-break: break-word; color: var(--text); font-size: 12.5px; max-height: 64px; overflow: auto; }
-.q-card.q-current { border-color: rgba(224,175,104,0.5); box-shadow: 0 0 0 1px rgba(224,175,104,0.25); }
-.q-card.q-current .q-num { background: var(--warn); color: #1a1206; }
-.q-card.q-done { opacity: 0.55; }
-.q-card.q-done .q-num { background: var(--green); color: var(--accent-contrast); }
-
-/* running-queue badge on the project card */
-.card-qbadge { display: none; padding: 4px 8px; border-radius: 7px; border: 1px solid var(--border); background: rgba(255,255,255,0.03); color: var(--text-dim); cursor: pointer; font-size: 11px; }
-.card-qbadge.show { display: inline-block; }
-.card-qbadge:hover { color: var(--text); border-color: var(--border-strong); }
-.card-qbadge.running { color: var(--warn); border-color: rgba(224,175,104,0.5); background: rgba(224,175,104,0.12); }
-.card-qbadge.armed { color: #1a1206; background: var(--warn); border-color: var(--warn); animation: qbadge-pulse 1.3s ease-out infinite; }
 
 /* ---------------- git panel (gm-* shared by the right-pane Git module) ---------------- */
 .gm-branch { display: flex; align-items: center; gap: 10px; }
@@ -1465,7 +1427,6 @@ body[data-theme="neumorphism"] .btn,
 body[data-theme="neumorphism"] .icon-btn,
 body[data-theme="neumorphism"] .tt-btn,
 body[data-theme="neumorphism"] .gm-mini,
-body[data-theme="neumorphism"] .card-act,
 body[data-theme="neumorphism"] .card-star,
 body[data-theme="neumorphism"] .card-kebab,
 body[data-theme="neumorphism"] .card-copy,
@@ -1475,7 +1436,7 @@ body[data-theme="neumorphism"] .toast { box-shadow: 6px 6px 16px #0c0e12, -6px -
 body[data-theme="neumorphism"] .modal { box-shadow: 9px 9px 24px #0a0c0f, -9px -9px 24px #22282f; }
 body[data-theme="neumorphism"] input,
 body[data-theme="neumorphism"] select,
-body[data-theme="neumorphism"] .note-edit,
+body[data-theme="neumorphism"] .nt-modal-ta,
 body[data-theme="neumorphism"] .gm-msg,
 body[data-theme="neumorphism"] .gm-cloneurl,
 body[data-theme="neumorphism"] .pal-input,
