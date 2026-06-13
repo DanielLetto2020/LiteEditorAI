@@ -12,6 +12,7 @@ lite-editor
 CLAUDE.md
 CLAUDE.local.md
 NEXT.md
+*.bkp
 # артефакты модуля «Контекст» в этом проекте: бекапы исходников при распиле/сборке
 context_project_bkp/
 # внутренние доки-компаньоны CLAUDE.md (ARCHITECTURE/RELEASE/PULT) — не в публичный main

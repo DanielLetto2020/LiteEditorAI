@@ -143,37 +143,33 @@
           <span id="ctx-stale" class="ctx-stale" title="Есть неподтверждённые изменения — нажми «Подтвердить»" hidden>●</span>
           <div class="drag-space-static"></div>
           <button id="ctx-help" class="icon-btn" title="Как это работает?" data-icon="help"></button>
-          <button id="ctx-add" class="icon-btn" title="Добавить блок" data-icon="plus"></button>
-          <button id="ctx-split" class="icon-btn" data-icon="scissors" hidden></button><!-- показывается по детекту CLAUDE.md/AGENTS.md -->
-
-          <button id="ctx-apply" class="icon-btn" title="Подтвердить изменения: сохранить канву и собрать CLAUDE.md / AGENTS.md (с бекапом)" data-icon="check"></button>
-          <button id="ctx-reset" class="icon-btn" title="Сбросить неподтверждённые изменения — вернуть канву к последнему подтверждённому виду" data-icon="refresh" hidden></button>
           <button id="ctx-settings" class="icon-btn" title="Настройки (бекапы, автосборка)" data-icon="sliders"></button>
           <button id="ctx-close" class="icon-btn" title="Закрыть" data-icon="x"></button>
         </div>
-        <div id="ctx-profiles" class="ctx-profiles"></div><!-- вкладки-профили: рендерятся в contextgraph.js -->
+        <div id="ctx-agents" class="ctx-agents"></div><!-- переключатель агента (Claude/Codex): рендерится в contextgraph.js -->
+        <div id="ctx-profiles" class="ctx-profiles"></div><!-- вкладки-профили текущего агента -->
         <div id="ctx-stats" class="ctx-stats"></div>
         <div id="ctx-canvas" class="ctx-canvas">
+          <!-- плавающая панель действий профиля/канвы (поверх канвы, правый верхний угол) -->
+          <div id="ctx-toolbar" class="ctx-toolbar">
+            <button id="ctx-add" class="icon-btn" title="Добавить блок" data-icon="plus"></button>
+            <button id="ctx-split" class="icon-btn" title="Распилить версию (CLAUDE.md/AGENTS.md → блоки)" data-icon="scissors" hidden></button>
+            <button id="ctx-fit" class="icon-btn" title="Уместить всё в экран" data-icon="maximize"></button>
+            <button id="ctx-points" class="icon-btn ctx-tb-emoji" title="Версии (точки восстановления)">🕘</button>
+            <button id="ctx-reset" class="icon-btn" title="Сбросить неподтверждённые изменения — вернуть канву к последнему подтверждённому виду" data-icon="refresh" hidden></button>
+            <button id="ctx-apply" class="btn ctx-tb-apply" title="Подтвердить изменения: сохранить канву и собрать файл агента (с бекапом)">✓ Подтвердить</button>
+          </div>
+          <button id="ctx-wire-del" class="ctx-wire-del" title="Удалить соединение" hidden>×</button><!-- появляется при наведении на провод -->
           <div id="ctx-world" class="ctx-world">
             <svg id="ctx-wires" class="ctx-wires"></svg>
             <div id="ctx-nodes"></div>
           </div>
-          <div id="ctx-empty" class="ctx-empty" hidden>
-            <div class="hint-card">
-              <div class="hint-title">Здесь собирается контекст для агента</div>
-              <div class="hint-text">Слева — блоки с кусками контекста (текст, файл, команда, память агента),<br>
-                в середине — группы-профили с тумблерами, справа — выходы: Claude и Codex.<br>
-                По кнопке «Подтвердить» (✓) всё включённое склеивается в <b>CLAUDE.md</b> / <b>AGENTS.md</b> —<br>
-                файлы, которые агент читает при старте сессии (старый файл бекапится).<br><br>
-                Провод тянется мышкой от правой точки блока к левой точке группы/выхода.<br>
-                Напрямую в выход = постоянный контекст · через группу = включается тумблером.<br>
-                Двойной клик по блоку — редактирование · колесо — зум · Del — удалить.</div>
-              <div class="ctx-empty-actions">
-                <button id="ctx-empty-help" class="btn">? Как это работает</button>
-                <button id="ctx-empty-add" class="btn">+ Блок</button>
-                <span id="ctx-empty-splits"></span><!-- кнопки «✂ распилить …» — по детекту файлов -->
-              </div>
-            </div>
+          <!-- лёгкий онбординг: нижняя плашка, закрывается один раз; основное управление — в тулбаре справа сверху -->
+          <div id="ctx-onboard" class="ctx-onboard" hidden>
+            <div class="ctx-onboard-tx"><b>Контекст агента из блоков.</b> Быстрый старт — «✂ Распилить версию»: локальный агент разложит CLAUDE.md/AGENTS.md на блоки. Дальше управляйте кнопками в правом верхнем углу: добавить блок, версии, уместить в экран, подтвердить.</div>
+            <button id="ctx-ob-split" class="btn primary">✂ Распилить версию</button>
+            <button id="ctx-ob-help" class="btn">Как это работает</button>
+            <button id="ctx-ob-close" class="icon-btn" title="Скрыть подсказку" data-icon="x"></button>
           </div>
         </div>
       </section>

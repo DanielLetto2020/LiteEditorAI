@@ -683,6 +683,13 @@ body.resizing { cursor: col-resize; user-select: none; }
 /* ---------------- «Контекст»: граф контекста агента (канва как n8n) ---------------- */
 #ctx-pane { flex: 0 0 740px; min-width: 320px; border-left: 1px solid var(--border); display: flex; flex-direction: column; background: var(--panel); overflow: hidden; }
 .ctx-stale { color: var(--warn); margin-left: 6px; font-size: 13px; animation: update-pulse 2s ease-in-out infinite; }
+/* переключатель агента (Claude/Codex) над профилями */
+.ctx-agents { display: flex; gap: 6px; align-items: center; padding: 7px 10px 4px; border-bottom: 1px solid var(--border); flex: 0 0 auto; }
+.ctx-agent { padding: 4px 14px; border: 1px solid var(--border-strong); border-radius: 16px; background: var(--surface-2); color: var(--text-dim); font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; transition: background .12s, color .12s, border-color .12s; }
+.ctx-agent:hover { background: var(--hover-2); color: var(--text); }
+.ctx-agent.on { background: var(--accent-soft); color: var(--text); border-color: var(--border-accent); }
+.ctx-tb-emoji { font-size: 14px; line-height: 1; }
+.ctx-vbtn { font-size: 11.5px; padding: 5px 11px; }
 /* вкладки-профили над канвой */
 .ctx-profiles { display: flex; align-items: center; gap: 4px; padding: 5px 8px 0; border-bottom: 1px solid var(--border); flex: 0 0 auto; overflow-x: auto; }
 .ctx-ptab { display: inline-flex; align-items: center; gap: 6px; padding: 5px 10px; border: 1px solid var(--border); border-bottom: none; border-radius: 8px 8px 0 0; background: var(--surface-2); color: var(--text-dim); font-size: 12px; cursor: pointer; white-space: nowrap; max-width: 200px; }
@@ -750,10 +757,23 @@ body.resizing { cursor: col-resize; user-select: none; }
 /* пустая канва */
 .ctx-empty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; pointer-events: none; }
 .ctx-empty[hidden] { display: none; }   /* атрибут hidden слабее display:flex — без этого подсказка висела поверх нод */
+/* плавающая панель действий профиля/канвы — поверх канвы, правый верхний угол */
+.ctx-toolbar { position: absolute; top: 10px; right: 12px; z-index: 6; display: flex; align-items: center; gap: 4px; padding: 4px; background: color-mix(in srgb, var(--panel) 88%, transparent); border: 1px solid var(--border); border-radius: 10px; box-shadow: var(--card-shadow); backdrop-filter: blur(3px); }
+.ctx-tb-apply { font-size: 12px; padding: 6px 12px; margin-left: 2px; white-space: nowrap; }
 /* «Подтвердить» подсвечивается, пока есть неподтверждённые правки */
 #ctx-apply.hot { color: var(--accent-contrast); background: var(--green); border-color: var(--border-accent); }
+/* кнопка удаления провода (как в n8n: появляется по наведению на линию) */
+.ctx-wire-del { position: absolute; z-index: 5; width: 20px; height: 20px; padding: 0; transform: translate(-50%, -50%); display: flex; align-items: center; justify-content: center; border-radius: 50%; border: 1px solid var(--danger); background: var(--panel); color: var(--danger); font-size: 14px; line-height: 1; cursor: pointer; box-shadow: var(--card-shadow); transition: background .1s, color .1s, transform .1s; }
+.ctx-wire-del:hover { background: var(--danger); color: var(--accent-contrast); transform: translate(-50%, -50%) scale(1.12); }
+.ctx-wire-del[hidden] { display: none; }
 .ctx-empty .hint-card { pointer-events: auto; }
 .ctx-empty-actions { display: flex; gap: 8px; justify-content: center; margin-top: 12px; }
+/* онбординг-плашка снизу канвы (лёгкая, закрывается один раз) */
+.ctx-onboard { position: absolute; left: 12px; right: 12px; bottom: 12px; z-index: 5; display: flex; align-items: center; gap: 10px; padding: 10px 12px; background: color-mix(in srgb, var(--panel) 94%, transparent); border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--card-shadow); backdrop-filter: blur(3px); }
+.ctx-onboard[hidden] { display: none; }
+.ctx-onboard-tx { flex: 1 1 auto; font-size: 12px; color: var(--text-dim); line-height: 1.5; }
+.ctx-onboard-tx b { color: var(--text); }
+.ctx-onboard .btn { flex: 0 0 auto; font-size: 12px; padding: 6px 12px; }
 
 /* модалки модуля */
 .ctx-modal { width: 680px; max-width: 94vw; overflow-x: hidden; } /* overflow-x:hidden — без горизонтального скролла */
@@ -761,6 +781,15 @@ body.resizing { cursor: col-resize; user-select: none; }
 .ctx-mtype { display: inline-flex; align-items: center; gap: 6px; color: var(--green); font-size: 12px; font-weight: 600; white-space: nowrap; }
 .ctx-mtitle { flex: 1 1 auto; background: var(--bg-input); border: 1px solid var(--border-strong); border-radius: 8px; color: var(--text); font: inherit; font-weight: 600; padding: 7px 10px; outline: none; }
 .ctx-mtitle:focus { border-color: var(--border-accent); }
+/* стрелки-слайды: листание текстовых блоков прямо в модалке */
+.ctx-mnav { display: inline-flex; align-items: center; gap: 2px; flex: 0 0 auto; }
+.ctx-mnav-btn { width: 28px; height: 28px; padding: 0; display: inline-flex; align-items: center; justify-content: center; border: 1px solid var(--border-strong); border-radius: 7px; background: var(--surface-2); color: var(--text); font-size: 13px; cursor: pointer; transition: background .1s, border-color .1s, opacity .1s; }
+.ctx-mnav-btn:hover:not(:disabled) { background: var(--hover-2); border-color: var(--border-accent); }
+.ctx-mnav-btn:disabled { opacity: .35; cursor: default; }
+.ctx-mnav-pos { font-size: 11px; color: var(--text-dim); min-width: 30px; text-align: center; font-variant-numeric: tabular-nums; }
+/* футер модалки: «Отмена/Закрыть»+«Сохранить» — справа, всё остальное (инфо/удалить/доп.действия) — слева */
+.ctx-mfoot #cxm-cancel { margin-left: auto; }
+.ctx-mfoot .ctx-foot-info { margin-right: 2px; }
 .ctx-med { border: 1px solid var(--border-strong); border-radius: 8px; overflow: hidden; margin-bottom: 10px; }
 .ctx-med .cm-editor { height: 320px; font-size: 12.5px; }
 .ctx-med .cm-editor.cm-focused { outline: none; }
