@@ -7,7 +7,7 @@
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache--2.0-green.svg)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/DanielLetto2020/LiteEditorAI?include_prereleases&sort=semver)](https://github.com/DanielLetto2020/LiteEditorAI/releases)
 [![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20Windows-blue.svg)](#установка)
-[![Built with Electron](https://img.shields.io/badge/Electron-33-47848F.svg?logo=electron&logoColor=white)](https://www.electronjs.org/)
+[![Built with Electron](https://img.shields.io/badge/Electron-42-47848F.svg?logo=electron&logoColor=white)](https://www.electronjs.org/)
 [![Status: alpha](https://img.shields.io/badge/status-alpha-orange.svg)](#статус)
 
 </div>
@@ -126,7 +126,7 @@ npm install        # зависимости + сборка node-pty под Elect
 npm start          # сборка фронта + запуск
 ```
 
-Требуется Node.js 18+ (Linux/Windows x64). Для разработчиков — [CONTRIBUTING.md](CONTRIBUTING.md).
+Требуется Node.js 22+ (Linux/Windows x64). Для разработчиков — [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Горячие клавиши
 

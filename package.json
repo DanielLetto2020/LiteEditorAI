@@ -1,6 +1,6 @@
 {
   "name": "liteeditor-ai",
-  "version": "1.0.144-alpha",
+  "version": "1.0.147-alpha",
   "description": "Lightweight editor for working with AI coding agents in the terminal",
   "main": "main.js",
   "author": "Максим Кузьминский <i@m-letto.ru>",
@@ -14,8 +14,8 @@
     "build": "node build.js",
     "start": "node build.js && electron --no-sandbox --class=LiteEditorAI .",
     "watch": "node build.js --watch",
-    "rebuild": "electron-rebuild -f -w node-pty",
-    "postinstall": "electron-rebuild -f -w node-pty || echo 'node-pty rebuild skipped — run: npm run rebuild'",
+    "rebuild": "electron-rebuild -f -o node-pty",
+    "postinstall": "electron-rebuild -f -o node-pty || echo 'node-pty rebuild skipped — run: npm run rebuild'",
     "gen-icons": "node scripts/gen-icons.js",
     "install-desktop": "node scripts/install-desktop.js",
     "dist:linux": "node build.js && electron-builder --linux deb",
@@ -57,10 +57,10 @@
     "ws": "^8.21.0"
   },
   "devDependencies": {
-    "@electron/rebuild": "^3.7.1",
-    "electron": "^33.2.0",
+    "@electron/rebuild": "^4.0.4",
+    "electron": "^42.4.0",
     "electron-builder": "^26.8.1",
-    "esbuild": "^0.24.0",
+    "esbuild": "^0.28.1",
     "sharp": "^0.33.5"
   },
   "build": {
@@ -100,7 +100,12 @@
       "maintainer": "Максим Кузьминский <i@m-letto.ru>",
       "executableArgs": [
         "--no-sandbox"
-      ]
+      ],
+      "desktop": {
+        "entry": {
+          "StartupWMClass": "liteeditor-ai"
+        }
+      }
     },
     "win": {
       "target": [
