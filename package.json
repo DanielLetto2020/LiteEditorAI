@@ -100,7 +100,12 @@
       "maintainer": "Максим Кузьминский <i@m-letto.ru>",
       "executableArgs": [
         "--no-sandbox"
-      ]
+      ],
+      "desktop": {
+        "entry": {
+          "StartupWMClass": "liteeditor-ai"
+        }
+      }
     },
     "win": {
       "target": [
