@@ -134,6 +134,11 @@ contextBridge.exposeInMainWorld('lite', {
     onSysInfo: (cb) => { const h = (_e, p) => cb(p || {}); ipcRenderer.on('remote:sysinfo', h); return () => ipcRenderer.removeListener('remote:sysinfo', h); },
   },
 
+  audit: {
+    scan: (root, opts) => ipcRenderer.invoke('audit:scan', { root, opts }), // → агрегаты | { error }
+    export: (content, defaultName) => ipcRenderer.invoke('audit:export', { content, defaultName }), // → {ok,file}|{canceled}|{error}
+  },
+
   git: {
     status: (root) => ipcRenderer.invoke('git:status', root),
     fileDiff: (root, file) => ipcRenderer.invoke('git:fileDiff', { root, file }),
