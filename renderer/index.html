@@ -205,6 +205,18 @@
         <div id="audit-body" class="audit-body"></div>
       </section>
 
+      <!-- WEB/SEO audit module: аудит сайта (локальный dev-сервер или внешний домен), следует за проектом -->
+      <div id="gutter-seo" class="gutter hidden" data-resize="seo"></div>
+      <section id="seo-pane" class="hidden">
+        <div class="pane-head">
+          <span id="seo-proj">WEB/SEO аудит</span>
+          <div class="drag-space-static"></div>
+          <button id="seo-rescan" class="icon-btn" title="Пересканировать сайт" data-icon="refresh"></button>
+          <button id="seo-close" class="icon-btn" title="Закрыть" data-icon="x"></button>
+        </div>
+        <div id="seo-body" class="seo-body"></div>
+      </section>
+
       <!-- Containers module (docker/podman): system-wide, opens to the right -->
       <div id="gutter-docker" class="gutter hidden" data-resize="docker"></div>
       <section id="docker-pane" class="hidden">
