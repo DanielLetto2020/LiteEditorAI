@@ -2511,10 +2511,18 @@ const SEO_DOM_SCRIPT = `(async () => {
   };
 })()`;
 
-const SEO_RENDER_TIMEOUT = 25000;
+const SEO_RENDER_TIMEOUT = 20000;
+// Обёртка против зависания отдельного шага рендера (страница/GPU/CDP могут залипнуть навсегда).
+function seoWithTimeout(p, ms, fallback) {
+  return Promise.race([
+    Promise.resolve(p).catch(() => fallback),
+    new Promise((r) => setTimeout(() => r(fallback), ms)),
+  ]);
+}
 
 // Глубокий аудит: грузим страницу в скрытом окне, снимаем отрендеренный DOM, метрики, сеть (CDP),
 // скриншоты, консольные ошибки, битые ссылки. Окно ВСЕГДА уничтожается в finally.
+// Каждый потенциально-залипающий шаг обёрнут таймаутом, чтобы аудит не висел бесконечно.
 ipcMain.handle('seo:render', async (_e, { url }) => {
   const u = seoNormalizeUrl(url);
   if (!u) return { ok: false, error: 'Некорректный адрес' };
@@ -2554,16 +2562,19 @@ ipcMain.handle('seo:render', async (_e, { url }) => {
     const loadRes = await Promise.race([loaded, timer]);
     await new Promise((r) => setTimeout(r, 400)); // дать догрузиться
 
-    let dom = null; try { dom = await wc.executeJavaScript(SEO_DOM_SCRIPT, true); } catch (e) { dom = { error: String((e && e.message) || e) }; }
+    // Извлечение DOM — с таймаутом (страница может залипнуть и не отдать результат).
+    const dom = await seoWithTimeout(
+      wc.executeJavaScript(SEO_DOM_SCRIPT, true).catch((e) => ({ error: String((e && e.message) || e) })),
+      8000, { error: 'таймаут извлечения DOM' });
 
     let shotDesktop = null, shotMobile = null;
-    try { const img = await wc.capturePage(); if (img && !img.isEmpty()) shotDesktop = img.resize({ width: 520 }).toDataURL(); } catch (e) {}
+    try { const img = await seoWithTimeout(wc.capturePage(), 6000, null); if (img && !img.isEmpty()) shotDesktop = img.resize({ width: 520 }).toDataURL(); } catch (e) {}
     try {
       if (dbg) {
-        await wc.debugger.sendCommand('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 2, mobile: true });
+        await seoWithTimeout(wc.debugger.sendCommand('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 2, mobile: true }), 3000, null);
         await new Promise((r) => setTimeout(r, 300));
-        const img2 = await wc.capturePage(); if (img2 && !img2.isEmpty()) shotMobile = img2.resize({ width: 280 }).toDataURL();
-        await wc.debugger.sendCommand('Emulation.clearDeviceMetricsOverride').catch(() => {});
+        const img2 = await seoWithTimeout(wc.capturePage(), 6000, null); if (img2 && !img2.isEmpty()) shotMobile = img2.resize({ width: 280 }).toDataURL();
+        await seoWithTimeout(wc.debugger.sendCommand('Emulation.clearDeviceMetricsOverride'), 3000, null);
       }
     } catch (e) {}
 
@@ -2714,12 +2725,40 @@ ipcMain.handle('git:clone', async (_e, { root, url }) => {
   // '--' ends option parsing so the URL can never be treated as a flag.
   return gitRun(root, ['clone', '--', u, '.'], { timeout: 120000 });
 });
-ipcMain.handle('git:commit', async (_e, { root, message, push }) => {
-  const add = await gitRun(root, ['add', '-A']); if (!add.ok) return add;
+ipcMain.handle('git:commit', async (_e, { root, message, push, files }) => {
+  // files передан → коммитим только выбранное (git add -- <files>), иначе всё (git add -A, как раньше).
+  const sel = Array.isArray(files) && files.length;
+  const add = await gitRun(root, sel ? ['add', '--', ...files] : ['add', '-A']); if (!add.ok) return add;
   const c = await gitRun(root, ['commit', '-m', message || 'update']); if (!c.ok) return c;
   if (push) { const p = await gitRun(root, ['push']); if (!p.ok) return { ok: false, error: 'Коммит создан, push не прошёл: ' + p.error }; }
   return { ok: true, out: c.out };
 });
+// Стейджинг выбранных путей (для пометки конфликта разрешённым и выборочного коммита).
+ipcMain.handle('git:add', async (_e, { root, files }) =>
+  gitRun(root, ['add', '--', ...(Array.isArray(files) ? files : [files])]));
+// Список конфликтных файлов (unmerged). Коды porcelain с 'U' либо AA/DD — обе стороны изменили.
+ipcMain.handle('git:conflicts', async (_e, root) => {
+  if (!root || !fs.existsSync(root)) return { error: 'no root' };
+  const top = await git(root, ['rev-parse', '--show-toplevel']);
+  if (top == null) return { repo: false, files: [] };
+  const base = top.trim();
+  const out = await git(root, ['status', '--porcelain', '--untracked-files=no']);
+  const files = [];
+  if (out) for (const line of out.split('\n')) {
+    if (!line) continue;
+    const code = line.slice(0, 2);
+    // Unmerged: оба знака конфликта (DD, AU, UD, UA, DU, AA, UU) — наличие 'U', либо DD/AA.
+    if (/U/.test(code) || code === 'DD' || code === 'AA') {
+      let p = line.slice(3);
+      if (p.startsWith('"') && p.endsWith('"')) p = p.slice(1, -1);
+      files.push({ rel: p, abs: path.join(base, p), code: code.trim() });
+    }
+  }
+  return { repo: true, files };
+});
+// Слить ветку в текущую. Конфликт → ok:false (UI откроет модалку разрешения по git:conflicts).
+ipcMain.handle('git:merge', async (_e, { root, branch }) => gitRun(root, ['merge', '--no-edit', branch]));
+ipcMain.handle('git:mergeAbort', async (_e, root) => gitRun(root, ['merge', '--abort']));
 ipcMain.handle('git:push', async (_e, root) => gitRun(root, ['push']));
 ipcMain.handle('git:pull', async (_e, root) => gitRun(root, ['pull', '--ff-only']));
 // Stash including untracked (-u) so a quick "спрятать всё" doesn't leave new files behind.

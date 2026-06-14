@@ -2,7 +2,34 @@
 // No imports from renderer.js (keeps the dependency graph a DAG: ui.js ← modules ← core).
 // Everything here is pure DOM: no core state, no window.lite calls.
 
+import hljs from 'highlight.js/lib/common';
+
 const $ = (sel) => document.querySelector(sel);
+
+// Расширение → id языка highlight.js (только из lite-набора common). Неизвестное → null (без подсветки).
+const DIFF_LANGS = {
+  js: 'javascript', jsx: 'javascript', mjs: 'javascript', cjs: 'javascript',
+  ts: 'typescript', tsx: 'typescript', py: 'python', rb: 'ruby', go: 'go',
+  rs: 'rust', java: 'java', php: 'php', c: 'c', h: 'c', cpp: 'cpp', cc: 'cpp',
+  cs: 'csharp', kt: 'kotlin', swift: 'swift', lua: 'lua', pl: 'perl',
+  json: 'json', css: 'css', scss: 'scss', less: 'less', html: 'xml', htm: 'xml',
+  xml: 'xml', svg: 'xml', md: 'markdown', markdown: 'markdown', sql: 'sql',
+  sh: 'bash', bash: 'bash', zsh: 'bash', yml: 'yaml', yaml: 'yaml', ini: 'ini',
+  toml: 'ini', make: 'makefile', dockerfile: 'dockerfile', r: 'r',
+};
+// Язык по имени файла или строке заголовка диффа ('+++ b/path.ext\t...').
+export function langForName(s) {
+  if (!s) return null;
+  const name = String(s).replace(/^[+\-]{3}\s+/, '').split('\t')[0].trim();
+  const m = name.match(/\.([a-zA-Z0-9]+)$/);
+  return (m && DIFF_LANGS[m[1].toLowerCase()]) || null;
+}
+// Подсветить кусок кода (sanitized HTML от hljs); при неизвестном языке/ошибке вернуть null.
+export function highlightCode(text, lang) {
+  if (!lang || !text || !hljs.getLanguage(lang)) return null;
+  try { return hljs.highlight(text, { language: lang, ignoreIllegals: true }).value; }
+  catch (_) { return null; }
+}
 
 export function el(tag, cls, text) {
   const e = document.createElement(tag);
@@ -104,16 +131,29 @@ export function toast(msg, opts = {}) {
 }
 
 // Render a unified diff string into a container, line-classed like the viewer's diff.
-export function renderDiffInto(view, text) {
+// fileName (optional) задаёт язык подсветки; иначе берётся из строки '+++ ' в диффе.
+export function renderDiffInto(view, text, fileName) {
   view.innerHTML = '';
   if (!text || !text.trim()) { view.appendChild(el('div', 'diff-empty', 'Нет изменений относительно HEAD.')); return; }
+  let lang = fileName ? langForName(fileName) : null;
   for (const ln of text.split('\n')) {
     let cls = '';
     if (ln.startsWith('@@')) cls = 'hunk';
-    else if (ln.startsWith('+++') || ln.startsWith('---') || ln.startsWith('diff ') || ln.startsWith('index ')) cls = 'meta';
-    else if (ln.startsWith('+')) cls = 'add';
+    else if (ln.startsWith('+++') || ln.startsWith('---') || ln.startsWith('diff ') || ln.startsWith('index ') || ln.startsWith('\\')) {
+      cls = 'meta';
+      if (!lang && ln.startsWith('+++')) lang = langForName(ln);
+    } else if (ln.startsWith('+')) cls = 'add';
     else if (ln.startsWith('-')) cls = 'del';
-    view.appendChild(el('div', 'diff-line ' + cls, ln || ' '));
+    const row = el('div', 'diff-line ' + cls);
+    if (cls === 'add' || cls === 'del' || cls === '') { // содержимое кода — подсветить, маркер +/-/пробел отдельно
+      row.appendChild(el('span', 'diff-mark', ln.slice(0, 1) || ' '));
+      const code = el('span', 'diff-code');
+      const body = ln.slice(1);
+      const hl = highlightCode(body, lang);
+      if (hl != null) code.innerHTML = hl; else code.textContent = body;
+      row.appendChild(code);
+    } else row.textContent = ln || ' ';
+    view.appendChild(row);
   }
 }
 

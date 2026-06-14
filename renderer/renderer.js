@@ -10,8 +10,8 @@ import { CanvasAddon } from '@xterm/addon-canvas';
 import { Unicode11Addon } from '@xterm/addon-unicode11';
 import '@xterm/xterm/css/xterm.css';
 
-import { EditorView, keymap, lineNumbers, highlightActiveLine, drawSelection } from '@codemirror/view';
-import { EditorState, Compartment } from '@codemirror/state';
+import { EditorView, keymap, lineNumbers, highlightActiveLine, drawSelection, Decoration } from '@codemirror/view';
+import { EditorState, Compartment, StateField, StateEffect } from '@codemirror/state';
 import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands';
 import { syntaxHighlighting, defaultHighlightStyle, indentOnInput, bracketMatching } from '@codemirror/language';
 import { search, searchKeymap, highlightSelectionMatches, openSearchPanel } from '@codemirror/search';
@@ -38,7 +38,7 @@ import { initSeo } from './modules/seo.js';
 import { initOpenRouter } from './modules/openrouter.js';
 import { initExtensions } from './modules/extensions.js';
 
-const APP_VERSION = 'alpha v1.0.157';
+const APP_VERSION = 'alpha v1.0.160';
 const GUTTER = 5;
 const SCRATCH_ID = '__scratch__'; // префикс id системных терминалов (домашняя папка), не привязаны к проектам
 const isScratch = (id) => typeof id === 'string' && id.startsWith(SCRATCH_ID);
@@ -1583,6 +1583,53 @@ function makeEditor() {
   });
   editor = new EditorView({ state, parent: $('#editor') });
 }
+// Подсветка строк по эффекту (для конфликтных регионов merge-модалки): per-line background-класс.
+const setMarksEffect = StateEffect.define();
+const marksField = StateField.define({
+  create: () => Decoration.none,
+  update(deco, tr) {
+    deco = deco.map(tr.changes);
+    for (const e of tr.effects) if (e.is(setMarksEffect)) deco = e.value;
+    return deco;
+  },
+  provide: (f) => EditorView.decorations.from(f),
+});
+// Переиспользуемая фабрика CodeMirror для модулей (merge-модалка git): та же тема/подсветка, что у вивера,
+// но изолированный инстанс. opts: { doc, readOnly, language, onChange } → { view, getValue, setValue, setMarks, destroy }.
+function createCodeEditor(parent, opts = {}) {
+  const exts = [
+    lineNumbers(), drawSelection(), history(), indentOnInput(), bracketMatching(),
+    syntaxHighlighting(defaultHighlightStyle, { fallback: true }), oneDark, marksField,
+    opts.language || [],
+    keymap.of([indentWithTab, ...defaultKeymap, ...historyKeymap]),
+  ];
+  if (opts.readOnly) exts.push(EditorState.readOnly.of(true), EditorView.editable.of(false));
+  if (opts.onChange) exts.push(EditorView.updateListener.of((u) => { if (u.docChanged) opts.onChange(u.state.doc.toString()); }));
+  const view = new EditorView({ state: EditorState.create({ doc: opts.doc || '', extensions: exts }), parent });
+  return {
+    view,
+    getValue: () => view.state.doc.toString(),
+    setValue: (text) => view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: text || '' } }),
+    // specs: [{ fromLine, toLine, cls }] — 1-based включительно; подсвечивает целые строки.
+    setMarks: (specs) => {
+      const total = view.state.doc.lines;
+      const deco = [];
+      for (const s of (specs || [])) {
+        for (let ln = Math.max(1, s.fromLine); ln <= Math.min(total, s.toLine); ln++) {
+          deco.push(Decoration.line({ class: s.cls }).range(view.state.doc.line(ln).from));
+        }
+      }
+      deco.sort((a, b) => a.from - b.from);
+      view.dispatch({ effects: setMarksEffect.of(Decoration.set(deco, true)) });
+    },
+    scrollToLine: (ln) => {
+      const total = view.state.doc.lines;
+      const pos = view.state.doc.line(Math.max(1, Math.min(total, ln))).from;
+      view.dispatch({ effects: EditorView.scrollIntoView(pos, { y: 'center' }) });
+    },
+    destroy: () => view.destroy(),
+  };
+}
 function previewKind(file) {
   const e = extOf(file);
   if (['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'ico', 'avif'].includes(e)) return 'image';
@@ -1845,6 +1892,7 @@ registerPanel('files', { isOpen: () => viewerOpen, setOpen: (open, opts) => { if
 const Git = initGit({
   layout, GUTTER, saveUiState, renderProjects, refitActiveTerminal,
   activeProject, getActiveId: () => activeId, refreshTree, closeOtherPanels,
+  createCodeEditor, languageFor,
 });
 registerPanel('git', { isOpen: Git.isOpen, setOpen: Git.setOpen });
 // «Контекст» — граф контекста агента (renderer/modules/contextgraph.js, канва как n8n).
@@ -1878,7 +1926,6 @@ registerPanel('audit', { isOpen: Audit.isOpen, setOpen: Audit.setOpen });
 // WEB/SEO аудит — самостоятельный анализатор сайтов (renderer/modules/seo.js); системная панель, свой список сайтов.
 const Seo = initSeo({
   layout, GUTTER, saveUiState, refitActiveTerminal, closeOtherPanels, STORE, persist,
-  sendToTerminal: (text) => { const p = activeProject(); if (p) sendNoteToTerminal(p, text); else toast('Откройте проект, чтобы передать находки агенту'); },
 });
 registerPanel('seo', { isOpen: Seo.isOpen, setOpen: Seo.setOpen });
 // Пользовательские модули (extensions): загрузчик + общая панель правого слота.
