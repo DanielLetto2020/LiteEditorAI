@@ -33,10 +33,11 @@ import { initContainers } from './modules/containers.js';
 import { initDb } from './modules/db.js';
 import { initRh } from './modules/remotehost.js';
 import { initNotes } from './modules/notes.js';
+import { initAudit } from './modules/audit.js';
 import { initOpenRouter } from './modules/openrouter.js';
 import { initExtensions } from './modules/extensions.js';
 
-const APP_VERSION = 'alpha v1.0.152';
+const APP_VERSION = 'alpha v1.0.155';
 const GUTTER = 5;
 const SCRATCH_ID = '__scratch__'; // префикс id системных терминалов (домашняя папка), не привязаны к проектам
 const isScratch = (id) => typeof id === 'string' && id.startsWith(SCRATCH_ID);
@@ -88,7 +89,7 @@ const Or = initOpenRouter({
   isViewerOpen: () => viewerOpen, getActiveOrId: () => activeOrId,
   setActiveOrId: (v) => { activeOrId = v; }, clearActiveDoc: () => { activeDocId = null; },
   // чат закрывает проектные модули правого слота; rh исторически не трогает (1:1)
-  closePanelsForChat: () => { if (Git.isOpen()) Git.setOpen(false); if (Containers.isOpen()) Containers.setOpen(false); if (Db.isOpen()) Db.setOpen(false); if (Notes.isOpen()) Notes.setOpen(false); if (scratchOpen) setScratchOpen(false); },
+  closePanelsForChat: () => { if (Git.isOpen()) Git.setOpen(false); if (Containers.isOpen()) Containers.setOpen(false); if (Db.isOpen()) Db.setOpen(false); if (Notes.isOpen()) Notes.setOpen(false); if (Audit.isOpen()) Audit.setOpen(false); if (scratchOpen) setScratchOpen(false); },
 });
 // ---------------------------------------------------------------- Text processing (изолированный модуль)
 // Документ-плашка открывается ВМЕСТО терминала (как чат OpenRouter). Вся логика — в
@@ -125,7 +126,7 @@ let editor = null;
 let loadingDoc = false;
 const langComp = new Compartment();
 
-const DEFAULT_LAYOUT = { sidebar: 240, viewer: 520, tree: 240, scratch: 420, git: 360, ctx: 740, docker: 460, db: 560, rh: 520, ext: 420, notes: 480 };
+const DEFAULT_LAYOUT = { sidebar: 240, viewer: 520, tree: 240, scratch: 420, git: 360, ctx: 740, docker: 460, db: 560, rh: 520, ext: 420, notes: 480, audit: 460 };
 let layout = loadLayout();
 let lastParent = STORE.lastParent || '';
 
@@ -171,7 +172,7 @@ function loadLayout() { return { ...DEFAULT_LAYOUT, ...(STORE.layout || {}) }; }
 function saveLayout() { persist('layout', layout); }
 // Whether the viewer / system terminal panes are open — part of the backed-up state,
 // restored on startup (and on import) so the window reopens the way it was left.
-function saveUiState() { persist('uiState', { viewerOpen, scratchOpen, gitOpen: Git.isOpen(), ctxOpen: Ctx.isOpen(), dockerOpen: Containers.isOpen(), dbOpen: Db.isOpen(), rhOpen: Rh.isOpen(), notesOpen: Notes.isOpen() }); }
+function saveUiState() { persist('uiState', { viewerOpen, scratchOpen, gitOpen: Git.isOpen(), ctxOpen: Ctx.isOpen(), dockerOpen: Containers.isOpen(), dbOpen: Db.isOpen(), rhOpen: Rh.isOpen(), notesOpen: Notes.isOpen(), auditOpen: Audit.isOpen() }); }
 function applyLayout() {
   $('#sidebar').style.flexBasis = layout.sidebar + 'px';
   $('#viewer-pane').style.flexBasis = layout.viewer + 'px';
@@ -184,6 +185,7 @@ function applyLayout() {
   $('#rh-pane').style.flexBasis = layout.rh + 'px';
   $('#ext-pane').style.flexBasis = layout.ext + 'px';
   $('#notes-pane').style.flexBasis = layout.notes + 'px';
+  $('#audit-pane').style.flexBasis = layout.audit + 'px';
 }
 function loadRecents() { return Array.isArray(STORE.recents) ? STORE.recents : []; }
 function pushRecent(p) {
@@ -1523,6 +1525,7 @@ function doSetActive(id) {
   if (viewerOpen) refreshViewerForActive();
   if (Git.isOpen()) Git.renderPanel(proj); // Git module follows the active project
   if (Notes.isOpen()) Notes.renderPanel(proj); // панель задач следует за активным проектом
+  if (Audit.isOpen()) Audit.renderPanel(); // аудит следует за активным проектом
   try { Ctx.onProjectChange(proj); } catch (_) {} // канва «Контекста» следует за активным проектом
   try { Ext.notifyActiveProject(activeId); } catch (_) {} // пользовательские модули: ctx.projects.onChange
 }
@@ -1796,11 +1799,13 @@ function showViewerPlaceholder() {
   clearViewer();
 }
 
+// Возвращает промис первичной отрисовки (renderTree + clearViewer), чтобы вызывающий мог
+// дождаться её и лишь потом грузить файл — иначе clearViewer() затрёт свежезагруженный файл.
 function setViewerOpen(open, opts = {}) {
   if (open === viewerOpen) {
-    if (open) refreshViewerForActive();
+    const p = open ? refreshViewerForActive() : null;
     renderProjects();
-    return;
+    return p;
   }
   // Right slot holds one module — opening the viewer closes the others (chat is separate).
   if (open) closeOtherPanels('files');
@@ -1812,8 +1817,9 @@ function setViewerOpen(open, opts = {}) {
   if (opts.grow !== false) lite.win.growBy(open ? delta : -delta); // grow:false on restore — saved width already counts these panes
   saveUiState();
   renderProjects();
-  if (open) refreshViewerForActive();
+  const pending = open ? refreshViewerForActive() : null;
   setTimeout(refitActiveTerminal, 150);
+  return pending;
 }
 
 // ================================================================ right module slot
@@ -1822,7 +1828,7 @@ function setViewerOpen(open, opts = {}) {
 // Реестр панелей: каждая setXxxOpen знает только себя, взаимоисключение — closeOtherPanels.
 // Порядок закрытия фиксирован (он же — порядок старых inline-цепочек во всех setXxxOpen).
 const panels = new Map(); // id -> { isOpen(), setOpen(open, opts) }
-const PANEL_ORDER = ['files', 'git', 'ctx', 'docker', 'db', 'scratch', 'rh', 'notes'];
+const PANEL_ORDER = ['files', 'git', 'ctx', 'docker', 'db', 'scratch', 'rh', 'notes', 'audit'];
 function registerPanel(id, api) { panels.set(id, api); }
 function closeOtherPanels(selfId) {
   for (const id of PANEL_ORDER) {
@@ -1860,6 +1866,13 @@ const Rh = initRh({
 registerPanel('rh', { isOpen: Rh.isOpen, setOpen: Rh.setOpen });
 // Задачи/заметки — панель правого слота (renderer/modules/notes.js); следует за активным проектом.
 registerPanel('notes', { isOpen: Notes.isOpen, setOpen: Notes.setOpen });
+// Аудит — базовый рентген активного проекта (renderer/modules/audit.js); следует за проектом.
+const Audit = initAudit({
+  layout, GUTTER, saveUiState, refitActiveTerminal, activeProject, closeOtherPanels,
+  openInViewer: async (abs, line) => { if (!viewerOpen) await setViewerOpen(true); await openFile(abs, line); },
+  sendToTerminal: (text) => { const p = activeProject(); if (p) sendNoteToTerminal(p, text); },
+});
+registerPanel('audit', { isOpen: Audit.isOpen, setOpen: Audit.setOpen });
 // Пользовательские модули (extensions): загрузчик + общая панель правого слота.
 // renderer/modules/extensions.js; публичный API ctx v1 — спека в module-kit/GUIDE.md.
 const Ext = initExtensions({
@@ -1895,6 +1908,7 @@ const QUICK_BUILTIN = [
   { id: 'db',      icon: 'database', label: 'Базы данных — Postgres / MySQL / SQLite' },
   { id: 'rh',      icon: 'globe',    label: 'Удалённые хосты — SSH-сессии' },
   { id: 'notes',   icon: 'note',     label: 'Задачи — заметки проекта' },
+  { id: 'audit',   icon: 'grid',     label: 'Аудит — анализ проекта' },
   { id: 'scratch', icon: 'terminal', label: 'Системный терминал (вне проектов)' },
 ];
 function quickAllModules() {
@@ -2350,6 +2364,7 @@ function buildModulesMenu(dd) {
     sub.appendChild(moduleRow('database', 'Базы данных', 'Postgres · MySQL · SQLite', () => { closeMenus(); openModule('db'); }));
     sub.appendChild(moduleRow('globe', 'Удалённые хосты', 'SSH-сессии к серверам', () => { closeMenus(); openModule('rh'); }));
     sub.appendChild(moduleRow('note', 'Задачи', 'заметки проекта и общие', () => { closeMenus(); openModule('notes'); }));
+    sub.appendChild(moduleRow('grid', 'Аудит', 'типы файлов, крупные файлы, медиа', () => { closeMenus(); openModule('audit'); }));
     sub.appendChild(el('div', 'menu-sep'));
     sub.appendChild(moduleRow('terminal', 'Системный терминал', 'вне проектов', () => { closeMenus(); openModule('scratch'); }));
   });
@@ -2853,6 +2868,8 @@ function init() {
   $('#viewer-close').addEventListener('click', () => setViewerOpen(false));
   $('#git-close').addEventListener('click', () => Git.setOpen(false));
   $('#git-refresh').addEventListener('click', () => { if (Git.isOpen()) Git.renderPanel(activeProject()); });
+  $('#audit-close').addEventListener('click', () => Audit.setOpen(false));
+  $('#audit-rescan').addEventListener('click', () => Audit.rescan());
   $('#notes-close').addEventListener('click', () => Notes.setOpen(false));
   $('#notes-export').addEventListener('click', () => Notes.exportMenu());
   $('#notes-import').addEventListener('click', () => Notes.importNotes());
@@ -2931,10 +2948,10 @@ function init() {
   // Right-slot modules are mutually exclusive — restore at most one, first-true-wins
   // (приоритет — порядок старых if-цепочек: viewer, scratch, git, docker, db, rh).
   // allowEmpty so Git returns even before a project is active — matching the viewer, so window width fits.
-  const RESTORE_ORDER = [['files', 'viewerOpen'], ['scratch', 'scratchOpen'], ['git', 'gitOpen'], ['ctx', 'ctxOpen'], ['docker', 'dockerOpen'], ['db', 'dbOpen'], ['rh', 'rhOpen'], ['notes', 'notesOpen']];
+  const RESTORE_ORDER = [['files', 'viewerOpen'], ['scratch', 'scratchOpen'], ['git', 'gitOpen'], ['ctx', 'ctxOpen'], ['docker', 'dockerOpen'], ['db', 'dbOpen'], ['rh', 'rhOpen'], ['notes', 'notesOpen'], ['audit', 'auditOpen']];
   for (const [id, key] of RESTORE_ORDER) {
     if (!ui[key]) continue;
-    panels.get(id).setOpen(true, (id === 'git' || id === 'ctx' || id === 'notes') ? { grow: false, allowEmpty: true } : { grow: false });
+    panels.get(id).setOpen(true, (id === 'git' || id === 'ctx' || id === 'notes' || id === 'audit') ? { grow: false, allowEmpty: true } : { grow: false });
     break;
   }
 

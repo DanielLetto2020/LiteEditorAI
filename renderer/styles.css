@@ -476,6 +476,130 @@ html, body {
 .nt-imp-warn { margin: 8px 0 4px; padding: 9px 11px; border-radius: 9px; background: var(--accent-soft); border: 1px solid var(--border); color: var(--text-dim); font-size: 12px; line-height: 1.5; }
 .nt-imp-warn b { color: var(--text); }
 
+/* ───────────────── Аудит проекта (модуль audit.js) ───────────────── */
+#audit-pane { flex: 0 0 460px; min-width: 300px; border-left: 1px solid var(--border); display: flex; flex-direction: column; background: var(--panel); }
+.audit-body { flex: 1; min-height: 0; overflow: hidden; padding: 10px 12px; display: flex; flex-direction: column; gap: 10px; }
+.au-empty { color: var(--text-mute); text-align: center; padding: 24px 12px; font-size: 12.5px; line-height: 1.5; }
+.au-empty.au-err { color: var(--danger); }
+
+/* шапка: источник + кнопка скана + заметка */
+.au-controls { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; flex-wrap: wrap; }
+.au-seg { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.au-seg-inline { margin-bottom: 4px; }
+.au-segbtn { padding: 5px 11px; background: transparent; border: 0; color: var(--text-dim); cursor: pointer; font-size: 12px; transition: color .12s, background .12s; }
+.au-segbtn:hover { color: var(--text); }
+.au-segbtn.active { color: var(--accent-contrast); background: var(--green); font-weight: 600; }
+.au-scan { display: inline-flex; align-items: center; gap: 6px; padding: 5px 11px; border-radius: 8px; border: 1px solid var(--green-dim); background: transparent; color: var(--green); cursor: pointer; font-size: 12px; transition: color .12s, background .12s, border-color .12s; }
+.au-scan:hover { color: var(--accent-contrast); background: var(--green); border-color: var(--green); }
+.au-note { flex: 1 1 100%; color: var(--text-mute); font-size: 11px; line-height: 1.4; }
+.au-note:empty { display: none; }
+
+/* вкладки */
+.au-tabs { display: flex; flex-wrap: wrap; gap: 4px; flex: 0 0 auto; border-bottom: 1px solid var(--border); }
+.au-tab { display: inline-flex; align-items: center; gap: 6px; padding: 7px 11px; background: transparent; border: 0; border-bottom: 2px solid transparent; color: var(--text-dim); cursor: pointer; font-size: 12.5px; margin-bottom: -1px; }
+.au-tab:hover { color: var(--text); }
+.au-tab.active { color: var(--green-bright); border-bottom-color: var(--green); }
+
+.au-content { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; padding-right: 2px; }
+.au-h { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--text-mute); font-weight: 600; margin: 2px 0 -4px; }
+.au-foot { color: var(--text-mute); font-size: 11px; line-height: 1.4; }
+
+/* Обзор: карточки-метрики */
+.au-cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.au-statcard { display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 12px 6px; border-radius: 11px; border: 1px solid var(--border); background: var(--surface); color: var(--text-dim); }
+.au-statcard .ic { color: var(--green); }
+.au-stat-val { font-size: 18px; font-weight: 700; color: var(--text); }
+.au-stat-lbl { font-size: 10.5px; color: var(--text-mute); text-align: center; }
+
+/* Обзор: бары языков */
+.au-bars { display: flex; flex-direction: column; gap: 6px; }
+.au-bar { display: flex; align-items: center; gap: 8px; }
+.au-bar-lbl { flex: 0 0 56px; font-size: 11.5px; color: var(--text-dim); font-variant-numeric: tabular-nums; }
+.au-bar-track { flex: 1; height: 8px; border-radius: 5px; background: var(--hover); overflow: hidden; }
+.au-bar-fill { height: 100%; border-radius: 5px; background: var(--green); }
+.au-bar-val { flex: 0 0 auto; font-size: 11px; color: var(--text-mute); font-variant-numeric: tabular-nums; }
+
+/* Обзор: категории */
+.au-catgrid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px; }
+.au-cat { display: flex; flex-direction: column; gap: 1px; padding: 7px 9px; border-radius: 8px; border: 1px solid var(--border); background: var(--surface); text-align: left; font: inherit; cursor: pointer; transition: border-color .12s, background .12s; }
+.au-cat:hover { border-color: var(--border-accent); background: var(--accent-soft); }
+.au-cat-name { font-size: 12px; color: var(--text); }
+.au-cat-meta { font-size: 10.5px; color: var(--text-mute); }
+
+/* баннер активного фильтра категории + сброс */
+.au-filter { display: flex; align-items: center; gap: 8px; padding: 6px 9px; border-radius: 8px; background: var(--accent-soft); border: 1px solid var(--border-accent); }
+.au-filter-lbl { flex: 1; font-size: 12px; color: var(--text); }
+.au-filter-x { display: inline-flex; align-items: center; gap: 4px; padding: 3px 8px; border-radius: 6px; border: 1px solid var(--border); background: transparent; color: var(--text-dim); cursor: pointer; font-size: 11.5px; }
+.au-filter-x:hover { color: var(--text); border-color: var(--border-strong); }
+/* кнопка «назад» из дралл-дауна */
+.au-back { display: inline-flex; align-items: center; gap: 4px; align-self: flex-start; padding: 4px 10px 4px 6px; border-radius: 7px; border: 1px solid var(--border); background: transparent; color: var(--text-dim); cursor: pointer; font-size: 12px; }
+.au-back:hover { color: var(--text); border-color: var(--border-strong); }
+
+/* Типы: таблица */
+.au-table { display: flex; flex-direction: column; }
+.au-tr { display: grid; grid-template-columns: minmax(0,1.6fr) .8fr .8fr .8fr 64px; align-items: center; gap: 6px; padding: 6px 4px; border-bottom: 1px solid var(--border); }
+.au-tr-btn { width: 100%; text-align: left; font: inherit; color: inherit; background: transparent; border: 0; border-bottom: 1px solid var(--border); cursor: pointer; }
+.au-tr-btn:hover { background: var(--hover); }
+.au-thead { position: sticky; top: 0; background: var(--panel); z-index: 1; border-bottom-color: var(--border-strong); }
+.au-thead .au-td { font-size: 10.5px; text-transform: uppercase; letter-spacing: .05em; color: var(--text-mute); }
+.au-td { font-size: 12px; color: var(--text-dim); min-width: 0; }
+.au-num { text-align: right; font-variant-numeric: tabular-nums; }
+.au-sortable { cursor: pointer; }
+.au-sortable:hover { color: var(--text); }
+.au-sortable.active { color: var(--green-bright); }
+.au-c-ext { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.au-ext { color: var(--text); font-weight: 600; font-size: 12px; }
+.au-cat-tag { font-size: 10px; color: var(--text-mute); padding: 1px 6px; border-radius: 20px; border: 1px solid var(--border); white-space: nowrap; }
+.au-c-share { display: flex; align-items: center; }
+.au-share-track { width: 100%; height: 6px; border-radius: 4px; background: var(--hover); overflow: hidden; }
+.au-share-fill { height: 100%; background: var(--green-dim); border-radius: 4px; }
+
+/* Списки файлов (Крупные/Медиа/дралл-даун/находки): grid path | value | actions.
+   auto-колонки под значение и действия → вес/строки ВСЕГДА видны даже при длинных путях. */
+.au-files { display: flex; flex-direction: column; }
+.au-frow { display: grid; grid-template-columns: minmax(0,1fr) auto auto; align-items: center; gap: 8px; padding: 6px 6px; border-radius: 7px; cursor: pointer; border-bottom: 1px solid var(--border); }
+.au-frow:hover { background: var(--hover); }
+.au-fwrap { min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.au-fmain { min-width: 0; display: flex; align-items: baseline; white-space: nowrap; }
+.au-fdir { color: var(--text-mute); font-size: 11.5px; flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.au-fname { color: var(--text); font-size: 12.5px; flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.au-fsub { color: var(--text-mute); font-size: 11px; line-height: 1.35; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.au-fval { color: var(--green-bright); font-size: 11.5px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.au-frow.au-danger .au-fval { color: var(--danger); }
+.au-badge { flex: 0 0 auto; margin-left: 6px; font-size: 9.5px; text-transform: uppercase; letter-spacing: .04em; padding: 1px 6px; border-radius: 20px; background: var(--warn); color: var(--accent-contrast); font-weight: 700; }
+.au-frow.au-danger .au-badge { background: var(--danger); }
+/* действия по файлу — появляются на ховере строки */
+.au-facts { display: flex; gap: 2px; opacity: 0; transition: opacity .12s; }
+.au-frow:hover .au-facts { opacity: 1; }
+.au-fact { width: 24px; height: 24px; display: inline-flex; align-items: center; justify-content: center; padding: 0; border-radius: 6px; background: transparent; border: 1px solid transparent; color: var(--text-mute); cursor: pointer; }
+.au-fact:hover { color: var(--text); background: var(--hover-2); }
+
+/* Обзор: действия (сводка/экспорт) + чипы-находки */
+.au-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.au-actbtn { display: inline-flex; align-items: center; gap: 6px; padding: 6px 11px; border-radius: 8px; border: 1px solid var(--border); background: transparent; color: var(--text-dim); cursor: pointer; font-size: 12px; transition: color .12s, border-color .12s, background .12s; }
+.au-actbtn:hover { color: var(--text); border-color: var(--border-strong); background: var(--hover); }
+.au-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.au-chip2 { display: inline-flex; align-items: center; gap: 5px; padding: 4px 10px; border-radius: 20px; border: 1px solid var(--border); background: var(--surface); color: var(--text-dim); cursor: pointer; font-size: 11.5px; }
+.au-chip2:hover { color: var(--text); border-color: var(--border-strong); }
+.au-chip2.warn { border-color: var(--danger); color: var(--danger); }
+.au-chip-n { font-weight: 700; color: var(--text); }
+.au-chip2.warn .au-chip-n { color: var(--danger); }
+.au-allgood { color: var(--green-bright); font-size: 12px; }
+
+/* фильтр-чип (напр. «только аномалии») и строка управления над списком */
+.au-barrow { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+.au-chip { display: inline-flex; align-items: center; padding: 4px 11px; border-radius: 20px; border: 1px solid var(--border); background: transparent; color: var(--text-dim); cursor: pointer; font-size: 11.5px; }
+.au-chip:hover { color: var(--text); border-color: var(--border-strong); }
+.au-chip.active { color: var(--accent-contrast); background: var(--green); border-color: var(--green); font-weight: 600; }
+
+/* секции внутри вкладок «Гигиена»/«Долг»/«История» */
+.au-sec { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+.au-sec-title { font-size: 12.5px; font-weight: 600; color: var(--text); }
+.au-sec-count { font-size: 11px; padding: 0 7px; border-radius: 20px; background: var(--hover-2); color: var(--text-dim); font-variant-numeric: tabular-nums; }
+.au-sec-hint { font-size: 11px; color: var(--text-mute); line-height: 1.35; margin: -2px 0 2px; }
+.au-dupe { margin: 4px 0; padding: 6px 8px; border: 1px solid var(--border); border-radius: 8px; }
+.au-dupe-head { font-size: 11px; color: var(--text-mute); margin-bottom: 2px; }
+
 /* Git toolbar: neat compact pill buttons (replaces the old massive .btn row) */
 .git-tools { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
 .git-tool {

@@ -9,6 +9,7 @@ const os = require('os');
 const { execFile, spawn } = require('child_process');
 const https = require('https');
 const net = require('net');
+const crypto = require('crypto');
 const { pathToFileURL } = require('url');
 const pty = require('node-pty');
 // Headless-xterm: на каждую сессию держим «теневой» терминал, который потребляет тот же
@@ -1830,6 +1831,290 @@ function git(cwd, args) {
     });
   });
 }
+
+// ---------------------------------------------------------------- audit (базовый аудит проекта)
+// Один проход по дереву проекта → агрегаты: типы файлов, крупнейшие файлы, медиа по весу.
+// Источник файлов: 'git' (git ls-files — только отслеживаемое, самый честный фильтр; node_modules
+// и сборка отсекаются репозиторием) или 'fs' (рекурсивный обход с IGNORE_DIRS). Бинарь не читаем
+// построчно (классификация по расширению + NUL-проба первых байт); строки считаем у текста до лимита.
+// MVP: читает каждый текстовый файл целиком ради подсчёта строк — на гигантских деревьях небыстро,
+// поэтому два предохранителя: лимит файлов и лимит размера для построчного счёта.
+const AUDIT_MAX_FILES = 60000;                       // патологические деревья → стоп, флаг capped
+const AUDIT_LINE_MAX_BYTES = 4 * 1024 * 1024;        // крупнее — вес считаем, строки пропускаем
+const AUDIT_FILES_OUT = 20000;                       // сколько файлов отдаём в рендерер для дралл-даунов
+// Расширение → категория (для группировки и вкладки «Медиа»).
+const AUDIT_EXT_CAT = (() => {
+  const m = {};
+  const add = (cat, exts) => exts.forEach((e) => { m[e] = cat; });
+  add('code', ['js', 'mjs', 'cjs', 'jsx', 'ts', 'tsx', 'py', 'go', 'rs', 'java', 'kt', 'kts', 'scala', 'c', 'h', 'cc', 'cpp', 'cxx', 'hpp', 'cs', 'rb', 'php', 'swift', 'm', 'mm', 'lua', 'dart', 'vue', 'svelte', 'sh', 'bash', 'zsh', 'fish', 'pl', 'r', 'jl', 'ex', 'exs', 'erl', 'clj', 'hs', 'ml', 'sql', 'gradle', 'groovy']);
+  add('web', ['html', 'htm', 'css', 'scss', 'sass', 'less', 'styl']);
+  add('config', ['json', 'jsonc', 'json5', 'yaml', 'yml', 'toml', 'ini', 'cfg', 'conf', 'env', 'xml', 'plist', 'lock', 'properties', 'editorconfig', 'gitignore', 'dockerignore']);
+  add('docs', ['md', 'markdown', 'mdx', 'txt', 'rst', 'adoc', 'org', 'tex']);
+  add('data', ['csv', 'tsv', 'ndjson']);
+  add('image', ['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'avif', 'ico', 'bmp', 'tiff', 'heic']);
+  add('media', ['mp4', 'mov', 'webm', 'mkv', 'avi', 'mp3', 'wav', 'ogg', 'flac', 'aac', 'm4a', 'm4v']);
+  add('archive', ['zip', 'tar', 'gz', 'tgz', 'bz2', 'xz', '7z', 'rar', 'zst']);
+  add('font', ['ttf', 'otf', 'woff', 'woff2', 'eot']);
+  add('binary', ['pdf', 'wasm', 'bin', 'dat', 'db', 'sqlite', 'sqlite3', 'exe', 'dll', 'so', 'dylib', 'o', 'a', 'class', 'jar', 'pyc']);
+  return m;
+})();
+const AUDIT_BINARY_CATS = new Set(['image', 'media', 'archive', 'font', 'binary']); // не читать построчно
+function auditCat(ext) { return AUDIT_EXT_CAT[ext] || 'other'; }
+
+// --- эвристики находок (вкладки «Гигиена»/«Долг») ---
+const AUDIT_MARKER_RE = /\b(TODO|FIXME|HACK|XXX|BUG)\b/;       // метки техдолга (вкладка «Долг»)
+const AUDIT_MINIFIED_MAXLINE = 1000;                          // строка длиннее → «минифицированный»/генерённый
+const AUDIT_FIND_CAP = 800;                                   // потолок на общий список меток/секретов
+const AUDIT_GIT_COMMITS = 2000;                               // глубина истории для churn/возраста
+// Правила секретов — консервативный набор с низким FP (имя правила → regex).
+const AUDIT_SECRET_RULES = [
+  ['AWS access key', /AKIA[0-9A-Z]{16}/],
+  ['Google API key', /AIza[0-9A-Za-z_-]{35}/],
+  ['GitHub token', /gh[posru]_[0-9A-Za-z]{36,}/],
+  ['Slack token', /xox[baprs]-[0-9A-Za-z-]{10,}/],
+  ['Stripe key', /sk_live_[0-9A-Za-z]{16,}/],
+  ['Private key', /-----BEGIN (?:RSA |EC |DSA |OPENSSH |PGP )?PRIVATE KEY-----/],
+  ['JWT', /eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/],
+  ['Generic secret', /(?:api[_-]?key|secret|token|password|passwd|access[_-]?key)["']?\s*[:=]\s*["'][^"'\s]{12,}["']/i],
+];
+// «Мусор в гите»: что обычно не должно лежать под версионным контролем.
+const AUDIT_JUNK_SEG = new Set(['node_modules', 'dist', 'build', '.next', 'out', 'target', 'vendor', '__pycache__', '.venv', 'venv', 'coverage', '.cache', '.parcel-cache']);
+function auditJunkReason(rel, cat, bytes) {
+  const segs = rel.split('/');
+  const base = segs[segs.length - 1];
+  for (const s of segs) if (AUDIT_JUNK_SEG.has(s)) return 'каталог сборки/зависимостей под git (' + s + ')';
+  if (/^\.env(\.|$)/.test(base) && !/\.(example|sample|template)$/.test(base)) return 'файл окружения (.env) под git — риск утечки';
+  if (base === '.DS_Store' || base === 'Thumbs.db' || base === 'desktop.ini') return 'служебный файл ОС';
+  if (/\.(log|tmp|temp|swp|swo|bak|orig)$/.test(base)) return 'временный/лог-файл';
+  if (/\.min\.(js|css)$/.test(base)) return 'минифицированный бандл (часто генерируется)';
+  if (cat === 'archive') return 'архив под git';
+  if (AUDIT_BINARY_CATS.has(cat) && bytes > 1024 * 1024) return 'крупный бинарь (>1 МБ) под git';
+  return null;
+}
+
+// Текстовый проход: строки + макс. длина строки + метки + секреты. NUL → null (бинарь).
+async function auditScanText(full) {
+  let buf;
+  try { buf = await fs.promises.readFile(full); } catch { return null; }
+  const probe = Math.min(buf.length, 8192);
+  for (let i = 0; i < probe; i++) if (buf[i] === 0) return null; // нашли NUL → бинарь
+  if (buf.length === 0) return { lines: 0, maxLine: 0, markers: [], secrets: [] };
+  const rows = buf.toString('utf8').split('\n');
+  let lines = rows.length;
+  if (rows[rows.length - 1] === '') lines -= 1; // финальный \n не создаёт «лишнюю» строку
+  let maxLine = 0;
+  const markers = [], secrets = [];
+  for (let i = 0; i < rows.length; i++) {
+    const ln = rows[i];
+    if (ln.length > maxLine) maxLine = ln.length;
+    if (markers.length < 12) { const m = AUDIT_MARKER_RE.exec(ln); if (m) markers.push({ line: i + 1, kind: m[1], text: ln.trim().slice(0, 160) }); }
+    if (secrets.length < 8) for (const [rule, re] of AUDIT_SECRET_RULES) if (re.test(ln)) { secrets.push({ line: i + 1, rule, text: ln.trim().slice(0, 120) }); break; }
+  }
+  return { lines, maxLine, markers, secrets };
+}
+
+// Дубликаты: хешируем только файлы, чей размер совпал с другим (кандидаты), — дёшево.
+async function auditDupes(root, files) {
+  const bySize = new Map();
+  for (const f of files) { if (f.bytes < 16) continue; const a = bySize.get(f.bytes); if (a) a.push(f); else bySize.set(f.bytes, [f]); }
+  const cand = [];
+  for (const arr of bySize.values()) if (arr.length > 1) cand.push(...arr);
+  if (!cand.length || cand.length > 4000) return { groups: [], skipped: cand.length > 4000 };
+  const byHash = new Map();
+  for (const f of cand) {
+    let buf; try { buf = await fs.promises.readFile(path.join(root, f.rel)); } catch { continue; }
+    const k = f.bytes + ':' + crypto.createHash('sha1').update(buf).digest('hex');
+    const a = byHash.get(k); if (a) a.push(f); else byHash.set(k, [f]);
+  }
+  const groups = [];
+  for (const arr of byHash.values()) if (arr.length > 1) groups.push({ bytes: arr[0].bytes, files: arr.map((x) => x.rel) });
+  groups.sort((a, b) => b.bytes * b.files.length - a.bytes * a.files.length);
+  return { groups: groups.slice(0, 200), skipped: false };
+}
+
+// История из git: churn (число коммитов на файл) + дата последнего изменения (log новейшие-сверху).
+// quotePath=false — пути без кавычек, чтобы совпадали с `ls-files -z`.
+async function auditGitHistory(root, fileSet) {
+  const out = await git(root, ['-c', 'core.quotePath=false', 'log', '-n', String(AUDIT_GIT_COMMITS), '--no-merges', '--pretty=format:\x01%aI', '--name-only']);
+  if (out == null) return null;
+  const commits = new Map(), lastDate = new Map();
+  let cur = null;
+  for (const ln of out.split('\n')) {
+    if (ln[0] === '\x01') { cur = ln.slice(1); continue; }
+    if (!ln || !fileSet.has(ln)) continue;
+    commits.set(ln, (commits.get(ln) || 0) + 1);
+    if (!lastDate.has(ln) && cur) lastDate.set(ln, cur);
+  }
+  return { commits, lastDate };
+}
+
+// Осиротевшие (эвристика): basename файла не встречается ни в одном ДРУГОМ файле. Только малые проекты.
+async function auditOrphans(root, files) {
+  if (files.length > 1500) return { items: [], skipped: true };
+  const corpus = [];
+  for (const f of files) {
+    if (AUDIT_BINARY_CATS.has(f.cat) || f.bytes > AUDIT_LINE_MAX_BYTES) continue;
+    let buf; try { buf = await fs.promises.readFile(path.join(root, f.rel)); } catch { continue; }
+    if (buf.includes(0)) continue;
+    corpus.push({ rel: f.rel, lower: buf.toString('utf8').toLowerCase() });
+  }
+  const ENTRY = /^(index|main|app|mod|__init__|readme|license|changelog|setup|conftest)\b/i;
+  const items = [];
+  for (const f of files) {
+    if (items.length >= 200) break;
+    if (f.cat !== 'code' && f.cat !== 'web') continue;
+    const base = f.rel.split('/').pop();
+    if (ENTRY.test(base) || base.startsWith('.')) continue;
+    const b = base.toLowerCase(), n = b.replace(/\.[^.]+$/, '');
+    const referenced = corpus.some((o) => o.rel !== f.rel && (o.lower.includes(b) || o.lower.includes(n)));
+    if (!referenced) items.push({ rel: f.rel, bytes: f.bytes });
+  }
+  return { items, skipped: false };
+}
+
+// Рекурсивный обход (источник 'fs'): относительные пути, IGNORE_DIRS отсекаются.
+async function auditWalkFs(root, out) {
+  const stack = ['.'];
+  while (stack.length) {
+    const rel = stack.pop();
+    let ents;
+    try { ents = await fs.promises.readdir(path.join(root, rel), { withFileTypes: true }); } catch { continue; }
+    for (const ent of ents) {
+      if (out.length >= AUDIT_MAX_FILES) return true; // capped
+      const childRel = rel === '.' ? ent.name : rel + '/' + ent.name;
+      if (ent.isDirectory()) { if (!IGNORE_DIRS.has(ent.name)) stack.push(childRel); }
+      else if (ent.isFile()) out.push(childRel);
+    }
+  }
+  return false;
+}
+
+ipcMain.handle('audit:scan', async (_e, { root, opts }) => {
+  if (!root || !fs.existsSync(root)) return { error: 'Нет каталога проекта' };
+  const wanted = (opts && opts.source) === 'fs' ? 'fs' : 'git';
+  let source = wanted, capped = false, gitless = false;
+  let relPaths = null;
+
+  if (wanted === 'git') {
+    const top = await git(root, ['rev-parse', '--show-toplevel']);
+    if (top == null) { source = 'fs'; gitless = true; }            // не git-репозиторий → откат на fs
+    else {
+      const out = await git(root, ['ls-files', '-z']);
+      if (out == null) { source = 'fs'; gitless = true; }          // буфер/ошибка → откат на fs
+      else relPaths = out.split('\0').filter(Boolean);
+    }
+  }
+  if (relPaths == null) { relPaths = []; capped = await auditWalkFs(root, relPaths); }
+  else if (relPaths.length >= AUDIT_MAX_FILES) { relPaths = relPaths.slice(0, AUDIT_MAX_FILES); capped = true; }
+
+  const byExtMap = new Map();   // ext → {ext, cat, files, lines, bytes}
+  const byCatMap = new Map();   // cat → {cat, files, lines, bytes}
+  const files = [];             // {rel, ext, cat, bytes, lines, hasLines, mtime}
+  const junk = [], todos = [], secrets = [], minified = []; // находки для «Гигиена»/«Долг»
+  let totFiles = 0, totLines = 0, totBytes = 0, skippedBig = 0;
+
+  for (const rel of relPaths) {
+    const full = path.join(root, rel);
+    let st;
+    try { st = await fs.promises.stat(full); } catch { continue; }
+    if (!st.isFile()) continue;
+    const bytes = st.size;
+    const dot = path.extname(rel);
+    const ext = dot ? dot.slice(1).toLowerCase() : '';
+    const key = ext || '—';
+    const cat = auditCat(ext);
+    let lines = null;
+    const isBinary = AUDIT_BINARY_CATS.has(cat);
+    if (!isBinary && bytes <= AUDIT_LINE_MAX_BYTES) {
+      const scan = await auditScanText(full);
+      if (scan) {
+        lines = scan.lines;
+        if (scan.maxLine >= AUDIT_MINIFIED_MAXLINE) minified.push({ rel, maxLine: scan.maxLine, bytes, lines });
+        for (const m of scan.markers) if (todos.length < AUDIT_FIND_CAP) todos.push({ rel, line: m.line, kind: m.kind, text: m.text });
+        for (const s of scan.secrets) if (secrets.length < AUDIT_FIND_CAP) secrets.push({ rel, line: s.line, rule: s.rule, text: s.text });
+      }
+    } else if (!isBinary) { skippedBig++; }
+    const hasLines = lines != null;
+
+    const reason = auditJunkReason(rel, cat, bytes);
+    if (reason) junk.push({ rel, reason, bytes });
+
+    totFiles++; totBytes += bytes; if (hasLines) totLines += lines;
+    let e = byExtMap.get(key);
+    if (!e) { e = { ext: key, cat, files: 0, lines: 0, bytes: 0 }; byExtMap.set(key, e); }
+    e.files++; e.bytes += bytes; if (hasLines) e.lines += lines;
+    let c = byCatMap.get(cat);
+    if (!c) { c = { cat, files: 0, lines: 0, bytes: 0 }; byCatMap.set(cat, c); }
+    c.files++; c.bytes += bytes; if (hasLines) c.lines += lines;
+    files.push({ rel, ext: key, cat, bytes, lines: hasLines ? lines : 0, hasLines, mtime: st.mtimeMs });
+  }
+
+  // Дубликаты и осиротевшие — пост-проходы (читают только нужные файлы / только малые проекты).
+  const dupes = await auditDupes(root, files);
+  const orphans = await auditOrphans(root, files);
+
+  // Свежие/старые БЕЗ пересечения: на малых проектах «top-N новых» и «top-N старых» иначе
+  // делят одни и те же файлы (файл попадал и в «Свежие», и в «Давно не тронуты»).
+  const splitAge = (dated) => {
+    const sorted = dated.slice().sort((a, b) => b.when.localeCompare(a.when)); // новые сверху
+    const recent = sorted.slice(0, 40);
+    const seen = new Set(recent.map((x) => x.rel));
+    const stale = sorted.filter((x) => !seen.has(x.rel)).slice(-40).reverse(); // старые снизу, исключая свежие
+    return { recent, stale };
+  };
+  // История: из git (churn + дата последнего коммита) либо из mtime (источник fs / не репозиторий).
+  let history;
+  if (source === 'git') {
+    const h = await auditGitHistory(root, new Set(files.map((f) => f.rel)));
+    if (h) {
+      const churn = [...h.commits.entries()].map(([rel, commits]) => ({ rel, commits })).sort((a, b) => b.commits - a.commits).slice(0, 60);
+      const dated = files.filter((f) => h.lastDate.has(f.rel)).map((f) => ({ rel: f.rel, when: h.lastDate.get(f.rel), bytes: f.bytes }));
+      history = { mode: 'git', churn, ...splitAge(dated), windowCommits: AUDIT_GIT_COMMITS };
+    }
+  }
+  if (!history) {
+    const dated = files.map((f) => ({ rel: f.rel, when: new Date(f.mtime).toISOString(), bytes: f.bytes }));
+    history = { mode: 'mtime', churn: [], ...splitAge(dated) };
+  }
+
+  const slim = (f) => ({ rel: f.rel, ext: f.ext, cat: f.cat, bytes: f.bytes, lines: f.lines, hasLines: f.hasLines });
+  const byExt = [...byExtMap.values()].sort((a, b) => b.bytes - a.bytes);
+  const byCat = [...byCatMap.values()].sort((a, b) => b.bytes - a.bytes);
+  // Языки для обзора: топ расширений код+веб по строкам.
+  const langs = byExt.filter((e) => e.cat === 'code' || e.cat === 'web').sort((a, b) => b.lines - a.lines).slice(0, 8);
+  // Полный список файлов (для дралл-даунов на клиенте: по типу, по категории, крупные, медиа, аномалии).
+  // Отсортирован по весу убыв.; лимит на отдачу, чтобы не гнать в рендерер сотни тысяч объектов.
+  const filesSorted = files.sort((a, b) => b.bytes - a.bytes);
+  const filesOut = filesSorted.slice(0, AUDIT_FILES_OUT).map(slim);
+  const filesCapped = filesSorted.length > AUDIT_FILES_OUT;
+  minified.sort((a, b) => b.maxLine - a.maxLine);
+  junk.sort((a, b) => b.bytes - a.bytes);
+
+  return {
+    root, source, gitless, capped, scannedAt: Date.now(),
+    totals: { files: totFiles, lines: totLines, bytes: totBytes, skippedBig },
+    byExt, byCat, langs, files: filesOut, filesCapped,
+    // находки
+    junk, todos, secrets, minified: minified.slice(0, 200),
+    dupes: dupes.groups, dupesSkipped: dupes.skipped,
+    orphans: orphans.items, orphansSkipped: orphans.skipped,
+    history,
+  };
+});
+
+// Экспорт отчёта аудита в файл (md/json) через системный диалог сохранения.
+ipcMain.handle('audit:export', async (_e, { content, defaultName }) => {
+  try {
+    const r = await dialog.showSaveDialog({
+      defaultPath: defaultName || 'audit-report.md',
+      filters: [{ name: 'Markdown', extensions: ['md'] }, { name: 'JSON', extensions: ['json'] }, { name: 'Все файлы', extensions: ['*'] }],
+    });
+    if (r.canceled || !r.filePath) return { canceled: true };
+    fs.writeFileSync(r.filePath, String(content == null ? '' : content));
+    return { ok: true, file: r.filePath };
+  } catch (e) { return { error: String((e && e.message) || e) }; }
+});
+
 // Map of changed files (abs path -> short status code) for tree decorations.
 ipcMain.handle('git:status', async (_e, root) => {
   if (!root || !fs.existsSync(root)) return { error: 'no root' };
