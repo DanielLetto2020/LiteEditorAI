@@ -34,10 +34,11 @@ import { initDb } from './modules/db.js';
 import { initRh } from './modules/remotehost.js';
 import { initNotes } from './modules/notes.js';
 import { initAudit } from './modules/audit.js';
+import { initSeo } from './modules/seo.js';
 import { initOpenRouter } from './modules/openrouter.js';
 import { initExtensions } from './modules/extensions.js';
 
-const APP_VERSION = 'alpha v1.0.155';
+const APP_VERSION = 'alpha v1.0.157';
 const GUTTER = 5;
 const SCRATCH_ID = '__scratch__'; // префикс id системных терминалов (домашняя папка), не привязаны к проектам
 const isScratch = (id) => typeof id === 'string' && id.startsWith(SCRATCH_ID);
@@ -89,7 +90,7 @@ const Or = initOpenRouter({
   isViewerOpen: () => viewerOpen, getActiveOrId: () => activeOrId,
   setActiveOrId: (v) => { activeOrId = v; }, clearActiveDoc: () => { activeDocId = null; },
   // чат закрывает проектные модули правого слота; rh исторически не трогает (1:1)
-  closePanelsForChat: () => { if (Git.isOpen()) Git.setOpen(false); if (Containers.isOpen()) Containers.setOpen(false); if (Db.isOpen()) Db.setOpen(false); if (Notes.isOpen()) Notes.setOpen(false); if (Audit.isOpen()) Audit.setOpen(false); if (scratchOpen) setScratchOpen(false); },
+  closePanelsForChat: () => { if (Git.isOpen()) Git.setOpen(false); if (Containers.isOpen()) Containers.setOpen(false); if (Db.isOpen()) Db.setOpen(false); if (Notes.isOpen()) Notes.setOpen(false); if (Audit.isOpen()) Audit.setOpen(false); if (Seo.isOpen()) Seo.setOpen(false); if (scratchOpen) setScratchOpen(false); },
 });
 // ---------------------------------------------------------------- Text processing (изолированный модуль)
 // Документ-плашка открывается ВМЕСТО терминала (как чат OpenRouter). Вся логика — в
@@ -126,7 +127,7 @@ let editor = null;
 let loadingDoc = false;
 const langComp = new Compartment();
 
-const DEFAULT_LAYOUT = { sidebar: 240, viewer: 520, tree: 240, scratch: 420, git: 360, ctx: 740, docker: 460, db: 560, rh: 520, ext: 420, notes: 480, audit: 460 };
+const DEFAULT_LAYOUT = { sidebar: 240, viewer: 520, tree: 240, scratch: 420, git: 360, ctx: 740, docker: 460, db: 560, rh: 520, ext: 420, notes: 480, audit: 460, seo: 480 };
 let layout = loadLayout();
 let lastParent = STORE.lastParent || '';
 
@@ -172,7 +173,7 @@ function loadLayout() { return { ...DEFAULT_LAYOUT, ...(STORE.layout || {}) }; }
 function saveLayout() { persist('layout', layout); }
 // Whether the viewer / system terminal panes are open — part of the backed-up state,
 // restored on startup (and on import) so the window reopens the way it was left.
-function saveUiState() { persist('uiState', { viewerOpen, scratchOpen, gitOpen: Git.isOpen(), ctxOpen: Ctx.isOpen(), dockerOpen: Containers.isOpen(), dbOpen: Db.isOpen(), rhOpen: Rh.isOpen(), notesOpen: Notes.isOpen(), auditOpen: Audit.isOpen() }); }
+function saveUiState() { persist('uiState', { viewerOpen, scratchOpen, gitOpen: Git.isOpen(), ctxOpen: Ctx.isOpen(), dockerOpen: Containers.isOpen(), dbOpen: Db.isOpen(), rhOpen: Rh.isOpen(), notesOpen: Notes.isOpen(), auditOpen: Audit.isOpen(), seoOpen: Seo.isOpen() }); }
 function applyLayout() {
   $('#sidebar').style.flexBasis = layout.sidebar + 'px';
   $('#viewer-pane').style.flexBasis = layout.viewer + 'px';
@@ -186,6 +187,7 @@ function applyLayout() {
   $('#ext-pane').style.flexBasis = layout.ext + 'px';
   $('#notes-pane').style.flexBasis = layout.notes + 'px';
   $('#audit-pane').style.flexBasis = layout.audit + 'px';
+  $('#seo-pane').style.flexBasis = layout.seo + 'px';
 }
 function loadRecents() { return Array.isArray(STORE.recents) ? STORE.recents : []; }
 function pushRecent(p) {
@@ -1828,7 +1830,7 @@ function setViewerOpen(open, opts = {}) {
 // Реестр панелей: каждая setXxxOpen знает только себя, взаимоисключение — closeOtherPanels.
 // Порядок закрытия фиксирован (он же — порядок старых inline-цепочек во всех setXxxOpen).
 const panels = new Map(); // id -> { isOpen(), setOpen(open, opts) }
-const PANEL_ORDER = ['files', 'git', 'ctx', 'docker', 'db', 'scratch', 'rh', 'notes', 'audit'];
+const PANEL_ORDER = ['files', 'git', 'ctx', 'docker', 'db', 'scratch', 'rh', 'notes', 'audit', 'seo'];
 function registerPanel(id, api) { panels.set(id, api); }
 function closeOtherPanels(selfId) {
   for (const id of PANEL_ORDER) {
@@ -1873,6 +1875,12 @@ const Audit = initAudit({
   sendToTerminal: (text) => { const p = activeProject(); if (p) sendNoteToTerminal(p, text); },
 });
 registerPanel('audit', { isOpen: Audit.isOpen, setOpen: Audit.setOpen });
+// WEB/SEO аудит — самостоятельный анализатор сайтов (renderer/modules/seo.js); системная панель, свой список сайтов.
+const Seo = initSeo({
+  layout, GUTTER, saveUiState, refitActiveTerminal, closeOtherPanels, STORE, persist,
+  sendToTerminal: (text) => { const p = activeProject(); if (p) sendNoteToTerminal(p, text); else toast('Откройте проект, чтобы передать находки агенту'); },
+});
+registerPanel('seo', { isOpen: Seo.isOpen, setOpen: Seo.setOpen });
 // Пользовательские модули (extensions): загрузчик + общая панель правого слота.
 // renderer/modules/extensions.js; публичный API ctx v1 — спека в module-kit/GUIDE.md.
 const Ext = initExtensions({
@@ -1909,6 +1917,7 @@ const QUICK_BUILTIN = [
   { id: 'rh',      icon: 'globe',    label: 'Удалённые хосты — SSH-сессии' },
   { id: 'notes',   icon: 'note',     label: 'Задачи — заметки проекта' },
   { id: 'audit',   icon: 'grid',     label: 'Аудит — анализ проекта' },
+  { id: 'seo',     icon: 'globe',    label: 'WEB/SEO аудит — анализ сайта' },
   { id: 'scratch', icon: 'terminal', label: 'Системный терминал (вне проектов)' },
 ];
 function quickAllModules() {
@@ -2365,6 +2374,7 @@ function buildModulesMenu(dd) {
     sub.appendChild(moduleRow('globe', 'Удалённые хосты', 'SSH-сессии к серверам', () => { closeMenus(); openModule('rh'); }));
     sub.appendChild(moduleRow('note', 'Задачи', 'заметки проекта и общие', () => { closeMenus(); openModule('notes'); }));
     sub.appendChild(moduleRow('grid', 'Аудит', 'типы файлов, крупные файлы, медиа', () => { closeMenus(); openModule('audit'); }));
+    sub.appendChild(moduleRow('globe', 'WEB/SEO аудит', 'сайт: безопасность, SEO, сеть', () => { closeMenus(); openModule('seo'); }));
     sub.appendChild(el('div', 'menu-sep'));
     sub.appendChild(moduleRow('terminal', 'Системный терминал', 'вне проектов', () => { closeMenus(); openModule('scratch'); }));
   });
@@ -2870,6 +2880,8 @@ function init() {
   $('#git-refresh').addEventListener('click', () => { if (Git.isOpen()) Git.renderPanel(activeProject()); });
   $('#audit-close').addEventListener('click', () => Audit.setOpen(false));
   $('#audit-rescan').addEventListener('click', () => Audit.rescan());
+  $('#seo-close').addEventListener('click', () => Seo.setOpen(false));
+  $('#seo-rescan').addEventListener('click', () => Seo.rescan());
   $('#notes-close').addEventListener('click', () => Notes.setOpen(false));
   $('#notes-export').addEventListener('click', () => Notes.exportMenu());
   $('#notes-import').addEventListener('click', () => Notes.importNotes());
@@ -2948,7 +2960,7 @@ function init() {
   // Right-slot modules are mutually exclusive — restore at most one, first-true-wins
   // (приоритет — порядок старых if-цепочек: viewer, scratch, git, docker, db, rh).
   // allowEmpty so Git returns even before a project is active — matching the viewer, so window width fits.
-  const RESTORE_ORDER = [['files', 'viewerOpen'], ['scratch', 'scratchOpen'], ['git', 'gitOpen'], ['ctx', 'ctxOpen'], ['docker', 'dockerOpen'], ['db', 'dbOpen'], ['rh', 'rhOpen'], ['notes', 'notesOpen'], ['audit', 'auditOpen']];
+  const RESTORE_ORDER = [['files', 'viewerOpen'], ['scratch', 'scratchOpen'], ['git', 'gitOpen'], ['ctx', 'ctxOpen'], ['docker', 'dockerOpen'], ['db', 'dbOpen'], ['rh', 'rhOpen'], ['notes', 'notesOpen'], ['audit', 'auditOpen'], ['seo', 'seoOpen']];
   for (const [id, key] of RESTORE_ORDER) {
     if (!ui[key]) continue;
     panels.get(id).setOpen(true, (id === 'git' || id === 'ctx' || id === 'notes' || id === 'audit') ? { grow: false, allowEmpty: true } : { grow: false });

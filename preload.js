@@ -139,6 +139,14 @@ contextBridge.exposeInMainWorld('lite', {
     export: (content, defaultName) => ipcRenderer.invoke('audit:export', { content, defaultName }), // → {ok,file}|{canceled}|{error}
   },
 
+  seo: {
+    scan: (url) => ipcRenderer.invoke('seo:scan', { url }),                     // → быстрый отчёт (Node) | { error }
+    render: (url) => ipcRenderer.invoke('seo:render', { url }),                 // → глубокий аудит (скрытый Chromium): DOM/метрики/сеть/скриншоты
+    links: (urls, base) => ipcRenderer.invoke('seo:links', { urls, base }),     // → { checked, broken[] } проверка ссылок (отдельный этап)
+    devServers: () => ipcRenderer.invoke('seo:devServers'),                     // → { ports:[...] } локальные dev-серверы
+    export: (content, defaultName) => ipcRenderer.invoke('seo:export', { content, defaultName }), // → {ok,file}|{canceled}|{error}
+  },
+
   git: {
     status: (root) => ipcRenderer.invoke('git:status', root),
     fileDiff: (root, file) => ipcRenderer.invoke('git:fileDiff', { root, file }),
