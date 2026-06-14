@@ -569,12 +569,7 @@ ipcMain.on('tp:abort', (_e, { reqId } = {}) => {
 const ctxDir = path.join(storeDir, 'contextgraph');
 const ctxSafe = (s) => String(s).replace(/[^\w.-]/g, '_');
 const ctxProjDir = (projId) => path.join(ctxDir, 'projects', ctxSafe(projId));
-const ctxLibDir = path.join(ctxDir, 'library');
-const ctxLibIndexFile = path.join(ctxLibDir, 'library.json');
-const CTX_MARKER = '<!-- LiteEditorAI:contextgraph';
 const CTX_TARGETS = { claude: 'CLAUDE.md', codex: 'AGENTS.md' };
-const CTX_LEGACY_CLAUDE = 'CLAUDE.local.md'; // раньше Claude писал сюда — мигрируем на CLAUDE.md
-const CTX_CMD_MAX = 256 * 1024; // потолок вывода cmd-блока — защита от «cat огромного лога»
 
 // --- Профили per-agent: для каждого агента (claude/codex) свой набор независимых графов под
 // agents/<agent>/. Индекс profiles.json {active, applied, list:[{id,name}]}; граф — profiles/<id>.json
@@ -604,7 +599,6 @@ function ctxActiveGraphFile(projId, agent, profileId) { return ctxProfileGraphFi
 // Контент текстовой ноды — общий на проект: blocks/<id>.md. (file/cmd/slot/lib временно отключены.)
 function ctxNodeFile(projId, projPath, node) {
   if (!node || node.type !== 'text') return null;
-  if (node.ref && String(node.ref).startsWith('lib:')) return null;
   return path.join(ctxBlocksDir(projId), ctxSafe(node.id) + '.md');
 }
 function ctxReadFileSafe(f) { try { return fs.readFileSync(f, 'utf8'); } catch (_) { return null; } }
@@ -651,7 +645,7 @@ ipcMain.handle('ctx:profileCreate', (_e, { projId, agent, name, fromId } = {}) =
         if (n.type === 'out') { map.set(n.id, n.id); continue; }
         const nid = 'n' + Date.now().toString(36) + (i++).toString(36) + Math.random().toString(36).slice(2, 4);
         map.set(n.id, nid);
-        if (n.type === 'text' && !(n.ref && String(n.ref).startsWith('lib:'))) {
+        if (n.type === 'text') {
           try {
             const sf = path.join(ctxBlocksDir(projId), ctxSafe(n.id) + '.md');
             if (fs.existsSync(sf)) { fs.mkdirSync(ctxBlocksDir(projId), { recursive: true }); fs.copyFileSync(sf, path.join(ctxBlocksDir(projId), ctxSafe(nid) + '.md')); }
@@ -701,16 +695,26 @@ ipcMain.handle('ctx:pointRead', (_e, { projId, agent, id } = {}) => {
   const t = ctxReadFileSafe(ctxPointFile(projId, agent, id));
   return { text: t == null ? '' : t, exists: t != null, chars: t ? t.length : 0 };
 });
-ipcMain.handle('ctx:pointCreate', (_e, { projId, agent, name, content } = {}) => {
-  if (!projId) return { error: 'no projId' };
-  return { ok: true, ...ctxAddPoint(projId, agent, name, content, false) };
-});
 ipcMain.handle('ctx:pointDelete', (_e, { projId, agent, id } = {}) => {
   const p = ctxLoadPoints(projId, agent);
   const pt = p.list.find((x) => x.id === id); if (!pt) return { error: 'нет точки' };
   if (pt.locked) return { error: 'нельзя удалить «Оригинал»' };
   p.list = p.list.filter((x) => x.id !== id); ctxSavePoints(projId, agent, p);
   try { fs.rmSync(ctxPointFile(projId, agent, id), { force: true }); } catch (_) {}
+  return { ok: true, list: p.list };
+});
+// Сделать любую версию «Оригиналом» (🔒): прежний оригинал теряет замок и переименовывается
+// (становится обычной удаляемой версией). Оригинал устаревает со временем — так его можно обновить.
+ipcMain.handle('ctx:pointSetOriginal', (_e, { projId, agent, id } = {}) => {
+  if (!projId || !id) return { error: 'bad args' };
+  const p = ctxLoadPoints(projId, agent);
+  const target = p.list.find((x) => x.id === id); if (!target) return { error: 'нет версии' };
+  if (target.locked) return { ok: true, list: p.list, already: true };
+  for (const pt of p.list) {
+    if (pt.locked) { pt.locked = false; if (pt.name === 'Оригинал') pt.name = 'Снимок ' + new Date(pt.ts || Date.now()).toISOString().slice(0, 16).replace('T', ' '); }
+  }
+  target.locked = true; target.name = 'Оригинал';
+  ctxSavePoints(projId, agent, p);
   return { ok: true, list: p.list };
 });
 // Снимок #0 «Оригинал» из живого файла — один раз, пока точек ещё нет
@@ -738,74 +742,10 @@ ipcMain.handle('ctx:blockWrite', (_e, { projId, projPath, node, text } = {}) => 
   } catch (e) { return { error: String(e.message || e) }; }
 });
 ipcMain.handle('ctx:blockDelete', (_e, { projId, projPath, node } = {}) => {
-  // удаляем только СВОИ файлы (локальный блок/слот); file-ноды и библиотеку не трогаем
-  const own = node && ((node.type === 'text' && !String(node.ref || '').startsWith('lib:')) || node.type === 'slot');
-  if (own) { try { fs.rmSync(ctxNodeFile(projId, projPath, node), { force: true }); } catch (_) {} }
+  if (node && node.type === 'text') { try { fs.rmSync(ctxNodeFile(projId, projPath, node), { force: true }); } catch (_) {} }
   return { ok: true };
 });
 
-// shell-команда cmd-блока: превью из модалки и резолв при компиляции — одна функция
-function ctxRunCmd(projPath, cmd, timeoutMs) {
-  return new Promise((resolve) => {
-    let child;
-    const t0 = Date.now();
-    try { child = spawn(String(cmd), [], { shell: true, cwd: projPath, env: tpEnv(), windowsHide: true }); }
-    catch (e) { resolve({ out: '', error: String(e.message || e), ms: 0 }); return; }
-    let out = '', err = '', done = false;
-    const fin = (error) => { if (done) return; done = true; resolve({ out: out.slice(0, CTX_CMD_MAX), error: error || null, ms: Date.now() - t0 }); };
-    const to = setTimeout(() => { try { child.kill('SIGKILL'); } catch (_) {} fin('таймаут команды'); }, Math.max(1000, Math.min(60000, parseInt(timeoutMs, 10) || 10000)));
-    child.stdout.on('data', (c) => { if (out.length < CTX_CMD_MAX) out += c.toString('utf8'); });
-    child.stderr.on('data', (c) => { if (err.length < 8192) err += c.toString('utf8'); });
-    child.on('error', (e) => { clearTimeout(to); fin(String(e.message || e)); });
-    child.on('close', (code) => { clearTimeout(to); fin((out.trim() || code === 0) ? null : (err.trim() || ('код ' + code))); });
-  });
-}
-ipcMain.handle('ctx:runCmd', async (_e, { projPath, cmd, timeout } = {}) => {
-  if (!projPath || !cmd) return { error: 'bad args' };
-  const r = await ctxRunCmd(projPath, cmd, timeout);
-  return { ...r, chars: (r.out || '').length };
-});
-
-// Локальный агент в headless-режиме (как tp:run, но invoke — удобнее для разовой «Распилить CLAUDE.md»)
-ipcMain.handle('ctx:agent', (_e, { agent, prompt } = {}) => new Promise((resolve) => {
-  const conf = TP_AGENTS[agent] || TP_AGENTS.claude;
-  const args = conf.via === 'arg' ? [...conf.args, prompt || ''] : [...conf.args];
-  let child;
-  try { child = spawn(conf.cmd, args, { cwd: os.homedir(), env: tpEnv() }); }
-  catch (err) { resolve({ error: 'не запустить «' + conf.cmd + '»: ' + (err.message || err) }); return; }
-  let out = '', errOut = '', done = false;
-  const fin = (v) => { if (!done) { done = true; resolve(v); } };
-  const to = setTimeout(() => { try { child.kill(); } catch (_) {} fin({ error: 'таймаут (агент не ответил за 4 минуты)' }); }, 240000);
-  child.stdout.on('data', (c) => { out += c.toString('utf8'); });
-  child.stderr.on('data', (c) => { errOut += c.toString('utf8'); });
-  child.on('error', (err) => { clearTimeout(to); fin({ error: 'агент «' + conf.cmd + '» не найден/не запустился: ' + (err.message || err) }); });
-  child.on('close', (code) => { clearTimeout(to); const text = out.trim(); fin(text ? { text } : { error: errOut.trim() || ('агент завершился с кодом ' + code) }); });
-  if (conf.via === 'stdin') { try { child.stdin.write(prompt || ''); child.stdin.end(); } catch (_) {} }
-}));
-
-// Контрибьюторы выхода: обратный обход по рёбрам через включённые ноды (группы вкладываются),
-// порядок склейки = вертикальный порядок на канве (y, при равенстве x), дубли отбрасываются.
-function ctxContributors(graph, outId) {
-  const byId = new Map((graph.nodes || []).map((n) => [n.id, n]));
-  const seen = new Set();
-  const stack = [outId];
-  const found = [];
-  while (stack.length) {
-    const cur = stack.pop();
-    if (seen.has(cur)) continue;
-    seen.add(cur);
-    for (const e of (graph.edges || [])) {
-      if (e.to !== cur) continue;
-      const src = byId.get(e.from);
-      if (!src || !src.enabled) continue;
-      if (src.type === 'group') stack.push(src.id);
-      else found.push(src);
-    }
-  }
-  found.sort((a, b) => (a.y - b.y) || (a.x - b.x));
-  const ids = new Set();
-  return found.filter((n) => { if (ids.has(n.id)) return false; ids.add(n.id); return true; });
-}
 // Бекап существующего файла перед перезаписью/распилом + прунинг (держим keep свежих на имя).
 // Дефолтная папка — В ПРОЕКТЕ: <proj>/context_project_bkp (пользователь может сменить в настройках).
 const CTX_BKP_DEFAULT = 'context_project_bkp';
@@ -826,6 +766,38 @@ function ctxBackup(file, settings, projPath) {
   for (const o of all.slice(keep)) { try { fs.rmSync(path.join(dir, o.f), { force: true }); } catch (_) {} }
   return dst;
 }
+// Быстрый хэш строки (для детекта «файл изменён вне модуля»): значение + длина.
+function ctxHash(s) { let h = 0; const str = String(s || ''); for (let i = 0; i < str.length; i++) h = (h * 31 + str.charCodeAt(i)) | 0; return h + ':' + str.length; }
+// Собрать содержимое файла-выхода агента из графа — общая логика для compile и экспорта.
+// Обход pre-order (родитель→дети, сиблинги по y,x). Группа-обёртка прозрачна (только дети);
+// группа-текст (с .head) пишет свой заголовок, затем детей. → { content|null, charsByNode }.
+function ctxAssemble(graph, projId, projPath, ag) {
+  const charsByNode = {};
+  const outNode = (graph.nodes || []).find((n) => n.type === 'out' && n.out === ag);
+  if (!outNode || !outNode.enabled) return { content: null, charsByNode };
+  const byId = new Map((graph.nodes || []).map((n) => [n.id, n]));
+  const childrenOf = (id) => (graph.edges || []).filter((e) => e.to === id).map((e) => byId.get(e.from))
+    .filter((n) => n && n.enabled).sort((a, b) => (a.y - b.y) || (a.x - b.x));
+  const parts = []; const seen = new Set();
+  (function visit(id) {
+    for (const n of childrenOf(id)) {
+      if (seen.has(n.id)) continue;
+      seen.add(n.id);
+      if (n.type === 'group') {
+        if (n.head && String(n.head).trim()) parts.push(String(n.head).trim()); // группа-текст: свой заголовок
+        visit(n.id);
+      } else if (n.type === 'text') {
+        const f = ctxNodeFile(projId, projPath, n);
+        const text = f ? ctxReadFileSafe(f) : null;
+        charsByNode[n.id] = text ? text.length : 0;
+        if (text && text.trim()) parts.push(text.trim());
+        visit(n.id);
+      }
+    }
+  })(outNode.id);
+  if (!parts.length) return { content: null, charsByNode };
+  return { content: parts.join('\n\n') + '\n', charsByNode };
+}
 // Сборка ОДНОГО агента: активный профиль (единственный выход) → его файл; старый в бекап + новая точка.
 ipcMain.handle('ctx:compile', async (_e, { projId, projPath, agent, force, profileId } = {}) => {
   if (!projId || !projPath) return { error: 'bad args' };
@@ -836,33 +808,26 @@ ipcMain.handle('ctx:compile', async (_e, { projId, projPath, agent, force, profi
   let graph;
   try { graph = JSON.parse(fs.readFileSync(gFile, 'utf8')); } catch (_) { return { error: 'граф не найден — сначала сохраните канву' }; }
   const settings = graph.settings || {};
-  const results = [], conflicts = [], errors = [];
-  const charsByNode = {};
-  const outNode = (graph.nodes || []).find((n) => n.type === 'out' && n.out === ag);
+  const results = [], conflicts = [], diverged = [], errors = [];
+  const { content: asm, charsByNode } = ctxAssemble(graph, projId, projPath, ag);
   let applied = null, point = null;
-  if (outNode && outNode.enabled) {
-    const contrib = ctxContributors(graph, outNode.id);
-    const parts = [];
-    for (const n of contrib) {
-      if (n.type !== 'text') continue;
-      const f = ctxNodeFile(projId, projPath, n);
-      const text = f ? ctxReadFileSafe(f) : null;
-      charsByNode[n.id] = text ? text.length : 0;
-      if (text && text.trim()) parts.push(`<!-- ── блок: ${n.title || 'text'} ── -->\n${text.trim()}`);
-    }
-    if (parts.length) { // пустой выход — файл не трогаем (ничего не удаляем молча)
-      const content = CTX_MARKER + ' v1 · собрано модулем «Контекст» LiteEditor — не редактируйте вручную, файл перезаписывается при сборке -->\n\n' + parts.join('\n\n') + '\n';
+  if (asm != null) {
+    { // пустой выход — файл не трогаем (ничего не удаляем молча)
+      const content = asm;
       const target = path.join(projPath, fname);
       const existing = ctxReadFileSafe(target);
       if (existing != null && existing === content) {
         results.push({ out: ag, file: fname, chars: content.length, wrote: false });
-      } else if (existing != null && !existing.startsWith(CTX_MARKER) && !force) {
-        conflicts.push(fname);
+      } else if (existing != null && !force && !graph.compiledHash) {
+        conflicts.push(fname); // файл есть, но мы его НИКОГДА не собирали → не знаем, наш ли (спросить)
+      } else if (existing != null && !force && ctxHash(existing) !== graph.compiledHash) {
+        diverged.push(fname); // наш файл (есть запись сборки), но на диске другой → внешняя правка (агентом)
       } else {
         let backup = null;
         if (existing != null) { try { backup = ctxBackup(target, settings, projPath); } catch (e) { errors.push('бекап не записан: ' + (e.message || e)); } }
         try {
           atomicWriteSync(target, content);
+          graph.compiledHash = ctxHash(content); // запоминаем, что мы записали (для детекта внешних правок)
           const pr = ctxAddPoint(projId, ag, 'Сборка ' + new Date().toISOString().slice(0, 16).replace('T', ' '), content, false);
           point = pr.id;
           results.push({ out: ag, file: fname, chars: content.length, wrote: true, backup: backup ? path.basename(backup) : null, bdir: backup ? path.dirname(backup) : null, point });
@@ -871,102 +836,79 @@ ipcMain.handle('ctx:compile', async (_e, { projId, projPath, agent, force, profi
     }
   }
   for (const n of (graph.nodes || [])) if (charsByNode[n.id] != null) n.chars = charsByNode[n.id];
-  if (!conflicts.length) { graph.dirty = false; graph.compiledAt = Date.now(); }
+  const blocked = conflicts.length || diverged.length;
+  if (!blocked) { graph.dirty = false; graph.compiledAt = Date.now(); }
   try { fs.mkdirSync(path.dirname(gFile), { recursive: true }); atomicWriteSync(gFile, JSON.stringify(graph)); } catch (_) {}
-  if (!conflicts.length) { // запоминаем, какой профиль теперь собран в файле (индикация в UI)
+  if (!blocked) { // запоминаем, какой профиль теперь собран в файле (индикация в UI)
     try { const ix = ctxLoadProfiles(projId, ag); ix.applied = pid; ctxSaveProfiles(projId, ag, ix); applied = pid; } catch (_) {}
   }
-  return { ok: true, results, conflicts, errors, graph, applied, point };
+  return { ok: true, results, conflicts, diverged, errors, graph, applied, point };
 });
-
-// Слот агента: снапшот «последнее просмотренное» (для бейджа/диффа «что нового»)
-ipcMain.handle('ctx:seenRead', (_e, { projId, nodeId } = {}) => {
-  const t = ctxReadFileSafe(path.join(ctxProjDir(projId), 'seen-' + ctxSafe(nodeId) + '.md'));
-  return { text: t == null ? '' : t };
-});
-ipcMain.handle('ctx:slotSeen', (_e, { projId, projPath, nodeId } = {}) => {
+// Экспорт собранного файла профиля в произвольное место (save-диалог). Без записи в проект/без точки —
+// просто «сохранить копию на ПК». Граф берём с диска (рендерер перед экспортом активного профиля сохраняет канву).
+ipcMain.handle('ctx:exportFile', async (_e, { projId, projPath, agent, profileId } = {}) => {
+  if (!projId || !projPath) return { error: 'bad args' };
+  const ag = ctxAgentSafe(agent);
+  const pid = ctxResolveProfileId(projId, ag, profileId);
+  let graph;
+  try { graph = JSON.parse(fs.readFileSync(ctxProfileGraphFile(projId, ag, pid), 'utf8')); } catch (_) { return { error: 'граф профиля не найден — сначала сохраните канву' }; }
+  const { content } = ctxAssemble(graph, projId, projPath, ag);
+  if (content == null) return { error: 'нечего сохранять — подключите текст-блоки к выходу' };
+  const fname = CTX_TARGETS[ag];
+  const last = loadState().lastOpenDir;
+  const res = await dialog.showSaveDialog(mainWindow, {
+    title: 'Сохранить файл контекста',
+    defaultPath: path.join(last && fs.existsSync(last) ? last : os.homedir(), fname),
+    filters: [{ name: 'Markdown', extensions: ['md'] }, { name: 'Все файлы', extensions: ['*'] }],
+  });
+  if (res.canceled || !res.filePath) return { canceled: true };
   try {
-    const cur = ctxReadFileSafe(ctxNodeFile(projId, projPath, { type: 'slot', id: nodeId })) || '';
-    fs.mkdirSync(ctxProjDir(projId), { recursive: true });
-    atomicWriteSync(path.join(ctxProjDir(projId), 'seen-' + ctxSafe(nodeId) + '.md'), cur);
-    return { ok: true };
+    atomicWriteSync(res.filePath, content);
+    saveState({ lastOpenDir: path.dirname(res.filePath) });
+    return { ok: true, file: res.filePath, chars: content.length };
   } catch (e) { return { error: String(e.message || e) }; }
 });
-// Живой бейдж: следим за <proj>/.lite (агент дописал слот → событие в рендерер).
-const ctxWatchers = new Map(); // projId -> { watcher, timers: Map<nodeId, timeout> }
-ipcMain.on('ctx:watchSlots', (e, { projId, projPath } = {}) => {
-  if (!projId || !projPath || ctxWatchers.has(projId)) return;
-  const dir = path.join(projPath, '.lite');
-  try { fs.mkdirSync(dir, { recursive: true }); } catch (_) {}
+
+// Текущее содержимое файла на диске + флаг внешней правки (для бейджа и окна реконсиляции). Ничего не
+// пишет. external = файл есть и его хэш ≠ хэшу нашей последней сборки (значит правил кто-то снаружи).
+ipcMain.handle('ctx:assembleText', (_e, { projId, projPath, agent, profileId } = {}) => {
+  if (!projId || !projPath) return { error: 'bad args' };
+  const ag = ctxAgentSafe(agent);
+  const pid = ctxResolveProfileId(projId, ag, profileId);
+  let graph = null;
+  try { graph = JSON.parse(fs.readFileSync(ctxProfileGraphFile(projId, ag, pid), 'utf8')); } catch (_) {}
+  const fileText = ctxReadFileSafe(path.join(projPath, CTX_TARGETS[ag]));
+  const fileExists = fileText != null;
+  const external = fileExists && !!(graph && graph.compiledHash) && ctxHash(fileText) !== graph.compiledHash;
+  return { ok: true, fileText: fileText == null ? '' : fileText, fileExists, external };
+});
+// Снимок текущего файла агента в «Версии» (например, перед втягиванием внешних правок) — страховка.
+ipcMain.handle('ctx:snapshotOutput', (_e, { projId, projPath, agent, name } = {}) => {
+  if (!projId || !projPath) return { error: 'bad args' };
+  const ag = ctxAgentSafe(agent);
+  const content = ctxReadFileSafe(path.join(projPath, CTX_TARGETS[ag]));
+  if (content == null) return { ok: true, empty: true };
+  return { ok: true, ...ctxAddPoint(projId, ag, String(name || 'Внешняя правка').slice(0, 60), content, false) };
+});
+// Слежение за выходными файлами проекта (CLAUDE.md/AGENTS.md) пока открыт модуль → событие при правке агентом
+const ctxOutWatchers = new Map(); // projId -> fs.FSWatcher
+ipcMain.on('ctx:watchOutputs', (e, { projId, projPath } = {}) => {
+  if (!projId || !projPath || ctxOutWatchers.has(projId)) return;
+  const timers = {};
   let watcher;
   try {
-    watcher = fs.watch(dir, (_ev, fname) => {
-      const m = /^ctx-slot-(.+)\.md$/.exec(String(fname || ''));
-      if (!m) return;
-      const rec = ctxWatchers.get(projId);
-      if (!rec) return;
-      clearTimeout(rec.timers.get(m[1]));
-      rec.timers.set(m[1], setTimeout(() => safeSend(e.sender, 'ctx:slotChanged', { projId, nodeId: m[1] }), 400));
+    watcher = fs.watch(projPath, (_ev, fname) => {
+      const agent = fname === CTX_TARGETS.claude ? 'claude' : (fname === CTX_TARGETS.codex ? 'codex' : null);
+      if (!agent) return;
+      clearTimeout(timers[agent]);
+      timers[agent] = setTimeout(() => safeSend(e.sender, 'ctx:outputChanged', { projId, agent }), 400);
     });
   } catch (_) { return; }
-  ctxWatchers.set(projId, { watcher, timers: new Map() });
+  ctxOutWatchers.set(projId, watcher);
 });
-ipcMain.on('ctx:unwatchSlots', (_e, { projId } = {}) => {
-  const rec = ctxWatchers.get(projId);
-  if (!rec) return;
-  try { rec.watcher.close(); } catch (_) {}
-  for (const t of rec.timers.values()) clearTimeout(t);
-  ctxWatchers.delete(projId);
-});
-
-// Библиотека блоков (общие между проектами, на канве — значок 📚)
-function ctxLibIndex() { try { return JSON.parse(fs.readFileSync(ctxLibIndexFile, 'utf8')); } catch (_) { return []; } }
-function ctxLibSaveIndex(ix) { fs.mkdirSync(ctxLibDir, { recursive: true }); atomicWriteSync(ctxLibIndexFile, JSON.stringify(ix)); }
-ipcMain.handle('ctx:libList', () => ({
-  items: ctxLibIndex().map((b) => {
-    const t = ctxReadFileSafe(path.join(ctxLibDir, ctxSafe(b.id) + '.md'));
-    return { id: b.id, title: b.title, chars: t ? t.length : 0 };
-  }),
-}));
-ipcMain.handle('ctx:libSave', (_e, { id, title, text } = {}) => {
-  try {
-    const ix = ctxLibIndex();
-    const bid = id || ('L' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6));
-    fs.mkdirSync(ctxLibDir, { recursive: true });
-    if (text != null) atomicWriteSync(path.join(ctxLibDir, ctxSafe(bid) + '.md'), String(text));
-    const cur = ix.find((b) => b.id === bid);
-    if (cur) { if (title) cur.title = title; } else ix.push({ id: bid, title: title || 'Блок' });
-    ctxLibSaveIndex(ix);
-    return { ok: true, id: bid };
-  } catch (e) { return { error: String(e.message || e) }; }
-});
-ipcMain.handle('ctx:libUsage', (_e, { libId } = {}) => {
-  const ref = 'lib:' + libId;
-  let count = 0;
-  const projIds = [];
-  try {
-    for (const d of fs.readdirSync(path.join(ctxDir, 'projects'))) {
-      try {
-        // считаем по всем профилям проекта (+ legacy graph.json, если ещё не мигрирован)
-        const files = [];
-        const profDir = path.join(ctxDir, 'projects', d, 'profiles');
-        try { for (const f of fs.readdirSync(profDir)) if (f.endsWith('.json')) files.push(path.join(profDir, f)); } catch (_) {}
-        const legacy = path.join(ctxDir, 'projects', d, 'graph.json');
-        if (!files.length && fs.existsSync(legacy)) files.push(legacy);
-        let hit = 0;
-        for (const gf of files) { try { const g = JSON.parse(fs.readFileSync(gf, 'utf8')); hit += (g.nodes || []).filter((x) => x.ref === ref).length; } catch (_) {} }
-        if (hit) { count += hit; projIds.push(d); }
-      } catch (_) {}
-    }
-  } catch (_) {}
-  return { count, projIds };
-});
-ipcMain.handle('ctx:libDelete', (_e, { libId } = {}) => {
-  try {
-    fs.rmSync(path.join(ctxLibDir, ctxSafe(libId) + '.md'), { force: true });
-    ctxLibSaveIndex(ctxLibIndex().filter((b) => b.id !== libId));
-    return { ok: true };
-  } catch (e) { return { error: String(e.message || e) }; }
+ipcMain.on('ctx:unwatchOutputs', (_e, { projId } = {}) => {
+  const w = ctxOutWatchers.get(projId);
+  if (w) { try { w.close(); } catch (_) {} ctxOutWatchers.delete(projId); }
 });
 // Папка бекапов для модалки настроек («открыть папку»): резолв дефолта + mkdir
 ipcMain.handle('ctx:backupDir', (_e, { projPath, dir } = {}) => {
@@ -974,16 +916,6 @@ ipcMain.handle('ctx:backupDir', (_e, { projPath, dir } = {}) => {
   const d = ctxBackupDirFor(projPath || '', { backupDir: dir });
   try { fs.mkdirSync(d, { recursive: true }); } catch (_) {}
   return { dir: d };
-});
-// Бекап произвольного файла проекта (исходник перед «Распилить») — настройки берём из графа
-ipcMain.handle('ctx:backupFile', (_e, { projId, projPath, name, profileId } = {}) => {
-  if (!projId || !projPath || !name || /[\\/]/.test(String(name))) return { error: 'bad args' };
-  const file = path.join(projPath, String(name));
-  if (ctxReadFileSafe(file) == null) return { error: 'файл не найден: ' + name };
-  let settings = {};
-  try { settings = (JSON.parse(fs.readFileSync(ctxActiveGraphFile(projId, profileId), 'utf8')).settings) || {}; } catch (_) {}
-  try { const b = ctxBackup(file, settings, projPath); return { ok: true, backup: path.basename(b), dir: path.dirname(b) }; }
-  catch (e) { return { error: String(e.message || e) }; }
 });
 // Смена папки бекапов: все *.bak переезжают в новую папку без потерь, пустая старая удаляется
 ipcMain.handle('ctx:backupMove', (_e, { projPath, from, to } = {}) => {

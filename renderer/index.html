@@ -141,6 +141,7 @@
         <div class="pane-head">
           <span id="ctx-title">Контекст</span>
           <span id="ctx-stale" class="ctx-stale" title="Есть неподтверждённые изменения — нажми «Подтвердить»" hidden>●</span>
+          <button id="ctx-extern" class="ctx-extern" title="Файл изменён вне модуля (вероятно, агентом) — посмотреть и втянуть правки" hidden>⚠ файл изменён вне модуля</button>
           <div class="drag-space-static"></div>
           <button id="ctx-help" class="icon-btn" title="Как это работает?" data-icon="help"></button>
           <button id="ctx-settings" class="icon-btn" title="Настройки (бекапы, автосборка)" data-icon="sliders"></button>
@@ -152,22 +153,27 @@
         <div id="ctx-canvas" class="ctx-canvas">
           <!-- плавающая панель действий профиля/канвы (поверх канвы, правый верхний угол) -->
           <div id="ctx-toolbar" class="ctx-toolbar">
-            <button id="ctx-add" class="icon-btn" title="Добавить блок" data-icon="plus"></button>
-            <button id="ctx-split" class="icon-btn" title="Распилить версию (CLAUDE.md/AGENTS.md → блоки)" data-icon="scissors" hidden></button>
-            <button id="ctx-fit" class="icon-btn" title="Уместить всё в экран" data-icon="maximize"></button>
-            <button id="ctx-points" class="icon-btn ctx-tb-emoji" title="Версии (точки восстановления)">🕘</button>
-            <button id="ctx-reset" class="icon-btn" title="Сбросить неподтверждённые изменения — вернуть канву к последнему подтверждённому виду" data-icon="refresh" hidden></button>
-            <button id="ctx-apply" class="btn ctx-tb-apply" title="Подтвердить изменения: сохранить канву и собрать файл агента (с бекапом)">✓ Подтвердить</button>
+            <div class="ctx-tb-row">
+              <button id="ctx-add" class="icon-btn" title="Добавить блок" data-icon="plus"></button>
+              <button id="ctx-group" class="icon-btn" title="Сгруппировать выделенные блоки (Ctrl+G)" data-icon="layers" hidden></button>
+              <button id="ctx-fit" class="icon-btn" title="Уместить всё в экран" data-icon="maximize"></button>
+              <button id="ctx-points" class="icon-btn ctx-tb-emoji" title="Версии (точки восстановления)">🕘</button>
+            </div>
+            <div id="ctx-tb-actions" class="ctx-tb-row ctx-tb-actions" hidden>
+              <button id="ctx-reset" class="icon-btn" title="Сбросить неподтверждённые изменения — вернуть канву к последнему подтверждённому виду" data-icon="refresh" hidden></button>
+              <button id="ctx-apply" class="icon-btn ctx-apply-btn" title="Подтвердить изменения: сохранить канву и собрать файл агента (с бекапом)" data-icon="check" hidden></button>
+            </div>
           </div>
           <button id="ctx-wire-del" class="ctx-wire-del" title="Удалить соединение" hidden>×</button><!-- появляется при наведении на провод -->
+          <div id="ctx-marquee" class="ctx-marquee" hidden></div><!-- рамка выделения (Shift+протягивание) -->
           <div id="ctx-world" class="ctx-world">
             <svg id="ctx-wires" class="ctx-wires"></svg>
             <div id="ctx-nodes"></div>
           </div>
           <!-- лёгкий онбординг: нижняя плашка, закрывается один раз; основное управление — в тулбаре справа сверху -->
           <div id="ctx-onboard" class="ctx-onboard" hidden>
-            <div class="ctx-onboard-tx"><b>Контекст агента из блоков.</b> Быстрый старт — «✂ Распилить версию»: локальный агент разложит CLAUDE.md/AGENTS.md на блоки. Дальше управляйте кнопками в правом верхнем углу: добавить блок, версии, уместить в экран, подтвердить.</div>
-            <button id="ctx-ob-split" class="btn primary">✂ Распилить версию</button>
+            <div class="ctx-onboard-tx"><b>Контекст агента из блоков.</b> Стартовый блок — это весь файл агента. Наведи на него курсор и нажми <b>✂</b> (или кнопку ниже), чтобы разложить его на блоки по заголовкам. Дальше: «+» добавить блок, 🕘 версии, выделить блоки и сгруппировать.</div>
+            <button id="ctx-ob-split" class="btn primary">✂ Распилить файл</button>
             <button id="ctx-ob-help" class="btn">Как это работает</button>
             <button id="ctx-ob-close" class="icon-btn" title="Скрыть подсказку" data-icon="x"></button>
           </div>
