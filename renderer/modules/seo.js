@@ -7,7 +7,7 @@
 // (скриншоты в историю НЕ пишем — только в памяти текущей сессии). Вкладки:
 //   Обзор · Безопасность · SEO · Производительность · Сеть/Домен · История.
 // Изоляция как у audit.js: всё из ядра — только через host; UI — из ui.js.
-// host: { layout, GUTTER, saveUiState, refitActiveTerminal, closeOtherPanels, STORE, persist, sendToTerminal }
+// host: { layout, GUTTER, saveUiState, refitActiveTerminal, closeOtherPanels, STORE, persist }
 import { el, icon, iconBtn, toast } from '../ui.js';
 
 const $ = (sel) => document.querySelector(sel);
@@ -90,7 +90,7 @@ function snapOf(result) {
 }
 
 export function initSeo(host) {
-  const { layout, GUTTER, saveUiState, refitActiveTerminal, closeOtherPanels, STORE, persist, sendToTerminal } = host;
+  const { layout, GUTTER, saveUiState, refitActiveTerminal, closeOtherPanels, STORE, persist } = host;
 
   let seoOpen = false;
   let tab = 'overview';
@@ -336,12 +336,6 @@ export function initSeo(host) {
     const expBtn = el('button', 'seo-actbtn'); expBtn.append(icon('download', 14), el('span', null, 'Экспорт'));
     expBtn.onclick = () => exportReport(d);
     acts.append(sumBtn, expBtn);
-    if (sendToTerminal) {
-      const agentBtn = el('button', 'seo-actbtn'); agentBtn.append(icon('terminal', 14), el('span', null, 'Передать агенту'));
-      agentBtn.title = 'Вставить все находки в активный терминал как задачу';
-      agentBtn.onclick = () => { sendToTerminal(buildAgentPrompt(d, null)); toast('Находки переданы агенту'); };
-      acts.appendChild(agentBtn);
-    }
     root.appendChild(acts);
 
     const f = d.findings || [];
@@ -357,7 +351,7 @@ export function initSeo(host) {
     if (topf.length) {
       root.appendChild(el('div', 'seo-h', 'Главные находки'));
       const list = el('div', 'seo-find');
-      for (const x of topf) list.appendChild(findRow(x, d));
+      for (const x of topf) list.appendChild(findRow(x));
       root.appendChild(list);
     }
   }
@@ -384,19 +378,14 @@ export function initSeo(host) {
     c.onclick = () => { tab = sev === 'crit' || sev === 'warn' ? 'security' : 'seo'; renderBody(); };
     return c;
   }
-  // Строка находки + кнопка «починить с агентом» (адресно).
-  function findRow(x, d) {
+  // Строка находки.
+  function findRow(x) {
     const r = el('div', 'seo-frow seo-' + x.sev);
     r.appendChild(el('span', 'seo-dot seo-' + x.sev));
     const w = el('div', 'seo-fwrap');
     w.appendChild(el('div', 'seo-ftitle', (x.cat ? '[' + x.cat + '] ' : '') + x.title));
     if (x.advice) w.appendChild(el('div', 'seo-fadvice', x.advice));
     r.appendChild(w);
-    if (sendToTerminal) {
-      const fix = iconBtn('seo-fix', 'terminal', 'Починить с агентом', 13);
-      fix.onclick = (e) => { e.stopPropagation(); sendToTerminal(buildAgentPrompt(d, x)); toast('Передано агенту'); };
-      r.appendChild(fix);
-    }
     return r;
   }
 
@@ -526,7 +515,7 @@ export function initSeo(host) {
     if (issues.length) {
       root.appendChild(el('div', 'seo-h', 'Замечания SEO'));
       const list = el('div', 'seo-find');
-      for (const x of issues.slice().sort((a, b) => SEV_RANK[a.sev] - SEV_RANK[b.sev])) list.appendChild(findRow({ ...x, cat: 'SEO' }, d));
+      for (const x of issues.slice().sort((a, b) => SEV_RANK[a.sev] - SEV_RANK[b.sev])) list.appendChild(findRow({ ...x, cat: 'SEO' }));
       root.appendChild(list);
     }
   }
@@ -708,7 +697,7 @@ export function initSeo(host) {
     if (snaps.length > 1) root.appendChild(el('div', 'seo-foot', 'Дельта на «Обзоре» сравнивает последние два аудита. Скриншоты в историю не сохраняются.'));
   }
 
-  // ---------------- экспорт / сводка / агент ----------------
+  // ---------------- экспорт / сводка ----------------
   function buildSummaryMd(d) {
     const L = [];
     L.push('# WEB/SEO аудит — ' + ((d.fetch && d.fetch.finalUrl) || d.url));
@@ -738,24 +727,6 @@ export function initSeo(host) {
     for (const x of (d.security || [])) L.push('- ' + x.label + ': ' + (x.present ? 'есть' : 'нет'));
     if (d.whois) { L.push(''); L.push('## Домен'); L.push('- Регистратор: ' + (d.whois.registrar || '—') + ' · создан: ' + (d.whois.created || '—') + ' · истекает: ' + (d.whois.expires || '—')); }
     return L.join('\n') + '\n';
-  }
-  // Промпт агенту: либо по одной находке (fix), либо по всем.
-  function buildAgentPrompt(d, one) {
-    const url = (d.fetch && d.fetch.finalUrl) || d.url;
-    const L = [];
-    if (one) {
-      L.push('Аудит сайта ' + url + ' выявил проблему — исправь её в проекте:');
-      L.push('- [' + SEV_LABEL[one.sev] + '] ' + (one.cat ? one.cat + ': ' : '') + one.title + (one.advice ? ' — ' + one.advice : ''));
-      L.push('');
-      L.push('Найди отвечающий за это код, покажи правки. ');
-      return L.join('\n');
-    }
-    const f = (d.findings || []).slice().sort((a, b) => SEV_RANK[a.sev] - SEV_RANK[b.sev]);
-    L.push('Проведён аудит сайта ' + url + '. Исправь в проекте найденные проблемы (по убыванию важности):');
-    for (const x of f) L.push('- [' + SEV_LABEL[x.sev] + '] ' + (x.cat ? x.cat + ': ' : '') + x.title + (x.advice ? ' — ' + x.advice : ''));
-    L.push('');
-    L.push('Начни с критичных, покажи какие файлы правишь. ');
-    return L.join('\n');
   }
   async function exportReport(d) {
     const base = (hostOf(d.url).replace(/[^\p{L}\p{N}.-]+/gu, '_') || 'site') + '-seo-audit.md';
