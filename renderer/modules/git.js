@@ -111,6 +111,22 @@ export function initGit(host) {
     return b;
   }
 
+  // Чип состояния ветки vs её upstream (по info.branchTrack[name]). null → синхронна/нет upstream.
+  function trackChip(tr) {
+    if (!tr) return null;
+    if (tr.gone) { const c = el('span', 'gm-btrack gone', 'upstream удалён'); c.title = 'Удалённая ветка ' + (tr.upstream || 'upstream') + ' больше не существует'; return c; }
+    if (!tr.ahead && !tr.behind) return null;
+    const parts = [];
+    if (tr.behind) parts.push('↓' + tr.behind);
+    if (tr.ahead) parts.push('↑' + tr.ahead);
+    const c = el('span', 'gm-btrack ' + (tr.behind ? 'behind' : 'ahead'), parts.join(' '));
+    const t = [];
+    if (tr.behind) t.push('отстаёт от ' + (tr.upstream || 'upstream') + ' на ' + tr.behind + ' ' + shortCount(tr.behind, 'коммит', 'коммита', 'коммитов'));
+    if (tr.ahead) t.push('впереди на ' + tr.ahead + ' ' + shortCount(tr.ahead, 'коммит', 'коммита', 'коммитов'));
+    c.title = t.join(', ') + (tr.behind ? ' — обновите кнопкой ⟳' : '');
+    return c;
+  }
+
   // ============================================================ панель (вкладки)
   // Привязана к активному проекту; ядро зовёт renderPanel при смене проекта (см. doSetActive).
   async function renderGitPanel(p) {
@@ -189,20 +205,42 @@ export function initGit(host) {
     branchLabel.appendChild(icon('git', 14));
     branchLabel.appendChild(el('span', null, 'Ветка'));
 
-    const sel = el('select', 'gm-branchsel');
+    // Кастомная выпадашка веток (не нативный <select>): popup растягивается left:0/right:0
+    // внутри грид-ячейки и потому НИКОГДА не вылезает за пределы панели/экрана справа —
+    // в отличие от нативного option-popup Chromium, который у правого края уезжал за экран.
     const brs = info.branches && info.branches.length ? info.branches : [info.branch];
-    for (const b of brs) {
-      const o = document.createElement('option');
-      o.value = b; o.textContent = b;
-      if (b === info.branch) o.selected = true;
-      sel.appendChild(o);
+    const dd = el('div', 'gm-branchdd');
+    const ddBtn = el('button', 'gm-branchsel');
+    ddBtn.type = 'button';
+    ddBtn.title = 'Текущая ветка — нажмите для переключения';
+    ddBtn.append(el('span', 'gm-branchsel-txt', info.branch), icon('chevron-down', 14));
+    const pop = el('div', 'gm-branchpop hidden');
+    dd.append(ddBtn, pop);
+    let popOpen = false;
+    const onDoc = (e) => { if (!dd.contains(e.target)) closePop(); };
+    function closePop() { popOpen = false; pop.classList.add('hidden'); dd.classList.remove('open'); document.removeEventListener('mousedown', onDoc, true); }
+    function openPop() {
+      pop.innerHTML = '';
+      for (const b of brs) {
+        const item = el('div', 'gm-branchitem' + (b === info.branch ? ' cur' : ''));
+        item.appendChild(icon(b === info.branch ? 'check' : 'git', 13));
+        item.appendChild(el('span', 'gm-branchitem-name', b));
+        const tc = trackChip((info.branchTrack || {})[b]);
+        if (tc) item.appendChild(tc);
+        item.onclick = async () => {
+          closePop();
+          if (b === info.branch) return;
+          const r = await lite.git.checkout(p.path, b);
+          if (r.ok) toast('Ветка: ' + b); else toast(r.error || 'не удалось переключить', { kind: 'err', ttl: 8000 });
+          renderGitPanel(p); renderProjects();
+        };
+        pop.appendChild(item);
+      }
+      popOpen = true; pop.classList.remove('hidden'); dd.classList.add('open');
+      document.addEventListener('mousedown', onDoc, true);
     }
-    sel.onchange = async () => {
-      const r = await lite.git.checkout(p.path, sel.value);
-      if (r.ok) toast('Ветка: ' + sel.value); else toast(r.error || 'не удалось переключить', { kind: 'err', ttl: 8000 });
-      renderGitPanel(p); renderProjects();
-    };
-    branchRow.append(branchLabel, sel);
+    ddBtn.onclick = () => (popOpen ? closePop() : openPop());
+    branchRow.append(branchLabel, dd);
 
     const mgr = miniIcon('sliders', 'Управление ветками');
     mgr.onclick = () => { activeTab = 'branches'; renderGitPanel(p); };
@@ -397,6 +435,8 @@ export function initGit(host) {
       const r = await lite.git.commit(p.path, message, withPush, allIncluded ? null : sel);
       btn.classList.remove('loading');
       if (r.ok) { toast(withPush ? 'Закоммичено и запушено' : 'Закоммичено'); msg.value = ''; selectedChangeFile = null; renderGitPanel(p); renderProjects(); }
+      // Коммит лёг, но push не прошёл: список ОБЯЗАН обновиться (файлы уже в коммите), плюс показываем ошибку.
+      else if (r.committed) { toast(r.error || 'push не прошёл', { kind: 'err', ttl: 9000 }); msg.value = ''; selectedChangeFile = null; renderGitPanel(p); renderProjects(); }
       else { btn.disabled = false; toast(r.error || 'ошибка коммита', { kind: 'err', ttl: 8000 }); updateCommitState(); }
     };
     commit.onclick = () => doCommit(false);
@@ -514,6 +554,8 @@ export function initGit(host) {
       name.appendChild(el('span', null, b));
       if (cur) name.appendChild(el('span', 'git-branch-badge', 'current'));
       row.appendChild(name);
+      const tc = trackChip((info.branchTrack || {})[b]);
+      if (tc) row.appendChild(tc);
       const acts = el('div', 'gm-bacts');
       if (!cur) {
         const co = miniIcon('arrow-right', 'Переключиться');
