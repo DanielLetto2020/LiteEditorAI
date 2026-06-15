@@ -277,6 +277,38 @@ function writeStoreKey(key, value) {
 }
 ensureStoreDir();
 
+// ── Централизованная обвязка ошибок IPC (см. CLAUDE.md → «Логирование ошибок») ──────────────
+// ВСЕ модули (текущие и будущие, включая db/remotehost ниже) общаются с бэкендом через
+// ipcMain.handle / ipcMain.on. Оборачиваем регистрацию ОДИН раз, до первого обработчика, чтобы:
+//   • исключение в любом handler → лог [ERROR] с каналом и стеком, затем проброс (reject в рендерер
+//     остаётся как был — поведение модулей не меняем);
+//   • результат вида { ok:false, error } → лог [WARN] (так провалившиеся git/db/seo/… операции
+//     перестают «теряться»: раньше push-ошибка нигде не фиксировалась);
+//   • исключение в ipcMain.on (fire-and-forget) → лог [ERROR] вместо тихого падения EventEmitter.
+// Лог пишется в рантайме (logger.init уже отработал к моменту вызова). Это и есть та «обвязка на
+// сбор ошибок», которую достаточно держать здесь — отдельные модули её НЕ дублируют.
+(() => {
+  const _handle = ipcMain.handle.bind(ipcMain);
+  const oneLine = (s) => String(s == null ? '' : s).split('\n')[0].slice(0, 400);
+  ipcMain.handle = (channel, fn) => _handle(channel, async (event, ...args) => {
+    try {
+      const res = await fn(event, ...args);
+      if (res && typeof res === 'object' && res.ok === false && res.error) {
+        logger.log('warn', 'ipc', `${channel} → ${oneLine(res.error)}`);
+      }
+      return res;
+    } catch (e) {
+      logger.log('error', 'ipc', `${channel} threw`, e);
+      throw e;
+    }
+  });
+  const _on = ipcMain.on.bind(ipcMain);
+  ipcMain.on = (channel, fn) => _on(channel, (event, ...args) => {
+    try { return fn(event, ...args); }
+    catch (e) { logger.log('error', 'ipc', `${channel} (on) threw`, e); }
+  });
+})();
+
 // «Базы данных» backend (drivers + SSH tunnel + safeStorage secrets) — handlers live in lib/db.js.
 const dbApi = dbBackend.registerDbIpc({
   ipcMain, safeStorage, dialog,
@@ -295,6 +327,10 @@ const rhApi = rhBackend.registerRemoteIpc({
 
 // File logging lives next to the store, survives restarts, keeps 5 days.
 const logsDir = path.join(storeDir, 'logs');
+// Реестр ошибок (errors.json в storeDir) — инициализируем ДО logger.init: logger.write()
+// кормит реестр на каждый warn/error/fatal, поэтому реестр должен быть готов раньше.
+const errledger = require('./errledger');
+errledger.init(storeDir);
 logger.init(logsDir);
 ipcMain.on('log:renderer', (_e, { level, args } = {}) => logger.renderer(level, ...(Array.isArray(args) ? args : [args])));
 
@@ -326,6 +362,18 @@ ipcMain.handle('logs:read', (_e, name) => {
     } finally { fs.closeSync(fd); }
   } catch (e) { return { error: String(e) }; }
 });
+// Удалить один лог-файл / очистить старые (сегодняшний живой файл сохраняется).
+ipcMain.handle('logs:delete', (_e, name) => ({ ok: logger.removeFile(name) }));
+ipcMain.handle('logs:clearOld', () => ({ ok: true, removed: logger.clearOld() }));
+
+// ── Реестр ошибок (errors ledger) ───────────────────────────────────────────────────────────
+ipcMain.handle('errors:list', () => errledger.list());
+ipcMain.handle('errors:setStatus', (_e, { id, status, note, commit } = {}) => errledger.setStatus(id, status, note, commit));
+ipcMain.handle('errors:clearResolved', () => errledger.clearResolved());
+ipcMain.handle('errors:setContext', (_e, projectPath) => { errledger.setContext(projectPath); return { ok: true }; });
+// Изменения реестра (новые ошибки, правки статуса, ВНЕШНИЕ правки агентом) → живой UI.
+errledger.onChange(() => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('errors:changed'); });
+errledger.watch();
 
 ipcMain.on('store:loadAll', (e) => {
   const o = {};
@@ -1176,8 +1224,9 @@ function createWindow() {
     logger.log('fatal', 'render-process-gone', JSON.stringify(d)));
   mainWindow.webContents.on('unresponsive', () => logger.log('warn', 'window', 'renderer unresponsive'));
   mainWindow.webContents.on('responsive', () => logger.log('info', 'window', 'renderer responsive'));
-  mainWindow.webContents.on('console-message', (_e, level, message, line, sourceId) => {
-    if (level >= 2) logger.log(level === 3 ? 'error' : 'warn', 'console', `${message} (${sourceId}:${line})`);
+  mainWindow.webContents.on('console-message', (e) => {
+    if (e.level === 'warning' || e.level === 'error')
+      logger.log(e.level === 'error' ? 'error' : 'warn', 'console', `${e.message} (${e.sourceId}:${e.lineNumber})`);
   });
 
   const persist = () => {
@@ -1233,7 +1282,7 @@ function createTray() {
 // GPU/utility child processes dying (the other half of a "trap int3" crash).
 app.on('child-process-gone', (_e, d) =>
   logger.log(d && d.reason === 'clean-exit' ? 'info' : 'error', 'child-process-gone', JSON.stringify(d)));
-app.on('before-quit', () => logger.log('info', 'app', 'before-quit'));
+app.on('before-quit', () => { try { errledger.flush(); } catch (_) {} logger.log('info', 'app', 'before-quit'); });
 
 app.whenReady().then(() => {
   const gpu = !(process.env.LITE_NO_GPU === '1' || process.env.LITE_SOFTWARE_RENDER === '1');
@@ -2533,7 +2582,7 @@ ipcMain.handle('seo:render', async (_e, { url }) => {
     win = new BrowserWindow({ show: false, width: 1366, height: 900, webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false, webSecurity: true, backgroundThrottling: false, images: true } });
     const wc = win.webContents;
     wc.setAudioMuted(true);
-    wc.on('console-message', (_ev, level, message) => { if (level >= 2) consoleMsgs.push({ level, text: String(message).slice(0, 300) }); if (/Mixed Content/i.test(message)) network.mixed++; });
+    wc.on('console-message', (e) => { const message = e.message; const level = e.level === 'error' ? 3 : e.level === 'warning' ? 2 : 0; if (level >= 2) consoleMsgs.push({ level, text: String(message).slice(0, 300) }); if (/Mixed Content/i.test(message)) network.mixed++; });
 
     // Сетевая статистика через CDP (точные размеры передачи, типы, сжатие).
     let dbg = false; const reqInfo = new Map();
@@ -2678,10 +2727,27 @@ ipcMain.handle('git:info', async (_e, root) => {
   const last = await git(root, ['log', '-1', '--format=%h\t%s\t%cr\t%an']);
   let lastCommit = null;
   if (last && last.trim()) { const [hash, subject, when, author] = last.trim().split('\t'); lastCommit = { hash, subject, when, author }; }
-  const brOut = await git(root, ['branch', '--format=%(refname:short)']);
-  const branches = brOut ? brOut.split('\n').map((s) => s.trim()).filter(Boolean) : [];
+  // Per-branch upstream tracking: имя + upstream + [ahead N, behind M] (по уже зафетченным
+  // remote-tracking ref'ам, без сети — как PhpStorm после fetch). Таб-разделитель безопасен:
+  // имя ветки таб не содержит, а %(upstream:track) — только пробелы/скобки/запятые.
+  const brOut = await git(root, ['branch', '--format=%(refname:short)\t%(upstream:short)\t%(upstream:track)']);
+  const branches = [];
+  const branchTrack = {};
+  if (brOut) for (const line of brOut.split('\n')) {
+    if (!line.trim()) continue;
+    const [name, up, track] = line.split('\t');
+    if (!name) continue;
+    branches.push(name);
+    let a = 0, bh = 0, gone = false;
+    if (track) {
+      if (/gone/.test(track)) gone = true;
+      const am = track.match(/ahead (\d+)/); if (am) a = +am[1];
+      const bm = track.match(/behind (\d+)/); if (bm) bh = +bm[1];
+    }
+    branchTrack[name] = { upstream: (up || '').trim(), ahead: a, behind: bh, gone };
+  }
   const remote = ((await git(root, ['remote'])) || '').trim().split('\n').filter(Boolean);
-  return { repo: true, branch, ahead, behind, upstream, lastCommit, branches, hasRemote: remote.length > 0 };
+  return { repo: true, branch, ahead, behind, upstream, lastCommit, branches, branchTrack, hasRemote: remote.length > 0 };
 });
 // Recent commit history for the Git module's log view (PhpStorm-style). Read-only.
 ipcMain.handle('git:log', async (_e, { root, limit } = {}) => {
@@ -2725,12 +2791,26 @@ ipcMain.handle('git:clone', async (_e, { root, url }) => {
   // '--' ends option parsing so the URL can never be treated as a flag.
   return gitRun(root, ['clone', '--', u, '.'], { timeout: 120000 });
 });
+// Пуш с авто-установкой upstream при первом пуше ветки (как PhpStorm / git push.autoSetupRemote).
+// Без этого `git push` для ветки без upstream падал «has no upstream branch» — коммит проходил,
+// а пуш нет; пользователю приходилось пушить из стороннего клиента.
+async function gitPush(root) {
+  const first = await gitRun(root, ['push']);
+  if (first.ok) return first;
+  if (/no upstream branch|--set-upstream|no configured push destination|does not have a branch/i.test(first.error || '')) {
+    const remotes = ((await git(root, ['remote'])) || '').trim().split('\n').filter(Boolean);
+    const remote = remotes.includes('origin') ? 'origin' : remotes[0];
+    if (remote) return gitRun(root, ['push', '-u', remote, 'HEAD']);
+  }
+  return first;
+}
 ipcMain.handle('git:commit', async (_e, { root, message, push, files }) => {
   // files передан → коммитим только выбранное (git add -- <files>), иначе всё (git add -A, как раньше).
   const sel = Array.isArray(files) && files.length;
   const add = await gitRun(root, sel ? ['add', '--', ...files] : ['add', '-A']); if (!add.ok) return add;
   const c = await gitRun(root, ['commit', '-m', message || 'update']); if (!c.ok) return c;
-  if (push) { const p = await gitRun(root, ['push']); if (!p.ok) return { ok: false, error: 'Коммит создан, push не прошёл: ' + p.error }; }
+  // committed:true даже при провале пуша — фронт обязан обновить список (коммит-то уже лёг).
+  if (push) { const p = await gitPush(root); if (!p.ok) return { ok: false, committed: true, error: 'Коммит создан, push не прошёл: ' + p.error }; }
   return { ok: true, out: c.out };
 });
 // Стейджинг выбранных путей (для пометки конфликта разрешённым и выборочного коммита).
@@ -2759,7 +2839,7 @@ ipcMain.handle('git:conflicts', async (_e, root) => {
 // Слить ветку в текущую. Конфликт → ok:false (UI откроет модалку разрешения по git:conflicts).
 ipcMain.handle('git:merge', async (_e, { root, branch }) => gitRun(root, ['merge', '--no-edit', branch]));
 ipcMain.handle('git:mergeAbort', async (_e, root) => gitRun(root, ['merge', '--abort']));
-ipcMain.handle('git:push', async (_e, root) => gitRun(root, ['push']));
+ipcMain.handle('git:push', async (_e, root) => gitPush(root));
 ipcMain.handle('git:pull', async (_e, root) => gitRun(root, ['pull', '--ff-only']));
 // Stash including untracked (-u) so a quick "спрятать всё" doesn't leave new files behind.
 ipcMain.handle('git:stash', async (_e, root) => gitRun(root, ['stash', 'push', '-u']));
