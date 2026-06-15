@@ -26,7 +26,7 @@ import { css } from '@codemirror/lang-css';
 import { sql, PostgreSQL, MySQL, SQLite } from '@codemirror/lang-sql';
 import { showMinimap } from '@replit/codemirror-minimap';
 import { initTextProc } from './modules/textproc.js';
-import { el, svgEl, icon, iconBtn, hydrateIcons, toast, renderDiffInto, makeModal, showConfirm, showPrompt, baseName, ICONS } from './ui.js';
+import { el, svgEl, icon, iconBtn, hydrateIcons, toast, renderDiffInto, makeModal, showConfirm, showPrompt, baseName, ICONS, setErrorSink } from './ui.js';
 import { initGit } from './modules/git.js';
 import { initCtx } from './modules/contextgraph.js';
 import { initContainers } from './modules/containers.js';
@@ -38,7 +38,7 @@ import { initSeo } from './modules/seo.js';
 import { initOpenRouter } from './modules/openrouter.js';
 import { initExtensions } from './modules/extensions.js';
 
-const APP_VERSION = 'alpha v1.0.160';
+const APP_VERSION = 'alpha v1.0.167';
 const GUTTER = 5;
 const SCRATCH_ID = '__scratch__'; // префикс id системных терминалов (домашняя папка), не привязаны к проектам
 const isScratch = (id) => typeof id === 'string' && id.startsWith(SCRATCH_ID);
@@ -1516,6 +1516,7 @@ function doSetActive(id) {
   const proj = projects.find((p) => p.id === id);
   if (!proj) return;
   activeId = id;
+  try { lite.errors.setContext(proj.path); } catch (_) {} // тег проекта для новых ошибок в реестре
   activeOrId = null; // selecting a project always leaves chat mode
   activeDocId = null; // …и режим документа «Обработки текста»
   if (watchedRoot && watchedRoot !== proj.path) lite.fs.unwatch(watchedRoot);
@@ -2538,25 +2539,49 @@ function showCreateFolder() {
 // Renders lines via textContent (never innerHTML) — log text is untrusted input.
 function showLogs() {
   closeMenus();
+  let unsub = null;
   const { m } = makeModal(`
     <h2>🗒 Логи приложения</h2>
-    <div class="logs-wrap">
-      <div class="logs-files" id="logs-files"></div>
+    <div class="logs-tabs">
+      <button class="logs-tab active" data-tab="stream">Поток</button>
+      <button class="logs-tab" data-tab="errors">Ошибки <span class="logs-tabcount" id="logs-errcount"></span></button>
+    </div>
+    <div class="logs-wrap" id="logs-stream">
+      <div class="logs-side">
+        <div class="logs-files" id="logs-files"></div>
+        <button class="btn logs-clearold" id="logs-clearold" title="Удалить все логи кроме сегодняшних">🗑 Очистить старые</button>
+      </div>
       <div class="logs-main">
         <div class="logs-bar">
           <span class="logs-name" id="logs-curname">—</span>
-          <span class="drag-space-static"></span>
+          <input type="text" class="logs-search" id="logs-search" placeholder="фильтр строк…">
           <label class="logs-chk"><input type="checkbox" id="logs-erronly"> только ошибки</label>
           <button class="icon-btn" id="logs-copy" title="Скопировать файл">⧉</button>
           <button class="icon-btn" id="logs-refresh" title="Обновить">⟳</button>
         </div>
         <div class="logs-view" id="logs-view"></div>
       </div>
-    </div>`);
+    </div>
+    <div class="logs-errpane hidden" id="logs-errors">
+      <div class="logs-errbar">
+        <select class="logs-errfilter" id="logs-errfilter">
+          <option value="open">Открытые</option>
+          <option value="all">Все</option>
+          <option value="resolved">Решённые</option>
+          <option value="ignored">Игнор</option>
+        </select>
+        <span class="drag-space-static"></span>
+        <button class="btn" id="logs-err-agent" title="Вставить открытые ошибки в терминал активного проекта">→ Передать агенту</button>
+        <button class="btn" id="logs-err-clear" title="Удалить решённые и игнор из реестра">Очистить решённые</button>
+        <button class="icon-btn" id="logs-err-refresh" title="Обновить">⟳</button>
+      </div>
+      <div class="logs-errlist" id="logs-errlist"></div>
+    </div>`, () => { if (unsub) unsub(); });
   const filesBox = m.querySelector('#logs-files');
   const view = m.querySelector('#logs-view');
   const curName = m.querySelector('#logs-curname');
   const errOnly = m.querySelector('#logs-erronly');
+  const search = m.querySelector('#logs-search');
   let current = null, raw = '';
   const fmtSize = (n) => n < 1024 ? n + ' B' : n < 1048576 ? Math.round(n / 1024) + ' KB' : (n / 1048576).toFixed(1) + ' MB';
   const levelOf = (line) => /\[(FATAL|ERROR)\]/.test(line) ? 'err' : /\[WARN\]/.test(line) ? 'warn' : /\[INFO\]/.test(line) ? 'info' : null;
@@ -2565,6 +2590,8 @@ function showLogs() {
     if (!current) { view.appendChild(el('div', 'logs-empty', 'Выбери файл слева')); return; }
     let lines = raw.split('\n');
     if (errOnly.checked) lines = lines.filter((l) => { const k = levelOf(l); return k === 'err' || k === 'warn'; });
+    const q = (search.value || '').trim().toLowerCase();
+    if (q) lines = lines.filter((l) => l.toLowerCase().includes(q));
     const MAXL = 2500;
     if (lines.length > MAXL) { view.appendChild(el('div', 'logs-note', `…последние ${MAXL} строк из ${lines.length}`)); lines = lines.slice(-MAXL); }
     if (!lines.length) { view.appendChild(el('div', 'logs-empty', errOnly.checked ? 'Ошибок и предупреждений нет 🎉' : 'Файл пуст')); return; }
@@ -2588,16 +2615,112 @@ function showLogs() {
     if (!files.length) { filesBox.appendChild(el('div', 'logs-empty', 'Логов пока нет')); view.innerHTML = ''; return; }
     for (const f of files) {
       const row = el('div', 'logs-file'); row.dataset.name = f.name;
-      row.appendChild(el('div', 'logs-fname', f.name));
-      row.appendChild(el('div', 'logs-fmeta', fmtSize(f.size)));
-      row.addEventListener('click', () => load(f.name));
+      const info = el('div', 'logs-finfo');
+      info.appendChild(el('div', 'logs-fname', f.name));
+      info.appendChild(el('div', 'logs-fmeta', fmtSize(f.size)));
+      info.addEventListener('click', () => load(f.name));
+      const del = el('button', 'logs-fdel'); del.title = 'Удалить файл'; del.textContent = '✕';
+      del.addEventListener('click', (e) => {
+        e.stopPropagation();
+        showConfirm('Удалить лог?', 'Файл «' + f.name + '» будет удалён безвозвратно.', 'Удалить', async () => {
+          const r = await lite.logs.delete(f.name);
+          if (r && r.ok) { if (current === f.name) { current = null; raw = ''; view.innerHTML = ''; } refresh(); }
+          else toast('Не удалось удалить файл', { kind: 'err' });
+        });
+      });
+      row.append(info, del);
       filesBox.appendChild(row);
     }
     load((current && files.some((f) => f.name === current)) ? current : files[0].name); // newest day first
   }
   errOnly.onchange = render;
+  search.addEventListener('input', render);
   m.querySelector('#logs-refresh').onclick = refresh;
   m.querySelector('#logs-copy').onclick = () => { if (raw) { lite.copyText(raw); toast('Лог скопирован в буфер'); } };
+  m.querySelector('#logs-clearold').onclick = () => showConfirm('Очистить старые логи?', 'Будут удалены все лог-файлы, кроме сегодняшних. Текущая сессия сохранится.', 'Очистить', async () => {
+    const r = await lite.logs.clearOld();
+    toast(r && r.ok ? ('Удалено файлов: ' + (r.removed || 0)) : 'Не удалось очистить', r && r.ok ? {} : { kind: 'err' });
+    refresh();
+  });
+
+  // ── вкладка «Ошибки» (реестр) ──────────────────────────────────────────────────────────
+  const streamPane = m.querySelector('#logs-stream');
+  const errPane = m.querySelector('#logs-errors');
+  const tabs = [...m.querySelectorAll('.logs-tab')];
+  const errCount = m.querySelector('#logs-errcount');
+  const errList = m.querySelector('#logs-errlist');
+  const errFilter = m.querySelector('#logs-errfilter');
+  let errEntries = [];
+  const ago = (t) => { const s = Math.max(0, (Date.now() - t) / 1000); return s < 60 ? Math.floor(s) + 'с' : s < 3600 ? Math.floor(s / 60) + 'м' : s < 86400 ? Math.floor(s / 3600) + 'ч' : Math.floor(s / 86400) + 'д'; };
+  function renderErrors() {
+    errList.innerHTML = '';
+    const f = errFilter.value;
+    const items = f === 'all' ? errEntries : errEntries.filter((e) => e.status === f);
+    if (!items.length) { errList.appendChild(el('div', 'logs-empty', f === 'open' ? 'Открытых ошибок нет 🎉' : 'Пусто')); return; }
+    for (const e of items) {
+      const card = el('div', 'logs-err' + (e.status !== 'open' ? ' done' : ''));
+      const head = el('div', 'logs-err-head');
+      head.appendChild(el('span', 'logs-err-lvl ' + (e.level === 'warn' ? 'warn' : 'err'), (e.level || '').toUpperCase()));
+      head.appendChild(el('span', 'logs-err-src', e.source || 'main'));
+      head.appendChild(el('span', 'logs-err-count', '×' + (e.count || 1)));
+      if (e.project) head.appendChild(el('span', 'logs-err-proj', baseName(e.project)));
+      if (e.regressed) head.appendChild(el('span', 'logs-err-regr', 'регрессия'));
+      if (e.status === 'resolved') head.appendChild(el('span', 'logs-err-tag ok', '✓ решено'));
+      else if (e.status === 'ignored') head.appendChild(el('span', 'logs-err-tag', 'игнор'));
+      head.appendChild(el('span', 'logs-err-time', ago(e.lastSeen)));
+      card.appendChild(head);
+      card.appendChild(el('div', 'logs-err-msg', e.sample || ''));
+      if (e.note) card.appendChild(el('div', 'logs-err-note', '📝 ' + e.note + (e.commit ? ' · ' + e.commit : '')));
+      const acts = el('div', 'logs-err-acts');
+      if (e.status === 'open') {
+        const res = el('button', 'logs-err-btn ok', '✓ Решено');
+        res.onclick = async () => { const r = await lite.errors.setStatus(e.id, 'resolved', null, null); if (r && r.ok) loadErrors(); };
+        const ign = el('button', 'logs-err-btn', 'Игнор');
+        ign.onclick = async () => { const r = await lite.errors.setStatus(e.id, 'ignored'); if (r && r.ok) loadErrors(); };
+        acts.append(res, ign);
+      } else {
+        const re = el('button', 'logs-err-btn', '↩ Вернуть в открытые');
+        re.onclick = async () => { const r = await lite.errors.setStatus(e.id, 'open'); if (r && r.ok) loadErrors(); };
+        acts.append(re);
+      }
+      card.appendChild(acts);
+      errList.appendChild(card);
+    }
+  }
+  async function loadErrors() {
+    let res; try { res = await lite.errors.list(); } catch (_) { res = { entries: [], open: 0 }; }
+    errEntries = (res && res.entries) || [];
+    const open = (res && res.open) || 0;
+    errCount.textContent = open ? String(open) : '';
+    errCount.classList.toggle('has', open > 0);
+    renderErrors();
+  }
+  function setTab(name) {
+    streamPane.classList.toggle('hidden', name !== 'stream');
+    errPane.classList.toggle('hidden', name !== 'errors');
+    tabs.forEach((t) => t.classList.toggle('active', t.dataset.tab === name));
+    if (name === 'errors') loadErrors();
+  }
+  tabs.forEach((t) => { t.onclick = () => setTab(t.dataset.tab); });
+  errFilter.onchange = renderErrors;
+  m.querySelector('#logs-err-refresh').onclick = loadErrors;
+  m.querySelector('#logs-err-clear').onclick = () => showConfirm('Очистить реестр?', 'Решённые и игнорированные записи будут удалены из реестра. Открытые останутся.', 'Очистить', async () => {
+    const r = await lite.errors.clearResolved();
+    toast(r && r.ok ? ('Удалено записей: ' + (r.removed || 0)) : 'Не удалось', r && r.ok ? {} : { kind: 'err' });
+    loadErrors();
+  });
+  m.querySelector('#logs-err-agent').onclick = () => {
+    const p = activeProject();
+    if (!p) { toast('Нет активного проекта — открой проект, чтобы передать в его терминал', { kind: 'err', ttl: 7000 }); return; }
+    const open = errEntries.filter((e) => e.status === 'open' && (!e.project || e.project === p.path));
+    if (!open.length) { toast('Открытых ошибок для этого проекта нет'); return; }
+    const lines = open.slice(0, 40).map((e) => `- [${e.level}] ${e.source}: ${e.sample} (×${e.count}, id ${e.id})`).join('\n');
+    const text = `В логе редактора есть открытые ошибки (реестр ~/.LiteEditorAI/errors.json). Разберись и почини; что устранил — отметь в errors.json по правилу из CLAUDE.md (для записи по id выставить "status":"resolved" + "note" + "commit"). Открытые сейчас:\n${lines}\n`;
+    sendNoteToTerminal(p, text);
+    toast('Передано в терминал: ' + open.length);
+  };
+  try { unsub = lite.errors.onChanged(() => loadErrors()); } catch (_) {}
+  loadErrors();   // заполнить счётчик на вкладке сразу
   refresh();
 }
 
@@ -2846,6 +2969,9 @@ function init() {
   // surface unexpected renderer errors instead of failing silently — toast for
   // the user, and forward to the main-process file log so crashes are diagnosable
   const logErr = (...a) => { try { lite.log('error', ...a); } catch (_) {} };
+  // Любой error-тост модуля (toast(..., {kind:'err'})) уезжает в лог редактора — единая обвязка
+  // ошибок фронта без правок в самих модулях. См. CLAUDE.md → «Логирование ошибок».
+  setErrorSink((m) => logErr('toast', m));
   window.addEventListener('error', (e) => {
     logErr('window.error', (e.error && e.error.stack) || e.message || '', e.filename ? `${e.filename}:${e.lineno}:${e.colno}` : '');
     toast('Ошибка: ' + (e.message || (e.error && e.error.message) || 'см. F12'), { kind: 'err', ttl: 8000 });

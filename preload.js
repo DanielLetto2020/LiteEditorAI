@@ -42,6 +42,15 @@ contextBridge.exposeInMainWorld('lite', {
   logs: {
     list: () => ipcRenderer.invoke('logs:list'),
     read: (name) => ipcRenderer.invoke('logs:read', name),
+    delete: (name) => ipcRenderer.invoke('logs:delete', name),
+    clearOld: () => ipcRenderer.invoke('logs:clearOld'),
+  },
+  errors: {
+    list: () => ipcRenderer.invoke('errors:list'),
+    setStatus: (id, status, note, commit) => ipcRenderer.invoke('errors:setStatus', { id, status, note, commit }),
+    clearResolved: () => ipcRenderer.invoke('errors:clearResolved'),
+    setContext: (projectPath) => ipcRenderer.invoke('errors:setContext', projectPath),
+    onChanged: (cb) => { const h = () => cb(); ipcRenderer.on('errors:changed', h); return () => ipcRenderer.removeListener('errors:changed', h); },
   },
 
   // Пользовательские модули (расширения): скан папки ~/.LiteEditorAI/modules + скаффолд нового модуля.

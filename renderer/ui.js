@@ -117,7 +117,14 @@ export function hydrateIcons(root = document) {
 }
 
 // ---------------------------------------------------------------- toasts
+// Сборщик ошибок фронта: ядро прокидывает сюда lite.log (см. renderer.js), чтобы КАЖДЫЙ
+// error-тост любого модуля попадал в лог редактора без правок в модулях. ui.js при этом
+// остаётся чистым DOM (window.lite не импортируется — колбэк инъектируется сверху). DAG цел.
+let _errSink = null;
+export function setErrorSink(fn) { _errSink = typeof fn === 'function' ? fn : null; }
+
 export function toast(msg, opts = {}) {
+  if (opts.kind === 'err' && _errSink && !opts.silent) { try { _errSink(String(msg)); } catch (_) {} }
   const t = el('div', 'toast' + (opts.kind ? ' ' + opts.kind : ''));
   t.appendChild(el('span', 'toast-msg', msg));
   if (opts.actionLabel) {
