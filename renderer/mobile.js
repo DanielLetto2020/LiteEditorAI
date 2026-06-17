@@ -15,9 +15,10 @@
 const sgrline = require('../lib/sgrline.js');
 
 let ws = null;
-let relayUrl = 'wss://lite.codecopy.ru/ws';
+let relayUrl = '';   // адрес релея задаётся пользователем на экране входа (self-hosting), хранится в lite_relay
 let token = '';
 let selected = null;
+let activeProj = null;   // активный проект на пульте: меню «Проекты» выбирает его, селектор над терминалом листает его вкладки
 let lastSessions = [];
 let lastProjects = [];
 let booted = false;
@@ -36,12 +37,33 @@ function lsGet(k) { try { return localStorage.getItem(k); } catch (_) { return (
 function lsSet(k, v) { try { localStorage.setItem(k, v); } catch (_) { mem[k] = v; } }
 function lsDel(k) { try { localStorage.removeItem(k); } catch (_) { delete mem[k]; } }
 
+// Хост релея ↔ WS-URL. Пользователь вводит голый host[:port], строим wss://host/ws.
+function relayUrlFromHost(h) {
+  h = String(h || '').trim().replace(/^wss?:\/\//i, '').replace(/^https?:\/\//i, '').replace(/\/.*$/, '').trim();
+  return h ? ('wss://' + h + '/ws') : '';
+}
+function relayHostFromUrl(u) {
+  return String(u || '').replace(/^wss?:\/\//i, '').replace(/\/ws$/i, '').replace(/\/.*$/, '');
+}
+
 // ----------------------------------------------- идентичность устройства (pairing)
 // Стабильный per-устройство id (одобряется на ПК один раз). Имя — модель из UA для
 // наглядности в модалке одобрения на ПК.
 function deviceId() {
   let id = lsGet('lite_device_id');
-  if (!id) { id = 'd' + randHex(16); lsSet('lite_device_id', id); }   // 128 бит, неугадываемо
+  if (id) return id;
+  // Предпочитаем НАТИВНЫЙ стабильный id (ANDROID_ID) — он переживает переустановку APK,
+  // поэтому после обновления пульта повторный пайринг по коду не нужен. localStorage
+  // стирается при удалении приложения, а нативный id — нет. В браузере (нет моста) —
+  // CSPRNG-фолбэк (предсказуемый id дал бы перебор чужого одобренного устройства).
+  try {
+    if (window.LiteDevice && typeof window.LiteDevice.deviceId === 'function') {
+      const nid = window.LiteDevice.deviceId();
+      if (nid) id = nid;
+    }
+  } catch (_) {}
+  if (!id) id = 'd' + randHex(16);   // 128 бит, неугадываемо
+  lsSet('lite_device_id', id);
   return id;
 }
 // Криптостойкие случайные байты → hex. device_id ключует одобрение устройства на релее:
@@ -253,6 +275,7 @@ function setShade(on) { const sh = $('shade'); if (sh) sh.style.display = on ? '
 function closeTopPanels() {
   const pm = $('projmodal'); if (pm) pm.style.display = 'none';
   const dm = $('dropmenu'); if (dm) dm.style.display = 'none';
+  const td = $('termdrop'); if (td) td.style.display = 'none';
   setShade(false);
 }
 function wireTopPanels() {
@@ -503,16 +526,27 @@ function showNewFolder() {
 function showLogin(errText) {
   $('login').style.display = 'flex';
   $('app').style.display = 'none';
+  const hostInp = $('lg-host');
+  if (hostInp && !hostInp.value) hostInp.value = relayHostFromUrl(relayUrl);
   if (errText !== undefined) $('lg-err').textContent = errText || '';
 }
 function setAuthBusy(b) { const g = $('lg-go'); if (g) g.disabled = b; }
 function authError(msg) { clearTimeout(authTimer); authTimer = null; authPending = null; setAuthBusy(false); $('lg-err').textContent = msg; }
 
 function submitAuth() {
+  const hostInp = $('lg-host');
+  const host = hostInp ? hostInp.value.trim() : '';
   const login = $('lg-login').value.trim().toLowerCase();
   const pass = $('lg-pass').value;
   $('lg-err').textContent = '';
+  if (!host) { $('lg-err').textContent = 'Укажите хост релея'; return; }
   if (login.length < 3 || pass.length < 4) { $('lg-err').textContent = 'Логин ≥3, пароль ≥4 символа'; return; }
+  const url = relayUrlFromHost(host);
+  if (!url) { $('lg-err').textContent = 'Некорректный хост релея'; return; }
+  // Сменили хост — закрываем старый пред-авторизованный сокет, чтобы переоткрыть на новый релей.
+  if (url !== relayUrl) { try { ws && ws.close(); } catch (_) {} ws = null; }
+  relayUrl = url;
+  lsSet('lite_relay', relayUrl);
   setAuthBusy(true);
   authPending = { login, password: pass };
   clearTimeout(authTimer);
@@ -560,6 +594,11 @@ let histText = '';          // подгруженный кусок транск�
 let histStart = -1;         // смещение начала histText в транскрипте ПК; 0 = упёрлись в начало; -1 = не грузили
 let histLoading = false;
 let histAnchor = null;      // {top, height} — восстановить позицию после пришивания сверху
+// renderScreen полностью пересобирает <pre> (textContent=''), из-за чего scrollTop
+// схлопывается в 0 и браузер шлёт «фантомный» scroll-event. Без флага он трактуется
+// как «пользователь долистал до верха» → ложная подгрузка истории при каждом кадре
+// (в т.ч. на каждый символ при наборе). Подавляем scroll-обработчик на время пересборки.
+let suppressScroll = false;
 const HIST_CHUNK = 48 * 1024;
 const HIST_SEP = '\n┄┄┄┄┄┄┄┄ выше — история ┄┄┄┄┄┄┄┄\n';
 
@@ -602,6 +641,7 @@ function initScreen() {
   screenEl.className = 'screen';
   screenEl.textContent = 'Выбери терминал слева';
   screenEl.addEventListener('scroll', () => {
+    if (suppressScroll) return;                            // программная пересборка кадра — не реагируем
     const atB = screenAtBottom();
     screenFollow = atB;
     if (atB) {
@@ -726,6 +766,8 @@ function renderScreen() {
     if (hasCur) insertCursor(rows[cy]);
     // 3) сборка: [история] + кадр; подряд идущие НЕстилизованные строки батчим в один
     //    текстовый узел; строка с курсором — <span class=cur-line> (подсветка поля ввода).
+    suppressScroll = true;                  // пересборка ниже схлопнет scrollTop → глушим фантомный scroll
+    const prevTop = screenEl.scrollTop;     // позиция до пересборки (нужна, когда не липнем к низу)
     screenEl.textContent = '';
     if (histText) screenEl.appendChild(document.createTextNode(histText + HIST_SEP));
     let buf = '';
@@ -753,7 +795,13 @@ function renderScreen() {
       histAnchor = null;
     } else if (stick) {
       screenEl.scrollTop = screenEl.scrollHeight;
+    } else {
+      screenEl.scrollTop = prevTop;   // не липнем — сохраняем позицию, НЕ прыгаем в верх (иначе ложная подгрузка)
     }
+    // Снимаем подавление после того, как браузер отстрелит scroll-события пересборки.
+    // Порядок в event loop: scroll-шаги идут ДО rAF-колбэков, поэтому к следующему rAF
+    // фантомные события уже отработали и реальный пользовательский скролл снова в силе.
+    requestAnimationFrame(() => { suppressScroll = false; });
   });
 }
 // Кадр с ПК: full — заменить экран целиком; diff — точечно изменившиеся строки.
@@ -1029,15 +1077,26 @@ function catHue(name) {
   let h = 0; for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) >>> 0;
   return h % 360;
 }
-const ADD_SVG = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>';
 
+// id сессий-сирот (проект удалён на ПК, а PTY жив) сводим к псевдо-проекту «Прочее»,
+// чтобы доступ к таким терминалам не терялся ни в выборе проектов, ни в выпадашке.
+const ORPHAN = '__orphan__';
+function knownProjIds() { const k = {}; (lastProjects || []).forEach((p) => { k[p.id] = 1; }); return k; }
+function projKeyOf(s) { const known = knownProjIds(); return (s.projId && known[s.projId]) ? s.projId : ORPHAN; }
+function sessionsForProj(projId) { return (lastSessions || []).filter((s) => projKeyOf(s) === projId); }
+function projName(projId) {
+  if (projId === ORPHAN) return 'Прочее';
+  const p = (lastProjects || []).find((x) => x.id === projId);
+  return p ? p.name : '—';
+}
+
+// Меню «Проекты»: только категории → проекты (терминалы переехали в выпадашку над терминалом).
+// Тап по проекту делает его активным; вкладки-терминалы листаются селектором над терминалом.
 function renderTree() {
   const box = $('tabs');
+  if (!box) return;
   box.innerHTML = '';
   const projects = lastProjects || [];
-  const sessions = lastSessions || [];
-  const byProj = {};
-  for (const s of sessions) { const k = s.projId || '__none__'; (byProj[k] = byProj[k] || []).push(s); }
 
   const fav = projects.filter((p) => p.favorite);
   const cats = {};
@@ -1061,65 +1120,114 @@ function renderTree() {
     box.appendChild(h);
     return collapsed;
   };
-  const addSession = (s, canClose) => {
-    const t = document.createElement('div');
-    t.className = 'tab' + (s.sid === selected ? ' active' : '');
-    const nm = document.createElement('span');
-    nm.className = 'tab-name'; nm.textContent = s.tab || s.label || s.sid;
-    nm.onclick = () => { closeTopPanels(); selectSession(s.sid); };
-    t.appendChild(nm);
-    // Крестик — только если у проекта 2+ терминала (последний закрывать нельзя).
-    if (canClose) {
-      const x = document.createElement('button');
-      x.className = 'tab-x'; x.textContent = '×';
-      x.onclick = (e) => { e.stopPropagation(); send({ t: 'close', sid: s.sid }); };
-      t.appendChild(x);
-    }
-    box.appendChild(t);
-  };
-  // Вкладка-плейсхолдер: у проекта ещё нет PTY на ПК, но визуально вкладка ЕСТЬ
-  // (как в редакторе — у проекта минимум один терминал). Тап = открыть на ПК и
-  // автоматически выбрать, когда сессия появится в state (pendingOpenProj).
-  const addGhost = (p) => {
-    const t = document.createElement('div');
-    t.className = 'tab ghost';
-    const nm = document.createElement('span');
-    nm.className = 'tab-name'; nm.textContent = 'Терминал 1';
-    nm.onclick = () => { openProjTerminal(p.id); };
-    t.appendChild(nm);
-    box.appendChild(t);
-  };
-  const addProj = (p) => {
+  // Плашка проекта: имя + бейдж с числом открытых терминалов (если есть). Тап — выбрать проект.
+  const addProj = (id, name) => {
     const pr = document.createElement('div');
-    pr.className = 'proj';
-    const nm = document.createElement('span'); nm.className = 'proj-name'; nm.textContent = p.name;
-    const plus = document.createElement('button'); plus.className = 'add-term'; plus.title = 'Открыть ещё терминал';
-    plus.innerHTML = ADD_SVG;   // статичная SVG-иконка (без пользовательских данных)
-    plus.onclick = (e) => { e.stopPropagation(); openProjTerminal(p.id); };
-    pr.appendChild(nm); pr.appendChild(plus);
+    pr.className = 'proj-pick' + (id === activeProj ? ' active' : '');
+    const nm = document.createElement('span'); nm.className = 'pp-name'; nm.textContent = name;
+    pr.appendChild(nm);
+    const n = sessionsForProj(id).length;
+    if (n) { const b = document.createElement('span'); b.className = 'pp-count'; b.textContent = n; pr.appendChild(b); }
+    pr.onclick = () => selectProject(id);
     box.appendChild(pr);
-    const list = byProj[p.id] || [];
-    if (list.length) { for (const s of list) addSession(s, list.length > 1); }
-    else addGhost(p);
   };
 
   for (const g of groups) {
     const collapsed = addCat(g[0]);
-    // Свёрнуто — прячем ВСЕ плашки категории (включая проекты с открытым терминалом).
-    // Доступ к запущенной вкладке не теряется: её вывод виден в терминале, для смены — развернуть.
-    if (!collapsed) for (const p of g[1]) addProj(p);
+    if (!collapsed) for (const p of g[1]) addProj(p.id, p.name);
   }
-  const known = {}; projects.forEach((p) => { known[p.id] = 1; });
-  const orphans = sessions.filter((s) => !s.projId || !known[s.projId]);
-  if (orphans.length) { addCat('Прочее'); orphans.forEach((s) => addSession(s, orphans.length > 1)); }  // сессии всегда видны
+  // Сироты-сессии — отдельным псевдо-проектом «Прочее» (доступ к их терминалам не теряется).
+  if (sessionsForProj(ORPHAN).length) { addCat('Прочее'); addProj(ORPHAN, 'Прочее'); }
 }
+
+// Выбор проекта из меню «Проекты»: делаем активным и переходим в один из его терминалов
+// (текущий, если он этого проекта; иначе первый; если ни одного открытого — открываем новый).
+function selectProject(projId) {
+  activeProj = projId;
+  closeTopPanels();
+  const list = sessionsForProj(projId);
+  if (list.length) {
+    const cur = list.find((s) => s.sid === selected) || list[0];
+    selectSession(cur.sid);
+  } else if (projId !== ORPHAN) {
+    openProjTerminal(projId);   // PTY ещё нет — поднять на ПК (state выберет новую сессию)
+    updateTermSel();
+    renderTree();
+  }
+}
+
+// Выпадашка над терминалом: все терминалы активного проекта + «новый терминал».
+function renderTermDropdown() {
+  const td = $('termdrop');
+  if (!td) return;
+  td.innerHTML = '';
+  if (!activeProj) {
+    const e = document.createElement('div'); e.className = 'td-empty';
+    e.textContent = 'Выберите проект в меню «📁 Проекты».';
+    td.appendChild(e);
+    return;
+  }
+  const list = sessionsForProj(activeProj);
+  const canClose = list.length > 1;
+  for (const s of list) {
+    const row = document.createElement('div');
+    row.className = 'td-term' + (s.sid === selected ? ' active' : '');
+    const nm = document.createElement('span');
+    nm.className = 'td-name'; nm.textContent = s.tab || s.label || s.sid;
+    nm.onclick = () => { closeTopPanels(); selectSession(s.sid); };
+    row.appendChild(nm);
+    // Крестик — только если терминалов 2+ (последний закрывать нельзя).
+    if (canClose) {
+      const x = document.createElement('button');
+      x.className = 'td-x'; x.textContent = '×';
+      x.onclick = (e) => { e.stopPropagation(); send({ t: 'close', sid: s.sid }); };
+      row.appendChild(x);
+    }
+    td.appendChild(row);
+  }
+  if (activeProj !== ORPHAN) {   // сироты-проекта на ПК нет — новый терминал открывать некуда
+    const add = document.createElement('button');
+    add.className = 'td-new'; add.textContent = '＋ Новый терминал';
+    add.onclick = () => { openProjTerminal(activeProj); };   // openProjTerminal сам закроет панели
+    td.appendChild(add);
+  }
+}
+
+// Открыть/закрыть выпадашку терминалов, прижав её к низу селектор-бара.
+function toggleTermDropdown() {
+  const td = $('termdrop');
+  if (!td) return;
+  if (td.style.display === 'block') { closeTopPanels(); return; }
+  const pm = $('projmodal'); if (pm) pm.style.display = 'none';
+  const dm = $('dropmenu'); if (dm) dm.style.display = 'none';
+  renderTermDropdown();
+  const sel = $('termsel');
+  if (sel) td.style.top = Math.round(sel.getBoundingClientRect().bottom + 2) + 'px';
+  setShade(true);
+  td.style.display = 'block';
+}
+
+// Подпись селектор-бара: «Проект · Терминал N».
+function updateTermSel() {
+  const lbl = $('termsel-label');
+  if (!lbl) return;
+  if (!activeProj) { lbl.textContent = 'Выбери проект'; return; }
+  const s = (lastSessions || []).find((x) => x.sid === selected);
+  const tname = s ? (s.tab || s.label || s.sid) : '—';
+  lbl.textContent = projName(activeProj) + ' · ' + tname;
+}
+
 function selectSession(sid) {
   selected = sid;
+  const s = (lastSessions || []).find((x) => x.sid === sid);
+  if (s) activeProj = projKeyOf(s);   // следуем за проектом выбранного терминала
   frame = null;
   screenFollow = true;
   resetHistory();
   renderScreen();
   send({ t: 'select', sid, styled: 1 });   // ПК ответит немедленным полным кадром (styled — просим цвета)
+  updateTermSel();
+  renderTermDropdown();
   renderTree();
 }
 // Открыть терминал проекта на ПК (＋ или тап по вкладке-плейсхолдеру). Новая сессия
@@ -1147,7 +1255,10 @@ function resyncTerminal() {
   const sid = (selected && lastSessions.some((s) => s.sid === selected)) ? selected
             : (lastSessions[0] && lastSessions[0].sid);
   if (!sid) return false;       // вкладок ещё нет (ПК не успел поднять) — попробуем на следующем state
-  selected = sid; renderTree();
+  selected = sid;
+  const s = (lastSessions || []).find((x) => x.sid === sid);
+  if (s) activeProj = projKeyOf(s);
+  updateTermSel(); renderTree();
   frame = null;
   screenFollow = true;
   resetHistory();
@@ -1244,6 +1355,11 @@ function connect() {
         if (resyncTerminal()) resyncTerm = false;   // удалось — сброс; нет вкладок — ждём следующий state
       } else if (!exists) { selected = null; if (target) selectSession(target); }   // сессия исчезла/первый вход — выбрать валидную
       // НЕ следуем за активной ПК: вкладку на пульте выбирает пользователь, PC-active игнорируем
+      // Активный проект мог исчезнуть (удалён на ПК / сироты закрылись) — синхронизируем подпись и открытую выпадашку.
+      if (activeProj && activeProj !== ORPHAN && !knownProjIds()[activeProj]) activeProj = null;
+      if (activeProj === ORPHAN && !sessionsForProj(ORPHAN).length) activeProj = null;
+      updateTermSel();
+      const td = $('termdrop'); if (td && td.style.display === 'block') renderTermDropdown();
     }
     else if (m.t === 'screen') { applyScreenMsg(m); }
     else if (m.t === 'exit') {
@@ -1423,7 +1539,9 @@ window.__kbChanged = function () {
 };
 
 function start(config) {
+  // Приоритет: явный ?relay= из URL → сохранённый пользователем хост → пусто (спросим на входе).
   if (config && config.relayUrl) relayUrl = config.relayUrl;
+  else { const saved = lsGet('lite_relay'); if (saved) relayUrl = saved; }
   if (booted) return;  // Android зовёт __bootLite после DOMContentLoaded — не дублируем
   booted = true;
   try {
@@ -1434,12 +1552,14 @@ function start(config) {
     const ver = $('top-ver'); if (ver) ver.textContent = window.PULT_VER || '';
     const lver = $('login-ver'); if (lver && window.PULT_VER) lver.textContent = 'пульт v' + window.PULT_VER;   // версия на экране входа из единого источника
     const mb = $('menu-btn'); if (mb) mb.onclick = openMenu;
+    const ts = $('termsel'); if (ts) ts.onclick = toggleTermDropdown;   // селектор → выпадашка терминалов активного проекта
     wireViewportEvents(); // единая точка resize/orientation для xterm и плавающей клавиатуры
     lockViewport();      // клавиатура не должна двигать UI (старые WebView)
     wireKbd();           // плавающая своя клавиатура (перетаскивание + крестик)
     token = lsGet('lite_token') || '';
-    if (token) enterApp(); else showLogin('');
-    connect();           // с токеном → авторизуемся; без → пред-авторизованный сокет для входа
+    if (token && relayUrl) enterApp(); else showLogin('');
+    // Без указанного хоста релея не подключаемся — ждём ввода на экране входа (submitAuth).
+    if (relayUrl) connect();   // с токеном → авторизуемся; без → пред-авторизованный сокет для входа
     // Вотчдог кадра: раз в секунду. Если сессия выбрана, а кадра нет (ПК перезапускался,
     // PTY ещё не поднялся, select потерялся в сети) — сами перезапрашиваем полный кадр,
     // пока не получим (requestFullFrame троттлит до 1 запроса/сек).

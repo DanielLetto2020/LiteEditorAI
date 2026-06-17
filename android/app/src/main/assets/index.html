@@ -9,8 +9,11 @@
        Так мы видим причину «тишины»/чёрного экрана, даже если основной JS не исполняется. -->
   <script>
   (function () {
-    var RELAY = 'wss://lite.codecopy.ru/ws';
+    // Хост релея больше не зашит — берём сохранённый пользователем (self-hosting).
+    var RELAY = '';
+    try { var h = localStorage.getItem('lite_relay'); if (h) RELAY = h; } catch (e) {}
     function report(kind, msg, detail) {
+      if (!RELAY) return;   // нет настроенного релея — некуда репортить (до первого входа)
       try {
         var w = new WebSocket(RELAY + '?role=app');
         w.onopen = function () {
@@ -20,7 +23,7 @@
       } catch (e) {}
     }
     window.__report = report;
-    window.PULT_VER = '0.54.0';
+    window.PULT_VER = '0.59.0';
     window.onerror = function (m, src, line, col, err) {
       report('page-error', m, (err && err.stack) || (src + ':' + line));
       var b = document.getElementById('fatal') || document.createElement('div');
@@ -30,7 +33,7 @@
       if (document.body) document.body.appendChild(b);
       return false;
     };
-    report('page-loaded', 'index.html v0.54.0', navigator.userAgent);
+    report('page-loaded', 'index.html v0.59.0', navigator.userAgent);
   })();
   </script>
   <link rel="stylesheet" href="./app.css" />
@@ -95,6 +98,31 @@
     .tab-x { background: none; border: 0; color: #6a7a8c; font-size: 16px; width: 26px; flex: 0 0 auto; }
     .tab-x:active { color: #f7768e; }
     .tab-empty { padding: 12px; font-size: 11px; color: #5a6675; }
+    /* Проекты-only: лист дерева — проект (тап = сделать активным). Терминалы ушли в выпадашку. */
+    .proj-pick { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-bottom: 1px solid #141a22; color: #b7c2d0; font-size: 14px; }
+    .proj-pick.active { background: #1c2530; color: #7fdbca; border-left: 3px solid #7fdbca; padding-left: 9px; }
+    .proj-pick .pp-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .proj-pick .pp-count { font-size: 11px; color: #7fdbca; background: #16222e; border-radius: 9px; padding: 1px 7px; flex: 0 0 auto; }
+
+    /* Селектор активного терминала над терминалом + его выпадашка. */
+    #termsel { display: flex; align-items: center; gap: 6px; padding: 7px 12px; background: #0e131a;
+      border-bottom: 1px solid #1f2630; flex: 0 0 auto; }
+    #termsel:active { background: #141c26; }
+    #termsel-label { flex: 1; font-size: 13px; color: #cfe3ee; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    #termsel-chev { font-size: 10px; color: #7fdbca; flex: 0 0 auto; }
+    #termdrop { display: none; position: fixed; top: 120px; left: 6px; right: 6px; z-index: 80;
+      max-height: 60vh; overflow-y: auto; background: #0e131a; border: 1px solid #2a3a4a; border-radius: 10px;
+      box-shadow: 0 12px 36px rgba(0,0,0,.6); padding: 6px; }
+    .td-term { display: flex; align-items: center; gap: 2px; padding: 11px 8px; border-bottom: 1px solid #141a22;
+      color: #b7c2d0; font-size: 14px; border-radius: 6px; }
+    .td-term.active { background: #1c2530; color: #7fdbca; }
+    .td-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .td-x { background: none; border: 0; color: #6a7a8c; font-size: 17px; width: 30px; flex: 0 0 auto; }
+    .td-x:active { color: #f7768e; }
+    .td-new { display: block; width: 100%; text-align: left; background: none; color: #5f86c7; border: 0;
+      border-radius: 8px; padding: 11px 8px; font-size: 14px; margin-top: 2px; }
+    .td-new:active { background: #1c2530; }
+    .td-empty { padding: 12px 8px; color: #5a6675; font-size: 12px; line-height: 1.5; }
 
     /* Бургер-меню — выпадающий список под шапкой (вместо центральной модалки). */
     #dropmenu { display: none; position: fixed; top: 42px; left: 6px; z-index: 80; width: 280px; max-width: 92vw;
@@ -162,6 +190,8 @@
       #top-ver { display: none; }
       #termbar { padding: 2px 4px; gap: 4px; }
       .tk { padding: 4px 7px; font-size: 11px; }
+      #termsel { padding: 3px 8px; }
+      #termsel-label { font-size: 12px; }
       #term { padding: 2px; }
     }
   </style>
@@ -171,12 +201,13 @@
   <div id="login">
     <div class="login-box">
       <h1>LiteEditor Пульт</h1>
+      <input id="lg-host" placeholder="Хост релея (relay.example.com)" autocapitalize="off" autocorrect="off" inputmode="url" />
       <input id="lg-login" placeholder="Логин" autocapitalize="off" autocorrect="off" />
       <input id="lg-pass" type="password" placeholder="Пароль" />
       <div id="lg-err"></div>
       <button id="lg-go">Войти</button>
-      <div class="login-note">Регистрация аккаунта — в редакторе на ПК (меню «Пульт»).</div>
-      <div class="login-note" id="login-ver" style="opacity:.6">пульт v0.54.0</div>
+      <div class="login-note">Укажите хост своего релея. Регистрация аккаунта — в редакторе на ПК (меню «Пульт»).</div>
+      <div class="login-note" id="login-ver" style="opacity:.6">пульт v0.59.0</div>
     </div>
   </div>
 
@@ -211,14 +242,18 @@
           <button class="tk" data-key="enter">⏎</button>
         </div>
       </div>
+      <!-- Селектор активного терминала: имя «Проект · Терминал N» + ▾, тап = выпадашка
+           терминалов активного проекта (переключение/закрытие/новый). -->
+      <div id="termsel"><span id="termsel-label">Выбери проект</span><span id="termsel-chev">▾</span></div>
       <div id="term"></div>
     </div>
-    <!-- Шторка-фон + верхняя шторка проектов + выпадающее бургер-меню. -->
+    <!-- Шторка-фон + верхняя шторка проектов + выпадашка терминалов + бургер-меню. -->
     <div id="shade"></div>
     <div id="projmodal">
-      <div class="pm-head"><span class="pm-title">Проекты и терминалы</span><button class="pm-x" id="pm-x">✕</button></div>
+      <div class="pm-head"><span class="pm-title">Проекты</span><button class="pm-x" id="pm-x">✕</button></div>
       <div id="tabs"></div>
     </div>
+    <div id="termdrop"></div>
     <div id="dropmenu"></div>
     <!-- Плавающее перетаскиваемое окно своей клавиатуры (поверх всего, с крестиком). -->
     <div id="kbd">
