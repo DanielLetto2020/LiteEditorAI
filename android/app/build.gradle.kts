@@ -24,16 +24,30 @@ android {
         applicationId = "com.liteeditor.pult"
         minSdk = 24
         targetSdk = 34
-        versionCode = 50
-        versionName = "0.54.0"
+        versionCode = 55
+        versionName = "0.59.0"
 
         buildConfigField("String", "RELAY_URL", "\"$relayUrl\"")
         buildConfigField("String", "ROOM", "\"$room\"")
         buildConfigField("String", "TOKEN", "\"$token\"")
     }
 
+    // ПОСТОЯННЫЙ debug-keystore (lite-debug.keystore, коммитится в репо). Без него Gradle
+    // генерирует свежий ключ при каждой сборке в эфемерном контейнере → у каждого APK другая
+    // подпись → при переустановке Android выдаёт НОВЫЙ ANDROID_ID → пульт требует повторного
+    // пайринга по коду. Фиксированный ключ → стабильный ANDROID_ID → одобрил устройство один
+    // раз (хранится в БД релея по device_id), и переустановки/обновления пульта его не сбрасывают.
+    signingConfigs {
+        getByName("debug") {
+            storeFile = file("lite-debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
+    }
+
     buildTypes {
-        debug { isMinifyEnabled = false }
+        debug { isMinifyEnabled = false }   // подпись — signingConfigs.debug (по умолчанию для debug-типа)
     }
 
     compileOptions {

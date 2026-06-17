@@ -34,11 +34,12 @@ import { initDb } from './modules/db.js';
 import { initRh } from './modules/remotehost.js';
 import { initNotes } from './modules/notes.js';
 import { initAudit } from './modules/audit.js';
+import { initIterflow } from './modules/iterflow.js';
 import { initSeo } from './modules/seo.js';
 import { initOpenRouter } from './modules/openrouter.js';
 import { initExtensions } from './modules/extensions.js';
 
-const APP_VERSION = 'alpha v1.0.167';
+const APP_VERSION = 'alpha v1.0.177';
 const GUTTER = 5;
 const SCRATCH_ID = '__scratch__'; // префикс id системных терминалов (домашняя папка), не привязаны к проектам
 const isScratch = (id) => typeof id === 'string' && id.startsWith(SCRATCH_ID);
@@ -90,7 +91,7 @@ const Or = initOpenRouter({
   isViewerOpen: () => viewerOpen, getActiveOrId: () => activeOrId,
   setActiveOrId: (v) => { activeOrId = v; }, clearActiveDoc: () => { activeDocId = null; },
   // чат закрывает проектные модули правого слота; rh исторически не трогает (1:1)
-  closePanelsForChat: () => { if (Git.isOpen()) Git.setOpen(false); if (Containers.isOpen()) Containers.setOpen(false); if (Db.isOpen()) Db.setOpen(false); if (Notes.isOpen()) Notes.setOpen(false); if (Audit.isOpen()) Audit.setOpen(false); if (Seo.isOpen()) Seo.setOpen(false); if (scratchOpen) setScratchOpen(false); },
+  closePanelsForChat: () => { if (Git.isOpen()) Git.setOpen(false); if (Containers.isOpen()) Containers.setOpen(false); if (Db.isOpen()) Db.setOpen(false); if (Notes.isOpen()) Notes.setOpen(false); if (Audit.isOpen()) Audit.setOpen(false); if (Iterflow.isOpen()) Iterflow.setOpen(false); if (Seo.isOpen()) Seo.setOpen(false); if (scratchOpen) setScratchOpen(false); },
 });
 // ---------------------------------------------------------------- Text processing (изолированный модуль)
 // Документ-плашка открывается ВМЕСТО терминала (как чат OpenRouter). Вся логика — в
@@ -127,7 +128,7 @@ let editor = null;
 let loadingDoc = false;
 const langComp = new Compartment();
 
-const DEFAULT_LAYOUT = { sidebar: 240, viewer: 520, tree: 240, scratch: 420, git: 360, ctx: 740, docker: 460, db: 560, rh: 520, ext: 420, notes: 480, audit: 460, seo: 480 };
+const DEFAULT_LAYOUT = { sidebar: 240, viewer: 520, tree: 240, scratch: 420, git: 360, ctx: 740, docker: 460, db: 560, rh: 520, ext: 420, notes: 480, audit: 460, iterflow: 480, seo: 480 };
 let layout = loadLayout();
 let lastParent = STORE.lastParent || '';
 
@@ -173,7 +174,7 @@ function loadLayout() { return { ...DEFAULT_LAYOUT, ...(STORE.layout || {}) }; }
 function saveLayout() { persist('layout', layout); }
 // Whether the viewer / system terminal panes are open — part of the backed-up state,
 // restored on startup (and on import) so the window reopens the way it was left.
-function saveUiState() { persist('uiState', { viewerOpen, scratchOpen, gitOpen: Git.isOpen(), ctxOpen: Ctx.isOpen(), dockerOpen: Containers.isOpen(), dbOpen: Db.isOpen(), rhOpen: Rh.isOpen(), notesOpen: Notes.isOpen(), auditOpen: Audit.isOpen(), seoOpen: Seo.isOpen() }); }
+function saveUiState() { persist('uiState', { viewerOpen, scratchOpen, gitOpen: Git.isOpen(), ctxOpen: Ctx.isOpen(), dockerOpen: Containers.isOpen(), dbOpen: Db.isOpen(), rhOpen: Rh.isOpen(), notesOpen: Notes.isOpen(), auditOpen: Audit.isOpen(), iterflowOpen: Iterflow.isOpen(), seoOpen: Seo.isOpen() }); }
 function applyLayout() {
   $('#sidebar').style.flexBasis = layout.sidebar + 'px';
   $('#viewer-pane').style.flexBasis = layout.viewer + 'px';
@@ -187,6 +188,7 @@ function applyLayout() {
   $('#ext-pane').style.flexBasis = layout.ext + 'px';
   $('#notes-pane').style.flexBasis = layout.notes + 'px';
   $('#audit-pane').style.flexBasis = layout.audit + 'px';
+  $('#iterflow-pane').style.flexBasis = layout.iterflow + 'px';
   $('#seo-pane').style.flexBasis = layout.seo + 'px';
 }
 function loadRecents() { return Array.isArray(STORE.recents) ? STORE.recents : []; }
@@ -352,9 +354,10 @@ function showRemote() {
     <h2><span style="color:var(--green-bright)">📱</span> Удалённый пульт</h2>
     <div class="about-desc">
       Управляй терминалом и вкладками ПК с Android-планшета через интернет.
-      Зарегистрируй аккаунт здесь, в редакторе, затем в приложении-пульте войди
-      тем же логином и паролем — токены вводить не нужно. Пультов можно подключить
-      несколько.
+      Укажи <b>хост релея</b> (свой self-hosted сервер), зарегистрируй на нём аккаунт
+      здесь, в редакторе, затем в приложении-пульте укажи тот же хост и войди тем же
+      логином и паролем. Свой релей можно поднять на VPS — инструкция в папке
+      <code>relay/</code> репозитория.
     </div>
     <div class="or-add" id="rmt-body"></div>
     <div class="modal-actions"><button class="btn" id="rmt-close">Закрыть</button></div>`);
@@ -376,8 +379,11 @@ function showRemote() {
 
   function statusText(st) { return st.connected ? '● На связи' : (st.enabled ? '○ Подключение…' : '○ Выключено'); }
 
-  function buildAuth() {
+  function buildAuth(st) {
     body.innerHTML = '';
+    const hostF = field('Хост релея', 'text');
+    hostF.inp.placeholder = 'relay.example.com';
+    hostF.inp.value = (st && st.host) || '';
     const login = field('Логин', 'text');
     const pass = field('Пароль', 'password');
     const err = el('div', 'err');
@@ -385,21 +391,22 @@ function showRemote() {
     const reg = el('button', 'btn', 'Зарегистрироваться');
     const inb = el('button', 'btn primary', 'Войти');
     actions.appendChild(reg); actions.appendChild(inb);
-    body.appendChild(login.f); body.appendChild(pass.f); body.appendChild(err); body.appendChild(actions);
+    body.appendChild(hostF.f); body.appendChild(login.f); body.appendChild(pass.f); body.appendChild(err); body.appendChild(actions);
     const run = async (fn) => {
       err.textContent = '';
-      const l = login.inp.value.trim(), p = pass.inp.value;
+      const h = hostF.inp.value.trim(), l = login.inp.value.trim(), p = pass.inp.value;
+      if (!h) { err.textContent = 'Укажите хост релея'; return; }
       if (l.length < 3 || p.length < 4) { err.textContent = 'Логин ≥3, пароль ≥4 символа'; return; }
       reg.disabled = inb.disabled = true;
-      let res; try { res = await fn(l, p); } catch (_) { res = { ok: false, error: 'Нет связи с релеем' }; }
+      let res; try { res = await fn(l, p, h); } catch (_) { res = { ok: false, error: 'Нет связи с релеем' }; }
       reg.disabled = inb.disabled = false;
       if (res.ok) { toast('Пульт: вошли как ' + res.status.login); tick(); }
       else err.textContent = res.error || 'Ошибка';
     };
-    inb.onclick = () => run((l, p) => lite.remote.login(l, p));
-    reg.onclick = () => run((l, p) => lite.remote.register(l, p));
+    inb.onclick = () => run((l, p, h) => lite.remote.login(l, p, h));
+    reg.onclick = () => run((l, p, h) => lite.remote.register(l, p, h));
     pass.inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') inb.click(); });
-    setTimeout(() => login.inp.focus(), 30);
+    setTimeout(() => (hostF.inp.value ? login.inp : hostF.inp).focus(), 30);
   }
 
   function buildAccount(st) {
@@ -451,7 +458,7 @@ function showRemote() {
     if (want !== mode) {
       mode = want;
       statusEl = null;
-      if (want === 'auth') buildAuth(); else buildAccount(st);
+      if (want === 'auth') buildAuth(st); else buildAccount(st);
     } else if (mode === 'account' && statusEl) {
       // Тот же режим — НЕ пересобираем (иначе терялся бы фокус/ввод), только статус.
       statusEl.textContent = statusText(st);
@@ -1878,7 +1885,7 @@ function setViewerOpen(open, opts = {}) {
 // Реестр панелей: каждая setXxxOpen знает только себя, взаимоисключение — closeOtherPanels.
 // Порядок закрытия фиксирован (он же — порядок старых inline-цепочек во всех setXxxOpen).
 const panels = new Map(); // id -> { isOpen(), setOpen(open, opts) }
-const PANEL_ORDER = ['files', 'git', 'ctx', 'docker', 'db', 'scratch', 'rh', 'notes', 'audit', 'seo'];
+const PANEL_ORDER = ['files', 'git', 'ctx', 'docker', 'db', 'scratch', 'rh', 'notes', 'audit', 'iterflow', 'seo'];
 function registerPanel(id, api) { panels.set(id, api); }
 function closeOtherPanels(selfId) {
   for (const id of PANEL_ORDER) {
@@ -1924,6 +1931,11 @@ const Audit = initAudit({
   sendToTerminal: (text) => { const p = activeProject(); if (p) sendNoteToTerminal(p, text); },
 });
 registerPanel('audit', { isOpen: Audit.isOpen, setOpen: Audit.setOpen });
+// IterFlow — таск-трекер исполнителя (renderer/modules/iterflow.js); системная панель, данные из IterFlow (/api/editor/*), не зависит от папки редактора.
+const Iterflow = initIterflow({
+  layout, GUTTER, saveUiState, refitActiveTerminal, closeOtherPanels,
+});
+registerPanel('iterflow', { isOpen: Iterflow.isOpen, setOpen: Iterflow.setOpen });
 // WEB/SEO аудит — самостоятельный анализатор сайтов (renderer/modules/seo.js); системная панель, свой список сайтов.
 const Seo = initSeo({
   layout, GUTTER, saveUiState, refitActiveTerminal, closeOtherPanels, STORE, persist,
@@ -1965,6 +1977,7 @@ const QUICK_BUILTIN = [
   { id: 'rh',      icon: 'globe',    label: 'Удалённые хосты — SSH-сессии' },
   { id: 'notes',   icon: 'note',     label: 'Задачи — заметки проекта' },
   { id: 'audit',   icon: 'grid',     label: 'Аудит — анализ проекта' },
+  { id: 'iterflow', icon: 'layers',  label: 'IterFlow — задачи итераций (трекер)' },
   { id: 'seo',     icon: 'globe',    label: 'WEB/SEO аудит — анализ сайта' },
   { id: 'scratch', icon: 'terminal', label: 'Системный терминал (вне проектов)' },
 ];
@@ -2422,6 +2435,7 @@ function buildModulesMenu(dd) {
     sub.appendChild(moduleRow('globe', 'Удалённые хосты', 'SSH-сессии к серверам', () => { closeMenus(); openModule('rh'); }));
     sub.appendChild(moduleRow('note', 'Задачи', 'заметки проекта и общие', () => { closeMenus(); openModule('notes'); }));
     sub.appendChild(moduleRow('grid', 'Аудит', 'типы файлов, крупные файлы, медиа', () => { closeMenus(); openModule('audit'); }));
+    sub.appendChild(moduleRow('layers', 'IterFlow', 'задачи итераций из трекера', () => { closeMenus(); openModule('iterflow'); }));
     sub.appendChild(moduleRow('globe', 'WEB/SEO аудит', 'сайт: безопасность, SEO, сеть', () => { closeMenus(); openModule('seo'); }));
     sub.appendChild(el('div', 'menu-sep'));
     sub.appendChild(moduleRow('terminal', 'Системный терминал', 'вне проектов', () => { closeMenus(); openModule('scratch'); }));
@@ -3053,6 +3067,10 @@ function init() {
   $('#git-refresh').addEventListener('click', () => { if (Git.isOpen()) Git.renderPanel(activeProject()); });
   $('#audit-close').addEventListener('click', () => Audit.setOpen(false));
   $('#audit-rescan').addEventListener('click', () => Audit.rescan());
+  $('#iterflow-close').addEventListener('click', () => Iterflow.setOpen(false));
+  $('#iterflow-site').addEventListener('click', () => Iterflow.openSite());
+  $('#iterflow-refresh').addEventListener('click', () => Iterflow.refresh());
+  $('#iterflow-logout').addEventListener('click', () => Iterflow.logout());
   $('#seo-close').addEventListener('click', () => Seo.setOpen(false));
   $('#seo-rescan').addEventListener('click', () => Seo.rescan());
   $('#notes-close').addEventListener('click', () => Notes.setOpen(false));
@@ -3133,10 +3151,10 @@ function init() {
   // Right-slot modules are mutually exclusive — restore at most one, first-true-wins
   // (приоритет — порядок старых if-цепочек: viewer, scratch, git, docker, db, rh).
   // allowEmpty so Git returns even before a project is active — matching the viewer, so window width fits.
-  const RESTORE_ORDER = [['files', 'viewerOpen'], ['scratch', 'scratchOpen'], ['git', 'gitOpen'], ['ctx', 'ctxOpen'], ['docker', 'dockerOpen'], ['db', 'dbOpen'], ['rh', 'rhOpen'], ['notes', 'notesOpen'], ['audit', 'auditOpen'], ['seo', 'seoOpen']];
+  const RESTORE_ORDER = [['files', 'viewerOpen'], ['scratch', 'scratchOpen'], ['git', 'gitOpen'], ['ctx', 'ctxOpen'], ['docker', 'dockerOpen'], ['db', 'dbOpen'], ['rh', 'rhOpen'], ['notes', 'notesOpen'], ['audit', 'auditOpen'], ['iterflow', 'iterflowOpen'], ['seo', 'seoOpen']];
   for (const [id, key] of RESTORE_ORDER) {
     if (!ui[key]) continue;
-    panels.get(id).setOpen(true, (id === 'git' || id === 'ctx' || id === 'notes' || id === 'audit') ? { grow: false, allowEmpty: true } : { grow: false });
+    panels.get(id).setOpen(true, (id === 'git' || id === 'ctx' || id === 'notes' || id === 'audit' || id === 'iterflow') ? { grow: false, allowEmpty: true } : { grow: false });
     break;
   }
 

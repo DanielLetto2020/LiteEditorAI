@@ -1,0 +1,6 @@
+# Caddy: терминирует HTTPS для домена релея и проксирует на контейнер relay:8080.
+# Сертификат Let's Encrypt выдаётся и продлевается автоматически.
+{$RELAY_DOMAIN} {
+	tls {$RELAY_ACME_EMAIL}
+	reverse_proxy relay:8080
+}

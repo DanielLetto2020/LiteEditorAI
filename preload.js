@@ -120,8 +120,8 @@ contextBridge.exposeInMainWorld('lite', {
   // Удалённый пульт (Android): аккаунт логин/пароль вместо токена.
   remote: {
     status: () => ipcRenderer.invoke('remote:status'),
-    register: (login, password) => ipcRenderer.invoke('remote:register', { login, password }),
-    login: (login, password) => ipcRenderer.invoke('remote:login', { login, password }),
+    register: (login, password, host) => ipcRenderer.invoke('remote:register', { login, password, host }),
+    login: (login, password, host) => ipcRenderer.invoke('remote:login', { login, password, host }),
     logout: () => ipcRenderer.invoke('remote:logout'),
     revokeAllDevices: () => ipcRenderer.invoke('remote:revokeAllDevices'),   // «выйти на всех устройствах»
     setEnabled: (enabled) => ipcRenderer.invoke('remote:setEnabled', { enabled }),
@@ -146,6 +146,21 @@ contextBridge.exposeInMainWorld('lite', {
   audit: {
     scan: (root, opts) => ipcRenderer.invoke('audit:scan', { root, opts }), // → агрегаты | { error }
     export: (content, defaultName) => ipcRenderer.invoke('audit:export', { content, defaultName }), // → {ok,file}|{canceled}|{error}
+  },
+
+  // IterFlow — таск-трекер исполнителя через /api/editor/* (см. renderer/modules/iterflow.js).
+  // Все ответы — { ok, data } | { ok:false, error[, unauth] }. Токен живёт в main, сюда не приходит.
+  iterflow: {
+    login: (email, password) => ipcRenderer.invoke('iterflow:login', { email, password }), // → {ok,data:{user,profiles,teams}}
+    logout: () => ipcRenderer.invoke('iterflow:logout'),
+    session: () => ipcRenderer.invoke('iterflow:session'),                                  // → {ok,data:{authed,user?,profiles?,teams?}}
+    counterparties: (ctx) => ipcRenderer.invoke('iterflow:counterparties', { ctx }),        // ctx = 'solo:<id>' | 'team:<id>'
+    counterpartyProjects: (cpId) => ipcRenderer.invoke('iterflow:counterpartyProjects', { cpId }),
+    projectIterations: (projectId) => ipcRenderer.invoke('iterflow:projectIterations', { projectId }),
+    iterationTasks: (iterationId) => ipcRenderer.invoke('iterflow:iterationTasks', { iterationId }),
+    setTaskKanban: (taskId, status) => ipcRenderer.invoke('iterflow:setTaskKanban', { taskId, status }), // только active + исполнитель
+    projectNotes: (projectId) => ipcRenderer.invoke('iterflow:projectNotes', { projectId }),         // туду (веб-cookie)
+    projectMessages: (projectId) => ipcRenderer.invoke('iterflow:projectMessages', { projectId }),   // общий чат (веб-cookie)
   },
 
   seo: {

@@ -1,0 +1,53 @@
+# Self-hosted релей LiteEditor + Caddy (автоматический HTTPS по Let's Encrypt).
+# Caddy сам получает и продлевает сертификат для RELAY_DOMAIN — отдельный реверс-прокси
+# настраивать не нужно. Работает и с `docker compose`, и с `podman compose`.
+#
+# Перед запуском: скопируй .env.example → .env, впиши RELAY_DOMAIN/RELAY_ACME_EMAIL и
+# сгенерируй RELAY_SECRET (см. README.md). DNS A-запись RELAY_DOMAIN должна указывать
+# на IP этого сервера, порты 80 и 443 — открыты.
+
+services:
+  relay:
+    build: .
+    image: liteeditor-relay:latest
+    container_name: liteeditor-relay
+    restart: unless-stopped
+    environment:
+      - RELAY_SECRET=${RELAY_SECRET}
+      - RELAY_MIN_PASSWORD=${RELAY_MIN_PASSWORD:-8}
+      - RELAY_TOKEN_TTL=${RELAY_TOKEN_TTL:-2592000}
+      - RELAY_REQUIRE_PAIRING=${RELAY_REQUIRE_PAIRING:-0}
+      - RELAY_LOGIN_MAX_FAILS=${RELAY_LOGIN_MAX_FAILS:-5}
+      - RELAY_LOGIN_LOCKOUT=${RELAY_LOGIN_LOCKOUT:-900}
+      - RELAY_REG_MAX_PER_IP=${RELAY_REG_MAX_PER_IP:-10}
+      - RELAY_MAX_CONN_PER_IP=${RELAY_MAX_CONN_PER_IP:-40}
+      # За Caddy → читаем реальный IP из X-Forwarded-For (нужно для IP-лимитов).
+      - RELAY_TRUST_PROXY=1
+      # Свежая установка — старые форматы токенов не нужны.
+      - RELAY_ALLOW_STATELESS=0
+      - RELAY_ALLOW_LEGACY=0
+    volumes:
+      - ./data:/app/data        # SQLite с аккаунтами/сессиями — переживает пересборку
+    expose:
+      - "8080"
+
+  caddy:
+    image: caddy:2
+    container_name: liteeditor-caddy
+    restart: unless-stopped
+    depends_on:
+      - relay
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      - RELAY_DOMAIN=${RELAY_DOMAIN}
+      - RELAY_ACME_EMAIL=${RELAY_ACME_EMAIL}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data         # сертификаты Let's Encrypt (не терять между рестартами)
+      - caddy_config:/config
+
+volumes:
+  caddy_data:
+  caddy_config:

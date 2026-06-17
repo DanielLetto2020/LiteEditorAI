@@ -11,6 +11,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Environment
 import android.provider.MediaStore
+import android.provider.Settings
 import android.util.Base64
 import android.view.ViewGroup
 import android.webkit.GeolocationPermissions
@@ -221,6 +222,20 @@ class MainActivity : Activity() {
     }
 
     inner class DeviceInfo {
+        // Стабильный id устройства, ПЕРЕЖИВАЮЩИЙ переустановку APK (в отличие от localStorage,
+        // который стирается при удалении приложения). ANDROID_ID привязан к устройству + ключу
+        // подписи приложения, поэтому при обновлении пульта тем же ключом он не меняется —
+        // редактор узнаёт устройство, повторный пайринг по коду не нужен.
+        @JavascriptInterface
+        fun deviceId(): String {
+            return try {
+                val id = Settings.Secure.getString(contentResolver, Settings.Secure.ANDROID_ID)
+                if (id.isNullOrBlank()) "" else "a$id"
+            } catch (_: Exception) {
+                ""
+            }
+        }
+
         @JavascriptInterface
         fun systemInfo(): String {
             return try {
