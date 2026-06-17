@@ -39,7 +39,7 @@ import { initSeo } from './modules/seo.js';
 import { initOpenRouter } from './modules/openrouter.js';
 import { initExtensions } from './modules/extensions.js';
 
-const APP_VERSION = 'alpha v1.0.177';
+const APP_VERSION = 'alpha v1.0.178';
 const GUTTER = 5;
 const SCRATCH_ID = '__scratch__'; // префикс id системных терминалов (домашняя папка), не привязаны к проектам
 const isScratch = (id) => typeof id === 'string' && id.startsWith(SCRATCH_ID);
