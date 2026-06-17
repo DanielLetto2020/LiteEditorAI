@@ -1482,7 +1482,13 @@ function remoteHistoryGet(reqId, sid, before, size) {
   }
   remote.send({ t: 'history:end', reqId, sid, start, total });
 }
-const REMOTE_DEFAULT_HOST = 'lite.codecopy.ru';
+// Хост релея больше НЕ зашит — пользователь указывает свой (self-hosting). Пусто = пульт
+// не поднимается, пока не выполнен вход с хостом в модалке «Пульт».
+const REMOTE_DEFAULT_HOST = '';
+// Нормализуем введённый хост: срезаем схему (wss?://), путь и пробелы — остаётся голый host[:port].
+function normalizeRelayHost(s) {
+  return String(s || '').trim().replace(/^wss?:\/\//i, '').replace(/^https?:\/\//i, '').replace(/\/.*$/, '').trim();
+}
 function startRemotePult() {
   try {
     remote.init({
@@ -1510,13 +1516,13 @@ function startRemotePult() {
       onSysInfo: (m) => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('remote:sysinfo', m); },
     });
     const r = readStoreKey('remote') || {};
-    if (r.token) {
-      // Аккаунт сохранён (вошли через модалку «Пульт»).
-      remote.apply({ host: r.host || REMOTE_DEFAULT_HOST, token: r.token, enabled: r.enabled !== false });
-    } else if (process.env.LITE_REMOTE === '1' && process.env.LITE_RELAY_TOKEN) {
-      // Legacy: включение через env (общий токен).
-      const host = (process.env.LITE_RELAY_URL || '').replace(/^wss?:\/\//, '').replace(/\/.*$/, '') || REMOTE_DEFAULT_HOST;
-      remote.apply({ host, token: process.env.LITE_RELAY_TOKEN, enabled: true });
+    if (r.token && r.host) {
+      // Аккаунт + хост сохранены (вошли через модалку «Пульт»).
+      remote.apply({ host: normalizeRelayHost(r.host), token: r.token, enabled: r.enabled !== false });
+    } else if (process.env.LITE_REMOTE === '1' && process.env.LITE_RELAY_TOKEN && process.env.LITE_RELAY_URL) {
+      // Legacy: включение через env (общий токен + явный хост релея).
+      const host = normalizeRelayHost(process.env.LITE_RELAY_URL);
+      if (host) remote.apply({ host, token: process.env.LITE_RELAY_TOKEN, enabled: true });
     }
   } catch (e) { logger.log('error', 'remote', 'start failed', e); }
 }
@@ -1543,9 +1549,10 @@ function remoteStoreState() {
   return { loggedIn: !!r.token, login: r.login || '', enabled: r.enabled !== false, connected: st.connected, host: r.host || REMOTE_DEFAULT_HOST };
 }
 
-// Регистрация/вход: дергаем релей, сохраняем {login, token, host, enabled}, поднимаем соединение.
-async function remoteAuth(kind, { login, password } = {}) {
-  const host = REMOTE_DEFAULT_HOST;
+// Регистрация/вход: дергаем указанный пользователем релей, сохраняем {login, token, host, enabled}, поднимаем соединение.
+async function remoteAuth(kind, { login, password, host } = {}) {
+  host = normalizeRelayHost(host || (readStoreKey('remote') || {}).host || '');
+  if (!host) return { ok: false, error: 'Укажите хост релея (например relay.example.com)' };
   const res = await relayPost(host, '/' + kind, { login, password });
   if (res.status === 200 && res.body && res.body.token) {
     const rec = { login: res.body.login || login, token: res.body.token, host, enabled: true };
@@ -2040,6 +2047,43 @@ async function auditWalkFs(root, out) {
   }
   return false;
 }
+
+// ── IterFlow (модуль renderer/modules/iterflow.js) ─────────────────────────────
+// Сетевой клиент изолированной группы /api/editor/* IterFlow живёт в main (CSP
+// рендерера запрещает сеть). Хост — прод https://iter-flow.ru (env ITERFLOW_HOST
+// для локалки). Контракт ответа: успех → { ok:true, data }, провал → { ok:false,
+// error[, unauth:true] } (обёртка ipcMain.handle логирует ok:false сама). Токен
+// device-сессии наружу в рендерер НЕ отдаём — он живёт только в main/session.json.
+const { createIterflowApi } = require('./lib/iterflow-api');
+const iterflowApi = createIterflowApi({ storeDir });
+function ifWrap(fn) {
+  return async (...args) => {
+    try { return { ok: true, data: await fn(...args) }; }
+    catch (e) { return { ok: false, error: String((e && e.message) || e), unauth: (e && e.status) === 401, web401: !!(e && e.web401) }; }
+  };
+}
+ipcMain.handle('iterflow:login', ifWrap(async (_e, { email, password }) => {
+  const r = await iterflowApi.login(email, password);
+  return { user: r.user, profiles: r.profiles || [], teams: r.teams || [] };
+}));
+ipcMain.handle('iterflow:logout', ifWrap(async () => { await iterflowApi.logout(); return true; }));
+ipcMain.handle('iterflow:session', ifWrap(async () => {
+  if (!iterflowApi.isAuthed()) return { authed: false };
+  try {
+    const b = await iterflowApi.me();
+    return { authed: true, user: b.user, profiles: b.profiles || [], teams: b.teams || [] };
+  } catch (e) {
+    if ((e && e.status) === 401) return { authed: false }; // токен протух — тихо на логин
+    throw e;
+  }
+}));
+ipcMain.handle('iterflow:counterparties', ifWrap((_e, { ctx }) => iterflowApi.counterparties(ctx)));
+ipcMain.handle('iterflow:counterpartyProjects', ifWrap((_e, { cpId }) => iterflowApi.counterpartyProjects(cpId)));
+ipcMain.handle('iterflow:projectIterations', ifWrap((_e, { projectId }) => iterflowApi.projectIterations(projectId)));
+ipcMain.handle('iterflow:iterationTasks', ifWrap((_e, { iterationId }) => iterflowApi.iterationTasks(iterationId)));
+ipcMain.handle('iterflow:setTaskKanban', ifWrap((_e, { taskId, status }) => iterflowApi.setTaskKanban(taskId, status)));
+ipcMain.handle('iterflow:projectNotes', ifWrap((_e, { projectId }) => iterflowApi.projectNotes(projectId)));
+ipcMain.handle('iterflow:projectMessages', ifWrap((_e, { projectId }) => iterflowApi.projectMessages(projectId)));
 
 ipcMain.handle('audit:scan', async (_e, { root, opts }) => {
   if (!root || !fs.existsSync(root)) return { error: 'Нет каталога проекта' };
@@ -3013,9 +3057,17 @@ ipcMain.handle('containers:action', async (_e, { engine, kind, action, id } = {}
   return { ok: r.ok, error: r.error };
 });
 
-ipcMain.handle('shell:openPath', async (_e, target) => {
-  const err = await shell.openPath(target);
-  return err ? { error: err } : { ok: true };
+ipcMain.handle('shell:openPath', (_e, target) => {
+  // shell.openPath на Linux ждёт завершения xdg-open: «холодный» запуск файлового
+  // менеджера/браузера может тянуться дольше, чем живёт окно IPC-ответа, и Electron
+  // отклоняет invoke с "reply was never sent" (в рендерере — ложный error-тост, хотя
+  // открытие по факту прошло). Поэтому отвечаем сразу, а реальную ошибку открытия
+  // (если будет) логируем отдельно. Все вызовы из рендерера — fire-and-forget, error-строку
+  // никто не читает, так что семантика не теряется.
+  Promise.resolve(shell.openPath(String(target == null ? '' : target)))
+    .then((err) => { if (err) logger.log('warn', 'shell', `openPath: ${err}`); })
+    .catch((e) => logger.log('error', 'shell', 'openPath threw', e));
+  return { ok: true };
 });
 ipcMain.handle('shell:openExternal', async (_e, url) => {
   if (!/^https?:\/\//i.test(String(url))) return { error: 'bad url' };

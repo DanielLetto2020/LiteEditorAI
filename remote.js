@@ -1,6 +1,6 @@
 // remote.js — удалённый пульт LiteEditor (ПК-сторона).
 //
-// Открывает ИСХОДЯЩИЙ WebSocket к релею (lite.codecopy.ru) с role=pc. Релей
+// Открывает ИСХОДЯЩИЙ WebSocket к релею (хост задаёт пользователь — self-hosting) с role=pc. Релей
 // склеивает нас с Android-пультом(ами) по аккаунту (логин/пароль → токен сессии).
 // Токен пользователь не вводит: входит логином/паролем в модалке «Пульт», main
 // получает токен от релея и передаёт его сюда через apply().
@@ -66,7 +66,7 @@ function pultsChanged() {
   try { onPultsChanged(pultList()); } catch (_) {}
 }
 
-let host = 'lite.codecopy.ru';
+let host = '';   // хост релея задаётся пользователем (self-hosting); пусто = не подключаемся
 let token = '';
 let enabled = false;
 
@@ -165,7 +165,7 @@ function sendState() {
 }
 
 function connect() {
-  if (!WebSocket || !enabled || !token) return;
+  if (!WebSocket || !enabled || !token || !host) return;
   const url = `${wsUrl()}?token=${encodeURIComponent(token)}&role=pc`;
   try { ws = new WebSocket(url); }
   catch (e) { logger.log('error', 'remote', 'connect failed', e); scheduleReconnect(); return; }
@@ -262,14 +262,14 @@ function init(opts = {}) {
 
 // Применить конфиг (host/token/enabled). Поднимает или гасит соединение.
 function apply(cfg = {}) {
-  if (cfg.host !== undefined) host = cfg.host || 'lite.codecopy.ru';
+  if (cfg.host !== undefined) host = cfg.host || '';
   if (cfg.token !== undefined) token = cfg.token || '';
   if (cfg.enabled !== undefined) enabled = !!cfg.enabled;
   reconcile();
 }
 
 function reconcile() {
-  if (enabled && token && WebSocket) {
+  if (enabled && token && host && WebSocket) {
     stopped = false;
     if (!ws) connect();
   } else {
