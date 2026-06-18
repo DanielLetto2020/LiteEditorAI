@@ -3,6 +3,14 @@
 Все заметные изменения LiteEditorAI. Формат — [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/),
 нумерация — [SemVer](https://semver.org/lang/ru/). Проект в стадии **alpha**.
 
+## [1.0.181] — 2026-06-18
+
+### 🔒 Безопасность
+- Обновлены транзитивные **сборочные** зависимости с известными уязвимостями: `form-data` 4.0.5 → **4.0.6**
+  (CRLF-инъекция, GHSA-hmw2-7cc7-3qxx, high) и `tar` 7.5.15 → **7.5.16** (file smuggling, GHSA-vmf3-w455-68vh,
+  moderate). Это dev-инструментарий (electron-builder / node-gyp) — в поставляемое приложение не входит;
+  обновление закрывает алерты `npm audit` / Dependabot. Кода приложения не касается.
+
 ## [1.0.180] — 2026-06-18
 
 Срочный фикс упаковки: установленное приложение падало при запуске.
@@ -653,6 +661,7 @@ AGENTS.md как граф на канве), и **цветной пульт** —
 - Первые публичные alpha-сборки: терминал на проект (xterm + node-pty), вивер кода (CodeMirror), дерево
   файлов, дистрибуция под Linux (`.deb`) и Windows (portable `.zip`) через GitHub Actions.
 
+[1.0.181]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.0.181
 [1.0.180]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.0.180
 [1.0.179]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.0.179
 [1.0.177]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.0.177
