@@ -98,6 +98,9 @@ export const ICONS = {
   graph: '<rect x="3" y="4" width="6" height="5" rx="1.5"/><rect x="3" y="15" width="6" height="5" rx="1.5"/><rect x="15" y="9.5" width="6" height="5" rx="1.5"/><path d="M9 6.5h2.5a1.5 1.5 0 0 1 1.5 1.5v2.5M9 17.5h2.5a1.5 1.5 0 0 0 1.5-1.5v-2.5M13 12h2"/>',
   help: '<circle cx="12" cy="12" r="8.5"/><path d="M9.5 9.3a2.6 2.6 0 1 1 3.6 2.4c-.85.35-1.1 1-1.1 1.8"/><circle cx="12" cy="16.7" r="1" fill="currentColor" stroke="none"/>',
   scissors: '<circle cx="6" cy="6.5" r="2.4"/><circle cx="6" cy="17.5" r="2.4"/><path d="M8.1 7.9L20 18M8.1 16.1L20 6M13.5 12.4l-1.8 1.6"/>',
+  wrench: '<path d="M14.7 6.3a4 4 0 0 0-5.4 5.2L4 16.8 7.2 20l5.3-5.3a4 4 0 0 0 5.2-5.4l-2.6 2.6-2.3-.3-.3-2.3z"/>',
+  image: '<rect x="3.5" y="4.5" width="17" height="15" rx="2.5"/><circle cx="9" cy="10" r="1.8"/><path d="M5 18l4.5-4.5 3 3L16 13l3 3.5"/>',
+  braces: '<path d="M8 4.5c-2 0-2.5 1-2.5 3v1.5C5.5 10.5 5 11 3.5 11M3.5 11c1.5 0 2 .5 2 2v3c0 2 .5 3 2.5 3"/><path d="M16 4.5c2 0 2.5 1 2.5 3v1.5c0 1.5.5 2 2 2M20.5 11c-1.5 0-2 .5-2 2v3c0 2-.5 3-2.5 3"/>',
 };
 export function icon(name, size = 16) {
   return svgEl(`<svg class="ic" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name] || ''}</svg>`);
