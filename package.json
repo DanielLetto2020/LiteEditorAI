@@ -1,6 +1,6 @@
 {
   "name": "liteeditor-ai",
-  "version": "1.0.179-alpha",
+  "version": "1.0.180-alpha",
   "description": "Lightweight editor for working with AI coding agents in the terminal",
   "main": "main.js",
   "author": "Максим Кузьминский <i@m-letto.ru>",
@@ -81,6 +81,7 @@
       "remote.js",
       "preload.js",
       "logger.js",
+      "errledger.js",
       "lib/**",
       "package.json",
       "renderer/index.html",

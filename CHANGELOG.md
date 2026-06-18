@@ -3,6 +3,17 @@
 Все заметные изменения LiteEditorAI. Формат — [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/),
 нумерация — [SemVer](https://semver.org/lang/ru/). Проект в стадии **alpha**.
 
+## [1.0.180] — 2026-06-18
+
+Срочный фикс упаковки: установленное приложение падало при запуске.
+
+### 🐛 Исправлено
+- **Приложение не запускалось из дистрибутива** (`.deb` и `.zip`) — падало сразу со
+  `Error: Cannot find module './errledger'`. Файл `errledger.js` (реестр ошибок) подключается напрямую из
+  `logger.js` и `main.js`, но не был включён в белый список файлов сборки и физически отсутствовал в пакете.
+  Добавлен в `build.files` — установленная сборка снова стартует штатно. Затрагивало все релизы начиная с
+  v1.0.167. Спасибо [@Eurgen](https://github.com/Eurgen) за подробный отчёт (#5).
+
 ## [1.0.179] — 2026-06-18
 
 Новый модуль **«Инструменты»** — локальный девтулз-комбайн прямо рядом с терминалом, и фикс детекта
@@ -642,6 +653,7 @@ AGENTS.md как граф на канве), и **цветной пульт** —
 - Первые публичные alpha-сборки: терминал на проект (xterm + node-pty), вивер кода (CodeMirror), дерево
   файлов, дистрибуция под Linux (`.deb`) и Windows (portable `.zip`) через GitHub Actions.
 
+[1.0.180]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.0.180
 [1.0.179]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.0.179
 [1.0.177]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.0.177
 [1.0.167]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.0.167
