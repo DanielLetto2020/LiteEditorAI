@@ -36,10 +36,11 @@ import { initNotes } from './modules/notes.js';
 import { initAudit } from './modules/audit.js';
 import { initIterflow } from './modules/iterflow.js';
 import { initSeo } from './modules/seo.js';
+import { initTools } from './modules/tools.js';
 import { initOpenRouter } from './modules/openrouter.js';
 import { initExtensions } from './modules/extensions.js';
 
-const APP_VERSION = 'alpha v1.0.177';
+const APP_VERSION = 'alpha v1.0.179';
 const GUTTER = 5;
 const SCRATCH_ID = '__scratch__'; // префикс id системных терминалов (домашняя папка), не привязаны к проектам
 const isScratch = (id) => typeof id === 'string' && id.startsWith(SCRATCH_ID);
@@ -128,7 +129,7 @@ let editor = null;
 let loadingDoc = false;
 const langComp = new Compartment();
 
-const DEFAULT_LAYOUT = { sidebar: 240, viewer: 520, tree: 240, scratch: 420, git: 360, ctx: 740, docker: 460, db: 560, rh: 520, ext: 420, notes: 480, audit: 460, iterflow: 480, seo: 480 };
+const DEFAULT_LAYOUT = { sidebar: 240, viewer: 520, tree: 240, scratch: 420, git: 360, ctx: 740, docker: 460, db: 560, rh: 520, ext: 420, notes: 480, audit: 460, iterflow: 480, seo: 480, tools: 560 };
 let layout = loadLayout();
 let lastParent = STORE.lastParent || '';
 
@@ -174,7 +175,7 @@ function loadLayout() { return { ...DEFAULT_LAYOUT, ...(STORE.layout || {}) }; }
 function saveLayout() { persist('layout', layout); }
 // Whether the viewer / system terminal panes are open — part of the backed-up state,
 // restored on startup (and on import) so the window reopens the way it was left.
-function saveUiState() { persist('uiState', { viewerOpen, scratchOpen, gitOpen: Git.isOpen(), ctxOpen: Ctx.isOpen(), dockerOpen: Containers.isOpen(), dbOpen: Db.isOpen(), rhOpen: Rh.isOpen(), notesOpen: Notes.isOpen(), auditOpen: Audit.isOpen(), iterflowOpen: Iterflow.isOpen(), seoOpen: Seo.isOpen() }); }
+function saveUiState() { persist('uiState', { viewerOpen, scratchOpen, gitOpen: Git.isOpen(), ctxOpen: Ctx.isOpen(), dockerOpen: Containers.isOpen(), dbOpen: Db.isOpen(), rhOpen: Rh.isOpen(), notesOpen: Notes.isOpen(), auditOpen: Audit.isOpen(), iterflowOpen: Iterflow.isOpen(), seoOpen: Seo.isOpen(), toolsOpen: Tools.isOpen() }); }
 function applyLayout() {
   $('#sidebar').style.flexBasis = layout.sidebar + 'px';
   $('#viewer-pane').style.flexBasis = layout.viewer + 'px';
@@ -190,6 +191,7 @@ function applyLayout() {
   $('#audit-pane').style.flexBasis = layout.audit + 'px';
   $('#iterflow-pane').style.flexBasis = layout.iterflow + 'px';
   $('#seo-pane').style.flexBasis = layout.seo + 'px';
+  $('#tools-pane').style.flexBasis = layout.tools + 'px';
 }
 function loadRecents() { return Array.isArray(STORE.recents) ? STORE.recents : []; }
 function pushRecent(p) {
@@ -1885,7 +1887,7 @@ function setViewerOpen(open, opts = {}) {
 // Реестр панелей: каждая setXxxOpen знает только себя, взаимоисключение — closeOtherPanels.
 // Порядок закрытия фиксирован (он же — порядок старых inline-цепочек во всех setXxxOpen).
 const panels = new Map(); // id -> { isOpen(), setOpen(open, opts) }
-const PANEL_ORDER = ['files', 'git', 'ctx', 'docker', 'db', 'scratch', 'rh', 'notes', 'audit', 'iterflow', 'seo'];
+const PANEL_ORDER = ['files', 'git', 'ctx', 'docker', 'db', 'scratch', 'rh', 'notes', 'audit', 'iterflow', 'seo', 'tools'];
 function registerPanel(id, api) { panels.set(id, api); }
 function closeOtherPanels(selfId) {
   for (const id of PANEL_ORDER) {
@@ -1941,6 +1943,11 @@ const Seo = initSeo({
   layout, GUTTER, saveUiState, refitActiveTerminal, closeOtherPanels, STORE, persist,
 });
 registerPanel('seo', { isOpen: Seo.isOpen, setOpen: Seo.setOpen });
+// Инструменты — devtools-комбайн (renderer/modules/tools.js); системная панель, чистый фронт без бэкенда.
+const Tools = initTools({
+  STORE, persist, layout, GUTTER, saveUiState, refitActiveTerminal, closeOtherPanels,
+});
+registerPanel('tools', { isOpen: Tools.isOpen, setOpen: Tools.setOpen });
 // Пользовательские модули (extensions): загрузчик + общая панель правого слота.
 // renderer/modules/extensions.js; публичный API ctx v1 — спека в module-kit/GUIDE.md.
 const Ext = initExtensions({
@@ -1979,6 +1986,7 @@ const QUICK_BUILTIN = [
   { id: 'audit',   icon: 'grid',     label: 'Аудит — анализ проекта' },
   { id: 'iterflow', icon: 'layers',  label: 'IterFlow — задачи итераций (трекер)' },
   { id: 'seo',     icon: 'globe',    label: 'WEB/SEO аудит — анализ сайта' },
+  { id: 'tools',   icon: 'wrench',   label: 'Инструменты — base64, JSON/YAML, хэши, regex…' },
   { id: 'scratch', icon: 'terminal', label: 'Системный терминал (вне проектов)' },
 ];
 function quickAllModules() {
@@ -2437,6 +2445,7 @@ function buildModulesMenu(dd) {
     sub.appendChild(moduleRow('grid', 'Аудит', 'типы файлов, крупные файлы, медиа', () => { closeMenus(); openModule('audit'); }));
     sub.appendChild(moduleRow('layers', 'IterFlow', 'задачи итераций из трекера', () => { closeMenus(); openModule('iterflow'); }));
     sub.appendChild(moduleRow('globe', 'WEB/SEO аудит', 'сайт: безопасность, SEO, сеть', () => { closeMenus(); openModule('seo'); }));
+    sub.appendChild(moduleRow('wrench', 'Инструменты', 'base64, JSON/YAML, хэши, JWT, regex, diff', () => { closeMenus(); openModule('tools'); }));
     sub.appendChild(el('div', 'menu-sep'));
     sub.appendChild(moduleRow('terminal', 'Системный терминал', 'вне проектов', () => { closeMenus(); openModule('scratch'); }));
   });
@@ -3067,6 +3076,7 @@ function init() {
   $('#git-refresh').addEventListener('click', () => { if (Git.isOpen()) Git.renderPanel(activeProject()); });
   $('#audit-close').addEventListener('click', () => Audit.setOpen(false));
   $('#audit-rescan').addEventListener('click', () => Audit.rescan());
+  $('#tools-close').addEventListener('click', () => Tools.setOpen(false));
   $('#iterflow-close').addEventListener('click', () => Iterflow.setOpen(false));
   $('#iterflow-site').addEventListener('click', () => Iterflow.openSite());
   $('#iterflow-refresh').addEventListener('click', () => Iterflow.refresh());
@@ -3151,7 +3161,7 @@ function init() {
   // Right-slot modules are mutually exclusive — restore at most one, first-true-wins
   // (приоритет — порядок старых if-цепочек: viewer, scratch, git, docker, db, rh).
   // allowEmpty so Git returns even before a project is active — matching the viewer, so window width fits.
-  const RESTORE_ORDER = [['files', 'viewerOpen'], ['scratch', 'scratchOpen'], ['git', 'gitOpen'], ['ctx', 'ctxOpen'], ['docker', 'dockerOpen'], ['db', 'dbOpen'], ['rh', 'rhOpen'], ['notes', 'notesOpen'], ['audit', 'auditOpen'], ['iterflow', 'iterflowOpen'], ['seo', 'seoOpen']];
+  const RESTORE_ORDER = [['files', 'viewerOpen'], ['scratch', 'scratchOpen'], ['git', 'gitOpen'], ['ctx', 'ctxOpen'], ['docker', 'dockerOpen'], ['db', 'dbOpen'], ['rh', 'rhOpen'], ['notes', 'notesOpen'], ['audit', 'auditOpen'], ['iterflow', 'iterflowOpen'], ['seo', 'seoOpen'], ['tools', 'toolsOpen']];
   for (const [id, key] of RESTORE_ORDER) {
     if (!ui[key]) continue;
     panels.get(id).setOpen(true, (id === 'git' || id === 'ctx' || id === 'notes' || id === 'audit' || id === 'iterflow') ? { grow: false, allowEmpty: true } : { grow: false });

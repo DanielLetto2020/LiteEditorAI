@@ -205,6 +205,17 @@
         <div id="audit-body" class="audit-body"></div>
       </section>
 
+      <!-- Tools module: devtools-комбайн (base64/JSON↔YAML/хэши/JWT/regex/diff…), системная панель -->
+      <div id="gutter-tools" class="gutter hidden" data-resize="tools"></div>
+      <section id="tools-pane" class="hidden">
+        <div class="pane-head">
+          <span>Инструменты</span>
+          <div class="drag-space-static"></div>
+          <button id="tools-close" class="icon-btn" title="Закрыть" data-icon="x"></button>
+        </div>
+        <div id="tools-body" class="tools-body"></div>
+      </section>
+
       <!-- IterFlow module: таск-трекер исполнителя (отдельный продукт через /api/editor/*) -->
       <div id="gutter-iterflow" class="gutter hidden" data-resize="iterflow"></div>
       <section id="iterflow-pane" class="hidden">

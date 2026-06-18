@@ -1,6 +1,6 @@
 {
   "name": "liteeditor-ai",
-  "version": "1.0.177-alpha",
+  "version": "1.0.179-alpha",
   "description": "Lightweight editor for working with AI coding agents in the terminal",
   "main": "main.js",
   "author": "Максим Кузьминский <i@m-letto.ru>",
@@ -48,6 +48,7 @@
     "@xterm/xterm": "^5.5.0",
     "basic-ftp": "^6.0.1",
     "highlight.js": "^11.11.1",
+    "js-yaml": "^4.2.0",
     "marked": "^18.0.4",
     "mysql2": "^3.22.4",
     "node-pty": "^1.0.0",

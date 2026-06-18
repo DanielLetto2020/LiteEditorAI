@@ -931,7 +931,21 @@ ipcMain.handle('ctx:assembleText', (_e, { projId, projPath, agent, profileId } =
   try { graph = JSON.parse(fs.readFileSync(ctxProfileGraphFile(projId, ag, pid), 'utf8')); } catch (_) {}
   const fileText = ctxReadFileSafe(path.join(projPath, CTX_TARGETS[ag]));
   const fileExists = fileText != null;
-  const external = fileExists && !!(graph && graph.compiledHash) && ctxHash(fileText) !== graph.compiledHash;
+  // external = файл на диске разошёлся с тем, что отражает модуль. Если профиль уже собирался —
+  // сравниваем с хэшем сборки (точно). Если НЕ собирался (нет compiledHash) — сравниваем с тем,
+  // что собрал бы ТЕКУЩИЙ граф. Без этой ветки внешние правки в never-compiled проекте не
+  // детектились вовсе (бейдж и реконсиляция молчали, даже после перезагрузки). При первом открытии
+  // граф сидируется из файла → сборка == файл → external=false; после внешней переписки файл
+  // расходится с графом → external=true. trim гасит косметическую разницу в крайних переносах.
+  let external = false;
+  if (fileExists && graph) {
+    if (graph.compiledHash) {
+      external = ctxHash(fileText) !== graph.compiledHash;
+    } else {
+      const { content } = ctxAssemble(graph, projId, projPath, ag);
+      external = ctxHash(String(fileText).trim()) !== ctxHash(String(content || '').trim());
+    }
+  }
   return { ok: true, fileText: fileText == null ? '' : fileText, fileExists, external };
 });
 // Снимок текущего файла агента в «Версии» (например, перед втягиванием внешних правок) — страховка.
