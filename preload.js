@@ -8,6 +8,7 @@ contextBridge.exposeInMainWorld('lite', {
   pathForFile: (file) => { try { return webUtils.getPathForFile(file); } catch (_) { return ''; } },
   pickDir: () => ipcRenderer.invoke('dialog:pickDir'),
   openInFileManager: (target) => ipcRenderer.invoke('shell:openPath', target),
+  openInBrowser: (target) => ipcRenderer.invoke('shell:openInBrowser', target),
   openExternal: (url) => ipcRenderer.invoke('shell:openExternal', url),
   copyText: (text) => ipcRenderer.send('clipboard:write', text),
   readClipboard: () => ipcRenderer.invoke('clipboard:read'),

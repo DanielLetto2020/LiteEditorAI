@@ -40,7 +40,7 @@ import { initTools } from './modules/tools.js';
 import { initOpenRouter } from './modules/openrouter.js';
 import { initExtensions } from './modules/extensions.js';
 
-const APP_VERSION = 'alpha v1.0.182';
+const APP_VERSION = 'alpha v1.0.187';
 const GUTTER = 5;
 const SCRATCH_ID = '__scratch__'; // префикс id системных терминалов (домашняя папка), не привязаны к проектам
 const isScratch = (id) => typeof id === 'string' && id.startsWith(SCRATCH_ID);
@@ -994,7 +994,7 @@ async function openFromTerminal(projPath, raw) {
   let p = mm[1]; const line = mm[2] ? parseInt(mm[2], 10) : 0;
   if (!/^([a-zA-Z]:[\\/]|[\\/])/.test(p)) p = projPath.replace(/[\\/]$/, '') + '/' + p.replace(/^\.[\\/]/, '');
   if (!(await lite.fs.exists(p))) return;
-  if (!viewerOpen) setViewerOpen(true);
+  if (!viewerOpen) await setViewerOpen(true); // дождаться renderTree+clearViewer, иначе clearViewer затрёт свежий файл
   await openFile(p, line);
 }
 
@@ -1530,6 +1530,7 @@ function doSetActive(id) {
   activeDocId = null; // …и режим документа «Обработки текста»
   if (watchedRoot && watchedRoot !== proj.path) lite.fs.unwatch(watchedRoot);
   lite.fs.watch(proj.path); watchedRoot = proj.path;
+  for (const d of expandedDirs) if (!pathInside(d, proj.path)) expandedDirs.delete(d); // не копить пути чужих проектов за сессию
   ensureProjectTabs(proj);
   renderProjects();
   showActiveTerminal();
@@ -1605,7 +1606,7 @@ const marksField = StateField.define({
   provide: (f) => EditorView.decorations.from(f),
 });
 // Переиспользуемая фабрика CodeMirror для модулей (merge-модалка git): та же тема/подсветка, что у вивера,
-// но изолированный инстанс. opts: { doc, readOnly, language, onChange } → { view, getValue, setValue, setMarks, destroy }.
+// но изолированный инстанс. opts: { doc, readOnly, language, onChange } → { view, getValue, setMarks, scrollToLine, destroy }.
 function createCodeEditor(parent, opts = {}) {
   const exts = [
     lineNumbers(), drawSelection(), history(), indentOnInput(), bracketMatching(),
@@ -1619,7 +1620,6 @@ function createCodeEditor(parent, opts = {}) {
   return {
     view,
     getValue: () => view.state.doc.toString(),
-    setValue: (text) => view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: text || '' } }),
     // specs: [{ fromLine, toLine, cls }] — 1-based включительно; подсвечивает целые строки.
     setMarks: (specs) => {
       const total = view.state.doc.lines;
@@ -1647,44 +1647,71 @@ function previewKind(file) {
   if (['html', 'htm'].includes(e)) return 'html';
   return null;
 }
-async function openFile(filePath, line) {
-  if (diffMode) exitDiff(false);
-  exitPreview();
-  const kind = previewKind(filePath);
+// Commit the viewer chrome (filename, preview/fullscreen buttons, tree highlight) for an
+// open file. Вынесено из openFile, чтобы ставить эти метки ТОЛЬКО после успешного чтения —
+// иначе при ошибке вивер показывал имя/подсветку файла без живого currentFile (рассинхрон).
+function commitOpenUI(filePath, kind) {
   $('#viewer-filename').textContent = baseName(filePath);
   $('#viewer-preview').style.display = (kind && kind !== 'image') ? '' : 'none'; // toggle only when there's source too
   $('#viewer-full').style.display = (kind === 'html') ? '' : 'none'; // «на весь экран» только для HTML-вёрстки
   document.querySelectorAll('.tree-row.open').forEach((r) => r.classList.remove('open'));
   const row = document.querySelector(`.tree-row[data-path="${cssEscape(filePath)}"]`);
   if (row) row.classList.add('open');
+}
+let openSeq = 0; // монотонный токен открытия — против гонки при быстром переключении файлов
+async function openFile(filePath, line) {
+  const seq = ++openSeq;
+  if (diffMode) exitDiff(false);
+  exitPreview();
+  const kind = previewKind(filePath);
 
   if (kind === 'image') { // binary — no editable source
     currentFile = filePath;
+    commitOpenUI(filePath, kind);
     setEditorText('', []); markDirty(false);
     await showPreview('image', filePath, '');
     return;
   }
   const res = await lite.fs.readFile(filePath);
-  if (res.error) { setEditorText(`// ${res.error}`, []); currentFile = null; return; }
+  if (seq !== openSeq) return; // обогнал более свежий openFile — выходим, не затирая его результат
+  if (res.error) { toast(res.error, { kind: 'err', ttl: 6000 }); return; } // оставляем текущий файл нетронутым
   currentFile = filePath;
+  commitOpenUI(filePath, kind);
   setEditorText(res.content, languageFor(filePath));
   markDirty(false);
-  if (kind) await showPreview(kind, filePath, res.content); // md/html default to rendered preview
-  else if (line && line > 0) requestAnimationFrame(() => gotoLine(line));
+  // md/html по умолчанию открываются рендером; но если явно просили строку (переход из аудита/поиска) —
+  // показываем исходник и прыгаем на строку, иначе номер строки потерялся бы в превью.
+  if (kind && !(line && line > 0)) await showPreview(kind, filePath, res.content);
+  else if (line && line > 0) requestAnimationFrame(() => { if (seq === openSeq) gotoLine(line); }); // не прыгать в чужом доке, если уже открыли другой файл
 }
 
 // ---------------------------------------------------------------- viewer preview (md/image/html)
+// Чистим распарсенный markdown ПЕРЕД вставкой в DOM. CSP уже блокирует исполнение инлайн-скриптов,
+// это второй рубеж (и страховка, если CSP когда-нибудь ослабят): убираем активные узлы и обработчики.
+function sanitizePreviewHtml(root) {
+  root.querySelectorAll('script, iframe, frame, object, embed, base, link, meta').forEach((n) => n.remove());
+  root.querySelectorAll('*').forEach((n) => {
+    for (const attr of [...n.attributes]) {
+      const name = attr.name.toLowerCase();
+      if (name.startsWith('on')) n.removeAttribute(attr.name); // инлайн-обработчики (onerror/onclick/…)
+      else if (/^(href|src|xlink:href)$/.test(name) && /^\s*javascript:/i.test(attr.value)) n.removeAttribute(attr.name);
+    }
+  });
+}
 async function showPreview(kind, file, content) {
+  if (diffMode) exitDiff(false); // diff и preview взаимоисключающие — иначе оба оверлея накладываются
   previewMode = true;
   const view = $('#preview-view');
   view.innerHTML = '';
   if (kind === 'image') {
     const res = await lite.fs.readDataUrl(file);
+    if (file !== currentFile) return; // обогнали более свежим open — не дорисовываем в чужой view (гонка)
     if (res.error) view.appendChild(el('div', 'prev-empty', res.error));
     else { const img = el('img', 'prev-img'); img.src = res.url; view.appendChild(img); }
   } else if (kind === 'markdown') {
     const div = el('div', 'prev-md');
     try { div.innerHTML = marked.parse(content || '', { breaks: true }); } catch (_) { div.textContent = content || ''; }
+    sanitizePreviewHtml(div); // defense-in-depth поверх CSP: вырезать <script>/iframe/инлайн-обработчики/javascript:
     const base = dirName(file);
     div.querySelectorAll('img').forEach((im) => { // resolve relative image paths from the file's folder
       const s = im.getAttribute('src') || '';
@@ -1750,12 +1777,29 @@ function gotoLine(line) {
 // Reload the open file from disk (agent changed it) — keep caret roughly put.
 async function reloadCurrentFile() {
   if (!currentFile) return;
-  const res = await lite.fs.readFile(currentFile);
+  const kind = previewKind(currentFile);
+  if (kind === 'image') { // бинарник: исходника нет — обновляем только открытое превью
+    if (previewMode) await showPreview('image', currentFile, '');
+    return;
+  }
+  const f = currentFile;
+  const res = await lite.fs.readFile(f);
+  if (f !== currentFile) return; // за время чтения открыли другой файл — не подменяем его содержимым этого
   if (res.error) return;
   const head = editor.state.selection.main.head;
   setEditorText(res.content, languageFor(currentFile));
   markDirty(false);
   try { editor.dispatch({ selection: { anchor: Math.min(head, editor.state.doc.length) } }); } catch (_) {}
+  if (previewMode && kind) await showPreview(kind, currentFile, res.content); // перерисовать рендер md/html
+}
+// Перезапросить дифф открытого файла, когда он изменился на диске (агент правит, а мы смотрим дифф).
+// Read-only: трогаем только #diff-view, редактор/несохранённые правки не задеваем.
+async function reloadCurrentDiff() {
+  if (!currentFile || !diffMode) return;
+  const p = activeProject(); if (!p) return;
+  const res = await lite.git.fileDiff(p.path, currentFile);
+  if (!diffMode || !currentFile) return; // режим мог смениться за время await
+  showDiff(res && res.diff ? res.diff : '');
 }
 function setEditorText(text, lang) {
   loadingDoc = true;
@@ -1781,10 +1825,13 @@ async function toggleDiff() {
   if (diffMode) { exitDiff(true); return; }
   if (!currentFile) return;
   const p = activeProject(); if (!p) return;
-  const res = await lite.git.fileDiff(p.path, currentFile);
+  const file = currentFile;
+  const res = await lite.git.fileDiff(p.path, file);
+  if (currentFile !== file) return; // переключили файл за время await — не показываем устаревший дифф
   showDiff(res && res.diff ? res.diff : '');
 }
 function showDiff(text) {
+  if (previewMode) exitPreview(); // preview и diff взаимоисключающие — иначе оба оверлея накладываются
   diffMode = true;
   const view = $('#diff-view');
   view.innerHTML = '';
@@ -1834,6 +1881,8 @@ function dirGitClass(dirPath) {
 
 // ---------------------------------------------------------------- toasts
 function clearViewer() {
+  if (diffMode) exitDiff(false); // иначе оверлей диффа/превью старого файла остаётся висеть при смене проекта/чате/удалении
+  exitPreview();
   currentFile = null;
   setEditorText('', []);
   $('#viewer-filename').textContent = '—';
@@ -1868,6 +1917,7 @@ function setViewerOpen(open, opts = {}) {
   }
   // Right slot holds one module — opening the viewer closes the others (chat is separate).
   if (open) closeOtherPanels('files');
+  else exitPreviewFull(); // закрытие вивера (в т.ч. через closeOtherPanels) должно снять плавающую «✕ Esc» полноэкранного превью
   const delta = layout.viewer + layout.tree + GUTTER * 2;
   viewerOpen = open;
   $('#viewer-pane').classList.toggle('hidden', !open);
@@ -2167,8 +2217,11 @@ async function buildDir(dir, container, depth) {
 }
 function cssEscape(s) { return (window.CSS && CSS.escape) ? CSS.escape(s) : s.replace(/"/g, '\\"'); }
 const dirName = (p) => { const i = p.search(/[\\/][^\\/]*$/); return i >= 0 ? p.slice(0, i) : p; };
+// child == parent или лежит внутри него — учитывает оба сепаратора (важно для Windows-путей)
+const pathInside = (child, parent) => child === parent || (child.startsWith(parent) && (child[parent.length] === '/' || child[parent.length] === '\\'));
 // absolute fs path → file:// URL (Windows C:\x → file:///C:/x), for preview resources
-function fileUrl(p) { let u = String(p).replace(/\\/g, '/'); if (!u.startsWith('/')) u = '/' + u; return 'file://' + encodeURI(u); }
+// encodeURI не трогает % # ? — без этого пути с такими символами ломают src iframe/img (всё после # = фрагмент). % первым, иначе двойное экранирование.
+function fileUrl(p) { let u = String(p).replace(/\\/g, '/'); if (!u.startsWith('/')) u = '/' + u; return 'file://' + encodeURI(u).replace(/%(?![0-9A-Fa-f]{2})/g, '%25').replace(/#/g, '%23').replace(/\?/g, '%3F'); }
 
 // ---------------------------------------------------------------- tree file operations (#6)
 async function refreshTree() { const p = activeProject(); if (p) await renderTree(p); }
@@ -2191,7 +2244,11 @@ function treeRename(ent) {
     const to = dirName(ent.path) + '/' + name;
     const r = await lite.fs.rename(ent.path, to);
     if (r && !r.error) {
-      if (currentFile === ent.path) { currentFile = to; $('#viewer-filename').textContent = name; }
+      // ремап открытого файла: и сам файл, и случай переименования папки-предка (иначе stale-путь → запись мимо)
+      if (currentFile && pathInside(currentFile, ent.path)) {
+        currentFile = to + currentFile.slice(ent.path.length);
+        $('#viewer-filename').textContent = baseName(currentFile);
+      }
       await refreshTree();
     }
     return r;
@@ -2201,7 +2258,7 @@ function treeDelete(ent) {
   showConfirm('Удалить?', `«${ent.name}» будет перемещён в корзину.`, 'Удалить', async () => {
     const r = await lite.fs.trash(ent.path);
     if (r && r.error) { toast(r.error, { kind: 'err' }); return; }
-    if (currentFile && (currentFile === ent.path || currentFile.startsWith(ent.path + '/'))) clearViewer();
+    if (currentFile && pathInside(currentFile, ent.path)) clearViewer();
     await refreshTree();
   });
 }
@@ -2215,7 +2272,7 @@ function showTreeMenu(x, y, ent) {
     dd.appendChild(el('div', 'menu-sep'));
   } else {
     dd.appendChild(menuRow('eye', 'Открыть', () => { closeMenus(); if (!viewerOpen) setViewerOpen(true); guardDirty(() => openFile(ent.path)); }));
-    if (['html', 'htm'].includes(extOf(ent.name))) dd.appendChild(menuRow('globe', 'Открыть в браузере', () => { closeMenus(); lite.openInFileManager(ent.path); }));
+    if (['html', 'htm'].includes(extOf(ent.name))) dd.appendChild(menuRow('globe', 'Открыть в браузере', () => { closeMenus(); lite.openInBrowser(ent.path).then((r) => { if (r && r.error) toast(r.error, { kind: 'err' }); }); }));
     dd.appendChild(el('div', 'menu-sep'));
   }
   if (!ent.root) {
@@ -3055,8 +3112,9 @@ function init() {
     clearTimeout(fsTimer);
     fsTimer = setTimeout(() => {
       if (viewerOpen) renderTree(p);
-      if (currentFile && files.includes(currentFile) && !diffMode) {
-        if (!dirty) reloadCurrentFile();
+      if (currentFile && files.includes(currentFile)) {
+        if (diffMode) reloadCurrentDiff();              // в режиме диффа — обновляем дифф (редактор не трогаем)
+        else if (!dirty) reloadCurrentFile();
         else toast(`«${baseName(currentFile)}» изменён на диске`, { actionLabel: 'Перечитать', action: reloadCurrentFile, ttl: 8000 });
       }
     }, 120);
@@ -3122,7 +3180,7 @@ function init() {
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && document.body.classList.contains('preview-full')) { e.preventDefault(); exitPreviewFull(); return; }
     if (e.ctrlKey && e.key === '\\') { e.preventDefault(); toggleSingle(); }
-    if (e.ctrlKey && e.code === 'KeyS') { e.preventDefault(); saveCurrent(); }   // e.code, не e.key — иначе в русской раскладке не сработает (Ctrl+S → e.key='ы')
+    if (e.ctrlKey && e.code === 'KeyS') { e.preventDefault(); if (!(editor && editor.hasFocus)) saveCurrent(); }   // фокус в редакторе → его keymap Mod-s уже сохранит (без двойного вызова); e.code, не e.key — иначе в русской раскладке Ctrl+S → e.key='ы'
     if (e.ctrlKey && e.code === 'KeyK') { e.preventDefault(); showPalette(); }   // то же: Ctrl+K → e.key='л' в русской раскладке
     if (e.ctrlKey && (e.key === '=' || e.key === '+')) { e.preventDefault(); bumpFont(1); }
     if (e.ctrlKey && e.key === '-') { e.preventDefault(); bumpFont(-1); }

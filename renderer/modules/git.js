@@ -659,7 +659,8 @@ export function initGit(host) {
         <button class="btn" id="mrg-abort">Прервать слияние</button>
         <button class="btn" id="mrg-cancel">Отмена</button>
         <button class="btn primary" id="mrg-save">Сохранить разрешение</button>
-      </div>`);
+      </div>`,
+      () => { [edOurs, edTheirs, edResult].forEach((e) => { try { e && e.destroy(); } catch (_) {} }); }); // снять CodeMirror при закрытии — иначе утечка трёх инстансов на каждое открытие модалки
     m.classList.add('modal-merge');
     m.querySelector('.mrg-title').textContent = fname;
     const lang = languageFor ? languageFor(fileAbs) : [];
