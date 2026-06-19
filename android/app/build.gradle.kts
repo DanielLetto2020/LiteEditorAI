@@ -12,7 +12,7 @@ val liteProps = Properties().apply {
     val f = rootProject.file("lite.properties")
     if (f.exists()) load(FileInputStream(f))
 }
-val relayUrl: String = liteProps.getProperty("RELAY_URL", "wss://lite.codecopy.ru/ws")
+val relayUrl: String = liteProps.getProperty("RELAY_URL", "") // дефолт пустой — приватный хост не хардкодим; задаётся в lite.properties (gitignored)
 val room: String = liteProps.getProperty("ROOM", "default")
 val token: String = liteProps.getProperty("TOKEN", "")
 
