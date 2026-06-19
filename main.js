@@ -1797,9 +1797,15 @@ ipcMain.handle('pty:foregroundState', (_e, { id }) => {
 ipcMain.handle('fs:readDir', async (_e, dir) => {
   try {
     const entries = await fs.promises.readdir(dir, { withFileTypes: true });
-    return entries
-      .filter((d) => !(d.isDirectory() && IGNORE_DIRS.has(d.name)))
-      .map((d) => ({ name: d.name, path: path.join(dir, d.name), dir: d.isDirectory() }))
+    const out = await Promise.all(entries.map(async (d) => {
+      const full = path.join(dir, d.name);
+      let isDir = d.isDirectory();
+      // симлинк на папку: Dirent.isDirectory() == false → иначе показался бы файлом и клик читал бы каталог как файл. stat резолвит цель (битый симлинк → строка-файл).
+      if (d.isSymbolicLink()) { try { isDir = (await fs.promises.stat(full)).isDirectory(); } catch (_) { isDir = false; } }
+      return { name: d.name, path: full, dir: isDir };
+    }));
+    return out
+      .filter((e) => !(e.dir && IGNORE_DIRS.has(e.name)))
       .sort((a, b) => (a.dir === b.dir ? a.name.localeCompare(b.name) : a.dir ? -1 : 1));
   } catch (err) { return { error: String(err.message || err) }; }
 });
@@ -3100,6 +3106,19 @@ ipcMain.handle('shell:openPath', (_e, target) => {
 ipcMain.handle('shell:openExternal', async (_e, url) => {
   if (!/^https?:\/\//i.test(String(url))) return { error: 'bad url' };
   try { await shell.openExternal(url); return { ok: true }; } catch (e) { return { error: String(e) }; }
+});
+// Открыть локальный файл в браузере по умолчанию (как «Open in Browser» в IDE). Отдельный канал
+// от shell:openExternal: тот принимает только http(s); здесь валидируем существующий файл и формируем
+// file://-URL (shell.openExternal с file:// уходит именно в браузер, в отличие от openPath = приложение по умолчанию).
+ipcMain.handle('shell:openInBrowser', async (_e, target) => {
+  try {
+    const p = String(target == null ? '' : target);
+    if (!p || !fs.existsSync(p)) return { error: 'файл не найден' };
+    let u = p.replace(/\\/g, '/'); if (!u.startsWith('/')) u = '/' + u;
+    const url = 'file://' + encodeURI(u).replace(/%(?![0-9A-Fa-f]{2})/g, '%25').replace(/#/g, '%23').replace(/\?/g, '%3F');
+    await shell.openExternal(url);
+    return { ok: true };
+  } catch (e) { return { error: String(e) }; }
 });
 ipcMain.on('clipboard:write', (_e, text) => clipboard.writeText(String(text == null ? '' : text)));
 ipcMain.handle('clipboard:read', () => clipboard.readText());
