@@ -2098,6 +2098,20 @@ ipcMain.handle('iterflow:iterationTasks', ifWrap((_e, { iterationId }) => iterfl
 ipcMain.handle('iterflow:setTaskKanban', ifWrap((_e, { taskId, status }) => iterflowApi.setTaskKanban(taskId, status)));
 ipcMain.handle('iterflow:projectNotes', ifWrap((_e, { projectId }) => iterflowApi.projectNotes(projectId)));
 ipcMain.handle('iterflow:projectMessages', ifWrap((_e, { projectId }) => iterflowApi.projectMessages(projectId)));
+// CRUD + жизненный цикл (веб-cookie). web401 в обёртке → UI просит перелогин.
+ipcMain.handle('iterflow:createIteration', ifWrap((_e, { projectId, body }) => iterflowApi.createIteration(projectId, body)));
+ipcMain.handle('iterflow:renameIteration', ifWrap((_e, { id, title }) => iterflowApi.renameIteration(id, title)));
+ipcMain.handle('iterflow:setIterationDeadline', ifWrap((_e, { id, deadline }) => iterflowApi.setIterationDeadline(id, deadline)));
+ipcMain.handle('iterflow:deleteIteration', ifWrap((_e, { id }) => iterflowApi.deleteIteration(id)));
+ipcMain.handle('iterflow:iterationStage', ifWrap((_e, { id, action, body }) => iterflowApi.iterationStage(id, action, body)));
+ipcMain.handle('iterflow:createTask', ifWrap((_e, { iterationId, body }) => iterflowApi.createTask(iterationId, body)));
+ipcMain.handle('iterflow:updateTask', ifWrap((_e, { id, body }) => iterflowApi.updateTask(id, body)));
+ipcMain.handle('iterflow:toggleTaskDone', ifWrap((_e, { id }) => iterflowApi.toggleTaskDone(id)));
+ipcMain.handle('iterflow:deleteTask', ifWrap((_e, { id }) => iterflowApi.deleteTask(id)));
+ipcMain.handle('iterflow:createNote', ifWrap((_e, { projectId, body }) => iterflowApi.createNote(projectId, body)));
+ipcMain.handle('iterflow:updateNote', ifWrap((_e, { noteId, body }) => iterflowApi.updateNote(noteId, body)));
+ipcMain.handle('iterflow:deleteNote', ifWrap((_e, { noteId }) => iterflowApi.deleteNote(noteId)));
+ipcMain.handle('iterflow:reorderNotes', ifWrap((_e, { projectId, ids }) => iterflowApi.reorderNotes(projectId, ids)));
 
 ipcMain.handle('audit:scan', async (_e, { root, opts }) => {
   if (!root || !fs.existsSync(root)) return { error: 'Нет каталога проекта' };

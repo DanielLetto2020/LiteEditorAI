@@ -4,15 +4,17 @@
 //   • Логин   — email+пароль (device-токен живёт в main); ссылка на регистрацию.
 //   • Рабочая — 3 выпадашки сверху (контекст → заказчик → проект) + вкладки
 //               Итерация / Канбан / Туду / Чат.
-//     - Итерация: вертикальный таймлайн итераций (даты слева), карточки сворачиваются,
-//                 внутри — задачи.
-//     - Канбан:   задачи активной итерации по 6 колонкам (iteration/in_progress/
-//                 completed/review/done/rework); смена статуса (только в стадии active).
-//     - Туду/Чат: пока ЗАГЛУШКА — в /api/editor/* IterFlow нет ручек для project_notes
-//                 и project_messages (нужна доработка бэкенда IterFlow, по согласованию).
+//     - Итерация: вертикальный таймлайн (даты слева) + задачи; CRUD итераций/задач и
+//                 переходы стадий (submit/approve/accept/reject) — действия в карточке.
+//     - Канбан:   задачи активной итерации, смена статуса (только в стадии active).
+//     - Туду:     заметки проекта (project_notes) — создание/правка/удаление (правит автор).
+//     - Чат:      общий канал проекта (read-only).
+// Запись (CRUD + жизненный цикл) идёт через ВЕБ-cookie на те же /api/* маршруты, что и
+// веб-клиент IterFlow — в editor-группе write-ручек нет (только kanban-status). Все гейты
+// (стадия/роль/автор/frozen) проверяет сервер; UI лишь прячет заведомо запрещённое.
 // Изолирован по образцу audit.js: ядро — через host, UI — из ui.js, бэкенд — только
 // через window.lite. host: { layout, GUTTER, saveUiState, refitActiveTerminal, closeOtherPanels }
-import { el, icon, iconBtn, toast, makeModal } from '../ui.js';
+import { el, icon, iconBtn, toast, makeModal, showConfirm } from '../ui.js';
 
 const $ = (sel) => document.querySelector(sel);
 const lite = window.lite;
@@ -47,6 +49,13 @@ const MON = ['янв', 'фев', 'мар', 'апр', 'мая', 'июн', 'июл
 // Важность задачи/заметки (NotePriority) — метка + класс подсветки (как в вебе).
 const PRIO = { low: 'низкий', normal: 'обычный', high: 'высокий', urgent: 'срочно' };
 const TASK_STATUS = { todo: 'К выполнению', in_progress: 'В работе', done: 'Выполнено', blocked: 'Блок' };
+const NOTE_STATUS = { open: 'открыто', done: 'выполнено', archived: 'архив' };
+// Опции форм (точные enum'ы бэкенда: validNotePriority / validNoteViewMode /
+// validTaskStatus / validNoteStatus — см. notes.go/tasks.go IterFlow).
+const PRIO_OPTS = [['low', 'низкий'], ['normal', 'обычный'], ['high', 'высокий'], ['urgent', 'срочно']];
+const VIEW_OPTS = [['text', 'текст'], ['md', 'markdown'], ['html', 'HTML']];
+const TASK_STATUS_OPTS = [['todo', 'К выполнению'], ['in_progress', 'В работе'], ['done', 'Выполнено'], ['blocked', 'Блок']];
+const NOTE_STATUS_OPTS = [['open', 'открыто'], ['done', 'выполнено'], ['archived', 'архив']];
 
 // Заголовок = первая непустая строка content (со стрипом markdown), как в вебе
 // (project_note.dart::title / Task.title). У задач есть готовый title с бэка.
@@ -179,6 +188,177 @@ export function initIterflow(host) {
 
   function activeIteration() { return iterations.find((it) => it.stage === 'active') || null; }
 
+  // ---------------- запись: CRUD + жизненный цикл (веб-cookie) ----------------
+  // Все гейты (стадия/роль/автор/frozen) проверяет сервер; клиент лишь прячет
+  // заведомо запрещённые действия и показывает ошибку, если сервер всё же отказал.
+  function curCp() { return counterparties.find((c) => c.id === activeCp) || null; }
+  function curProj() { return projects.find((p) => p.id === activeProj) || null; }
+  // В личном/командном пространстве исполнитель сам себе заказчик → ему доступны
+  // клиентские переходы (согласовать/принять). В партнёрском проекте их делает заказчик.
+  function isSelfSpace() { const c = curCp(); return !!(c && (c.isPersonalSpace || c.isTeamSpace)); }
+  function projFrozen() { const p = curProj(); return !!(p && p.frozen); }
+  function iterOf(id) { return iterations.find((i) => i.id === id) || null; }
+  const myId = () => (user && user.id) || null;
+  const canEditNote = (n) => !!(myId() && n.createdByUserId === myId()); // править/удалять заметку может только её автор
+
+  // Перезагрузка итераций после структурных изменений (сохраняем свёрнутость карточек).
+  async function reloadIterations() {
+    if (!activeProj) return;
+    const keep = new Set(collapsed);
+    const r = await lite.iterflow.projectIterations(activeProj);
+    if (!r || !r.ok) return failToast('Итерации', r);
+    iterations = (r.data || []).slice().sort((a, b) => {
+      const d = (STAGE_ORDER[a.stage] ?? 9) - (STAGE_ORDER[b.stage] ?? 9);
+      return d !== 0 ? d : (b.number || 0) - (a.number || 0);
+    });
+    collapsed.clear();
+    for (const it of iterations) if (keep.has(it.id) || it.stage === 'closed' || it.stage === 'frozen') collapsed.add(it.id);
+    await Promise.all(iterations.map((it) => loadTasks(it.id)));
+  }
+
+  // Обёртка write-вызова: тост успеха/ошибки (web401 покажет своё сообщение). → data|null.
+  async function write(label, fn, okMsg) {
+    const r = await fn();
+    if (!r || !r.ok) { failToast(label, r); return null; }
+    if (okMsg) toast(okMsg);
+    return r.data != null ? r.data : true;
+  }
+
+  // Модалка-форма для создания/правки. fields: [{key,label,type,value,options?,placeholder?,rows?}].
+  function formModal(title, fields, submitLabel, onSubmit) {
+    const { m, close } = makeModal('<div class="if-modal"></div>');
+    const host = m.querySelector('.if-modal');
+    const head = el('div', 'if-modal-head');
+    head.appendChild(el('div', 'if-modal-title', title));
+    const x = iconBtn('icon-btn', 'x', 'Закрыть', 16); x.onclick = close; head.appendChild(x);
+    host.appendChild(head);
+    const inputs = {};
+    const form = el('div', 'if-form');
+    for (const f of fields) {
+      const row = el('div', 'if-form-row');
+      row.appendChild(el('label', 'if-form-lbl', f.label));
+      let inp;
+      if (f.type === 'textarea') { inp = el('textarea', 'if-form-area'); inp.rows = f.rows || 5; inp.value = f.value || ''; if (f.placeholder) inp.placeholder = f.placeholder; }
+      else if (f.type === 'select') { inp = el('select', 'if-form-sel'); for (const [v, l] of (f.options || [])) { const o = el('option', null, l); o.value = v; if (v === (f.value || '')) o.selected = true; inp.appendChild(o); } }
+      else { inp = el('input', 'if-form-inp'); inp.type = f.type || 'text'; inp.value = f.value || ''; if (f.placeholder) inp.placeholder = f.placeholder; }
+      inputs[f.key] = inp;
+      row.appendChild(inp);
+      form.appendChild(row);
+    }
+    host.appendChild(form);
+    const foot = el('div', 'if-form-foot');
+    const cancel = el('button', 'if-btn', 'Отмена'); cancel.onclick = close;
+    const ok = el('button', 'if-btn if-btn-primary', submitLabel || 'Сохранить');
+    ok.onclick = () => { const v = {}; for (const k in inputs) v[k] = inputs[k].value; onSubmit(v, close); };
+    foot.append(cancel, ok);
+    host.appendChild(foot);
+    const first = fields[0] && inputs[fields[0].key]; if (first) setTimeout(() => first.focus(), 30);
+    return { inputs, close };
+  }
+
+  // --- итерации ---
+  function addIteration() {
+    formModal('Новая итерация', [
+      { key: 'title', label: 'Название', type: 'text', placeholder: 'Напр. Спринт 1' },
+      { key: 'startsAt', label: 'Начало (ГГГГ-ММ-ДД)', type: 'text', placeholder: 'необязательно' },
+      { key: 'endsAt', label: 'Конец (ГГГГ-ММ-ДД)', type: 'text', placeholder: 'необязательно' },
+    ], 'Создать', (v, close) => {
+      if (!v.title.trim()) { toast('Введите название', { kind: 'err' }); return; }
+      const body = { title: v.title.trim(), startsAt: v.startsAt.trim() || null, endsAt: v.endsAt.trim() || null };
+      close();
+      run(async () => { if (await write('Создание итерации', () => lite.iterflow.createIteration(activeProj, body), 'Итерация создана')) await reloadIterations(); });
+    });
+  }
+  function renameIteration(it) {
+    formModal('Переименовать итерацию', [{ key: 'title', label: 'Название', type: 'text', value: it.title || '' }], 'Сохранить', (v, close) => {
+      if (!v.title.trim()) { toast('Введите название', { kind: 'err' }); return; }
+      close();
+      run(async () => { if (await write('Переименование', () => lite.iterflow.renameIteration(it.id, v.title.trim()), 'Сохранено')) await reloadIterations(); });
+    });
+  }
+  function editDeadline(it) {
+    formModal('Дедлайн итерации', [{ key: 'deadline', label: 'Дедлайн (ГГГГ-ММ-ДД, пусто = снять)', type: 'text', value: fmtDate(it.deadline) }], 'Сохранить', (v, close) => {
+      close();
+      run(async () => { if (await write('Дедлайн', () => lite.iterflow.setIterationDeadline(it.id, v.deadline.trim() || null), 'Сохранено')) await reloadIterations(); });
+    });
+  }
+  function removeIteration(it) {
+    showConfirm('Удалить итерацию?', '№' + (it.number || '?') + (it.title ? ' · ' + it.title : '') + '\nЭто действие необратимо.', 'Удалить', () => {
+      run(async () => { if (await write('Удаление итерации', () => lite.iterflow.deleteIteration(it.id), 'Итерация удалена')) await reloadIterations(); });
+    });
+  }
+  function stageAction(it, action, label, needReason) {
+    const go = (reason) => run(async () => { if (await write(label, () => lite.iterflow.iterationStage(it.id, action, reason != null ? { reason } : undefined), label + ' — готово')) await reloadIterations(); });
+    if (needReason) {
+      formModal(label, [{ key: 'reason', label: 'Причина', type: 'textarea', rows: 3 }], 'Отправить', (v, close) => {
+        if (!v.reason.trim()) { toast('Укажите причину', { kind: 'err' }); return; }
+        close(); go(v.reason.trim());
+      });
+    } else { go(null); }
+  }
+
+  // --- задачи ---
+  function addTask(it) {
+    formModal('Новая задача', [
+      { key: 'content', label: 'Содержимое', type: 'textarea', placeholder: 'Первая строка станет заголовком' },
+      { key: 'priority', label: 'Важность', type: 'select', options: PRIO_OPTS, value: 'normal' },
+      { key: 'viewMode', label: 'Формат', type: 'select', options: VIEW_OPTS, value: 'text' },
+    ], 'Создать', (v, close) => {
+      if (!v.content.trim()) { toast('Введите содержимое', { kind: 'err' }); return; }
+      close();
+      run(async () => { if (await write('Создание задачи', () => lite.iterflow.createTask(it.id, { content: v.content, priority: v.priority, viewMode: v.viewMode }), 'Задача создана')) await loadTasks(it.id); });
+    });
+  }
+  function editTask(task) {
+    formModal('Редактировать задачу', [
+      { key: 'content', label: 'Содержимое', type: 'textarea', value: task.content || '' },
+      { key: 'priority', label: 'Важность', type: 'select', options: PRIO_OPTS, value: task.priority || 'normal' },
+      { key: 'status', label: 'Статус', type: 'select', options: TASK_STATUS_OPTS, value: task.status || 'todo' },
+      { key: 'viewMode', label: 'Формат', type: 'select', options: VIEW_OPTS, value: task.viewMode || 'text' },
+    ], 'Сохранить', (v, close) => {
+      if (!v.content.trim()) { toast('Содержимое не может быть пустым', { kind: 'err' }); return; }
+      close();
+      run(async () => { if (await write('Сохранение задачи', () => lite.iterflow.updateTask(task.id, { content: v.content, priority: v.priority, status: v.status, viewMode: v.viewMode }), 'Сохранено')) await loadTasks(task.iterationId); });
+    });
+  }
+  function removeTask(task) {
+    showConfirm('Удалить задачу?', itemTitle(task) + '\nНеобратимо.', 'Удалить', () => {
+      run(async () => { if (await write('Удаление задачи', () => lite.iterflow.deleteTask(task.id), 'Задача удалена')) await loadTasks(task.iterationId); });
+    });
+  }
+  function toggleDone(task) {
+    run(async () => { if (await write('Готовность', () => lite.iterflow.toggleTaskDone(task.id))) await loadTasks(task.iterationId); });
+  }
+
+  // --- туду (project_notes) ---
+  function addNote() {
+    formModal('Новая заметка', [
+      { key: 'content', label: 'Текст', type: 'textarea', placeholder: 'Первая строка станет заголовком' },
+      { key: 'priority', label: 'Важность', type: 'select', options: PRIO_OPTS, value: 'normal' },
+    ], 'Создать', (v, close) => {
+      if (!v.content.trim()) { toast('Введите текст', { kind: 'err' }); return; }
+      close();
+      run(async () => { if (await write('Создание заметки', () => lite.iterflow.createNote(activeProj, { content: v.content, priority: v.priority }), 'Заметка создана')) await loadNotes(); });
+    });
+  }
+  function editNote(note) {
+    formModal('Редактировать заметку', [
+      { key: 'content', label: 'Текст', type: 'textarea', value: note.content || '' },
+      { key: 'priority', label: 'Важность', type: 'select', options: PRIO_OPTS, value: note.priority || 'normal' },
+      { key: 'status', label: 'Статус', type: 'select', options: NOTE_STATUS_OPTS, value: note.status || 'open' },
+      { key: 'viewMode', label: 'Формат', type: 'select', options: VIEW_OPTS, value: note.viewMode || 'text' },
+    ], 'Сохранить', (v, close) => {
+      if (!v.content.trim()) { toast('Текст не может быть пустым', { kind: 'err' }); return; }
+      close();
+      run(async () => { if (await write('Сохранение заметки', () => lite.iterflow.updateNote(note.id, { content: v.content, priority: v.priority, status: v.status, viewMode: v.viewMode }), 'Сохранено')) await loadNotes(); });
+    });
+  }
+  function removeNote(note) {
+    showConfirm('Удалить заметку?', itemTitle(note) + '\nНеобратимо.', 'Удалить', () => {
+      run(async () => { if (await write('Удаление заметки', () => lite.iterflow.deleteNote(note.id), 'Заметка удалена')) await loadNotes(); });
+    });
+  }
+
   // ---------------- рендер ----------------
   function renderBody() {
     const body = $('#iterflow-body');
@@ -301,10 +481,44 @@ export function initIterflow(host) {
 
   // ---- вкладка «Итерация»: вертикальный таймлайн ----
   function renderTimeline(root) {
+    const head = el('div', 'if-tab-actions');
+    const add = el('button', 'if-btn if-btn-primary', '+ Итерация');
+    if (projFrozen()) { add.disabled = true; add.title = 'Проект заморожен'; }
+    add.onclick = addIteration;
+    head.appendChild(add);
+    root.appendChild(head);
     if (!iterations.length && !busy) { root.appendChild(el('div', 'if-empty', 'В проекте пока нет итераций.')); return; }
     const tl = el('div', 'if-tl');
     for (const it of iterations) tl.appendChild(renderTlRow(it));
     root.appendChild(tl);
+  }
+
+  // Панель действий итерации (зависит от стадии и роли). frozen → всё дизейблим.
+  function renderIterActions(it) {
+    const bar = el('div', 'if-iter-actions');
+    const btn = (label, title, fn, primary) => {
+      const b = el('button', 'if-mini' + (primary ? ' if-mini-primary' : ''), label);
+      if (title) b.title = title;
+      b.onclick = (e) => { e.stopPropagation(); fn(); };
+      bar.appendChild(b);
+    };
+    btn('дедлайн', 'Изменить дедлайн', () => editDeadline(it));
+    if (it.stage === 'draft') {
+      btn('+ задача', 'Добавить задачу', () => addTask(it), true);
+      btn('переименовать', '', () => renameIteration(it));
+      btn('на согласование', 'submit-scope', () => stageAction(it, 'submit-scope', 'На согласование', false));
+      btn('удалить', '', () => removeIteration(it));
+    } else if (it.stage === 'scope_review' && isSelfSpace()) {
+      btn('согласовать', 'approve-scope', () => stageAction(it, 'approve-scope', 'Согласовать', false), true);
+      btn('в черновик', 'reject-scope', () => stageAction(it, 'reject-scope', 'Вернуть в черновик', true));
+    } else if (it.stage === 'active') {
+      btn('сдать итерацию', 'submit-iteration', () => stageAction(it, 'submit-iteration', 'Сдать итерацию', false), true);
+    } else if (it.stage === 'final_review' && isSelfSpace()) {
+      btn('принять', 'accept-iteration', () => stageAction(it, 'accept-iteration', 'Принять итерацию', false), true);
+      btn('в работу', 'reject-iteration', () => stageAction(it, 'reject-iteration', 'Вернуть в работу', true));
+    }
+    if (projFrozen()) bar.querySelectorAll('button').forEach((b) => { b.disabled = true; b.title = 'Проект заморожен'; });
+    return bar;
   }
 
   function renderTlRow(it) {
@@ -336,6 +550,7 @@ export function initIterflow(host) {
 
     if (!isCol) {
       if (it.deadline) card.appendChild(el('div', 'if-iter-meta', 'дедлайн: ' + fmtDate(it.deadline)));
+      card.appendChild(renderIterActions(it));
       card.appendChild(renderTaskList(it));
     }
     row.appendChild(card);
@@ -384,6 +599,20 @@ export function initIterflow(host) {
     host.appendChild(meta);
 
     host.appendChild(el('div', 'if-modal-content', item.content || '(без содержимого)'));
+
+    // Действия (CRUD/жизненный цикл) — по стадии итерации (для задач) / авторству (для заметок).
+    const acts = el('div', 'if-modal-acts');
+    const mbtn = (label, fn, primary) => { const b = el('button', 'if-btn' + (primary ? ' if-btn-primary' : ''), label); b.onclick = fn; acts.appendChild(b); };
+    if (kind === 'task') {
+      const stage = (iterOf(item.iterationId) || {}).stage;
+      const frozen = projFrozen();
+      if (!frozen && (stage === 'active' || stage === 'scope_review')) mbtn(item.status === 'done' ? 'Снять «выполнено»' : 'Отметить выполненной', () => { close(); toggleDone(item); });
+      if (!frozen && stage === 'draft') { mbtn('Редактировать', () => { close(); editTask(item); }, true); mbtn('Удалить', () => { close(); removeTask(item); }); }
+    } else if (kind === 'note') {
+      // Заметки правит/удаляет только автор; frozen на них не влияет (бэкенд разрешает).
+      if (canEditNote(item)) { mbtn('Редактировать', () => { close(); editNote(item); }, true); mbtn('Удалить', () => { close(); removeNote(item); }); }
+    }
+    if (acts.children.length) host.appendChild(acts);
   }
 
   // ---- вкладка «Канбан»: плоский список задач выбранной итерации с inline
@@ -431,6 +660,11 @@ export function initIterflow(host) {
 
   // ---- вкладка «Туду»: общие заметки проекта (project_notes, веб-cookie) ----
   function renderTodo(root) {
+    const head = el('div', 'if-tab-actions');
+    const add = el('button', 'if-btn if-btn-primary', '+ Заметка');
+    add.onclick = addNote;
+    head.appendChild(add);
+    root.appendChild(head);
     if (notes === null) { root.appendChild(el('div', 'if-empty', busy ? 'Загрузка…' : '—')); return; }
     if (notes.error) { root.appendChild(loadErrorBox(notes, 'Туду')); return; }
     if (!notes.length) { root.appendChild(el('div', 'if-empty', 'Общих заметок в проекте нет.')); return; }

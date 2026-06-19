@@ -530,6 +530,22 @@ html, body {
 .if-modal-title { font-size: 15px; font-weight: 600; color: var(--text); line-height: 1.3; }
 .if-modal-meta { display: flex; flex-wrap: wrap; gap: 6px; }
 .if-modal-content { font-size: 12.5px; color: var(--text); line-height: 1.5; white-space: pre-wrap; word-break: break-word; max-height: 50vh; overflow: auto; background: var(--bg-input); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; }
+/* CRUD: панель действий вкладки + действия итерации + формы + действия в модалке */
+.if-tab-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
+.if-iter-actions { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 4px; }
+.if-mini { font-size: 11.5px; padding: 4px 9px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface); color: var(--text-dim); cursor: pointer; }
+.if-mini:hover { background: var(--hover); color: var(--text); border-color: var(--border-strong); }
+.if-mini:disabled { opacity: 0.5; cursor: not-allowed; }
+.if-mini-primary { color: var(--accent-contrast); background: var(--green); border-color: transparent; font-weight: 600; }
+.if-mini-primary:hover { background: var(--green-bright); color: var(--accent-contrast); }
+.if-form { display: flex; flex-direction: column; gap: 10px; margin: 4px 0 12px; }
+.if-form-row { display: flex; flex-direction: column; gap: 4px; }
+.if-form-lbl { font-size: 11.5px; color: var(--text-mute); }
+.if-form-inp, .if-form-sel, .if-form-area { background: var(--bg-input); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; color: var(--text); font-size: 13px; outline: none; width: 100%; box-sizing: border-box; }
+.if-form-inp:focus, .if-form-sel:focus, .if-form-area:focus { border-color: var(--border-accent); }
+.if-form-area { font-family: var(--mono, ui-monospace, monospace); line-height: 1.5; resize: vertical; }
+.if-form-foot { display: flex; justify-content: flex-end; gap: 8px; }
+.if-modal-acts { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
 .if-prchip { font-size: 10.5px; padding: 2px 8px; border-radius: 20px; border: 1px solid var(--border); color: var(--text-dim); }
 .if-prchip.if-pr-low { color: var(--info); border-color: rgba(122, 162, 247, 0.3); background: rgba(122, 162, 247, 0.12); }
 .if-prchip.if-pr-normal { color: var(--green); border-color: var(--border-accent); background: var(--accent-soft); }
