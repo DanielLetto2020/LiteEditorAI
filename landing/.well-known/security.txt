@@ -1,0 +1,4 @@
+Contact: https://github.com/DanielLetto2020/LiteEditorAI/issues
+Expires: 2027-06-19T00:00:00.000Z
+Preferred-Languages: ru, en
+Canonical: https://lite-editor-ai.ru/.well-known/security.txt
