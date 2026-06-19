@@ -31,3 +31,5 @@ TO_SERVER_FILES.md
 # Приватное — НИКОГДА не публиковать (раскрытие keystore = подделка подписи APK; фидбэк — личные данные)
 android/app/lite-debug.keystore
 USER_FEEDBACK.md
+# Лендинг — НЕ в публичный репозиторий (деплой через ansible/ читает с диска, git-трекинг не нужен)
+landing/

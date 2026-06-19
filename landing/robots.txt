@@ -1,4 +1,0 @@
-User-agent: *
-Allow: /
-
-Sitemap: https://lite-editor-ai.ru/sitemap.xml
