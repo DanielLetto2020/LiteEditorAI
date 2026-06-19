@@ -17,6 +17,8 @@ NEXT.md
 context_project_bkp/
 # внутренние доки-компаньоны CLAUDE.md (ARCHITECTURE/RELEASE/PULT) — не в публичный main
 docs/
+# приватный деплой прод-инфры на VPS (IP/домены/прод-compose/секреты) — не в публичный main
+ansible/
 
 # Build output / release artifacts (большие бинарники не коммитим)
 dist-release/
