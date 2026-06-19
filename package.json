@@ -1,6 +1,6 @@
 {
   "name": "liteeditor-ai",
-  "version": "1.0.187-alpha",
+  "version": "1.0.188-alpha",
   "description": "Lightweight editor for working with AI coding agents in the terminal",
   "main": "main.js",
   "author": "Максим Кузьминский <i@m-letto.ru>",
@@ -63,6 +63,14 @@
     "electron-builder": "^26.8.1",
     "esbuild": "^0.28.1",
     "sharp": "^0.33.5"
+  },
+  "overrides": {
+    "@electron/get": {
+      "undici": "^7.28.0"
+    },
+    "node-gyp": {
+      "undici": "^6.27.0"
+    }
   },
   "build": {
     "appId": "com.mletto.liteeditorai",

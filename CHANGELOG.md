@@ -3,6 +3,17 @@
 Все заметные изменения LiteEditorAI. Формат — [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/),
 нумерация — [SemVer](https://semver.org/lang/ru/). Проект в стадии **alpha**.
 
+## [1.0.188] — 2026-06-20
+
+Сервисный релиз безопасности: закрыты все известные уязвимости в зависимостях.
+
+### 🔒 Безопасность
+- **Закрыты 9 уязвимостей Dependabot** в транзитивной зависимости `undici` (HTTP-клиент сборочных
+  инструментов Electron). Через `overrides` версии подняты до пропатченных: `undici@7.28.0` (ветка
+  `@electron/get`) и `undici@6.27.0` (ветка `node-gyp`). Затронуты только инструменты сборки
+  (devDependencies) — в дистрибутив, который скачивают пользователи, эта зависимость не входит. `npm audit`
+  теперь показывает **0 уязвимостей**.
+
 ## [1.0.187] — 2026-06-19
 
 Модуль просмотра кода («вивер») прошёл сквозную ревизию и стал заметно надёжнее, а у HTML-файлов появилось
@@ -705,6 +716,7 @@ AGENTS.md как граф на канве), и **цветной пульт** —
 - Первые публичные alpha-сборки: терминал на проект (xterm + node-pty), вивер кода (CodeMirror), дерево
   файлов, дистрибуция под Linux (`.deb`) и Windows (portable `.zip`) через GitHub Actions.
 
+[1.0.188]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.0.188
 [1.0.187]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.0.187
 [1.0.182]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.0.182
 [1.0.181]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.0.181
