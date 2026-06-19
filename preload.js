@@ -161,6 +161,20 @@ contextBridge.exposeInMainWorld('lite', {
     setTaskKanban: (taskId, status) => ipcRenderer.invoke('iterflow:setTaskKanban', { taskId, status }), // только active + исполнитель
     projectNotes: (projectId) => ipcRenderer.invoke('iterflow:projectNotes', { projectId }),         // туду (веб-cookie)
     projectMessages: (projectId) => ipcRenderer.invoke('iterflow:projectMessages', { projectId }),   // общий чат (веб-cookie)
+    // CRUD + жизненный цикл — через веб-cookie (editor-группа write не умеет). web401 → перелогин.
+    createIteration: (projectId, body) => ipcRenderer.invoke('iterflow:createIteration', { projectId, body }),
+    renameIteration: (id, title) => ipcRenderer.invoke('iterflow:renameIteration', { id, title }),
+    setIterationDeadline: (id, deadline) => ipcRenderer.invoke('iterflow:setIterationDeadline', { id, deadline }),
+    deleteIteration: (id) => ipcRenderer.invoke('iterflow:deleteIteration', { id }),
+    iterationStage: (id, action, body) => ipcRenderer.invoke('iterflow:iterationStage', { id, action, body }),
+    createTask: (iterationId, body) => ipcRenderer.invoke('iterflow:createTask', { iterationId, body }),
+    updateTask: (id, body) => ipcRenderer.invoke('iterflow:updateTask', { id, body }),
+    toggleTaskDone: (id) => ipcRenderer.invoke('iterflow:toggleTaskDone', { id }),
+    deleteTask: (id) => ipcRenderer.invoke('iterflow:deleteTask', { id }),
+    createNote: (projectId, body) => ipcRenderer.invoke('iterflow:createNote', { projectId, body }),
+    updateNote: (noteId, body) => ipcRenderer.invoke('iterflow:updateNote', { noteId, body }),
+    deleteNote: (noteId) => ipcRenderer.invoke('iterflow:deleteNote', { noteId }),
+    reorderNotes: (projectId, ids) => ipcRenderer.invoke('iterflow:reorderNotes', { projectId, ids }),
   },
 
   seo: {
