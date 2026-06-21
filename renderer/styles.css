@@ -394,7 +394,6 @@ html, body {
 .git-commit { display: flex; align-items: baseline; gap: 8px; padding: 3px 6px; border-radius: 6px; font-size: 12px; white-space: nowrap; cursor: pointer; }
 .git-commit:hover { background: var(--hover); }
 .git-csubj { flex: 1; overflow: hidden; text-overflow: ellipsis; color: var(--text); }
-.git-commit .gm-meta { color: var(--text-mute); font-size: 11px; flex: 0 0 auto; }
 .git-refs { color: var(--warn); font-size: 11px; }
 
 /* ---------------- Notes/tasks panel (right slot) ----------------
@@ -868,7 +867,6 @@ html, body {
 .git-tool.ico { padding: 6px; }
 .git-tool.danger:hover:not(:disabled) { background: transparent; border-color: var(--danger); color: var(--danger); }
 .git-tsep { width: 1px; align-self: stretch; min-height: 18px; background: var(--border); margin: 0 2px; }
-.git-sec-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 
 /* ---------------- Containers module (docker/podman) ---------------- */
 #docker-pane { flex: 0 0 460px; min-width: 300px; border-left: 1px solid var(--border); display: flex; flex-direction: column; background: var(--panel); }
@@ -1617,8 +1615,6 @@ body.preview-full .prev-frame { width: 100%; height: 100%; }
 
 /* ---------------- git panel (gm-* shared by the right-pane Git module) ---------------- */
 .gm-branch { display: flex; align-items: center; gap: 10px; }
-.gm-branchname { font-weight: 600; color: var(--green-bright); }
-.gm-track { font-size: 12px; color: var(--text-dim); }
 .gm-norepo { color: var(--text-dim); }
 .gm-clean { color: var(--text-dim); font-size: 12.5px; padding: 8px; }
 
@@ -1772,7 +1768,6 @@ body.preview-full .prev-frame { width: 100%; height: 100%; }
 .git-tools-commit { justify-content: flex-end; }
 .git-tool.loading { opacity: 0.7; cursor: wait; }
 .git-tsep { width: 1px; align-self: stretch; min-height: 18px; background: var(--border); margin: 0 2px; }
-.git-sec-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 
 .git-history-tools { display: flex; align-items: center; gap: 8px; }
 .git-search-wrap {

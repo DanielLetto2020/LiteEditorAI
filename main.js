@@ -2778,6 +2778,23 @@ ipcMain.handle('git:fileDiff', async (_e, { root, file }) => {
   if (top == null) return { error: 'не git-репозиторий' };
   let out = await git(root, ['diff', 'HEAD', '--', file]);
   if (out != null && out.trim() === '') out = await git(root, ['diff', '--', file]); // unstaged-only fallback
+  // Неотслеживаемый (новый) файл git diff не знает → синтезируем дифф «всё добавлено» из содержимого
+  // на диске, иначе клик по новому файлу открывал бы пустую панель «Нет изменений».
+  if ((out == null || out.trim() === '') && fs.existsSync(file) && fs.statSync(file).isFile()) {
+    const tracked = await git(root, ['ls-files', '--error-unmatch', '--', file]); // null → файл не отслеживается
+    if (tracked == null) {
+      try {
+        const buf = fs.readFileSync(file);
+        const rel = path.basename(file);
+        if (buf.includes(0)) out = 'diff --git a/' + rel + ' b/' + rel + '\nBinary file (новый, не отслеживается)';
+        else {
+          const lines = buf.toString('utf8').split('\n');
+          if (lines.length && lines[lines.length - 1] === '') lines.pop(); // не считать финальный перевод строки лишней строкой
+          out = '--- /dev/null\n+++ b/' + rel + '\n@@ -0,0 +1,' + lines.length + ' @@\n' + lines.map((l) => '+' + l).join('\n');
+        }
+      } catch (_) { /* нечитаемый файл — оставляем пустой дифф */ }
+    }
+  }
   return { diff: out || '' };
 });
 
@@ -2855,8 +2872,13 @@ ipcMain.handle('git:branchUpdate', async (_e, { root, branch, current }) => {
   return gitRun(root, ['fetch', remote, `${rb}:${branch}`]);
 });
 // New branch from any base branch; optionally check it out.
-ipcMain.handle('git:branchCreate', async (_e, { root, name, base, checkout }) =>
-  gitRun(root, checkout ? ['checkout', '-b', name, base] : ['branch', name, base]));
+ipcMain.handle('git:branchCreate', async (_e, { root, name, base, checkout }) => {
+  const nm = (name || '').trim();
+  // Имя из пользовательского ввода: ведущий '-' git примет за флаг (как в git:clone выше),
+  // а пробелы/спецсимволы — невалидный ref. Отсекаем до вызова с понятной ошибкой.
+  if (!nm || nm.startsWith('-') || /[\s~^:?*\[\\]/.test(nm) || nm.includes('..')) return { ok: false, error: 'Недопустимое имя ветки' };
+  return gitRun(root, checkout ? ['checkout', '-b', nm, base] : ['branch', nm, base]);
+});
 ipcMain.handle('git:init', async (_e, root) => gitRun(root, ['init']));
 // Clone INTO the (empty) project folder. Longer timeout than other mutations — fetching
 // a repo legitimately takes a while; private repos that need auth still fail fast via
@@ -2886,7 +2908,9 @@ ipcMain.handle('git:commit', async (_e, { root, message, push, files }) => {
   // files передан → коммитим только выбранное (git add -- <files>), иначе всё (git add -A, как раньше).
   const sel = Array.isArray(files) && files.length;
   const add = await gitRun(root, sel ? ['add', '--', ...files] : ['add', '-A']); if (!add.ok) return add;
-  const c = await gitRun(root, ['commit', '-m', message || 'update']); if (!c.ok) return c;
+  // sel → коммитим РОВНО выбранные пути (pathspec), иначе `git commit` забрал бы и всё прочее,
+  // что уже лежит в индексе (напр. файл, застейдженный при разрешении конфликта и затем снятый галкой).
+  const c = await gitRun(root, sel ? ['commit', '-m', message || 'update', '--', ...files] : ['commit', '-m', message || 'update']); if (!c.ok) return c;
   // committed:true даже при провале пуша — фронт обязан обновить список (коммит-то уже лёг).
   if (push) { const p = await gitPush(root); if (!p.ok) return { ok: false, committed: true, error: 'Коммит создан, push не прошёл: ' + p.error }; }
   return { ok: true, out: c.out };

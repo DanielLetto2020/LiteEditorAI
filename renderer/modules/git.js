@@ -97,11 +97,6 @@ export function initGit(host) {
   }
   function toggleGit() { setGitOpen(!gitOpen); }
 
-  function gitCodeClass(code) {
-    if (code === '?' || code.includes('A')) return 'g-add';
-    if (code.includes('D')) return 'g-del';
-    return 'g-mod';
-  }
   // Compact pill button for the Git toolbar (icon + optional label). Variants: 'primary' | 'ico' | 'danger'.
   function gitTool(iconName, label, title, variant) {
     const b = el('button', 'git-tool' + (variant ? ' ' + variant : ''));
@@ -270,6 +265,7 @@ export function initGit(host) {
     const keys = Object.keys(files).sort((a, b) => a.localeCompare(b));
     const groups = groupChanges(keys, files, conflictSet);
     const committableKeys = keys.filter((k) => !conflictSet.has(k));
+    for (const k of [...excluded]) if (!keys.includes(k)) excluded.delete(k); // прунинг исчезнувших путей — иначе ре-созданный файл молча останется исключённым из коммита
     if (selectedChangeFile && !keys.includes(selectedChangeFile)) selectedChangeFile = null;
     if (!selectedChangeFile && keys.length) selectedChangeFile = keys[0];
 
@@ -588,21 +584,23 @@ export function initGit(host) {
 
   // ============================================================ парсинг конфликтов
   // Разбор маркеров merge: <<<<<<< ours [||||||| base] ======= theirs >>>>>>>.
-  // Возвращает { lines, blocks }, blocks: { start, baseAt, sep, end, ours[], theirs[], base[] } (0-based индексы строк).
+  // Возвращает { lines, blocks }, blocks: { start, baseAt, sep, end, ours[], theirs[] } (0-based индексы строк).
   function parseConflicts(text) {
     const lines = text.split('\n');
     const blocks = [];
     let i = 0;
     while (i < lines.length) {
       if (lines[i].startsWith('<<<<<<<')) {
-        const start = i; const ours = []; const theirs = []; const base = [];
+        const start = i; const ours = []; const theirs = [];
         let baseAt = -1; let sep = -1; let end = -1;
         i++;
         while (i < lines.length && !lines[i].startsWith('|||||||') && !lines[i].startsWith('=======') && !lines[i].startsWith('>>>>>>>')) { ours.push(lines[i]); i++; }
-        if (i < lines.length && lines[i].startsWith('|||||||')) { baseAt = i; i++; while (i < lines.length && !lines[i].startsWith('=======') && !lines[i].startsWith('>>>>>>>')) { base.push(lines[i]); i++; } }
+        if (i < lines.length && lines[i].startsWith('|||||||')) { baseAt = i; i++; while (i < lines.length && !lines[i].startsWith('=======') && !lines[i].startsWith('>>>>>>>')) { i++; } } // diff3-секция base — пропускаем (UI её не показывает)
         if (i < lines.length && lines[i].startsWith('=======')) { sep = i; i++; while (i < lines.length && !lines[i].startsWith('>>>>>>>')) { theirs.push(lines[i]); i++; } }
         if (i < lines.length && lines[i].startsWith('>>>>>>>')) { end = i; }
-        blocks.push({ start, baseAt, sep, end, ours, theirs, base });
+        // Настоящий конфликт обязан содержать '======='. Без него (мусорный '<<<<<<<') блок не пушим —
+        // иначе buildSide с sep=-1 откатывал бы офсет назад и дублировал строки.
+        if (sep >= 0) blocks.push({ start, baseAt, sep, end, ours, theirs });
         i = (end >= 0 ? end : i) + 1;
       } else i++;
     }
