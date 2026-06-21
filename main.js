@@ -2945,6 +2945,13 @@ function cHumanSize(bytes) { // podman reports image size in bytes; docker is al
   while (v >= 1024 && i < u.length - 1) { v /= 1024; i++; }
   return (v >= 10 || i === 0 ? v.toFixed(0) : v.toFixed(1)) + ' ' + u[i];
 }
+function cImgCreated(img) { // podman: CreatedAt is ISO, Created is a raw unix int — show a short date (docker has CreatedSince)
+  const at = img.CreatedAt;
+  if (typeof at === 'string' && /^\d{4}-\d\d-\d\d/.test(at)) return at.slice(0, 10);
+  const n = Number(img.Created);
+  if (Number.isFinite(n) && n > 0) { try { return new Date(n * 1000).toISOString().slice(0, 10); } catch (_) {} }
+  return '';
+}
 function cParseLines(out) { // docker `{{json .}}` → one JSON object per line
   const arr = [];
   for (const ln of String(out || '').split('\n')) { const s = ln.trim(); if (!s) continue; try { arr.push(JSON.parse(s)); } catch (_) {} }
@@ -2997,10 +3004,19 @@ async function cListImages(engine) {
   const r = await containerRun(engine, ['images', '--format', fmt], { timeout: 12000 });
   if (!r.ok) return { error: r.error };
   if (engine === 'docker') return { items: cParseLines(r.out).map((i) => ({ id: i.ID, repo: i.Repository, tag: i.Tag, size: i.Size, created: i.CreatedSince })) };
-  return { items: cParseJson(r.out).map((i) => { const names = i.Names || i.RepoTags || [];
-    const full = Array.isArray(names) ? (names[0] || '<none>:<none>') : String(names);
-    const ci = full.lastIndexOf(':'); const repo = ci > 0 ? full.slice(0, ci) : full; const tag = ci > 0 ? full.slice(ci + 1) : '';
-    return { id: String(i.Id || i.ID || '').slice(0, 12), repo, tag, size: cHumanSize(i.Size), created: i.Created }; }) };
+  // podman repeats the full Names[] across several entries sharing one Id, so taking Names[0] yields
+  // duplicate identical rows and hides extra tags. Expand to one row per repo:tag, dedup by Id|name.
+  const seen = new Set(), items = [];
+  for (const i of cParseJson(r.out)) {
+    const names = Array.isArray(i.Names) ? i.Names : (Array.isArray(i.RepoTags) ? i.RepoTags : []);
+    const id = String(i.Id || i.ID || '');
+    for (const full of (names.length ? names : ['<none>:<none>'])) {
+      const key = id + '|' + full; if (seen.has(key)) continue; seen.add(key);
+      const ci = full.lastIndexOf(':'); const repo = ci > 0 ? full.slice(0, ci) : full; const tag = ci > 0 ? full.slice(ci + 1) : '';
+      items.push({ id: id.slice(0, 12), repo, tag, size: cHumanSize(i.Size), created: cImgCreated(i) });
+    }
+  }
+  return { items };
 }
 async function cListVolumes(engine) {
   const fmt = engine === 'docker' ? '{{json .}}' : 'json';
@@ -3024,8 +3040,18 @@ async function cListDf(engine) { // disk usage per object type (`system df`)
   }
   return out;
 }
-ipcMain.handle('containers:list', async (_e, { engine } = {}) => {
+ipcMain.handle('containers:list', async (_e, { engine, light } = {}) => {
   if (engine !== 'docker' && engine !== 'podman') return { error: 'bad engine' };
+  // Light path = the live poll: only the fast, frequently-changing data (containers + pods). Skips the heavy
+  // `system df` (storage scan, ~1s) and images/volumes so a 3s poll doesn't churn the disk. The renderer
+  // reconciles only the sections present in the reply, leaving the rest as last rendered by a full fetch.
+  if (light) {
+    if (engine === 'podman') {
+      const [containers, pods] = await Promise.all([cListContainers(engine), cListPods()]);
+      return { containers, pods };
+    }
+    return { containers: await cListContainers(engine) };
+  }
   const [containers, images, volumes, pods, df] = await Promise.all([
     cListContainers(engine), cListImages(engine), cListVolumes(engine),
     engine === 'podman' ? cListPods() : Promise.resolve({ items: [] }),

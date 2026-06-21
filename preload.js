@@ -212,7 +212,7 @@ contextBridge.exposeInMainWorld('lite', {
 
   containers: {
     detect: () => ipcRenderer.invoke('containers:detect'),
-    list: (engine) => ipcRenderer.invoke('containers:list', { engine }),
+    list: (engine, opts) => ipcRenderer.invoke('containers:list', { engine, ...(opts || {}) }),
     action: (engine, kind, action, id) => ipcRenderer.invoke('containers:action', { engine, kind, action, id }),
     bulk: (engine, action, ids) => ipcRenderer.invoke('containers:bulk', { engine, action, ids }),
     logsStart: (engine, id, streamId, tail) => ipcRenderer.invoke('containers:logsStart', { engine, id, streamId, tail }),
