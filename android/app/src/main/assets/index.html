@@ -23,7 +23,7 @@
       } catch (e) {}
     }
     window.__report = report;
-    window.PULT_VER = '0.59.0';
+    window.PULT_VER = '0.60.0';
     window.onerror = function (m, src, line, col, err) {
       report('page-error', m, (err && err.stack) || (src + ':' + line));
       var b = document.getElementById('fatal') || document.createElement('div');
@@ -33,7 +33,7 @@
       if (document.body) document.body.appendChild(b);
       return false;
     };
-    report('page-loaded', 'index.html v0.59.0', navigator.userAgent);
+    report('page-loaded', 'index.html v0.60.0', navigator.userAgent);
   })();
   </script>
   <link rel="stylesheet" href="./app.css" />
@@ -207,7 +207,7 @@
       <div id="lg-err"></div>
       <button id="lg-go">Войти</button>
       <div class="login-note">Укажите хост своего релея. Регистрация аккаунта — в редакторе на ПК (меню «Пульт»).</div>
-      <div class="login-note" id="login-ver" style="opacity:.6">пульт v0.59.0</div>
+      <div class="login-note" id="login-ver" style="opacity:.6">пульт v0.60.0</div>
     </div>
   </div>
 
@@ -229,6 +229,7 @@
         <div class="tb-row">
           <button class="tk tk-big" data-key="side" title="Проекты и терминалы">📁 Проекты</button>
           <button class="tk tk-big" data-key="kbd" title="Клавиатура">⌨ Клава</button>
+          <button class="tk tk-big" data-key="tasks" title="Задачи проекта и общие">✓ Задачи</button>
           <button class="tk tk-big" data-key="refresh" title="Обновить экран (свежий кадр с ПК)">⟳ Обновить</button>
         </div>
         <div class="tb-row">

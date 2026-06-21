@@ -40,7 +40,7 @@ import { initTools } from './modules/tools.js';
 import { initOpenRouter } from './modules/openrouter.js';
 import { initExtensions } from './modules/extensions.js';
 
-const APP_VERSION = 'alpha v1.0.197';
+const APP_VERSION = 'alpha v1.0.198';
 const GUTTER = 5;
 const SCRATCH_ID = '__scratch__'; // префикс id системных терминалов (домашняя папка), не привязаны к проектам
 const isScratch = (id) => typeof id === 'string' && id.startsWith(SCRATCH_ID);
@@ -1253,6 +1253,13 @@ async function handleRemoteNewFolder(name) {
     if (res && res.error) { toast('Пульт: ' + res.error); return; }
     if (res && res.path) { openByPath(res.path, res.name); toast(`Папка «${res.name}» создана (с пульта)`); }
   } catch (e) { toast('Пульт: не удалось создать папку'); }
+}
+// Пульт: «В терминал» из модалки «Задачи» — вставить текст в терминал проекта
+// (та же логика, что и кнопка «В терминал» в панели задач на ПК).
+function handleRemoteNoteToTerminal(projId, text) {
+  if (!text) return;
+  const proj = projects.find((x) => x.id === projId) || activeProject();
+  if (proj) sendNoteToTerminal(proj, text);
 }
 // Пульт просит одобрить устройство (pairing) → модалка с именем устройства и проверочным
 // кодом. Одобрять только своё устройство, у которого код на экране совпадает.
@@ -3091,6 +3098,8 @@ function init() {
   try { if (lite.remote && lite.remote.onCloseTab) lite.remote.onCloseTab((sid) => { try { handleRemoteClose(sid); } catch (_) {} }); } catch (_) {}
   // Пульт: «Создать папку» → создаём на десктопе.
   try { if (lite.remote && lite.remote.onNewFolder) lite.remote.onNewFolder((name) => { try { handleRemoteNewFolder(name); } catch (_) {} }); } catch (_) {}
+  try { if (lite.remote && lite.remote.onNoteToTerminal) lite.remote.onNoteToTerminal((projId, text) => { try { handleRemoteNoteToTerminal(projId, text); } catch (_) {} }); } catch (_) {}
+  try { if (lite.remote && lite.remote.onNotesChanged) lite.remote.onNotesChanged((id) => { try { Notes.onExternalChange(id); } catch (_) {} }); } catch (_) {}
   // Пульт просит одобрить устройство (pairing) → модалка одобрения.
   try { if (lite.remote && lite.remote.onPairRequest) lite.remote.onPairRequest((info) => { try { handleRemotePairRequest(info); } catch (_) {} }); } catch (_) {}
   // Бейдж «подключённые пульты» у версии: живёт на push-событиях из main + стартовый снимок.

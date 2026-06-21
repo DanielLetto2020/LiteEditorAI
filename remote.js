@@ -32,6 +32,9 @@ let onStoreList = () => {};
 let onStoreGet = () => {};
 let onStoreGetZip = () => {};
 let onStoreCancel = () => {};
+let onTasksGet = () => {};        // (reqId, id) — пульт запросил список задач (проектный/общий)
+let onTasksSet = () => {};        // (id, notes) — пульт сохранил список задач
+let onNoteToTerminal = () => {};  // (projId, text) — пульт: вставить текст задачи в терминал проекта
 let onPultPresence = () => {};   // (connected:boolean) — пульт подключился/отключился
 let onPairRequest = () => {};    // ({device,name,pubkey,code}) — пульт просит одобрить устройство
 let onPultsChanged = () => {};   // (list) — состав подключённых пультов изменился (для бейджа в UI)
@@ -212,6 +215,12 @@ function connect() {
       try { onStoreGetZip(m.reqId, m.path); } catch (_) {}
     } else if (m.t === 'store:cancel') {
       try { onStoreCancel(m.reqId); } catch (_) {}
+    } else if (m.t === 'tasks:get') {
+      try { onTasksGet(m.reqId, String(m.id || '')); } catch (_) {}
+    } else if (m.t === 'tasks:set' && typeof m.id === 'string' && Array.isArray(m.notes)) {
+      try { onTasksSet(m.id, m.notes); } catch (_) {}
+    } else if (m.t === 'tasks:toTerminal' && typeof m.text === 'string') {
+      try { onNoteToTerminal(String(m.projId || ''), m.text); } catch (_) {}
     } else if (m.t === 'pair:request') {
       // Пульт (через релей) запрашивает одобрение устройства → показать модалку в редакторе.
       try { onPairRequest({ device: m.device || '', name: m.name || '', pubkey: m.pubkey || '', code: m.code || '' }); } catch (_) {}
@@ -253,6 +262,9 @@ function init(opts = {}) {
   if (opts.onStoreGet) onStoreGet = opts.onStoreGet;
   if (opts.onStoreGetZip) onStoreGetZip = opts.onStoreGetZip;
   if (opts.onStoreCancel) onStoreCancel = opts.onStoreCancel;
+  if (opts.onTasksGet) onTasksGet = opts.onTasksGet;
+  if (opts.onTasksSet) onTasksSet = opts.onTasksSet;
+  if (opts.onNoteToTerminal) onNoteToTerminal = opts.onNoteToTerminal;
   if (opts.onPultPresence) onPultPresence = opts.onPultPresence;
   if (opts.onPairRequest) onPairRequest = opts.onPairRequest;
   if (opts.onPultsChanged) onPultsChanged = opts.onPultsChanged;

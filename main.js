@@ -1503,6 +1503,27 @@ const REMOTE_DEFAULT_HOST = '';
 function normalizeRelayHost(s) {
   return String(s || '').trim().replace(/^wss?:\/\//i, '').replace(/^https?:\/\//i, '').replace(/\/.*$/, '').trim();
 }
+// --- Задачи на пульте: читаем/пишем те же notes/<id>.json, что и панель «Задачи» ---
+function notesPath(id) { return path.join(storeDir, 'notes', String(id).replace(/[^\w.-]/g, '_') + '.json'); }
+function pultTasksGet(reqId, id) {
+  let notes = [];
+  try { notes = JSON.parse(fs.readFileSync(notesPath(id), 'utf8')); } catch (_) {}
+  if (!Array.isArray(notes)) notes = [];
+  remote.send({ t: 'tasks:data', reqId, id, notes });
+}
+function pultTasksSet(id, notes) {
+  if (!Array.isArray(notes)) return;
+  try {
+    fs.mkdirSync(path.join(storeDir, 'notes'), { recursive: true });
+    atomicWriteSync(notesPath(id), JSON.stringify(notes));
+    // Освежить открытую в редакторе панель «Задачи», если она показывает этот же список.
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('remote:notesChanged', { id: String(id) });
+  } catch (e) { logger.log('warn', 'remote', 'pult tasks save failed: ' + (e && e.message)); }
+}
+// Пульт: вставить текст задачи в терминал проекта — переадресуем рендереру (как в панели «Задачи»).
+function pultNoteToTerminal(projId, text) {
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('remote:noteToTerminal', { projId, text });
+}
 function startRemotePult() {
   try {
     remote.init({
@@ -1520,6 +1541,10 @@ function startRemotePult() {
       onStoreGet: (reqId, p) => pultStoreGet(reqId, p),
       onStoreGetZip: (reqId, p) => pultStoreGetZip(reqId, p),
       onStoreCancel: (reqId) => { storeCancelled.add(reqId); },
+      // Задачи на пульте: тот же notes/<id>.json, что и панель «Задачи» в редакторе.
+      onTasksGet: (reqId, id) => pultTasksGet(reqId, id),
+      onTasksSet: (id, notes) => pultTasksSet(id, notes),
+      onNoteToTerminal: (projId, text) => pultNoteToTerminal(projId, text),
       // Пульт смотрит «проекцию экрана» и размером PTY не владеет — на presence только лог.
       onPultPresence: (connected) => { logger.log('info', 'remote', connected ? 'pult connected' : 'pult disconnected'); },
       // Пульт просит одобрить устройство → показать модалку в редакторе.

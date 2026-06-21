@@ -393,5 +393,7 @@ export function initNotes(host) {
     importNotes,
     // вызывается ядром при смене активного проекта; для вкладки «Общие» список не зависит от проекта
     renderPanel: () => renderPanel(),
+    // список изменён извне (пульт записал notes/<id>.json) — перечитать, если открыт именно он
+    onExternalChange: (id) => { if (notesOpen && id === loadedId) { loadedId = null; renderPanel(); } },
   };
 }

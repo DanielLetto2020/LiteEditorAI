@@ -522,6 +522,268 @@ function showNewFolder() {
   setTimeout(() => inp.focus(), 60);
 }
 
+// ----------------------------------------------------------------- задачи (модалка)
+// Зеркало панели «Задачи» редактора: те же файлы notes/<id>.json на ПК (проектные —
+// по id проекта, общие — __global__). ПК отдаёт список по {t:'tasks:get}, принимает
+// сохранение {t:'tasks:set}, и {t:'tasks:toTerminal} вставляет текст в терминал проекта.
+// Модель задачи идентична редактору: { id, text, status:'todo'|'doing'|'done', prio:0|1|2 }.
+const TASK_GLOBAL_ID = '__global__';
+const TASK_STATUS = ['todo', 'doing', 'done'];
+const TASK_STATUS_LABEL = { todo: 'К выполнению', doing: 'В работе', done: 'Выполнено' };
+const TASK_PRIO_LABEL = ['Обычная', 'Важная', 'Срочная'];
+let tasksTab = (lsGet('tasks_tab') === 'global') ? 'global' : 'project';
+let tasksFilter = 'active';      // 'active' | 'all' | 'done'
+let tasksList = [];              // загруженный список текущей вкладки
+let tasksLoadedId = null;        // id списка, лежащего в tasksList
+let tasksLoading = false;
+let tasksError = '';
+let tasksBox = null;             // тело модалки (живёт, пока открыт оверлей)
+let tasksReqSeq = 0;
+const tasksPending = {};         // reqId → cb(notes, id, timedOut)
+
+// Какой список показывает активная вкладка: общий — всегда; проектный — активный проект (если валиден).
+function tasksTargetId() {
+  if (tasksTab === 'global') return TASK_GLOBAL_ID;
+  if (activeProj && activeProj !== ORPHAN && knownProjIds()[activeProj]) return activeProj;
+  return null;
+}
+// Низкоуровневый запрос списка с ПК (с таймаутом, чтобы спиннер не висел при офлайне).
+function tasksGet(id, cb) {
+  const reqId = 'k' + (tasksReqSeq++);
+  const timer = setTimeout(() => { if (tasksPending[reqId]) { delete tasksPending[reqId]; cb(null, id, true); } }, 10000);
+  tasksPending[reqId] = (notes, rid) => { clearTimeout(timer); cb(notes, rid, false); };
+  send({ t: 'tasks:get', reqId, id });
+}
+function tasksSave() { if (tasksLoadedId) send({ t: 'tasks:set', id: tasksLoadedId, notes: tasksList }); }
+
+// Загрузка списка под текущую вкладку (всегда свежая, если id сменился/сброшен).
+function tasksLoad() {
+  const id = tasksTargetId();
+  tasksError = '';
+  if (!id) { tasksLoadedId = null; tasksList = []; tasksLoading = false; renderTasks(); return; }
+  if (id === tasksLoadedId) { renderTasks(); return; }
+  tasksLoading = true; renderTasks();
+  tasksGet(id, (notes, rid, timedOut) => {
+    if (tasksTargetId() !== id) return;   // вкладку переключили, пока грузили
+    tasksLoading = false;
+    if (timedOut || !notes) { tasksList = []; tasksLoadedId = null; tasksError = 'Нет ответа от ПК (редактор запущен и на связи?)'; renderTasks(); return; }
+    notes.forEach((n) => { if (TASK_STATUS.indexOf(n.status) < 0) n.status = 'todo'; if (typeof n.prio !== 'number') n.prio = 0; });
+    tasksList = notes; tasksLoadedId = id; renderTasks();
+  });
+}
+function tasksCounts() { const done = tasksList.filter((n) => n.status === 'done').length; return { all: tasksList.length, done, active: tasksList.length - done }; }
+function tasksVisible() {
+  if (tasksFilter === 'active') return tasksList.filter((n) => n.status !== 'done');
+  if (tasksFilter === 'done') return tasksList.filter((n) => n.status === 'done');
+  return tasksList.slice();
+}
+function tasksSwitchTab(name) {
+  if (name === tasksTab) return;
+  tasksTab = name; lsSet('tasks_tab', name);
+  tasksLoadedId = null; tasksError = '';
+  tasksLoad();
+}
+// Переставить задачу относительно соседа в ВИДИМОМ порядке (свап в массиве).
+function tasksMove(note, dir) {
+  const vis = tasksVisible();
+  const sib = vis[vis.indexOf(note) + dir];
+  if (!sib) return;
+  const a = tasksList.indexOf(note), b = tasksList.indexOf(sib);
+  if (a < 0 || b < 0) return;
+  const t = tasksList[a]; tasksList[a] = tasksList[b]; tasksList[b] = t;
+  tasksSave(); renderTasks();
+}
+// Перенос задачи между списками (проект↔общие): дочитываем целевой, дописываем, убираем из текущего.
+function tasksMoveOther(note) {
+  const fromProject = tasksLoadedId !== TASK_GLOBAL_ID;
+  let destId, destName;
+  if (fromProject) { destId = TASK_GLOBAL_ID; destName = 'Общие'; }
+  else {
+    const pid = (activeProj && activeProj !== ORPHAN && knownProjIds()[activeProj]) ? activeProj : null;
+    if (!pid) { setStatus('Нет активного проекта — некуда перенести', 'wait'); return; }
+    destId = pid; destName = projName(pid);
+  }
+  tasksGet(destId, (dest, rid, timedOut) => {
+    if (timedOut) { setStatus('Перенос не удался: нет ответа ПК', 'wait'); return; }
+    dest = Array.isArray(dest) ? dest : [];
+    dest.unshift({ id: note.id, text: note.text, status: note.status, prio: note.prio });
+    send({ t: 'tasks:set', id: destId, notes: dest });
+    const ix = tasksList.indexOf(note); if (ix >= 0) tasksList.splice(ix, 1);
+    tasksSave(); renderTasks();
+    setStatus('Перенесено в «' + destName + '»', 'ok');
+  });
+}
+// «В терминал»: для общих задач целевой проект — активный (как в редакторе).
+function tasksSendToTerminal(note, alsoDelete) {
+  const projId = (tasksLoadedId === TASK_GLOBAL_ID)
+    ? ((activeProj && activeProj !== ORPHAN && knownProjIds()[activeProj]) ? activeProj : '')
+    : tasksLoadedId;
+  if (!projId) { setStatus('Нет активного проекта — некуда отправить', 'wait'); return; }
+  if (!note.text) { setStatus('Задача пустая', 'wait'); return; }
+  send({ t: 'tasks:toTerminal', projId, text: note.text });
+  setStatus('Отправлено в терминал', 'ok');
+  if (alsoDelete) { const ix = tasksList.indexOf(note); if (ix >= 0) tasksList.splice(ix, 1); tasksSave(); renderTasks(); }
+}
+
+// --- сборка UI модалки ---
+function tasksMsg(t) { const d = document.createElement('div'); d.style.cssText = 'color:#5a6675;font-size:13px;line-height:1.5;padding:14px 4px'; d.textContent = t; return d; }
+function tasksSubtitle(t) { const d = document.createElement('div'); d.style.cssText = 'color:#7fdbca;font-size:11px;margin:-4px 0 10px 2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap'; d.textContent = t; return d; }
+function tasksMiniBtn(label) { const b = document.createElement('button'); b.textContent = label; b.style.cssText = 'flex:0 0 auto;width:32px;height:30px;border-radius:6px;border:1px solid #2a323d;background:#1c2530;color:#cfe3ee;font-size:14px'; return b; }
+function tasksActBtn(label) { const b = document.createElement('button'); b.textContent = label; b.style.cssText = 'flex:1 1 auto;min-height:34px;border-radius:6px;border:1px solid #2a323d;background:#16202b;color:#9fd0c8;font-size:12px;padding:5px 8px'; return b; }
+function tasksStatusCss(s) { return s === 'done' ? 'background:#16321f;color:#7fdbca' : (s === 'doing' ? 'background:#2a2412;color:#e0af68' : 'background:#1c2530;color:#9fb0c0'); }
+function tasksPrioCss(p) { return p === 2 ? 'color:#f7768e;border-color:#5a2730' : (p === 1 ? 'color:#e0af68' : 'color:#9fb0c0'); }
+
+function tasksTabsRow() {
+  const wrap = document.createElement('div'); wrap.style.cssText = 'display:flex;gap:6px;margin-bottom:10px';
+  const mk = (name, label) => {
+    const on = tasksTab === name;
+    const b = document.createElement('button');
+    b.textContent = label;
+    b.style.cssText = 'flex:1;padding:9px;border-radius:7px;font-size:13px;border:1px solid ' + (on ? '#1f6feb' : '#2a323d') + ';background:' + (on ? '#1f6feb' : '#11161d') + ';color:' + (on ? '#fff' : '#9fb0c0');
+    b.onclick = () => tasksSwitchTab(name);
+    return b;
+  };
+  wrap.appendChild(mk('project', '📁 Проект'));
+  wrap.appendChild(mk('global', '🌐 Общие'));
+  return wrap;
+}
+function tasksAddBtn() {
+  const b = document.createElement('button');
+  b.textContent = '＋ Новая задача';
+  b.style.cssText = 'width:100%;background:#1f6feb;color:#fff;border:0;border-radius:8px;padding:11px;font-size:14px;margin-bottom:10px';
+  b.onclick = () => showTaskEditor(null);
+  return b;
+}
+function tasksChipsRow() {
+  const c = tasksCounts();
+  const wrap = document.createElement('div'); wrap.style.cssText = 'display:flex;gap:6px;margin-bottom:10px';
+  const mk = (f, label, n) => {
+    const on = tasksFilter === f;
+    const b = document.createElement('button');
+    b.textContent = label + (n ? (' ' + n) : '');
+    b.style.cssText = 'flex:1;padding:7px;border-radius:6px;font-size:12px;border:1px solid ' + (on ? '#1f6feb' : '#2a323d') + ';background:' + (on ? '#16243a' : '#11161d') + ';color:' + (on ? '#eaf2fb' : '#9fb0c0');
+    b.onclick = () => { tasksFilter = f; renderTasks(); };
+    return b;
+  };
+  wrap.appendChild(mk('active', 'Активные', c.active));
+  wrap.appendChild(mk('all', 'Все', c.all));
+  wrap.appendChild(mk('done', 'Готово', c.done));
+  return wrap;
+}
+function tasksCard(note, vis) {
+  const card = document.createElement('div');
+  card.style.cssText = 'border:1px solid #1f2630;border-radius:8px;padding:8px;margin-bottom:8px;background:#0e141b' + (note.status === 'done' ? ';opacity:.6' : '');
+  // строка 1: статус + текст
+  const top = document.createElement('div'); top.style.cssText = 'display:flex;align-items:flex-start;gap:8px';
+  const st = document.createElement('button');
+  st.textContent = note.status === 'done' ? '✓' : (note.status === 'doing' ? '◐' : '○');
+  st.title = TASK_STATUS_LABEL[note.status];
+  st.style.cssText = 'flex:0 0 auto;width:32px;height:32px;border-radius:6px;border:1px solid #2a323d;font-size:15px;' + tasksStatusCss(note.status);
+  st.onclick = () => { note.status = TASK_STATUS[(TASK_STATUS.indexOf(note.status) + 1) % 3]; tasksSave(); renderTasks(); };
+  const txt = document.createElement('div');
+  txt.textContent = note.text || '(пусто)';
+  txt.style.cssText = 'flex:1;color:#d6deeb;font-size:14px;line-height:1.4;word-break:break-word;white-space:pre-wrap' + (note.status === 'done' ? ';text-decoration:line-through' : '');
+  txt.onclick = () => showTaskEditor(note);
+  top.appendChild(st); top.appendChild(txt);
+  // строка 2: важность + ↑↓ + правка + удалить
+  const meta = document.createElement('div'); meta.style.cssText = 'display:flex;align-items:center;gap:6px;margin-top:8px';
+  const flag = document.createElement('button');
+  flag.textContent = '⚑' + (note.prio > 0 ? (' ' + TASK_PRIO_LABEL[note.prio]) : '');
+  flag.title = 'Важность: ' + TASK_PRIO_LABEL[note.prio];
+  flag.style.cssText = 'flex:0 0 auto;height:30px;border-radius:6px;border:1px solid #2a323d;padding:0 8px;font-size:12px;background:#1c2530;' + tasksPrioCss(note.prio);
+  flag.onclick = () => { note.prio = (note.prio + 1) % 3; tasksSave(); renderTasks(); };
+  const spacer = document.createElement('div'); spacer.style.flex = '1';
+  const vi = vis.indexOf(note);
+  const up = tasksMiniBtn('↑'); up.disabled = vi <= 0; if (up.disabled) up.style.opacity = '.4'; up.onclick = () => tasksMove(note, -1);
+  const down = tasksMiniBtn('↓'); down.disabled = vi >= vis.length - 1; if (down.disabled) down.style.opacity = '.4'; down.onclick = () => tasksMove(note, 1);
+  const edit = tasksMiniBtn('✎'); edit.onclick = () => showTaskEditor(note);
+  const del = tasksMiniBtn('🗑'); del.style.color = '#f7768e';
+  del.onclick = () => showTaskConfirm('Удалить задачу совсем (а не пометить выполненной)?', () => { const ix = tasksList.indexOf(note); if (ix >= 0) tasksList.splice(ix, 1); tasksSave(); renderTasks(); });
+  meta.appendChild(flag); meta.appendChild(spacer); meta.appendChild(up); meta.appendChild(down); meta.appendChild(edit); meta.appendChild(del);
+  // строка 3: в терминал / в терминал и удалить / перенос
+  const acts = document.createElement('div'); acts.style.cssText = 'display:flex;flex-wrap:wrap;gap:6px;margin-top:8px';
+  const send1 = tasksActBtn('⌨ В терминал'); send1.onclick = () => tasksSendToTerminal(note, false);
+  const send2 = tasksActBtn('⌨ + удалить'); send2.onclick = () => tasksSendToTerminal(note, true);
+  const toGlobal = tasksLoadedId !== TASK_GLOBAL_ID;
+  const moveBtn = tasksActBtn(toGlobal ? '→ В общие' : '→ В проект'); moveBtn.onclick = () => tasksMoveOther(note);
+  acts.appendChild(send1); acts.appendChild(send2); acts.appendChild(moveBtn);
+  card.appendChild(top); card.appendChild(meta); card.appendChild(acts);
+  return card;
+}
+// Главный рендер тела модалки (режим списка).
+function renderTasks() {
+  if (!tasksBox) return;
+  tasksBox.innerHTML = '';
+  tasksBox.appendChild(tasksTabsRow());
+  if (tasksTab === 'project') { const id = tasksTargetId(); tasksBox.appendChild(tasksSubtitle(id ? ('Проект: ' + projName(id)) : 'Проект не выбран')); }
+  if (tasksLoading) { tasksBox.appendChild(tasksMsg('Загрузка…')); return; }
+  const id = tasksTargetId();
+  if (!id) { tasksBox.appendChild(tasksMsg('Выберите проект в меню «📁 Проекты», чтобы вести его задачи, либо переключитесь на «🌐 Общие».')); return; }
+  if (tasksError) tasksBox.appendChild(tasksMsg('⚠ ' + tasksError));
+  tasksBox.appendChild(tasksAddBtn());
+  tasksBox.appendChild(tasksChipsRow());
+  const rows = tasksVisible();
+  if (!rows.length) {
+    tasksBox.appendChild(tasksMsg(tasksFilter === 'done' ? 'Выполненных задач пока нет.' : tasksFilter === 'active' ? 'Активных задач нет — добавьте новую кнопкой выше.' : 'Пусто — добавьте первую задачу.'));
+    return;
+  }
+  rows.forEach((n) => tasksBox.appendChild(tasksCard(n, rows)));
+}
+// Редактор задачи (новая/правка) — отдельный экран внутри модалки. Системная клавиатура
+// уместна (как на экранах входа/«Создать папку»): это обычная textarea, не xterm.
+function showTaskEditor(note) {
+  if (!tasksBox) return;
+  tasksBox.innerHTML = '';
+  const h = document.createElement('div'); h.style.cssText = 'color:#7fdbca;font-size:14px;margin-bottom:10px'; h.textContent = note ? 'Редактировать задачу' : 'Новая задача';
+  const ta = document.createElement('textarea');
+  ta.value = note ? (note.text || '') : '';
+  ta.setAttribute('autocapitalize', 'sentences');
+  ta.style.cssText = 'width:100%;min-height:120px;background:#11161d;color:#d6deeb;border:1px solid #2a323d;border-radius:8px;padding:12px;font-size:15px;resize:vertical';
+  const row = document.createElement('div'); row.style.cssText = 'display:flex;gap:8px;margin-top:12px';
+  const cancel = document.createElement('button');
+  cancel.textContent = 'Отмена';
+  cancel.style.cssText = 'flex:1;background:#1c2530;color:#cfe3ee;border:1px solid #2a323d;border-radius:8px;padding:11px;font-size:14px';
+  cancel.onclick = () => renderTasks();
+  const ok = document.createElement('button');
+  ok.textContent = note ? 'Сохранить' : 'Добавить';
+  ok.style.cssText = 'flex:1;background:#1f6feb;color:#fff;border:0;border-radius:8px;padding:11px;font-size:14px';
+  ok.onclick = () => {
+    const text = ta.value.trim();
+    if (!text) { renderTasks(); return; }
+    if (note) note.text = text;
+    else { tasksList.unshift({ id: 'n' + Date.now().toString(36), text, status: 'todo', prio: 0 }); if (tasksFilter === 'done') tasksFilter = 'active'; }
+    tasksSave(); renderTasks();
+  };
+  row.appendChild(cancel); row.appendChild(ok);
+  tasksBox.appendChild(h); tasksBox.appendChild(ta); tasksBox.appendChild(row);
+  setTimeout(() => { try { ta.focus(); } catch (_) {} }, 60);
+}
+// Подтверждение удаления — экран внутри модалки (без нативного confirm: он блокирует WebView).
+function showTaskConfirm(text, onYes) {
+  if (!tasksBox) return;
+  tasksBox.innerHTML = '';
+  const msg = document.createElement('div'); msg.style.cssText = 'color:#e0af68;font-size:14px;line-height:1.5;margin-bottom:14px'; msg.textContent = text;
+  const row = document.createElement('div'); row.style.cssText = 'display:flex;gap:8px';
+  const no = document.createElement('button');
+  no.textContent = 'Отмена';
+  no.style.cssText = 'flex:1;background:#1c2530;color:#cfe3ee;border:1px solid #2a323d;border-radius:8px;padding:11px;font-size:14px';
+  no.onclick = () => renderTasks();
+  const yes = document.createElement('button');
+  yes.textContent = 'Удалить';
+  yes.style.cssText = 'flex:1;background:#5a1620;color:#fff;border:0;border-radius:8px;padding:11px;font-size:14px';
+  yes.onclick = () => onYes();
+  row.appendChild(no); row.appendChild(yes);
+  tasksBox.appendChild(msg); tasksBox.appendChild(row);
+}
+// Кнопка «✓ Задачи» в тулбаре → открыть модалку (всегда свежая загрузка списка).
+function showTasks() {
+  const b = document.createElement('div');
+  tasksBox = b;
+  tasksLoadedId = null; tasksError = '';
+  showOverlay('Задачи', b);
+  tasksLoad();
+}
+
 // ----------------------------------------------------------------- вход
 function showLogin(errText) {
   $('login').style.display = 'flex';
@@ -892,6 +1154,7 @@ function wireTermbar() {
     b.onclick = (e) => {
       e.preventDefault();
       if (b.dataset.key === 'side') { showProjects(); return; }   // проекты — верхней шторкой
+      if (b.dataset.key === 'tasks') { showTasks(); return; }     // задачи — модалкой
       if (b.dataset.key === 'refresh') { refreshScreen(); return; }
       if (b.dataset.key === 'kbd') { toggleKbd(); return; }
       if (b.dataset.key === 'pgup') { pageScroll(true); return; }
@@ -1397,6 +1660,10 @@ function connect() {
       if (h && h.onError) h.onError(m.error || '', h, m);
       else if (h && h.pre) h.pre.textContent = 'Ошибка истории: ' + (m.error || '');
       if (h) delete historyPending[m.reqId];
+    }
+    else if (m.t === 'tasks:data') {
+      const cb = tasksPending[m.reqId];
+      if (cb) { delete tasksPending[m.reqId]; try { cb(m.notes || [], m.id); } catch (_) {} }
     }
     else if (m.t === 'store:tree') { renderStore(m.path || '', m.entries || []); setStoreStatus(''); }
     else if (m.t === 'store:begin') {

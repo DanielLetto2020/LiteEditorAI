@@ -131,6 +131,8 @@ contextBridge.exposeInMainWorld('lite', {
     onOpenProject: (cb) => { const h = (_e, p) => cb(p && p.projId); ipcRenderer.on('remote:openProject', h); return () => ipcRenderer.removeListener('remote:openProject', h); }, // пульт → десктоп: открыть терминал проекта
     onCloseTab: (cb) => { const h = (_e, p) => cb(p && p.sid); ipcRenderer.on('remote:closeTab', h); return () => ipcRenderer.removeListener('remote:closeTab', h); }, // пульт → десктоп: закрыть вкладку
     onNewFolder: (cb) => { const h = (_e, p) => cb(p && p.name); ipcRenderer.on('remote:newFolder', h); return () => ipcRenderer.removeListener('remote:newFolder', h); }, // пульт → десктоп: создать папку
+    onNoteToTerminal: (cb) => { const h = (_e, p) => cb(p && p.projId, p && p.text); ipcRenderer.on('remote:noteToTerminal', h); return () => ipcRenderer.removeListener('remote:noteToTerminal', h); }, // пульт → десктоп: вставить задачу в терминал
+    onNotesChanged: (cb) => { const h = (_e, p) => cb(p && p.id); ipcRenderer.on('remote:notesChanged', h); return () => ipcRenderer.removeListener('remote:notesChanged', h); }, // пульт изменил задачи → освежить панель
     // Pairing: пульт просит одобрить устройство → показать модалку; ответ — approve/deny.
     onPairRequest: (cb) => { const h = (_e, p) => cb(p || {}); ipcRenderer.on('remote:pairRequest', h); return () => ipcRenderer.removeListener('remote:pairRequest', h); },
     pairApprove: (device) => ipcRenderer.send('remote:pairApprove', { device }),
