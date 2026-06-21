@@ -2757,7 +2757,9 @@ ipcMain.handle('git:status', async (_e, root) => {
   const top = await git(root, ['rev-parse', '--show-toplevel']);
   if (top == null) return { repo: false, files: {} };
   const base = top.trim();
-  const out = await git(root, ['status', '--porcelain', '--untracked-files=normal']);
+  // --untracked-files=all: перечислять КАЖДЫЙ новый файл по отдельности, а не схлопывать
+  // содержимое неотслеживаемой папки в один элемент-каталог (во вкладке «Изменения» нужны файлы).
+  const out = await git(root, ['status', '--porcelain', '--untracked-files=all']);
   const files = {};
   if (out) {
     for (const line of out.split('\n')) {
