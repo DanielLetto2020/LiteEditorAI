@@ -20,6 +20,8 @@ jobs:
             target: --linux deb
           - os: windows-latest
             target: --win zip
+          - os: macos-latest
+            target: --mac
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -48,5 +50,6 @@ jobs:
           files: |
             dist-release/*.deb
             dist-release/*.zip
+            dist-release/*.dmg
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

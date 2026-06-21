@@ -7,7 +7,7 @@
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache--2.0-green.svg)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/DanielLetto2020/LiteEditorAI?include_prereleases&sort=semver)](https://github.com/DanielLetto2020/LiteEditorAI/releases)
 [![Website](https://img.shields.io/badge/сайт-lite--editor--ai.ru-3d7bff.svg)](https://lite-editor-ai.ru)
-[![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20Windows-blue.svg)](#установка)
+[![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20Windows%20%7C%20macOS-blue.svg)](#установка)
 [![Built with Electron](https://img.shields.io/badge/Electron-42-47848F.svg?logo=electron&logoColor=white)](https://www.electronjs.org/)
 [![Status: alpha](https://img.shields.io/badge/status-alpha-orange.svg)](#статус)
 
@@ -125,6 +125,15 @@ sudo apt install ./LiteEditorAI_*.deb
 Скачай **portable**-архив `LiteEditorAI_*-win.zip`, распакуй в любую папку и запусти **`LiteEditorAI.exe`**.
 Установка не нужна. Приложение пока без цифровой подписи — SmartScreen может предупредить:
 «Подробнее» → «Выполнить в любом случае».
+
+### macOS (Apple Silicon / Intel)
+Скачай `.dmg` под свой процессор: **`-arm64`** для Apple Silicon (M1–M4), **`-x64`** для Intel.
+Открой образ и перетащи **LiteEditorAI** в «Программы». Сборка пока без подписи Apple — при первом запуске
+Gatekeeper может сказать, что приложение «не удаётся проверить». Сними карантин одной командой:
+```bash
+xattr -dr com.apple.quarantine /Applications/LiteEditorAI.app
+```
+После этого приложение запускается обычным двойным кликом.
 
 ## Сборка из исходников
 

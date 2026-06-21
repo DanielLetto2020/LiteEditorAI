@@ -1,6 +1,6 @@
 {
   "name": "liteeditor-ai",
-  "version": "1.0.188-alpha",
+  "version": "1.0.189-alpha",
   "description": "Lightweight editor for working with AI coding agents in the terminal",
   "main": "main.js",
   "author": "Максим Кузьминский <i@m-letto.ru>",
@@ -20,6 +20,7 @@
     "install-desktop": "node scripts/install-desktop.js",
     "dist:linux": "node build.js && electron-builder --linux deb",
     "dist:win": "node build.js && electron-builder --win zip",
+    "dist:mac": "node build.js && electron-builder --mac",
     "release": "node scripts/release.js"
   },
   "dependencies": {
@@ -124,6 +125,29 @@
       "icon": "assets/icon.png",
       "signAndEditExecutable": true,
       "asar": false
+    },
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        }
+      ],
+      "category": "public.app-category.developer-tools",
+      "icon": "assets/icon.png",
+      "identity": null,
+      "entitlements": "assets/entitlements.mac.plist",
+      "entitlementsInherit": "assets/entitlements.mac.plist"
     }
   }
 }

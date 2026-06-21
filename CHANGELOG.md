@@ -3,6 +3,16 @@
 Все заметные изменения LiteEditorAI. Формат — [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/),
 нумерация — [SemVer](https://semver.org/lang/ru/). Проект в стадии **alpha**.
 
+## [1.0.189] — 2026-06-21
+
+Появились официальные сборки под **macOS** (Apple Silicon и Intel).
+
+### ✨ Добавлено
+- **Инсталлеры под macOS.** В каждый релиз теперь входят `.dmg` и `.zip` для двух архитектур: `arm64`
+  (Apple Silicon, M1–M4) и `x64` (Intel). CI собирает их на `macos-latest` — нативный `node-pty`, рабочий
+  терминал. Сборки пока без подписи Apple: при первом запуске нужно снять карантин
+  (`xattr -dr com.apple.quarantine /Applications/LiteEditorAI.app`) — инструкция в README.
+
 ## [1.0.188] — 2026-06-20
 
 Сервисный релиз безопасности: закрыты все известные уязвимости в зависимостях.
@@ -716,6 +726,7 @@ AGENTS.md как граф на канве), и **цветной пульт** —
 - Первые публичные alpha-сборки: терминал на проект (xterm + node-pty), вивер кода (CodeMirror), дерево
   файлов, дистрибуция под Linux (`.deb`) и Windows (portable `.zip`) через GitHub Actions.
 
+[1.0.189]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.0.189
 [1.0.188]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.0.188
 [1.0.187]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.0.187
 [1.0.182]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.0.182
