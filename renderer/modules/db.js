@@ -163,7 +163,9 @@ export function initDb(host) {
       sshWrap.style.display = (t !== 'sqlite' && sshOn.checked) ? '' : 'none';
       sslInsLabel.style.display = (t !== 'sqlite' && ssl.checked) ? '' : 'none';
     };
-    typeSel.onchange = () => { if (!port.value || port.value == DB_DEF_PORT[c.type]) port.value = DB_DEF_PORT[typeSel.value] || ''; syncType(); };
+    // Replace the port only when it's empty or still a known default (5432/3306) — keep custom ports.
+    const DEF_PORTS = new Set(Object.values(DB_DEF_PORT).filter(Boolean));
+    typeSel.onchange = () => { if (!port.value || DEF_PORTS.has(+port.value)) port.value = DB_DEF_PORT[typeSel.value] || ''; syncType(); };
     sshOn.onchange = syncType; syncType();
     // collect form → conn object (passwords only if typed)
     const collect = () => {
@@ -225,7 +227,7 @@ export function initDb(host) {
     for (const t of sch.tables) {
       const r = el('div', 'db-table-row clickable');
       r.append(icon(t.view ? 'eye' : 'box', 13), el('span', 'db-table-name', t.name));
-      r.onclick = () => { dbTableSel = { schema: sch.name, table: t.name, view: t.view, page: 0 }; renderDbPanel(); };
+      r.onclick = () => { dbTableSel = { schema: sch.name, table: t.name, page: 0 }; renderDbPanel(); };
       list.appendChild(r);
     }
     head.onclick = () => {
@@ -240,6 +242,7 @@ export function initDb(host) {
   const DB_PAGE = 200;
   async function renderDbTableView(view) {
     const sel = dbTableSel;
+    dbLastResult = null; // drop the previous table's data so a failed load can't be exported by mistake
     view.innerHTML = '';
     const bar = el('div', 'db-tablebar');
     const back = iconBtn('drow-act', 'chevron-left', 'К объектам', 15); back.onclick = () => { dbTableSel = null; renderDbPanel(); };
@@ -255,10 +258,14 @@ export function initDb(host) {
     if (r.error) { grid.appendChild(el('div', 'docker-err', r.error)); return; }
     dbLastResult = r;
     grid.appendChild(dbGrid(r.columns, r.rows));
-    const total = r.total != null && !Number.isNaN(r.total) ? r.total : '?';
-    pager.appendChild(el('span', 'db-pageinfo', `${r.rows.length ? sel.page * DB_PAGE + 1 : 0}–${sel.page * DB_PAGE + r.rows.length} из ${total}`));
+    const totalNum = r.total != null && !Number.isNaN(r.total) ? r.total : null;
+    pager.appendChild(el('span', 'db-pageinfo', `${r.rows.length ? sel.page * DB_PAGE + 1 : 0}–${sel.page * DB_PAGE + r.rows.length} из ${totalNum != null ? totalNum : '?'}`));
     const prev = iconBtn('drow-act', 'chevron-left', 'Назад', 13); prev.disabled = sel.page <= 0; prev.onclick = () => { if (sel.page > 0) { sel.page--; renderDbPanel(); } };
-    const next = iconBtn('drow-act', 'chevron-right', 'Вперёд', 13); next.disabled = r.rows.length < DB_PAGE; next.onclick = () => { sel.page++; renderDbPanel(); };
+    // Last page either when this page is short, or (total known) when the next offset is past the end —
+    // avoids stepping onto an empty trailing page when the row count is an exact multiple of DB_PAGE.
+    const next = iconBtn('drow-act', 'chevron-right', 'Вперёд', 13);
+    next.disabled = r.rows.length < DB_PAGE || (totalNum != null && (sel.page + 1) * DB_PAGE >= totalNum);
+    next.onclick = () => { sel.page++; renderDbPanel(); };
     pager.append(prev, next);
   }
 
@@ -317,6 +324,7 @@ export function initDb(host) {
     saveDbUi();
     const res = $('#db-sql-result'); if (!res) return;
     res.innerHTML = '<div class="git-loading">Выполняю…</div>';
+    dbLastResult = null; // a failed/aborted run must not leave the prior result exportable
     const seq = ++dbRenderSeq;
     const r = await lite.db.query(dbActiveId, text);
     if (seq !== dbRenderSeq || !document.getElementById('db-sql-result')) return;
