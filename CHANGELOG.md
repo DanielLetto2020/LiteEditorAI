@@ -3,6 +3,15 @@
 Все заметные изменения LiteEditorAI. Формат — [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/),
 нумерация — [SemVer](https://semver.org/lang/ru/). Проект в стадии **alpha**.
 
+## [1.0.196] — 2026-06-21
+
+Исправление сборки под **macOS на процессорах Intel**.
+
+### 🐛 Исправлено
+- **Терминал на Intel-маках.** В сборке для Intel (x64) терминал не запускался: при сборке обеих архитектур
+  на одном раннере нативный компонент терминала попадал в Intel-пакет в варианте под Apple Silicon. Теперь
+  каждая архитектура собирается на своём раннере — терминал работает и на Intel, и на Apple Silicon.
+
 ## [1.0.195] — 2026-06-21
 
 Доработка встроенного модуля **«Базы данных»** (PostgreSQL / MySQL / SQLite) к релизу: устойчивость к
@@ -796,6 +805,7 @@ AGENTS.md как граф на канве), и **цветной пульт** —
 - Первые публичные alpha-сборки: терминал на проект (xterm + node-pty), вивер кода (CodeMirror), дерево
   файлов, дистрибуция под Linux (`.deb`) и Windows (portable `.zip`) через GitHub Actions.
 
+[1.0.196]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.0.196
 [1.0.195]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.0.195
 [1.0.194]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.0.194
 [1.0.193]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.0.193

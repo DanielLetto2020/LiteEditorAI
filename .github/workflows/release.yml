@@ -20,8 +20,13 @@ jobs:
             target: --linux deb
           - os: windows-latest
             target: --win zip
-          - os: macos-latest
-            target: --mac
+          # macOS собираем ПО-АРХИТЕКТУРНО на РАЗНЫХ раннерах: один arm64-раннер не пересобирает
+          # нативный node-pty под x64 → в Intel-сборку попадал arm64-бинарь и терминал не запускался
+          # (v1.0.195). Каждый раннер делает `npm ci` под свою арх → pty.node/spawn-helper верной arch.
+          - os: macos-14            # Apple Silicon (arm64)
+            target: --mac --arm64
+          - os: macos-13            # Intel (x64)
+            target: --mac --x64
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
