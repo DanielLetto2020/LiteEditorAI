@@ -364,6 +364,9 @@ html, body {
 }
 .tree-row:hover { background: var(--hover); }
 .tree-row.open { background: var(--accent-soft); color: #fff; }
+/* drag-and-drop: подсветка папки-приёмника и корня дерева */
+.tree-row.drag-over { background: var(--accent-soft); box-shadow: inset 0 0 0 1px var(--accent); }
+#tree.drag-over-root { box-shadow: inset 0 0 0 2px var(--accent); border-radius: 4px; }
 .tree-chev { width: 10px; flex: 0 0 10px; color: var(--text-mute); font-size: 9px; }
 .tree-row .ti { flex: 0 0 14px; }
 .tree-name { overflow: hidden; text-overflow: ellipsis; }

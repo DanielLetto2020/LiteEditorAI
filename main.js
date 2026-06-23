@@ -1880,6 +1880,52 @@ ipcMain.handle('fs:trash', async (_e, target) => {
   try { await shell.trashItem(target); return { ok: true }; }
   catch (err) { return { error: String(err.message || err) }; }
 });
+// Перемещение узла внутри дерева (drag-and-drop): src → destDir/<имя>. Те же грабли, что у rename
+// (цель существует, EXDEV cross-device), плюс запрет затащить папку внутрь себя/своего потомка.
+ipcMain.handle('fs:move', async (_e, { src, destDir }) => {
+  try {
+    if (!src || !destDir) return { error: 'нет пути' };
+    if (!fs.existsSync(src)) return { error: 'источник не найден' };
+    if (!fs.statSync(destDir).isDirectory()) return { error: 'цель не папка' };
+    const base = path.basename(src);
+    const dest = path.join(destDir, base);
+    if (path.dirname(src) === destDir) return { path: src }; // уже в этой папке — no-op
+    const norm = (p) => p.replace(/[\\/]+$/, '');
+    if (fs.statSync(src).isDirectory() && (norm(destDir) === norm(src) || norm(destDir).startsWith(norm(src) + path.sep)))
+      return { error: 'нельзя переместить папку внутрь себя' };
+    if (fs.existsSync(dest)) return { error: `в папке уже есть «${base}»` };
+    try { await fs.promises.rename(src, dest); }
+    catch (e) {
+      if (e.code !== 'EXDEV') throw e;
+      // другое устройство: rename невозможен → копируем и удаляем оригинал; при сбое копии чистим частичный dest
+      try { await fs.promises.cp(src, dest, { recursive: true }); }
+      catch (ce) { await fs.promises.rm(dest, { recursive: true, force: true }).catch(() => {}); throw ce; }
+      await fs.promises.rm(src, { recursive: true, force: true });
+    }
+    return { path: dest };
+  } catch (err) { return { error: String(err.message || err) }; }
+});
+// Втянуть файл/папку извне (drag из файлового менеджера ОС) → копией в destDir. Имя-коллизия →
+// добавляем « (2)», « (3)»… (как в проводниках), чтобы не перезаписать существующее.
+ipcMain.handle('fs:import', async (_e, { src, destDir }) => {
+  try {
+    if (!src || !destDir) return { error: 'нет пути' };
+    if (!fs.existsSync(src)) return { error: 'источник не найден' };
+    if (!fs.statSync(destDir).isDirectory()) return { error: 'цель не папка' };
+    const isDir = fs.statSync(src).isDirectory();
+    const base = path.basename(src);
+    let dest = path.join(destDir, base);
+    if (fs.existsSync(dest)) {
+      const ext = isDir ? '' : path.extname(base);     // у каталога точка — часть имени, не расширение
+      const stem = base.slice(0, base.length - ext.length);
+      let n = 2; while (fs.existsSync(path.join(destDir, `${stem} (${n})${ext}`))) n++;
+      dest = path.join(destDir, `${stem} (${n})${ext}`);
+    }
+    if (isDir) await fs.promises.cp(src, dest, { recursive: true });
+    else await fs.promises.copyFile(src, dest);
+    return { path: dest, name: path.basename(dest) };
+  } catch (err) { return { error: String(err.message || err) }; }
+});
 // binary file → data: URL (for image preview under our CSP, which blocks file://)
 const IMG_MIME = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', svg: 'image/svg+xml', bmp: 'image/bmp', ico: 'image/x-icon', avif: 'image/avif' };
 ipcMain.handle('fs:readDataUrl', async (_e, file) => {
@@ -3196,6 +3242,38 @@ ipcMain.handle('shell:openInBrowser', async (_e, target) => {
     await shell.openExternal(url);
     return { ok: true };
   } catch (e) { return { error: String(e) }; }
+});
+// Показать файл в системном файловом менеджере с выделением (reveal-in-folder, как в IDE).
+// Отличается от shell:openPath: тот открыл бы файл приложением по умолчанию, а здесь — открываем
+// каталог и подсвечиваем сам файл (shell.showItemInFolder).
+ipcMain.handle('shell:showItemInFolder', (_e, target) => {
+  try {
+    const p = String(target == null ? '' : target);
+    if (!p || !fs.existsSync(p)) return { ok: false, error: 'файл не найден' };
+    shell.showItemInFolder(p);
+    return { ok: true };
+  } catch (e) { return { ok: false, error: String(e && e.message || e) }; }
+});
+// Положить сам ФАЙЛ в системный буфер обмена, чтобы его можно было вставить (Ctrl+V) в файловом
+// менеджере как копию. Нативного «copy file» в Electron нет — используем форматы буфера, понятные
+// файловым менеджерам: Linux/GNOME (Nautilus) — x-special/gnome-copied-files, macOS — public.file-url.
+// На Windows и прочих такого формата нет → кладём путь текстом (mode:'path'), фронт честно сообщает.
+ipcMain.handle('shell:copyFile', (_e, target) => {
+  try {
+    const p = String(target == null ? '' : target);
+    if (!p || !fs.existsSync(p)) return { ok: false, error: 'файл не найден' };
+    const fileUrl = require('url').pathToFileURL(p).href;
+    if (process.platform === 'linux') {
+      clipboard.writeBuffer('x-special/gnome-copied-files', Buffer.from('copy\n' + fileUrl, 'utf8'));
+      return { ok: true, mode: 'file' };
+    }
+    if (process.platform === 'darwin') {
+      clipboard.writeBuffer('public.file-url', Buffer.from(fileUrl, 'utf8'));
+      return { ok: true, mode: 'file' };
+    }
+    clipboard.writeText(p);
+    return { ok: true, mode: 'path' };
+  } catch (e) { return { ok: false, error: String(e && e.message || e) }; }
 });
 ipcMain.on('clipboard:write', (_e, text) => clipboard.writeText(String(text == null ? '' : text)));
 ipcMain.handle('clipboard:read', () => clipboard.readText());

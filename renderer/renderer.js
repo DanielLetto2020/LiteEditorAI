@@ -40,7 +40,7 @@ import { initTools } from './modules/tools.js';
 import { initOpenRouter } from './modules/openrouter.js';
 import { initExtensions } from './modules/extensions.js';
 
-const APP_VERSION = 'alpha v1.0.198';
+const APP_VERSION = 'alpha v1.0.199';
 const GUTTER = 5;
 const SCRATCH_ID = '__scratch__'; // префикс id системных терминалов (домашняя папка), не привязаны к проектам
 const isScratch = (id) => typeof id === 'string' && id.startsWith(SCRATCH_ID);
@@ -2170,6 +2170,60 @@ async function renderTree(proj) {
   root.innerHTML = '';
   await buildDir(proj.path, root, 0);
 }
+// ---- drag-and-drop в дереве: перемещение узлов (move) + втягивание файлов извне (copy из ОС)
+let dragSrcPath = null;   // путь перетаскиваемого узла (внутренний drag дерево→дерево); у внешнего drag из ОС — null
+let dropHLRow = null;     // подсвеченная папка-приёмник
+function setDropHL(row) { if (dropHLRow && dropHLRow !== row) dropHLRow.classList.remove('drag-over'); dropHLRow = row; if (row) row.classList.add('drag-over'); }
+function clearDropHL() { if (dropHLRow) { dropHLRow.classList.remove('drag-over'); dropHLRow = null; } $('#tree').classList.remove('drag-over-root'); }
+// Любую строку (файл/папку) можно «взять» мышью.
+function makeRowDraggable(row, srcPath) {
+  row.draggable = true;
+  row.addEventListener('dragstart', (e) => {
+    dragSrcPath = srcPath;
+    e.dataTransfer.effectAllowed = 'copyMove';
+    try { e.dataTransfer.setData('text/plain', srcPath); } catch (_) {}
+    e.stopPropagation();
+  });
+  row.addEventListener('dragend', () => { dragSrcPath = null; clearDropHL(); });
+}
+// Папка-строка — приёмник: внутренний move кладёт узел внутрь; внешний drop из ОС — копирует файлы внутрь.
+function makeRowDropTarget(row, destDir) {
+  row.addEventListener('dragover', (e) => {
+    e.preventDefault(); e.stopPropagation();
+    e.dataTransfer.dropEffect = dragSrcPath ? 'move' : 'copy';
+    setDropHL(row);
+  });
+  row.addEventListener('dragleave', (e) => { if (e.target === row && dropHLRow === row) clearDropHL(); });
+  row.addEventListener('drop', (e) => { e.preventDefault(); e.stopPropagation(); handleTreeDrop(e, destDir); });
+}
+async function handleTreeDrop(e, destDir) {
+  clearDropHL();
+  if (!destDir) return;
+  const files = e.dataTransfer && e.dataTransfer.files;
+  if (files && files.length) {            // внешний drop из файлового менеджера ОС → копируем внутрь
+    dragSrcPath = null;
+    const srcs = Array.from(files).map((f) => f.path || lite.pathForFile(f)).filter(Boolean);
+    let ok = 0;
+    for (const src of srcs) {
+      const r = await lite.fs.importPath(src, destDir);
+      if (r && r.error) toast(r.error, { kind: 'err' }); else ok++;
+    }
+    if (ok) { expandedDirs.add(destDir); await refreshTree(); toast(ok > 1 ? `Добавлено файлов: ${ok}` : 'Файл добавлен'); }
+    return;
+  }
+  const src = dragSrcPath; dragSrcPath = null;     // внутренний move дерево→дерево
+  if (!src) return;
+  if (src === destDir || dirName(src) === destDir) return;   // сам на себя / та же папка — тихий no-op
+  if (pathInside(destDir, src)) { toast('Нельзя переместить папку внутрь себя', { kind: 'err' }); return; }
+  const r = await lite.fs.move(src, destDir);
+  if (r && r.error) { toast(r.error, { kind: 'err' }); return; }
+  if (currentFile && pathInside(currentFile, src) && r.path) {   // ремап открытого файла после переноса
+    currentFile = r.path + currentFile.slice(src.length);
+    $('#viewer-filename').textContent = baseName(currentFile);
+  }
+  expandedDirs.add(destDir);
+  await refreshTree();
+}
 async function buildDir(dir, container, depth) {
   const entries = await lite.fs.readDir(dir);
   if (!Array.isArray(entries)) return;
@@ -2200,6 +2254,7 @@ async function buildDir(dir, container, depth) {
         else { expandedDirs.add(ent.path); await expand(); }
       });
       row.addEventListener('contextmenu', (e) => { e.preventDefault(); e.stopPropagation(); showTreeMenu(e.clientX, e.clientY, { name: ent.name, path: ent.path, dir: true }); });
+      makeRowDraggable(row, ent.path); makeRowDropTarget(row, ent.path); // папку можно тащить и в неё можно класть
       container.appendChild(row); container.appendChild(childBox);
       if (expandedDirs.has(ent.path)) await expand(); // restore after a live refresh
     } else {
@@ -2218,6 +2273,7 @@ async function buildDir(dir, container, depth) {
         guardDirty(() => openFile(ent.path));
       });
       row.addEventListener('contextmenu', (e) => { e.preventDefault(); e.stopPropagation(); showTreeMenu(e.clientX, e.clientY, { name: ent.name, path: ent.path, dir: false }); });
+      makeRowDraggable(row, ent.path); makeRowDropTarget(row, dirName(ent.path)); // тащить файл; drop на него = в его папку
       container.appendChild(row);
     }
   }
@@ -2287,7 +2343,22 @@ function showTreeMenu(x, y, ent) {
     dd.appendChild(menuRow('trash', 'Удалить…', () => { closeMenus(); treeDelete(ent); }, 'danger'));
   }
   dd.appendChild(menuRow('copy', 'Копировать путь', () => { closeMenus(); lite.copyText(ent.path); toast('Путь скопирован'); }));
+  dd.appendChild(menuRow('file', 'Копировать файл', () => { closeMenus(); copyEntryFile(ent.path); }));
+  dd.appendChild(menuRow('folder', 'Показать в проводнике', () => { closeMenus(); revealEntry(ent.path); }));
   placeMenu(dd, x, y);
+}
+// Положить файл/папку в системный буфер обмена ОС — вставить как файл в файловом менеджере.
+async function copyEntryFile(p) {
+  const r = await lite.copyFile(p);
+  if (!r || r.ok === false) { toast((r && r.error) || 'Не удалось скопировать файл', { kind: 'err' }); return; }
+  toast(r.mode === 'path'
+    ? 'Скопирован путь (копирование файла не поддержано этой ОС)'
+    : `«${baseName(p)}» в буфере — вставьте в файловом менеджере`);
+}
+// Показать файл/папку в системном файловом менеджере с выделением (reveal-in-folder).
+async function revealEntry(p) {
+  const r = await lite.showItemInFolder(p);
+  if (!r || r.ok === false) toast((r && r.error) || 'Не удалось открыть папку', { kind: 'err' });
 }
 
 // ---------------------------------------------------------------- gutters (resize)
@@ -3167,6 +3238,23 @@ function init() {
     e.preventDefault();
     const p = activeProject(); if (p) showTreeMenu(e.clientX, e.clientY, { name: p.name, path: p.path, dir: true, root: true });
   });
+  // Корневая зона drop: пустая область дерева = корень проекта (строки-папки перехватывают событие сами).
+  $('#tree').addEventListener('dragover', (e) => {
+    const p = activeProject(); if (!p) return;
+    e.preventDefault(); e.stopPropagation();
+    e.dataTransfer.dropEffect = dragSrcPath ? 'move' : 'copy';
+    setDropHL(null); $('#tree').classList.add('drag-over-root');
+  });
+  $('#tree').addEventListener('dragleave', (e) => { if (e.target === $('#tree')) $('#tree').classList.remove('drag-over-root'); });
+  $('#tree').addEventListener('drop', (e) => {
+    const p = activeProject(); if (!p) return;
+    e.preventDefault(); e.stopPropagation();
+    handleTreeDrop(e, p.path);
+  });
+  // Страховка от залипшей подсветки: внешний drag из ОС не шлёт dragend, и если его бросили мимо/вне окна,
+  // рамка приёмника могла бы остаться. Снимаем её при выходе курсора за окно и на любом drop.
+  window.addEventListener('drop', clearDropHL);
+  document.addEventListener('dragleave', (e) => { if (!e.relatedTarget) clearDropHL(); });
   $('#term-clear').addEventListener('click', () => clearTerminal());
   $('#term-restart').addEventListener('click', () => restartTerminal());
   $('#attention-badge').addEventListener('click', () => {
