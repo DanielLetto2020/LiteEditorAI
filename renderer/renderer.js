@@ -10,8 +10,8 @@ import { CanvasAddon } from '@xterm/addon-canvas';
 import { Unicode11Addon } from '@xterm/addon-unicode11';
 import '@xterm/xterm/css/xterm.css';
 
-import { EditorView, keymap, lineNumbers, highlightActiveLine, drawSelection, Decoration } from '@codemirror/view';
-import { EditorState, Compartment, StateField, StateEffect } from '@codemirror/state';
+import { EditorView, keymap, lineNumbers, highlightActiveLine, drawSelection, Decoration, gutter, GutterMarker } from '@codemirror/view';
+import { EditorState, Compartment, StateField, StateEffect, RangeSet } from '@codemirror/state';
 import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands';
 import { syntaxHighlighting, defaultHighlightStyle, indentOnInput, bracketMatching } from '@codemirror/language';
 import { search, searchKeymap, highlightSelectionMatches, openSearchPanel } from '@codemirror/search';
@@ -40,7 +40,7 @@ import { initTools } from './modules/tools.js';
 import { initOpenRouter } from './modules/openrouter.js';
 import { initExtensions } from './modules/extensions.js';
 
-const APP_VERSION = 'alpha v1.0.199';
+const APP_VERSION = 'alpha v1.0.200';
 const GUTTER = 5;
 const SCRATCH_ID = '__scratch__'; // префикс id системных терминалов (домашняя папка), не привязаны к проектам
 const isScratch = (id) => typeof id === 'string' && id.startsWith(SCRATCH_ID);
@@ -1587,7 +1587,7 @@ function makeEditor() {
   const state = EditorState.create({
     doc: '',
     extensions: [
-      lineNumbers(), highlightActiveLine(), drawSelection(), history(),
+      lineNumbers(), gitGutterField, gitGutterExt, highlightActiveLine(), drawSelection(), history(),
       indentOnInput(), bracketMatching(), highlightSelectionMatches(), search({ top: true }),
       syntaxHighlighting(defaultHighlightStyle, { fallback: true }), oneDark,
       minimapComp.of(settings.minimap ? minimapExt : []),
@@ -1612,6 +1612,68 @@ const marksField = StateField.define({
   },
   provide: (f) => EditorView.decorations.from(f),
 });
+// ---- git-маркеры в гаттере вивера: цветная полоса слева для строк, изменённых относительно HEAD.
+// Данные берём из `git diff HEAD -- file` (тот же источник, что diff-режим), парсим ханки в пер-строчные метки.
+const setGitGutterEffect = StateEffect.define(); // value: [{ line, type }] — line 1-based, type: added|modified|deleted
+class GitGutterMarker extends GutterMarker {
+  constructor(type) { super(); this.type = type; }
+  eq(o) { return o.type === this.type; }
+  toDOM() { const d = document.createElement('div'); d.className = 'cm-git-mark git-' + this.type; return d; }
+}
+const gitGutterField = StateField.define({
+  create: () => RangeSet.empty,
+  update(set, tr) {
+    set = set.map(tr.changes);
+    for (const e of tr.effects) {
+      if (!e.is(setGitGutterEffect)) continue;
+      const doc = tr.state.doc, ranges = [];
+      for (const m of e.value) {
+        if (m.line >= 1 && m.line <= doc.lines) ranges.push(new GitGutterMarker(m.type).range(doc.line(m.line).from));
+      }
+      ranges.sort((a, b) => a.from - b.from);
+      set = RangeSet.of(ranges, true);
+    }
+    return set;
+  },
+});
+const gitGutterExt = gutter({
+  class: 'cm-git-gutter',
+  markers: (view) => view.state.field(gitGutterField),
+});
+// Unified diff → пер-строчные метки для НОВОЙ версии файла (что лежит в редакторе).
+// Блок «-…+…» = modified; одиночные «+» = added; «-» без последующих «+» = deleted (треугольник на стыке).
+function parseDiffToMarks(diff) {
+  const marks = [];
+  if (!diff) return marks;
+  let newLine = 0, del = 0;
+  const flushDel = (at) => { if (del > 0) { marks.push({ line: Math.max(1, at), type: 'deleted' }); del = 0; } };
+  for (const ln of diff.split('\n')) {
+    if (ln.startsWith('@@')) {
+      flushDel(newLine);
+      const m = ln.match(/@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
+      if (m) newLine = parseInt(m[1], 10);
+      del = 0; continue;
+    }
+    if (ln.startsWith('+++') || ln.startsWith('---') || ln.startsWith('diff ') || ln.startsWith('index ') ||
+        ln.startsWith('new file') || ln.startsWith('deleted file') || ln.startsWith('\\') || ln.startsWith('Binary')) continue;
+    const c = ln[0];
+    if (c === '+') { marks.push({ line: newLine, type: del > 0 ? 'modified' : 'added' }); if (del > 0) del--; newLine++; }
+    else if (c === '-') { del++; }
+    else { flushDel(newLine); newLine++; }            // контекст (' ') или хвостовая пустая строка
+  }
+  flushDel(newLine);
+  return marks;
+}
+// Пересчитать git-гаттер для открытого файла (fire-and-forget; гонки гасим сверкой currentFile).
+async function updateGitGutter(file) {
+  if (!editor) return;
+  if (!file || previewKind(file) === 'image') { clearGitGutter(); return; }
+  const p = activeProject(); if (!p) { clearGitGutter(); return; }
+  let res; try { res = await lite.git.fileDiff(p.path, file); } catch (_) { return; }
+  if (file !== currentFile) return;                   // переключили файл за время await
+  editor.dispatch({ effects: setGitGutterEffect.of(parseDiffToMarks(res && res.diff ? res.diff : '')) });
+}
+function clearGitGutter() { if (editor) editor.dispatch({ effects: setGitGutterEffect.of([]) }); }
 // Переиспользуемая фабрика CodeMirror для модулей (merge-модалка git): та же тема/подсветка, что у вивера,
 // но изолированный инстанс. opts: { doc, readOnly, language, onChange } → { view, getValue, setMarks, scrollToLine, destroy }.
 function createCodeEditor(parent, opts = {}) {
@@ -1670,12 +1732,13 @@ async function openFile(filePath, line) {
   const seq = ++openSeq;
   if (diffMode) exitDiff(false);
   exitPreview();
+  hideReloadBar();
   const kind = previewKind(filePath);
 
   if (kind === 'image') { // binary — no editable source
     currentFile = filePath;
     commitOpenUI(filePath, kind);
-    setEditorText('', []); markDirty(false);
+    setEditorText('', []); markDirty(false); clearGitGutter();
     await showPreview('image', filePath, '');
     return;
   }
@@ -1686,6 +1749,7 @@ async function openFile(filePath, line) {
   commitOpenUI(filePath, kind);
   setEditorText(res.content, languageFor(filePath));
   markDirty(false);
+  updateGitGutter(filePath);
   // md/html по умолчанию открываются рендером; но если явно просили строку (переход из аудита/поиска) —
   // показываем исходник и прыгаем на строку, иначе номер строки потерялся бы в превью.
   if (kind && !(line && line > 0)) await showPreview(kind, filePath, res.content);
@@ -1796,6 +1860,8 @@ async function reloadCurrentFile() {
   const head = editor.state.selection.main.head;
   setEditorText(res.content, languageFor(currentFile));
   markDirty(false);
+  hideReloadBar();
+  updateGitGutter(currentFile);
   try { editor.dispatch({ selection: { anchor: Math.min(head, editor.state.doc.length) } }); } catch (_) {}
   if (previewMode && kind) await showPreview(kind, currentFile, res.content); // перерисовать рендер md/html
 }
@@ -1814,6 +1880,10 @@ function setEditorText(text, lang) {
   loadingDoc = false;
 }
 function markDirty(v) { dirty = v; $('#viewer-dirty').classList.toggle('show', v); }
+// Плашка-конфликт: файл изменился на диске, пока у нас есть несохранённые правки (агент тронул открытый файл).
+// Постоянная (в отличие от тоста) — пока пользователь не решит: перечитать с диска или оставить своё.
+function showReloadBar() { $('#viewer-reload-bar').classList.remove('hidden'); }
+function hideReloadBar() { $('#viewer-reload-bar').classList.add('hidden'); }
 // Returns true when the file is safely on disk (or there was nothing to save), false on a
 // failed write. Callers that gate a destructive next step (guardDirty) must NOT proceed on
 // false, or the unsaved edits are lost.
@@ -1822,7 +1892,7 @@ async function saveCurrent() {
   let res;
   try { res = await lite.fs.writeFile(currentFile, editor.state.doc.toString()); }
   catch (e) { res = { error: String(e) }; }
-  if (res && res.ok) { markDirty(false); return true; }
+  if (res && res.ok) { markDirty(false); hideReloadBar(); updateGitGutter(currentFile); return true; }
   toast(`Не удалось сохранить: ${(res && res.error) || 'ошибка записи'}`, { kind: 'err', ttl: 6000 });
   return false;
 }
@@ -1871,6 +1941,9 @@ async function loadGitStatus(proj) {
   if (!proj) { gitFiles = {}; return; }
   const res = await lite.git.status(proj.path);
   gitFiles = res && res.files ? res.files : {};
+  // освежить гаттер после внешних git-операций (коммит/checkout → tree refresh); только при чистом буфере —
+  // иначе перерисовали бы метки по диск-vs-HEAD, не совпадающие с несохранёнными правками в редакторе
+  if (currentFile && !dirty) updateGitGutter(currentFile);
 }
 function gitClassFor(p) {
   const c = gitFiles[p];
@@ -1892,6 +1965,8 @@ function clearViewer() {
   exitPreview();
   currentFile = null;
   setEditorText('', []);
+  clearGitGutter();
+  hideReloadBar();
   $('#viewer-filename').textContent = '—';
   markDirty(false);
   document.querySelectorAll('.tree-row.open').forEach((r) => r.classList.remove('open'));
@@ -3194,8 +3269,8 @@ function init() {
       if (viewerOpen) renderTree(p);
       if (currentFile && files.includes(currentFile)) {
         if (diffMode) reloadCurrentDiff();              // в режиме диффа — обновляем дифф (редактор не трогаем)
-        else if (!dirty) reloadCurrentFile();
-        else toast(`«${baseName(currentFile)}» изменён на диске`, { actionLabel: 'Перечитать', action: reloadCurrentFile, ttl: 8000 });
+        else if (!dirty) reloadCurrentFile();           // нет правок — молча перечитываем (вивер всегда = диск)
+        else showReloadBar();                           // есть несохранённые правки — постоянная плашка-конфликт
       }
     }, 120);
   });
@@ -3210,6 +3285,8 @@ function init() {
   $('#viewer-minimap').addEventListener('click', toggleMinimap);
   $('#viewer-minimap').classList.toggle('on', settings.minimap);
   $('#viewer-close').addEventListener('click', () => setViewerOpen(false));
+  $('#viewer-reload-apply').addEventListener('click', () => { hideReloadBar(); reloadCurrentFile(); });
+  $('#viewer-reload-dismiss').addEventListener('click', () => hideReloadBar());
   $('#git-close').addEventListener('click', () => Git.setOpen(false));
   $('#git-refresh').addEventListener('click', () => { if (Git.isOpen()) Git.renderPanel(activeProject()); });
   $('#audit-close').addEventListener('click', () => Audit.setOpen(false));

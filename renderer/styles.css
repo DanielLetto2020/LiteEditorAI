@@ -349,6 +349,22 @@ html, body {
 #editor .cm-editor { height: 100%; background: transparent; }
 #editor .cm-scroller { font-family: "JetBrains Mono", "Fira Code", "Cascadia Code", Consolas, monospace; font-size: var(--editor-fs, 13px); }
 #editor .cm-scroller::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.16); }
+/* git-маркеры в гаттере: тонкая цветная полоса справа от номеров строк (изменения vs HEAD) */
+#editor .cm-git-gutter { width: 3px; padding: 0; background: transparent; }
+#editor .cm-git-gutter .cm-gutterElement { padding: 0; }
+.cm-git-mark { width: 3px; height: 100%; min-height: 1em; box-sizing: border-box; }
+.cm-git-mark.git-added { background: var(--add); }
+.cm-git-mark.git-modified { background: var(--warn); }
+/* удаление: маленький треугольник на стыке строк, где что-то было вырезано */
+.cm-git-mark.git-deleted { width: 0; height: 0; background: none;
+  border-left: 4px solid var(--danger); border-top: 3px solid transparent; border-bottom: 3px solid transparent; }
+/* плашка-конфликт авто-reload (файл изменён на диске + есть несохранённые правки) */
+.reload-bar { display: flex; align-items: center; gap: 8px; padding: 6px 10px;
+  background: rgba(224,175,104,0.14); border-bottom: 1px solid var(--border); color: var(--text); font-size: 12px; }
+.reload-bar-text { flex: 1; color: var(--warn); }
+.reload-bar-btn { flex: 0 0 auto; padding: 3px 10px; border-radius: 6px; border: 1px solid var(--border-strong);
+  background: var(--green); color: var(--accent-contrast); font-size: 12px; font-weight: 600; cursor: pointer; }
+.reload-bar-btn:hover { filter: brightness(1.08); }
 /* minimap — вписываем в тему: разделитель слева + акцентная рамка «где ты» */
 #editor .cm-minimap-gutter { border-left: 1px solid var(--border); background: var(--ink-2); }
 #editor .cm-minimap-overlay { background: var(--green) !important; opacity: 0.14 !important; }
