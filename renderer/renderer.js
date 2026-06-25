@@ -31,7 +31,7 @@ import { showMinimap } from '@replit/codemirror-minimap';
 // initTextProc — «Обработка текста» мигрирована в отдельное окно (renderer/module-entry.js).
 import { el, svgEl, icon, iconBtn, hydrateIcons, toast, renderDiffInto, makeModal, showConfirm, showPrompt, baseName, ICONS, setErrorSink, applyLayoutSwap } from './ui.js';
 // initGit — модуль «Git» мигрирован в отдельное окно (renderer/module-entry.js).
-import { initCtx } from './modules/contextgraph.js';
+// initCtx — модуль «Контекст» мигрирован в отдельное окно (renderer/module-entry.js).
 // initContainers — модуль «Контейнеры» мигрирован в отдельное окно (renderer/module-entry.js).
 // initDb — модуль «Базы данных» мигрирован в отдельное окно (renderer/module-entry.js).
 // initRh — модуль «Удалённые хосты» мигрирован в отдельное окно (renderer/module-entry.js).
@@ -39,7 +39,7 @@ import { initCtx } from './modules/contextgraph.js';
 // initOpenRouter — чат мигрирован в отдельное окно (renderer/module-entry.js).
 import { initExtensions } from './modules/extensions.js';
 
-const APP_VERSION = 'alpha v1.1.8';
+const APP_VERSION = 'alpha v1.1.9';
 const GUTTER = 5;
 const SCRATCH_ID = '__scratch__'; // префикс id системных терминалов (домашняя папка), не привязаны к проектам
 const isScratch = (id) => typeof id === 'string' && id.startsWith(SCRATCH_ID);
@@ -135,13 +135,12 @@ function loadLayout() { return { ...DEFAULT_LAYOUT, ...(STORE.layout || {}) }; }
 function saveLayout() { persist('layout', layout); }
 // Whether the viewer / system terminal panes are open — part of the backed-up state,
 // restored on startup (and on import) so the window reopens the way it was left.
-function saveUiState() { persist('uiState', { viewerOpen, scratchOpen, ctxOpen: Ctx.isOpen() }); }
+function saveUiState() { persist('uiState', { viewerOpen, scratchOpen }); }
 function applyLayout() {
   $('#sidebar').style.flexBasis = layout.sidebar + 'px';
   $('#viewer-pane').style.flexBasis = layout.viewer + 'px';
   $('#tree-pane').style.flexBasis = layout.tree + 'px';
   $('#scratch-pane').style.flexBasis = layout.scratch + 'px';
-  $('#ctx-pane').style.flexBasis = layout.ctx + 'px';
   $('#ext-pane').style.flexBasis = layout.ext + 'px';
 }
 function loadRecents() { return Array.isArray(STORE.recents) ? STORE.recents : []; }
@@ -979,9 +978,29 @@ function createSession(proj, name) {
   terms.set(id, rec);
   tabsByProj.get(proj.id).sessions.push(id);
   // «Контекст»: тихая автосборка — новая сессия агента должна найти готовый CLAUDE.md/AGENTS.md,
-  // если файла-выхода ещё нет (try — Ctx создаётся позже по коду).
-  try { Ctx.autoApply(proj); } catch (_) {}
+  // если файла-выхода ещё нет. Логика бэкенд-only (lite.ctx.*), поэтому живёт в ядре, а не в окне ctx
+  // (окно ctx, если открыто, освежится по своему watch выходных файлов).
+  try { ctxAutoApply(proj); } catch (_) {}
   return id;
+}
+// Тихая автосборка контекста для проекта (порт из contextgraph.js: только бэкенд-вызовы, без UI).
+// Компилирует CLAUDE.md/AGENTS.md, ТОЛЬКО если файла-выхода ещё нет и автосборка не выключена в графе.
+const CTX_AGENTS = ['claude', 'codex'];
+const CTX_OUT_FILES = { claude: 'CLAUDE.md', codex: 'AGENTS.md' };
+async function ctxAutoApply(p) {
+  try {
+    for (const ag of CTX_AGENTS) {
+      const prof = await lite.ctx.profiles(p.id, ag);
+      const r0 = await lite.ctx.load(p.id, ag, prof && prof.active);
+      const g = r0 && r0.graph;
+      if (!g || (g.settings && g.settings.autoApply === false)) continue;
+      if (!(g.nodes || []).some((n) => n.type === 'text')) continue;
+      const o = (g.nodes || []).find((n) => n.type === 'out' && n.out === ag);
+      if (!o || !o.enabled) continue;
+      if (await lite.fs.exists(p.path + '/' + CTX_OUT_FILES[ag])) continue;
+      await lite.ctx.compile({ projId: p.id, projPath: p.path, agent: ag, profileId: prof && prof.active });
+    }
+  } catch (_) {}
 }
 // Ensure a project's sessions exist (restoring saved tab names on first open).
 function ensureProjectTabs(proj) {
@@ -1401,7 +1420,6 @@ function doSetActive(id) {
   showActiveTerminal();
   applyFontSize();
   if (viewerOpen) refreshViewerForActive();
-  try { Ctx.onProjectChange(proj); } catch (_) {} // канва «Контекста» следует за активным проектом
   try { Ext.notifyActiveProject(activeId); } catch (_) {} // пользовательские модули: ctx.projects.onChange
   pushActiveProject(proj); // окна модулей (git/ctx/notes/audit): следовать за активным проектом редактора
 }
@@ -1831,9 +1849,10 @@ function setViewerOpen(open, opts = {}) {
 // Реестр панелей: каждая setXxxOpen знает только себя, взаимоисключение — closeOtherPanels.
 // Порядок закрытия фиксирован (он же — порядок старых inline-цепочек во всех setXxxOpen).
 const panels = new Map(); // id -> { isOpen(), setOpen(open, opts) }
-const PANEL_ORDER = ['files', 'ctx', 'scratch'];
+// Правый слот редактора теперь держит только не-модули: вивер+дерево (files) и системный терминал (scratch).
+const PANEL_ORDER = ['files', 'scratch'];
 // Модули, мигрированные в отдельные окна (открываются через lite.module.open, не как панель правого слота).
-const WINDOW_MODULES = new Set(['tools', 'iterflow', 'seo', 'audit', 'notes', 'db', 'git', 'chat', 'doc', 'docker', 'rh']);
+const WINDOW_MODULES = new Set(['tools', 'iterflow', 'seo', 'audit', 'notes', 'db', 'git', 'chat', 'doc', 'docker', 'rh', 'ctx']);
 function registerPanel(id, api) { panels.set(id, api); }
 function closeOtherPanels(selfId) {
   for (const id of PANEL_ORDER) {
@@ -1846,12 +1865,8 @@ function closeOtherPanels(selfId) {
 registerPanel('files', { isOpen: () => viewerOpen, setOpen: (open, opts) => { if (open && viewerOpen) return; setViewerOpen(open, opts); } });
 // Git мигрирован в отдельное окно (проектозависимое: следует за активным проектом редактора).
 // См. WINDOW_MODULES / module-entry.js.
-// «Контекст» — граф контекста агента (renderer/modules/contextgraph.js, канва как n8n).
-const Ctx = initCtx({
-  layout, GUTTER, saveUiState, refitActiveTerminal,
-  activeProject, getActiveId: () => activeId, closeOtherPanels,
-});
-registerPanel('ctx', { isOpen: Ctx.isOpen, setOpen: Ctx.setOpen });
+// «Контекст» (ctx) — граф контекста агента (канва n8n) мигрирован в отдельное окно (проектозависимое:
+// следует за активным проектом редактора). autoApply (тихая автосборка) портирована в ядро (ctxAutoApply).
 // Контейнеры (docker), «Базы данных» (db), «Удалённые хосты» (rh) мигрированы в отдельные окна
 // (самостоятельные). Стримы (containers:*/rh:*) маршрутизируются по окну-владельцу. См. module-entry.js.
 registerPanel('scratch', { isOpen: () => scratchOpen, setOpen: setScratchOpen });
@@ -2855,8 +2870,7 @@ function paletteActions() {
   acts.push({ label: 'Создать папку…', run: showCreateFolder });
   acts.push({ label: viewerOpen ? 'Закрыть вивер' : 'Открыть вивер', run: () => setViewerOpen(!viewerOpen) });
   acts.push({ label: 'Открыть Git', run: () => openModule('git') });
-  acts.push({ label: Ctx.isOpen() ? 'Закрыть контекст' : 'Контекст — граф контекста агента', run: Ctx.toggle });
-  if (Ctx.isOpen()) acts.push({ label: 'Контекст: подтвердить (✓ собрать CLAUDE.md / AGENTS.md)', run: () => Ctx.applyCompile() });
+  acts.push({ label: 'Контекст — граф контекста агента', run: () => openModule('ctx') });
   acts.push({ label: 'Контейнеры (Docker / Podman)', run: () => openModule('docker') });
   acts.push({ label: 'Базы данных (Postgres / MySQL / SQLite)', run: () => openModule('db') });
   acts.push({ label: 'Задачи — заметки проекта', run: () => openModule('notes') });
@@ -3167,10 +3181,10 @@ function init() {
   // Right-slot modules are mutually exclusive — restore at most one, first-true-wins
   // (приоритет — порядок старых if-цепочек: viewer, scratch, git, docker, db, rh).
   // allowEmpty so Git returns even before a project is active — matching the viewer, so window width fits.
-  const RESTORE_ORDER = [['files', 'viewerOpen'], ['scratch', 'scratchOpen'], ['ctx', 'ctxOpen']];
+  const RESTORE_ORDER = [['files', 'viewerOpen'], ['scratch', 'scratchOpen']];
   for (const [id, key] of RESTORE_ORDER) {
     if (!ui[key]) continue;
-    panels.get(id).setOpen(true, (id === 'ctx') ? { grow: false, allowEmpty: true } : { grow: false });
+    panels.get(id).setOpen(true, { grow: false });
     break;
   }
 

@@ -85,50 +85,7 @@
 
       <!-- Git module («Git») — мигрирован в отдельное окно (renderer/module.html). -->
 
-      <!-- «Контекст» module: per-project граф контекста агента (канва как n8n) -->
-      <div id="gutter-ctx" class="gutter hidden" data-resize="ctx"></div>
-      <section id="ctx-pane" class="hidden">
-        <div class="pane-head">
-          <span id="ctx-title">Контекст</span>
-          <span id="ctx-stale" class="ctx-stale" title="Есть неподтверждённые изменения — нажми «Подтвердить»" hidden>●</span>
-          <button id="ctx-extern" class="ctx-extern" title="Файл изменён вне модуля (вероятно, агентом) — посмотреть и втянуть правки" hidden>⚠ файл изменён вне модуля</button>
-          <div class="drag-space-static"></div>
-          <button id="ctx-help" class="icon-btn" title="Как это работает?" data-icon="help"></button>
-          <button id="ctx-settings" class="icon-btn" title="Настройки (бекапы, автосборка)" data-icon="sliders"></button>
-          <button id="ctx-close" class="icon-btn" title="Закрыть" data-icon="x"></button>
-        </div>
-        <div id="ctx-agents" class="ctx-agents"></div><!-- переключатель агента (Claude/Codex): рендерится в contextgraph.js -->
-        <div id="ctx-profiles" class="ctx-profiles"></div><!-- вкладки-профили текущего агента -->
-        <div id="ctx-stats" class="ctx-stats"></div>
-        <div id="ctx-canvas" class="ctx-canvas">
-          <!-- плавающая панель действий профиля/канвы (поверх канвы, правый верхний угол) -->
-          <div id="ctx-toolbar" class="ctx-toolbar">
-            <div class="ctx-tb-row">
-              <button id="ctx-add" class="icon-btn" title="Добавить блок" data-icon="plus"></button>
-              <button id="ctx-group" class="icon-btn" title="Сгруппировать выделенные блоки (Ctrl+G)" data-icon="layers" hidden></button>
-              <button id="ctx-fit" class="icon-btn" title="Уместить всё в экран" data-icon="maximize"></button>
-              <button id="ctx-points" class="icon-btn ctx-tb-emoji" title="Версии (точки восстановления)">🕘</button>
-            </div>
-            <div id="ctx-tb-actions" class="ctx-tb-row ctx-tb-actions" hidden>
-              <button id="ctx-reset" class="icon-btn" title="Сбросить неподтверждённые изменения — вернуть канву к последнему подтверждённому виду" data-icon="refresh" hidden></button>
-              <button id="ctx-apply" class="icon-btn ctx-apply-btn" title="Подтвердить изменения: сохранить канву и собрать файл агента (с бекапом)" data-icon="check" hidden></button>
-            </div>
-          </div>
-          <button id="ctx-wire-del" class="ctx-wire-del" title="Удалить соединение" hidden>×</button><!-- появляется при наведении на провод -->
-          <div id="ctx-marquee" class="ctx-marquee" hidden></div><!-- рамка выделения (Shift+протягивание) -->
-          <div id="ctx-world" class="ctx-world">
-            <svg id="ctx-wires" class="ctx-wires"></svg>
-            <div id="ctx-nodes"></div>
-          </div>
-          <!-- лёгкий онбординг: нижняя плашка, закрывается один раз; основное управление — в тулбаре справа сверху -->
-          <div id="ctx-onboard" class="ctx-onboard" hidden>
-            <div class="ctx-onboard-tx"><b>Контекст агента из блоков.</b> Стартовый блок — это весь файл агента. Наведи на него курсор и нажми <b>✂</b> (или кнопку ниже), чтобы разложить его на блоки по заголовкам. Дальше: «+» добавить блок, 🕘 версии, выделить блоки и сгруппировать.</div>
-            <button id="ctx-ob-split" class="btn primary">✂ Распилить файл</button>
-            <button id="ctx-ob-help" class="btn">Как это работает</button>
-            <button id="ctx-ob-close" class="icon-btn" title="Скрыть подсказку" data-icon="x"></button>
-          </div>
-        </div>
-      </section>
+      <!-- «Контекст» module («Контекст») — мигрирован в отдельное окно (renderer/module.html). -->
 
       <!-- Notes/tasks module («Задачи») — мигрирован в отдельное окно (renderer/module.html). -->
 

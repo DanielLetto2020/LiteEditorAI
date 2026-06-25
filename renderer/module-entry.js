@@ -23,6 +23,7 @@ import { initOpenRouter } from './modules/openrouter.js';
 import { initTextProc } from './modules/textproc.js';
 import { initContainers } from './modules/containers.js';
 import { initRh } from './modules/remotehost.js';
+import { initCtx } from './modules/contextgraph.js';
 
 const lite = window.lite;
 const $ = (s) => document.querySelector(s);
@@ -82,6 +83,9 @@ const MODULES = {
       bind('#rh-back', () => mod.goList());
     },
   },
+  // ctx сам биндит свои кнопки канвы (включая #ctx-close с dirty-guard) → selfClose:true:
+  // module-entry НЕ переопределяет #ctx-close; закрытие окна идёт через host.closeWindow с подтверждением.
+  ctx: { title: 'Контекст', init: initCtx, project: true, selfClose: true },
 };
 
 const modId = (location.hash || '').replace(/^#/, '') || 'tools';
@@ -120,6 +124,7 @@ function buildHost() {
     sendNoteToTerminal: (p, t) => lite.editorBus.sendNoteToTerminal(p && p.id, t),
     refreshTree: () => lite.editorBus.refreshTree(),
     closeMenus: () => {},
+    closeWindow: () => lite.win.close(), // для модулей со своим dirty-guard на закрытии (ctx)
   };
 }
 
@@ -163,9 +168,12 @@ function boot() {
     rezT = setTimeout(() => { try { mod && mod.refitExec && mod.refitExec(); } catch (_) {} try { mod && mod.refitSession && mod.refitSession(); } catch (_) {} }, 80);
   });
 
-  // the pane-head close button now closes the window; module's own buttons via wire()
-  const closeBtn = $('#' + modId + '-close');
-  if (closeBtn) closeBtn.onclick = () => lite.win.close();
+  // the pane-head close button now closes the window; module's own buttons via wire().
+  // selfClose:true → модуль сам биндит #<id>-close (с своим подтверждением) и зовёт host.closeWindow.
+  if (!def.selfClose) {
+    const closeBtn = $('#' + modId + '-close');
+    if (closeBtn) closeBtn.onclick = () => lite.win.close();
+  }
   if (def.wire) { try { def.wire(mod); } catch (e) { try { lite.log('error', '[module:' + modId + '] wire', String(e)); } catch (_) {} } }
 
   // project-dependent modules re-render when the editor switches projects

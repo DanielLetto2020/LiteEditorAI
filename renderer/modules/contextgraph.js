@@ -59,7 +59,7 @@ function fmtTs(ts) {
 }
 
 export function initCtx(host) {
-  const { layout, GUTTER, saveUiState, refitActiveTerminal, activeProject, closeOtherPanels } = host;
+  const { layout, GUTTER, saveUiState, refitActiveTerminal, activeProject, closeOtherPanels, closeWindow } = host;
 
   let open = false;
   let proj = null;       // снапшот {id, path, name} проекта на канве
@@ -1656,8 +1656,10 @@ export function initCtx(host) {
 
   // ---------------------------------------------------------------- бинды панели
   $('#ctx-close').addEventListener('click', () => {
-    if (unsaved) showConfirm('Закрыть «Контекст»?', 'Есть неподтверждённые изменения — они будут потеряны.', 'Закрыть', () => setOpen(false));
-    else setOpen(false);
+    // В окне модуля закрываем ОКНО (closeWindow); в правом слоте редактора — прячем панель (setOpen).
+    const doClose = closeWindow || (() => setOpen(false));
+    if (unsaved) showConfirm('Закрыть «Контекст»?', 'Есть неподтверждённые изменения — они будут потеряны.', 'Закрыть', doClose);
+    else doClose();
   });
   wireDel.addEventListener('mouseenter', () => clearTimeout(wireDelHideTimer));
   wireDel.addEventListener('mouseleave', scheduleHideWireDel);
