@@ -33,6 +33,32 @@
         </div>
         <div id="tools-body" class="tools-body"></div>
       </section>
+
+      <!-- IterFlow module: таск-трекер исполнителя (отдельный продукт через /api/editor/*) -->
+      <div id="gutter-iterflow" class="gutter hidden" data-resize="iterflow"></div>
+      <section id="iterflow-pane" class="hidden">
+        <div class="pane-head">
+          <span id="iterflow-proj">IterFlow</span>
+          <div class="drag-space-static"></div>
+          <button id="iterflow-site" class="icon-btn" title="Открыть сайт IterFlow" data-icon="globe"></button>
+          <button id="iterflow-refresh" class="icon-btn" title="Обновить" data-icon="refresh"></button>
+          <button id="iterflow-logout" class="icon-btn" title="Выйти из IterFlow" data-icon="logout"></button>
+          <button id="iterflow-close" class="icon-btn" title="Закрыть" data-icon="x"></button>
+        </div>
+        <div id="iterflow-body" class="iterflow-body"></div>
+      </section>
+
+      <!-- WEB/SEO audit module: аудит сайта (локальный dev-сервер или внешний домен) -->
+      <div id="gutter-seo" class="gutter hidden" data-resize="seo"></div>
+      <section id="seo-pane" class="hidden">
+        <div class="pane-head">
+          <span id="seo-proj">WEB/SEO аудит</span>
+          <div class="drag-space-static"></div>
+          <button id="seo-rescan" class="icon-btn" title="Пересканировать сайт" data-icon="refresh"></button>
+          <button id="seo-close" class="icon-btn" title="Закрыть" data-icon="x"></button>
+        </div>
+        <div id="seo-body" class="seo-body"></div>
+      </section>
     </div>
   </div>
 

@@ -10,13 +10,25 @@ import '@xterm/xterm/css/xterm.css';
 import 'highlight.js/styles/atom-one-dark.css';
 
 import { initTools } from './modules/tools.js';
+import { initIterflow } from './modules/iterflow.js';
+import { initSeo } from './modules/seo.js';
 
 const lite = window.lite;
 const $ = (s) => document.querySelector(s);
+const bind = (sel, fn) => { const e = $(sel); if (e) e.onclick = fn; };
 
 // Registry of window-hosted modules. `project:true` → re-render on active-project change.
+// `wire(mod)` binds the pane-head buttons (the #<id>-close button is wired generically).
 const MODULES = {
   tools: { title: 'Инструменты', init: initTools, project: false },
+  iterflow: {
+    title: 'IterFlow', init: initIterflow, project: false,
+    wire: (mod) => { bind('#iterflow-site', () => mod.openSite()); bind('#iterflow-refresh', () => mod.refresh()); bind('#iterflow-logout', () => mod.logout()); },
+  },
+  seo: {
+    title: 'WEB/SEO аудит', init: initSeo, project: false,
+    wire: (mod) => { bind('#seo-rescan', () => mod.rescan()); },
+  },
 };
 
 const modId = (location.hash || '').replace(/^#/, '') || 'tools';
@@ -82,9 +94,10 @@ function boot() {
   mod = def.init(buildHost());
   mod.setOpen(true, { grow: false, allowEmpty: true });
 
-  // the pane-head close button now closes the window
+  // the pane-head close button now closes the window; module's own buttons via wire()
   const closeBtn = $('#' + modId + '-close');
   if (closeBtn) closeBtn.onclick = () => lite.win.close();
+  if (def.wire) { try { def.wire(mod); } catch (e) { try { lite.log('error', '[module:' + modId + '] wire', String(e)); } catch (_) {} } }
 
   // project-dependent modules re-render when the editor switches projects
   if (def.project) {
