@@ -30,13 +30,13 @@ import { el, svgEl, icon, iconBtn, hydrateIcons, toast, renderDiffInto, makeModa
 import { initGit } from './modules/git.js';
 import { initCtx } from './modules/contextgraph.js';
 import { initContainers } from './modules/containers.js';
-import { initDb } from './modules/db.js';
+// initDb — модуль «Базы данных» мигрирован в отдельное окно (renderer/module-entry.js).
 import { initRh } from './modules/remotehost.js';
 // initNotes / initAudit / initSeo / initTools / initIterflow — модули мигрированы в отдельные окна (renderer/module-entry.js).
 import { initOpenRouter } from './modules/openrouter.js';
 import { initExtensions } from './modules/extensions.js';
 
-const APP_VERSION = 'alpha v1.1.4';
+const APP_VERSION = 'alpha v1.1.5';
 const GUTTER = 5;
 const SCRATCH_ID = '__scratch__'; // префикс id системных терминалов (домашняя папка), не привязаны к проектам
 const isScratch = (id) => typeof id === 'string' && id.startsWith(SCRATCH_ID);
@@ -150,7 +150,7 @@ function loadLayout() { return { ...DEFAULT_LAYOUT, ...(STORE.layout || {}) }; }
 function saveLayout() { persist('layout', layout); }
 // Whether the viewer / system terminal panes are open — part of the backed-up state,
 // restored on startup (and on import) so the window reopens the way it was left.
-function saveUiState() { persist('uiState', { viewerOpen, scratchOpen, gitOpen: Git.isOpen(), ctxOpen: Ctx.isOpen(), dockerOpen: Containers.isOpen(), dbOpen: Db.isOpen(), rhOpen: Rh.isOpen(), chatOpen: Or.isOpen(), docOpen: TextProc.isOpen() }); }
+function saveUiState() { persist('uiState', { viewerOpen, scratchOpen, gitOpen: Git.isOpen(), ctxOpen: Ctx.isOpen(), dockerOpen: Containers.isOpen(), rhOpen: Rh.isOpen(), chatOpen: Or.isOpen(), docOpen: TextProc.isOpen() }); }
 function applyLayout() {
   $('#sidebar').style.flexBasis = layout.sidebar + 'px';
   $('#viewer-pane').style.flexBasis = layout.viewer + 'px';
@@ -159,7 +159,6 @@ function applyLayout() {
   $('#git-pane').style.flexBasis = layout.git + 'px';
   $('#ctx-pane').style.flexBasis = layout.ctx + 'px';
   $('#docker-pane').style.flexBasis = layout.docker + 'px';
-  $('#db-pane').style.flexBasis = layout.db + 'px';
   $('#rh-pane').style.flexBasis = layout.rh + 'px';
   $('#ext-pane').style.flexBasis = layout.ext + 'px';
   $('#chat-pane').style.flexBasis = layout.chat + 'px';
@@ -1943,9 +1942,9 @@ function setViewerOpen(open, opts = {}) {
 // Реестр панелей: каждая setXxxOpen знает только себя, взаимоисключение — closeOtherPanels.
 // Порядок закрытия фиксирован (он же — порядок старых inline-цепочек во всех setXxxOpen).
 const panels = new Map(); // id -> { isOpen(), setOpen(open, opts) }
-const PANEL_ORDER = ['files', 'git', 'ctx', 'docker', 'db', 'scratch', 'rh', 'chat', 'doc'];
+const PANEL_ORDER = ['files', 'git', 'ctx', 'docker', 'scratch', 'rh', 'chat', 'doc'];
 // Модули, мигрированные в отдельные окна (открываются через lite.module.open, не как панель правого слота).
-const WINDOW_MODULES = new Set(['tools', 'iterflow', 'seo', 'audit', 'notes']);
+const WINDOW_MODULES = new Set(['tools', 'iterflow', 'seo', 'audit', 'notes', 'db']);
 function registerPanel(id, api) { panels.set(id, api); }
 function closeOtherPanels(selfId) {
   for (const id of PANEL_ORDER) {
@@ -1974,8 +1973,7 @@ const Containers = initContainers({
   closeOtherPanels, termTheme, applyUnicode11, loadFastRenderer,
 });
 registerPanel('docker', { isOpen: Containers.isOpen, setOpen: Containers.setOpen });
-const Db = initDb({ STORE, persist, layout, GUTTER, saveUiState, refitActiveTerminal, closeOtherPanels });
-registerPanel('db', { isOpen: Db.isOpen, setOpen: Db.setOpen });
+// «Базы данных» (db) мигрирован в отдельное окно (самостоятельный). См. WINDOW_MODULES / module-entry.js.
 registerPanel('scratch', { isOpen: () => scratchOpen, setOpen: setScratchOpen });
 const Rh = initRh({
   STORE, persist, settings, layout, GUTTER, saveUiState, refitActiveTerminal,
@@ -2998,7 +2996,7 @@ function paletteActions() {
   acts.push({ label: Ctx.isOpen() ? 'Закрыть контекст' : 'Контекст — граф контекста агента', run: Ctx.toggle });
   if (Ctx.isOpen()) acts.push({ label: 'Контекст: подтвердить (✓ собрать CLAUDE.md / AGENTS.md)', run: () => Ctx.applyCompile() });
   acts.push({ label: Containers.isOpen() ? 'Закрыть контейнеры' : 'Контейнеры (Docker / Podman)', run: Containers.toggle });
-  acts.push({ label: Db.isOpen() ? 'Закрыть базы данных' : 'Базы данных (Postgres / MySQL / SQLite)', run: Db.toggle });
+  acts.push({ label: 'Базы данных (Postgres / MySQL / SQLite)', run: () => openModule('db') });
   acts.push({ label: 'Задачи — заметки проекта', run: () => openModule('notes') });
   acts.push({ label: 'Режим «один терминал»', run: toggleSingle });
   acts.push({ label: 'Поиск в терминале', run: openTermSearch });
@@ -3223,8 +3221,7 @@ function init() {
   // tools/iterflow/seo/audit/notes живут в окнах модулей (module.html) — их кнопки привязывает module-entry.js.
   $('#docker-close').addEventListener('click', () => Containers.setOpen(false));
   $('#docker-refresh').addEventListener('click', () => Containers.refresh());
-  $('#db-close').addEventListener('click', () => Db.setOpen(false));
-  $('#db-refresh').addEventListener('click', () => Db.refresh());
+  // db живёт в окне модуля (module.html) — кнопки привязывает module-entry.js.
   $('#rh-close').addEventListener('click', () => Rh.setOpen(false));
   $('#rh-refresh').addEventListener('click', () => { if (Rh.isOpen()) Rh.renderPanel(); });
   $('#rh-back').addEventListener('click', () => Rh.goList());
@@ -3318,7 +3315,7 @@ function init() {
   // Right-slot modules are mutually exclusive — restore at most one, first-true-wins
   // (приоритет — порядок старых if-цепочек: viewer, scratch, git, docker, db, rh).
   // allowEmpty so Git returns even before a project is active — matching the viewer, so window width fits.
-  const RESTORE_ORDER = [['files', 'viewerOpen'], ['scratch', 'scratchOpen'], ['git', 'gitOpen'], ['ctx', 'ctxOpen'], ['docker', 'dockerOpen'], ['db', 'dbOpen'], ['rh', 'rhOpen'], ['chat', 'chatOpen'], ['doc', 'docOpen']];
+  const RESTORE_ORDER = [['files', 'viewerOpen'], ['scratch', 'scratchOpen'], ['git', 'gitOpen'], ['ctx', 'ctxOpen'], ['docker', 'dockerOpen'], ['rh', 'rhOpen'], ['chat', 'chatOpen'], ['doc', 'docOpen']];
   for (const [id, key] of RESTORE_ORDER) {
     if (!ui[key]) continue;
     panels.get(id).setOpen(true, (id === 'git' || id === 'ctx') ? { grow: false, allowEmpty: true } : { grow: false });

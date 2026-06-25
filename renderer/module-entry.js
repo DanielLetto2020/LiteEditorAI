@@ -14,6 +14,7 @@ import { initIterflow } from './modules/iterflow.js';
 import { initSeo } from './modules/seo.js';
 import { initAudit } from './modules/audit.js';
 import { initNotes } from './modules/notes.js';
+import { initDb } from './modules/db.js';
 
 const lite = window.lite;
 const $ = (s) => document.querySelector(s);
@@ -43,6 +44,10 @@ const MODULES = {
       // пульт изменил задачи → редактор ретранслировал app:notesChanged → перечитать, если открыт тот список
       lite.app.onNotesChanged((id) => { try { mod.onExternalChange(id); } catch (_) {} });
     },
+  },
+  db: {
+    title: 'Базы данных', init: initDb, project: false,
+    wire: (mod) => { bind('#db-refresh', () => mod.refresh()); },
   },
 };
 
