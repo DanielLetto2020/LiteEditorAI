@@ -7,6 +7,8 @@ import {
   el, icon, iconBtn, toast, makeModal, showConfirm, showPrompt, hydrateIcons, setErrorSink, applyLayoutSwap,
 } from './ui.js';
 import { createCodeEditor, languageFor } from './codeedit.js';
+import { THEMES, TERM_THEME, DEFAULT_THEME, termThemeFor } from './themes.js';
+import { loadFastRenderer, applyUnicode11, copySelection } from './termutil.js';
 import '@xterm/xterm/css/xterm.css';
 import 'highlight.js/styles/atom-one-dark.css';
 
@@ -19,6 +21,8 @@ import { initDb } from './modules/db.js';
 import { initGit } from './modules/git.js';
 import { initOpenRouter } from './modules/openrouter.js';
 import { initTextProc } from './modules/textproc.js';
+import { initContainers } from './modules/containers.js';
+import { initRh } from './modules/remotehost.js';
 
 const lite = window.lite;
 const $ = (s) => document.querySelector(s);
@@ -66,6 +70,18 @@ const MODULES = {
     title: 'Обработка текста', init: initTextProc, project: false,
     wire: (mod) => { bind('#doc-settings', () => mod.showSettings()); },
   },
+  docker: {
+    title: 'Контейнеры', init: initContainers, project: false,
+    wire: (mod) => { bind('#docker-refresh', () => mod.refresh()); },
+  },
+  rh: {
+    title: 'Удалённые хосты', init: initRh, project: false,
+    wire: (mod) => {
+      mod.bindEvents(); // поток данных/закрытие SSH-сессий → xterm-вкладки
+      bind('#rh-refresh', () => mod.renderPanel());
+      bind('#rh-back', () => mod.goList());
+    },
+  },
 };
 
 const modId = (location.hash || '').replace(/^#/, '') || 'tools';
@@ -92,6 +108,7 @@ function buildHost() {
   return {
     el, icon, iconBtn, makeModal, showConfirm, showPrompt, toast, applyLayoutSwap,
     createCodeEditor, languageFor,
+    termTheme: () => termThemeFor(settings.theme), applyUnicode11, loadFastRenderer, copySelection,
     STORE, persist, settings, saveSettings,
     layout: layoutProxy, GUTTER: 0,
     saveUiState: () => {}, refitActiveTerminal: () => {}, closeOtherPanels: () => {}, renderProjects: () => {},
@@ -125,12 +142,26 @@ function boot() {
   lite.win.isMaximized().then((v) => $('#mod-app').classList.toggle('is-max', !!v)).catch(() => {});
   hydrateIcons(document);
 
-  // live settings/theme updates from the editor
-  lite.app.onSettingsChanged((s) => { if (s) { settings = s; applyTheme(settings.theme); } });
+  // live settings/theme updates from the editor — МУТИРУЕМ settings (модуль держит ссылку на него),
+  // перекрашиваем тему окна и xterm-терминалы модуля (если он их рисует).
+  lite.app.onSettingsChanged((s) => {
+    if (!s) return;
+    Object.assign(settings, s);
+    applyTheme(settings.theme);
+    try { mod && mod.applyTermTheme && mod.applyTermTheme(); } catch (_) {}
+    try { mod && mod.applyFontSize && mod.applyFontSize(); } catch (_) {}
+  });
 
   // init the module; the pane is always visible in a window (open with grow:false)
   mod = def.init(buildHost());
   mod.setOpen(true, { grow: false, allowEmpty: true });
+
+  // окно изменило размер → подогнать встроенные терминалы модуля (контейнеры exec / SSH-сессии)
+  let rezT;
+  window.addEventListener('resize', () => {
+    clearTimeout(rezT);
+    rezT = setTimeout(() => { try { mod && mod.refitExec && mod.refitExec(); } catch (_) {} try { mod && mod.refitSession && mod.refitSession(); } catch (_) {} }, 80);
+  });
 
   // the pane-head close button now closes the window; module's own buttons via wire()
   const closeBtn = $('#' + modId + '-close');

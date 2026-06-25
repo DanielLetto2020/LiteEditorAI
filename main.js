@@ -320,7 +320,10 @@ const dbApi = dbBackend.registerDbIpc({
 // send() лениво ссылается на mainWindow (создаётся позже), вызывается только при живой сессии.
 const rhApi = rhBackend.registerRemoteIpc({
   ipcMain, safeStorage,
-  send: (ch, payload) => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(ch, payload); },
+  // rh:data/rh:exit несут { id: sessionId } → маршрутизируем в окно-владельца сессии (редактор ИЛИ
+  // окно модуля «Удалённые хосты»); если владельца нет — фолбэк в окно редактора (sendToOwner).
+  send: (ch, payload) => sendToOwner(payload && payload.id, ch, payload),
+  onSessionOpen: (sessionId, sender) => { if (sessionId && sender) ownerBySession.set(sessionId, sender); },
   getConnections: () => readStoreKey('rhConnections'),
   setConnections: (v) => writeStoreKey('rhConnections', v),
 });
@@ -3268,30 +3271,32 @@ ipcMain.handle('containers:bulk', async (_e, { engine, action, ids } = {}) => {
 // --- container logs (streamed) and interactive exec (PTY) for the detail view
 const cLogProcs = new Map();  // streamId -> ChildProcess (logs -f)
 const cExecPtys = new Map();  // execId   -> IPty (exec -it)
-ipcMain.handle('containers:logsStart', (_e, { engine, id, streamId, tail } = {}) => {
+ipcMain.handle('containers:logsStart', (e, { engine, id, streamId, tail } = {}) => {
   if (engine !== 'docker' && engine !== 'podman') return { error: 'bad engine' };
   if (!id || !streamId) return { error: 'bad args' };
   let cp;
   try { cp = spawn(engine, ['logs', '-f', '--tail', String(Math.max(1, Math.min(5000, parseInt(tail, 10) || 500))), id], { windowsHide: true }); }
-  catch (e) { return { error: String(e.message || e) }; }
-  const send = (d) => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('containers:logsData', { streamId, data: d.toString('utf8') }); };
+  catch (e2) { return { error: String(e2.message || e2) }; }
+  const sender = e.sender; // окно-владелец (редактор ИЛИ окно модуля «Контейнеры») — стрим уходит туда
+  const send = (d) => safeSend(sender, 'containers:logsData', { streamId, data: d.toString('utf8') });
   cp.stdout.on('data', send); cp.stderr.on('data', send);
   cp.on('error', (err) => send('\n[ошибка logs: ' + (err.message || err) + ']\n'));
-  cp.on('close', () => { cLogProcs.delete(streamId); if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('containers:logsExit', { streamId }); });
+  cp.on('close', () => { cLogProcs.delete(streamId); safeSend(sender, 'containers:logsExit', { streamId }); });
   cLogProcs.set(streamId, cp);
   return { ok: true };
 });
 ipcMain.on('containers:logsStop', (_e, { streamId } = {}) => { const cp = cLogProcs.get(streamId); if (cp) { try { cp.kill(); } catch (_) {} cLogProcs.delete(streamId); } });
-ipcMain.handle('containers:execStart', (_e, { engine, id, execId, cols, rows } = {}) => {
+ipcMain.handle('containers:execStart', (e, { engine, id, execId, cols, rows } = {}) => {
   if (engine !== 'docker' && engine !== 'podman') return { error: 'bad engine' };
   if (!id || !execId) return { error: 'bad args' };
   let proc;
   try {
     proc = pty.spawn(engine, ['exec', '-it', id, 'sh', '-c', 'command -v bash >/dev/null 2>&1 && exec bash || exec sh'],
       { name: 'xterm-color', cols: cols || 80, rows: rows || 24, env: process.env });
-  } catch (e) { return { error: String(e.message || e) }; }
-  proc.onData((d) => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('containers:execData', { execId, data: d }); });
-  proc.onExit(() => { cExecPtys.delete(execId); if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('containers:execExit', { execId }); });
+  } catch (e2) { return { error: String(e2.message || e2) }; }
+  const sender = e.sender; // окно-владелец exec-терминала
+  proc.onData((d) => safeSend(sender, 'containers:execData', { execId, data: d }));
+  proc.onExit(() => { cExecPtys.delete(execId); safeSend(sender, 'containers:execExit', { execId }); });
   cExecPtys.set(execId, proc);
   return { ok: true };
 });

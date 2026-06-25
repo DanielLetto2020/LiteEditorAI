@@ -25,19 +25,21 @@ import { html } from '@codemirror/lang-html';
 import { css } from '@codemirror/lang-css';
 import { sql, PostgreSQL, MySQL, SQLite } from '@codemirror/lang-sql';
 import { createCodeEditor, languageFor } from './codeedit.js';
+import { THEMES, TERM_THEME, DEFAULT_THEME } from './themes.js';
+import { loadFastRenderer, applyUnicode11, copySelection } from './termutil.js';
 import { showMinimap } from '@replit/codemirror-minimap';
 // initTextProc — «Обработка текста» мигрирована в отдельное окно (renderer/module-entry.js).
 import { el, svgEl, icon, iconBtn, hydrateIcons, toast, renderDiffInto, makeModal, showConfirm, showPrompt, baseName, ICONS, setErrorSink, applyLayoutSwap } from './ui.js';
 // initGit — модуль «Git» мигрирован в отдельное окно (renderer/module-entry.js).
 import { initCtx } from './modules/contextgraph.js';
-import { initContainers } from './modules/containers.js';
+// initContainers — модуль «Контейнеры» мигрирован в отдельное окно (renderer/module-entry.js).
 // initDb — модуль «Базы данных» мигрирован в отдельное окно (renderer/module-entry.js).
-import { initRh } from './modules/remotehost.js';
+// initRh — модуль «Удалённые хосты» мигрирован в отдельное окно (renderer/module-entry.js).
 // initNotes / initAudit / initSeo / initTools / initIterflow — модули мигрированы в отдельные окна (renderer/module-entry.js).
 // initOpenRouter — чат мигрирован в отдельное окно (renderer/module-entry.js).
 import { initExtensions } from './modules/extensions.js';
 
-const APP_VERSION = 'alpha v1.1.7';
+const APP_VERSION = 'alpha v1.1.8';
 const GUTTER = 5;
 const SCRATCH_ID = '__scratch__'; // префикс id системных терминалов (домашняя папка), не привязаны к проектам
 const isScratch = (id) => typeof id === 'string' && id.startsWith(SCRATCH_ID);
@@ -109,25 +111,7 @@ const DEFAULT_LAYOUT = { sidebar: 240, viewer: 520, tree: 240, scratch: 420, git
 let layout = loadLayout();
 let lastParent = STORE.lastParent || '';
 
-const TERM_THEME = {
-  background: '#0d1116', foreground: '#cdd6e0', cursor: '#34d399',
-  selectionBackground: '#1f3a4d',
-  black: '#0d1116', red: '#f7768e', green: '#9ece6a', yellow: '#e0af68',
-  blue: '#7aa2f7', magenta: '#bb9af7', cyan: '#7dcfff', white: '#a9b1d6',
-};
-// ---------------------------------------------------------------- themes (a curated few)
-// Theme registry. The CSS does the heavy lifting via body[data-theme] (token contract
-// in styles.css); here we carry the human label + per-theme terminal (xterm) colours.
-// To add a theme: add a block in styles.css AND an entry here. Default = neumorphism.
-const DEFAULT_THEME = 'neumorphism';
-const THEMES = {
-  neumorphism: { label: 'Неоморфизм', term: { background: '#161a20', foreground: '#cfd4db', cursor: '#34d399', selectionBackground: '#1f3a30' } },
-  glass:       { label: 'Стекло',     term: { background: '#0b0f16', foreground: '#dbe5ee', cursor: '#5eead4', selectionBackground: '#13443c' } },
-  material:    { label: 'Material',   term: { background: '#121212', foreground: '#e0e0e0', cursor: '#26a69a', selectionBackground: '#004d40' } },
-  catppuccin:  { label: 'Catppuccin', term: { background: '#181825', foreground: '#cdd6f4', cursor: '#a6e3a1', selectionBackground: '#333b54' } },
-  gruvbox:     { label: 'Gruvbox',    term: { background: '#282828', foreground: '#ebdbb2', cursor: '#fabd2f', selectionBackground: '#504945' } },
-  aurora:      { label: 'Aurora',     term: { background: '#0a0f14', foreground: '#dbe7f0', cursor: '#2dd4bf', selectionBackground: '#0f4a44' } },
-};
+// TERM_THEME/THEMES/DEFAULT_THEME вынесены в renderer/themes.js (общий реестр редактора и окон модулей).
 function termTheme() {
   const t = THEMES[settings.theme] || THEMES[DEFAULT_THEME];
   return { ...TERM_THEME, ...t.term };
@@ -138,8 +122,8 @@ function applyTheme() {
   for (const rec of terms.values()) { try { rec.term.options.theme = termTheme(); } catch (_) {} }
   for (const rec of scratchTerms.values()) { try { rec.term.options.theme = termTheme(); } catch (_) {} }
   for (const rec of extTerms.values()) { try { rec.term.options.theme = termTheme(); } catch (_) {} }
-  Containers.applyTermTheme(); // exec-терминал контейнера красится тем же termTheme
   try { Ext.notifyTheme(name); } catch (_) {} // пользовательские модули: ctx.theme.onChange
+  try { lite.app.settingsChanged(settings); } catch (_) {} // окна модулей: применить тему/настройки
 }
 
 const activeProject = () => projects.find((p) => p.id === activeId);
@@ -151,15 +135,13 @@ function loadLayout() { return { ...DEFAULT_LAYOUT, ...(STORE.layout || {}) }; }
 function saveLayout() { persist('layout', layout); }
 // Whether the viewer / system terminal panes are open — part of the backed-up state,
 // restored on startup (and on import) so the window reopens the way it was left.
-function saveUiState() { persist('uiState', { viewerOpen, scratchOpen, ctxOpen: Ctx.isOpen(), dockerOpen: Containers.isOpen(), rhOpen: Rh.isOpen() }); }
+function saveUiState() { persist('uiState', { viewerOpen, scratchOpen, ctxOpen: Ctx.isOpen() }); }
 function applyLayout() {
   $('#sidebar').style.flexBasis = layout.sidebar + 'px';
   $('#viewer-pane').style.flexBasis = layout.viewer + 'px';
   $('#tree-pane').style.flexBasis = layout.tree + 'px';
   $('#scratch-pane').style.flexBasis = layout.scratch + 'px';
   $('#ctx-pane').style.flexBasis = layout.ctx + 'px';
-  $('#docker-pane').style.flexBasis = layout.docker + 'px';
-  $('#rh-pane').style.flexBasis = layout.rh + 'px';
   $('#ext-pane').style.flexBasis = layout.ext + 'px';
 }
 function loadRecents() { return Array.isArray(STORE.recents) ? STORE.recents : []; }
@@ -929,37 +911,8 @@ async function openFromTerminal(projPath, raw) {
 
 // True only for a real GPU — software WebGL (SwiftShader/llvmpipe) is slower than
 // Canvas and stalls, so route those to the Canvas renderer instead.
-function isHardwareWebgl() {
-  try {
-    const gl = document.createElement('canvas').getContext('webgl2') || document.createElement('canvas').getContext('webgl');
-    if (!gl) return false;
-    const dbg = gl.getExtension('WEBGL_debug_renderer_info');
-    const r = dbg ? String(gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL)) : '';
-    return !/swiftshader|llvmpipe|software|mesa offscreen/i.test(r);
-  } catch (_) { return false; }
-}
-// Fast xterm renderer: WebGL on real GPU (smooth scroll), else Canvas. Both beat
-// the default DOM renderer. On WebGL context loss → fall back to Canvas.
-function loadFastRenderer(term) {
-  if (isHardwareWebgl()) {
-    try {
-      const webgl = new WebglAddon();
-      webgl.onContextLoss(() => {
-        try { webgl.dispose(); } catch (_) {}
-        try { term.loadAddon(new CanvasAddon()); } catch (_) {}
-      });
-      term.loadAddon(webgl);
-      return;
-    } catch (_) {}
-  }
-  try { term.loadAddon(new CanvasAddon()); } catch (_) {}
-}
-// xterm ships Unicode V6 width tables, which lack newer emoji ranges (📁 U+1F4C1, ⏰ U+23F0…)
-// → they're treated as width 1 and overlap neighbouring text (e.g. Claude Code's status line).
-// The unicode11 addon adds the Unicode 11 width tables; activeVersion='11' switches to them.
-function applyUnicode11(term) {
-  try { term.loadAddon(new Unicode11Addon()); term.unicode.activeVersion = '11'; } catch (_) {}
-}
+// isHardwareWebgl/loadFastRenderer/applyUnicode11/copySelection вынесены в renderer/termutil.js
+// (общие xterm-хелперы редактора и окон модулей; импорт у блока импортов).
 
 // ---- terminal sessions (tabs) ----
 // Each project owns ≥1 SESSION (tab) = its own PTY + xterm. `terms` is keyed by sessionId;
@@ -1114,14 +1067,6 @@ async function pasteInto(id) {
 // Smart Ctrl+C: if there's a non-empty selection, copy it (and clear, so the next
 // Ctrl+C can still send SIGINT) and report handled; otherwise return false so the
 // keypress falls through to the PTY as the interrupt signal. Mirrors the menu's copy.
-function copySelection(term) {
-  if (term.hasSelection && term.hasSelection()) {
-    const sel = term.getSelection();
-    if (sel) { lite.copyText(sel); if (term.clearSelection) term.clearSelection(); return true; }
-  }
-  return false;
-}
-
 function showActiveTerminal() {
   const asid = activeSessionId();
   $('#empty-hint').style.display = activeId ? 'none' : 'flex';
@@ -1203,7 +1148,6 @@ function handleRemoteClose(sid) {
   closeTab(sid);
 }
 function refitActiveTerminal(focusIt) {
-  Containers.refitExec(); // exec-терминал контейнера тоже подгоняется под новый размер
   try { Ext.refitTerminal(); } catch (_) {} // dev-терминал модуля в #ext-pane
   const asid = activeSessionId();
   const rec = asid ? terms.get(asid) : null;
@@ -1395,7 +1339,6 @@ function applyFontSize() {
   for (const rec of terms.values()) { rec.term.options.fontSize = settings.fontSize; try { rec.fit.fit(); } catch (_) {} }
   for (const rec of scratchTerms.values()) { rec.term.options.fontSize = settings.fontSize; try { rec.fit.fit(); } catch (_) {} }
   for (const rec of extTerms.values()) { rec.term.options.fontSize = settings.fontSize; try { rec.fit.fit(); } catch (_) {} }
-  Rh.applyFontSize(); // SSH-терминалы модуля «Удалённые хосты»
   document.documentElement.style.setProperty('--editor-fs', settings.fontSize + 'px');
   refitActiveTerminal();
 }
@@ -1888,9 +1831,9 @@ function setViewerOpen(open, opts = {}) {
 // Реестр панелей: каждая setXxxOpen знает только себя, взаимоисключение — closeOtherPanels.
 // Порядок закрытия фиксирован (он же — порядок старых inline-цепочек во всех setXxxOpen).
 const panels = new Map(); // id -> { isOpen(), setOpen(open, opts) }
-const PANEL_ORDER = ['files', 'ctx', 'docker', 'scratch', 'rh'];
+const PANEL_ORDER = ['files', 'ctx', 'scratch'];
 // Модули, мигрированные в отдельные окна (открываются через lite.module.open, не как панель правого слота).
-const WINDOW_MODULES = new Set(['tools', 'iterflow', 'seo', 'audit', 'notes', 'db', 'git', 'chat', 'doc']);
+const WINDOW_MODULES = new Set(['tools', 'iterflow', 'seo', 'audit', 'notes', 'db', 'git', 'chat', 'doc', 'docker', 'rh']);
 function registerPanel(id, api) { panels.set(id, api); }
 function closeOtherPanels(selfId) {
   for (const id of PANEL_ORDER) {
@@ -1909,18 +1852,9 @@ const Ctx = initCtx({
   activeProject, getActiveId: () => activeId, closeOtherPanels,
 });
 registerPanel('ctx', { isOpen: Ctx.isOpen, setOpen: Ctx.setOpen });
-const Containers = initContainers({
-  STORE, persist, settings, layout, GUTTER, saveUiState, refitActiveTerminal,
-  closeOtherPanels, termTheme, applyUnicode11, loadFastRenderer,
-});
-registerPanel('docker', { isOpen: Containers.isOpen, setOpen: Containers.setOpen });
-// «Базы данных» (db) мигрирован в отдельное окно (самостоятельный). См. WINDOW_MODULES / module-entry.js.
+// Контейнеры (docker), «Базы данных» (db), «Удалённые хосты» (rh) мигрированы в отдельные окна
+// (самостоятельные). Стримы (containers:*/rh:*) маршрутизируются по окну-владельцу. См. module-entry.js.
 registerPanel('scratch', { isOpen: () => scratchOpen, setOpen: setScratchOpen });
-const Rh = initRh({
-  STORE, persist, settings, layout, GUTTER, saveUiState, refitActiveTerminal,
-  closeOtherPanels, termTheme, applyUnicode11, loadFastRenderer, copySelection,
-});
-registerPanel('rh', { isOpen: Rh.isOpen, setOpen: Rh.setOpen });
 // Задачи (notes) мигрированы в отдельное окно (проектозависимое: следует за активным проектом редактора).
 // Аудит (audit) мигрирован в отдельное окно (проектозависимое: следует за активным проектом редактора
 // через app:activeProject). IterFlow и WEB/SEO аудит — тоже отдельные окна. См. module-entry.js.
@@ -2923,7 +2857,7 @@ function paletteActions() {
   acts.push({ label: 'Открыть Git', run: () => openModule('git') });
   acts.push({ label: Ctx.isOpen() ? 'Закрыть контекст' : 'Контекст — граф контекста агента', run: Ctx.toggle });
   if (Ctx.isOpen()) acts.push({ label: 'Контекст: подтвердить (✓ собрать CLAUDE.md / AGENTS.md)', run: () => Ctx.applyCompile() });
-  acts.push({ label: Containers.isOpen() ? 'Закрыть контейнеры' : 'Контейнеры (Docker / Podman)', run: Containers.toggle });
+  acts.push({ label: 'Контейнеры (Docker / Podman)', run: () => openModule('docker') });
   acts.push({ label: 'Базы данных (Postgres / MySQL / SQLite)', run: () => openModule('db') });
   acts.push({ label: 'Задачи — заметки проекта', run: () => openModule('notes') });
   acts.push({ label: 'Режим «один терминал»', run: toggleSingle });
@@ -3090,7 +3024,6 @@ function init() {
     setProjState(id, 'quiet');
   });
   // RemoteHost — SSH-сессии (отдельный канал, не PTY): пишем вывод в соответствующий xterm.
-  Rh.bindEvents(); // поток данных/закрытие SSH-сессий → xterm-вкладки модуля
   // Пульт выбрал вкладку → синхронизируем активную на десктопе.
   try { if (lite.remote && lite.remote.onSelect) lite.remote.onSelect((sid) => { try { handleRemoteSelect(sid); } catch (_) {} }); } catch (_) {}
   // Пульт открыл терминал проекта → создаём вкладку на десктопе.
@@ -3143,12 +3076,7 @@ function init() {
   // git живёт в окне модуля (module.html) — кнопки привязывает module-entry.js.
   // doc (обработка текста) живёт в окне модуля — кнопки привязывает module-entry.js.
   // tools/iterflow/seo/audit/notes живут в окнах модулей (module.html) — их кнопки привязывает module-entry.js.
-  $('#docker-close').addEventListener('click', () => Containers.setOpen(false));
-  $('#docker-refresh').addEventListener('click', () => Containers.refresh());
-  // db живёт в окне модуля (module.html) — кнопки привязывает module-entry.js.
-  $('#rh-close').addEventListener('click', () => Rh.setOpen(false));
-  $('#rh-refresh').addEventListener('click', () => { if (Rh.isOpen()) Rh.renderPanel(); });
-  $('#rh-back').addEventListener('click', () => Rh.goList());
+  // docker (контейнеры), db, rh (удалённые хосты) живут в окнах модулей — кнопки привязывает module-entry.js.
   // Действия из окон модулей (audit/notes/…): открыть файл в вивере / послать текст в терминал / обновить дерево.
   lite.editorBus.onOpenInViewer(async (abs, line) => { if (!viewerOpen) await setViewerOpen(true); await openFile(abs, line); });
   lite.editorBus.onSendToTerminal((text) => { const p = activeProject(); if (p) sendNoteToTerminal(p, text); });
@@ -3225,7 +3153,7 @@ function init() {
   new ResizeObserver(() => { clearTimeout(rezTimer); rezTimer = setTimeout(() => refitActiveTerminal(), 80); }).observe($('#terminal-pane'));
   let scratchRezTimer;
   new ResizeObserver(() => { clearTimeout(scratchRezTimer); scratchRezTimer = setTimeout(() => refitScratch(), 80); }).observe($('#scratch-pane'));
-  let rhRezTimer; new ResizeObserver(() => { clearTimeout(rhRezTimer); rhRezTimer = setTimeout(() => Rh.refitSession(), 80); }).observe($('#rh-pane'));
+  // rh-ресайз (#rh-pane) теперь в окне модуля «Удалённые хосты» — обрабатывается module-entry.js.
 
   applyFontSize();
   projects = loadProjectsFromDisk();
@@ -3239,7 +3167,7 @@ function init() {
   // Right-slot modules are mutually exclusive — restore at most one, first-true-wins
   // (приоритет — порядок старых if-цепочек: viewer, scratch, git, docker, db, rh).
   // allowEmpty so Git returns even before a project is active — matching the viewer, so window width fits.
-  const RESTORE_ORDER = [['files', 'viewerOpen'], ['scratch', 'scratchOpen'], ['ctx', 'ctxOpen'], ['docker', 'dockerOpen'], ['rh', 'rhOpen']];
+  const RESTORE_ORDER = [['files', 'viewerOpen'], ['scratch', 'scratchOpen'], ['ctx', 'ctxOpen']];
   for (const [id, key] of RESTORE_ORDER) {
     if (!ui[key]) continue;
     panels.get(id).setOpen(true, (id === 'ctx') ? { grow: false, allowEmpty: true } : { grow: false });
