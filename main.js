@@ -1801,8 +1801,11 @@ ipcMain.on('tray:update', (_e, { attention } = {}) => {
 
 // Grow/shrink the window to the right by dx px (used when the viewer opens, so
 // the terminal keeps its size instead of being squished).
-ipcMain.on('win:growBy', (_e, { dx }) => {
-  if (!mainWindow || mainWindow.isFullScreen() || mainWindow.isMaximized()) return;
+ipcMain.on('win:growBy', (e, { dx }) => {
+  // growBy растягивает ТОЛЬКО окно редактора (правый слот). В окнах модулей панель занимает всё окно,
+  // поэтому их вызовы growBy (напр. из setOpen(false) модуля) — no-op, чтобы не двигать окно редактора.
+  if (!mainWindow || senderWin(e) !== mainWindow) return;
+  if (mainWindow.isFullScreen() || mainWindow.isMaximized()) return;
   const b = mainWindow.getBounds();
   const work = screen.getDisplayMatching(b).workArea;
   // Accumulate the request in a virtual width (unclamped) so a clamped grow + full shrink

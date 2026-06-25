@@ -17,6 +17,8 @@ import { initAudit } from './modules/audit.js';
 import { initNotes } from './modules/notes.js';
 import { initDb } from './modules/db.js';
 import { initGit } from './modules/git.js';
+import { initOpenRouter } from './modules/openrouter.js';
+import { initTextProc } from './modules/textproc.js';
 
 const lite = window.lite;
 const $ = (s) => document.querySelector(s);
@@ -54,6 +56,15 @@ const MODULES = {
   git: {
     title: 'Git', init: initGit, project: true,
     wire: (mod) => { bind('#git-refresh', () => mod.renderPanel(activeProj)); },
+  },
+  chat: {
+    title: 'OpenRouter', init: initOpenRouter, project: false,
+    // чат сам вешает слушатели панели и стрима (bindControls биндит #chat-close/#chat-keys/модель/сессии).
+    wire: (mod) => { try { mod.bindControls(); mod.bindStream(); } catch (_) {} },
+  },
+  doc: {
+    title: 'Обработка текста', init: initTextProc, project: false,
+    wire: (mod) => { bind('#doc-settings', () => mod.showSettings()); },
   },
 };
 

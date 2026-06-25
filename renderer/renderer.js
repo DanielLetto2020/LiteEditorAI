@@ -26,7 +26,7 @@ import { css } from '@codemirror/lang-css';
 import { sql, PostgreSQL, MySQL, SQLite } from '@codemirror/lang-sql';
 import { createCodeEditor, languageFor } from './codeedit.js';
 import { showMinimap } from '@replit/codemirror-minimap';
-import { initTextProc } from './modules/textproc.js';
+// initTextProc — «Обработка текста» мигрирована в отдельное окно (renderer/module-entry.js).
 import { el, svgEl, icon, iconBtn, hydrateIcons, toast, renderDiffInto, makeModal, showConfirm, showPrompt, baseName, ICONS, setErrorSink, applyLayoutSwap } from './ui.js';
 // initGit — модуль «Git» мигрирован в отдельное окно (renderer/module-entry.js).
 import { initCtx } from './modules/contextgraph.js';
@@ -34,10 +34,10 @@ import { initContainers } from './modules/containers.js';
 // initDb — модуль «Базы данных» мигрирован в отдельное окно (renderer/module-entry.js).
 import { initRh } from './modules/remotehost.js';
 // initNotes / initAudit / initSeo / initTools / initIterflow — модули мигрированы в отдельные окна (renderer/module-entry.js).
-import { initOpenRouter } from './modules/openrouter.js';
+// initOpenRouter — чат мигрирован в отдельное окно (renderer/module-entry.js).
 import { initExtensions } from './modules/extensions.js';
 
-const APP_VERSION = 'alpha v1.1.6';
+const APP_VERSION = 'alpha v1.1.7';
 const GUTTER = 5;
 const SCRATCH_ID = '__scratch__'; // префикс id системных терминалов (домашняя папка), не привязаны к проектам
 const isScratch = (id) => typeof id === 'string' && id.startsWith(SCRATCH_ID);
@@ -151,7 +151,7 @@ function loadLayout() { return { ...DEFAULT_LAYOUT, ...(STORE.layout || {}) }; }
 function saveLayout() { persist('layout', layout); }
 // Whether the viewer / system terminal panes are open — part of the backed-up state,
 // restored on startup (and on import) so the window reopens the way it was left.
-function saveUiState() { persist('uiState', { viewerOpen, scratchOpen, ctxOpen: Ctx.isOpen(), dockerOpen: Containers.isOpen(), rhOpen: Rh.isOpen(), chatOpen: Or.isOpen(), docOpen: TextProc.isOpen() }); }
+function saveUiState() { persist('uiState', { viewerOpen, scratchOpen, ctxOpen: Ctx.isOpen(), dockerOpen: Containers.isOpen(), rhOpen: Rh.isOpen() }); }
 function applyLayout() {
   $('#sidebar').style.flexBasis = layout.sidebar + 'px';
   $('#viewer-pane').style.flexBasis = layout.viewer + 'px';
@@ -161,8 +161,6 @@ function applyLayout() {
   $('#docker-pane').style.flexBasis = layout.docker + 'px';
   $('#rh-pane').style.flexBasis = layout.rh + 'px';
   $('#ext-pane').style.flexBasis = layout.ext + 'px';
-  $('#chat-pane').style.flexBasis = layout.chat + 'px';
-  $('#doc-pane').style.flexBasis = layout.doc + 'px';
 }
 function loadRecents() { return Array.isArray(STORE.recents) ? STORE.recents : []; }
 function pushRecent(p) {
@@ -1890,9 +1888,9 @@ function setViewerOpen(open, opts = {}) {
 // Реестр панелей: каждая setXxxOpen знает только себя, взаимоисключение — closeOtherPanels.
 // Порядок закрытия фиксирован (он же — порядок старых inline-цепочек во всех setXxxOpen).
 const panels = new Map(); // id -> { isOpen(), setOpen(open, opts) }
-const PANEL_ORDER = ['files', 'ctx', 'docker', 'scratch', 'rh', 'chat', 'doc'];
+const PANEL_ORDER = ['files', 'ctx', 'docker', 'scratch', 'rh'];
 // Модули, мигрированные в отдельные окна (открываются через lite.module.open, не как панель правого слота).
-const WINDOW_MODULES = new Set(['tools', 'iterflow', 'seo', 'audit', 'notes', 'db', 'git']);
+const WINDOW_MODULES = new Set(['tools', 'iterflow', 'seo', 'audit', 'notes', 'db', 'git', 'chat', 'doc']);
 function registerPanel(id, api) { panels.set(id, api); }
 function closeOtherPanels(selfId) {
   for (const id of PANEL_ORDER) {
@@ -1929,22 +1927,9 @@ registerPanel('rh', { isOpen: Rh.isOpen, setOpen: Rh.setOpen });
 // Инструменты — devtools-комбайн (renderer/modules/tools.js); системная панель, чистый фронт без бэкенда.
 // «Инструменты» (tools) — мигрирован в отдельное окно: openModule('tools') открывает BrowserWindow
 // (см. WINDOW_MODULES / lite.module.open). В правом слоте больше не регистрируется.
-// OpenRouter — чат по своим API-ключам (renderer/modules/openrouter.js); панель правого слота.
-// Карточки-ключи живут секцией в колонке проектов; клик по карточке открывает панель на нужном ключе.
-const Or = initOpenRouter({
-  STORE, persist, settings,
-  layout, GUTTER, saveUiState, refitActiveTerminal, closeOtherPanels,
-  closeMenus: () => closeMenus(),
-});
-registerPanel('chat', { isOpen: Or.isOpen, setOpen: Or.setOpen });
-// «Обработка текста» — документы + AI-правки фрагментов (renderer/modules/textproc.js); панель правого слота.
-// Документы показываются вкладками внутри панели; клик по вкладке открывает документ.
-const TextProc = initTextProc({
-  el, icon, iconBtn, makeModal, showConfirm, showPrompt, toast,
-  STORE, persist, settings, saveSettings,
-  layout, GUTTER, saveUiState, refitActiveTerminal, closeOtherPanels,
-});
-registerPanel('doc', { isOpen: TextProc.isOpen, setOpen: TextProc.setOpen });
+// OpenRouter (чат) и «Обработка текста» мигрированы в отдельные окна (самостоятельные). Их стримы
+// (openrouter:chunk/done/error, tp:done/error) уже маршрутизируются по окну-отправителю через
+// safeSend(e.sender,…) в main.js → уходят именно в своё окно. См. WINDOW_MODULES / module-entry.js.
 // Пользовательские модули (extensions): загрузчик + общая панель правого слота.
 // renderer/modules/extensions.js; публичный API ctx v1 — спека в module-kit/GUIDE.md.
 const Ext = initExtensions({
@@ -3125,8 +3110,6 @@ function init() {
     if (lite.remote && lite.remote.pults) setTimeout(() => { refreshPults().catch(() => {}); }, 1500);
   } catch (_) {}
 
-  // OpenRouter streaming → SSE-события маршрутизирует модуль (по reqId).
-  Or.bindStream();
 
   // Live disk changes for the active project: refresh tree (keeping expansion)
   // and reload the open file — or warn if you have unsaved edits.
@@ -3158,8 +3141,7 @@ function init() {
   $('#viewer-reload-apply').addEventListener('click', () => { hideReloadBar(); reloadCurrentFile(); });
   $('#viewer-reload-dismiss').addEventListener('click', () => hideReloadBar());
   // git живёт в окне модуля (module.html) — кнопки привязывает module-entry.js.
-  $('#doc-close').addEventListener('click', () => TextProc.setOpen(false));
-  $('#doc-settings').addEventListener('click', () => TextProc.showSettings());
+  // doc (обработка текста) живёт в окне модуля — кнопки привязывает module-entry.js.
   // tools/iterflow/seo/audit/notes живут в окнах модулей (module.html) — их кнопки привязывает module-entry.js.
   $('#docker-close').addEventListener('click', () => Containers.setOpen(false));
   $('#docker-refresh').addEventListener('click', () => Containers.refresh());
@@ -3213,7 +3195,7 @@ function init() {
   $('#term-search-prev').addEventListener('click', () => runTermSearch(-1));
   $('#term-search-close').addEventListener('click', closeTermSearch);
 
-  Or.bindControls(); // OpenRouter chat controls — слушатели панели чата (модуль)
+  // OpenRouter (чат) живёт в окне модуля — bindControls/bindStream вызывает module-entry.js.
 
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && document.body.classList.contains('preview-full')) { e.preventDefault(); exitPreviewFull(); return; }
@@ -3257,7 +3239,7 @@ function init() {
   // Right-slot modules are mutually exclusive — restore at most one, first-true-wins
   // (приоритет — порядок старых if-цепочек: viewer, scratch, git, docker, db, rh).
   // allowEmpty so Git returns even before a project is active — matching the viewer, so window width fits.
-  const RESTORE_ORDER = [['files', 'viewerOpen'], ['scratch', 'scratchOpen'], ['ctx', 'ctxOpen'], ['docker', 'dockerOpen'], ['rh', 'rhOpen'], ['chat', 'chatOpen'], ['doc', 'docOpen']];
+  const RESTORE_ORDER = [['files', 'viewerOpen'], ['scratch', 'scratchOpen'], ['ctx', 'ctxOpen'], ['docker', 'dockerOpen'], ['rh', 'rhOpen']];
   for (const [id, key] of RESTORE_ORDER) {
     if (!ui[key]) continue;
     panels.get(id).setOpen(true, (id === 'ctx') ? { grow: false, allowEmpty: true } : { grow: false });
