@@ -39,10 +39,10 @@ import { el, svgEl, icon, iconBtn, hydrateIcons, toast, renderDiffInto, makeModa
 // initOpenRouter — чат мигрирован в отдельное окно (renderer/module-entry.js).
 import { initExtensions } from './modules/extensions.js';
 
-const APP_VERSION = 'alpha v1.1.10';
+const APP_VERSION = 'alpha v1.1.11';
 const GUTTER = 5;
-const SCRATCH_ID = '__scratch__'; // префикс id системных терминалов (домашняя папка), не привязаны к проектам
-const isScratch = (id) => typeof id === 'string' && id.startsWith(SCRATCH_ID);
+// Системный терминал («Система · ~») мигрирован в отдельное окно (renderer/modules/scratch.js):
+// его id `__scratch__::tN` маршрутизируются main'ом в окно-владельца, в ядре их больше не обрабатываем.
 
 const lite = window.lite;
 const $ = (sel) => document.querySelector(sel);
@@ -87,11 +87,6 @@ let gitFiles = {};           // active project: abs path -> git short status cod
 // после этого места). Сами модули держат своё внутреннее состояние (активный ключ/документ).
 
 let viewerOpen = false;
-let scratchOpen = false;     // системный терминал справа открыт
-const scratchTerms = new Map(); // scratchId -> { term, fit, search, container, name }
-let scratchSessions = [];        // ordered scratch ids (tabs)
-let scratchActiveId = null;
-let scratchSeq = 0;
 // Терминалы dev-папок пользовательских модулей: живут ВНУТРИ панели «Модули» (#ext-pane),
 // не в области проектов и не среди скретч-вкладок. cwd = папка модуля.
 const EXT_TERM_ID = '__extterm__';
@@ -120,7 +115,6 @@ function applyTheme() {
   const name = THEMES[settings.theme] ? settings.theme : DEFAULT_THEME;
   document.body.dataset.theme = name; // always set; index.html ships data-theme too so there's no flash
   for (const rec of terms.values()) { try { rec.term.options.theme = termTheme(); } catch (_) {} }
-  for (const rec of scratchTerms.values()) { try { rec.term.options.theme = termTheme(); } catch (_) {} }
   for (const rec of extTerms.values()) { try { rec.term.options.theme = termTheme(); } catch (_) {} }
   try { Ext.notifyTheme(name); } catch (_) {} // пользовательские модули: ctx.theme.onChange
   try { lite.app.settingsChanged(settings); } catch (_) {} // окна модулей: применить тему/настройки
@@ -135,12 +129,11 @@ function loadLayout() { return { ...DEFAULT_LAYOUT, ...(STORE.layout || {}) }; }
 function saveLayout() { persist('layout', layout); }
 // Whether the viewer / system terminal panes are open — part of the backed-up state,
 // restored on startup (and on import) so the window reopens the way it was left.
-function saveUiState() { persist('uiState', { viewerOpen, scratchOpen }); }
+function saveUiState() { persist('uiState', { viewerOpen }); }
 function applyLayout() {
   $('#sidebar').style.flexBasis = layout.sidebar + 'px';
   $('#viewer-pane').style.flexBasis = layout.viewer + 'px';
   $('#tree-pane').style.flexBasis = layout.tree + 'px';
-  $('#scratch-pane').style.flexBasis = layout.scratch + 'px';
   $('#ext-pane').style.flexBasis = layout.ext + 'px';
 }
 function loadRecents() { return Array.isArray(STORE.recents) ? STORE.recents : []; }
@@ -1080,7 +1073,7 @@ async function pasteInto(id) {
   if (text) lite.pty.write(id, text);
   // Reading the clipboard is async (IPC round-trip) and the right-click menu steals
   // focus — without this the terminal looks "frozen" until clicked. Refocus the xterm.
-  const rec = scratchTerms.get(id) || terms.get(id);
+  const rec = terms.get(id);
   if (rec && rec.term) { try { rec.term.focus(); } catch (_) {} }
 }
 // Smart Ctrl+C: if there's a non-empty selection, copy it (and clear, so the next
@@ -1176,12 +1169,10 @@ function refitActiveTerminal(focusIt) {
   });
 }
 function clearTerminal(id) {
-  if (isScratch(id)) { const r = scratchTerms.get(id) || scratchTerms.get(scratchActiveId); if (r) { try { r.term.clear(); } catch (_) {} r.term.focus(); } return; }
   const sid = (id && terms.has(id)) ? id : activeSessionId();
   const rec = terms.get(sid); if (rec) { try { rec.term.clear(); } catch (_) {} rec.term.focus(); }
 }
 function restartTerminal(id) {
-  if (isScratch(id)) { restartScratch(id); return; }
   const sid = (id && terms.has(id)) ? id : activeSessionId();
   const rec = terms.get(sid);
   const proj = rec && projects.find((p) => p.id === rec.projId);
@@ -1194,122 +1185,6 @@ function restartTerminal(id) {
   rec.term.focus();
 }
 
-// ---------------------------------------------------------------- system terminals (module)
-// System terminals aren't tied to any project (cwd = home dir; main falls back to os.homedir()
-// when no cwd is given). Now a right-slot MODULE with its own TABS — several independent shells.
-// PTY ids are `__scratch__::tN`.
-function newScratchId() { return SCRATCH_ID + '::t' + (++scratchSeq); }
-function createScratchSession(name) {
-  const id = newScratchId();
-  const container = el('div', 'term-instance');
-  $('#scratch-term').appendChild(container);
-  const term = new Terminal({
-    fontFamily: '"JetBrains Mono", "Fira Code", "Cascadia Code", Consolas, monospace',
-    fontSize: settings.fontSize, cursorBlink: true, allowProposedApi: true, theme: termTheme(), scrollback: 5000,
-  });
-  const fit = new FitAddon();
-  const search = new SearchAddon();
-  term.loadAddon(fit);
-  term.loadAddon(search);
-  term.loadAddon(new WebLinksAddon((_e, uri) => lite.openExternal(uri)));
-  applyUnicode11(term);
-  term.open(container);
-  loadFastRenderer(term);
-  fit.fit();
-  lite.pty.create({ id, cols: term.cols, rows: term.rows }); // no cwd → ~ (os.homedir)
-  term.onData((data) => lite.pty.write(id, data));
-  term.onResize(({ cols, rows }) => lite.pty.resize(id, cols, rows));
-  term.attachCustomKeyEventHandler((e) => {
-    if (e.type !== 'keydown') return true;
-    if (e.ctrlKey && e.shiftKey && e.code === 'KeyT') { addScratchTab(); return false; }
-    if (e.ctrlKey && e.shiftKey && e.code === 'KeyW') { closeScratchTab(scratchActiveId); return false; }
-    if (e.ctrlKey && (e.key === 'PageDown' || e.key === 'PageUp')) { cycleScratchTab(e.key === 'PageDown' ? 1 : -1); return false; }
-    // match by physical key so copy/paste work in any layout (Russian incl.)
-    if (e.ctrlKey && !e.shiftKey && !e.altKey && e.code === 'KeyC') return !copySelection(term); // copied → swallow; else SIGINT
-    if (e.ctrlKey && !e.shiftKey && !e.altKey && e.code === 'KeyV') { e.preventDefault(); pasteInto(id); return false; }
-    // Ctrl+Enter — перенос строки в вводе (продолжение команды): \ + CR для bash/zsh, LF для ConPTY/PSReadLine (Win)
-    if (e.ctrlKey && !e.shiftKey && !e.altKey && e.key === 'Enter') { lite.pty.write(id, lite.platform === 'win32' ? '\n' : '\\\r'); return false; }
-    return true;
-  });
-  container.addEventListener('contextmenu', (e) => { e.preventDefault(); showTermMenu(e.clientX, e.clientY, term, id); });
-  scratchTerms.set(id, { term, fit, search, container, name: name || ('Терминал ' + (scratchSessions.length + 1)) });
-  scratchSessions.push(id);
-  return id;
-}
-function ensureScratch() { if (!scratchSessions.length) scratchActiveId = createScratchSession('Терминал 1'); }
-function showActiveScratch() {
-  for (const [sid, rec] of scratchTerms) rec.container.style.display = sid === scratchActiveId ? 'block' : 'none';
-  renderScratchTabs();
-  refitScratch(true);
-}
-function renderScratchTabs() {
-  const bar = $('#scratch-tabs'); if (!bar) return;
-  bar.innerHTML = '';
-  scratchSessions.forEach((sid) => {
-    const rec = scratchTerms.get(sid); if (!rec) return;
-    const tab = el('div', 'tab' + (sid === scratchActiveId ? ' active' : ''));
-    tab.appendChild(el('span', 'tab-name', rec.name));
-    if (scratchSessions.length > 1) {
-      const x = iconBtn('tab-close', 'x', 'Закрыть вкладку (Ctrl+Shift+W)', 12);
-      x.addEventListener('click', (e) => { e.stopPropagation(); closeScratchTab(sid); });
-      tab.appendChild(x);
-    }
-    tab.addEventListener('click', () => switchScratchTab(sid));
-    tab.addEventListener('dblclick', () => renameScratchTab(sid));
-    bar.appendChild(tab);
-  });
-  const add = iconBtn('tab-add', 'plus', 'Новый системный терминал (Ctrl+Shift+T)', 15);
-  add.addEventListener('click', () => addScratchTab());
-  bar.appendChild(add);
-}
-function switchScratchTab(sid) { if (!scratchTerms.has(sid)) return; scratchActiveId = sid; showActiveScratch(); }
-function addScratchTab() { scratchActiveId = createScratchSession('Терминал ' + (scratchSessions.length + 1)); showActiveScratch(); }
-function closeScratchTab(sid) {
-  if (scratchSessions.length <= 1) return; // keep ≥1
-  lite.pty.kill(sid);
-  const rec = scratchTerms.get(sid);
-  if (rec) { try { rec.term.dispose(); } catch (_) {} rec.container.remove(); scratchTerms.delete(sid); }
-  const i = scratchSessions.indexOf(sid); scratchSessions.splice(i, 1);
-  if (scratchActiveId === sid) scratchActiveId = scratchSessions[Math.max(0, i - 1)];
-  showActiveScratch();
-}
-function cycleScratchTab(dir) {
-  if (scratchSessions.length < 2) return;
-  let i = scratchSessions.indexOf(scratchActiveId) + dir;
-  if (i < 0) i = scratchSessions.length - 1; if (i >= scratchSessions.length) i = 0;
-  switchScratchTab(scratchSessions[i]);
-}
-function renameScratchTab(sid) {
-  const rec = scratchTerms.get(sid); if (!rec) return;
-  showPrompt('Переименовать вкладку', 'Название', rec.name, (v) => { rec.name = v; renderScratchTabs(); });
-}
-function refitScratch(focusIt) {
-  if (!scratchOpen || !scratchActiveId) return;
-  const rec = scratchTerms.get(scratchActiveId); if (!rec) return;
-  requestAnimationFrame(() => {
-    try { rec.fit.fit(); lite.pty.resize(scratchActiveId, rec.term.cols, rec.term.rows); if (focusIt) rec.term.focus(); } catch (_) {}
-  });
-}
-function setScratchOpen(open, opts = {}) {
-  if (open === scratchOpen) { if (open) refitScratch(true); return; }
-  // System terminals are a right-slot module now → mutually exclusive with the rest.
-  if (open) closeOtherPanels('scratch');
-  const delta = layout.scratch + GUTTER;
-  scratchOpen = open;
-  $('#scratch-pane').classList.toggle('hidden', !open);
-  $('#gutter-scratch').classList.toggle('hidden', !open);
-  if (opts.grow !== false) lite.win.growBy(open ? delta : -delta); // grow:false on restore — saved width already counts this pane
-  saveUiState();
-  if (open) { ensureScratch(); setTimeout(() => showActiveScratch(), 60); }
-  setTimeout(refitActiveTerminal, 160);
-}
-function restartScratch(id) {
-  const sid = (id && scratchTerms.has(id)) ? id : scratchActiveId;
-  const rec = scratchTerms.get(sid); if (!rec) return;
-  try { rec.term.reset(); } catch (_) {}
-  lite.pty.restart({ id: sid, cols: rec.term.cols, rows: rec.term.rows }); // no cwd → ~
-  rec.term.focus();
-}
 
 // Терминал dev-папки модуля: PTY+xterm в переданном контейнере (живёт в #ext-pane).
 // Возвращает handle для extensions.js; xterm в код модуля не утекает (правило изоляции).
@@ -1356,10 +1231,10 @@ function createExtTerminal(container, cwd) {
 let watchedRoot = null; // we live-watch only the active project to limit inotify use
 function applyFontSize() {
   for (const rec of terms.values()) { rec.term.options.fontSize = settings.fontSize; try { rec.fit.fit(); } catch (_) {} }
-  for (const rec of scratchTerms.values()) { rec.term.options.fontSize = settings.fontSize; try { rec.fit.fit(); } catch (_) {} }
   for (const rec of extTerms.values()) { rec.term.options.fontSize = settings.fontSize; try { rec.fit.fit(); } catch (_) {} }
   document.documentElement.style.setProperty('--editor-fs', settings.fontSize + 'px');
   refitActiveTerminal();
+  try { lite.app.settingsChanged(settings); } catch (_) {} // окно «Система · ~» подхватит размер шрифта
 }
 function bumpFont(delta) {
   settings.fontSize = Math.max(9, Math.min(24, settings.fontSize + delta));
@@ -1850,9 +1725,9 @@ function setViewerOpen(open, opts = {}) {
 // Порядок закрытия фиксирован (он же — порядок старых inline-цепочек во всех setXxxOpen).
 const panels = new Map(); // id -> { isOpen(), setOpen(open, opts) }
 // Правый слот редактора теперь держит только не-модули: вивер+дерево (files) и системный терминал (scratch).
-const PANEL_ORDER = ['files', 'scratch'];
+const PANEL_ORDER = ['files'];
 // Модули, мигрированные в отдельные окна (открываются через lite.module.open, не как панель правого слота).
-const WINDOW_MODULES = new Set(['tools', 'iterflow', 'seo', 'audit', 'notes', 'db', 'git', 'chat', 'doc', 'docker', 'rh', 'ctx']);
+const WINDOW_MODULES = new Set(['tools', 'iterflow', 'seo', 'audit', 'notes', 'db', 'git', 'chat', 'doc', 'docker', 'rh', 'ctx', 'scratch']);
 function registerPanel(id, api) { panels.set(id, api); }
 function closeOtherPanels(selfId) {
   for (const id of PANEL_ORDER) {
@@ -1869,7 +1744,7 @@ registerPanel('files', { isOpen: () => viewerOpen, setOpen: (open, opts) => { if
 // следует за активным проектом редактора). autoApply (тихая автосборка) портирована в ядро (ctxAutoApply).
 // Контейнеры (docker), «Базы данных» (db), «Удалённые хосты» (rh) мигрированы в отдельные окна
 // (самостоятельные). Стримы (containers:*/rh:*) маршрутизируются по окну-владельцу. См. module-entry.js.
-registerPanel('scratch', { isOpen: () => scratchOpen, setOpen: setScratchOpen });
+// scratch (системный терминал) мигрирован в отдельное окно — в реестре панелей больше нет.
 // Задачи (notes) мигрированы в отдельное окно (проектозависимое: следует за активным проектом редактора).
 // Аудит (audit) мигрирован в отдельное окно (проектозависимое: следует за активным проектом редактора
 // через app:activeProject). IterFlow и WEB/SEO аудит — тоже отдельные окна. См. module-entry.js.
@@ -3024,15 +2899,13 @@ function init() {
 
   lite.pty.onData(({ id, data }) => {
     if (isExtTerm(id)) { const r = extTerms.get(id); if (r) r.term.write(data); return; }
-    if (isScratch(id)) { const r = scratchTerms.get(id); if (r) r.term.write(data); return; }
-    const rec = terms.get(id);
+    const rec = terms.get(id); // scratch-сессии маршрутизируются в своё окно (не приходят сюда)
     if (!rec) return;
     rec.term.write(data);
     markActivity(id, data);
   });
   lite.pty.onExit(({ id }) => {
     if (isExtTerm(id)) { const r = extTerms.get(id); if (r) r.term.write('\r\n\x1b[90m[шелл завершён]\x1b[0m\r\n'); return; }
-    if (isScratch(id)) { const r = scratchTerms.get(id); if (r) r.term.write('\r\n\x1b[90m[шелл завершён — ⟳ для нового]\x1b[0m\r\n'); return; }
     const rec = terms.get(id);
     if (rec) rec.term.write('\r\n\x1b[90m[процесс завершён — закрой и переоткрой проект]\x1b[0m\r\n');
     setProjState(id, 'quiet');
@@ -3076,8 +2949,7 @@ function init() {
   });
 
   $('#btn-single').addEventListener('click', toggleSingle);
-  $('#scratch-restart').addEventListener('click', () => restartScratch());
-  $('#scratch-close').addEventListener('click', () => setScratchOpen(false));
+  // scratch (системный терминал) живёт в окне модуля — кнопки привязывает module-entry.js.
   $('#viewer-save').addEventListener('click', saveCurrent);
   $('#viewer-diff').addEventListener('click', toggleDiff);
   $('#viewer-preview').addEventListener('click', togglePreview);
@@ -3165,9 +3037,7 @@ function init() {
 
   let rezTimer;
   new ResizeObserver(() => { clearTimeout(rezTimer); rezTimer = setTimeout(() => refitActiveTerminal(), 80); }).observe($('#terminal-pane'));
-  let scratchRezTimer;
-  new ResizeObserver(() => { clearTimeout(scratchRezTimer); scratchRezTimer = setTimeout(() => refitScratch(), 80); }).observe($('#scratch-pane'));
-  // rh-ресайз (#rh-pane) теперь в окне модуля «Удалённые хосты» — обрабатывается module-entry.js.
+  // scratch/rh ресайз теперь в окнах модулей — обрабатывается module-entry.js.
 
   applyFontSize();
   projects = loadProjectsFromDisk();
@@ -3181,7 +3051,7 @@ function init() {
   // Right-slot modules are mutually exclusive — restore at most one, first-true-wins
   // (приоритет — порядок старых if-цепочек: viewer, scratch, git, docker, db, rh).
   // allowEmpty so Git returns even before a project is active — matching the viewer, so window width fits.
-  const RESTORE_ORDER = [['files', 'viewerOpen'], ['scratch', 'scratchOpen']];
+  const RESTORE_ORDER = [['files', 'viewerOpen']];
   for (const [id, key] of RESTORE_ORDER) {
     if (!ui[key]) continue;
     panels.get(id).setOpen(true, { grow: false });

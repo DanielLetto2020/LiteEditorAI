@@ -1860,7 +1860,10 @@ ipcMain.handle('dialog:pickDir', async () => {
 });
 
 // ---------------------------------------------------------------- PTY
-function spawnPtyFor(id, cwd, cols, rows) {
+// owner = webContents окна, создавшего сессию (редактор для терминалов проектов, окно «Система · ~»
+// для scratch). Данные/выход маршрутизируем владельцу (sendToOwner; фолбэк — окно редактора).
+function spawnPtyFor(id, cwd, cols, rows, owner) {
+  if (owner) ownerBySession.set(id, owner);
   const { file: shell, args: shellArgs } = resolveShell();
   const startCwd = cwd && fs.existsSync(cwd) ? cwd : os.homedir();
   // Log around the spawn: it runs synchronously on the main thread, so if it ever
@@ -1879,16 +1882,14 @@ function spawnPtyFor(id, cwd, cols, rows) {
     });
   } catch (err) {
     logger.log('error', 'pty', 'spawn failed', err);
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send('pty:data', { id, data: `\r\n\x1b[31mНе удалось запустить шелл (${shell}): ${err.message}\x1b[0m\r\n` });
-      mainWindow.webContents.send('pty:exit', { id });
-    }
+    sendToOwner(id, 'pty:data', { id, data: `\r\n\x1b[31mНе удалось запустить шелл (${shell}): ${err.message}\x1b[0m\r\n` });
+    sendToOwner(id, 'pty:exit', { id });
     return { error: String(err.message || err) };
   }
   logger.log('info', 'pty', `spawned pid=${proc.pid}`);
   mirrorCreate(id, cols, rows);   // свежий теневой терминал (сбрасывает scrollback при рестарте PTY)
   proc.onData((data) => {
-    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('pty:data', { id, data });
+    sendToOwner(id, 'pty:data', { id, data });     // окну-владельцу (редактор/scratch-окно)
     mirrorWrite(id, data);                         // сначала в теневой терминал (кадр всегда консистентен)
     try { remote.screenTouch(id); } catch (_) {}   // потом будим диффер кадров (debounce внутри)
   });
@@ -1897,24 +1898,24 @@ function spawnPtyFor(id, cwd, cols, rows) {
     ptys.delete(id);
     ptySize.delete(id);
     mirrorDispose(id);
-    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('pty:exit', { id });
+    sendToOwner(id, 'pty:exit', { id });
     try { remote.exit(id); remote.notifyState(); } catch (_) {}
   });
   ptys.set(id, proc);
   ptySize.set(id, { cols: cols || 80, rows: rows || 24 });
   return { ok: true };
 }
-ipcMain.handle('pty:create', (_e, { id, cwd, cols, rows }) => {
-  if (ptys.has(id)) return { ok: true, existed: true };
-  const r = spawnPtyFor(id, cwd, cols, rows);
+ipcMain.handle('pty:create', (e, { id, cwd, cols, rows }) => {
+  if (ptys.has(id)) { ownerBySession.set(id, e.sender); return { ok: true, existed: true }; }
+  const r = spawnPtyFor(id, cwd, cols, rows, e.sender);
   try { remote.notifyState(); } catch (_) {} // обновить список вкладок на пульте
   return r;
 });
 // Kill the existing PTY (if any) and start a fresh one in the same cwd.
-ipcMain.handle('pty:restart', (_e, { id, cwd, cols, rows }) => {
+ipcMain.handle('pty:restart', (e, { id, cwd, cols, rows }) => {
   const old = ptys.get(id);
   if (old) { try { old.kill(); } catch (_) {} ptys.delete(id); }
-  return spawnPtyFor(id, cwd, cols, rows);
+  return spawnPtyFor(id, cwd, cols, rows, e.sender);
 });
 ipcMain.on('pty:write', (_e, { id, data }) => { const p = ptys.get(id); if (p) p.write(data); });
 ipcMain.on('pty:resize', (_e, { id, cols, rows }) => {

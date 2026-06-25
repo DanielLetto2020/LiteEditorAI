@@ -23,6 +23,18 @@
 
     <!-- Скелеты панелей модулей переезжают сюда из index.html (по одному модулю на окно). -->
     <div id="module-root">
+      <!-- Системный терминал: свой PTY в домашней папке, вкладки независимых шеллов -->
+      <div id="gutter-scratch" class="gutter gutter-scratch hidden" data-resize="scratch"></div>
+      <section id="scratch-pane" class="hidden">
+        <div class="pane-head">
+          <span>СИСТЕМА · ~</span>
+          <div class="drag-space-static"></div>
+          <button id="scratch-restart" class="icon-btn" title="Перезапустить активную вкладку (новый шелл в ~)" data-icon="refresh"></button>
+          <button id="scratch-close" class="icon-btn" title="Закрыть модуль" data-icon="x"></button>
+        </div>
+        <div id="scratch-tabs" class="term-tabs scratch-tabs"></div>
+        <div id="scratch-term"></div>
+      </section>
       <!-- OpenRouter chat: чат по своим API-ключам (самостоятельный) -->
       <div id="gutter-chat" class="gutter hidden" data-resize="chat"></div>
       <section id="chat-pane" class="hidden">

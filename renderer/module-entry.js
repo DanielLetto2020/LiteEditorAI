@@ -24,6 +24,7 @@ import { initTextProc } from './modules/textproc.js';
 import { initContainers } from './modules/containers.js';
 import { initRh } from './modules/remotehost.js';
 import { initCtx } from './modules/contextgraph.js';
+import { initScratch } from './modules/scratch.js';
 
 const lite = window.lite;
 const $ = (s) => document.querySelector(s);
@@ -86,6 +87,10 @@ const MODULES = {
   // ctx сам биндит свои кнопки канвы (включая #ctx-close с dirty-guard) → selfClose:true:
   // module-entry НЕ переопределяет #ctx-close; закрытие окна идёт через host.closeWindow с подтверждением.
   ctx: { title: 'Контекст', init: initCtx, project: true, selfClose: true },
+  scratch: {
+    title: 'Система · ~', init: initScratch, project: false,
+    wire: (mod) => { bind('#scratch-restart', () => mod.restart()); },
+  },
 };
 
 const modId = (location.hash || '').replace(/^#/, '') || 'tools';
@@ -165,7 +170,11 @@ function boot() {
   let rezT;
   window.addEventListener('resize', () => {
     clearTimeout(rezT);
-    rezT = setTimeout(() => { try { mod && mod.refitExec && mod.refitExec(); } catch (_) {} try { mod && mod.refitSession && mod.refitSession(); } catch (_) {} }, 80);
+    rezT = setTimeout(() => {
+      try { mod && mod.refitExec && mod.refitExec(); } catch (_) {}
+      try { mod && mod.refitSession && mod.refitSession(); } catch (_) {}
+      try { mod && mod.refit && mod.refit(); } catch (_) {}
+    }, 80);
   });
 
   // the pane-head close button now closes the window; module's own buttons via wire().
