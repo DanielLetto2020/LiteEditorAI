@@ -302,6 +302,10 @@ html, body {
 .tab-close:hover { background: var(--hover-2); color: var(--text); }
 .tab-add { width: 26px; height: 26px; flex: 0 0 auto; align-self: center; margin-bottom: 3px; border: 0; background: none; color: var(--text-dim); border-radius: 7px; display: inline-flex; align-items: center; justify-content: center; cursor: pointer; }
 .tab-add:hover { background: var(--hover); color: var(--text); }
+/* вкладки внутри панелей-модулей (ключи OpenRouter / документы «Обработки текста») */
+.chat-tabs, .doc-tabs { flex: 0 0 auto; min-width: 0; display: flex; align-items: flex-end; gap: 3px; padding: 4px 8px 0; overflow-x: auto; overflow-y: hidden; border-bottom: 1px solid var(--border); background: var(--bar); }
+.chat-tabs::-webkit-scrollbar, .doc-tabs::-webkit-scrollbar { height: 0; }
+.chat-usage { flex: 0 0 auto; font-size: 11px; color: var(--text-mute); white-space: nowrap; }
 .term-instance { position: absolute; inset: 0; padding: 6px 4px 6px 10px; }
 .term-instance .xterm { height: 100%; }
 /* hide the terminal scrollbar entirely (wheel scroll still works) */
@@ -1921,12 +1925,12 @@ body.preview-full .prev-frame { width: 100%; height: 100%; }
 .or-row-key { font-size: 11px; color: var(--text-mute); font-family: "JetBrains Mono", monospace; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .or-add .field { margin-bottom: 10px; }
 
-/* ---------------- chat pane (replaces terminal for OpenRouter cards) ---------------- */
-#chat-pane { position: absolute; inset: 0; display: flex; flex-direction: column; min-height: 0; background: var(--bg); }
+/* ---------------- chat pane (right-slot panel for OpenRouter cards) ---------------- */
+#chat-pane { flex: 0 0 600px; min-width: 340px; border-left: 1px solid var(--border); display: flex; flex-direction: column; min-height: 0; background: var(--panel); }
 #chat-pane.hidden { display: none; }
-#chat-top { flex: 0 0 auto; display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-bottom: 1px solid var(--border); background: var(--bar); }
-.chat-title { font-weight: 600; font-size: 13px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 30%; }
-.chat-model-wrap { position: relative; flex: 1; min-width: 0; }
+#chat-top { flex: 0 0 auto; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 8px 12px; border-bottom: 1px solid var(--border); background: var(--bar); }
+.chat-title { font-weight: 600; font-size: 13px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.chat-model-wrap { position: relative; flex: 1 1 160px; min-width: 0; }
 .chat-model-btn {
   max-width: 100%; padding: 6px 12px; border-radius: 9px; cursor: pointer; font-size: 12.5px;
   background: var(--surface-2); border: 1px solid var(--border); color: var(--text);
@@ -1999,11 +2003,11 @@ body.preview-full .prev-frame { width: 100%; height: 100%; }
 .tp-file .ic { opacity: .7; }
 .tp-file-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-family: "JetBrains Mono", monospace; }
 
-/* центральная зона: документ вместо терминала */
-#doc-pane { position: absolute; inset: 0; display: flex; flex-direction: column; min-height: 0; background: var(--bg); }
+/* правый слот: документ «Обработки текста» */
+#doc-pane { flex: 0 0 640px; min-width: 340px; border-left: 1px solid var(--border); display: flex; flex-direction: column; min-height: 0; background: var(--panel); }
 #doc-pane.hidden { display: none; }
 #doc-toolbar { flex: 0 0 auto; display: flex; align-items: center; gap: 10px; padding: 7px 12px; border-bottom: 1px solid var(--border); background: var(--bar); }
-.doc-title { font-weight: 600; font-size: 13.5px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 220px; }
+.doc-title { font-weight: 600; font-size: 13.5px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .doc-modes { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
 .doc-tools-space { flex: 1; }
 .doc-saved { flex: 0 0 auto; font-size: 11px; color: var(--text-mute); }

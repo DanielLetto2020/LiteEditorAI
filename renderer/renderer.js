@@ -40,7 +40,7 @@ import { initTools } from './modules/tools.js';
 import { initOpenRouter } from './modules/openrouter.js';
 import { initExtensions } from './modules/extensions.js';
 
-const APP_VERSION = 'alpha v1.0.200';
+const APP_VERSION = 'alpha v1.0.201';
 const GUTTER = 5;
 const SCRATCH_ID = '__scratch__'; // префикс id системных терминалов (домашняя папка), не привязаны к проектам
 const isScratch = (id) => typeof id === 'string' && id.startsWith(SCRATCH_ID);
@@ -83,30 +83,9 @@ const missing = new Set();   // ids of projects whose folder no longer exists on
 const expandedDirs = new Set(); // tree dir paths currently expanded (survives live refresh)
 let gitFiles = {};           // active project: abs path -> git short status code
 
-// ---------------------------------------------------------------- OpenRouter chat state
-let activeOrId = null;        // id of the OpenRouter card whose chat is shown (null → terminal mode)
-const Or = initOpenRouter({
-  STORE, persist, settings, isCollapsed, setCollapsed, guardDirty,
-  renderProjects, showActiveTerminal, refreshViewerForActive,
-  closeMenus: () => closeMenus(),   // модалка ключей закрывает открытые дропдауны ядра
-  isViewerOpen: () => viewerOpen, getActiveOrId: () => activeOrId,
-  setActiveOrId: (v) => { activeOrId = v; }, clearActiveDoc: () => { activeDocId = null; },
-  // чат закрывает проектные модули правого слота; rh исторически не трогает (1:1)
-  closePanelsForChat: () => { if (Git.isOpen()) Git.setOpen(false); if (Containers.isOpen()) Containers.setOpen(false); if (Db.isOpen()) Db.setOpen(false); if (Notes.isOpen()) Notes.setOpen(false); if (Audit.isOpen()) Audit.setOpen(false); if (Iterflow.isOpen()) Iterflow.setOpen(false); if (Seo.isOpen()) Seo.setOpen(false); if (scratchOpen) setScratchOpen(false); },
-});
-// ---------------------------------------------------------------- Text processing (изолированный модуль)
-// Документ-плашка открывается ВМЕСТО терминала (как чат OpenRouter). Вся логика — в
-// renderer/textproc.js; связь только через host-контракт (см. модуль). activeDocId ≠ null
-// → центральная зона показывает документ. Mutually exclusive с чатом и терминалом.
-let activeDocId = null;
-const TextProc = initTextProc({
-  el, icon, iconBtn, makeModal, showConfirm, showPrompt, toast,
-  STORE, persist, settings, saveSettings, isCollapsed, setCollapsed,
-  activate: (id) => guardDirty(() => { activeOrId = null; activeDocId = id; renderProjects(); showActiveTerminal(); }),
-  isActive: (id) => activeDocId === id,
-  deactivate: () => { activeDocId = null; renderProjects(); showActiveTerminal(); },
-  refresh: () => renderProjects(),
-});
+// OpenRouter (чат) и «Обработка текста» — панели правого слота. Их инициализация и регистрация
+// в реестре панелей — ниже, вместе с git/audit/… (нужны layout/GUTTER/closeOtherPanels, объявленные
+// после этого места). Сами модули держат своё внутреннее состояние (активный ключ/документ).
 
 let viewerOpen = false;
 let scratchOpen = false;     // системный терминал справа открыт
@@ -129,7 +108,7 @@ let editor = null;
 let loadingDoc = false;
 const langComp = new Compartment();
 
-const DEFAULT_LAYOUT = { sidebar: 240, viewer: 520, tree: 240, scratch: 420, git: 360, ctx: 740, docker: 460, db: 560, rh: 520, ext: 420, notes: 480, audit: 460, iterflow: 480, seo: 480, tools: 560 };
+const DEFAULT_LAYOUT = { sidebar: 240, viewer: 520, tree: 240, scratch: 420, git: 360, ctx: 740, docker: 460, db: 560, rh: 520, ext: 420, notes: 480, audit: 460, iterflow: 480, seo: 480, tools: 560, chat: 600, doc: 640 };
 let layout = loadLayout();
 let lastParent = STORE.lastParent || '';
 
@@ -175,7 +154,7 @@ function loadLayout() { return { ...DEFAULT_LAYOUT, ...(STORE.layout || {}) }; }
 function saveLayout() { persist('layout', layout); }
 // Whether the viewer / system terminal panes are open — part of the backed-up state,
 // restored on startup (and on import) so the window reopens the way it was left.
-function saveUiState() { persist('uiState', { viewerOpen, scratchOpen, gitOpen: Git.isOpen(), ctxOpen: Ctx.isOpen(), dockerOpen: Containers.isOpen(), dbOpen: Db.isOpen(), rhOpen: Rh.isOpen(), notesOpen: Notes.isOpen(), auditOpen: Audit.isOpen(), iterflowOpen: Iterflow.isOpen(), seoOpen: Seo.isOpen(), toolsOpen: Tools.isOpen() }); }
+function saveUiState() { persist('uiState', { viewerOpen, scratchOpen, gitOpen: Git.isOpen(), ctxOpen: Ctx.isOpen(), dockerOpen: Containers.isOpen(), dbOpen: Db.isOpen(), rhOpen: Rh.isOpen(), notesOpen: Notes.isOpen(), auditOpen: Audit.isOpen(), iterflowOpen: Iterflow.isOpen(), seoOpen: Seo.isOpen(), toolsOpen: Tools.isOpen(), chatOpen: Or.isOpen(), docOpen: TextProc.isOpen() }); }
 function applyLayout() {
   $('#sidebar').style.flexBasis = layout.sidebar + 'px';
   $('#viewer-pane').style.flexBasis = layout.viewer + 'px';
@@ -192,6 +171,8 @@ function applyLayout() {
   $('#iterflow-pane').style.flexBasis = layout.iterflow + 'px';
   $('#seo-pane').style.flexBasis = layout.seo + 'px';
   $('#tools-pane').style.flexBasis = layout.tools + 'px';
+  $('#chat-pane').style.flexBasis = layout.chat + 'px';
+  $('#doc-pane').style.flexBasis = layout.doc + 'px';
 }
 function loadRecents() { return Array.isArray(STORE.recents) ? STORE.recents : []; }
 function pushRecent(p) {
@@ -259,8 +240,8 @@ function renderProjects() {
   box.innerHTML = '';
   const sections = buildSections();
   sections.forEach((s, i) => box.appendChild(renderSection(s, i, sections)));
-  box.appendChild(Or.renderSection()); // always shown (even with 0 keys) — own «интеграции» strip
-  box.appendChild(TextProc.renderSection()); // «Обработка текста» — изолированный модуль
+  // OpenRouter (ключи) и «Обработка текста» (документы) больше НЕ в сайдбаре — их списки живут
+  // вкладками внутри своих панелей правого слота (открываются через квикбар/меню «Модули»).
   renderMiniRail();
 }
 // OpenRouter section — fixed group (no reorder arrows), like a special category.
@@ -306,7 +287,7 @@ function renderSection(s, index, sections) {
 function makeCard(p) {
   const card = el('div', 'card');
   card.dataset.id = p.id;
-  if (p.id === activeId && activeOrId === null) card.classList.add('active');
+  if (p.id === activeId) card.classList.add('active');
   if (missing.has(p.id)) card.classList.add('missing');
   if (p.accent) { card.classList.add('accented'); card.style.setProperty('--card-accent', p.accent); } // весь бордер + усиленная левая полоса
 
@@ -338,12 +319,8 @@ function makeCard(p) {
   card.addEventListener('contextmenu', (e) => { e.preventDefault(); showCardMenu(e.clientX, e.clientY, p); });
   return card;
 }
-// Switch from chat mode back to a project's terminal (or just select the project).
+// Клик по карточке проекта → выбрать его (чат/документ теперь живут отдельной панелью справа).
 function focusProject(id) {
-  if (activeOrId !== null) {
-    activeOrId = null;
-    if (id === activeId) { renderProjects(); showActiveTerminal(); if (viewerOpen) refreshViewerForActive(); return; }
-  }
   setActive(id);
 }
 
@@ -1194,18 +1171,6 @@ function copySelection(term) {
 }
 
 function showActiveTerminal() {
-  const docMode = activeDocId !== null;            // документ «Обработки текста»
-  const chatMode = !docMode && activeOrId !== null; // чат OpenRouter
-  TextProc.sync(docMode ? activeDocId : null);      // показать/спрятать (и сохранить) документ
-  $('#doc-pane').classList.toggle('hidden', !docMode);
-  $('#chat-pane').classList.toggle('hidden', !chatMode);
-  $('#terminals').style.display = (docMode || chatMode) ? 'none' : '';
-  if (docMode || chatMode) { // документ/чат заменяют терминал; прячем вкладки/терминалы/подсказку
-    $('#empty-hint').style.display = 'none';
-    $('#term-header').style.display = 'none';
-    reportRemoteActive(null);
-    return;
-  }
   const asid = activeSessionId();
   $('#empty-hint').style.display = activeId ? 'none' : 'flex';
   for (const [sid, rec] of terms) rec.container.style.display = sid === asid ? 'block' : 'none';
@@ -1525,7 +1490,7 @@ function guardDirty(proceed) {
 function setActive(id) {
   const proj = projects.find((p) => p.id === id);
   if (!proj) return;
-  if (id === activeId && activeOrId === null) return;
+  if (id === activeId) return;
   guardDirty(() => doSetActive(id));
 }
 function doSetActive(id) {
@@ -1533,8 +1498,6 @@ function doSetActive(id) {
   if (!proj) return;
   activeId = id;
   try { lite.errors.setContext(proj.path); } catch (_) {} // тег проекта для новых ошибок в реестре
-  activeOrId = null; // selecting a project always leaves chat mode
-  activeDocId = null; // …и режим документа «Обработки текста»
   if (watchedRoot && watchedRoot !== proj.path) lite.fs.unwatch(watchedRoot);
   lite.fs.watch(proj.path); watchedRoot = proj.path;
   for (const d of expandedDirs) if (!pathInside(d, proj.path)) expandedDirs.delete(d); // не копить пути чужих проектов за сессию
@@ -1973,9 +1936,9 @@ function clearViewer() {
 }
 // Re-render the tree for the active project; viewer starts empty (no auto-reopen).
 // Switching/opening a project always gives a clean viewer — open files from the tree.
-// В режиме чата OpenRouter (activeOrId !== null) «выбранного проекта» нет → показываем заглушку.
+// Нет выбранного проекта (открыта категория) → показываем заглушку вивера.
 async function refreshViewerForActive() {
-  const p = (activeOrId === null) ? activeProject() : null;
+  const p = activeProject();
   if (!p) { showViewerPlaceholder(); return; }
   await renderTree(p);
   clearViewer();
@@ -2019,7 +1982,7 @@ function setViewerOpen(open, opts = {}) {
 // Реестр панелей: каждая setXxxOpen знает только себя, взаимоисключение — closeOtherPanels.
 // Порядок закрытия фиксирован (он же — порядок старых inline-цепочек во всех setXxxOpen).
 const panels = new Map(); // id -> { isOpen(), setOpen(open, opts) }
-const PANEL_ORDER = ['files', 'git', 'ctx', 'docker', 'db', 'scratch', 'rh', 'notes', 'audit', 'iterflow', 'seo', 'tools'];
+const PANEL_ORDER = ['files', 'git', 'ctx', 'docker', 'db', 'scratch', 'rh', 'notes', 'audit', 'iterflow', 'seo', 'tools', 'chat', 'doc'];
 function registerPanel(id, api) { panels.set(id, api); }
 function closeOtherPanels(selfId) {
   for (const id of PANEL_ORDER) {
@@ -2080,6 +2043,22 @@ const Tools = initTools({
   STORE, persist, layout, GUTTER, saveUiState, refitActiveTerminal, closeOtherPanels,
 });
 registerPanel('tools', { isOpen: Tools.isOpen, setOpen: Tools.setOpen });
+// OpenRouter — чат по своим API-ключам (renderer/modules/openrouter.js); панель правого слота.
+// Карточки-ключи живут секцией в колонке проектов; клик по карточке открывает панель на нужном ключе.
+const Or = initOpenRouter({
+  STORE, persist, settings,
+  layout, GUTTER, saveUiState, refitActiveTerminal, closeOtherPanels,
+  closeMenus: () => closeMenus(),
+});
+registerPanel('chat', { isOpen: Or.isOpen, setOpen: Or.setOpen });
+// «Обработка текста» — документы + AI-правки фрагментов (renderer/modules/textproc.js); панель правого слота.
+// Документы показываются вкладками внутри панели; клик по вкладке открывает документ.
+const TextProc = initTextProc({
+  el, icon, iconBtn, makeModal, showConfirm, showPrompt, toast,
+  STORE, persist, settings, saveSettings,
+  layout, GUTTER, saveUiState, refitActiveTerminal, closeOtherPanels,
+});
+registerPanel('doc', { isOpen: TextProc.isOpen, setOpen: TextProc.setOpen });
 // Пользовательские модули (extensions): загрузчик + общая панель правого слота.
 // renderer/modules/extensions.js; публичный API ctx v1 — спека в module-kit/GUIDE.md.
 const Ext = initExtensions({
@@ -2119,6 +2098,8 @@ const QUICK_BUILTIN = [
   { id: 'iterflow', icon: 'layers',  label: 'IterFlow — задачи итераций (трекер)' },
   { id: 'seo',     icon: 'globe',    label: 'WEB/SEO аудит — анализ сайта' },
   { id: 'tools',   icon: 'wrench',   label: 'Инструменты — base64, JSON/YAML, хэши, regex…' },
+  { id: 'chat',    icon: 'chat',     label: 'OpenRouter — чат по своим API-ключам' },
+  { id: 'doc',     icon: 'note',     label: 'Обработка текста — документы + AI-правки' },
   { id: 'scratch', icon: 'terminal', label: 'Системный терминал (вне проектов)' },
 ];
 function quickAllModules() {
@@ -2656,6 +2637,8 @@ function buildModulesMenu(dd) {
     sub.appendChild(moduleRow('layers', 'IterFlow', 'задачи итераций из трекера', () => { closeMenus(); openModule('iterflow'); }));
     sub.appendChild(moduleRow('globe', 'WEB/SEO аудит', 'сайт: безопасность, SEO, сеть', () => { closeMenus(); openModule('seo'); }));
     sub.appendChild(moduleRow('wrench', 'Инструменты', 'base64, JSON/YAML, хэши, JWT, regex, diff', () => { closeMenus(); openModule('tools'); }));
+    sub.appendChild(moduleRow('chat', 'OpenRouter', 'чат по своим API-ключам', () => { closeMenus(); openModule('chat'); }));
+    sub.appendChild(moduleRow('note', 'Обработка текста', 'документы + AI-правки фрагментов', () => { closeMenus(); openModule('doc'); }));
     sub.appendChild(el('div', 'menu-sep'));
     sub.appendChild(moduleRow('terminal', 'Системный терминал', 'вне проектов', () => { closeMenus(); openModule('scratch'); }));
   });
@@ -3291,6 +3274,8 @@ function init() {
   $('#git-refresh').addEventListener('click', () => { if (Git.isOpen()) Git.renderPanel(activeProject()); });
   $('#audit-close').addEventListener('click', () => Audit.setOpen(false));
   $('#audit-rescan').addEventListener('click', () => Audit.rescan());
+  $('#doc-close').addEventListener('click', () => TextProc.setOpen(false));
+  $('#doc-settings').addEventListener('click', () => TextProc.showSettings());
   $('#tools-close').addEventListener('click', () => Tools.setOpen(false));
   $('#iterflow-close').addEventListener('click', () => Iterflow.setOpen(false));
   $('#iterflow-site').addEventListener('click', () => Iterflow.openSite());
@@ -3393,7 +3378,7 @@ function init() {
   // Right-slot modules are mutually exclusive — restore at most one, first-true-wins
   // (приоритет — порядок старых if-цепочек: viewer, scratch, git, docker, db, rh).
   // allowEmpty so Git returns even before a project is active — matching the viewer, so window width fits.
-  const RESTORE_ORDER = [['files', 'viewerOpen'], ['scratch', 'scratchOpen'], ['git', 'gitOpen'], ['ctx', 'ctxOpen'], ['docker', 'dockerOpen'], ['db', 'dbOpen'], ['rh', 'rhOpen'], ['notes', 'notesOpen'], ['audit', 'auditOpen'], ['iterflow', 'iterflowOpen'], ['seo', 'seoOpen'], ['tools', 'toolsOpen']];
+  const RESTORE_ORDER = [['files', 'viewerOpen'], ['scratch', 'scratchOpen'], ['git', 'gitOpen'], ['ctx', 'ctxOpen'], ['docker', 'dockerOpen'], ['db', 'dbOpen'], ['rh', 'rhOpen'], ['notes', 'notesOpen'], ['audit', 'auditOpen'], ['iterflow', 'iterflowOpen'], ['seo', 'seoOpen'], ['tools', 'toolsOpen'], ['chat', 'chatOpen'], ['doc', 'docOpen']];
   for (const [id, key] of RESTORE_ORDER) {
     if (!ui[key]) continue;
     panels.get(id).setOpen(true, (id === 'git' || id === 'ctx' || id === 'notes' || id === 'audit' || id === 'iterflow') ? { grow: false, allowEmpty: true } : { grow: false });

@@ -1,8 +1,8 @@
 // renderer/textproc.js
 // ============================================================================
-// «Обработка текста» — изолированная подсистема (отдельная категория в секции
-// ИНТЕГРАЦИИ, ниже «OpenRouter»). Документы-плашки = файлы в ~/.LiteEditorAI/
-// textproc/. Клик по плашке открывает текст ВМЕСТО терминала (как чат OpenRouter).
+// «Обработка текста» — изолированная подсистема, ПАНЕЛЬ ПРАВОГО СЛОТА (как git/audit).
+// Документы = файлы в ~/.LiteEditorAI/textproc/, показываются ВКЛАДКАМИ внутри панели
+// (#doc-tabs); клик по вкладке открывает документ в редакторе панели, терминал — в центре.
 //
 // Главная фича: выделяешь любой фрагмент → над ним всплывает кнопка «AI» →
 // модалка (системный промпт + заготовленный + свой) → фрагмент уходит ЛОКАЛЬНОМУ
@@ -14,10 +14,10 @@
 // идёт через host-объект, переданный в initTextProc(host). Так фичу можно
 // развивать отдельно. host = {
 //   el, icon, iconBtn, makeModal, showConfirm, showPrompt, toast,    // UI-хелперы
-//   STORE, persist, settings, saveSettings, isCollapsed, setCollapsed, // состояние
-//   activate(id), isActive(id), deactivate(), refresh(),              // навигация
+//   STORE, persist, settings, saveSettings,                          // состояние
+//   layout, GUTTER, saveUiState, refitActiveTerminal, closeOtherPanels, // контракт панели правого слота
 // }
-// Экспортирует: { renderSection(), sync(idOrNull) }.
+// Экспортирует: { isOpen(), setOpen(open,opts), toggle(), showSettings() }.
 // ============================================================================
 import { EditorView, keymap, lineNumbers, highlightActiveLine, drawSelection } from '@codemirror/view';
 import { EditorState, Compartment } from '@codemirror/state';
@@ -53,12 +53,16 @@ mdRender.use({ renderer: {
 } });
 
 const $ = (s) => document.querySelector(s);
-const SECTION_KEY = '__textproc__';
 
 export function initTextProc(host) {
   const { el, icon, iconBtn, makeModal, showConfirm, showPrompt, toast,
-          STORE, persist, settings, saveSettings, isCollapsed, setCollapsed } = host;
+          STORE, persist, settings, saveSettings,
+          layout, GUTTER, saveUiState, refitActiveTerminal, closeOtherPanels } = host;
   const lite = window.lite;
+
+  // ---- состояние панели правого слота ----
+  let docOpen = false;    // открыта ли панель «Обработка текста» в правом слоте
+  let curDocId = null;    // id документа, выбранного для показа в панели (внутреннее состояние модуля)
 
   // ---------------------------------------------------------------- state
   let docs = Array.isArray(STORE.textproc) ? STORE.textproc : [];      // [{id,name,file,md}]
@@ -99,58 +103,27 @@ export function initTextProc(host) {
     return f;
   }
 
-  // ================================================================ sidebar section
-  // Своя фикс-группа со «своим» названием, как у OpenRouter (renderOrSection-стиль).
-  function renderSection() {
-    const sec = el('div', 'pgroup tp-group');
-    const collapsed = isCollapsed(SECTION_KEY);
-    const head = el('div', 'pgroup-head');
-    const chev = el('span', 'pgroup-chev');
-    chev.appendChild(icon(collapsed ? 'chevron-right' : 'chevron-down', 15));
-    head.appendChild(chev);
-    head.appendChild(el('span', 'pgroup-name', 'Обработка текста'));
-    head.appendChild(el('span', 'pgroup-count', String(docs.length)));
-    const tools = el('div', 'pgroup-tools');
-    const add = iconBtn('pgroup-arrow', 'plus', 'Новый документ');
-    add.style.opacity = '1';
-    add.addEventListener('click', (e) => { e.stopPropagation(); newDoc(); });
-    const cog = iconBtn('pgroup-arrow', 'sliders', 'Промпты и агент');
-    cog.style.opacity = '1';
-    cog.addEventListener('click', (e) => { e.stopPropagation(); showSettings(); });
-    tools.appendChild(add); tools.appendChild(cog);
-    head.appendChild(tools);
-    const body = el('div', 'pgroup-body');
-    if (collapsed) body.style.display = 'none';
-    head.addEventListener('click', () => {
-      const now = !isCollapsed(SECTION_KEY); setCollapsed(SECTION_KEY, now);
-      body.style.display = now ? 'none' : 'block';
-      chev.replaceChildren(icon(now ? 'chevron-right' : 'chevron-down', 15));
-    });
-    if (!docs.length) body.appendChild(el('div', 'or-empty', 'Пока пусто — создай документ кнопкой ＋.'));
-    for (const d of docs) body.appendChild(makeCard(d));
-    sec.appendChild(head); sec.appendChild(body);
-    return sec;
-  }
-  function makeCard(doc) {
-    const card = el('div', 'card tp-card');
-    if (host.isActive(doc.id)) card.classList.add('active');
-    const head = el('div', 'card-head');
-    const ind = el('span', 'or-ind'); ind.appendChild(icon('note', 15));
-    const title = el('span', 'card-title', doc.name); title.title = doc.name;
-    head.appendChild(ind); head.appendChild(title);
-    const ren = iconBtn('icon-btn tp-card-act', 'pencil', 'Переименовать заголовок', 14);
-    ren.addEventListener('click', (e) => { e.stopPropagation(); renameDoc(doc); });
-    const del = iconBtn('icon-btn tp-card-act', 'trash', 'Удалить документ', 14);
-    del.addEventListener('click', (e) => { e.stopPropagation(); delDoc(doc); });
-    head.appendChild(ren); head.appendChild(del);
-    card.appendChild(head);
-    // реальное имя файла — менее заметной строкой под заголовком
-    const sub = el('div', 'tp-file');
-    sub.appendChild(icon('file', 12));
-    sub.appendChild(el('span', 'tp-file-name', doc.file));
-    card.appendChild(sub);
-    card.addEventListener('click', () => host.activate(doc.id));
-    return card;
+  // ================================================================ вкладки панели
+  // По одной вкладке на документ. Клик — открыть/переключить, двойной клик — переименовать,
+  // «×» — удалить (в корзину, с подтверждением), «+» — новый документ.
+  function renderDocTabs() {
+    const bar = $('#doc-tabs'); if (!bar) return;
+    bar.innerHTML = '';
+    for (const d of docs) {
+      const tab = el('div', 'tab' + (d.id === curDocId ? ' active' : ''));
+      tab.dataset.docid = d.id;
+      tab.appendChild(el('span', 'tab-name', d.name));
+      tab.title = d.name + '  ·  ' + d.file + '  (двойной клик — переименовать)';
+      const x = iconBtn('tab-close', 'x', 'Удалить документ', 12);
+      x.addEventListener('click', (e) => { e.stopPropagation(); delDoc(d); });
+      tab.appendChild(x);
+      tab.addEventListener('click', () => openDoc(d.id));
+      tab.addEventListener('dblclick', () => renameDoc(d));
+      bar.appendChild(tab);
+    }
+    const add = iconBtn('tab-add', 'plus', 'Новый документ', 15);
+    add.addEventListener('click', () => newDoc());
+    bar.appendChild(add);
   }
 
   // ---- doc CRUD ----
@@ -162,23 +135,23 @@ export function initTextProc(host) {
       const r = await lite.fs.writeFile(tpDir + '/' + file, '');
       if (r && r.error) { toast('Не удалось создать файл: ' + r.error, { kind: 'err', ttl: 6000 }); return; }
       const doc = { id: uid('doc'), name: t, file, md: isMdFile(file) };
-      docs.push(doc); saveDocs(); host.refresh();
-      host.activate(doc.id);
+      docs.push(doc); saveDocs(); renderDocTabs();
+      openDoc(doc.id);
     });
   }
   function renameDoc(doc) {
     showPrompt('Переименовать заголовок', 'Заголовок (файл на диске не меняется)', doc.name, (v) => {
       const t = (v || '').trim(); if (!t) return;
-      doc.name = t; saveDocs(); host.refresh();
-      if (host.isActive(doc.id)) { const ttl = $('#doc-title'); if (ttl) ttl.textContent = t; }
+      doc.name = t; saveDocs(); renderDocTabs();
+      if (doc.id === curDocId) { const ttl = $('#doc-title'); if (ttl) ttl.textContent = t; }
     });
   }
   function delDoc(doc) {
     showConfirm('Удалить документ?', `«${doc.name}» (${doc.file}) будет перемещён в корзину.`, 'Удалить', async () => {
       try { await lite.fs.trash(tpDir + '/' + doc.file); } catch (_) {}
       docs = docs.filter((d) => d.id !== doc.id); saveDocs();
-      if (host.isActive(doc.id)) { loadedId = null; host.deactivate(); }
-      host.refresh();
+      if (doc.id === curDocId) { loadedId = null; curDocId = null; if (docOpen) showDocPlaceholder(); }
+      renderDocTabs();
     });
   }
 
@@ -248,7 +221,7 @@ export function initTextProc(host) {
     hideAi();
   }
 
-  // вызывается из renderer при смене центральной зоны: id — показать документ, null — спрятать
+  // показать документ id в панели (null — спрятать редактор, дописав на диск)
   function sync(id) {
     if (id == null) { flushSave(); hideAi(); return; }
     ensureEditor();
@@ -257,6 +230,38 @@ export function initTextProc(host) {
     setTimeout(() => { try { editor.focus(); } catch (_) {} requestMeasure(); }, 30);
   }
   function requestMeasure() { try { editor && editor.requestMeasure(); } catch (_) {} }
+
+  // ================================================================ панель правого слота
+  // Заглушка, когда панель открыта, но документ не выбран (или удалён).
+  function showDocPlaceholder() {
+    const ttl = $('#doc-title'); if (ttl) ttl.textContent = 'Обработка текста';
+    const bar = $('#doc-modes'); if (bar) bar.innerHTML = '';
+    const s = $('#doc-saved'); if (s) { s.textContent = ''; s.classList.remove('dirty'); }
+    if (editor) setText('');
+    hideAi();
+  }
+  // Канонический setOpen панели (по образцу git/audit): взаимоисключение + рост окна + сохранение.
+  function setDocOpen(open, opts = {}) {
+    if (open === docOpen) { if (open) { if (curDocId) sync(curDocId); else showDocPlaceholder(); } return; }
+    if (open) closeOtherPanels('doc');
+    const delta = layout.doc + GUTTER;
+    docOpen = open;
+    $('#doc-pane').classList.toggle('hidden', !open);
+    $('#gutter-doc').classList.toggle('hidden', !open);
+    if (opts.grow !== false) lite.win.growBy(open ? delta : -delta); // grow:false на restore — сохранённая ширина уже учла панель
+    saveUiState();
+    if (open) { renderDocTabs(); ensureEditor(); if (curDocId) sync(curDocId); else showDocPlaceholder(); }
+    else { flushSave(); hideAi(); }
+    setTimeout(refitActiveTerminal, 150);
+  }
+  function toggleDoc() { setDocOpen(!docOpen); }
+  // Открыть документ id (клик по вкладке): выбрать + раскрыть панель.
+  function openDoc(id) {
+    curDocId = id;
+    renderDocTabs();           // подсветка активной вкладки
+    if (!docOpen) setDocOpen(true);
+    else sync(id);
+  }
 
   // ---- toolbar ----
   function renderToolbar() {
@@ -524,5 +529,10 @@ export function initTextProc(host) {
     m.querySelector('#tps-close').onclick = close;
   }
 
-  return { renderSection, sync };
+  return {
+    isOpen: () => docOpen,
+    setOpen: setDocOpen,
+    toggle: toggleDoc,
+    showSettings,
+  };
 }

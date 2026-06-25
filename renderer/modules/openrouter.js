@@ -1,9 +1,9 @@
-// LiteEditor — модуль «OpenRouter» (чат по своим ключам вместо терминала + карточки в колонке).
-// Изолирован по образцу textproc.js. activeOrId ЖИВЁТ В ЯДРЕ (его читают showActiveTerminal/
-// doSetActive/focusProject) — модуль ходит к нему через getActiveOrId/setActiveOrId.
-// host: { STORE, persist, settings, isCollapsed, setCollapsed, guardDirty, renderProjects,
-//         showActiveTerminal, refreshViewerForActive, isViewerOpen, getActiveOrId, setActiveOrId,
-//         clearActiveDoc, closePanelsForChat }
+// LiteEditor — модуль «OpenRouter» (чат по своим ключам; ключи = вкладки внутри панели).
+// ПАНЕЛЬ ПРАВОГО СЛОТА (как git/audit): терминал остаётся в центре, чат открывается справа.
+// Активный ключ (activeCardId) — внутреннее состояние модуля. Ключи показываются ВКЛАДКАМИ
+// внутри панели (#chat-tabs), клик переключает активный ключ. host: { STORE, persist, settings,
+//   closeMenus, layout, GUTTER, saveUiState, refitActiveTerminal, closeOtherPanels }.
+// Экспортирует: { isOpen(), setOpen(open,opts), toggle(), bindStream(), bindControls() }.
 import { el, icon, iconBtn, makeModal, showConfirm, showPrompt, toast } from '../ui.js';
 import { marked } from 'marked';
 import hljs from 'highlight.js/lib/common';
@@ -13,20 +13,24 @@ const $ = (sel) => document.querySelector(sel);
 const lite = window.lite;
 
 export function initOpenRouter(host) {
-  const { STORE, persist, settings, isCollapsed, setCollapsed, guardDirty, renderProjects, showActiveTerminal, refreshViewerForActive, isViewerOpen, getActiveOrId, setActiveOrId, clearActiveDoc, closePanelsForChat, closeMenus } = host;
+  const { STORE, persist, settings, closeMenus,
+          layout, GUTTER, saveUiState, refitActiveTerminal, closeOtherPanels } = host;
+
+  // ---- состояние панели правого слота ----
+  let chatOpen = false;       // открыта ли панель чата в правом слоте
+  let activeCardId = null;    // id карточки-ключа, чат которой показан в панели (внутреннее состояние модуля)
 
   // orCards: persisted list of {id, name, key, model, contextN}. Each renders as a card in
-  // its own «OpenRouter» section; clicking one shows the chat (instead of the terminal).
+  // its own «OpenRouter» section; clicking one opens the chat panel on the right.
   let orCards = Array.isArray(STORE.openrouter) ? STORE.openrouter : [];
   const orChats = new Map();    // cardId -> { messages:[{role,content}], loaded, streaming, reqId }
   const orModelsByKey = new Map(); // apiKey -> [{id,name}] (fetched once, cached for the session)
   const orUsageByKey = new Map();  // apiKey -> {usage,limit,limit_remaining,label} | {loading} | {error}
   const pendingOr = new Map();  // reqId -> { chunk, done, error } stream handlers
   let orReqSeq = 0;
-  const OR_KEY = '__openrouter__'; // accordion/section key for the OpenRouter group
 
   function saveOrCards() { persist('openrouter', orCards); }
-  function activeOrCard() { return orCards.find((c) => c.id === getActiveOrId()) || null; }
+  function activeOrCard() { return orCards.find((c) => c.id === activeCardId) || null; }
   function newOrId() { return 'or' + Date.now().toString(36) + Math.floor(Math.random() * 1e5).toString(36); }
   function maskKey(k) { k = String(k || ''); return k.length <= 12 ? k : k.slice(0, 8) + '…' + k.slice(-4); }
   function clamp(n, lo, hi) { n = parseInt(n, 10); if (!Number.isFinite(n)) n = lo; return Math.max(lo, Math.min(hi, n)); }
@@ -89,6 +93,13 @@ export function initOpenRouter(host) {
     if (r && !r.error) orUsageByKey.set(key, { usage: r.usage, limit: r.limit, limit_remaining: r.limit_remaining, label: r.label });
     else orUsageByKey.set(key, { error: (r && r.error) || 'ошибка' });
     updateUsageDom(key);
+  }
+  // Баланс активного ключа в шапке чат-топа (#chat-usage/#chat-usage-refresh). Привязка к ключу
+  // через data-key → существующий updateUsageDom обновит этот элемент по тому же селектору.
+  function showUsage(key) {
+    const t = $('#chat-usage'); if (t) { t.dataset.key = key; t.textContent = usageText(key); }
+    const r = $('#chat-usage-refresh'); if (r) { r.dataset.key = key; r.classList.toggle('spinning', !!(orUsageByKey.get(key) || {}).loading); }
+    if (!orUsageByKey.has(key)) fetchKeyInfo(key, false); // ленивая автозагрузка один раз на ключ
   }
   function modelMetaText(card) {
     const mm = card.modelMeta; if (!mm) return card.model || '';
@@ -178,101 +189,89 @@ export function initOpenRouter(host) {
     } catch (_) {}
   }
 
-  function renderOrSection() {
-    const sec = el('div', 'pgroup or-group');
-    sec.appendChild(el('div', 'or-divider', 'ИНТЕГРАЦИИ')); // visual strip separating it from project categories
-    const collapsed = isCollapsed(OR_KEY);
-    const head = el('div', 'pgroup-head');
-    const chev = el('span', 'pgroup-chev');
-    chev.appendChild(icon(collapsed ? 'chevron-right' : 'chevron-down', 15));
-    head.appendChild(chev);
-    head.appendChild(el('span', 'pgroup-name', 'OpenRouter'));
-    head.appendChild(el('span', 'pgroup-count', String(orCards.length)));
-    const tools = el('div', 'pgroup-tools');
-    const cog = iconBtn('pgroup-arrow', 'sliders', 'Управление ключами');
-    cog.style.opacity = '1';
-    cog.addEventListener('click', (e) => { e.stopPropagation(); showOpenRouter(); });
-    tools.appendChild(cog);
-    head.appendChild(tools);
-    const body = el('div', 'pgroup-body');
-    if (collapsed) body.style.display = 'none';
-    head.addEventListener('click', () => {
-      const now = !isCollapsed(OR_KEY); setCollapsed(OR_KEY, now);
-      body.style.display = now ? 'none' : 'block';
-      chev.replaceChildren(icon(now ? 'chevron-right' : 'chevron-down', 15));
-    });
-    for (const c of orCards) body.appendChild(makeOrCard(c));
-    sec.appendChild(head); sec.appendChild(body);
-    return sec;
-  }
-  function makeOrCard(c) {
-    const card = el('div', 'card or-card');
-    card.dataset.orid = c.id;
-    if (c.id === getActiveOrId()) card.classList.add('active');
-    const head = el('div', 'card-head');
-    const ind = el('span', 'or-ind');
-    ind.appendChild(icon('chat', 15));
-    const title = el('span', 'card-title', c.name);
-    title.title = c.name;
-    head.appendChild(ind); head.appendChild(title); // no kebab — управление через ⚙ в шапке секции
-    card.appendChild(head);
-    const sub = el('div', 'or-key-row');
-    sub.appendChild(icon('key', 12));
-    sub.appendChild(el('span', 'or-key', maskKey(c.key)));
-    if (c.model) { const mm = el('span', 'or-model', c.model); mm.title = c.model; sub.appendChild(mm); }
-    card.appendChild(sub);
-    // balance row: spent / limit + refresh
-    const usage = el('div', 'or-usage');
-    const uText = el('span', 'or-usage-text', usageText(c.key)); uText.dataset.key = c.key;
-    const refresh = iconBtn('or-refresh', 'refresh', 'Обновить баланс ключа', 13); refresh.dataset.key = c.key;
-    if ((orUsageByKey.get(c.key) || {}).loading) refresh.classList.add('spinning');
-    refresh.addEventListener('click', (e) => { e.stopPropagation(); fetchKeyInfo(c.key, true); });
-    usage.appendChild(uText); usage.appendChild(refresh);
-    card.appendChild(usage);
-    if (!orUsageByKey.has(c.key)) fetchKeyInfo(c.key, false); // lazy auto-load once per key
-    card.addEventListener('click', () => openChat(c.id));
-    card.addEventListener('contextmenu', (e) => { e.preventDefault(); showOpenRouter(); });
-    return card;
+  // Вкладки внутри панели чата — по одной на каждый ключ. Клик переключает активный ключ,
+  // «+» открывает модалку добавления/управления ключами (там же rename/delete). ПКМ — туда же.
+  function renderChatTabs() {
+    const bar = $('#chat-tabs'); if (!bar) return;
+    bar.innerHTML = '';
+    for (const c of orCards) {
+      const tab = el('div', 'tab' + (c.id === activeCardId ? ' active' : ''));
+      tab.dataset.orid = c.id;
+      tab.appendChild(el('span', 'tab-name', c.name));
+      tab.title = c.name + (c.model ? ' · ' + c.model : '') + '  ·  ' + maskKey(c.key);
+      tab.addEventListener('click', () => openChat(c.id));
+      tab.addEventListener('contextmenu', (e) => { e.preventDefault(); showOpenRouter(); });
+      bar.appendChild(tab);
+    }
+    const add = iconBtn('tab-add', 'plus', 'Добавить ключ OpenRouter', 15);
+    add.addEventListener('click', () => showOpenRouter());
+    bar.appendChild(add);
   }
 
   // ---------------------------------------------------------------- OpenRouter chat UI
-  // Open an OpenRouter card's chat in place of the terminal. Guards unsaved viewer edits
-  // (same as switching projects), loads the persisted history once, and shows the pane.
+  // ================================================================ панель правого слота
+  // Заглушка, когда панель открыта, но ключ не выбран (или удалён).
+  function showChatPlaceholder() {
+    renderChatTabs();
+    $('#chat-title').textContent = 'OpenRouter';
+    const log = $('#chat-log'); if (log) { log.innerHTML = ''; log.appendChild(el('div', 'chat-empty', 'Выберите ключ во вкладках сверху или добавьте новый кнопкой «+».')); }
+    const b = $('#chat-model-btn'); if (b) { b.textContent = 'Выбрать модель…'; b.title = ''; }
+    const u = $('#chat-usage'); if (u) { u.textContent = ''; u.removeAttribute('data-key'); }
+    $('#chat-model-pop') && $('#chat-model-pop').classList.add('hidden');
+    $('#chat-session-pop') && $('#chat-session-pop').classList.add('hidden');
+    setChatSending(false);
+  }
+  // Канонический setOpen панели (по образцу git/audit): взаимоисключение + рост окна + сохранение.
+  function setChatOpen(open, opts = {}) {
+    if (open === chatOpen) { if (open) renderActiveCard(); return; }
+    if (open) closeOtherPanels('chat');
+    const delta = layout.chat + GUTTER;
+    chatOpen = open;
+    $('#chat-pane').classList.toggle('hidden', !open);
+    $('#gutter-chat').classList.toggle('hidden', !open);
+    if (opts.grow !== false) lite.win.growBy(open ? delta : -delta); // grow:false на restore — сохранённая ширина уже учла панель
+    saveUiState();
+    if (open) renderActiveCard();
+    setTimeout(refitActiveTerminal, 150);
+  }
+  function toggleChat() { setChatOpen(!chatOpen); }
+  // Открыть чат карточки-ключа id (клик по плашке в колонке проектов): выбрать ключ + раскрыть панель.
   function openChat(id) {
     const card = orCards.find((c) => c.id === id);
     if (!card) return;
-    guardDirty(async () => {
-      // Opening the OpenRouter chat hides project-specific right modules — chat takes over.
-      // Вивер оставляем открытым: он покажет заглушку «нет выбранного проекта» (см. refreshViewerForActive).
-      closePanelsForChat();
-      setActiveOrId(id);
-      clearActiveDoc(); // чат и документ «Обработки текста» взаимоисключающи
-      const st = getOrChat(id);
-      renderProjects();        // refresh card highlights (active OR card, deselect projects)
-      if (isViewerOpen()) refreshViewerForActive(); // chat mode → вивер показывает заглушку
-      showActiveTerminal();    // single source of pane visibility → reveals #chat-pane
-      $('#chat-title').textContent = card.name;
-      $('#chat-model-btn').textContent = card.model || 'Выбрать модель…';
-      $('#chat-model-btn').title = card.model ? modelMetaText(card) : '';
-      $('#chat-model-pop').classList.add('hidden');
-      $('#chat-session-pop').classList.add('hidden');
-      setChatSending(st.streaming);
-      if (!st.loaded) { // pull history from disk on first open of this card
-        let doc = null;
-        try { doc = await lite.openrouter.histGet(id); } catch (_) {}
-        if (Array.isArray(doc)) st.sessions = doc.length ? [{ id: newSessId(), name: 'Сессия 1', messages: doc }] : []; // legacy
-        else if (doc && Array.isArray(doc.sessions)) { st.sessions = doc.sessions; st.active = doc.active; }
-        // backfill per-session contextN (older data kept it per-card) so the setting binds to the session
-        for (const s of st.sessions) if (s.contextN == null) s.contextN = clamp(card.contextN || 10, 1, 100);
-        st.loaded = true;
-      }
-      if (getActiveOrId() !== id) return; // user switched away during the async load
-      ensureSession(st);
-      updateSessionBtn();
-      syncCtxInput();
-      renderChatLog();
-      setTimeout(() => { const ta = $('#chat-input'); if (ta) ta.focus(); }, 30);
-    });
+    activeCardId = id;
+    if (!chatOpen) setChatOpen(true);   // setChatOpen → renderActiveCard
+    else renderActiveCard();
+  }
+  // Отрисовать панель под текущий activeCardId (грузит историю при первом открытии ключа).
+  async function renderActiveCard() {
+    renderChatTabs();        // подсветка активной вкладки-ключа
+    const card = activeOrCard();
+    if (!card) { showChatPlaceholder(); return; }
+    const id = card.id;
+    const st = getOrChat(id);
+    $('#chat-title').textContent = card.name;
+    showUsage(card.key);     // баланс активного ключа в шапке чат-топа
+    $('#chat-model-btn').textContent = card.model || 'Выбрать модель…';
+    $('#chat-model-btn').title = card.model ? modelMetaText(card) : '';
+    $('#chat-model-pop').classList.add('hidden');
+    $('#chat-session-pop').classList.add('hidden');
+    setChatSending(st.streaming);
+    if (!st.loaded) { // pull history from disk on first open of this card
+      let doc = null;
+      try { doc = await lite.openrouter.histGet(id); } catch (_) {}
+      if (Array.isArray(doc)) st.sessions = doc.length ? [{ id: newSessId(), name: 'Сессия 1', messages: doc }] : []; // legacy
+      else if (doc && Array.isArray(doc.sessions)) { st.sessions = doc.sessions; st.active = doc.active; }
+      // backfill per-session contextN (older data kept it per-card) so the setting binds to the session
+      for (const s of st.sessions) if (s.contextN == null) s.contextN = clamp(card.contextN || 10, 1, 100);
+      st.loaded = true;
+    }
+    if (activeCardId !== id) return; // user switched away during the async load
+    ensureSession(st);
+    updateSessionBtn();
+    syncCtxInput();
+    renderChatLog();
+    setTimeout(() => { const ta = $('#chat-input'); if (ta) ta.focus(); }, 30);
   }
   function updateSessionBtn() { const s = activeSession(); const b = $('#chat-session-btn'); if (b) b.textContent = '☰ ' + (s ? s.name : 'Сессия'); }
   function renderChatLog() {
@@ -352,7 +351,7 @@ export function initOpenRouter(host) {
       renderMsgContent(bubble, 'assistant', acc || (errMsg ? '' : '(пустой ответ)'));
       if (errMsg) { bubble.classList.add('err'); bubble.appendChild(el('div', 'chat-err', '⚠ Ошибка: ' + errMsg)); }
       if (acc) { sess.messages.push({ role: 'assistant', content: acc }); saveOrHist(card.id); }
-      if (getActiveOrId() === card.id) setChatSending(false);
+      if (activeCardId === card.id) setChatSending(false);
       scrollChat();
     };
     pendingOr.set(reqId, {
@@ -446,7 +445,7 @@ export function initOpenRouter(host) {
       if (r.error) { list.innerHTML = ''; list.appendChild(el('div', 'chat-model-loading', 'Ошибка: ' + r.error)); return; }
       models = r.models || []; orModelsByKey.set(card.key, models);
     }
-    if (getActiveOrId() !== card.id || pop.classList.contains('hidden')) return;
+    if (activeCardId !== card.id || pop.classList.contains('hidden')) return;
     renderModelList('');
   }
   function renderModelList(filter) {
@@ -473,7 +472,7 @@ export function initOpenRouter(host) {
         $('#chat-model-btn').textContent = m.id;
         $('#chat-model-btn').title = modelMetaText(card);
         $('#chat-model-pop').classList.add('hidden');
-        renderProjects(); // model shown on the card
+        renderChatTabs(); // обновить ярлык вкладки активного ключа
       });
       list.appendChild(row);
     }
@@ -486,8 +485,8 @@ export function initOpenRouter(host) {
     saveOrCards();
     orChats.delete(id);
     try { lite.openrouter.histSet(id, []); } catch (_) {}
-    if (getActiveOrId() === id) { setActiveOrId(null); showActiveTerminal(); }
-    renderProjects();
+    if (activeCardId === id) { activeCardId = null; if (chatOpen) renderActiveCard(); }
+    renderChatTabs();
   }
   function showOpenRouter() {
     closeMenus();
@@ -528,8 +527,8 @@ export function initOpenRouter(host) {
         const ren = iconBtn('icon-btn', 'pencil', 'Переименовать');
         ren.addEventListener('click', () => showPrompt('Название ключа', 'Название', c.name, (v) => {
           const t = (v || '').trim(); if (!t) return;
-          c.name = t; saveOrCards(); renderList(); renderProjects();
-          if (getActiveOrId() === c.id) $('#chat-title').textContent = t;
+          c.name = t; saveOrCards(); renderList(); renderChatTabs();
+          if (activeCardId === c.id) $('#chat-title').textContent = t;
         }));
         const del = iconBtn('icon-btn', 'trash', 'Удалить ключ');
         del.addEventListener('click', () => showConfirm('Удалить ключ?',
@@ -548,7 +547,7 @@ export function initOpenRouter(host) {
       orCards.push({ id: newOrId(), name: name || ('Ключ ' + (orCards.length + 1)), key, model: '', contextN: 10 });
       saveOrCards();
       m.querySelector('#or-key').value = ''; m.querySelector('#or-name').value = ''; err.textContent = '';
-      renderList(); renderProjects();
+      renderList(); renderChatTabs();
     };
     setTimeout(() => m.querySelector('#or-key').focus(), 30);
   }
@@ -560,6 +559,9 @@ export function initOpenRouter(host) {
     lite.openrouter.onError(({ reqId, error }) => { const h = pendingOr.get(reqId); if (h) h.error(error); });
   }
   function bindControls() {
+  $('#chat-close').addEventListener('click', () => setChatOpen(false));
+  $('#chat-keys').addEventListener('click', (e) => { e.stopPropagation(); showOpenRouter(); });
+  $('#chat-usage-refresh').addEventListener('click', (e) => { e.stopPropagation(); const c = activeOrCard(); if (c) fetchKeyInfo(c.key, true); });
   $('#chat-send').addEventListener('click', onSendClick);
   $('#chat-model-btn').addEventListener('click', (e) => { e.stopPropagation(); toggleModelPop(); });
   $('#chat-model-search').addEventListener('input', (e) => renderModelList(e.target.value));
@@ -593,5 +595,11 @@ export function initOpenRouter(host) {
   });
   }
 
-  return { renderSection: renderOrSection, bindStream, bindControls };
+  return {
+    isOpen: () => chatOpen,
+    setOpen: setChatOpen,
+    toggle: toggleChat,
+    bindStream,
+    bindControls,
+  };
 }

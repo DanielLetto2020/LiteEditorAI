@@ -65,46 +65,6 @@
             <div class="hint-text">Открой папку слева — справа поднимется её терминал.</div>
           </div>
         </div>
-        <!-- OpenRouter chat: shown instead of the terminal when an OpenRouter card is active -->
-        <div id="chat-pane" class="hidden">
-          <div id="chat-top">
-            <span id="chat-title" class="chat-title"></span>
-            <div id="chat-session-wrap" class="chat-session-wrap">
-              <button id="chat-session-btn" class="chat-session-btn" type="button" title="Сессии этого ключа">☰ Сессия 1</button>
-              <div id="chat-session-pop" class="chat-session-pop hidden"></div>
-            </div>
-            <div id="chat-model-wrap" class="chat-model-wrap">
-              <button id="chat-model-btn" class="chat-model-btn" type="button">Выбрать модель…</button>
-              <div id="chat-model-pop" class="chat-model-pop hidden">
-                <input id="chat-model-search" type="text" placeholder="Поиск модели…" autocomplete="off" spellcheck="false">
-                <div id="chat-model-list" class="chat-model-list"></div>
-              </div>
-            </div>
-            <div class="chat-ctx" title="Сколько последних сообщений отправлять модели (1–100)">
-              <label for="chat-ctx-input">контекст</label>
-              <input id="chat-ctx-input" type="number" min="1" max="100" value="10">
-            </div>
-          </div>
-          <div id="chat-log" class="chat-log"></div>
-          <div id="chat-input-row" class="chat-input-row">
-            <textarea id="chat-input" rows="1" placeholder="Сообщение…  (Enter — отправить, Shift+Enter — перенос строки)" spellcheck="false"></textarea>
-            <button id="chat-send" class="btn primary chat-send" type="button" title="Отправить">▶</button>
-          </div>
-        </div>
-        <!-- Обработка текста: документ вместо терминала (как чат OpenRouter). Модуль renderer/textproc.js -->
-        <div id="doc-pane" class="hidden">
-          <div id="doc-toolbar">
-            <span id="doc-title" class="doc-title"></span>
-            <div id="doc-modes" class="doc-modes"></div>
-            <div class="doc-tools-space"></div>
-            <span id="doc-saved" class="doc-saved"></span>
-          </div>
-          <div id="doc-body" class="doc-body">
-            <div id="doc-editor" class="doc-editor"></div>
-            <div id="doc-preview" class="doc-preview prev-md" style="display:none"></div>
-            <button id="doc-ai-btn" class="doc-ai-btn" type="button" style="display:none">✦ AI</button>
-          </div>
-        </div>
         </div>
         <!-- quickbar: полоса быстрого доступа к модулям (Модули → Настройка панели…) -->
         <div id="quickbar" class="hidden"></div>
@@ -280,6 +240,63 @@
         <div id="rh-tabs" class="term-tabs rh-tabs" style="display:none"></div>
         <div id="rh-conns" class="db-body"></div>
         <div id="rh-term" style="display:none"></div>
+      </section>
+
+      <!-- OpenRouter chat: панель правого слота (чат по своим ключам), один ключ за раз -->
+      <div id="gutter-chat" class="gutter hidden" data-resize="chat"></div>
+      <section id="chat-pane" class="hidden">
+        <div class="pane-head">
+          <span id="chat-title" class="chat-title">OpenRouter</span>
+          <div class="drag-space-static"></div>
+          <button id="chat-keys" class="icon-btn" title="Управление ключами" data-icon="sliders"></button>
+          <button id="chat-close" class="icon-btn" title="Закрыть" data-icon="x"></button>
+        </div>
+        <div id="chat-tabs" class="chat-tabs"></div><!-- вкладка на каждый ключ (рендерит openrouter.js) -->
+        <div id="chat-top">
+          <div id="chat-session-wrap" class="chat-session-wrap">
+            <button id="chat-session-btn" class="chat-session-btn" type="button" title="Сессии этого ключа">☰ Сессия 1</button>
+            <div id="chat-session-pop" class="chat-session-pop hidden"></div>
+          </div>
+          <div id="chat-model-wrap" class="chat-model-wrap">
+            <button id="chat-model-btn" class="chat-model-btn" type="button">Выбрать модель…</button>
+            <div id="chat-model-pop" class="chat-model-pop hidden">
+              <input id="chat-model-search" type="text" placeholder="Поиск модели…" autocomplete="off" spellcheck="false">
+              <div id="chat-model-list" class="chat-model-list"></div>
+            </div>
+          </div>
+          <div class="chat-ctx" title="Сколько последних сообщений отправлять модели (1–100)">
+            <label for="chat-ctx-input">контекст</label>
+            <input id="chat-ctx-input" type="number" min="1" max="100" value="10">
+          </div>
+          <span id="chat-usage" class="or-usage-text chat-usage" title="Баланс активного ключа"></span>
+          <button id="chat-usage-refresh" class="or-refresh" title="Обновить баланс ключа" data-icon="refresh" data-icon-size="13"></button>
+        </div>
+        <div id="chat-log" class="chat-log"></div>
+        <div id="chat-input-row" class="chat-input-row">
+          <textarea id="chat-input" rows="1" placeholder="Сообщение…  (Enter — отправить, Shift+Enter — перенос строки)" spellcheck="false"></textarea>
+          <button id="chat-send" class="btn primary chat-send" type="button" title="Отправить">▶</button>
+        </div>
+      </section>
+
+      <!-- Обработка текста: панель правого слота (документы + AI-правки фрагментов). Модуль renderer/modules/textproc.js -->
+      <div id="gutter-doc" class="gutter hidden" data-resize="doc"></div>
+      <section id="doc-pane" class="hidden">
+        <div class="pane-head">
+          <span id="doc-title" class="doc-title">Обработка текста</span>
+          <div class="drag-space-static"></div>
+          <span id="doc-saved" class="doc-saved"></span>
+          <button id="doc-settings" class="icon-btn" title="Промпты и агент" data-icon="sliders"></button>
+          <button id="doc-close" class="icon-btn" title="Закрыть" data-icon="x"></button>
+        </div>
+        <div id="doc-tabs" class="doc-tabs"></div><!-- вкладка на каждый документ (рендерит textproc.js) -->
+        <div id="doc-toolbar">
+          <div id="doc-modes" class="doc-modes"></div>
+        </div>
+        <div id="doc-body" class="doc-body">
+          <div id="doc-editor" class="doc-editor"></div>
+          <div id="doc-preview" class="doc-preview prev-md" style="display:none"></div>
+          <button id="doc-ai-btn" class="doc-ai-btn" type="button" style="display:none">✦ AI</button>
+        </div>
       </section>
 
       <!-- User modules (extensions): общая панель правого слота, один пользовательский модуль за раз -->
