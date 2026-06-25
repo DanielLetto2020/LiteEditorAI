@@ -225,7 +225,7 @@ try {
   const legacy = path.join(os.homedir(), '.LiteEditor');
   if (!fs.existsSync(storeDir) && fs.existsSync(legacy)) fs.cpSync(legacy, storeDir, { recursive: true });
 } catch (_) {}
-const STORE_KEYS = ['projects', 'settings', 'layout', 'recents', 'lastParent', 'categories', 'sectionOrder', 'accordions', 'dismissed', 'uiState', 'projTabs', 'openrouter', 'remote', 'shares', 'pultBlocked', 'dockerUi', 'dbConnections', 'dbUi', 'rhConnections', 'rhUi', 'textproc', 'tpPrompts', 'extData', 'extEnabled', 'quickbar', 'seoTargets', 'seoSites'];
+const STORE_KEYS = ['projects', 'settings', 'layout', 'recents', 'lastParent', 'categories', 'sectionOrder', 'accordions', 'dismissed', 'uiState', 'projTabs', 'openrouter', 'remote', 'shares', 'pultBlocked', 'dockerUi', 'dbConnections', 'dbUi', 'rhConnections', 'rhUi', 'textproc', 'tpPrompts', 'extData', 'extEnabled', 'quickbar', 'seoTargets', 'seoSites', 'moduleWins'];
 // Папка-«стор» для шаринга с пультом (агент кладёт сюда файлы; в PTY доступна как $LITE_STORE).
 const pultStoreDir = path.join(storeDir, 'store');
 try { fs.mkdirSync(pultStoreDir, { recursive: true }); } catch (_) {}
@@ -1259,6 +1259,9 @@ function createWindow() {
   mainWindow.on('resize', debounce(persist, 400));
   mainWindow.on('move', debounce(persist, 400));
   mainWindow.on('close', persist);
+  // Закрытие редактора закрывает все окна модулей (освобождение памяти). После этого
+  // window-all-closed штатно убивает PTY/db/rh и завершает приложение.
+  mainWindow.on('close', () => closeAllModuleWindows());
   mainWindow.on('maximize', () => mainWindow.webContents.send('win:maximized', true));
   mainWindow.on('unmaximize', () => mainWindow.webContents.send('win:maximized', false));
 
@@ -1274,6 +1277,77 @@ function showWindow() {
   if (mainWindow.isMinimized()) mainWindow.restore();
   mainWindow.show();
   mainWindow.focus();
+}
+
+// ---------------------------------------------------------------- module windows (v1.1+)
+// Каждый модуль (git/db/контейнеры/чат/…) живёт в ОТДЕЛЬНОМ окне, а не в правом слоте редактора.
+// Одно окно на тип модуля (повторный open = фокус). Окно помнит свои bounds (STORE.moduleWins[id]).
+// Закрытие редактора закрывает все окна модулей (освобождение памяти — отдельный процесс на окно).
+const moduleWindows = new Map();    // modId -> BrowserWindow
+let activeProjectInfo = null;       // {id,path,name,accent} — кэш активного проекта редактора (для проектозависимых окон)
+const ownerBySession = new Map();   // sessionId -> webContents — маршрутизация стримов по окну-владельцу (этап D)
+
+function readModuleWins() { const v = readStoreKey('moduleWins'); return (v && typeof v === 'object') ? v : {}; }
+function saveModuleBounds(modId, win) {
+  if (!win || win.isDestroyed()) return;
+  const all = readModuleWins();
+  if (win.isMaximized()) { all[modId] = { ...(all[modId] || {}), maximized: true }; }
+  else { const b = win.getBounds(); all[modId] = { x: b.x, y: b.y, width: b.width, height: b.height, maximized: false }; }
+  writeStoreKey('moduleWins', all);
+}
+function broadcastModuleOpenSet() {
+  const ids = [...moduleWindows.keys()];
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('module:openSet', { ids });
+}
+function broadcastToModules(ch, payload) {
+  for (const w of moduleWindows.values()) { if (w && !w.isDestroyed()) w.webContents.send(ch, payload); }
+}
+// Маршрут стрима к окну-владельцу сессии (fallback — главное окно редактора).
+function sendToOwner(sessionId, ch, payload) {
+  const wc = ownerBySession.get(sessionId);
+  if (wc && !wc.isDestroyed()) { wc.send(ch, payload); return; }
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(ch, payload);
+}
+function openModuleWindow(modId) {
+  const existing = moduleWindows.get(modId);
+  if (existing && !existing.isDestroyed()) { if (existing.isMinimized()) existing.restore(); existing.focus(); return; }
+  const saved = readModuleWins()[modId] || {};
+  const iconPng = path.join(__dirname, 'assets', 'icon.png');
+  const opts = {
+    width: saved.width || 900, height: saved.height || 700,
+    minWidth: 420, minHeight: 320,
+    backgroundColor: '#00000000', frame: false, transparent: true,
+    title: 'LiteEditorAI', show: false,
+    webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false },
+  };
+  if (Number.isInteger(saved.x) && Number.isInteger(saved.y)) { opts.x = saved.x; opts.y = saved.y; }
+  if (fs.existsSync(iconPng)) opts.icon = iconPng;
+  const win = new BrowserWindow(opts);
+  moduleWindows.set(modId, win);
+  win.loadFile(path.join(__dirname, 'renderer', 'module.html'), { hash: modId });
+  if (saved.maximized) win.maximize();
+  win.once('ready-to-show', () => { if (!win.isDestroyed()) win.show(); });
+  win.on('maximize', () => { if (!win.isDestroyed()) win.webContents.send('win:maximized', true); });
+  win.on('unmaximize', () => { if (!win.isDestroyed()) win.webContents.send('win:maximized', false); });
+  win.on('resize', debounce(() => saveModuleBounds(modId, win), 400));
+  win.on('move', debounce(() => saveModuleBounds(modId, win), 400));
+  win.on('close', () => saveModuleBounds(modId, win));
+  win.on('closed', () => {
+    moduleWindows.delete(modId);
+    for (const [sid, wc] of ownerBySession) { try { if (wc.isDestroyed()) ownerBySession.delete(sid); } catch (_) { ownerBySession.delete(sid); } }
+    broadcastModuleOpenSet();
+  });
+  win.webContents.on('render-process-gone', (_e, d) => logger.log('error', 'module-window', `${modId} ${JSON.stringify(d)}`));
+  win.webContents.on('before-input-event', (event, input) => {
+    if (input.type !== 'keyDown') return;
+    if (input.key === 'F12') win.webContents.toggleDevTools();
+    if (input.key === 'F11') win.setFullScreen(!win.isFullScreen());
+  });
+  broadcastModuleOpenSet();
+}
+function closeAllModuleWindows() {
+  for (const w of [...moduleWindows.values()]) { try { if (w && !w.isDestroyed()) w.destroy(); } catch (_) {} }
+  moduleWindows.clear();
 }
 
 // Tray gives a quick way back to the window and surfaces how many agents need
@@ -1687,15 +1761,34 @@ app.on('window-all-closed', () => {
 });
 
 // ---------------------------------------------------------------- window controls
-ipcMain.on('win:minimize', () => mainWindow && mainWindow.minimize());
-ipcMain.on('win:maximizeToggle', () => {
-  if (!mainWindow) return;
-  if (mainWindow.isMaximized()) mainWindow.unmaximize();
-  else mainWindow.maximize();
+// Действуют на окно ОТПРАВИТЕЛЯ (редактор ИЛИ окно модуля), не на mainWindow жёстко.
+function senderWin(e) { try { return BrowserWindow.fromWebContents(e.sender); } catch (_) { return null; } }
+ipcMain.on('win:minimize', (e) => { const w = senderWin(e); if (w) w.minimize(); });
+ipcMain.on('win:maximizeToggle', (e) => {
+  const w = senderWin(e);
+  if (!w) return;
+  if (w.isMaximized()) w.unmaximize();
+  else w.maximize();
 });
-ipcMain.on('win:close', () => mainWindow && mainWindow.close());
-ipcMain.handle('win:isMaximized', () => !!(mainWindow && mainWindow.isMaximized()));
+ipcMain.on('win:close', (e) => { const w = senderWin(e); if (w) w.close(); });
+ipcMain.handle('win:isMaximized', (e) => { const w = senderWin(e); return !!(w && w.isMaximized()); });
 ipcMain.on('win:show', showWindow);
+
+// ── Окна модулей: open/close/реестр открытых ──────────────────────────────────────────
+ipcMain.on('module:open', (_e, { modId } = {}) => { if (modId) openModuleWindow(String(modId)); });
+ipcMain.on('module:close', (_e, { modId } = {}) => { const w = moduleWindows.get(String(modId)); if (w && !w.isDestroyed()) w.close(); });
+ipcMain.handle('module:openSet', () => ({ ids: [...moduleWindows.keys()] }));
+
+// ── Кросс-оконная шина: активный проект редактора → окна модулей ──────────────────────
+ipcMain.on('app:setActiveProject', (_e, info) => { activeProjectInfo = info || null; broadcastToModules('app:activeProject', activeProjectInfo); });
+ipcMain.handle('app:getActiveProject', () => activeProjectInfo);
+ipcMain.on('app:settingsChanged', (_e, s) => broadcastToModules('app:settingsChanged', s || {}));
+
+// ── Действия из окна модуля → переслать редактору (вивер/терминал/дерево) ─────────────
+function forwardToEditor(ch, payload) { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(ch, payload); }
+ipcMain.on('editor:openInViewer', (_e, payload) => forwardToEditor('editor:openInViewer', payload));
+ipcMain.on('editor:sendToTerminal', (_e, payload) => forwardToEditor('editor:sendToTerminal', payload));
+ipcMain.on('editor:refreshTree', (_e, payload) => forwardToEditor('editor:refreshTree', payload));
 
 // Reflect how many agents need attention on the tray tooltip (and macOS title).
 ipcMain.on('tray:update', (_e, { attention } = {}) => {

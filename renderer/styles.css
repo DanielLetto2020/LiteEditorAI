@@ -156,6 +156,26 @@ html, body {
 #win-close::after { width: 13px; height: 0; border-top: 1.6px solid var(--text); transform: translate(-50%, -50%) rotate(-45deg); }
 .win-btn.close:hover::before, .win-btn.close:hover::after { border-top-color: #fff; }
 
+/* ---------------- module window (v1.1+) ---------------- */
+/* Окно одного модуля: титлбар сверху + единственная панель, заполняющая окно. Переиспользует
+   токены тем и классы .win-btn/.brand; панель теряет border-left/фикс-ширину и тянется. */
+#mod-app {
+  display: flex; flex-direction: column; height: 100vh;
+  border: 1px solid var(--app-border); border-radius: 11px; overflow: hidden; background: var(--bg);
+}
+#mod-app.is-max { border-radius: 0; border-color: transparent; }
+#mod-topbar {
+  display: flex; align-items: center; gap: 4px; height: 38px; padding: 0 6px 0 14px;
+  background: var(--bar); border-bottom: 1px solid var(--border); -webkit-app-region: drag;
+}
+#module-root { flex: 1 1 auto; display: flex; min-height: 0; position: relative; }
+body.module-window #module-root > section {
+  flex: 1 1 auto !important; min-width: 0 !important; border-left: none !important;
+}
+body.module-window #module-root > .gutter { display: none !important; }
+#mod-app.is-max #win-max::before { width: 8px; height: 8px; transform: translate(-60%, -40%); }
+#mod-app.is-max #win-max::after { width: 8px; height: 8px; border: 1.6px solid var(--text); border-radius: 2px; transform: translate(-30%, -60%); background: var(--bg); }
+
 /* ---------------- body & panes ---------------- */
 #body { flex: 1; display: flex; min-height: 0; }
 

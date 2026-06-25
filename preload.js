@@ -33,6 +33,35 @@ contextBridge.exposeInMainWorld('lite', {
 
   tray: { update: (attention) => ipcRenderer.send('tray:update', { attention }) },
 
+  // Окна модулей (v1.1+): открыть/сфокусировать, закрыть, подписка на набор открытых.
+  module: {
+    open: (modId) => ipcRenderer.send('module:open', { modId }),
+    close: (modId) => ipcRenderer.send('module:close', { modId }),
+    openSet: () => ipcRenderer.invoke('module:openSet'),
+    onOpenSet: (cb) => { const h = (_e, p) => cb(p && p.ids || []); ipcRenderer.on('module:openSet', h); return () => ipcRenderer.removeListener('module:openSet', h); },
+  },
+
+  // Кросс-оконная шина редактор↔окна модулей. Редактор пушит активный проект/настройки;
+  // окно модуля их читает и подписывается на изменения.
+  app: {
+    setActiveProject: (info) => ipcRenderer.send('app:setActiveProject', info),
+    getActiveProject: () => ipcRenderer.invoke('app:getActiveProject'),
+    onActiveProject: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('app:activeProject', h); return () => ipcRenderer.removeListener('app:activeProject', h); },
+    settingsChanged: (s) => ipcRenderer.send('app:settingsChanged', s),
+    onSettingsChanged: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('app:settingsChanged', h); return () => ipcRenderer.removeListener('app:settingsChanged', h); },
+  },
+
+  // Действия окна модуля над редактором (форвард через main). Send-side зовёт окно модуля,
+  // on-side слушает редактор.
+  editorBus: {
+    openInViewer: (filePath) => ipcRenderer.send('editor:openInViewer', { path: filePath }),
+    sendToTerminal: (text) => ipcRenderer.send('editor:sendToTerminal', { text }),
+    refreshTree: () => ipcRenderer.send('editor:refreshTree', {}),
+    onOpenInViewer: (cb) => { const h = (_e, p) => cb(p && p.path); ipcRenderer.on('editor:openInViewer', h); return () => ipcRenderer.removeListener('editor:openInViewer', h); },
+    onSendToTerminal: (cb) => { const h = (_e, p) => cb(p && p.text); ipcRenderer.on('editor:sendToTerminal', h); return () => ipcRenderer.removeListener('editor:sendToTerminal', h); },
+    onRefreshTree: (cb) => { const h = () => cb(); ipcRenderer.on('editor:refreshTree', h); return () => ipcRenderer.removeListener('editor:refreshTree', h); },
+  },
+
   store: {
     loadAll: () => ipcRenderer.sendSync('store:loadAll'),       // sync snapshot at startup
     set: (key, value) => ipcRenderer.send('store:set', { key, value }),
