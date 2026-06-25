@@ -1301,6 +1301,15 @@ function saveModuleBounds(modId, win) {
 function broadcastModuleOpenSet() {
   const ids = [...moduleWindows.keys()];
   if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('module:openSet', { ids });
+  // запоминаем набор открытых окон — чтобы переоткрыть его при следующем запуске редактора
+  try { const all = readModuleWins(); all.__open = ids; writeStoreKey('moduleWins', all); } catch (_) {}
+}
+// Переоткрыть окна модулей, которые были открыты на момент прошлого выхода (с их сохранёнными bounds).
+function reopenSavedModuleWindows() {
+  try {
+    const open = readModuleWins().__open;
+    if (Array.isArray(open)) for (const id of open) { if (id && typeof id === 'string') openModuleWindow(id); }
+  } catch (_) {}
 }
 function broadcastToModules(ch, payload) {
   for (const w of moduleWindows.values()) { if (w && !w.isDestroyed()) w.webContents.send(ch, payload); }
@@ -1381,6 +1390,9 @@ app.whenReady().then(() => {
   Menu.setApplicationMenu(null); // we draw our own menu in the custom titlebar
   createWindow();
   createTray();
+  // Переоткрыть окна модулей, открытые в прошлой сессии (проектозависимые подхватят активный
+  // проект, когда редактор его запушит). Небольшая задержка — дать окну редактора подняться.
+  setTimeout(reopenSavedModuleWindows, 600);
   startRemotePult();
   signalHeirReady();   // если нас запустили как «наследника» при перезагрузке с пульта — отрапортовать старой копии
   app.on('activate', () => {

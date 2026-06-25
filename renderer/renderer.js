@@ -39,7 +39,7 @@ import { el, svgEl, icon, iconBtn, hydrateIcons, toast, renderDiffInto, makeModa
 // initOpenRouter — чат мигрирован в отдельное окно (renderer/module-entry.js).
 import { initExtensions } from './modules/extensions.js';
 
-const APP_VERSION = 'alpha v1.1.9';
+const APP_VERSION = 'alpha v1.1.10';
 const GUTTER = 5;
 const SCRATCH_ID = '__scratch__'; // префикс id системных терминалов (домашняя папка), не привязаны к проектам
 const isScratch = (id) => typeof id === 'string' && id.startsWith(SCRATCH_ID);
