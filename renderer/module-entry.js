@@ -13,6 +13,7 @@ import { initTools } from './modules/tools.js';
 import { initIterflow } from './modules/iterflow.js';
 import { initSeo } from './modules/seo.js';
 import { initAudit } from './modules/audit.js';
+import { initNotes } from './modules/notes.js';
 
 const lite = window.lite;
 const $ = (s) => document.querySelector(s);
@@ -33,6 +34,15 @@ const MODULES = {
   audit: {
     title: 'Аудит проекта', init: initAudit, project: true,
     wire: (mod) => { bind('#audit-rescan', () => mod.rescan()); },
+  },
+  notes: {
+    title: 'Задачи', init: initNotes, project: true,
+    wire: (mod) => {
+      bind('#notes-export', () => mod.exportMenu());
+      bind('#notes-import', () => mod.importNotes());
+      // пульт изменил задачи → редактор ретранслировал app:notesChanged → перечитать, если открыт тот список
+      lite.app.onNotesChanged((id) => { try { mod.onExternalChange(id); } catch (_) {} });
+    },
   },
 };
 

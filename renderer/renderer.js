@@ -32,13 +32,11 @@ import { initCtx } from './modules/contextgraph.js';
 import { initContainers } from './modules/containers.js';
 import { initDb } from './modules/db.js';
 import { initRh } from './modules/remotehost.js';
-import { initNotes } from './modules/notes.js';
-// initAudit — модуль «Аудит» мигрирован в отдельное окно (renderer/module-entry.js).
-// initSeo / initTools / initIterflow — модули мигрированы в отдельные окна (renderer/module-entry.js), в ядре не инициализируются.
+// initNotes / initAudit / initSeo / initTools / initIterflow — модули мигрированы в отдельные окна (renderer/module-entry.js).
 import { initOpenRouter } from './modules/openrouter.js';
 import { initExtensions } from './modules/extensions.js';
 
-const APP_VERSION = 'alpha v1.1.3';
+const APP_VERSION = 'alpha v1.1.4';
 const GUTTER = 5;
 const SCRATCH_ID = '__scratch__'; // префикс id системных терминалов (домашняя папка), не привязаны к проектам
 const isScratch = (id) => typeof id === 'string' && id.startsWith(SCRATCH_ID);
@@ -152,7 +150,7 @@ function loadLayout() { return { ...DEFAULT_LAYOUT, ...(STORE.layout || {}) }; }
 function saveLayout() { persist('layout', layout); }
 // Whether the viewer / system terminal panes are open — part of the backed-up state,
 // restored on startup (and on import) so the window reopens the way it was left.
-function saveUiState() { persist('uiState', { viewerOpen, scratchOpen, gitOpen: Git.isOpen(), ctxOpen: Ctx.isOpen(), dockerOpen: Containers.isOpen(), dbOpen: Db.isOpen(), rhOpen: Rh.isOpen(), notesOpen: Notes.isOpen(), chatOpen: Or.isOpen(), docOpen: TextProc.isOpen() }); }
+function saveUiState() { persist('uiState', { viewerOpen, scratchOpen, gitOpen: Git.isOpen(), ctxOpen: Ctx.isOpen(), dockerOpen: Containers.isOpen(), dbOpen: Db.isOpen(), rhOpen: Rh.isOpen(), chatOpen: Or.isOpen(), docOpen: TextProc.isOpen() }); }
 function applyLayout() {
   $('#sidebar').style.flexBasis = layout.sidebar + 'px';
   $('#viewer-pane').style.flexBasis = layout.viewer + 'px';
@@ -164,7 +162,6 @@ function applyLayout() {
   $('#db-pane').style.flexBasis = layout.db + 'px';
   $('#rh-pane').style.flexBasis = layout.rh + 'px';
   $('#ext-pane').style.flexBasis = layout.ext + 'px';
-  $('#notes-pane').style.flexBasis = layout.notes + 'px';
   $('#chat-pane').style.flexBasis = layout.chat + 'px';
   $('#doc-pane').style.flexBasis = layout.doc + 'px';
 }
@@ -716,12 +713,8 @@ async function scanProjects() {
 // общий хелпер для редактора и окон модулей (импорт ниже).
 
 // ---------------------------------------------------------------- notes / prompt cards (#4)
-// Вынесены в renderer/modules/notes.js (const Notes ниже); здесь — только sendNoteToTerminal.
-const Notes = initNotes({
-  STORE, settings, saveSettings, applyLayoutSwap, sendNoteToTerminal,
-  layout, GUTTER, saveUiState, refitActiveTerminal, activeProject, closeOtherPanels,
-  getProjects: () => projects.map((p) => ({ id: p.id, name: p.name, path: p.path })),
-});
+// Модуль «Задачи» (notes) мигрирован в отдельное окно (renderer/module-entry.js, проектозависимый).
+// Здесь остаётся только sendNoteToTerminal — его зовёт редактор по editorBus (окно→редактор).
 function sendNoteToTerminal(p, text) {
   if (!text) return;
   const proj = projects.find((x) => x.id === p.id);
@@ -1469,7 +1462,6 @@ function doSetActive(id) {
   applyFontSize();
   if (viewerOpen) refreshViewerForActive();
   if (Git.isOpen()) Git.renderPanel(proj); // Git module follows the active project
-  if (Notes.isOpen()) Notes.renderPanel(proj); // панель задач следует за активным проектом
   try { Ctx.onProjectChange(proj); } catch (_) {} // канва «Контекста» следует за активным проектом
   try { Ext.notifyActiveProject(activeId); } catch (_) {} // пользовательские модули: ctx.projects.onChange
   pushActiveProject(proj); // окна модулей (git/ctx/notes/audit): следовать за активным проектом редактора
@@ -1951,9 +1943,9 @@ function setViewerOpen(open, opts = {}) {
 // Реестр панелей: каждая setXxxOpen знает только себя, взаимоисключение — closeOtherPanels.
 // Порядок закрытия фиксирован (он же — порядок старых inline-цепочек во всех setXxxOpen).
 const panels = new Map(); // id -> { isOpen(), setOpen(open, opts) }
-const PANEL_ORDER = ['files', 'git', 'ctx', 'docker', 'db', 'scratch', 'rh', 'notes', 'chat', 'doc'];
+const PANEL_ORDER = ['files', 'git', 'ctx', 'docker', 'db', 'scratch', 'rh', 'chat', 'doc'];
 // Модули, мигрированные в отдельные окна (открываются через lite.module.open, не как панель правого слота).
-const WINDOW_MODULES = new Set(['tools', 'iterflow', 'seo', 'audit']);
+const WINDOW_MODULES = new Set(['tools', 'iterflow', 'seo', 'audit', 'notes']);
 function registerPanel(id, api) { panels.set(id, api); }
 function closeOtherPanels(selfId) {
   for (const id of PANEL_ORDER) {
@@ -1990,8 +1982,7 @@ const Rh = initRh({
   closeOtherPanels, termTheme, applyUnicode11, loadFastRenderer, copySelection,
 });
 registerPanel('rh', { isOpen: Rh.isOpen, setOpen: Rh.setOpen });
-// Задачи/заметки — панель правого слота (renderer/modules/notes.js); следует за активным проектом.
-registerPanel('notes', { isOpen: Notes.isOpen, setOpen: Notes.setOpen });
+// Задачи (notes) мигрированы в отдельное окно (проектозависимое: следует за активным проектом редактора).
 // Аудит (audit) мигрирован в отдельное окно (проектозависимое: следует за активным проектом редактора
 // через app:activeProject). IterFlow и WEB/SEO аудит — тоже отдельные окна. См. module-entry.js.
 // Инструменты — devtools-комбайн (renderer/modules/tools.js); системная панель, чистый фронт без бэкенда.
@@ -3008,7 +2999,7 @@ function paletteActions() {
   if (Ctx.isOpen()) acts.push({ label: 'Контекст: подтвердить (✓ собрать CLAUDE.md / AGENTS.md)', run: () => Ctx.applyCompile() });
   acts.push({ label: Containers.isOpen() ? 'Закрыть контейнеры' : 'Контейнеры (Docker / Podman)', run: Containers.toggle });
   acts.push({ label: Db.isOpen() ? 'Закрыть базы данных' : 'Базы данных (Postgres / MySQL / SQLite)', run: Db.toggle });
-  acts.push({ label: Notes.isOpen() ? 'Закрыть задачи' : 'Задачи — заметки проекта', run: Notes.toggle });
+  acts.push({ label: 'Задачи — заметки проекта', run: () => openModule('notes') });
   acts.push({ label: 'Режим «один терминал»', run: toggleSingle });
   acts.push({ label: 'Поиск в терминале', run: openTermSearch });
   acts.push({ label: 'Очистить терминал', run: () => clearTerminal() });
@@ -3183,7 +3174,7 @@ function init() {
   // Пульт: «Создать папку» → создаём на десктопе.
   try { if (lite.remote && lite.remote.onNewFolder) lite.remote.onNewFolder((name) => { try { handleRemoteNewFolder(name); } catch (_) {} }); } catch (_) {}
   try { if (lite.remote && lite.remote.onNoteToTerminal) lite.remote.onNoteToTerminal((projId, text) => { try { handleRemoteNoteToTerminal(projId, text); } catch (_) {} }); } catch (_) {}
-  try { if (lite.remote && lite.remote.onNotesChanged) lite.remote.onNotesChanged((id) => { try { Notes.onExternalChange(id); } catch (_) {} }); } catch (_) {}
+  try { if (lite.remote && lite.remote.onNotesChanged) lite.remote.onNotesChanged((id) => { try { lite.app.notesChanged(id); } catch (_) {} }); } catch (_) {}
   // Пульт просит одобрить устройство (pairing) → модалка одобрения.
   try { if (lite.remote && lite.remote.onPairRequest) lite.remote.onPairRequest((info) => { try { handleRemotePairRequest(info); } catch (_) {} }); } catch (_) {}
   // Бейдж «подключённые пульты» у версии: живёт на push-событиях из main + стартовый снимок.
@@ -3229,10 +3220,7 @@ function init() {
   $('#git-refresh').addEventListener('click', () => { if (Git.isOpen()) Git.renderPanel(activeProject()); });
   $('#doc-close').addEventListener('click', () => TextProc.setOpen(false));
   $('#doc-settings').addEventListener('click', () => TextProc.showSettings());
-  // tools/iterflow/seo/audit живут в окнах модулей (module.html) — их кнопки привязывает module-entry.js.
-  $('#notes-close').addEventListener('click', () => Notes.setOpen(false));
-  $('#notes-export').addEventListener('click', () => Notes.exportMenu());
-  $('#notes-import').addEventListener('click', () => Notes.importNotes());
+  // tools/iterflow/seo/audit/notes живут в окнах модулей (module.html) — их кнопки привязывает module-entry.js.
   $('#docker-close').addEventListener('click', () => Containers.setOpen(false));
   $('#docker-refresh').addEventListener('click', () => Containers.refresh());
   $('#db-close').addEventListener('click', () => Db.setOpen(false));
@@ -3330,10 +3318,10 @@ function init() {
   // Right-slot modules are mutually exclusive — restore at most one, first-true-wins
   // (приоритет — порядок старых if-цепочек: viewer, scratch, git, docker, db, rh).
   // allowEmpty so Git returns even before a project is active — matching the viewer, so window width fits.
-  const RESTORE_ORDER = [['files', 'viewerOpen'], ['scratch', 'scratchOpen'], ['git', 'gitOpen'], ['ctx', 'ctxOpen'], ['docker', 'dockerOpen'], ['db', 'dbOpen'], ['rh', 'rhOpen'], ['notes', 'notesOpen'], ['chat', 'chatOpen'], ['doc', 'docOpen']];
+  const RESTORE_ORDER = [['files', 'viewerOpen'], ['scratch', 'scratchOpen'], ['git', 'gitOpen'], ['ctx', 'ctxOpen'], ['docker', 'dockerOpen'], ['db', 'dbOpen'], ['rh', 'rhOpen'], ['chat', 'chatOpen'], ['doc', 'docOpen']];
   for (const [id, key] of RESTORE_ORDER) {
     if (!ui[key]) continue;
-    panels.get(id).setOpen(true, (id === 'git' || id === 'ctx' || id === 'notes') ? { grow: false, allowEmpty: true } : { grow: false });
+    panels.get(id).setOpen(true, (id === 'git' || id === 'ctx') ? { grow: false, allowEmpty: true } : { grow: false });
     break;
   }
 

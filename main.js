@@ -1783,6 +1783,7 @@ ipcMain.handle('module:openSet', () => ({ ids: [...moduleWindows.keys()] }));
 ipcMain.on('app:setActiveProject', (_e, info) => { activeProjectInfo = info || null; broadcastToModules('app:activeProject', activeProjectInfo); });
 ipcMain.handle('app:getActiveProject', () => activeProjectInfo);
 ipcMain.on('app:settingsChanged', (_e, s) => broadcastToModules('app:settingsChanged', s || {}));
+ipcMain.on('app:notesChanged', (_e, { id } = {}) => broadcastToModules('app:notesChanged', { id }));
 
 // ── Действия из окна модуля → переслать редактору (вивер/терминал/дерево) ─────────────
 function forwardToEditor(ch, payload) { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(ch, payload); }
