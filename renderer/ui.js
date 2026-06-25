@@ -236,3 +236,37 @@ export function showPrompt(title, label, initial, onOk) {
   m.querySelector('#pr-ok').onclick = ok;
   m.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); ok(); } });
 }
+
+// Fix text typed in the wrong layout (e.g. "ghbdtn" → "привет") by physical key
+// position. Direction is auto-detected from which alphabet dominates the text.
+const US_RU_BASE = {
+  '`': 'ё', q: 'й', w: 'ц', e: 'у', r: 'к', t: 'е', y: 'н', u: 'г', i: 'ш', o: 'щ', p: 'з', '[': 'х', ']': 'ъ',
+  a: 'ф', s: 'ы', d: 'в', f: 'а', g: 'п', h: 'р', j: 'о', k: 'л', l: 'д', ';': 'ж', "'": 'э',
+  z: 'я', x: 'ч', c: 'с', v: 'м', b: 'и', n: 'т', m: 'ь', ',': 'б', '.': 'ю', '/': '.',
+};
+const US_RU = {};
+for (const [k, v] of Object.entries(US_RU_BASE)) {
+  US_RU[k] = v;
+  if (/[a-z]/.test(k)) US_RU[k.toUpperCase()] = v.toUpperCase();
+}
+Object.assign(US_RU, { '{': 'Х', '}': 'Ъ', ':': 'Ж', '"': 'Э', '<': 'Б', '>': 'Ю' }); // shifted punctuation keys
+const RU_US = {};
+for (const [k, v] of Object.entries(US_RU)) if (!(v in RU_US)) RU_US[v] = k;
+export function convertLayout(text) {
+  let lat = 0, cyr = 0;
+  for (const ch of text) { if (/[a-z]/i.test(ch)) lat++; else if (/[а-яё]/i.test(ch)) cyr++; }
+  const map = lat >= cyr ? US_RU : RU_US;
+  let out = '';
+  for (const ch of text) out += (map[ch] || ch);
+  return out;
+}
+export function applyLayoutSwap(ta) {
+  const s = ta.selectionStart, e = ta.selectionEnd;
+  if (s !== e) { // convert only the selection if there is one
+    ta.value = ta.value.slice(0, s) + convertLayout(ta.value.slice(s, e)) + ta.value.slice(e);
+    ta.setSelectionRange(s, e);
+  } else {
+    ta.value = convertLayout(ta.value);
+  }
+  ta.focus();
+}

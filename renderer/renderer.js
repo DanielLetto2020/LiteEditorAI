@@ -26,19 +26,19 @@ import { css } from '@codemirror/lang-css';
 import { sql, PostgreSQL, MySQL, SQLite } from '@codemirror/lang-sql';
 import { showMinimap } from '@replit/codemirror-minimap';
 import { initTextProc } from './modules/textproc.js';
-import { el, svgEl, icon, iconBtn, hydrateIcons, toast, renderDiffInto, makeModal, showConfirm, showPrompt, baseName, ICONS, setErrorSink } from './ui.js';
+import { el, svgEl, icon, iconBtn, hydrateIcons, toast, renderDiffInto, makeModal, showConfirm, showPrompt, baseName, ICONS, setErrorSink, applyLayoutSwap } from './ui.js';
 import { initGit } from './modules/git.js';
 import { initCtx } from './modules/contextgraph.js';
 import { initContainers } from './modules/containers.js';
 import { initDb } from './modules/db.js';
 import { initRh } from './modules/remotehost.js';
 import { initNotes } from './modules/notes.js';
-import { initAudit } from './modules/audit.js';
+// initAudit — модуль «Аудит» мигрирован в отдельное окно (renderer/module-entry.js).
 // initSeo / initTools / initIterflow — модули мигрированы в отдельные окна (renderer/module-entry.js), в ядре не инициализируются.
 import { initOpenRouter } from './modules/openrouter.js';
 import { initExtensions } from './modules/extensions.js';
 
-const APP_VERSION = 'alpha v1.1.2';
+const APP_VERSION = 'alpha v1.1.3';
 const GUTTER = 5;
 const SCRATCH_ID = '__scratch__'; // префикс id системных терминалов (домашняя папка), не привязаны к проектам
 const isScratch = (id) => typeof id === 'string' && id.startsWith(SCRATCH_ID);
@@ -152,7 +152,7 @@ function loadLayout() { return { ...DEFAULT_LAYOUT, ...(STORE.layout || {}) }; }
 function saveLayout() { persist('layout', layout); }
 // Whether the viewer / system terminal panes are open — part of the backed-up state,
 // restored on startup (and on import) so the window reopens the way it was left.
-function saveUiState() { persist('uiState', { viewerOpen, scratchOpen, gitOpen: Git.isOpen(), ctxOpen: Ctx.isOpen(), dockerOpen: Containers.isOpen(), dbOpen: Db.isOpen(), rhOpen: Rh.isOpen(), notesOpen: Notes.isOpen(), auditOpen: Audit.isOpen(), chatOpen: Or.isOpen(), docOpen: TextProc.isOpen() }); }
+function saveUiState() { persist('uiState', { viewerOpen, scratchOpen, gitOpen: Git.isOpen(), ctxOpen: Ctx.isOpen(), dockerOpen: Containers.isOpen(), dbOpen: Db.isOpen(), rhOpen: Rh.isOpen(), notesOpen: Notes.isOpen(), chatOpen: Or.isOpen(), docOpen: TextProc.isOpen() }); }
 function applyLayout() {
   $('#sidebar').style.flexBasis = layout.sidebar + 'px';
   $('#viewer-pane').style.flexBasis = layout.viewer + 'px';
@@ -165,7 +165,6 @@ function applyLayout() {
   $('#rh-pane').style.flexBasis = layout.rh + 'px';
   $('#ext-pane').style.flexBasis = layout.ext + 'px';
   $('#notes-pane').style.flexBasis = layout.notes + 'px';
-  $('#audit-pane').style.flexBasis = layout.audit + 'px';
   $('#chat-pane').style.flexBasis = layout.chat + 'px';
   $('#doc-pane').style.flexBasis = layout.doc + 'px';
 }
@@ -713,40 +712,8 @@ async function scanProjects() {
 }
 
 // ---------------------------------------------------------------- keyboard layout swap
-// Fix text typed in the wrong layout (e.g. "ghbdtn" → "привет") by physical key
-// position. Direction is auto-detected from which alphabet dominates the text.
-const US_RU_BASE = {
-  '`': 'ё', q: 'й', w: 'ц', e: 'у', r: 'к', t: 'е', y: 'н', u: 'г', i: 'ш', o: 'щ', p: 'з', '[': 'х', ']': 'ъ',
-  a: 'ф', s: 'ы', d: 'в', f: 'а', g: 'п', h: 'р', j: 'о', k: 'л', l: 'д', ';': 'ж', "'": 'э',
-  z: 'я', x: 'ч', c: 'с', v: 'м', b: 'и', n: 'т', m: 'ь', ',': 'б', '.': 'ю', '/': '.',
-};
-const US_RU = {};
-for (const [k, v] of Object.entries(US_RU_BASE)) {
-  US_RU[k] = v;
-  if (/[a-z]/.test(k)) US_RU[k.toUpperCase()] = v.toUpperCase();
-}
-Object.assign(US_RU, { '{': 'Х', '}': 'Ъ', ':': 'Ж', '"': 'Э', '<': 'Б', '>': 'Ю' }); // shifted punctuation keys
-const RU_US = {};
-for (const [k, v] of Object.entries(US_RU)) if (!(v in RU_US)) RU_US[v] = k;
-
-function convertLayout(text) {
-  let lat = 0, cyr = 0;
-  for (const ch of text) { if (/[a-z]/i.test(ch)) lat++; else if (/[а-яё]/i.test(ch)) cyr++; }
-  const map = lat >= cyr ? US_RU : RU_US;
-  let out = '';
-  for (const ch of text) out += (map[ch] || ch);
-  return out;
-}
-function applyLayoutSwap(ta) {
-  const s = ta.selectionStart, e = ta.selectionEnd;
-  if (s !== e) { // convert only the selection if there is one
-    ta.value = ta.value.slice(0, s) + convertLayout(ta.value.slice(s, e)) + ta.value.slice(e);
-    ta.setSelectionRange(s, e);
-  } else {
-    ta.value = convertLayout(ta.value);
-  }
-  ta.focus();
-}
+// convertLayout/applyLayoutSwap (фиксер раскладки «ghbdtn»→«привет») вынесены в ui.js —
+// общий хелпер для редактора и окон модулей (импорт ниже).
 
 // ---------------------------------------------------------------- notes / prompt cards (#4)
 // Вынесены в renderer/modules/notes.js (const Notes ниже); здесь — только sendNoteToTerminal.
@@ -1503,7 +1470,6 @@ function doSetActive(id) {
   if (viewerOpen) refreshViewerForActive();
   if (Git.isOpen()) Git.renderPanel(proj); // Git module follows the active project
   if (Notes.isOpen()) Notes.renderPanel(proj); // панель задач следует за активным проектом
-  if (Audit.isOpen()) Audit.renderPanel(); // аудит следует за активным проектом
   try { Ctx.onProjectChange(proj); } catch (_) {} // канва «Контекста» следует за активным проектом
   try { Ext.notifyActiveProject(activeId); } catch (_) {} // пользовательские модули: ctx.projects.onChange
   pushActiveProject(proj); // окна модулей (git/ctx/notes/audit): следовать за активным проектом редактора
@@ -1985,9 +1951,9 @@ function setViewerOpen(open, opts = {}) {
 // Реестр панелей: каждая setXxxOpen знает только себя, взаимоисключение — closeOtherPanels.
 // Порядок закрытия фиксирован (он же — порядок старых inline-цепочек во всех setXxxOpen).
 const panels = new Map(); // id -> { isOpen(), setOpen(open, opts) }
-const PANEL_ORDER = ['files', 'git', 'ctx', 'docker', 'db', 'scratch', 'rh', 'notes', 'audit', 'chat', 'doc'];
+const PANEL_ORDER = ['files', 'git', 'ctx', 'docker', 'db', 'scratch', 'rh', 'notes', 'chat', 'doc'];
 // Модули, мигрированные в отдельные окна (открываются через lite.module.open, не как панель правого слота).
-const WINDOW_MODULES = new Set(['tools', 'iterflow', 'seo']);
+const WINDOW_MODULES = new Set(['tools', 'iterflow', 'seo', 'audit']);
 function registerPanel(id, api) { panels.set(id, api); }
 function closeOtherPanels(selfId) {
   for (const id of PANEL_ORDER) {
@@ -2026,14 +1992,8 @@ const Rh = initRh({
 registerPanel('rh', { isOpen: Rh.isOpen, setOpen: Rh.setOpen });
 // Задачи/заметки — панель правого слота (renderer/modules/notes.js); следует за активным проектом.
 registerPanel('notes', { isOpen: Notes.isOpen, setOpen: Notes.setOpen });
-// Аудит — базовый рентген активного проекта (renderer/modules/audit.js); следует за проектом.
-const Audit = initAudit({
-  layout, GUTTER, saveUiState, refitActiveTerminal, activeProject, closeOtherPanels,
-  openInViewer: async (abs, line) => { if (!viewerOpen) await setViewerOpen(true); await openFile(abs, line); },
-  sendToTerminal: (text) => { const p = activeProject(); if (p) sendNoteToTerminal(p, text); },
-});
-registerPanel('audit', { isOpen: Audit.isOpen, setOpen: Audit.setOpen });
-// IterFlow и WEB/SEO аудит мигрированы в отдельные окна (см. WINDOW_MODULES / module-entry.js).
+// Аудит (audit) мигрирован в отдельное окно (проектозависимое: следует за активным проектом редактора
+// через app:activeProject). IterFlow и WEB/SEO аудит — тоже отдельные окна. См. module-entry.js.
 // Инструменты — devtools-комбайн (renderer/modules/tools.js); системная панель, чистый фронт без бэкенда.
 // «Инструменты» (tools) — мигрирован в отдельное окно: openModule('tools') открывает BrowserWindow
 // (см. WINDOW_MODULES / lite.module.open). В правом слоте больше не регистрируется.
@@ -3267,11 +3227,9 @@ function init() {
   $('#viewer-reload-dismiss').addEventListener('click', () => hideReloadBar());
   $('#git-close').addEventListener('click', () => Git.setOpen(false));
   $('#git-refresh').addEventListener('click', () => { if (Git.isOpen()) Git.renderPanel(activeProject()); });
-  $('#audit-close').addEventListener('click', () => Audit.setOpen(false));
-  $('#audit-rescan').addEventListener('click', () => Audit.rescan());
   $('#doc-close').addEventListener('click', () => TextProc.setOpen(false));
   $('#doc-settings').addEventListener('click', () => TextProc.showSettings());
-  // tools/iterflow/seo живут в окнах модулей (module.html) — их кнопки привязывает module-entry.js.
+  // tools/iterflow/seo/audit живут в окнах модулей (module.html) — их кнопки привязывает module-entry.js.
   $('#notes-close').addEventListener('click', () => Notes.setOpen(false));
   $('#notes-export').addEventListener('click', () => Notes.exportMenu());
   $('#notes-import').addEventListener('click', () => Notes.importNotes());
@@ -3282,6 +3240,11 @@ function init() {
   $('#rh-close').addEventListener('click', () => Rh.setOpen(false));
   $('#rh-refresh').addEventListener('click', () => { if (Rh.isOpen()) Rh.renderPanel(); });
   $('#rh-back').addEventListener('click', () => Rh.goList());
+  // Действия из окон модулей (audit/notes/…): открыть файл в вивере / послать текст в терминал / обновить дерево.
+  lite.editorBus.onOpenInViewer(async (abs, line) => { if (!viewerOpen) await setViewerOpen(true); await openFile(abs, line); });
+  lite.editorBus.onSendToTerminal((text) => { const p = activeProject(); if (p) sendNoteToTerminal(p, text); });
+  lite.editorBus.onSendNoteToTerminal((projId, text) => { const proj = projects.find((x) => x.id === projId) || activeProject(); if (proj) sendNoteToTerminal(proj, text); });
+  lite.editorBus.onRefreshTree(() => { const p = activeProject(); if (p) renderTree(p); });
   $('#tree-refresh').addEventListener('click', () => { const p = activeProject(); if (p) renderTree(p); });
   $('#tree-new').addEventListener('click', (e) => { const p = activeProject(); if (p) showTreeMenu(e.clientX, e.clientY, { name: p.name, path: p.path, dir: true, root: true }); });
   $('#tree').addEventListener('contextmenu', (e) => {
@@ -3367,10 +3330,10 @@ function init() {
   // Right-slot modules are mutually exclusive — restore at most one, first-true-wins
   // (приоритет — порядок старых if-цепочек: viewer, scratch, git, docker, db, rh).
   // allowEmpty so Git returns even before a project is active — matching the viewer, so window width fits.
-  const RESTORE_ORDER = [['files', 'viewerOpen'], ['scratch', 'scratchOpen'], ['git', 'gitOpen'], ['ctx', 'ctxOpen'], ['docker', 'dockerOpen'], ['db', 'dbOpen'], ['rh', 'rhOpen'], ['notes', 'notesOpen'], ['audit', 'auditOpen'], ['chat', 'chatOpen'], ['doc', 'docOpen']];
+  const RESTORE_ORDER = [['files', 'viewerOpen'], ['scratch', 'scratchOpen'], ['git', 'gitOpen'], ['ctx', 'ctxOpen'], ['docker', 'dockerOpen'], ['db', 'dbOpen'], ['rh', 'rhOpen'], ['notes', 'notesOpen'], ['chat', 'chatOpen'], ['doc', 'docOpen']];
   for (const [id, key] of RESTORE_ORDER) {
     if (!ui[key]) continue;
-    panels.get(id).setOpen(true, (id === 'git' || id === 'ctx' || id === 'notes' || id === 'audit') ? { grow: false, allowEmpty: true } : { grow: false });
+    panels.get(id).setOpen(true, (id === 'git' || id === 'ctx' || id === 'notes') ? { grow: false, allowEmpty: true } : { grow: false });
     break;
   }
 

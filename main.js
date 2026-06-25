@@ -1788,6 +1788,7 @@ ipcMain.on('app:settingsChanged', (_e, s) => broadcastToModules('app:settingsCha
 function forwardToEditor(ch, payload) { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(ch, payload); }
 ipcMain.on('editor:openInViewer', (_e, payload) => forwardToEditor('editor:openInViewer', payload));
 ipcMain.on('editor:sendToTerminal', (_e, payload) => forwardToEditor('editor:sendToTerminal', payload));
+ipcMain.on('editor:sendNoteToTerminal', (_e, payload) => forwardToEditor('editor:sendNoteToTerminal', payload));
 ipcMain.on('editor:refreshTree', (_e, payload) => forwardToEditor('editor:refreshTree', payload));
 
 // Reflect how many agents need attention on the tray tooltip (and macOS title).

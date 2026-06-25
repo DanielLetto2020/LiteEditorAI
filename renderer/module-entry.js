@@ -4,7 +4,7 @@
 // right-slot machinery (growBy / closeOtherPanels / refit / saveUiState) is neutralised and
 // the pane fills the whole window. Editor-facing actions are forwarded to the main window.
 import {
-  el, icon, iconBtn, toast, makeModal, showConfirm, showPrompt, hydrateIcons, setErrorSink,
+  el, icon, iconBtn, toast, makeModal, showConfirm, showPrompt, hydrateIcons, setErrorSink, applyLayoutSwap,
 } from './ui.js';
 import '@xterm/xterm/css/xterm.css';
 import 'highlight.js/styles/atom-one-dark.css';
@@ -12,6 +12,7 @@ import 'highlight.js/styles/atom-one-dark.css';
 import { initTools } from './modules/tools.js';
 import { initIterflow } from './modules/iterflow.js';
 import { initSeo } from './modules/seo.js';
+import { initAudit } from './modules/audit.js';
 
 const lite = window.lite;
 const $ = (s) => document.querySelector(s);
@@ -28,6 +29,10 @@ const MODULES = {
   seo: {
     title: 'WEB/SEO аудит', init: initSeo, project: false,
     wire: (mod) => { bind('#seo-rescan', () => mod.rescan()); },
+  },
+  audit: {
+    title: 'Аудит проекта', init: initAudit, project: true,
+    wire: (mod) => { bind('#audit-rescan', () => mod.rescan()); },
   },
 };
 
@@ -53,16 +58,16 @@ let mod = null;          // the initialised module instance
 const layoutProxy = new Proxy({}, { get: () => 480 });
 function buildHost() {
   return {
-    el, icon, iconBtn, makeModal, showConfirm, showPrompt, toast,
+    el, icon, iconBtn, makeModal, showConfirm, showPrompt, toast, applyLayoutSwap,
     STORE, persist, settings, saveSettings,
     layout: layoutProxy, GUTTER: 0,
     saveUiState: () => {}, refitActiveTerminal: () => {}, closeOtherPanels: () => {}, renderProjects: () => {},
     activeProject: () => activeProj,
     getActiveId: () => (activeProj && activeProj.id) || null,
-    getProjects: () => [],
-    openInViewer: (p) => lite.editorBus.openInViewer(p),
+    getProjects: () => (STORE.projects || []).map((p) => ({ id: p.id, name: p.name, path: p.path })),
+    openInViewer: (abs, line) => lite.editorBus.openInViewer(abs, line),
     sendToTerminal: (t) => lite.editorBus.sendToTerminal(t),
-    sendNoteToTerminal: (_id, t) => lite.editorBus.sendToTerminal(t),
+    sendNoteToTerminal: (p, t) => lite.editorBus.sendNoteToTerminal(p && p.id, t),
     refreshTree: () => lite.editorBus.refreshTree(),
     closeMenus: () => {},
   };
