@@ -6,6 +6,7 @@
 import {
   el, icon, iconBtn, toast, makeModal, showConfirm, showPrompt, hydrateIcons, setErrorSink, applyLayoutSwap,
 } from './ui.js';
+import { createCodeEditor, languageFor } from './codeedit.js';
 import '@xterm/xterm/css/xterm.css';
 import 'highlight.js/styles/atom-one-dark.css';
 
@@ -15,6 +16,7 @@ import { initSeo } from './modules/seo.js';
 import { initAudit } from './modules/audit.js';
 import { initNotes } from './modules/notes.js';
 import { initDb } from './modules/db.js';
+import { initGit } from './modules/git.js';
 
 const lite = window.lite;
 const $ = (s) => document.querySelector(s);
@@ -49,6 +51,10 @@ const MODULES = {
     title: 'Базы данных', init: initDb, project: false,
     wire: (mod) => { bind('#db-refresh', () => mod.refresh()); },
   },
+  git: {
+    title: 'Git', init: initGit, project: true,
+    wire: (mod) => { bind('#git-refresh', () => mod.renderPanel(activeProj)); },
+  },
 };
 
 const modId = (location.hash || '').replace(/^#/, '') || 'tools';
@@ -74,6 +80,7 @@ const layoutProxy = new Proxy({}, { get: () => 480 });
 function buildHost() {
   return {
     el, icon, iconBtn, makeModal, showConfirm, showPrompt, toast, applyLayoutSwap,
+    createCodeEditor, languageFor,
     STORE, persist, settings, saveSettings,
     layout: layoutProxy, GUTTER: 0,
     saveUiState: () => {}, refitActiveTerminal: () => {}, closeOtherPanels: () => {}, renderProjects: () => {},

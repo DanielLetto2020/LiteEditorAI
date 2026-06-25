@@ -24,10 +24,11 @@ import { markdown } from '@codemirror/lang-markdown';
 import { html } from '@codemirror/lang-html';
 import { css } from '@codemirror/lang-css';
 import { sql, PostgreSQL, MySQL, SQLite } from '@codemirror/lang-sql';
+import { createCodeEditor, languageFor } from './codeedit.js';
 import { showMinimap } from '@replit/codemirror-minimap';
 import { initTextProc } from './modules/textproc.js';
 import { el, svgEl, icon, iconBtn, hydrateIcons, toast, renderDiffInto, makeModal, showConfirm, showPrompt, baseName, ICONS, setErrorSink, applyLayoutSwap } from './ui.js';
-import { initGit } from './modules/git.js';
+// initGit — модуль «Git» мигрирован в отдельное окно (renderer/module-entry.js).
 import { initCtx } from './modules/contextgraph.js';
 import { initContainers } from './modules/containers.js';
 // initDb — модуль «Базы данных» мигрирован в отдельное окно (renderer/module-entry.js).
@@ -36,7 +37,7 @@ import { initRh } from './modules/remotehost.js';
 import { initOpenRouter } from './modules/openrouter.js';
 import { initExtensions } from './modules/extensions.js';
 
-const APP_VERSION = 'alpha v1.1.5';
+const APP_VERSION = 'alpha v1.1.6';
 const GUTTER = 5;
 const SCRATCH_ID = '__scratch__'; // префикс id системных терминалов (домашняя папка), не привязаны к проектам
 const isScratch = (id) => typeof id === 'string' && id.startsWith(SCRATCH_ID);
@@ -150,13 +151,12 @@ function loadLayout() { return { ...DEFAULT_LAYOUT, ...(STORE.layout || {}) }; }
 function saveLayout() { persist('layout', layout); }
 // Whether the viewer / system terminal panes are open — part of the backed-up state,
 // restored on startup (and on import) so the window reopens the way it was left.
-function saveUiState() { persist('uiState', { viewerOpen, scratchOpen, gitOpen: Git.isOpen(), ctxOpen: Ctx.isOpen(), dockerOpen: Containers.isOpen(), rhOpen: Rh.isOpen(), chatOpen: Or.isOpen(), docOpen: TextProc.isOpen() }); }
+function saveUiState() { persist('uiState', { viewerOpen, scratchOpen, ctxOpen: Ctx.isOpen(), dockerOpen: Containers.isOpen(), rhOpen: Rh.isOpen(), chatOpen: Or.isOpen(), docOpen: TextProc.isOpen() }); }
 function applyLayout() {
   $('#sidebar').style.flexBasis = layout.sidebar + 'px';
   $('#viewer-pane').style.flexBasis = layout.viewer + 'px';
   $('#tree-pane').style.flexBasis = layout.tree + 'px';
   $('#scratch-pane').style.flexBasis = layout.scratch + 'px';
-  $('#git-pane').style.flexBasis = layout.git + 'px';
   $('#ctx-pane').style.flexBasis = layout.ctx + 'px';
   $('#docker-pane').style.flexBasis = layout.docker + 'px';
   $('#rh-pane').style.flexBasis = layout.rh + 'px';
@@ -1460,7 +1460,6 @@ function doSetActive(id) {
   showActiveTerminal();
   applyFontSize();
   if (viewerOpen) refreshViewerForActive();
-  if (Git.isOpen()) Git.renderPanel(proj); // Git module follows the active project
   try { Ctx.onProjectChange(proj); } catch (_) {} // канва «Контекста» следует за активным проектом
   try { Ext.notifyActiveProject(activeId); } catch (_) {} // пользовательские модули: ctx.projects.onChange
   pushActiveProject(proj); // окна модулей (git/ctx/notes/audit): следовать за активным проектом редактора
@@ -1474,15 +1473,7 @@ function pushActiveProject(proj) {
 }
 
 // ---------------------------------------------------------------- viewer (CodeMirror)
-const LANGS = {
-  js: javascript, jsx: javascript, mjs: javascript, cjs: javascript,
-  ts: () => javascript({ typescript: true }), tsx: () => javascript({ typescript: true, jsx: true }),
-  py: python, json, md: markdown, markdown, html, htm: html, css, scss: css,
-};
-function languageFor(file) {
-  const make = LANGS[extOf(file)];
-  return make ? make() : [];
-}
+// LANGS/languageFor/createCodeEditor вынесены в renderer/codeedit.js (общий хелпер редактора и окон модулей).
 // Миникарта (VSCode-стиль): уменьшенная копия кода справа с индикатором области и кликом-прыжком.
 const minimapExt = showMinimap.compute([], () => ({
   create: () => ({ dom: document.createElement('div') }),
@@ -1525,16 +1516,6 @@ function makeEditor() {
   editor = new EditorView({ state, parent: $('#editor') });
 }
 // Подсветка строк по эффекту (для конфликтных регионов merge-модалки): per-line background-класс.
-const setMarksEffect = StateEffect.define();
-const marksField = StateField.define({
-  create: () => Decoration.none,
-  update(deco, tr) {
-    deco = deco.map(tr.changes);
-    for (const e of tr.effects) if (e.is(setMarksEffect)) deco = e.value;
-    return deco;
-  },
-  provide: (f) => EditorView.decorations.from(f),
-});
 // ---- git-маркеры в гаттере вивера: цветная полоса слева для строк, изменённых относительно HEAD.
 // Данные берём из `git diff HEAD -- file` (тот же источник, что diff-режим), парсим ханки в пер-строчные метки.
 const setGitGutterEffect = StateEffect.define(); // value: [{ line, type }] — line 1-based, type: added|modified|deleted
@@ -1599,39 +1580,6 @@ async function updateGitGutter(file) {
 function clearGitGutter() { if (editor) editor.dispatch({ effects: setGitGutterEffect.of([]) }); }
 // Переиспользуемая фабрика CodeMirror для модулей (merge-модалка git): та же тема/подсветка, что у вивера,
 // но изолированный инстанс. opts: { doc, readOnly, language, onChange } → { view, getValue, setMarks, scrollToLine, destroy }.
-function createCodeEditor(parent, opts = {}) {
-  const exts = [
-    lineNumbers(), drawSelection(), history(), indentOnInput(), bracketMatching(),
-    syntaxHighlighting(defaultHighlightStyle, { fallback: true }), oneDark, marksField,
-    opts.language || [],
-    keymap.of([indentWithTab, ...defaultKeymap, ...historyKeymap]),
-  ];
-  if (opts.readOnly) exts.push(EditorState.readOnly.of(true), EditorView.editable.of(false));
-  if (opts.onChange) exts.push(EditorView.updateListener.of((u) => { if (u.docChanged) opts.onChange(u.state.doc.toString()); }));
-  const view = new EditorView({ state: EditorState.create({ doc: opts.doc || '', extensions: exts }), parent });
-  return {
-    view,
-    getValue: () => view.state.doc.toString(),
-    // specs: [{ fromLine, toLine, cls }] — 1-based включительно; подсвечивает целые строки.
-    setMarks: (specs) => {
-      const total = view.state.doc.lines;
-      const deco = [];
-      for (const s of (specs || [])) {
-        for (let ln = Math.max(1, s.fromLine); ln <= Math.min(total, s.toLine); ln++) {
-          deco.push(Decoration.line({ class: s.cls }).range(view.state.doc.line(ln).from));
-        }
-      }
-      deco.sort((a, b) => a.from - b.from);
-      view.dispatch({ effects: setMarksEffect.of(Decoration.set(deco, true)) });
-    },
-    scrollToLine: (ln) => {
-      const total = view.state.doc.lines;
-      const pos = view.state.doc.line(Math.max(1, Math.min(total, ln))).from;
-      view.dispatch({ effects: EditorView.scrollIntoView(pos, { y: 'center' }) });
-    },
-    destroy: () => view.destroy(),
-  };
-}
 function previewKind(file) {
   const e = extOf(file);
   if (['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'ico', 'avif'].includes(e)) return 'image';
@@ -1942,9 +1890,9 @@ function setViewerOpen(open, opts = {}) {
 // Реестр панелей: каждая setXxxOpen знает только себя, взаимоисключение — closeOtherPanels.
 // Порядок закрытия фиксирован (он же — порядок старых inline-цепочек во всех setXxxOpen).
 const panels = new Map(); // id -> { isOpen(), setOpen(open, opts) }
-const PANEL_ORDER = ['files', 'git', 'ctx', 'docker', 'scratch', 'rh', 'chat', 'doc'];
+const PANEL_ORDER = ['files', 'ctx', 'docker', 'scratch', 'rh', 'chat', 'doc'];
 // Модули, мигрированные в отдельные окна (открываются через lite.module.open, не как панель правого слота).
-const WINDOW_MODULES = new Set(['tools', 'iterflow', 'seo', 'audit', 'notes', 'db']);
+const WINDOW_MODULES = new Set(['tools', 'iterflow', 'seo', 'audit', 'notes', 'db', 'git']);
 function registerPanel(id, api) { panels.set(id, api); }
 function closeOtherPanels(selfId) {
   for (const id of PANEL_ORDER) {
@@ -1955,13 +1903,8 @@ function closeOtherPanels(selfId) {
 }
 // 'files': повторное открытие — no-op (как старое `if (!viewerOpen) setViewerOpen(true)` в openModule).
 registerPanel('files', { isOpen: () => viewerOpen, setOpen: (open, opts) => { if (open && viewerOpen) return; setViewerOpen(open, opts); } });
-// Git — первый вынесенный модуль (renderer/modules/git.js, host-контракт по образцу textproc).
-const Git = initGit({
-  layout, GUTTER, saveUiState, renderProjects, refitActiveTerminal,
-  activeProject, getActiveId: () => activeId, refreshTree, closeOtherPanels,
-  createCodeEditor, languageFor,
-});
-registerPanel('git', { isOpen: Git.isOpen, setOpen: Git.setOpen });
+// Git мигрирован в отдельное окно (проектозависимое: следует за активным проектом редактора).
+// См. WINDOW_MODULES / module-entry.js.
 // «Контекст» — граф контекста агента (renderer/modules/contextgraph.js, канва как n8n).
 const Ctx = initCtx({
   layout, GUTTER, saveUiState, refitActiveTerminal,
@@ -2992,7 +2935,7 @@ function paletteActions() {
   acts.push({ label: 'Открыть папку…', run: openProjectDialog });
   acts.push({ label: 'Создать папку…', run: showCreateFolder });
   acts.push({ label: viewerOpen ? 'Закрыть вивер' : 'Открыть вивер', run: () => setViewerOpen(!viewerOpen) });
-  acts.push({ label: Git.isOpen() ? 'Закрыть Git' : 'Открыть Git', run: Git.toggle });
+  acts.push({ label: 'Открыть Git', run: () => openModule('git') });
   acts.push({ label: Ctx.isOpen() ? 'Закрыть контекст' : 'Контекст — граф контекста агента', run: Ctx.toggle });
   if (Ctx.isOpen()) acts.push({ label: 'Контекст: подтвердить (✓ собрать CLAUDE.md / AGENTS.md)', run: () => Ctx.applyCompile() });
   acts.push({ label: Containers.isOpen() ? 'Закрыть контейнеры' : 'Контейнеры (Docker / Podman)', run: Containers.toggle });
@@ -3214,8 +3157,7 @@ function init() {
   $('#viewer-close').addEventListener('click', () => setViewerOpen(false));
   $('#viewer-reload-apply').addEventListener('click', () => { hideReloadBar(); reloadCurrentFile(); });
   $('#viewer-reload-dismiss').addEventListener('click', () => hideReloadBar());
-  $('#git-close').addEventListener('click', () => Git.setOpen(false));
-  $('#git-refresh').addEventListener('click', () => { if (Git.isOpen()) Git.renderPanel(activeProject()); });
+  // git живёт в окне модуля (module.html) — кнопки привязывает module-entry.js.
   $('#doc-close').addEventListener('click', () => TextProc.setOpen(false));
   $('#doc-settings').addEventListener('click', () => TextProc.showSettings());
   // tools/iterflow/seo/audit/notes живут в окнах модулей (module.html) — их кнопки привязывает module-entry.js.
@@ -3315,10 +3257,10 @@ function init() {
   // Right-slot modules are mutually exclusive — restore at most one, first-true-wins
   // (приоритет — порядок старых if-цепочек: viewer, scratch, git, docker, db, rh).
   // allowEmpty so Git returns even before a project is active — matching the viewer, so window width fits.
-  const RESTORE_ORDER = [['files', 'viewerOpen'], ['scratch', 'scratchOpen'], ['git', 'gitOpen'], ['ctx', 'ctxOpen'], ['docker', 'dockerOpen'], ['rh', 'rhOpen'], ['chat', 'chatOpen'], ['doc', 'docOpen']];
+  const RESTORE_ORDER = [['files', 'viewerOpen'], ['scratch', 'scratchOpen'], ['ctx', 'ctxOpen'], ['docker', 'dockerOpen'], ['rh', 'rhOpen'], ['chat', 'chatOpen'], ['doc', 'docOpen']];
   for (const [id, key] of RESTORE_ORDER) {
     if (!ui[key]) continue;
-    panels.get(id).setOpen(true, (id === 'git' || id === 'ctx') ? { grow: false, allowEmpty: true } : { grow: false });
+    panels.get(id).setOpen(true, (id === 'ctx') ? { grow: false, allowEmpty: true } : { grow: false });
     break;
   }
 
