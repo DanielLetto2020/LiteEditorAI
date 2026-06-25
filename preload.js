@@ -61,6 +61,7 @@ contextBridge.exposeInMainWorld('lite', {
     sendToTerminal: (text) => ipcRenderer.send('editor:sendToTerminal', { text }),
     sendNoteToTerminal: (projId, text) => ipcRenderer.send('editor:sendNoteToTerminal', { projId, text }),
     refreshTree: () => ipcRenderer.send('editor:refreshTree', {}),
+    viewerReady: () => ipcRenderer.send('editor:viewerReady', {}), // окно вивера готово → main флашит отложенные openInViewer
     onOpenInViewer: (cb) => { const h = (_e, p) => cb(p && p.path, p && p.line); ipcRenderer.on('editor:openInViewer', h); return () => ipcRenderer.removeListener('editor:openInViewer', h); },
     onSendToTerminal: (cb) => { const h = (_e, p) => cb(p && p.text); ipcRenderer.on('editor:sendToTerminal', h); return () => ipcRenderer.removeListener('editor:sendToTerminal', h); },
     onSendNoteToTerminal: (cb) => { const h = (_e, p) => cb(p && p.projId, p && p.text); ipcRenderer.on('editor:sendNoteToTerminal', h); return () => ipcRenderer.removeListener('editor:sendNoteToTerminal', h); },

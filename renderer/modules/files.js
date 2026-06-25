@@ -43,6 +43,7 @@ export function initFiles(host) {
   let dragSrcPath = null;            // путь перетаскиваемого узла (внутренний drag дерево→дерево)
   let dropHLRow = null;              // подсвеченная папка-приёмник
   let fsTimer = null;
+  let mounted = false;               // mount() идемпотентен (окно строит редактор один раз)
 
   // ---------------------------------------------------------------- viewer (CodeMirror)
   // Миникарта (VSCode-стиль): уменьшенная копия кода справа с индикатором области и кликом-прыжком.
@@ -702,6 +703,8 @@ export function initFiles(host) {
   // ---- DOM-биндинги (вивер + дерево). В embedded-режиме элементы живут в index.html;
   // после флипа в окно — те же id будут в module.html, mount() не меняется.
   function mount() {
+    if (mounted) return;
+    mounted = true;
     makeEditor();
     $('#viewer-save').addEventListener('click', saveCurrent);
     $('#viewer-diff').addEventListener('click', toggleDiff);
@@ -709,7 +712,8 @@ export function initFiles(host) {
     $('#viewer-full').addEventListener('click', togglePreviewFull);
     $('#viewer-minimap').addEventListener('click', toggleMinimap);
     $('#viewer-minimap').classList.toggle('on', settings.minimap);
-    $('#viewer-close').addEventListener('click', () => setViewerOpen(false));
+    // В окне (window-host) #viewer-close закрывает само окно; в иных хостах — сворачивает панель.
+    $('#viewer-close').addEventListener('click', () => { if (host.closeWindow) host.closeWindow(); else setViewerOpen(false); });
     $('#viewer-reload-apply').addEventListener('click', () => { hideReloadBar(); reloadCurrentFile(); });
     $('#viewer-reload-dismiss').addEventListener('click', () => hideReloadBar());
     $('#tree-refresh').addEventListener('click', () => { const p = activeProject(); if (p) renderTree(p); });
@@ -736,10 +740,28 @@ export function initFiles(host) {
     // рамка приёмника могла бы остаться. Снимаем её при выходе курсора за окно и на любом drop.
     window.addEventListener('drop', clearDropHL);
     document.addEventListener('dragleave', (e) => { if (!e.relatedTarget) clearDropHL(); });
+    // Горячие клавиши окна вивера: Esc — выход из полноэкранного превью; Ctrl+S — сохранить (если фокус не
+    // в редакторе — там сохраняет keymap Mod-s). e.code, не e.key — иначе в русской раскладке Ctrl+S → 'ы'.
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && document.body.classList.contains('preview-full')) { e.preventDefault(); exitPreviewFull(); return; }
+      if (e.ctrlKey && e.code === 'KeyS') { e.preventDefault(); if (!(editor && editor.hasFocus)) saveCurrent(); }
+    });
+  }
+
+  // Контракт окна модуля (module-entry зовёт setOpen при загрузке и при смене активного проекта).
+  // Первый вызов строит редактор и рендерит вивер; повторный (смена проекта) — с защитой несохранённого.
+  function setOpen(open, opts = {}) {
+    if (!open) { if (host.closeWindow) host.closeWindow(); else setViewerOpen(false); return; }
+    if (!mounted) mount();
+    if (viewerOpen) { // окно уже открыто → это смена активного проекта: защитить правки и перерисовать
+      guardDirty(() => { const p = activeProject(); pruneExpandedDirs(p ? p.path : ''); refreshViewerForActive(); });
+      return;
+    }
+    return setViewerOpen(true, opts);
   }
 
   return {
-    mount,
+    mount, setOpen,
     // состояние для ядра
     isOpen: () => viewerOpen,
     isDirty: () => dirty,

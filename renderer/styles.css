@@ -173,6 +173,9 @@ body.module-window #module-root > section {
   flex: 1 1 auto !important; min-width: 0 !important; border-left: none !important;
 }
 body.module-window #module-root > .gutter { display: none !important; }
+/* Окно вивера: две панели — вивер заполняет, дерево фиксированной шириной справа. */
+body.mw-files #module-root > #viewer-pane { flex: 1 1 auto !important; min-width: 0 !important; }
+body.mw-files #module-root > #tree-pane { flex: 0 0 260px !important; min-width: 180px !important; border-left: 1px solid var(--border) !important; }
 #mod-app.is-max #win-max::before { width: 8px; height: 8px; transform: translate(-60%, -40%); }
 #mod-app.is-max #win-max::after { width: 8px; height: 8px; border: 1.6px solid var(--text); border-radius: 2px; transform: translate(-30%, -60%); background: var(--bg); }
 

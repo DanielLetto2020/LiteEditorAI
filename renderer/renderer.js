@@ -38,9 +38,9 @@ import { el, svgEl, icon, iconBtn, hydrateIcons, toast, renderDiffInto, makeModa
 // initNotes / initAudit / initSeo / initTools / initIterflow — модули мигрированы в отдельные окна (renderer/module-entry.js).
 // initOpenRouter — чат мигрирован в отдельное окно (renderer/module-entry.js).
 import { initExtensions } from './modules/extensions.js';
-import { initFiles } from './modules/files.js';
+// initFiles — вивер+дерево мигрированы в отдельное окно (renderer/module-entry.js).
 
-const APP_VERSION = 'alpha v1.1.12';
+const APP_VERSION = 'alpha v1.1.13';
 const GUTTER = 5;
 // Системный терминал («Система · ~») мигрирован в отдельное окно (renderer/modules/scratch.js):
 // его id `__scratch__::tN` маршрутизируются main'ом в окно-владельца, в ядре их больше не обрабатываем.
@@ -80,8 +80,8 @@ const tabsByProj = new Map();     // projId -> { sessions: [sessionId...], activ
 let sessionSeq = 0;
 const projState = new Map(); // sessionId -> 'quiet' | 'busy' | 'waiting'
 const missing = new Set();   // ids of projects whose folder no longer exists on disk
-// expandedDirs/gitFiles/currentFile/viewerOpen/dirty/… — состояние вивера+дерева переехало в
-// renderer/modules/files.js (initFiles). Ядро обращается к нему через Files.* (см. ниже).
+// Состояние вивера+дерева (expandedDirs/gitFiles/currentFile/dirty/…) живёт в отдельном ОКНЕ —
+// renderer/modules/files.js (initFiles) + module-entry.js. Ядро его не держит (см. WINDOW_MODULES).
 
 // OpenRouter (чат) и «Обработка текста» — панели правого слота. Их инициализация и регистрация
 // в реестре панелей — ниже, вместе с git/audit/… (нужны layout/GUTTER/closeOtherPanels, объявленные
@@ -121,11 +121,10 @@ function loadLayout() { return { ...DEFAULT_LAYOUT, ...(STORE.layout || {}) }; }
 function saveLayout() { persist('layout', layout); }
 // Whether the viewer / system terminal panes are open — part of the backed-up state,
 // restored on startup (and on import) so the window reopens the way it was left.
-function saveUiState() { persist('uiState', { viewerOpen: Files.isOpen() }); }
+function saveUiState() { persist('uiState', {}); } // вивер теперь окно; набор открытых окон помнит main (moduleWins.__open)
 function applyLayout() {
   $('#sidebar').style.flexBasis = layout.sidebar + 'px';
-  $('#viewer-pane').style.flexBasis = layout.viewer + 'px';
-  $('#tree-pane').style.flexBasis = layout.tree + 'px';
+  // вивер/дерево живут в своём окне — в редакторе этих панелей больше нет.
   $('#ext-pane').style.flexBasis = layout.ext + 'px';
 }
 function loadRecents() { return Array.isArray(STORE.recents) ? STORE.recents : []; }
@@ -735,7 +734,7 @@ function closeProject(id) {
 function doCloseProject(id) {
   // Closing the project whose unsaved file is open in the viewer would silently drop those
   // edits — run the save/discard prompt first, then re-enter (dirty is false → falls through).
-  if (Files.isDirty() && Files.currentFilePath() && activeId === id) { Files.guardDirty(() => doCloseProject(id)); return; }
+  // Несохранённые правки вивера теперь защищает само окно вивера (guardDirty при смене проекта).
   const closing = projects.find((p) => p.id === id);
   if (closing) { // remember the close so a scan-dir project doesn't reappear next launch
     const dis = new Set(STORE.dismissed || []); dis.add(closing.path); persist('dismissed', [...dis]);
@@ -758,7 +757,7 @@ function doCloseProject(id) {
   if (activeId === id) {
     activeId = null;
     if (projects.length) setActive(projects[0].id);
-    else { if (Files.isOpen()) Files.setViewerOpen(false); renderProjects(); showActiveTerminal(); }
+    else { renderProjects(); showActiveTerminal(); } // нет проектов → окно вивера отреагирует на app:activeProject=null
   } else {
     renderProjects();
   }
@@ -889,8 +888,7 @@ async function openFromTerminal(projPath, raw) {
   let p = mm[1]; const line = mm[2] ? parseInt(mm[2], 10) : 0;
   if (!/^([a-zA-Z]:[\\/]|[\\/])/.test(p)) p = projPath.replace(/[\\/]$/, '') + '/' + p.replace(/^\.[\\/]/, '');
   if (!(await lite.fs.exists(p))) return;
-  if (!Files.isOpen()) await Files.setViewerOpen(true); // дождаться renderTree+clearViewer, иначе clearViewer затрёт свежий файл
-  await Files.openFile(p, line);
+  lite.editorBus.openInViewer(p, line); // main откроет окно вивера (если надо) и покажет файл
 }
 
 // True only for a real GPU — software WebGL (SwiftShader/llvmpipe) is slower than
@@ -1261,7 +1259,7 @@ function setActive(id) {
   const proj = projects.find((p) => p.id === id);
   if (!proj) return;
   if (id === activeId) return;
-  Files.guardDirty(() => doSetActive(id));
+  doSetActive(id); // окно вивера само защитит несохранённые правки при смене активного проекта
 }
 function doSetActive(id) {
   const proj = projects.find((p) => p.id === id);
@@ -1270,12 +1268,11 @@ function doSetActive(id) {
   try { lite.errors.setContext(proj.path); } catch (_) {} // тег проекта для новых ошибок в реестре
   if (watchedRoot && watchedRoot !== proj.path) lite.fs.unwatch(watchedRoot);
   lite.fs.watch(proj.path); watchedRoot = proj.path;
-  Files.pruneExpandedDirs(proj.path); // не копить пути чужих проектов за сессию
   ensureProjectTabs(proj);
   renderProjects();
   showActiveTerminal();
   applyFontSize();
-  if (Files.isOpen()) Files.refreshViewerForActive();
+  // вивер живёт в своём окне и следует за проектом через app:activeProject (pushActiveProject ниже)
   try { Ext.notifyActiveProject(activeId); } catch (_) {} // пользовательские модули: ctx.projects.onChange
   pushActiveProject(proj); // окна модулей (git/ctx/notes/audit): следовать за активным проектом редактора
 }
@@ -1287,17 +1284,11 @@ function pushActiveProject(proj) {
   } catch (_) {}
 }
 
-// ---------------------------------------------------------------- viewer + tree → модуль files.js
-// Вивер (CodeMirror) и дерево файлов вынесены в renderer/modules/files.js (initFiles). Они делят
-// изменяемое состояние (currentFile/dirty/expandedDirs/gitFiles), поэтому живут вместе. В embedded-
-// режиме модуль рендерится в #viewer-pane/#tree-pane (index.html); Files.mount() в init() строит
-// редактор и вешает кнопки вивера/дерева. Ядро зовёт Files.* через host-колбэки ниже.
-const Files = initFiles({
-  activeProject, layout, GUTTER, settings, saveSettings,
-  growBy: (d) => lite.win.growBy(d),
-  closeOtherPanels, renderProjects, saveUiState, refitActiveTerminal,
-  menuRow, placeMenu, closeMenus,
-});
+// ---------------------------------------------------------------- viewer + tree → ОТДЕЛЬНОЕ ОКНО (files)
+// Вивер (CodeMirror) и дерево файлов — модуль renderer/modules/files.js, теперь в собственном окне
+// (проектозависимое: следует за активным проектом редактора через app:activeProject). Ядро его НЕ
+// держит: открыть — openModule('files'); открыть файл — lite.editorBus.openInViewer(path,line) (main
+// маршрутизирует в окно вивера, открывая его при необходимости).
 
 // ================================================================ right module slot
 // One module open at a time in the right slot. NOT modules: terminals (project + scratch ~)
@@ -1305,10 +1296,10 @@ const Files = initFiles({
 // Реестр панелей: каждая setXxxOpen знает только себя, взаимоисключение — closeOtherPanels.
 // Порядок закрытия фиксирован (он же — порядок старых inline-цепочек во всех setXxxOpen).
 const panels = new Map(); // id -> { isOpen(), setOpen(open, opts) }
-// Правый слот редактора теперь держит только не-модули: вивер+дерево (files) и системный терминал (scratch).
-const PANEL_ORDER = ['files'];
+// Правый слот редактора теперь держит только «Мои модули» (ext); всё остальное — отдельные окна.
+const PANEL_ORDER = [];
 // Модули, мигрированные в отдельные окна (открываются через lite.module.open, не как панель правого слота).
-const WINDOW_MODULES = new Set(['tools', 'iterflow', 'seo', 'audit', 'notes', 'db', 'git', 'chat', 'doc', 'docker', 'rh', 'ctx', 'scratch']);
+const WINDOW_MODULES = new Set(['tools', 'iterflow', 'seo', 'audit', 'notes', 'db', 'git', 'chat', 'doc', 'docker', 'rh', 'ctx', 'scratch', 'files']);
 function registerPanel(id, api) { panels.set(id, api); }
 function closeOtherPanels(selfId) {
   for (const id of PANEL_ORDER) {
@@ -1317,8 +1308,8 @@ function closeOtherPanels(selfId) {
     if (p && p.isOpen()) p.setOpen(false);
   }
 }
-// 'files': повторное открытие — no-op (как старое `if (!viewerOpen) setViewerOpen(true)` в openModule).
-registerPanel('files', { isOpen: Files.isOpen, setOpen: (open, opts) => { if (open && Files.isOpen()) return; Files.setViewerOpen(open, opts); } });
+// Вивер+дерево (files) мигрированы в отдельное окно (проектозависимое: следует за активным проектом).
+// В реестре панелей больше нет; открытие — openModule('files'). См. WINDOW_MODULES / module-entry.js.
 // Git мигрирован в отдельное окно (проектозависимое: следует за активным проектом редактора).
 // См. WINDOW_MODULES / module-entry.js.
 // «Контекст» (ctx) — граф контекста агента (канва n8n) мигрирован в отдельное окно (проектозависимое:
@@ -2107,7 +2098,7 @@ function paletteActions() {
   for (const p of projects) acts.push({ label: `Проект: ${p.name}`, hint: p.path, run: () => setActive(p.id) });
   acts.push({ label: 'Открыть папку…', run: openProjectDialog });
   acts.push({ label: 'Создать папку…', run: showCreateFolder });
-  acts.push({ label: Files.isOpen() ? 'Закрыть вивер' : 'Открыть вивер', run: () => Files.setViewerOpen(!Files.isOpen()) });
+  acts.push({ label: 'Вивер кода (открыть окно)', run: () => openModule('files') });
   acts.push({ label: 'Открыть Git', run: () => openModule('git') });
   acts.push({ label: 'Контекст — граф контекста агента', run: () => openModule('ctx') });
   acts.push({ label: 'Контейнеры (Docker / Podman)', run: () => openModule('docker') });
@@ -2118,9 +2109,7 @@ function paletteActions() {
   acts.push({ label: 'Очистить терминал', run: () => clearTerminal() });
   acts.push({ label: 'Перезапустить терминал', run: () => restartTerminal() });
   acts.push({ label: 'Настройки…', run: showSettings });
-  if (Files.currentFilePath()) acts.push({ label: 'Показать дифф файла', run: Files.toggleDiff });
-  if (Files.currentFilePath()) acts.push({ label: 'Поиск в файле', run: Files.openFileSearch });
-  if (Files.previewKindOfCurrent()) acts.push({ label: 'Превью файла (вкл/выкл)', run: Files.togglePreview });
+  // Дифф/превью/поиск по файлу — теперь действия внутри окна вивера (его кнопки/горячие клавиши).
   for (const a of Ext.paletteActions()) acts.push(a); // команды пользовательских модулей (ctx.commands)
   return acts;
 }
@@ -2234,7 +2223,7 @@ async function checkForUpdate({ manual = false } = {}) {
 function init() {
   hydrateIcons(); // fill the static [data-icon] buttons (titlebar / pane toolbars) with SVG
   { const av = $('#app-ver'); if (av) av.textContent = APP_VERSION; } // version label in the titlebar
-  Files.mount(); // строит редактор вивера и вешает кнопки вивера/дерева (#viewer-*/#tree-*)
+  // вивер живёт в отдельном окне (module.html#files) — в редакторе его DOM/редактор больше нет.
   applyLayout();
   applyTheme();
   initGutters();
@@ -2295,27 +2284,21 @@ function init() {
   } catch (_) {}
 
 
-  // Live disk changes for the active project: вивер/дерево обновляет сам модуль files.js
-  // (renderTree при открытом вивере + перечитка/плашка для открытого файла). Ядро лишь
-  // фильтрует по активному проекту и форвардит.
-  lite.fs.onChange(({ root, files }) => {
-    const p = activeProject();
-    if (!p || p.path !== root) return;
-    Files.onFsChange(p, files);
-  });
+  // Live disk changes (fs:changed) теперь потребляет окно вивера (module-entry подписан на lite.fs.onChange).
+  // Редактор остаётся источником слежения (lite.fs.watch активного проекта в doSetActive), main рассылает
+  // событие и редактору, и окну вивера. В самом редакторе вивера/дерева больше нет — подписку убрали.
 
   $('#btn-single').addEventListener('click', toggleSingle);
   // scratch (системный терминал) живёт в окне модуля — кнопки привязывает module-entry.js.
-  // вивер+дерево (files) — кнопки #viewer-*/#tree-* вешает Files.mount() (renderer/modules/files.js).
+  // вивер+дерево (files) живут в окне модуля — их DOM/кнопки строит Files.mount() в module-entry.js.
   // git живёт в окне модуля (module.html) — кнопки привязывает module-entry.js.
   // doc (обработка текста) живёт в окне модуля — кнопки привязывает module-entry.js.
   // tools/iterflow/seo/audit/notes живут в окнах модулей (module.html) — их кнопки привязывает module-entry.js.
   // docker (контейнеры), db, rh (удалённые хосты) живут в окнах модулей — кнопки привязывает module-entry.js.
-  // Действия из окон модулей (audit/notes/…): открыть файл в вивере / послать текст в терминал / обновить дерево.
-  lite.editorBus.onOpenInViewer(async (abs, line) => { if (!Files.isOpen()) await Files.setViewerOpen(true); await Files.openFile(abs, line); });
+  // Действия из окон модулей: «послать текст в терминал» обрабатывает редактор (терминалы тут); «открыть
+  // файл в вивере»/«обновить дерево» main маршрутизирует в окно вивера (не сюда).
   lite.editorBus.onSendToTerminal((text) => { const p = activeProject(); if (p) sendNoteToTerminal(p, text); });
   lite.editorBus.onSendNoteToTerminal((projId, text) => { const proj = projects.find((x) => x.id === projId) || activeProject(); if (proj) sendNoteToTerminal(proj, text); });
-  lite.editorBus.onRefreshTree(() => { const p = activeProject(); if (p) Files.renderTree(p); });
   $('#term-clear').addEventListener('click', () => clearTerminal());
   $('#term-restart').addEventListener('click', () => restartTerminal());
   $('#attention-badge').addEventListener('click', () => {
@@ -2336,9 +2319,8 @@ function init() {
   // OpenRouter (чат) живёт в окне модуля — bindControls/bindStream вызывает module-entry.js.
 
   document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && document.body.classList.contains('preview-full')) { e.preventDefault(); Files.exitPreviewFull(); return; }
+    // Esc-выход из полноэкранного превью и Ctrl+S сохранения файла живут в окне вивера (его keydown).
     if (e.ctrlKey && e.key === '\\') { e.preventDefault(); toggleSingle(); }
-    if (e.ctrlKey && e.code === 'KeyS') { e.preventDefault(); if (!Files.editorHasFocus()) Files.saveCurrent(); }   // фокус в редакторе → его keymap Mod-s уже сохранит (без двойного вызова); e.code, не e.key — иначе в русской раскладке Ctrl+S → e.key='ы'
     if (e.ctrlKey && e.code === 'KeyK') { e.preventDefault(); showPalette(); }   // то же: Ctrl+K → e.key='л' в русской раскладке
     if (e.ctrlKey && (e.key === '=' || e.key === '+')) { e.preventDefault(); bumpFont(1); }
     if (e.ctrlKey && e.key === '-') { e.preventDefault(); bumpFont(-1); }
@@ -2369,18 +2351,8 @@ function init() {
   if (projects.length) setActive(projects[0].id);
   else showActiveTerminal();
 
-  // Restore which panes were open last time (viewer / system terminal). grow:false —
-  // the saved window width already includes them, so reveal in place without resizing.
-  const ui = STORE.uiState || {};
-  // Right-slot modules are mutually exclusive — restore at most one, first-true-wins
-  // (приоритет — порядок старых if-цепочек: viewer, scratch, git, docker, db, rh).
-  // allowEmpty so Git returns even before a project is active — matching the viewer, so window width fits.
-  const RESTORE_ORDER = [['files', 'viewerOpen']];
-  for (const [id, key] of RESTORE_ORDER) {
-    if (!ui[key]) continue;
-    panels.get(id).setOpen(true, { grow: false });
-    break;
-  }
+  // Набор открытых окон модулей (включая вивер) восстанавливает main (moduleWins.__open) при старте —
+  // правому слоту редактора восстанавливать больше нечего (там остались только «Мои модули» по запросу).
 
   scanProjects();          // add subfolders of settings.scanDirs (non-blocking)
   checkProjectsExistence();

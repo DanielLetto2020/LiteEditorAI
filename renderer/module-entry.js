@@ -4,7 +4,7 @@
 // right-slot machinery (growBy / closeOtherPanels / refit / saveUiState) is neutralised and
 // the pane fills the whole window. Editor-facing actions are forwarded to the main window.
 import {
-  el, icon, iconBtn, toast, makeModal, showConfirm, showPrompt, hydrateIcons, setErrorSink, applyLayoutSwap,
+  el, icon, iconBtn, toast, makeModal, showConfirm, showPrompt, hydrateIcons, setErrorSink, applyLayoutSwap, ICONS,
 } from './ui.js';
 import { createCodeEditor, languageFor } from './codeedit.js';
 import { THEMES, TERM_THEME, DEFAULT_THEME, termThemeFor } from './themes.js';
@@ -25,10 +25,33 @@ import { initContainers } from './modules/containers.js';
 import { initRh } from './modules/remotehost.js';
 import { initCtx } from './modules/contextgraph.js';
 import { initScratch } from './modules/scratch.js';
+import { initFiles } from './modules/files.js';
 
 const lite = window.lite;
 const $ = (s) => document.querySelector(s);
 const bind = (sel, fn) => { const e = $(sel); if (e) e.onclick = fn; };
+
+// Лёгкая меню-машинерия для окна модуля (контекст-меню дерева вивера): работает на #menu-layer.
+// В ядре редактора эти примитивы свои (с состоянием верхнего меню); тут — автономная копия.
+function closeMenus() { const ml = $('#menu-layer'); if (ml) ml.innerHTML = ''; }
+function placeMenu(dd, x, y) {
+  $('#menu-layer').appendChild(dd);
+  dd.style.left = x + 'px'; dd.style.top = y + 'px';
+  const r = dd.getBoundingClientRect();
+  if (r.right > window.innerWidth - 8) dd.style.left = (window.innerWidth - 8 - r.width) + 'px';
+  if (r.bottom > window.innerHeight - 8) dd.style.top = (window.innerHeight - 8 - r.height) + 'px';
+}
+function menuRow(glyph, text, onClick, cls) {
+  const row = el('div', 'menu-row' + (cls ? ' ' + cls : ''));
+  const ic = el('span', 'menu-ic');
+  if (glyph && ICONS[glyph]) ic.appendChild(icon(glyph, 16));
+  else if (glyph) ic.textContent = glyph;
+  row.appendChild(ic); row.appendChild(el('span', null, text));
+  if (onClick) row.addEventListener('click', onClick);
+  return row;
+}
+document.addEventListener('click', closeMenus);
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeMenus(); });
 
 // Registry of window-hosted modules. `project:true` → re-render on active-project change.
 // `wire(mod)` binds the pane-head buttons (the #<id>-close button is wired generically).
@@ -91,6 +114,19 @@ const MODULES = {
     title: 'Система · ~', init: initScratch, project: false,
     wire: (mod) => { bind('#scratch-restart', () => mod.restart()); },
   },
+  // Вивер кода + дерево файлов (проектозависимое окно: следует за активным проектом редактора).
+  // Кнопки #viewer-*/#tree-* и контекст-меню дерева вешает сам модуль (Files.mount); тут — только
+  // приём действий от других модулей-окон (открыть файл / обновить дерево) и сигнал готовности.
+  files: {
+    title: 'Файлы', init: initFiles, project: true, selfClose: true,
+    wire: (mod) => {
+      lite.editorBus.onOpenInViewer((abs, line) => { try { mod.openFile(abs, line); } catch (_) {} });
+      lite.editorBus.onRefreshTree(() => { try { if (activeProj) mod.renderTree(activeProj); } catch (_) {} });
+      // живые изменения на диске активного проекта (агент тронул файл) → обновить дерево/перечитать
+      lite.fs.onChange(({ root, files }) => { try { if (activeProj && activeProj.path === root) mod.onFsChange(activeProj, files); } catch (_) {} });
+      try { lite.editorBus.viewerReady(); } catch (_) {} // флаш отложенных openInViewer из main
+    },
+  },
 };
 
 const modId = (location.hash || '').replace(/^#/, '') || 'tools';
@@ -121,6 +157,8 @@ function buildHost() {
     STORE, persist, settings, saveSettings,
     layout: layoutProxy, GUTTER: 0,
     saveUiState: () => {}, refitActiveTerminal: () => {}, closeOtherPanels: () => {}, renderProjects: () => {},
+    growBy: () => {}, // окно не двигаем (right-slot growBy → no-op)
+    menuRow, placeMenu, closeMenus, // контекст-меню дерева вивера
     activeProject: () => activeProj,
     getActiveId: () => (activeProj && activeProj.id) || null,
     getProjects: () => (STORE.projects || []).map((p) => ({ id: p.id, name: p.name, path: p.path })),
@@ -142,6 +180,7 @@ function boot() {
     document.body.replaceChildren(box);
     return;
   }
+  document.body.classList.add('mw-' + modId); // per-module хук для CSS (раскладка окна вивера и пр.)
   $('#mod-brand-title').textContent = def.title;
   document.title = 'LiteEditorAI — ' + def.title;
   $('#win-min').onclick = () => lite.win.minimize();

@@ -1346,6 +1346,7 @@ function openModuleWindow(modId) {
   win.on('close', () => saveModuleBounds(modId, win));
   win.on('closed', () => {
     moduleWindows.delete(modId);
+    if (modId === 'files') filesViewerReady = false; // окно вивера закрыто → следующее openInViewer переоткроет и переждёт готовность
     for (const [sid, wc] of ownerBySession) { try { if (wc.isDestroyed()) ownerBySession.delete(sid); } catch (_) { ownerBySession.delete(sid); } }
     broadcastModuleOpenSet();
   });
@@ -1800,12 +1801,28 @@ ipcMain.handle('app:getActiveProject', () => activeProjectInfo);
 ipcMain.on('app:settingsChanged', (_e, s) => broadcastToModules('app:settingsChanged', s || {}));
 ipcMain.on('app:notesChanged', (_e, { id } = {}) => broadcastToModules('app:notesChanged', { id }));
 
-// ── Действия из окна модуля → переслать редактору (вивер/терминал/дерево) ─────────────
+// ── Действия из окна модуля → переслать редактору (терминал) или окну вивера (файл/дерево) ──
 function forwardToEditor(ch, payload) { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(ch, payload); }
-ipcMain.on('editor:openInViewer', (_e, payload) => forwardToEditor('editor:openInViewer', payload));
+// Вивер живёт в окне модуля «files». openInViewer/refreshTree маршрутизируем туда (открываем окно при
+// необходимости). Окно может быть не готово принять сообщение сразу после открытия → копим в очередь до
+// сигнала editor:viewerReady (его шлёт module-entry после подписки).
+let filesViewerReady = false;
+const pendingViewerOpens = [];
+function filesWindow() { const w = moduleWindows.get('files'); return (w && !w.isDestroyed()) ? w : null; }
+function routeOpenInViewer(payload) {
+  if (!filesWindow()) openModuleWindow('files'); // откроет окно (и переключит на активный проект)
+  const w = filesWindow();
+  if (w && filesViewerReady) w.webContents.send('editor:openInViewer', payload);
+  else pendingViewerOpens.push(payload); // флашнем по editor:viewerReady
+}
+ipcMain.on('editor:openInViewer', (_e, payload) => routeOpenInViewer(payload));
+ipcMain.on('editor:refreshTree', (_e, payload) => { const w = filesWindow(); if (w) w.webContents.send('editor:refreshTree', payload); });
+ipcMain.on('editor:viewerReady', () => {
+  filesViewerReady = true;
+  while (pendingViewerOpens.length) { const p = pendingViewerOpens.shift(); const w = filesWindow(); if (w) w.webContents.send('editor:openInViewer', p); }
+});
 ipcMain.on('editor:sendToTerminal', (_e, payload) => forwardToEditor('editor:sendToTerminal', payload));
 ipcMain.on('editor:sendNoteToTerminal', (_e, payload) => forwardToEditor('editor:sendNoteToTerminal', payload));
-ipcMain.on('editor:refreshTree', (_e, payload) => forwardToEditor('editor:refreshTree', payload));
 
 // Reflect how many agents need attention on the tray tooltip (and macOS title).
 ipcMain.on('tray:update', (_e, { attention } = {}) => {
@@ -2073,6 +2090,7 @@ ipcMain.on('fs:watch', (_e, root) => {
     rec.timer = setTimeout(() => {
       const files = [...rec.pending]; rec.pending.clear();
       if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('fs:changed', { root, files });
+      const fw = filesWindow(); if (fw) fw.webContents.send('fs:changed', { root, files }); // окно вивера обновляет дерево/файл
     }, 180);
   });
   watchers.set(root, rec);
