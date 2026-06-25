@@ -10,26 +10,12 @@ import { CanvasAddon } from '@xterm/addon-canvas';
 import { Unicode11Addon } from '@xterm/addon-unicode11';
 import '@xterm/xterm/css/xterm.css';
 
-import { EditorView, keymap, lineNumbers, highlightActiveLine, drawSelection, Decoration, gutter, GutterMarker } from '@codemirror/view';
-import { EditorState, Compartment, StateField, StateEffect, RangeSet } from '@codemirror/state';
-import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands';
-import { syntaxHighlighting, defaultHighlightStyle, indentOnInput, bracketMatching } from '@codemirror/language';
-import { search, searchKeymap, highlightSelectionMatches, openSearchPanel } from '@codemirror/search';
-import { oneDark } from '@codemirror/theme-one-dark';
-import { marked } from 'marked';
-import { javascript } from '@codemirror/lang-javascript';
-import { python } from '@codemirror/lang-python';
-import { json } from '@codemirror/lang-json';
-import { markdown } from '@codemirror/lang-markdown';
-import { html } from '@codemirror/lang-html';
-import { css } from '@codemirror/lang-css';
-import { sql, PostgreSQL, MySQL, SQLite } from '@codemirror/lang-sql';
-import { createCodeEditor, languageFor } from './codeedit.js';
+// CodeMirror/marked/showMinimap/codeedit — переехали в окно вивера (renderer/modules/files.js).
+// В ядре остались только терминал (xterm) + темы/термутилы.
 import { THEMES, TERM_THEME, DEFAULT_THEME } from './themes.js';
 import { loadFastRenderer, applyUnicode11, copySelection } from './termutil.js';
-import { showMinimap } from '@replit/codemirror-minimap';
 // initTextProc — «Обработка текста» мигрирована в отдельное окно (renderer/module-entry.js).
-import { el, svgEl, icon, iconBtn, hydrateIcons, toast, renderDiffInto, makeModal, showConfirm, showPrompt, baseName, ICONS, setErrorSink, applyLayoutSwap } from './ui.js';
+import { el, svgEl, icon, iconBtn, hydrateIcons, toast, makeModal, showConfirm, showPrompt, baseName, ICONS, setErrorSink, applyLayoutSwap } from './ui.js';
 // initGit — модуль «Git» мигрирован в отдельное окно (renderer/module-entry.js).
 // initCtx — модуль «Контекст» мигрирован в отдельное окно (renderer/module-entry.js).
 // initContainers — модуль «Контейнеры» мигрирован в отдельное окно (renderer/module-entry.js).
@@ -40,7 +26,7 @@ import { el, svgEl, icon, iconBtn, hydrateIcons, toast, renderDiffInto, makeModa
 import { initExtensions } from './modules/extensions.js';
 // initFiles — вивер+дерево мигрированы в отдельное окно (renderer/module-entry.js).
 
-const APP_VERSION = 'alpha v1.1.13';
+const APP_VERSION = 'alpha v1.1.14';
 const GUTTER = 5;
 // Системный терминал («Система · ~») мигрирован в отдельное окно (renderer/modules/scratch.js):
 // его id `__scratch__::tN` маршрутизируются main'ом в окно-владельца, в ядре их больше не обрабатываем.

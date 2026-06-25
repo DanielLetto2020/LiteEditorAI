@@ -166,7 +166,6 @@ function buildHost() {
     sendToTerminal: (t) => lite.editorBus.sendToTerminal(t),
     sendNoteToTerminal: (p, t) => lite.editorBus.sendNoteToTerminal(p && p.id, t),
     refreshTree: () => lite.editorBus.refreshTree(),
-    closeMenus: () => {},
     closeWindow: () => lite.win.close(), // для модулей со своим dirty-guard на закрытии (ctx)
   };
 }
