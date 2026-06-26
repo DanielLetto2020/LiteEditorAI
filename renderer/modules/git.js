@@ -149,7 +149,7 @@ export function initGit(host) {
       const localNames = data.local.map((b) => b.name);
       const hit = (n) => !ql || n.toLowerCase().includes(ql);
       const favNames = localNames.filter((n) => isFav(p.path, n) && hit(n));
-      if (favNames.length) { body.appendChild(branchSectionHead('★ Избранные')); for (const n of favNames) body.appendChild(branchRow(n, n, 'local', ctx, 0)); }
+      if (favNames.length) { body.appendChild(branchSectionHead('Избранные')); for (const n of favNames) body.appendChild(branchRow(n, n, 'local', ctx, 0)); }
       const locals = localNames.filter(hit);
       body.appendChild(branchSectionHead('Локальные'));
       if (!locals.length) body.appendChild(el('div', 'gm-branch-none', '—')); else renderBranchTree(buildBranchTree(locals), body, 'local', ctx, 0);
@@ -163,12 +163,12 @@ export function initGit(host) {
   function renderBranchTree(node, container, kind, ctx, depth) {
     for (const [dname, child] of [...node.dirs.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
       const row = el('div', 'gm-branch-folder'); row.style.paddingLeft = (depth * 12 + 8) + 'px';
-      const chev = el('span', 'gm-branch-chev', '▾');
+      const chev = el('span', 'gm-branch-chev'); chev.appendChild(icon('chevron-down', 12));   // SVG-шеврон вместо ▾/▸
       row.append(chev, icon('folder', 13), el('span', 'gm-branch-fname', dname));
       container.appendChild(row);
       const box = el('div'); container.appendChild(box);
       renderBranchTree(child, box, kind, ctx, depth + 1);
-      row.onclick = (e) => { e.stopPropagation(); const hidden = box.style.display === 'none'; box.style.display = hidden ? '' : 'none'; chev.textContent = hidden ? '▾' : '▸'; };
+      row.onclick = (e) => { e.stopPropagation(); const hidden = box.style.display === 'none'; box.style.display = hidden ? '' : 'none'; chev.replaceChildren(icon(hidden ? 'chevron-down' : 'chevron-right', 12)); };
     }
     for (const { full, leaf } of node.leaves.sort((a, b) => a.leaf.localeCompare(b.leaf))) container.appendChild(branchRow(full, leaf, kind, ctx, depth));
   }

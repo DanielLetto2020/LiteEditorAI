@@ -590,11 +590,6 @@ body.preview-split #preview-view { border-left: 1px solid var(--border); }
 .git-body .gm-file:hover { background: var(--hover); }
 .git-body .gm-file.open { background: var(--accent-soft); color: #fff; }
 .git-body .gm-fname { flex: 1; overflow: hidden; text-overflow: ellipsis; }
-.git-log { display: flex; flex-direction: column; gap: 2px; max-height: 30vh; overflow: auto; }
-.git-commit { display: flex; align-items: baseline; gap: 8px; padding: 3px 6px; border-radius: 6px; font-size: 12px; white-space: nowrap; cursor: pointer; }
-.git-commit:hover { background: var(--hover); }
-.git-csubj { flex: 1; overflow: hidden; text-overflow: ellipsis; color: var(--text); }
-.git-refs { color: var(--warn); font-size: 11px; }
 
 /* ---------------- Notes/tasks panel (right slot) ----------------
    Вкладки (Проект/Общие) + кнопка добавления + фильтры фиксированы сверху, список скроллится. */
@@ -1857,7 +1852,7 @@ body.preview-full .prev-frame { width: 100%; height: 100%; }
 .gm-branch-folder { display: flex; align-items: center; gap: 6px; padding: 4px 8px; border-radius: 6px;
   cursor: pointer; color: var(--text-dim); font-size: 12.5px; }
 .gm-branch-folder:hover { background: var(--hover); color: var(--text); }
-.gm-branch-chev { width: 10px; flex: 0 0 auto; font-size: 9px; }
+.gm-branch-chev { flex: 0 0 auto; display: inline-flex; align-items: center; color: var(--text-mute); }
 .gm-branch-fname { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .gm-branch-star { flex: 0 0 auto; display: flex; align-items: center; justify-content: center; width: 18px; height: 18px;
   border: none; background: transparent; color: var(--text-mute); border-radius: 4px; cursor: pointer; opacity: 0; }
@@ -2011,7 +2006,8 @@ body.preview-full .prev-frame { width: 100%; height: 100%; }
 }
 .git-commit:hover { background: var(--hover); border-color: var(--border-strong); }
 .git-commit-main { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
-.git-csubj { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--text); white-space: nowrap; }
+/* название коммита переносится на новую строку, а не вылезает за блок справа */
+.git-csubj { flex: 1; min-width: 0; color: var(--text); white-space: normal; overflow-wrap: anywhere; }
 .git-commit-meta { display: flex; gap: 8px; color: var(--text-mute); font-size: 11px; }
 .gm-hash { font-family: monospace; color: var(--green-bright); flex: 0 0 auto; }
 .git-ref-list { display: flex; gap: 4px; flex-wrap: wrap; }

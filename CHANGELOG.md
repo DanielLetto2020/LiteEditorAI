@@ -3,6 +3,14 @@
 Все заметные изменения LiteEditorAI. Формат — [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/),
 нумерация — [SemVer](https://semver.org/lang/ru/). Проект в стадии **alpha**.
 
+## [1.1.29] — 2026-06-26
+
+Полировка вивера после крупного обновления Git/IDE из v1.1.28.
+
+### 🐛 Исправлено
+- **Выпадашка веток** — нечитаемые символы-стрелки у папок-групп заменены на нормальные иконки-шевроны.
+- **История Git** — длинные названия коммитов теперь переносятся на новую строку, а не вылезают за блок справа.
+
 ## [1.1.28] — 2026-06-26
 
 **Вивер кода дорастает до полноценной IDE.** Git внутри окна переделан под PhpStorm, добавлены привычные
@@ -942,6 +950,7 @@ AGENTS.md как граф на канве), и **цветной пульт** —
 - Первые публичные alpha-сборки: терминал на проект (xterm + node-pty), вивер кода (CodeMirror), дерево
   файлов, дистрибуция под Linux (`.deb`) и Windows (portable `.zip`) через GitHub Actions.
 
+[1.1.29]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.1.29
 [1.1.28]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.1.28
 [1.1.27]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.1.27
 [1.1.14]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.1.14
