@@ -177,20 +177,51 @@ body.module-window #module-root > .gutter { display: none !important; }
    слева стрип-иконки (strip) + переключаемая секция (left: дерево/коммит/ветки), по центру вивер. */
 body.mw-files #module-root {
   display: grid; flex: 1 1 auto; min-height: 0;
-  grid-template-columns: 42px var(--mw-left, 300px) 4px 1fr;
-  grid-template-rows: auto 1fr;
-  grid-template-areas: "top top top top" "strip left gut center";
+  grid-template-columns: 42px var(--mw-left, 300px) 4px var(--tabs-w, 0px) 1fr;
+  grid-template-rows: auto 1fr var(--log-h, 0px);
+  grid-template-areas: "top top top top top" "strip left gut tabs center" "log log log log log";
 }
 body.mw-files #vcs-topbar { grid-area: top; }
 body.mw-files #vcs-strip { grid-area: strip; }
 body.mw-files #mw-gutter { grid-area: gut; cursor: col-resize; background: var(--border); transition: background .12s; }
 body.mw-files #mw-gutter:hover { background: var(--accent); }
+body.mw-files #tabs-pane { grid-area: tabs; min-width: 0; min-height: 0; }
+/* нижняя панель «Ветки · История» — на всю ширину окна вивера, высота тянется ручкой (--log-h) */
+body.mw-files #log-pane { grid-area: log; min-width: 0; min-height: 0; position: relative; display: flex; flex-direction: column; border-top: 1px solid var(--border); background: var(--panel); }
+body.mw-files #log-pane.hidden { display: none !important; }
+.log-resize { position: absolute; top: -2px; left: 0; right: 0; height: 5px; cursor: row-resize; z-index: 3; }
+.log-resize:hover { background: var(--accent); }
 /* стрип/гаттер/секции гита есть в общем module.html — показываем ТОЛЬКО в окне вивера (mw-files) */
-body:not(.mw-files) #mw-gutter, body:not(.mw-files) #vcs-strip, body:not(.mw-files) #vcs-topbar { display: none !important; }
-body.mw-files #viewer-pane { grid-area: center !important; min-width: 0 !important; border-left: none !important; }
+body:not(.mw-files) #mw-gutter, body:not(.mw-files) #vcs-strip, body:not(.mw-files) #vcs-topbar, body:not(.mw-files) #tabs-pane, body:not(.mw-files) #log-pane { display: none !important; }
+body.mw-files #viewer-pane { grid-area: center !important; min-width: 0 !important; min-height: 0 !important; border-left: none !important; }
 body.mw-files #tree-pane,
-body.mw-files #commit-pane,
-body.mw-files #branches-pane { grid-area: left !important; min-width: 0 !important; border-left: none !important; flex: 1 1 auto; }
+body.mw-files #commit-pane { grid-area: left !important; min-width: 0 !important; min-height: 0 !important; border-left: none !important; flex: 1 1 auto; }
+/* B16: Zen-режим — только редактор, грид схлопнут до центральной ячейки */
+body.mw-files.viewer-zen #module-root { grid-template-columns: 0 0 0 0 1fr; grid-template-rows: 0 1fr 0; }
+body.viewer-zen #vcs-strip, body.viewer-zen #tabs-pane, body.viewer-zen #tree-pane,
+body.viewer-zen #commit-pane, body.viewer-zen #log-pane, body.viewer-zen #mw-gutter,
+body.viewer-zen #vcs-topbar { display: none !important; }
+/* колонка табов открытых файлов (вертикальный список между деревом и вивером) */
+.file-tabs { display: flex; flex-direction: column; gap: 1px; overflow-y: auto; overflow-x: hidden;
+  background: var(--ink-2); border-left: 1px solid var(--border); border-right: 1px solid var(--border); padding: 4px 0; }
+.file-tabs.empty { display: none; }
+.ftab { display: flex; align-items: center; gap: 6px; padding: 5px 6px 5px 9px; cursor: pointer;
+  color: var(--text-dim); border-left: 2px solid transparent; user-select: none; }
+.ftab:hover { background: var(--hover, rgba(255,255,255,0.06)); color: var(--text); }
+.ftab.active { background: var(--accent-soft, rgba(255,255,255,0.1)); color: var(--text); border-left-color: var(--green); }
+.ftab .ti { flex: 0 0 auto; }
+.ftab-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+.ftab-x { flex: 0 0 auto; display: flex; align-items: center; justify-content: center; width: 16px; height: 16px;
+  border: none; background: transparent; color: var(--text-dim); border-radius: 4px; cursor: pointer; opacity: 0; }
+.ftab:hover .ftab-x { opacity: 0.7; }
+.ftab-x:hover { opacity: 1; background: var(--hover-strong, rgba(255,255,255,0.12)); color: var(--text); }
+/* цветовая кодировка git-статуса в имени таба (как в дереве) */
+.ftab-name.g-add { color: var(--add); }
+.ftab-name.g-mod { color: var(--info); }
+.ftab-name.g-del { color: var(--text-dim); text-decoration: line-through; }
+/* закреплённый таб: иконка-флажок вместо крестика всегда видна (акцент) */
+.ftab.pinned .ftab-x { opacity: 1; color: var(--green); }
+.ftab.pinned { border-left-color: var(--accent-soft); }
 /* стрип-иконки */
 .vcs-strip { display: flex; flex-direction: column; align-items: center; gap: 2px; padding-top: 6px;
   background: var(--ink-2); border-right: 1px solid var(--border); }
@@ -202,8 +233,8 @@ body.mw-files #branches-pane { grid-area: left !important; min-width: 0 !importa
 .vcs-topbar { display: flex; align-items: center; gap: 8px; padding: 4px 10px; min-height: 34px;
   background: var(--ink-2); border-bottom: 1px solid var(--border); }
 .vcs-topbar.hidden { display: none; }
-#commit-pane, #branches-pane { display: flex; flex-direction: column; background: var(--panel); }
-#commit-pane.hidden, #branches-pane.hidden { display: none; }
+#commit-pane { display: flex; flex-direction: column; background: var(--panel); }
+#commit-pane.hidden { display: none; }
 /* VCS-полоса: содержимое renderHeader (ветка + ahead/behind + fetch/pull/push) — горизонтальный ряд */
 .vcs-bar { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; }
 .vcs-bar .gm-branchdd { flex: 0 1 260px; min-width: 120px; }
@@ -405,10 +436,52 @@ body.mw-files #branches-pane { grid-area: left !important; min-width: 0 !importa
 #viewer-filename { color: var(--text); font-size: 12px; letter-spacing: 0; }
 .dirty-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--green); display: none; }
 .dirty-dot.show { display: inline-block; }
-#editor { flex: 1; overflow: hidden; }
+/* B15: контейнер редактора/диффа/превью — флекс-ряд (сплит-превью кладёт код+рендер рядом) */
+#viewer-body { flex: 1; min-height: 0; min-width: 0; display: flex; position: relative; }
+#viewer-body > #editor, #viewer-body > #diff-view, #viewer-body > #preview-view { min-width: 0; }
+body.preview-split #preview-view { border-left: 1px solid var(--border); }
+#editor { flex: 1; min-height: 0; overflow: hidden; position: relative; }
+/* A6: sticky scroll — закреплённый заголовок области сверху редактора */
+.cm-sticky-header { position: absolute; top: 0; left: 0; right: 0; z-index: 4; display: flex; align-items: center;
+  gap: 7px; padding: 3px 12px; background: var(--panel); border-bottom: 1px solid var(--border);
+  font-size: 12px; color: var(--text-dim); cursor: pointer; }
+.cm-sticky-header.hidden { display: none; }
+.cm-sticky-header:hover { background: var(--hover); color: var(--text); }
+.cm-sticky-header .sticky-kind { font-family: monospace; color: var(--text-mute); }
+.cm-sticky-header .sticky-name { color: var(--text); }
 #editor .cm-editor { height: 100%; background: transparent; }
-#editor .cm-scroller { font-family: "JetBrains Mono", "Fira Code", "Cascadia Code", Consolas, monospace; font-size: var(--editor-fs, 13px); }
+#editor .cm-scroller { overflow: auto; font-family: "JetBrains Mono", "Fira Code", "Cascadia Code", Consolas, monospace; font-size: var(--editor-fs, 13px); }
 #editor .cm-scroller::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.16); }
+/* C18: бейдж числа изменённых файлов на кнопке режима агента + откат ханка в диффе */
+#viewer-agent { position: relative; }
+.agent-badge { position: absolute; top: -3px; right: -3px; min-width: 14px; height: 14px; padding: 0 3px;
+  border-radius: 7px; background: var(--warn); color: var(--bg); font-size: 9px; line-height: 14px;
+  text-align: center; font-weight: 700; box-sizing: border-box; pointer-events: none; }
+.diff-line.hunk { display: flex; align-items: center; gap: 8px; }
+.diff-hunk-revert { margin-left: auto; display: inline-flex; align-items: center; justify-content: center;
+  width: 18px; height: 16px; border: none; background: transparent; color: var(--text-dim); border-radius: 4px;
+  cursor: pointer; flex: 0 0 auto; }
+.diff-hunk-revert:hover { color: var(--danger); background: var(--hover); }
+/* C21: гаттер авторства (агент/ты) */
+#editor .cm-auth-gutter { width: 3px; padding: 0; background: transparent; }
+#editor .cm-auth-gutter .cm-gutterElement { padding: 0; }
+.cm-auth-mark { width: 3px; height: 100%; min-height: 1em; box-sizing: border-box; }
+.cm-auth-mark.auth-you { background: var(--info); }
+.cm-auth-mark.auth-agent { background: var(--warn); }
+/* B11: инлайн-свотч цвета перед литералом */
+.cm-color-swatch { display: inline-block; width: 11px; height: 11px; border-radius: 3px; margin-right: 4px;
+  vertical-align: middle; cursor: pointer; border: 1px solid var(--border-strong); box-sizing: border-box; }
+/* B12: подсветка TODO/FIXME/… */
+.cm-todo { font-weight: 700; border-radius: 3px; padding: 0 2px; background: var(--hover); }
+.cm-todo-todo { color: var(--info); }
+.cm-todo-fixme, .cm-todo-bug, .cm-todo-xxx { color: var(--danger); }
+.cm-todo-hack { color: var(--warn); }
+.cm-todo-note { color: var(--add); }
+/* глифы видов TODO в оверлей-списке */
+.ov-kind.ov-todo-todo { color: var(--info); }
+.ov-kind.ov-todo-fixme, .ov-kind.ov-todo-bug, .ov-kind.ov-todo-xxx { color: var(--danger); }
+.ov-kind.ov-todo-hack { color: var(--warn); }
+.ov-kind.ov-todo-note { color: var(--add); }
 /* git-маркеры в гаттере: тонкая цветная полоса справа от номеров строк (изменения vs HEAD) */
 #editor .cm-git-gutter { width: 3px; padding: 0; background: transparent; }
 #editor .cm-git-gutter .cm-gutterElement { padding: 0; }
@@ -444,6 +517,7 @@ body.mw-files #branches-pane { grid-area: left !important; min-width: 0 !importa
 .viewer-status.hidden { display: none; }
 .viewer-status .vs-sel { color: var(--green); }
 .viewer-status .vs-lang { color: var(--text-dim); }
+.viewer-status .vs-blame { color: var(--text-mute); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-style: italic; }
 /* хлебные крошки: путь от корня проекта + текущий символ */
 .viewer-crumbs { display: flex; align-items: center; flex-wrap: wrap; gap: 3px; flex: 0 0 auto; padding: 3px 10px;
   border-bottom: 1px solid var(--border); background: var(--ink-2); font-size: 11px; color: var(--text-dim); user-select: none; }
@@ -990,9 +1064,6 @@ body.mw-files #branches-pane { grid-area: left !important; min-width: 0 !importa
 .git-tool:disabled { opacity: .45; cursor: default; }
 .git-tool.primary { background: var(--green); border-color: var(--green); color: var(--accent-contrast); font-weight: 600; }
 .git-tool.primary:hover:not(:disabled) { background: var(--green-bright); }
-.git-tool.ico { padding: 6px; }
-.git-tool.danger:hover:not(:disabled) { background: transparent; border-color: var(--danger); color: var(--danger); }
-.git-tsep { width: 1px; align-self: stretch; min-height: 18px; background: var(--border); margin: 0 2px; }
 
 /* ---------------- Containers module (docker/podman) ---------------- */
 #docker-pane { flex: 0 0 460px; min-width: 300px; border-left: 1px solid var(--border); display: flex; flex-direction: column; background: var(--panel); }
@@ -1774,6 +1845,44 @@ body.preview-full .prev-frame { width: 100%; height: 100%; }
 .gm-btrack.behind { color: var(--warn); border-color: var(--border-strong); }
 .gm-btrack.ahead { color: var(--green-bright); border-color: var(--border-accent); }
 .gm-btrack.gone { color: var(--text-mute); }
+/* ---- выпадашка веток PhpStorm-style: поиск + секции + дерево Local/Remote + звезда избранного ---- */
+.gm-branchpop { min-width: 300px; max-height: 60vh; }
+.gm-branch-search { margin: 2px 2px 5px; padding: 6px 9px; border-radius: 7px; background: var(--bg-input);
+  border: 1px solid var(--border-strong); color: var(--text); font-size: 12.5px; outline: none; }
+.gm-branch-search:focus { border-color: var(--border-accent); }
+.gm-branch-body { display: flex; flex-direction: column; gap: 1px; }
+.gm-branch-section { padding: 6px 8px 2px; font-size: 10px; font-weight: 700; letter-spacing: .04em;
+  text-transform: uppercase; color: var(--text-mute); }
+.gm-branch-none { padding: 3px 10px; color: var(--text-mute); font-size: 12px; }
+.gm-branch-folder { display: flex; align-items: center; gap: 6px; padding: 4px 8px; border-radius: 6px;
+  cursor: pointer; color: var(--text-dim); font-size: 12.5px; }
+.gm-branch-folder:hover { background: var(--hover); color: var(--text); }
+.gm-branch-chev { width: 10px; flex: 0 0 auto; font-size: 9px; }
+.gm-branch-fname { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gm-branch-star { flex: 0 0 auto; display: flex; align-items: center; justify-content: center; width: 18px; height: 18px;
+  border: none; background: transparent; color: var(--text-mute); border-radius: 4px; cursor: pointer; opacity: 0; }
+.gm-branchitem:hover .gm-branch-star { opacity: .65; }
+.gm-branch-star.on { opacity: 1; color: var(--star); }
+.gm-branch-star:hover { opacity: 1; color: var(--star); }
+/* меню действий по ветке (плавающее, справа от строки) */
+.gm-branchmenu { position: fixed; z-index: 90; min-width: 230px; padding: 4px; border-radius: 9px;
+  background: var(--bg-pop); border: 1px solid var(--border-strong); box-shadow: var(--card-shadow);
+  display: flex; flex-direction: column; gap: 1px; }
+.gm-branchmenu-item { padding: 6px 10px; border-radius: 6px; cursor: pointer; font-size: 12.5px; color: var(--text); white-space: nowrap; }
+.gm-branchmenu-item:hover { background: var(--hover); }
+.gm-branchmenu-item.danger { color: var(--danger); }
+.gm-branchmenu-sep { height: 1px; background: var(--border); margin: 3px 2px; }
+/* модалка «Сравнить с текущей» — два списка коммитов */
+.modal-compare { width: min(820px, 94vw); }
+.cmp-head { margin-bottom: 8px; }
+.cmp-title { font-weight: 650; color: var(--text); }
+.cmp-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; min-height: 220px; max-height: 56vh; }
+.cmp-col { display: flex; flex-direction: column; min-height: 0; }
+.cmp-collabel { font-size: 11px; color: var(--text-dim); padding: 0 2px 6px; }
+.cmp-list { flex: 1 1 auto; min-height: 0; overflow: auto; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); padding: 5px; display: flex; flex-direction: column; gap: 3px; }
+.cmp-commit { display: flex; gap: 8px; align-items: baseline; padding: 3px 5px; border-radius: 6px; font-size: 12px; }
+.cmp-commit:hover { background: var(--hover); }
+.cmp-subj { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
 .git-chip {
   min-width: 0; max-width: 100%; display: inline-flex; align-items: center; gap: 5px;
   padding: 3px 7px; border-radius: 8px; border: 1px solid var(--border);
@@ -1783,22 +1892,9 @@ body.preview-full .prev-frame { width: 100%; height: 100%; }
 .git-chip.warn { color: var(--warn); border-color: var(--border-strong); }
 .git-chip.muted { color: var(--text-mute); }
 
-.git-summary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
-.git-sum-card {
-  min-width: 0; display: flex; flex-direction: column; gap: 2px; padding: 8px 9px;
-  border: 1px solid var(--border); border-radius: 8px; background: var(--surface);
-}
-.git-sum-card.danger { border-color: var(--danger); }
-.git-sum-num { font-size: 18px; line-height: 1; font-weight: 750; color: var(--text); }
-.git-sum-card.danger .git-sum-num { color: var(--danger); }
-.git-sum-label { min-width: 0; color: var(--text-dim); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-
-.git-changes-panel { min-width: 0; display: flex; flex-direction: column; gap: 7px; }
-.git-list-head, .git-commit-top {
+.git-commit-top {
   display: flex; align-items: center; justify-content: space-between; gap: 8px; min-width: 0;
 }
-.git-list-actions { display: flex; align-items: center; gap: 5px; flex: 0 0 auto; }
-.git-list-actions .git-tool { padding: 4px 8px; font-size: 11.5px; }
 .git-sec { font-size: 11px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; color: var(--text-mute); margin-top: 2px; }
 
 .gm-changes {
@@ -1828,9 +1924,12 @@ body.preview-full .prev-frame { width: 100%; height: 100%; }
   flex: 0 0 25px; min-width: 25px; font-family: monospace; font-weight: 800; text-align: center;
   border-radius: 6px; padding: 2px 3px; background: var(--surface-2); border: 1px solid var(--border);
 }
-.gm-code.g-mod, .gm-code.g-modified { color: var(--warn); }
-.gm-code.g-add, .gm-code.g-added, .gm-code.g-untracked { color: var(--add); }
-.gm-code.g-del, .gm-code.g-deleted, .gm-code.g-conflict { color: var(--danger); }
+/* цвета статусов файлов как в PhpStorm: modified=синий, added=зелёный, untracked=оранжевый, deleted=серый, conflict=красный */
+.gm-code.g-modified, .gm-fname.g-modified, .gm-code.g-mod { color: var(--info); }
+.gm-code.g-added, .gm-fname.g-added, .gm-code.g-add { color: var(--add); }
+.gm-code.g-untracked, .gm-fname.g-untracked { color: var(--warn); }
+.gm-code.g-deleted, .gm-fname.g-deleted, .gm-code.g-del { color: var(--text-dim); }
+.gm-code.g-conflict, .gm-fname.g-conflict { color: var(--danger); }
 .gm-file-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
 .gm-fname { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
 .gm-fdir { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-mute); font-size: 11px; }
@@ -1845,6 +1944,33 @@ body.preview-full .prev-frame { width: 100%; height: 100%; }
 .gm-resolve { color: var(--danger); }
 .gm-disc:hover:not(:disabled) { color: var(--danger); border-color: var(--danger); }
 
+/* ---- секция «Коммит» (PhpStorm-style): тулбар-иконки сверху · список · сообщение+кнопки снизу ---- */
+.git-commit-toolbar { display: flex; align-items: center; gap: 4px; flex: 0 0 auto; }
+.gm-tsep { width: 1px; height: 18px; background: var(--border); margin: 0 3px; flex: 0 0 auto; }
+.commit-body { gap: 8px; }
+.commit-body .gm-changes { flex: 1 1 auto; max-height: none; min-height: 120px; }
+.gm-group-title { flex: 1; }
+.gm-group-check { margin-right: 2px; accent-color: var(--green); }
+.gm-group-head { cursor: default; }
+
+/* ---- модалка списка stash: слева наборы, справа их файлы ---- */
+.modal-stash { width: min(760px, 94vw); }
+.stash-head { margin-bottom: 8px; }
+.stash-title { font-weight: 650; color: var(--text); }
+.stash-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; min-height: 280px; max-height: 56vh; }
+.stash-list, .stash-files { border: 1px solid var(--border); border-radius: 8px; background: var(--surface); overflow: auto; padding: 5px; }
+.stash-item { display: flex; align-items: center; gap: 8px; padding: 7px 8px; border-radius: 7px; cursor: pointer; border: 1px solid transparent; }
+.stash-item:hover { background: var(--hover); border-color: var(--border); }
+.stash-item.active { background: var(--accent-soft); border-color: var(--border-accent); }
+.stash-item-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.stash-item-msg { color: var(--text); font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.stash-item-when { color: var(--text-mute); font-size: 11px; }
+.stash-item-acts { display: inline-flex; gap: 4px; opacity: 0; flex: 0 0 auto; }
+.stash-item:hover .stash-item-acts, .stash-item.active .stash-item-acts { opacity: 1; }
+.stash-file { display: flex; align-items: center; gap: 7px; padding: 4px 6px; font-size: 12.5px; }
+.stash-file-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.stash-files-empty { color: var(--text-dim); padding: 16px; text-align: center; font-size: 12px; }
+
 .git-conflict-note {
   display: flex; align-items: center; gap: 7px; padding: 7px 8px; border-radius: 8px;
   border: 1px solid var(--danger); color: var(--danger); background: var(--surface);
@@ -1857,7 +1983,7 @@ body.preview-full .prev-frame { width: 100%; height: 100%; }
 
 .diff-mark { display: inline-block; width: 1ch; opacity: 0.55; user-select: none; }
 
-.git-sync-panel, .git-commit-panel {
+.git-commit-panel {
   display: flex; flex-direction: column; gap: 8px; border: 1px solid var(--border);
   border-radius: 8px; background: var(--surface); padding: 8px;
 }
@@ -1928,7 +2054,27 @@ body.preview-full .prev-frame { width: 100%; height: 100%; }
 }
 .git-tab:hover { color: var(--text); background: var(--hover); }
 .git-tab.active { color: var(--green-bright); border-bottom-color: var(--green); font-weight: 600; }
-.git-tabwrap { display: flex; flex-direction: column; gap: 10px; min-height: 0; }
+
+/* ---- нижняя панель «Ветки · История»: tabs сверху, ниже две зоны (список | дерево файлов коммита) ---- */
+.branchlog-body { padding: 0; gap: 0; overflow: hidden; }
+.branchlog-body .git-tabs { padding: 6px 8px 0; flex: 0 0 auto; }
+.git-log-split { flex: 1 1 auto; min-height: 0; display: grid; grid-template-columns: 1.25fr 1fr; }
+.git-log-list { min-width: 0; min-height: 0; overflow: auto; padding: 7px 8px; border-right: 1px solid var(--border); display: flex; flex-direction: column; gap: 6px; }
+.git-log-files { min-width: 0; min-height: 0; overflow: auto; padding: 7px 8px; display: flex; flex-direction: column; gap: 1px; }
+.git-log-files-empty { color: var(--text-dim); padding: 18px 12px; text-align: center; font-size: 12px; }
+.git-log-files-head { display: flex; align-items: center; gap: 8px; padding: 1px 2px 7px; border-bottom: 1px solid var(--border); margin-bottom: 5px; }
+.git-log-files-subj { color: var(--text-dim); font-size: 12px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.git-log-tree { display: flex; flex-direction: column; gap: 1px; }
+.git-tree-row { display: flex; align-items: center; gap: 6px; padding: 3px 6px; border-radius: 6px; font-size: 12.5px; cursor: default; }
+.git-tree-row.file { cursor: pointer; }
+.git-tree-row.file:hover { background: var(--hover); }
+.git-tree-row .ti { flex: 0 0 auto; }
+.git-tree-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
+.git-tree-row .gm-code { flex: 0 0 22px; min-width: 22px; font-size: 10px; padding: 1px 2px; }
+/* выбранный коммит в списке + наведение для action-иконок */
+.git-commit.sel { background: var(--accent-soft); border-color: var(--border-accent); }
+.git-commit-acts { display: flex; justify-content: flex-end; opacity: 0; margin-top: -2px; }
+.git-commit:hover .git-commit-acts, .git-commit.sel .git-commit-acts { opacity: 1; }
 
 /* ---------------- git merge modal (3-pane conflict resolution) ---------------- */
 .modal-merge { width: min(1500px, 96vw); max-width: 96vw; padding: 16px 18px; }

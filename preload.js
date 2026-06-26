@@ -255,6 +255,29 @@ contextBridge.exposeInMainWorld('lite', {
     discardAll: (root) => ipcRenderer.invoke('git:discardAll', root),
     stash: (root) => ipcRenderer.invoke('git:stash', root),
     stashPop: (root) => ipcRenderer.invoke('git:stashPop', root),
+    blame: (root, file) => ipcRenderer.invoke('git:blame', { root, file }), // A7: пер-строчный git blame
+    revertHunk: (root, patch) => ipcRenderer.invoke('git:revertHunk', { root, patch }), // C18: откат ханка
+    // stash-управление (PhpStorm-style: список + просмотр файлов + apply/pop/drop по индексу)
+    stashList: (root) => ipcRenderer.invoke('git:stashList', root),
+    stashShow: (root, index) => ipcRenderer.invoke('git:stashShow', { root, index }),
+    stashApply: (root, index) => ipcRenderer.invoke('git:stashApply', { root, index }),
+    stashPopIndex: (root, index) => ipcRenderer.invoke('git:stashPopIndex', { root, index }),
+    stashDrop: (root, index) => ipcRenderer.invoke('git:stashDrop', { root, index }),
+    // лог: файлы коммита (дерево) + дифф файла в коммите
+    commitFiles: (root, hash) => ipcRenderer.invoke('git:commitFiles', { root, hash }),
+    commitFileDiff: (root, hash, file) => ipcRenderer.invoke('git:commitFileDiff', { root, hash, file }),
+    // ветки (local+remote) + операции PhpStorm-style
+    branches: (root) => ipcRenderer.invoke('git:branches', root),
+    branchRename: (root, from, to) => ipcRenderer.invoke('git:branchRename', { root, from, to }),
+    branchDelete: (root, name, force) => ipcRenderer.invoke('git:branchDelete', { root, name, force }),
+    branchPush: (root, name) => ipcRenderer.invoke('git:branchPush', { root, name }),
+    checkoutRemote: (root, remoteBranch) => ipcRenderer.invoke('git:checkoutRemote', { root, remoteBranch }),
+    rebaseOnto: (root, onto) => ipcRenderer.invoke('git:rebaseOnto', { root, onto }),
+    rebaseAbort: (root) => ipcRenderer.invoke('git:rebaseAbort', root),
+    pullMerge: (root, remoteBranch) => ipcRenderer.invoke('git:pullMerge', { root, remoteBranch }),
+    pullRebase: (root, remoteBranch) => ipcRenderer.invoke('git:pullRebase', { root, remoteBranch }),
+    branchCompare: (root, branch) => ipcRenderer.invoke('git:branchCompare', { root, branch }),
+    branchDiffWorktree: (root, branch) => ipcRenderer.invoke('git:branchDiffWorktree', { root, branch }),
   },
 
   containers: {

@@ -26,7 +26,7 @@ import { el, svgEl, icon, iconBtn, hydrateIcons, toast, makeModal, showConfirm, 
 import { initExtensions } from './modules/extensions.js';
 // initFiles — вивер+дерево мигрированы в отдельное окно (renderer/module-entry.js).
 
-const APP_VERSION = 'alpha v1.1.27';
+const APP_VERSION = 'alpha v1.1.28';
 const GUTTER = 5;
 // Системный терминал («Система · ~») мигрирован в отдельное окно (renderer/modules/scratch.js):
 // его id `__scratch__::tN` маршрутизируются main'ом в окно-владельца, в ядре их больше не обрабатываем.

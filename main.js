@@ -3248,6 +3248,166 @@ ipcMain.handle('git:stashPop', async (_e, root) => gitRun(root, ['stash', 'pop']
 // Revert tracked edits only ('checkout -- .'); untracked files are deliberately kept (no -fd clean).
 ipcMain.handle('git:discardAll', async (_e, root) => gitRun(root, ['checkout', '--', '.']));
 
+// C18: откатить один ханк правок агента — reverse-apply минимального патча к рабочему дереву.
+ipcMain.handle('git:revertHunk', async (_e, { root, patch } = {}) => {
+  if (!root || !patch) return { ok: false, error: 'нет патча' };
+  return new Promise((resolve) => {
+    const child = execFile('git', ['apply', '--reverse', '-'], { cwd: root, timeout: 15000, windowsHide: true,
+      env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } },
+      (err, _stdout, stderr) => resolve({ ok: !err, error: err ? ((stderr || '').trim() || String(err.message || err)) : '' }));
+    try { child.stdin.write(patch); child.stdin.end(); } catch (e) { resolve({ ok: false, error: String(e) }); }
+  });
+});
+
+// A7: git blame файла (--line-porcelain) → массив пер-строчных {hash,author,time,summary} (1:1 строкам файла).
+ipcMain.handle('git:blame', async (_e, { root, file } = {}) => {
+  if (!root || !file) return { error: 'no root/file' };
+  const out = await git(root, ['blame', '--line-porcelain', '--', file]);
+  if (out == null) return { error: 'не git-репозиторий или файл не отслеживается' };
+  const lines = [];
+  let cur = null;
+  for (const ln of out.split('\n')) {
+    if (/^[0-9a-f]{40} /.test(ln)) { cur = { hash: ln.slice(0, 8), uncommitted: /^0{40} /.test(ln) }; }
+    else if (cur && ln.startsWith('author ')) cur.author = ln.slice(7);
+    else if (cur && ln.startsWith('author-time ')) cur.time = parseInt(ln.slice(12), 10) || 0;
+    else if (cur && ln.startsWith('summary ')) cur.summary = ln.slice(8);
+    else if (cur && ln.startsWith('\t')) { lines.push(cur); cur = null; }
+  }
+  return { ok: true, lines };
+});
+
+// ---------------------------------------------------------------- git: stash management (PhpStorm-style)
+// index приходит из UI, но в ref подставляем только провалидированное число — никакого argv-инъекшна.
+const stashRef = (index) => { const i = parseInt(index, 10); return i >= 0 ? `stash@{${i}}` : null; };
+ipcMain.handle('git:stashList', async (_e, root) => {
+  const out = await git(root, ['stash', 'list', '--format=%gd%x1f%s%x1f%cr']);
+  const items = [];
+  if (out) for (const line of out.split('\n')) {
+    if (!line.trim()) continue;
+    const [ref, subject, when] = line.split('\x1f');
+    const m = /stash@\{(\d+)\}/.exec(ref || '');
+    items.push({ index: m ? +m[1] : items.length, ref: ref || '', subject: subject || '', when: when || '' });
+  }
+  return { ok: true, items };
+});
+// Файлы в конкретном stash (--name-status, включая untracked).
+ipcMain.handle('git:stashShow', async (_e, { root, index } = {}) => {
+  const ref = stashRef(index); if (!ref) return { ok: false, error: 'bad stash index' };
+  const out = await git(root, ['stash', 'show', '--include-untracked', '--name-status', ref]);
+  const files = [];
+  if (out != null) for (const line of out.split('\n')) {
+    if (!line.trim()) continue;
+    const parts = line.split('\t');
+    files.push({ code: (parts[0] || '').trim(), rel: parts[parts.length - 1] });
+  }
+  return { ok: true, files };
+});
+ipcMain.handle('git:stashApply', async (_e, { root, index } = {}) => { const r = stashRef(index); return r ? gitRun(root, ['stash', 'apply', r]) : { ok: false, error: 'bad index' }; });
+ipcMain.handle('git:stashPopIndex', async (_e, { root, index } = {}) => { const r = stashRef(index); return r ? gitRun(root, ['stash', 'pop', r]) : { ok: false, error: 'bad index' }; });
+ipcMain.handle('git:stashDrop', async (_e, { root, index } = {}) => { const r = stashRef(index); return r ? gitRun(root, ['stash', 'drop', r]) : { ok: false, error: 'bad index' }; });
+
+// ---------------------------------------------------------------- git: commit details (changed-files tree for the log)
+// Файлы, изменённые в коммите (--name-status), для дерева изменённых файлов в логе.
+ipcMain.handle('git:commitFiles', async (_e, { root, hash } = {}) => {
+  const h = String(hash || '').trim();
+  if (!/^[0-9a-fA-F]{4,40}$/.test(h)) return { ok: false, error: 'bad hash' };
+  const out = await git(root, ['show', '--no-color', '--name-status', '--format=', h]);
+  const files = [];
+  if (out != null) for (const line of out.split('\n')) {
+    if (!line.trim()) continue;
+    const parts = line.split('\t');
+    files.push({ code: (parts[0] || '').trim(), rel: parts[parts.length - 1] });
+  }
+  return { ok: true, files };
+});
+// Дифф одного файла в коммите (показать в центре вивера при выборе файла в логе).
+ipcMain.handle('git:commitFileDiff', async (_e, { root, hash, file } = {}) => {
+  const h = String(hash || '').trim();
+  if (!/^[0-9a-fA-F]{4,40}$/.test(h)) return { error: 'bad hash' };
+  const out = await git(root, ['show', '--no-color', h, '--', file]);
+  return { diff: out || '' };
+});
+
+// ---------------------------------------------------------------- git: branches (local + remote) & ops (PhpStorm-style)
+// Отсекаем argv-инъекшн/невалидные ref'ы (ведущий '-', пробелы/спецсимволы, '..'); '/' разрешён (remote/feature).
+const BAD_REF = (s) => !s || String(s).startsWith('-') || /[\s~^:?*\[\\]/.test(String(s)) || String(s).includes('..');
+ipcMain.handle('git:branches', async (_e, root) => {
+  if (!root || !fs.existsSync(root)) return { repo: false };
+  const top = await git(root, ['rev-parse', '--show-toplevel']);
+  if (top == null) return { repo: false };
+  const current = ((await git(root, ['rev-parse', '--abbrev-ref', 'HEAD'])) || '').trim();
+  const localOut = await git(root, ['for-each-ref', '--format=%(refname:short)%x1f%(upstream:short)%x1f%(upstream:track)', 'refs/heads']);
+  const local = [];
+  if (localOut) for (const line of localOut.split('\n')) {
+    if (!line.trim()) continue;
+    const [name, up, track] = line.split('\x1f');
+    let ahead = 0, behind = 0, gone = false;
+    if (track) { if (/gone/.test(track)) gone = true; const a = track.match(/ahead (\d+)/); if (a) ahead = +a[1]; const b = track.match(/behind (\d+)/); if (b) behind = +b[1]; }
+    local.push({ name, upstream: (up || '').trim(), ahead, behind, gone });
+  }
+  const remoteOut = await git(root, ['for-each-ref', '--format=%(refname:short)', 'refs/remotes']);
+  const remote = [];
+  if (remoteOut) for (const line of remoteOut.split('\n')) { const n = line.trim(); if (!n || /\/HEAD$/.test(n)) continue; remote.push(n); }
+  return { repo: true, current, local, remote };
+});
+ipcMain.handle('git:branchRename', async (_e, { root, from, to } = {}) => {
+  if (BAD_REF(to) || BAD_REF(from)) return { ok: false, error: 'Недопустимое имя ветки' };
+  return gitRun(root, ['branch', '-m', from, to]);
+});
+ipcMain.handle('git:branchDelete', async (_e, { root, name, force } = {}) => {
+  if (BAD_REF(name)) return { ok: false, error: 'Недопустимое имя ветки' };
+  return gitRun(root, ['branch', force ? '-D' : '-d', name]);
+});
+ipcMain.handle('git:branchPush', async (_e, { root, name } = {}) => {
+  if (BAD_REF(name)) return { ok: false, error: 'Недопустимое имя ветки' };
+  const remotes = ((await git(root, ['remote'])) || '').trim().split('\n').filter(Boolean);
+  const remote = remotes.includes('origin') ? 'origin' : remotes[0];
+  if (!remote) return { ok: false, error: 'нет remote' };
+  return gitRun(root, ['push', '-u', remote, name]);
+});
+// Checkout remote-ветки: создаём локальную tracking-ветку (origin/foo → foo), либо переключаемся, если уже есть.
+ipcMain.handle('git:checkoutRemote', async (_e, { root, remoteBranch } = {}) => {
+  const rb = String(remoteBranch || '');
+  if (BAD_REF(rb)) return { ok: false, error: 'Недопустимое имя ветки' };
+  const local = rb.replace(/^[^/]+\//, '');   // origin/foo → foo
+  if (BAD_REF(local)) return { ok: false, error: 'Недопустимое имя ветки' };
+  const exists = await git(root, ['rev-parse', '--verify', '--quiet', 'refs/heads/' + local]);
+  if (exists != null) return gitRun(root, ['checkout', local]);
+  return gitRun(root, ['checkout', '-b', local, '--track', rb]);
+});
+ipcMain.handle('git:rebaseOnto', async (_e, { root, onto } = {}) => BAD_REF(onto) ? { ok: false, error: 'плохая ветка' } : gitRun(root, ['rebase', onto]));
+ipcMain.handle('git:rebaseAbort', async (_e, root) => gitRun(root, ['rebase', '--abort']));
+// Pull into current: тянем ИМЕННО выбранную remote-ветку (origin/foo → git pull <remote> <branch>),
+// а не безымянный upstream текущей ветки. Без аргумента — фолбэк на стандартный pull.
+function gitPullRef(root, remoteBranch, rebase) {
+  const flag = rebase ? '--rebase' : '--no-rebase';
+  if (!remoteBranch) return gitRun(root, ['pull', flag]);
+  if (BAD_REF(remoteBranch)) return Promise.resolve({ ok: false, error: 'плохая ветка' });
+  const i = String(remoteBranch).indexOf('/');
+  const remote = i > 0 ? remoteBranch.slice(0, i) : 'origin';
+  const branch = i > 0 ? remoteBranch.slice(i + 1) : remoteBranch;
+  // перепроверяем КАЖДУЮ часть после split (ветка после '/' могла бы начинаться с '-' и протащить флаг);
+  // '--' завершает разбор опций перед позиционными remote/refspec (defense-in-depth от argv-инъекции).
+  if (BAD_REF(remote) || BAD_REF(branch)) return Promise.resolve({ ok: false, error: 'плохая ветка' });
+  return gitRun(root, ['pull', flag, '--', remote, branch]);
+}
+ipcMain.handle('git:pullMerge', async (_e, { root, remoteBranch } = {}) => gitPullRef(root, remoteBranch, false));
+ipcMain.handle('git:pullRebase', async (_e, { root, remoteBranch } = {}) => gitPullRef(root, remoteBranch, true));
+// Compare with current: коммиты, что есть в выбранной ветке но нет в текущей (и наоборот).
+ipcMain.handle('git:branchCompare', async (_e, { root, branch } = {}) => {
+  if (BAD_REF(branch)) return { ok: false, error: 'плохая ветка' };
+  const ahead = await git(root, ['log', '--oneline', '--no-color', `HEAD..${branch}`]);
+  const behind = await git(root, ['log', '--oneline', '--no-color', `${branch}..HEAD`]);
+  const parse = (s) => (s || '').split('\n').filter(Boolean).map((l) => { const i = l.indexOf(' '); return { hash: l.slice(0, i), subject: l.slice(i + 1) }; });
+  return { ok: true, branch, onlyInBranch: parse(ahead), onlyInCurrent: parse(behind) };
+});
+// Diff выбранной ветки vs рабочее дерево (показать в центре вивера).
+ipcMain.handle('git:branchDiffWorktree', async (_e, { root, branch } = {}) => {
+  if (BAD_REF(branch)) return { error: 'плохая ветка' };
+  const out = await git(root, ['diff', '--no-color', branch]);
+  return { diff: out || '' };
+});
+
 // ================================================================ containers (docker/podman)
 // Lightweight container manager — a desktop-GUI replacement. Read-only listing + basic
 // lifecycle actions, shelled out to the docker/podman CLIs (no daemon socket, no extra deps).

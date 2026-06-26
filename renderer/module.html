@@ -133,7 +133,7 @@
         </div>
       </section>
 
-      <!-- Git больше НЕ отдельное окно: вселён в окно вивера (#commit-pane / #branches-pane / #vcs-topbar). -->
+      <!-- Git больше НЕ отдельное окно: вселён в окно вивера (#commit-pane слева / #log-pane снизу / #vcs-topbar). -->
 
       <!-- Containers module (docker/podman): system-wide -->
       <div id="gutter-docker" class="gutter hidden" data-resize="docker"></div>
@@ -241,6 +241,8 @@
       </div>
       <!-- Разделитель между левой секцией и вивером: перетаскивание меняет ширину (--mw-left). -->
       <div id="mw-gutter" class="mw-gutter" title="Потяните, чтобы изменить ширину"></div>
+      <!-- Колонка табов открытых файлов (между деревом и вивером). Наполняет renderTabs(); пусто → ширина 0. -->
+      <section id="tabs-pane" class="file-tabs empty"></section>
       <section id="viewer-pane" class="hidden">
         <div class="pane-head">
           <button id="viewer-back" class="icon-btn" title="Назад (Alt+←)" data-icon="chevron-left" disabled></button>
@@ -250,11 +252,16 @@
           <div class="drag-space-static"></div>
           <button id="viewer-find" class="icon-btn" title="Найти в проекте (Ctrl+Shift+F)" data-icon="search"></button>
           <button id="viewer-outline" class="icon-btn" title="Структура файла (Ctrl+Shift+O)" data-icon="braces"></button>
+          <button id="viewer-todos" class="icon-btn" title="TODO / FIXME по проекту" data-icon="flag"></button>
           <button id="viewer-bookmark" class="icon-btn" title="Закладка на текущей строке (Ctrl+F2). Клик правой — список закладок" data-icon="star"></button>
           <button id="viewer-minimap" class="icon-btn" title="Миникарта кода (вкл/выкл)" data-icon="columns"></button>
           <button id="viewer-preview" class="icon-btn" title="Превью (Markdown / картинка / HTML)" data-icon="eye"></button>
+          <button id="viewer-split" class="icon-btn" title="Превью рядом с кодом (split, Markdown/HTML)" data-icon="grid"></button>
           <button id="viewer-full" class="icon-btn" title="Развернуть превью HTML на весь экран (Esc — выход)" style="display:none" data-icon="maximize"></button>
+          <button id="viewer-agent" class="icon-btn" title="Режим агента — ревью правок агента, слой авторства, «спросить агента» (вкл/выкл)" data-icon="terminal"></button>
+          <button id="viewer-blame" class="icon-btn" title="Git blame — автор строки (вкл/выкл)" data-icon="note"></button>
           <button id="viewer-diff" class="icon-btn" title="Дифф изменений vs HEAD (git)" data-icon="diff"></button>
+          <button id="viewer-zen" class="icon-btn" title="Zen-режим — только код (Esc выход)" data-icon="maximize"></button>
           <button id="viewer-save" class="icon-btn" title="Сохранить (Ctrl+S)" data-icon="save"></button>
         </div>
         <div id="viewer-crumbs" class="viewer-crumbs hidden"></div>
@@ -263,12 +270,15 @@
           <button id="viewer-reload-apply" class="reload-bar-btn">Перечитать с диска</button>
           <button id="viewer-reload-dismiss" class="icon-btn" title="Оставить мои правки" data-icon="x"></button>
         </div>
-        <div id="editor"></div>
-        <div id="diff-view"></div>
-        <div id="preview-view"></div>
+        <div id="viewer-body">
+          <div id="editor"></div>
+          <div id="diff-view"></div>
+          <div id="preview-view"></div>
+        </div>
         <div id="viewer-status" class="viewer-status hidden">
           <span id="vs-pos" class="vs-pos"></span>
           <span id="vs-sel" class="vs-sel"></span>
+          <span id="vs-blame" class="vs-blame"></span>
           <div class="drag-space-static"></div>
           <span id="vs-lang" class="vs-lang"></span>
         </div>
@@ -287,9 +297,12 @@
         <div class="pane-head"><span>КОММИТ</span><div class="drag-space-static"></div></div>
         <div id="commit-body" class="git-body commit-body"></div>
       </section>
-      <!-- Git: секция «Ветки/Лог» (ветки + история). Наполняет git-компонент. -->
-      <section id="branches-pane" class="hidden">
-        <div class="pane-head"><span>ВЕТКИ · ИСТОРИЯ</span><div class="drag-space-static"></div></div>
+      <!-- Git: «Ветки · История» — НИЖНЯЯ панель на всю ширину (PhpStorm Git tool window):
+           слева список коммитов/веток, справа дерево изменённых файлов выбранного коммита. -->
+      <section id="log-pane" class="hidden">
+        <div id="log-resize" class="log-resize" title="Потяните, чтобы изменить высоту"></div>
+        <div class="pane-head"><span>ВЕТКИ · ИСТОРИЯ</span><div class="drag-space-static"></div>
+          <button id="log-close" class="icon-btn" title="Скрыть панель" data-icon="x"></button></div>
         <div id="branchlog-body" class="git-body branchlog-body"></div>
       </section>
     </div>
