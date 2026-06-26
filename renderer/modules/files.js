@@ -9,13 +9,15 @@
 // Шаг 2 — флип в окно: те же #viewer-pane/#tree-pane переедут в module.html, host станет window-host.
 import { el, svgEl, toast, showConfirm, showPrompt, baseName } from '../ui.js';
 import { languageFor } from '../codeedit.js';
-import { EditorView, keymap, lineNumbers, highlightActiveLine, drawSelection, gutter, GutterMarker } from '@codemirror/view';
+import { initGit } from './git.js';
+import { EditorView, keymap, lineNumbers, highlightActiveLine, highlightActiveLineGutter, drawSelection, gutter, GutterMarker } from '@codemirror/view';
 import { EditorState, Compartment, StateField, StateEffect, RangeSet } from '@codemirror/state';
 import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands';
-import { syntaxHighlighting, defaultHighlightStyle, indentOnInput, bracketMatching } from '@codemirror/language';
-import { search, searchKeymap, highlightSelectionMatches, openSearchPanel } from '@codemirror/search';
+import { syntaxHighlighting, defaultHighlightStyle, indentOnInput, bracketMatching, foldGutter, codeFolding, foldKeymap } from '@codemirror/language';
+import { search, searchKeymap, highlightSelectionMatches } from '@codemirror/search';
 import { oneDark } from '@codemirror/theme-one-dark';
 import { showMinimap } from '@replit/codemirror-minimap';
+import { indentationMarkers } from '@replit/codemirror-indentation-markers';
 import { marked } from 'marked';
 
 const lite = window.lite;
@@ -41,6 +43,17 @@ export function initFiles(host) {
   const langComp = new Compartment();
   let openSeq = 0;                   // монотонный токен открытия — против гонки при быстром переключении файлов
   let dragSrcPath = null;            // путь перетаскиваемого узла (внутренний drag дерево→дерево)
+  // ---- навигация/поиск/закладки вивера (этапы «привычного»)
+  let navStack = [];                 // история открытых файлов (как назад/вперёд в IDE)
+  let navIdx = -1;                   // позиция в navStack
+  let navJumping = false;            // открытие вызвано back/fwd → не пушим новую запись
+  const recentFiles = [];            // недавние файлы (LRU) — показываются в Ctrl+P при пустом запросе
+  let fileListCache = null;          // { projPath, files[] } — кэш рекурсивного листинга для Ctrl+P
+  let cmpFirst = null;               // первый файл для «Сравнить два файла»
+  const bookmarks = (host.STORE && host.STORE.bookmarks) || {}; // projId -> [{file, line}] (персист)
+  // ---- встроенный Git (вместо отдельного окна): стрип-секции + дифф в центре вивера
+  let git = null;                    // git-компонент (initGit), монтируется в mount()
+  let curSection = 'files';          // активная секция левой зоны: 'files' | 'commit' | 'branches'
   let dropHLRow = null;              // подсвеченная папка-приёмник
   let fsTimer = null;
   let mounted = false;               // mount() идемпотентен (окно строит редактор один раз)
@@ -73,19 +86,45 @@ export function initFiles(host) {
     const state = EditorState.create({
       doc: '',
       extensions: [
-        lineNumbers(), gitGutterField, gitGutterExt, highlightActiveLine(), drawSelection(), history(),
+        lineNumbers(), bmGutterField, bmGutterExt, gitGutterField, gitGutterExt, highlightActiveLine(), highlightActiveLineGutter(),
+        codeFolding(), foldGutter(), indentationMarkers({ hideFirstIndent: true, highlightActiveBlock: false }),
+        drawSelection(), history(),
         indentOnInput(), bracketMatching(), highlightSelectionMatches(), search({ top: true }),
         syntaxHighlighting(defaultHighlightStyle, { fallback: true }), oneDark,
         minimapComp.of(settings.minimap ? minimapExt : []),
         langComp.of([]),
         keymap.of([
           { key: 'Mod-s', preventDefault: true, run: () => { saveCurrent(); return true; } },
-          indentWithTab, ...searchKeymap, ...defaultKeymap, ...historyKeymap,
+          indentWithTab, ...foldKeymap, ...searchKeymap, ...defaultKeymap, ...historyKeymap,
         ]),
-        EditorView.updateListener.of((u) => { if (u.docChanged && !loadingDoc) markDirty(true); }),
+        EditorView.updateListener.of((u) => {
+          if (u.docChanged && !loadingDoc) markDirty(true);
+          if (u.docChanged) { symCacheFile = null; remapBookmarks(u); }
+          if (u.docChanged || u.selectionSet) { updateStatus(u.state); updateBreadcrumb(u.state); }
+        }),
       ],
     });
     editor = new EditorView({ state, parent: $('#editor') });
+  }
+  // Метки языка для статус-строки (по расширению; '' → «Текст»).
+  const LANG_LABEL = {
+    js: 'JavaScript', jsx: 'JavaScript', mjs: 'JavaScript', cjs: 'JavaScript', ts: 'TypeScript', tsx: 'TypeScript',
+    py: 'Python', json: 'JSON', md: 'Markdown', markdown: 'Markdown', html: 'HTML', htm: 'HTML',
+    css: 'CSS', scss: 'SCSS', sql: 'SQL', sh: 'Shell', yml: 'YAML', yaml: 'YAML',
+  };
+  // Нижняя статус-строка вивера: позиция курсора (строка:колонка), число строк, выделение, язык.
+  function updateStatus(state) {
+    const bar = $('#viewer-status'); if (!bar) return;
+    if (!currentFile || previewMode || diffMode) { bar.classList.add('hidden'); return; }
+    bar.classList.remove('hidden');
+    const sel = state.selection.main;
+    const line = state.doc.lineAt(sel.head);
+    const col = sel.head - line.from + 1;
+    const selLen = sel.to - sel.from;
+    const posEl = $('#vs-pos'), selEl = $('#vs-sel'), langEl = $('#vs-lang');
+    if (posEl) posEl.textContent = `Стр ${line.number}, кол ${col}`;
+    if (selEl) selEl.textContent = selLen ? `(выбрано ${selLen})` : '';
+    if (langEl) langEl.textContent = (LANG_LABEL[extOf(currentFile)] || 'Текст') + ' · ' + state.doc.lines + ' стр';
   }
   // ---- git-маркеры в гаттере вивера: цветная полоса слева для строк, изменённых относительно HEAD.
   // Данные берём из `git diff HEAD -- file` (тот же источник, что diff-режим), парсим ханки в пер-строчные метки.
@@ -114,6 +153,32 @@ export function initFiles(host) {
   const gitGutterExt = gutter({
     class: 'cm-git-gutter',
     markers: (view) => view.state.field(gitGutterField),
+  });
+  // ---- гаттер закладок: звёздочка слева на отмеченных строках (клик по звезде — снять закладку).
+  const setBookmarkGutterEffect = StateEffect.define(); // value: [lineNumbers] (1-based)
+  class BookmarkMarker extends GutterMarker {
+    toDOM() { const d = document.createElement('div'); d.className = 'cm-bm-mark'; d.textContent = '★'; return d; }
+  }
+  const bmGutterField = StateField.define({
+    create: () => RangeSet.empty,
+    update(set, tr) {
+      set = set.map(tr.changes);
+      for (const e of tr.effects) {
+        if (!e.is(setBookmarkGutterEffect)) continue;
+        const doc = tr.state.doc, ranges = [];
+        for (const ln of e.value) if (ln >= 1 && ln <= doc.lines) ranges.push(new BookmarkMarker().range(doc.line(ln).from));
+        ranges.sort((a, b) => a.from - b.from);
+        set = RangeSet.of(ranges, true);
+      }
+      return set;
+    },
+  });
+  const bmGutterExt = gutter({
+    class: 'cm-bm-gutter',
+    markers: (view) => view.state.field(bmGutterField),
+    domEventHandlers: {
+      click: (view, block) => { const ln = view.state.doc.lineAt(block.from).number; toggleBookmarkAt(ln); return true; },
+    },
   });
   // Unified diff → пер-строчные метки для НОВОЙ версии файла (что лежит в редакторе).
   // Блок «-…+…» = modified; одиночные «+» = added; «-» без последующих «+» = deleted (треугольник на стыке).
@@ -169,6 +234,7 @@ export function initFiles(host) {
   }
   async function openFile(filePath, line) {
     const seq = ++openSeq;
+    clearGitDiff();                  // открываем реальный файл — это больше не git-дифф в центре
     if (diffMode) exitDiff(false);
     exitPreview();
     hideReloadBar();
@@ -177,6 +243,7 @@ export function initFiles(host) {
     if (kind === 'image') { // binary — no editable source
       currentFile = filePath;
       commitOpenUI(filePath, kind);
+      afterOpen(filePath);
       setEditorText('', []); markDirty(false); clearGitGutter();
       await showPreview('image', filePath, '');
       return;
@@ -186,6 +253,7 @@ export function initFiles(host) {
     if (res.error) { toast(res.error, { kind: 'err', ttl: 6000 }); return; } // оставляем текущий файл нетронутым
     currentFile = filePath;
     commitOpenUI(filePath, kind);
+    afterOpen(filePath);
     setEditorText(res.content, languageFor(filePath));
     markDirty(false);
     updateGitGutter(filePath);
@@ -240,6 +308,7 @@ export function initFiles(host) {
     $('#editor').style.display = 'none';
     view.style.display = 'block';
     $('#viewer-preview').classList.add('on');
+    updateStatus(editor.state);
   }
   function exitPreview() {
     exitPreviewFull(); // на всякий случай свернуть полноэкранный режим
@@ -248,6 +317,7 @@ export function initFiles(host) {
     if (v) { v.style.display = 'none'; v.innerHTML = ''; }
     $('#editor').style.display = '';
     $('#viewer-preview').classList.remove('on');
+    updateStatus(editor.state);
   }
   function togglePreview() {
     if (previewMode) { exitPreview(); editor.focus(); return; }
@@ -317,6 +387,10 @@ export function initFiles(host) {
     loadingDoc = true;
     editor.dispatch({ changes: { from: 0, to: editor.state.doc.length, insert: text }, effects: langComp.reconfigure(lang) });
     loadingDoc = false;
+    symCacheFile = null;
+    updateStatus(editor.state);
+    updateBreadcrumb(editor.state);
+    refreshBookmarkGutter();          // канонический момент загрузки дока → маркеры закладок по НОВОМУ содержимому
   }
   function markDirty(v) { dirty = v; $('#viewer-dirty').classList.toggle('show', v); }
   // Плашка-конфликт: файл изменился на диске, пока у нас есть несохранённые правки (агент тронул открытый файл).
@@ -366,6 +440,7 @@ export function initFiles(host) {
     $('#editor').style.display = 'none';
     view.style.display = 'block';
     $('#viewer-diff').classList.add('on');
+    updateStatus(editor.state);
   }
   function exitDiff(refocus) {
     diffMode = false;
@@ -373,6 +448,7 @@ export function initFiles(host) {
     $('#editor').style.display = '';
     $('#viewer-diff').classList.remove('on');
     if (refocus) editor.focus();
+    updateStatus(editor.state);
   }
 
   // ---------------------------------------------------------------- git status (tree decorations)
@@ -402,7 +478,8 @@ export function initFiles(host) {
     if (diffMode) exitDiff(false); // иначе оверлей диффа/превью старого файла остаётся висеть при смене проекта/чате/удалении
     exitPreview();
     currentFile = null;
-    setEditorText('', []);
+    clearGitDiff();
+    setEditorText('', []);          // setEditorText сам обновит гаттер закладок (currentFile=null → пусто)
     clearGitGutter();
     hideReloadBar();
     $('#viewer-filename').textContent = '—';
@@ -414,9 +491,11 @@ export function initFiles(host) {
   // Нет выбранного проекта (открыта категория) → показываем заглушку вивера.
   async function refreshViewerForActive() {
     const p = activeProject();
-    if (!p) { showViewerPlaceholder(); return; }
+    if (!p) { showViewerPlaceholder(); if (git) git.renderPanel(null); return; }
     await renderTree(p);
     clearViewer();
+    // VCS-полоса нужна всегда; тяжёлую секцию гита рендерим лениво — только если она активна (не «Файлы»).
+    if (git) git.renderPanel(p, { section: curSection !== 'files' });
   }
   // Заглушка вивера, когда нет выбранного проекта (открыта категория/чат OpenRouter).
   function showViewerPlaceholder() {
@@ -658,6 +737,7 @@ export function initFiles(host) {
     } else {
       dd.appendChild(menuRow('eye', 'Открыть', () => { closeMenus(); if (!viewerOpen) setViewerOpen(true); guardDirty(() => openFile(ent.path)); }));
       if (['html', 'htm'].includes(extOf(ent.name))) dd.appendChild(menuRow('globe', 'Открыть в браузере', () => { closeMenus(); lite.openInBrowser(ent.path).then((r) => { if (r && r.error) toast(r.error, { kind: 'err' }); }); }));
+      dd.appendChild(compareMenuRow(ent));
       dd.appendChild(el('div', 'menu-sep'));
     }
     if (!ent.root) {
@@ -685,9 +765,15 @@ export function initFiles(host) {
 
   // ---- сборка live-обновления диска для активного проекта (агент тронул файл)
   function onFsChange(p, files) {
+    fileListCache = null;                               // дерево менялось на диске → пересобрать листинг для Ctrl+P
     clearTimeout(fsTimer);
     fsTimer = setTimeout(() => {
       if (viewerOpen) renderTree(p);
+      // живой git-дифф в центре: показанный файл изменился на диске (агент правит) → перечитать дифф
+      if (gitDiffFile && diffMode && gitDiffProj && files.includes(gitDiffFile)) {
+        const f = gitDiffFile;
+        lite.git.fileDiff(gitDiffProj, f).then((r) => { if (gitDiffFile === f && diffMode) showDiff(r && r.diff ? r.diff : ''); });
+      }
       if (currentFile && files.includes(currentFile)) {
         if (diffMode) reloadCurrentDiff();              // в режиме диффа — обновляем дифф (редактор не трогаем)
         else if (!dirty) reloadCurrentFile();           // нет правок — молча перечитываем (вивер всегда = диск)
@@ -700,20 +786,357 @@ export function initFiles(host) {
     for (const d of expandedDirs) if (!pathInside(d, projPath)) expandedDirs.delete(d);
   }
 
+  // ================================================================ «привычное» (этапы 2–7)
+  // --- пути (нормализуем сепараторы к '/'; основные платформы — linux/mac) ---
+  function relTo(base, file) { const r = file.startsWith(base) ? file.slice(base.length) : file; return r.replace(/^[/\\]+/, '').replace(/\\/g, '/'); }
+  function joinPath(base, rel) { return base.replace(/[/\\]+$/, '') + '/' + rel; }
+
+  // --- структура файла (символы) по эвристикам-регэкспам; кэш на текущий файл ---
+  let symCacheFile = null, symCache = [];
+  function currentSymbols() {
+    if (symCacheFile === currentFile && symCache.length) return symCache;
+    symCache = currentFile ? extractSymbols(editor.state.doc.toString(), extOf(currentFile)) : [];
+    symCacheFile = currentFile;
+    return symCache;
+  }
+  function extractSymbols(text, ext) {
+    const syms = [], lines = text.split('\n');
+    const push = (line, name, kind) => { if (name) syms.push({ line, name, kind }); };
+    if (ext === 'md' || ext === 'markdown') {
+      for (let i = 0; i < lines.length; i++) { const m = /^(#{1,6})\s+(.+?)\s*#*$/.exec(lines[i]); if (m) push(i + 1, m[2].trim(), 'h' + m[1].length); }
+      return syms;
+    }
+    if (ext === 'py') {
+      for (let i = 0; i < lines.length; i++) { const m = /^(\s*)(async\s+def|def|class)\s+([A-Za-z_]\w*)/.exec(lines[i]); if (m) push(i + 1, m[3], m[2].includes('class') ? 'class' : 'fn'); }
+      return syms;
+    }
+    if (ext === 'css' || ext === 'scss') {
+      for (let i = 0; i < lines.length; i++) { if (/^\s*@(media|keyframes|supports|import|font-face)/.test(lines[i])) continue; const m = /^([.#&:\[a-zA-Z][^{};]*?)\s*\{/.exec(lines[i]); if (m) push(i + 1, m[1].trim().slice(0, 60), 'rule'); }
+      return syms;
+    }
+    // JS/TS/JSX и прочие C-подобные
+    for (let i = 0; i < lines.length; i++) {
+      const ln = lines[i]; let m;
+      if ((m = /^\s*(?:export\s+)?(?:default\s+)?(?:async\s+)?function\s*\*?\s*([A-Za-z_$][\w$]*)/.exec(ln))) push(i + 1, m[1], 'fn');
+      else if ((m = /^\s*(?:export\s+)?(?:default\s+)?(?:abstract\s+)?class\s+([A-Za-z_$][\w$]*)/.exec(ln))) push(i + 1, m[1], 'class');
+      else if ((m = /^\s*(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*=>/.exec(ln))) push(i + 1, m[1], 'fn');
+      else if ((m = /^\s*(?:async\s+)?([A-Za-z_$][\w$]*)\s*\([^)]*\)\s*\{/.exec(ln)) && !/^(if|for|while|switch|catch|return|function|do|else)$/.test(m[1])) push(i + 1, m[1], 'method');
+    }
+    return syms;
+  }
+  function kindGlyph(k) { return k === 'class' ? 'C' : k === 'method' ? 'm' : k === 'fn' ? 'ƒ' : k === 'rule' ? '{}' : /^h\d$/.test(k) ? k.toUpperCase() : '•'; }
+
+  // --- хлебные крошки: путь от корня проекта + текущий символ по позиции курсора ---
+  function updateBreadcrumb(state) {
+    const bar = $('#viewer-crumbs'); if (!bar) return;
+    if (!currentFile || previewMode || diffMode) { bar.classList.add('hidden'); bar.replaceChildren(); return; }
+    bar.classList.remove('hidden');
+    const p = activeProject();
+    const rel = p ? relTo(p.path, currentFile) : baseName(currentFile);
+    const segs = rel.split('/');
+    bar.replaceChildren();
+    segs.forEach((s, i) => { if (i) bar.appendChild(el('span', 'crumb-sep', '›')); bar.appendChild(el('span', 'crumb' + (i === segs.length - 1 ? ' crumb-file' : ''), s)); });
+    const ln = state.doc.lineAt(state.selection.main.head).number;
+    let cur = null; for (const s of currentSymbols()) { if (s.line <= ln) cur = s; else break; }
+    if (cur) { bar.appendChild(el('span', 'crumb-sep', '›')); bar.appendChild(el('span', 'crumb crumb-sym', cur.name)); }
+  }
+
+  // --- универсальный оверлей со списком и фильтром (палитра Ctrl+P, структура, закладки) ---
+  let _overlay = null;
+  function closeOverlay() { document.querySelectorAll('.viewer-ov').forEach((n) => n.remove()); _overlay = null; }
+  function openListOverlay(o) {
+    closeOverlay();
+    const root = el('div', 'viewer-ov'), box = el('div', 'viewer-ov-box' + (o.wide ? ' wide' : ''));
+    const inp = el('input', 'viewer-ov-input'); inp.placeholder = o.placeholder || ''; inp.spellcheck = false;
+    const list = el('div', 'viewer-ov-list');
+    box.appendChild(inp); box.appendChild(list); root.appendChild(box); document.body.appendChild(root); _overlay = root;
+    let items = [], active = 0;
+    const highlight = () => { [...list.children].forEach((c, i) => c.classList.toggle('active', i === active)); const a = list.children[active]; if (a) a.scrollIntoView({ block: 'nearest' }); };
+    const pick = (i) => { const it = items[i]; closeOverlay(); if (it) o.onPick(it); };
+    function render(q) {
+      items = o.filter(q) || []; active = 0; list.replaceChildren();
+      items.slice(0, 500).forEach((it, i) => {
+        const row = el('div', 'viewer-ov-row'); o.renderRow(row, it);
+        row.addEventListener('mousedown', (e) => { e.preventDefault(); pick(i); });
+        row.addEventListener('mouseenter', () => { active = i; highlight(); });
+        list.appendChild(row);
+      });
+      highlight();
+    }
+    inp.addEventListener('input', () => render(inp.value.trim()));
+    inp.addEventListener('keydown', (e) => {
+      if (e.key === 'ArrowDown') { e.preventDefault(); active = Math.min(active + 1, items.length - 1); highlight(); }
+      else if (e.key === 'ArrowUp') { e.preventDefault(); active = Math.max(active - 1, 0); highlight(); }
+      else if (e.key === 'Enter') { e.preventDefault(); pick(active); }
+      else if (e.key === 'Escape') { e.preventDefault(); closeOverlay(); }
+    });
+    root.addEventListener('mousedown', (e) => { if (e.target === root) closeOverlay(); });
+    render(''); inp.focus();
+  }
+  // нечёткий ранкинг путей (подпоследовательность + бонусы за имя файла/смежность)
+  function fuzzyScore(str, q) {
+    let si = 0, score = 0, streak = 0;
+    const base = str.slice(str.lastIndexOf('/') + 1);
+    if (base.includes(q)) score += 50;
+    for (let qi = 0; qi < q.length; qi++) { const idx = str.indexOf(q[qi], si); if (idx === -1) return -1; streak = idx === si ? streak + 1 : 0; score += 1 + streak; si = idx + 1; }
+    return score - str.length * 0.01;
+  }
+  function fuzzyRank(listArr, q) {
+    const ql = q.toLowerCase(), scored = [];
+    for (const s of listArr) { const sc = fuzzyScore(s.toLowerCase(), ql); if (sc > -1) scored.push([sc, s]); }
+    scored.sort((a, b) => b[0] - a[0]);
+    return scored.map((x) => x[1]);
+  }
+
+  // --- Ctrl+P: быстрое открытие файла (рекурсивный листинг проекта, кэш на проект) ---
+  async function openPalette() {
+    const p = activeProject(); if (!p) { toast('Нет активного проекта'); return; }
+    if (!fileListCache || fileListCache.projPath !== p.path) {
+      const r = await lite.fs.listAll(p.path);
+      if (r && r.error) { toast(r.error, { kind: 'err' }); return; }
+      fileListCache = { projPath: p.path, files: ((r && r.files) || []).map((f) => f.replace(/\\/g, '/')) };
+      if (r && r.capped) toast('Очень большой проект — показаны не все файлы', { ttl: 5000 });
+    }
+    const all = fileListCache.files;
+    openListOverlay({
+      placeholder: 'Открыть файл…  (часть имени или пути)',
+      filter: (q) => {
+        if (!q) { const rec = recentFiles.map((f) => relTo(p.path, f)).filter((r) => all.includes(r)); return [...new Set([...rec, ...all])].slice(0, 200); }
+        return fuzzyRank(all, q).slice(0, 200);
+      },
+      renderRow: (row, rel) => { const segs = rel.split('/'); row.appendChild(el('span', 'ov-name', segs[segs.length - 1])); if (segs.length > 1) row.appendChild(el('span', 'ov-path', segs.slice(0, -1).join('/'))); },
+      onPick: (rel) => { const abs = joinPath(p.path, rel); if (!viewerOpen) setViewerOpen(true); guardDirty(() => openFile(abs)); },
+    });
+  }
+
+  // --- Ctrl+Shift+F: поиск по всему проекту (grep на бэкенде) ---
+  function openProjectSearch() {
+    const p = activeProject(); if (!p) { toast('Нет активного проекта'); return; }
+    closeOverlay();
+    const root = el('div', 'viewer-ov'), box = el('div', 'viewer-ov-box wide');
+    const inp = el('input', 'viewer-ov-input'); inp.placeholder = 'Найти в проекте…  (Enter — искать)'; inp.spellcheck = false;
+    const csCb = el('input'); csCb.type = 'checkbox';
+    const rxCb = el('input'); rxCb.type = 'checkbox';
+    const cs = el('label', 'search-opt'); cs.title = 'Учитывать регистр'; cs.appendChild(csCb); cs.appendChild(el('span', null, 'Aa'));
+    const rx = el('label', 'search-opt'); rx.title = 'Регулярное выражение'; rx.appendChild(rxCb); rx.appendChild(el('span', null, '.*'));
+    const opts = el('div', 'search-opts'); opts.appendChild(cs); opts.appendChild(rx);
+    const head = el('div', 'search-head'); head.appendChild(inp); head.appendChild(opts);
+    const info = el('div', 'search-info');
+    const list = el('div', 'viewer-ov-list search-list');
+    box.appendChild(head); box.appendChild(info); box.appendChild(list); root.appendChild(box); document.body.appendChild(root); _overlay = root;
+    let seq = 0, t;
+    async function run() {
+      const q = inp.value; if (!q) { list.replaceChildren(); info.textContent = ''; return; }
+      const my = ++seq; info.textContent = 'Поиск…';
+      const r = await lite.fs.search(p.path, q, { caseSensitive: csCb.checked, regex: rxCb.checked });
+      if (my !== seq) return;
+      if (r && r.error) { info.textContent = r.error; list.replaceChildren(); return; }
+      const matches = (r && r.matches) || [];
+      info.textContent = matches.length ? `Совпадений: ${matches.length}${r.capped ? '+ (показаны первые)' : ''}` : 'Ничего не найдено';
+      list.replaceChildren();
+      matches.forEach((mt) => {
+        const file = mt.file.replace(/\\/g, '/');
+        const row = el('div', 'viewer-ov-row search-row');
+        row.appendChild(el('span', 'sr-loc', file + ':' + mt.line));
+        row.appendChild(el('span', 'sr-text', mt.text.trim().slice(0, 200)));
+        row.addEventListener('mousedown', (e) => { e.preventDefault(); closeOverlay(); const abs = joinPath(p.path, file); if (!viewerOpen) setViewerOpen(true); guardDirty(() => openFile(abs, mt.line)); });
+        list.appendChild(row);
+      });
+    }
+    inp.addEventListener('input', () => { clearTimeout(t); t = setTimeout(run, 250); });
+    inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); clearTimeout(t); run(); } else if (e.key === 'Escape') { e.preventDefault(); closeOverlay(); } });
+    csCb.addEventListener('change', run); rxCb.addEventListener('change', run);
+    root.addEventListener('mousedown', (e) => { if (e.target === root) closeOverlay(); });
+    inp.focus();
+  }
+
+  // --- структура файла (Ctrl+Shift+O / кнопка) ---
+  function showOutline() {
+    if (!currentFile) { toast('Нет открытого файла'); return; }
+    const syms = currentSymbols();
+    if (!syms.length) { toast('Символы в этом файле не распознаны'); return; }
+    openListOverlay({
+      placeholder: 'Перейти к символу…',
+      filter: (q) => { const ql = q.toLowerCase(); return q ? syms.filter((s) => s.name.toLowerCase().includes(ql)) : syms; },
+      renderRow: (row, s) => { row.appendChild(el('span', 'ov-kind ov-' + s.kind, kindGlyph(s.kind))); row.appendChild(el('span', 'ov-name', s.name)); row.appendChild(el('span', 'ov-path', ':' + s.line)); },
+      onPick: (s) => { if (previewMode) exitPreview(); if (diffMode) exitDiff(true); gotoLine(s.line); },
+    });
+  }
+
+  // --- история назад/вперёд + недавние ---
+  function afterOpen(filePath) {
+    addRecent(filePath); pushHistory(filePath); // гаттер закладок обновит setEditorText после загрузки дока
+  }
+  function addRecent(p) { const i = recentFiles.indexOf(p); if (i >= 0) recentFiles.splice(i, 1); recentFiles.unshift(p); if (recentFiles.length > 30) recentFiles.pop(); }
+  function pushHistory(p) {
+    if (navJumping) return;
+    if (navStack[navIdx] === p) return;
+    navStack = navStack.slice(0, navIdx + 1); navStack.push(p);
+    if (navStack.length > 100) navStack.shift();
+    navIdx = navStack.length - 1; updateNavButtons();
+  }
+  function navOpenCurrent() { navJumping = true; const done = () => { navJumping = false; updateNavButtons(); }; openFile(navStack[navIdx]).then(done, done); }
+  function navBack() { if (navIdx <= 0) return; guardDirty(() => { navIdx--; navOpenCurrent(); }); }
+  function navFwd() { if (navIdx >= navStack.length - 1) return; guardDirty(() => { navIdx++; navOpenCurrent(); }); }
+  function updateNavButtons() { const b = $('#viewer-back'), f = $('#viewer-fwd'); if (b) b.disabled = navIdx <= 0; if (f) f.disabled = navIdx >= navStack.length - 1; }
+
+  // --- закладки (персист по проекту) ---
+  function bmList() { const p = activeProject(); if (!p) return []; if (!bookmarks[p.id]) bookmarks[p.id] = []; return bookmarks[p.id]; }
+  function saveBookmarks() { if (host.persist) host.persist('bookmarks', bookmarks); }
+  function toggleBookmarkAt(line) {
+    if (!currentFile) return;
+    const list = bmList();
+    const i = list.findIndex((b) => b.file === currentFile && b.line === line);
+    if (i >= 0) list.splice(i, 1); else list.push({ file: currentFile, line });
+    saveBookmarks(); refreshBookmarkGutter();
+  }
+  function refreshBookmarkGutter() {
+    if (!editor) return;
+    const lines = currentFile ? bmList().filter((b) => b.file === currentFile).map((b) => b.line) : [];
+    editor.dispatch({ effects: setBookmarkGutterEffect.of(lines) });
+  }
+  // Правки сдвигают строки → хранимые номера закладок текущего файла маппим вслед за изменениями дока,
+  // иначе клик по визуально-сместившейся звезде не найдёт закладку (и поставит дубль). Гаттер маппится сам.
+  function remapBookmarks(u) {
+    if (!currentFile || loadingDoc) return;          // на полной перезагрузке файла не маппим
+    const old = u.startState.doc;
+    let changed = false;
+    for (const b of bmList()) {
+      if (b.file !== currentFile || b.line < 1 || b.line > old.lines) continue;
+      const newLine = u.state.doc.lineAt(u.changes.mapPos(old.line(b.line).from, 1)).number;
+      if (newLine !== b.line) { b.line = newLine; changed = true; }
+    }
+    if (changed) saveBookmarks();
+  }
+  function toggleBookmarkHere() { if (!currentFile) { toast('Нет открытого файла'); return; } toggleBookmarkAt(editor.state.doc.lineAt(editor.state.selection.main.head).number); }
+  function nextBookmark(dir) {
+    if (!currentFile) return;
+    const here = bmList().filter((b) => b.file === currentFile).map((b) => b.line).sort((a, b) => a - b);
+    if (!here.length) { toast('В этом файле нет закладок'); return; }
+    const cur = editor.state.doc.lineAt(editor.state.selection.main.head).number;
+    let target;
+    if (dir > 0) { target = here.find((l) => l > cur); if (target == null) target = here[0]; }
+    else { const prev = here.filter((l) => l < cur); target = prev.length ? prev[prev.length - 1] : here[here.length - 1]; }
+    gotoLine(target);
+  }
+  function showBookmarks() {
+    const list = bmList();
+    if (!list.length) { toast('Закладок нет. Поставьте на строке (Ctrl+F2)'); return; }
+    const p = activeProject();
+    openListOverlay({
+      placeholder: 'Закладки проекта…',
+      filter: (q) => { const ql = q.toLowerCase(); const items = list.map((b) => ({ ...b, rel: p ? relTo(p.path, b.file) : b.file })); return q ? items.filter((it) => (it.rel + ':' + it.line).toLowerCase().includes(ql)) : items; },
+      renderRow: (row, b) => { row.appendChild(el('span', 'ov-name', baseName(b.file) + ':' + b.line)); row.appendChild(el('span', 'ov-path', b.rel)); },
+      onPick: (b) => { if (!viewerOpen) setViewerOpen(true); guardDirty(() => openFile(b.file, b.line)); },
+    });
+  }
+
+  // --- сравнение двух файлов (через git diff --no-index) ---
+  function compareMenuRow(ent) {
+    if (cmpFirst && cmpFirst !== ent.path) return menuRow('columns', `Сравнить с «${baseName(cmpFirst)}»`, () => { closeMenus(); const a = cmpFirst; cmpFirst = null; runCompare(a, ent.path); });
+    return menuRow('columns', 'Выбрать для сравнения', () => { closeMenus(); cmpFirst = ent.path; toast(`«${baseName(ent.path)}» выбран — ПКМ по второму файлу → «Сравнить с…»`, { ttl: 6000 }); });
+  }
+  async function runCompare(a, b) {
+    if (!viewerOpen) setViewerOpen(true);
+    guardDirty(async () => {                         // не затереть несохранённые правки открытого файла
+      const r = await lite.fs.diffPair(a, b);
+      if (r && r.error) { toast(r.error, { kind: 'err' }); return; }
+      currentFile = null; clearGitDiff();            // это сравнение, не редактируемый файл
+      $('#viewer-filename').textContent = `${baseName(a)} ↔ ${baseName(b)}`;
+      setEditorText('', []); markDirty(false); clearGitGutter();
+      showDiff(r && r.diff ? r.diff : '');
+      if (!(r && r.diff && r.diff.trim())) toast('Файлы идентичны');
+    });
+  }
+
+  // ================================================================ встроенный Git (стрип-секции)
+  // applySection — ТОЛЬКО визуальное переключение левой секции (стрип + видимость панелей), без рендера
+  // гита (зов из git.syncStrip, чтобы не рендерить дважды). showSection — с рендером активной git-секции.
+  function applySection(name) {
+    curSection = name;
+    // уходим из git-секций на «Файлы», а в центре висит git-дифф/сравнение (currentFile===null) — снять его
+    if (name === 'files' && diffMode && !currentFile) { exitDiff(false); clearGitDiff(); $('#viewer-filename').textContent = '—'; }
+    document.querySelectorAll('.vcs-strip .strip-btn').forEach((b) => b.classList.toggle('active', b.dataset.section === name));
+    $('#tree-pane').classList.toggle('hidden', name !== 'files');
+    $('#commit-pane').classList.toggle('hidden', name !== 'commit');
+    $('#branches-pane').classList.toggle('hidden', name !== 'branches');
+  }
+  function showSection(name) {
+    applySection(name);
+    if (!git) return;
+    if (name === 'commit') git.showSection('commit');
+    else if (name === 'branches') git.showSection('branchlog');
+  }
+  // Дифф выбранного в гите файла — в ЦЕНТРЕ вивера (как в PhpStorm), переиспользуя diff-режим вивера.
+  // gitDiffFile/gitDiffProj запоминаем, чтобы перечитывать дифф вживую при изменении файла на диске.
+  let gitDiffFile = null, gitDiffProj = null;
+  async function showGitDiff(projPath, file, label) {
+    if (!viewerOpen) setViewerOpen(true);
+    // guardDirty: не затереть несохранённые правки открытого файла молча (показ диффа очищает редактор).
+    guardDirty(async () => {
+      const seq = ++openSeq;                         // общий с openFile токен гонки «дифф ↔ открытие файла»
+      gitDiffFile = file; gitDiffProj = projPath;
+      const r = await lite.git.fileDiff(projPath, file);
+      if (seq !== openSeq || gitDiffFile !== file) return; // обогнал более свежий показ/открытие
+      currentFile = null;                            // это дифф, не редактируемый файл
+      $('#viewer-filename').textContent = (label && label.name) || baseName(file);
+      setEditorText('', []); markDirty(false); clearGitGutter();
+      showDiff(r && r.diff ? r.diff : '');
+    });
+  }
+  function clearGitDiff() { gitDiffFile = null; gitDiffProj = null; }
+
+  // Ресайз левой колонки (дерево/коммит/ветки) перетаскиванием разделителя; ширина персистится.
+  function wireLeftResize() {
+    const g = $('#mw-gutter'), root = $('#module-root'); if (!g || !root) return;
+    const STRIP_W = 42, MIN = 180, MAX = 640;
+    const saved = host.STORE && host.STORE.mwLeft;
+    if (saved) root.style.setProperty('--mw-left', Math.max(MIN, Math.min(MAX, saved)) + 'px');
+    let dragging = false;
+    g.addEventListener('mousedown', (e) => { e.preventDefault(); dragging = true; document.body.style.cursor = 'col-resize'; document.body.style.userSelect = 'none'; });
+    window.addEventListener('mousemove', (e) => {
+      if (!dragging) return;
+      const w = Math.max(MIN, Math.min(MAX, e.clientX - STRIP_W));
+      root.style.setProperty('--mw-left', w + 'px');
+    });
+    window.addEventListener('mouseup', () => {
+      if (!dragging) return;
+      dragging = false; document.body.style.cursor = ''; document.body.style.userSelect = '';
+      const w = parseInt(getComputedStyle(root).getPropertyValue('--mw-left'), 10) || 300;
+      if (host.persist) host.persist('mwLeft', w);
+    });
+  }
+
   // ---- DOM-биндинги (вивер + дерево). В embedded-режиме элементы живут в index.html;
   // после флипа в окно — те же id будут в module.html, mount() не меняется.
   function mount() {
     if (mounted) return;
     mounted = true;
     makeEditor();
+    // встроенный Git: рендерит в VCS-полосу + секции; дифф файла — в центр вивера (showGitDiff).
+    git = initGit({
+      activeProject, getActiveId: host.getActiveId,
+      renderProjects: () => { try { lite.editorBus.refreshProjects(); } catch (_) {} }, // обновить git-бейджи в сайдбаре редактора
+      refreshTree: () => { const p = activeProject(); if (p) renderTree(p); },             // прямой рендер дерева (без IPC-петли)
+      createCodeEditor: host.createCodeEditor, languageFor: host.languageFor,
+      gitDiff: (projPath, file, label) => showGitDiff(projPath, file, label),
+      syncStrip: (gv) => applySection(gv === 'commit' ? 'commit' : gv === 'branchlog' ? 'branches' : gv),
+    });
+    git.setContainers({ topbar: $('#vcs-topbar'), commit: $('#commit-body'), branchlog: $('#branchlog-body') });
+    document.querySelectorAll('.vcs-strip .strip-btn').forEach((b) => b.addEventListener('click', () => showSection(b.dataset.section)));
+    wireLeftResize();
     $('#viewer-save').addEventListener('click', saveCurrent);
+    $('#viewer-back').addEventListener('click', navBack);
+    $('#viewer-fwd').addEventListener('click', navFwd);
+    $('#viewer-find').addEventListener('click', openProjectSearch);
+    $('#viewer-outline').addEventListener('click', showOutline);
+    $('#viewer-bookmark').addEventListener('click', toggleBookmarkHere);
+    $('#viewer-bookmark').addEventListener('contextmenu', (e) => { e.preventDefault(); showBookmarks(); });
     $('#viewer-diff').addEventListener('click', toggleDiff);
     $('#viewer-preview').addEventListener('click', togglePreview);
     $('#viewer-full').addEventListener('click', togglePreviewFull);
     $('#viewer-minimap').addEventListener('click', toggleMinimap);
     $('#viewer-minimap').classList.toggle('on', settings.minimap);
-    // В окне (window-host) #viewer-close закрывает само окно; в иных хостах — сворачивает панель.
-    $('#viewer-close').addEventListener('click', () => { if (host.closeWindow) host.closeWindow(); else setViewerOpen(false); });
     $('#viewer-reload-apply').addEventListener('click', () => { hideReloadBar(); reloadCurrentFile(); });
     $('#viewer-reload-dismiss').addEventListener('click', () => hideReloadBar());
     $('#tree-refresh').addEventListener('click', () => { const p = activeProject(); if (p) renderTree(p); });
@@ -744,7 +1167,18 @@ export function initFiles(host) {
     // в редакторе — там сохраняет keymap Mod-s). e.code, не e.key — иначе в русской раскладке Ctrl+S → 'ы'.
     document.addEventListener('keydown', (e) => {
       if (e.key === 'Escape' && document.body.classList.contains('preview-full')) { e.preventDefault(); exitPreviewFull(); return; }
-      if (e.ctrlKey && e.code === 'KeyS') { e.preventDefault(); if (!(editor && editor.hasFocus)) saveCurrent(); }
+      if (e.ctrlKey && e.code === 'KeyS') { e.preventDefault(); if (!(editor && editor.hasFocus)) saveCurrent(); return; }
+      // Ctrl+P — открыть файл; Ctrl+Shift+F — поиск в проекте; Ctrl+Shift+O — структура файла.
+      // e.code (а не e.key) — иначе в русской раскладке буквы не совпадут.
+      if (e.ctrlKey && !e.shiftKey && !e.altKey && e.code === 'KeyP') { e.preventDefault(); openPalette(); return; }
+      if (e.ctrlKey && e.shiftKey && e.code === 'KeyF') { e.preventDefault(); openProjectSearch(); return; }
+      if (e.ctrlKey && e.shiftKey && e.code === 'KeyO') { e.preventDefault(); showOutline(); return; }
+      // Alt+←/→ — назад/вперёд по истории файлов.
+      if (e.altKey && e.code === 'ArrowLeft') { e.preventDefault(); navBack(); return; }
+      if (e.altKey && e.code === 'ArrowRight') { e.preventDefault(); navFwd(); return; }
+      // Ctrl+F2 — поставить/снять закладку; F2/Shift+F2 — следующая/предыдущая закладка в файле.
+      if (e.ctrlKey && e.code === 'F2') { e.preventDefault(); toggleBookmarkHere(); return; }
+      if (!e.ctrlKey && !e.altKey && e.key === 'F2') { e.preventDefault(); nextBookmark(e.shiftKey ? -1 : 1); return; }
     });
   }
 
@@ -773,6 +1207,9 @@ export function initFiles(host) {
     renderTree, refreshTree, refreshViewerForActive,
     toggleDiff, togglePreview, exitPreviewFull,
     showTreeMenu, onFsChange, pruneExpandedDirs,
-    openFileSearch: () => { if (viewerOpen && !previewMode) openSearchPanel(editor); },
+    // dirty-guard на закрытие окна вивера: несохранённый файл → спросить (сохранить/не сохранять).
+    confirmClose: (proceed) => guardDirty(proceed),
+    // «Git» из редактора → переключить левую секцию на «Коммит».
+    focusGit: () => { if (!viewerOpen) setViewerOpen(true); showSection('commit'); },
   };
 }

@@ -18,7 +18,6 @@ import { initSeo } from './modules/seo.js';
 import { initAudit } from './modules/audit.js';
 import { initNotes } from './modules/notes.js';
 import { initDb } from './modules/db.js';
-import { initGit } from './modules/git.js';
 import { initOpenRouter } from './modules/openrouter.js';
 import { initTextProc } from './modules/textproc.js';
 import { initContainers } from './modules/containers.js';
@@ -82,13 +81,9 @@ const MODULES = {
     title: 'Базы данных', init: initDb, project: false,
     wire: (mod) => { bind('#db-refresh', () => mod.refresh()); },
   },
-  git: {
-    title: 'Git', init: initGit, project: true,
-    wire: (mod) => { bind('#git-refresh', () => mod.renderPanel(activeProj)); },
-  },
   chat: {
     title: 'OpenRouter', init: initOpenRouter, project: false,
-    // чат сам вешает слушатели панели и стрима (bindControls биндит #chat-close/#chat-keys/модель/сессии).
+    // чат сам вешает слушатели панели и стрима (bindControls биндит #chat-keys/модель/сессии).
     wire: (mod) => { try { mod.bindControls(); mod.bindStream(); } catch (_) {} },
   },
   doc: {
@@ -107,9 +102,9 @@ const MODULES = {
       bind('#rh-back', () => mod.goList());
     },
   },
-  // ctx сам биндит свои кнопки канвы (включая #ctx-close с dirty-guard) → selfClose:true:
-  // module-entry НЕ переопределяет #ctx-close; закрытие окна идёт через host.closeWindow с подтверждением.
-  ctx: { title: 'Контекст', init: initCtx, project: true, selfClose: true },
+  // ctx даёт confirmClose() (dirty-guard «есть неподтверждённые изменения») — закрытие окна
+  // спрашивает его перед закрытием; свои кнопки канвы биндит сам в initCtx.
+  ctx: { title: 'Контекст', init: initCtx, project: true },
   scratch: {
     title: 'Система · ~', init: initScratch, project: false,
     wire: (mod) => { bind('#scratch-restart', () => mod.restart()); },
@@ -118,9 +113,10 @@ const MODULES = {
   // Кнопки #viewer-*/#tree-* и контекст-меню дерева вешает сам модуль (Files.mount); тут — только
   // приём действий от других модулей-окон (открыть файл / обновить дерево) и сигнал готовности.
   files: {
-    title: 'Файлы', init: initFiles, project: true, selfClose: true,
+    title: 'Проект', init: initFiles, project: true,
     wire: (mod) => {
       lite.editorBus.onOpenInViewer((abs, line) => { try { mod.openFile(abs, line); } catch (_) {} });
+      lite.editorBus.onFocusGit(() => { try { mod.focusGit(); } catch (_) {} }); // «Git» из редактора → секция «Коммит»
       lite.editorBus.onRefreshTree(() => { try { if (activeProj) mod.renderTree(activeProj); } catch (_) {} });
       // живые изменения на диске активного проекта (агент тронул файл) → обновить дерево/перечитать
       lite.fs.onChange(({ root, files }) => { try { if (activeProj && activeProj.path === root) mod.onFsChange(activeProj, files); } catch (_) {} });
@@ -172,11 +168,10 @@ function buildHost() {
 
 function boot() {
   if (!def) {
-    const box = el('div', 'mod-unknown');
-    box.style.padding = '24px';
-    box.style.color = '#bbb';
-    box.textContent = 'Неизвестный модуль: ' + modId;
-    document.body.replaceChildren(box);
+    // Удалённый/устаревший модуль (например, старое окно 'git' из персиста __open после слияния с вивером)
+    // — не показываем стрелую заглушку, а тихо закрываем окно; набор открытых окон self-heal'ится.
+    try { lite.log('warn', '[module-entry]', 'unknown module → closing window: ' + modId); } catch (_) {}
+    try { lite.win.close(); } catch (_) {}
     return;
   }
   document.body.classList.add('mw-' + modId); // per-module хук для CSS (раскладка окна вивера и пр.)
@@ -215,12 +210,16 @@ function boot() {
     }, 80);
   });
 
-  // the pane-head close button now closes the window; module's own buttons via wire().
-  // selfClose:true → модуль сам биндит #<id>-close (с своим подтверждением) и зовёт host.closeWindow.
-  if (!def.selfClose) {
-    const closeBtn = $('#' + modId + '-close');
-    if (closeBtn) closeBtn.onclick = () => lite.win.close();
-  }
+  // Закрытие окна (единственная ✕ в шапке окна / Alt+F4 / ОС) идёт через dirty-guard модуля:
+  // main гасит первое закрытие и шлёт win:closeRequest; модуль с несохранёнными данными
+  // (ctx/files) спрашивает подтверждение, остальные закрываются сразу. proceed() = «закрывай».
+  lite.win.onCloseRequest(() => {
+    const proceed = () => lite.win.confirmClose();
+    try {
+      if (mod && typeof mod.confirmClose === 'function') mod.confirmClose(proceed);
+      else proceed();
+    } catch (_) { proceed(); }
+  });
   if (def.wire) { try { def.wire(mod); } catch (e) { try { lite.log('error', '[module:' + modId + '] wire', String(e)); } catch (_) {} } }
 
   // project-dependent modules re-render when the editor switches projects

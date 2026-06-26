@@ -11,6 +11,10 @@ lite-editor
 # Personal agent guidance / session handoff — readable on disk, kept out of the repo
 CLAUDE.md
 CLAUDE.local.md
+# проектные скиллы/команды агента — локальные, НЕ в публичный main/contrib
+.claude/
+# резервные копии CLAUDE.md
+CLAUDE.md.bak*
 NEXT.md
 *.bkp
 # артефакты модуля «Контекст» в этом проекте: бекапы исходников при распиле/сборке

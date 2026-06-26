@@ -26,7 +26,7 @@ import { el, svgEl, icon, iconBtn, hydrateIcons, toast, makeModal, showConfirm, 
 import { initExtensions } from './modules/extensions.js';
 // initFiles — вивер+дерево мигрированы в отдельное окно (renderer/module-entry.js).
 
-const APP_VERSION = 'alpha v1.1.14';
+const APP_VERSION = 'alpha v1.1.27';
 const GUTTER = 5;
 // Системный терминал («Система · ~») мигрирован в отдельное окно (renderer/modules/scratch.js):
 // его id `__scratch__::tN` маршрутизируются main'ом в окно-владельца, в ядре их больше не обрабатываем.
@@ -80,7 +80,7 @@ const isExtTerm = (id) => typeof id === 'string' && id.startsWith(EXT_TERM_ID);
 const extTerms = new Map(); // ptyId -> { term, fit, search, container }
 let extTermSeq = 0;
 
-const DEFAULT_LAYOUT = { sidebar: 240, viewer: 520, tree: 240, scratch: 420, git: 360, ctx: 740, docker: 460, db: 560, rh: 520, ext: 420, notes: 480, audit: 460, iterflow: 480, seo: 480, tools: 560, chat: 600, doc: 640 };
+const DEFAULT_LAYOUT = { sidebar: 240, viewer: 520, tree: 240, scratch: 420, ctx: 740, docker: 460, db: 560, rh: 520, ext: 420, notes: 480, audit: 460, iterflow: 480, seo: 480, tools: 560, chat: 600, doc: 640 };
 let layout = loadLayout();
 let lastParent = STORE.lastParent || '';
 
@@ -1285,7 +1285,7 @@ const panels = new Map(); // id -> { isOpen(), setOpen(open, opts) }
 // Правый слот редактора теперь держит только «Мои модули» (ext); всё остальное — отдельные окна.
 const PANEL_ORDER = [];
 // Модули, мигрированные в отдельные окна (открываются через lite.module.open, не как панель правого слота).
-const WINDOW_MODULES = new Set(['tools', 'iterflow', 'seo', 'audit', 'notes', 'db', 'git', 'chat', 'doc', 'docker', 'rh', 'ctx', 'scratch', 'files']);
+const WINDOW_MODULES = new Set(['tools', 'iterflow', 'seo', 'audit', 'notes', 'db', 'chat', 'doc', 'docker', 'rh', 'ctx', 'scratch', 'files']);
 function registerPanel(id, api) { panels.set(id, api); }
 function closeOtherPanels(selfId) {
   for (const id of PANEL_ORDER) {
@@ -1329,6 +1329,7 @@ registerPanel('ext', { isOpen: Ext.isOpen, setOpen: Ext.setOpen });
 PANEL_ORDER.push('ext');
 // Entry point used by the «Модули» menu / quickbar. Мигрированные модули открываются окном.
 function openModule(id) {
+  if (id === 'git') { lite.editorBus.focusGit(); return; } // Git встроен в окно вивера → открыть его на секции «Коммит»
   if (WINDOW_MODULES.has(id)) { lite.module.open(id); return; }
   const p = panels.get(id);
   if (p) p.setOpen(true);
@@ -1341,8 +1342,7 @@ function openModule(id) {
 // Спец-элемент '|' — вертикальный разделитель (можно ставить сколько угодно, в любое место).
 const QUICK_SEP = '|';
 const QUICK_BUILTIN = [
-  { id: 'files',   icon: 'eye',      label: 'Вивер — файлы выбранного проекта' },
-  { id: 'git',     icon: 'git',      label: 'Git — выбранного проекта' },
+  { id: 'files',   icon: 'eye',      label: 'Проект — вивер, дерево, Git' },
   { id: 'ctx',     icon: 'graph',    label: 'Контекст — граф контекста агента' },
   { id: 'docker',  icon: 'box',      label: 'Контейнеры — Docker / Podman' },
   { id: 'db',      icon: 'database', label: 'Базы данных — Postgres / MySQL / SQLite' },
@@ -1663,8 +1663,7 @@ function buildModulesMenu(dd) {
   };
 
   flyout('grid', 'Встроенные', 'панели редактора', (sub) => {
-    sub.appendChild(moduleRow('eye', 'Вивер', 'файлы выбранного проекта', () => { closeMenus(); openModule('files'); }));
-    sub.appendChild(moduleRow('git', 'Git', 'ветки, изменения, коммиты', () => { closeMenus(); openModule('git'); }));
+    sub.appendChild(moduleRow('eye', 'Проект', 'вивер кода, дерево, Git', () => { closeMenus(); openModule('files'); }));
     sub.appendChild(moduleRow('graph', 'Контекст', 'граф контекста агента', () => { closeMenus(); openModule('ctx'); }));
     sub.appendChild(moduleRow('box', 'Контейнеры', 'Docker / Podman', () => { closeMenus(); openModule('docker'); }));
     sub.appendChild(moduleRow('database', 'Базы данных', 'Postgres · MySQL · SQLite', () => { closeMenus(); openModule('db'); }));
@@ -2084,8 +2083,7 @@ function paletteActions() {
   for (const p of projects) acts.push({ label: `Проект: ${p.name}`, hint: p.path, run: () => setActive(p.id) });
   acts.push({ label: 'Открыть папку…', run: openProjectDialog });
   acts.push({ label: 'Создать папку…', run: showCreateFolder });
-  acts.push({ label: 'Вивер кода (открыть окно)', run: () => openModule('files') });
-  acts.push({ label: 'Открыть Git', run: () => openModule('git') });
+  acts.push({ label: 'Проект — вивер, дерево, Git (открыть окно)', run: () => openModule('files') });
   acts.push({ label: 'Контекст — граф контекста агента', run: () => openModule('ctx') });
   acts.push({ label: 'Контейнеры (Docker / Podman)', run: () => openModule('docker') });
   acts.push({ label: 'Базы данных (Postgres / MySQL / SQLite)', run: () => openModule('db') });
@@ -2285,6 +2283,7 @@ function init() {
   // файл в вивере»/«обновить дерево» main маршрутизирует в окно вивера (не сюда).
   lite.editorBus.onSendToTerminal((text) => { const p = activeProject(); if (p) sendNoteToTerminal(p, text); });
   lite.editorBus.onSendNoteToTerminal((projId, text) => { const proj = projects.find((x) => x.id === projId) || activeProject(); if (proj) sendNoteToTerminal(proj, text); });
+  lite.editorBus.onRefreshProjects(() => { try { renderProjects(); } catch (_) {} }); // git в окне вивера сделал commit/checkout → освежить бейджи
   $('#term-clear').addEventListener('click', () => clearTerminal());
   $('#term-restart').addEventListener('click', () => restartTerminal());
   $('#attention-badge').addEventListener('click', () => {

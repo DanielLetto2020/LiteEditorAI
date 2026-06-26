@@ -59,7 +59,7 @@ function fmtTs(ts) {
 }
 
 export function initCtx(host) {
-  const { layout, GUTTER, saveUiState, refitActiveTerminal, activeProject, closeOtherPanels, closeWindow } = host;
+  const { layout, GUTTER, saveUiState, refitActiveTerminal, activeProject, closeOtherPanels } = host;
 
   let open = false;
   let proj = null;       // снапшот {id, path, name} проекта на канве
@@ -1655,12 +1655,6 @@ export function initCtx(host) {
   }
 
   // ---------------------------------------------------------------- бинды панели
-  $('#ctx-close').addEventListener('click', () => {
-    // В окне модуля закрываем ОКНО (closeWindow); в правом слоте редактора — прячем панель (setOpen).
-    const doClose = closeWindow || (() => setOpen(false));
-    if (unsaved) showConfirm('Закрыть «Контекст»?', 'Есть неподтверждённые изменения — они будут потеряны.', 'Закрыть', doClose);
-    else doClose();
-  });
   wireDel.addEventListener('mouseenter', () => clearTimeout(wireDelHideTimer));
   wireDel.addEventListener('mouseleave', scheduleHideWireDel);
   wireDel.addEventListener('click', () => {
@@ -1683,5 +1677,11 @@ export function initCtx(host) {
   // агент дописал/правил выходной файл вне модуля → перепроверяем расхождение для текущего агента
   lite.ctx.onOutputChanged(({ projId, agent: ag } = {}) => { if (open && proj && projId === proj.id && ag === agent) checkExternal(); });
 
-  return { isOpen: () => open, setOpen, toggle, onProjectChange, autoApply, applyCompile };
+  // dirty-guard на закрытие окна: пока есть неподтверждённые правки канвы — спросить перед закрытием.
+  function confirmClose(proceed) {
+    if (unsaved) showConfirm('Закрыть «Контекст»?', 'Есть неподтверждённые изменения — они будут потеряны.', 'Закрыть', proceed);
+    else proceed();
+  }
+
+  return { isOpen: () => open, setOpen, toggle, onProjectChange, autoApply, applyCompile, confirmClose };
 }

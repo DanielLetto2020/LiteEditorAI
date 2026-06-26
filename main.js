@@ -225,7 +225,7 @@ try {
   const legacy = path.join(os.homedir(), '.LiteEditor');
   if (!fs.existsSync(storeDir) && fs.existsSync(legacy)) fs.cpSync(legacy, storeDir, { recursive: true });
 } catch (_) {}
-const STORE_KEYS = ['projects', 'settings', 'layout', 'recents', 'lastParent', 'categories', 'sectionOrder', 'accordions', 'dismissed', 'uiState', 'projTabs', 'openrouter', 'remote', 'shares', 'pultBlocked', 'dockerUi', 'dbConnections', 'dbUi', 'rhConnections', 'rhUi', 'textproc', 'tpPrompts', 'extData', 'extEnabled', 'quickbar', 'seoTargets', 'seoSites', 'moduleWins'];
+const STORE_KEYS = ['projects', 'settings', 'layout', 'recents', 'lastParent', 'categories', 'sectionOrder', 'accordions', 'dismissed', 'uiState', 'projTabs', 'openrouter', 'remote', 'shares', 'pultBlocked', 'dockerUi', 'dbConnections', 'dbUi', 'rhConnections', 'rhUi', 'textproc', 'tpPrompts', 'extData', 'extEnabled', 'quickbar', 'seoTargets', 'seoSites', 'moduleWins', 'mwLeft', 'bookmarks'];
 // Папка-«стор» для шаринга с пультом (агент кладёт сюда файлы; в PTY доступна как $LITE_STORE).
 const pultStoreDir = path.join(storeDir, 'store');
 try { fs.mkdirSync(pultStoreDir, { recursive: true }); } catch (_) {}
@@ -1343,7 +1343,15 @@ function openModuleWindow(modId) {
   win.on('unmaximize', () => { if (!win.isDestroyed()) win.webContents.send('win:maximized', false); });
   win.on('resize', debounce(() => saveModuleBounds(modId, win), 400));
   win.on('move', debounce(() => saveModuleBounds(modId, win), 400));
-  win.on('close', () => saveModuleBounds(modId, win));
+  // Закрытие окна модуля (верхняя ✕ / Alt+F4 / ОС) проходит через dirty-guard рендерера:
+  // первый раз гасим закрытие и спрашиваем окно, рендерер ответит win:confirmClose → закрываем.
+  // closeAllModuleWindows() зовёт destroy() в обход этого (выход редактора не блокируем).
+  win.on('close', (e) => {
+    saveModuleBounds(modId, win);
+    if (win.__forceClose) return;
+    e.preventDefault();
+    if (!win.isDestroyed()) win.webContents.send('win:closeRequest');
+  });
   win.on('closed', () => {
     moduleWindows.delete(modId);
     if (modId === 'files') filesViewerReady = false; // окно вивера закрыто → следующее openInViewer переоткроет и переждёт готовность
@@ -1787,6 +1795,7 @@ ipcMain.on('win:maximizeToggle', (e) => {
   else w.maximize();
 });
 ipcMain.on('win:close', (e) => { const w = senderWin(e); if (w) w.close(); });
+ipcMain.on('win:confirmClose', (e) => { const w = senderWin(e); if (w) { w.__forceClose = true; w.close(); } });
 ipcMain.handle('win:isMaximized', (e) => { const w = senderWin(e); return !!(w && w.isMaximized()); });
 ipcMain.on('win:show', showWindow);
 
@@ -1808,6 +1817,7 @@ function forwardToEditor(ch, payload) { if (mainWindow && !mainWindow.isDestroye
 // сигнала editor:viewerReady (его шлёт module-entry после подписки).
 let filesViewerReady = false;
 const pendingViewerOpens = [];
+let pendingFocusGit = false;        // «Git» нажат до готовности окна → фокус секции после viewerReady
 function filesWindow() { const w = moduleWindows.get('files'); return (w && !w.isDestroyed()) ? w : null; }
 function routeOpenInViewer(payload) {
   if (!filesWindow()) openModuleWindow('files'); // откроет окно (и переключит на активный проект)
@@ -1817,12 +1827,22 @@ function routeOpenInViewer(payload) {
 }
 ipcMain.on('editor:openInViewer', (_e, payload) => routeOpenInViewer(payload));
 ipcMain.on('editor:refreshTree', (_e, payload) => { const w = filesWindow(); if (w) w.webContents.send('editor:refreshTree', payload); });
+// «Git» из редактора: открыть окно вивера (если закрыто) и переключить его на секцию «Коммит».
+ipcMain.on('editor:focusGit', () => {
+  if (!filesWindow()) openModuleWindow('files');
+  const w = filesWindow();
+  if (w && filesViewerReady) { if (w.isMinimized()) w.restore(); w.focus(); w.webContents.send('editor:focusGit'); }
+  else pendingFocusGit = true;
+});
 ipcMain.on('editor:viewerReady', () => {
   filesViewerReady = true;
   while (pendingViewerOpens.length) { const p = pendingViewerOpens.shift(); const w = filesWindow(); if (w) w.webContents.send('editor:openInViewer', p); }
+  if (pendingFocusGit) { pendingFocusGit = false; const w = filesWindow(); if (w) { w.focus(); w.webContents.send('editor:focusGit'); } }
 });
 ipcMain.on('editor:sendToTerminal', (_e, payload) => forwardToEditor('editor:sendToTerminal', payload));
 ipcMain.on('editor:sendNoteToTerminal', (_e, payload) => forwardToEditor('editor:sendNoteToTerminal', payload));
+// Окно вивера (встроенный Git) попросило редактор перерисовать список проектов (git-бейджи после commit/checkout).
+ipcMain.on('editor:refreshProjects', () => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('editor:refreshProjects'); });
 
 // Reflect how many agents need attention on the tray tooltip (and macOS title).
 ipcMain.on('tray:update', (_e, { attention } = {}) => {
@@ -2068,6 +2088,80 @@ ipcMain.handle('fs:readDataUrl', async (_e, file) => {
     const buf = await fs.promises.readFile(file);
     return { url: `data:${mime};base64,${buf.toString('base64')}` };
   } catch (err) { return { error: String(err.message || err) }; }
+});
+
+// ---------------------------------------------------------------- files: проектные хелперы вивера
+// Ctrl+P (рекурсивный листинг), поиск по проекту (grep на Node) и сравнение двух файлов (git --no-index).
+const FILES_LIST_CAP = 30000;                  // потолок файлов для Ctrl+P
+const FILES_SEARCH_CAP = 1000;                 // потолок совпадений для поиска по проекту
+const FILES_SEARCH_FILE_MAX = 1024 * 1024;     // не грепаем файлы крупнее 1 МБ (минифицированные/данные)
+// Обход дерева проекта (тот же IGNORE_DIRS, что у дерева/аудита). onFile(full) — на каждый файл;
+// stop() → true прекращает обход (достигнут потолок). Симлинки на папки резолвим через stat.
+async function walkProjectFiles(root, onFile, stop) {
+  const stack = [root];
+  while (stack.length) {
+    if (stop && stop()) return;
+    const dir = stack.pop();
+    let entries;
+    try { entries = await fs.promises.readdir(dir, { withFileTypes: true }); } catch { continue; }
+    for (const d of entries) {
+      const full = path.join(dir, d.name);
+      let isDir = d.isDirectory();
+      if (d.isSymbolicLink()) { try { isDir = (await fs.promises.stat(full)).isDirectory(); } catch { isDir = false; } }
+      if (isDir) { if (!IGNORE_DIRS.has(d.name)) stack.push(full); continue; }
+      if (stop && stop()) return;
+      await onFile(full);
+    }
+  }
+}
+ipcMain.handle('files:listAll', async (_e, root) => {
+  if (!root) return { error: 'нет корня' };
+  const files = [];
+  let capped = false;
+  try {
+    await walkProjectFiles(root, (full) => { files.push(path.relative(root, full)); },
+      () => { if (files.length >= FILES_LIST_CAP) { capped = true; return true; } return false; });
+  } catch (err) { return { error: String(err.message || err) }; }
+  return { files, capped };
+});
+ipcMain.handle('files:search', async (_e, { root, query, opts } = {}) => {
+  if (!root || !query) return { matches: [] };
+  const o = opts || {};
+  let re;
+  try {
+    const src = o.regex ? query : query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    re = new RegExp(src, o.caseSensitive ? 'g' : 'gi');
+  } catch { return { error: 'некорректное регулярное выражение' }; }
+  const matches = [];
+  let capped = false;
+  try {
+    await walkProjectFiles(root, async (full) => {
+      if (matches.length >= FILES_SEARCH_CAP) return;
+      let stat; try { stat = await fs.promises.stat(full); } catch { return; }
+      if (!stat.size || stat.size > FILES_SEARCH_FILE_MAX) return;
+      let buf; try { buf = await fs.promises.readFile(full); } catch { return; }
+      const probe = Math.min(buf.length, 8192);
+      for (let i = 0; i < probe; i++) if (buf[i] === 0) return;   // NUL → бинарь, пропускаем
+      const rel = path.relative(root, full);
+      const rows = buf.toString('utf8').split('\n');
+      for (let i = 0; i < rows.length && matches.length < FILES_SEARCH_CAP; i++) {
+        re.lastIndex = 0;
+        const m = re.exec(rows[i]);
+        if (m) matches.push({ file: rel, line: i + 1, col: m.index + 1, text: rows[i].slice(0, 240) });
+      }
+    }, () => { if (matches.length >= FILES_SEARCH_CAP) { capped = true; return true; } return false; });
+  } catch (err) { return { error: String(err.message || err) }; }
+  return { matches, capped };
+});
+ipcMain.handle('files:diffPair', async (_e, { a, b } = {}) => {
+  if (!a || !b) return { error: 'нужны два файла' };
+  // git diff --no-index сравнивает произвольные файлы вне репозитория; exit 1 = «есть отличия» (норма).
+  const out = await new Promise((resolve) => {
+    execFile('git', ['diff', '--no-index', '--', a, b],
+      { timeout: 15000, maxBuffer: 16 * 1024 * 1024, windowsHide: true },
+      (_err, stdout) => resolve(stdout || ''));
+  });
+  return { diff: out };
 });
 
 // ---------------------------------------------------------------- file watching

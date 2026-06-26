@@ -29,6 +29,10 @@ contextBridge.exposeInMainWorld('lite', {
       ipcRenderer.on('win:maximized', h);
       return () => ipcRenderer.removeListener('win:maximized', h);
     },
+    // Окно модуля просят закрыть (верхняя ✕ / Alt+F4 / ОС) — main ждёт подтверждения,
+    // чтобы dirty-guard модуля успел спросить про несохранённые изменения. confirmClose() = «закрывай».
+    onCloseRequest: (cb) => { const h = () => cb(); ipcRenderer.on('win:closeRequest', h); return () => ipcRenderer.removeListener('win:closeRequest', h); },
+    confirmClose: () => ipcRenderer.send('win:confirmClose'),
   },
 
   tray: { update: (attention) => ipcRenderer.send('tray:update', { attention }) },
@@ -62,6 +66,10 @@ contextBridge.exposeInMainWorld('lite', {
     sendNoteToTerminal: (projId, text) => ipcRenderer.send('editor:sendNoteToTerminal', { projId, text }),
     refreshTree: () => ipcRenderer.send('editor:refreshTree', {}),
     viewerReady: () => ipcRenderer.send('editor:viewerReady', {}), // окно вивера готово → main флашит отложенные openInViewer
+    focusGit: () => ipcRenderer.send('editor:focusGit', {}),       // редактор: открыть окно вивера на секции «Коммит»
+    onFocusGit: (cb) => { const h = () => cb(); ipcRenderer.on('editor:focusGit', h); return () => ipcRenderer.removeListener('editor:focusGit', h); },
+    refreshProjects: () => ipcRenderer.send('editor:refreshProjects', {}), // окно вивера (git) → редактор перерисовать список проектов
+    onRefreshProjects: (cb) => { const h = () => cb(); ipcRenderer.on('editor:refreshProjects', h); return () => ipcRenderer.removeListener('editor:refreshProjects', h); },
     onOpenInViewer: (cb) => { const h = (_e, p) => cb(p && p.path, p && p.line); ipcRenderer.on('editor:openInViewer', h); return () => ipcRenderer.removeListener('editor:openInViewer', h); },
     onSendToTerminal: (cb) => { const h = (_e, p) => cb(p && p.text); ipcRenderer.on('editor:sendToTerminal', h); return () => ipcRenderer.removeListener('editor:sendToTerminal', h); },
     onSendNoteToTerminal: (cb) => { const h = (_e, p) => cb(p && p.projId, p && p.text); ipcRenderer.on('editor:sendNoteToTerminal', h); return () => ipcRenderer.removeListener('editor:sendNoteToTerminal', h); },
@@ -332,5 +340,9 @@ contextBridge.exposeInMainWorld('lite', {
       ipcRenderer.on('fs:changed', h);
       return () => ipcRenderer.removeListener('fs:changed', h);
     },
+    // Вивер: рекурсивный листинг (Ctrl+P), поиск по проекту (grep), сравнение двух файлов.
+    listAll: (root) => ipcRenderer.invoke('files:listAll', root),
+    search: (root, query, opts) => ipcRenderer.invoke('files:search', { root, query, opts }),
+    diffPair: (a, b) => ipcRenderer.invoke('files:diffPair', { a, b }),
   },
 });

@@ -30,7 +30,6 @@
           <span>СИСТЕМА · ~</span>
           <div class="drag-space-static"></div>
           <button id="scratch-restart" class="icon-btn" title="Перезапустить активную вкладку (новый шелл в ~)" data-icon="refresh"></button>
-          <button id="scratch-close" class="icon-btn" title="Закрыть модуль" data-icon="x"></button>
         </div>
         <div id="scratch-tabs" class="term-tabs scratch-tabs"></div>
         <div id="scratch-term"></div>
@@ -42,7 +41,6 @@
           <span id="chat-title" class="chat-title">OpenRouter</span>
           <div class="drag-space-static"></div>
           <button id="chat-keys" class="icon-btn" title="Управление ключами" data-icon="sliders"></button>
-          <button id="chat-close" class="icon-btn" title="Закрыть" data-icon="x"></button>
         </div>
         <div id="chat-tabs" class="chat-tabs"></div><!-- вкладка на каждый ключ (рендерит openrouter.js) -->
         <div id="chat-top">
@@ -79,7 +77,6 @@
           <div class="drag-space-static"></div>
           <span id="doc-saved" class="doc-saved"></span>
           <button id="doc-settings" class="icon-btn" title="Промпты и агент" data-icon="sliders"></button>
-          <button id="doc-close" class="icon-btn" title="Закрыть" data-icon="x"></button>
         </div>
         <div id="doc-tabs" class="doc-tabs"></div><!-- вкладка на каждый документ (рендерит textproc.js) -->
         <div id="doc-toolbar">
@@ -102,7 +99,6 @@
           <div class="drag-space-static"></div>
           <button id="ctx-help" class="icon-btn" title="Как это работает?" data-icon="help"></button>
           <button id="ctx-settings" class="icon-btn" title="Настройки (бекапы, автосборка)" data-icon="sliders"></button>
-          <button id="ctx-close" class="icon-btn" title="Закрыть" data-icon="x"></button>
         </div>
         <div id="ctx-agents" class="ctx-agents"></div><!-- переключатель агента (Claude/Codex): рендерится в contextgraph.js -->
         <div id="ctx-profiles" class="ctx-profiles"></div><!-- вкладки-профили текущего агента -->
@@ -137,17 +133,7 @@
         </div>
       </section>
 
-      <!-- Git module: репозиторий активного проекта (следует за активным проектом редактора) -->
-      <div id="gutter-git" class="gutter hidden" data-resize="git"></div>
-      <section id="git-pane" class="hidden">
-        <div class="pane-head">
-          <span id="git-proj">Git</span>
-          <div class="drag-space-static"></div>
-          <button id="git-refresh" class="icon-btn" title="Обновить" data-icon="refresh"></button>
-          <button id="git-close" class="icon-btn" title="Закрыть Git" data-icon="x"></button>
-        </div>
-        <div id="git-body" class="git-body"></div>
-      </section>
+      <!-- Git больше НЕ отдельное окно: вселён в окно вивера (#commit-pane / #branches-pane / #vcs-topbar). -->
 
       <!-- Containers module (docker/podman): system-wide -->
       <div id="gutter-docker" class="gutter hidden" data-resize="docker"></div>
@@ -156,7 +142,6 @@
           <span id="docker-title">Контейнеры</span>
           <div class="drag-space-static"></div>
           <button id="docker-refresh" class="icon-btn" title="Обновить" data-icon="refresh"></button>
-          <button id="docker-close" class="icon-btn" title="Закрыть" data-icon="x"></button>
         </div>
         <div id="docker-tabs" class="docker-tabs"></div>
         <div id="docker-body" class="docker-body"></div>
@@ -170,7 +155,6 @@
           <div class="drag-space-static"></div>
           <button id="rh-back" class="icon-btn" title="К списку подключений" data-icon="chevron-left" style="display:none"></button>
           <button id="rh-refresh" class="icon-btn" title="Обновить список" data-icon="refresh"></button>
-          <button id="rh-close" class="icon-btn" title="Закрыть модуль" data-icon="x"></button>
         </div>
         <div id="rh-tabs" class="term-tabs rh-tabs" style="display:none"></div>
         <div id="rh-conns" class="db-body"></div>
@@ -184,7 +168,6 @@
           <span id="db-title">Базы данных</span>
           <div class="drag-space-static"></div>
           <button id="db-refresh" class="icon-btn" title="Обновить" data-icon="refresh"></button>
-          <button id="db-close" class="icon-btn" title="Закрыть" data-icon="x"></button>
         </div>
         <div id="db-body" class="db-body"></div>
       </section>
@@ -197,7 +180,6 @@
           <div class="drag-space-static"></div>
           <button id="notes-export" class="icon-btn" title="Экспорт заметок в JSON" data-icon="download"></button>
           <button id="notes-import" class="icon-btn" title="Импорт заметок из JSON" data-icon="upload"></button>
-          <button id="notes-close" class="icon-btn" title="Закрыть" data-icon="x"></button>
         </div>
         <div id="notes-body" class="notes-body"></div>
       </section>
@@ -209,7 +191,6 @@
           <span id="audit-proj">Аудит проекта</span>
           <div class="drag-space-static"></div>
           <button id="audit-rescan" class="icon-btn" title="Пересканировать проект" data-icon="refresh"></button>
-          <button id="audit-close" class="icon-btn" title="Закрыть" data-icon="x"></button>
         </div>
         <div id="audit-body" class="audit-body"></div>
       </section>
@@ -219,7 +200,6 @@
         <div class="pane-head">
           <span>Инструменты</span>
           <div class="drag-space-static"></div>
-          <button id="tools-close" class="icon-btn" title="Закрыть" data-icon="x"></button>
         </div>
         <div id="tools-body" class="tools-body"></div>
       </section>
@@ -233,7 +213,6 @@
           <button id="iterflow-site" class="icon-btn" title="Открыть сайт IterFlow" data-icon="globe"></button>
           <button id="iterflow-refresh" class="icon-btn" title="Обновить" data-icon="refresh"></button>
           <button id="iterflow-logout" class="icon-btn" title="Выйти из IterFlow" data-icon="logout"></button>
-          <button id="iterflow-close" class="icon-btn" title="Закрыть" data-icon="x"></button>
         </div>
         <div id="iterflow-body" class="iterflow-body"></div>
       </section>
@@ -245,25 +224,40 @@
           <span id="seo-proj">WEB/SEO аудит</span>
           <div class="drag-space-static"></div>
           <button id="seo-rescan" class="icon-btn" title="Пересканировать сайт" data-icon="refresh"></button>
-          <button id="seo-close" class="icon-btn" title="Закрыть" data-icon="x"></button>
         </div>
         <div id="seo-body" class="seo-body"></div>
       </section>
 
-      <!-- Files module: вивер кода (CodeMirror) + дерево файлов (следует за активным проектом редактора).
-           Две панели в одном окне: вивер заполняет, дерево — боковая колонка (CSS body.mw-files ниже). -->
+      <!-- Files («Проект») window: вивер кода (CodeMirror) + дерево + ВСТРОЕННЫЙ Git (вместо отдельного окна).
+           Раскладка (CSS body.mw-files, grid): сверху VCS-полоса · слева стрип-иконки + переключаемая
+           секция (Файлы/Коммит/Ветки-Лог) · по центру вивер/дифф. PhpStorm-style. -->
+      <!-- VCS-полоса: ветка + ahead/behind + fetch/pull/push (наполняет git-компонент). Скрыта, если не репо. -->
+      <div id="vcs-topbar" class="vcs-topbar hidden"></div>
+      <!-- Стрип-иконки слева: переключают левую секцию. -->
+      <div id="vcs-strip" class="vcs-strip">
+        <button id="strip-files" class="strip-btn active" title="Файлы (дерево)" data-section="files" data-icon="folder"></button>
+        <button id="strip-commit" class="strip-btn" title="Коммит (изменения)" data-section="commit" data-icon="check"></button>
+        <button id="strip-branches" class="strip-btn" title="Ветки и история" data-section="branches" data-icon="git"></button>
+      </div>
+      <!-- Разделитель между левой секцией и вивером: перетаскивание меняет ширину (--mw-left). -->
+      <div id="mw-gutter" class="mw-gutter" title="Потяните, чтобы изменить ширину"></div>
       <section id="viewer-pane" class="hidden">
         <div class="pane-head">
+          <button id="viewer-back" class="icon-btn" title="Назад (Alt+←)" data-icon="chevron-left" disabled></button>
+          <button id="viewer-fwd" class="icon-btn" title="Вперёд (Alt+→)" data-icon="chevron-right" disabled></button>
           <span id="viewer-filename">—</span>
           <span id="viewer-dirty" class="dirty-dot" title="Несохранённые изменения"></span>
           <div class="drag-space-static"></div>
+          <button id="viewer-find" class="icon-btn" title="Найти в проекте (Ctrl+Shift+F)" data-icon="search"></button>
+          <button id="viewer-outline" class="icon-btn" title="Структура файла (Ctrl+Shift+O)" data-icon="braces"></button>
+          <button id="viewer-bookmark" class="icon-btn" title="Закладка на текущей строке (Ctrl+F2). Клик правой — список закладок" data-icon="star"></button>
           <button id="viewer-minimap" class="icon-btn" title="Миникарта кода (вкл/выкл)" data-icon="columns"></button>
           <button id="viewer-preview" class="icon-btn" title="Превью (Markdown / картинка / HTML)" data-icon="eye"></button>
           <button id="viewer-full" class="icon-btn" title="Развернуть превью HTML на весь экран (Esc — выход)" style="display:none" data-icon="maximize"></button>
           <button id="viewer-diff" class="icon-btn" title="Дифф изменений vs HEAD (git)" data-icon="diff"></button>
           <button id="viewer-save" class="icon-btn" title="Сохранить (Ctrl+S)" data-icon="save"></button>
-          <button id="viewer-close" class="icon-btn" title="Закрыть окно" data-icon="x"></button>
         </div>
+        <div id="viewer-crumbs" class="viewer-crumbs hidden"></div>
         <div id="viewer-reload-bar" class="reload-bar hidden">
           <span class="reload-bar-text">Файл изменён на диске, а у вас есть несохранённые правки.</span>
           <button id="viewer-reload-apply" class="reload-bar-btn">Перечитать с диска</button>
@@ -272,6 +266,12 @@
         <div id="editor"></div>
         <div id="diff-view"></div>
         <div id="preview-view"></div>
+        <div id="viewer-status" class="viewer-status hidden">
+          <span id="vs-pos" class="vs-pos"></span>
+          <span id="vs-sel" class="vs-sel"></span>
+          <div class="drag-space-static"></div>
+          <span id="vs-lang" class="vs-lang"></span>
+        </div>
       </section>
       <section id="tree-pane" class="hidden">
         <div class="pane-head">
@@ -281,6 +281,16 @@
           <button id="tree-refresh" class="icon-btn" title="Обновить дерево файлов" data-icon="refresh"></button>
         </div>
         <div id="tree"></div>
+      </section>
+      <!-- Git: секция «Коммит» (изменения + сообщение + commit/sync). Наполняет git-компонент. -->
+      <section id="commit-pane" class="hidden">
+        <div class="pane-head"><span>КОММИТ</span><div class="drag-space-static"></div></div>
+        <div id="commit-body" class="git-body commit-body"></div>
+      </section>
+      <!-- Git: секция «Ветки/Лог» (ветки + история). Наполняет git-компонент. -->
+      <section id="branches-pane" class="hidden">
+        <div class="pane-head"><span>ВЕТКИ · ИСТОРИЯ</span><div class="drag-space-static"></div></div>
+        <div id="branchlog-body" class="git-body branchlog-body"></div>
       </section>
     </div>
   </div>

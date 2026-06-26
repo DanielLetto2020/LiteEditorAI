@@ -559,7 +559,6 @@ export function initOpenRouter(host) {
     lite.openrouter.onError(({ reqId, error }) => { const h = pendingOr.get(reqId); if (h) h.error(error); });
   }
   function bindControls() {
-  $('#chat-close').addEventListener('click', () => setChatOpen(false));
   $('#chat-keys').addEventListener('click', (e) => { e.stopPropagation(); showOpenRouter(); });
   $('#chat-usage-refresh').addEventListener('click', (e) => { e.stopPropagation(); const c = activeOrCard(); if (c) fetchKeyInfo(c.key, true); });
   $('#chat-send').addEventListener('click', onSendClick);
