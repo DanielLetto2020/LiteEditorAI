@@ -20,13 +20,14 @@ jobs:
             target: --linux deb
           - os: windows-latest
             target: --win zip
-          # macOS собираем ПО-АРХИТЕКТУРНО на РАЗНЫХ раннерах: один arm64-раннер не пересобирает
-          # нативный node-pty под x64 → в Intel-сборку попадал arm64-бинарь и терминал не запускался
-          # (v1.0.195). Каждый раннер делает `npm ci` под свою арх → pty.node/spawn-helper верной arch.
-          - os: macos-14            # Apple Silicon (arm64)
-            target: --mac --arm64
-          - os: macos-13            # Intel (x64)
-            target: --mac --x64
+          # macOS: ОДИН arm64-раннер (macos-14) собирает ОБЕ архитектуры — build.mac.target жёстко задаёт
+          # arch:[arm64,x64] для dmg и zip, поэтому `--mac` строит и arm64, и x64 за один проход.
+          # Отдельный Intel-раннер (macos-13) УБРАН: он часто висел в очереди GitHub и тормозил весь релиз,
+          # а x64-сборка с arm64-раннера и так корректна — загрузчик node-pty (lib/utils.js) при неподходящем
+          # build/Release ловит ошибку и падает в апстрим-prebuild prebuilds/darwin-x64 (верный x86_64
+          # pty.node + spawn-helper). Проверено на v1.1.32: терминал на Intel работает через этот фолбэк.
+          - os: macos-14            # Apple Silicon (arm64) — за один проход собирает arm64 + x64
+            target: --mac
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
