@@ -3336,7 +3336,8 @@ ipcMain.handle('git:branches', async (_e, root) => {
   const top = await git(root, ['rev-parse', '--show-toplevel']);
   if (top == null) return { repo: false };
   const current = ((await git(root, ['rev-parse', '--abbrev-ref', 'HEAD'])) || '').trim();
-  const localOut = await git(root, ['for-each-ref', '--format=%(refname:short)%x1f%(upstream:short)%x1f%(upstream:track)', 'refs/heads']);
+  // for-each-ref (в отличие от log) НЕ понимает плейсхолдер %x1f — подставляем реальный байт 0x1F разделителем.
+  const localOut = await git(root, ['for-each-ref', '--format=%(refname:short)\x1f%(upstream:short)\x1f%(upstream:track)', 'refs/heads']);
   const local = [];
   if (localOut) for (const line of localOut.split('\n')) {
     if (!line.trim()) continue;
