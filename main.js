@@ -1808,7 +1808,13 @@ ipcMain.handle('module:openSet', () => ({ ids: [...moduleWindows.keys()] }));
 ipcMain.on('app:setActiveProject', (_e, info) => { activeProjectInfo = info || null; broadcastToModules('app:activeProject', activeProjectInfo); });
 ipcMain.handle('app:getActiveProject', () => activeProjectInfo);
 ipcMain.on('app:settingsChanged', (_e, s) => broadcastToModules('app:settingsChanged', s || {}));
-ipcMain.on('app:notesChanged', (_e, { id } = {}) => broadcastToModules('app:notesChanged', { id }));
+// Задачи изменились (модуль/пульт) → разослать ВСЕМ окнам модулей КРОМЕ отправителя (иначе автор правки
+// получил бы эхо своего же изменения и перезагрузил список после каждого клика) + в главное окно (для бейджа
+// счётчика активных задач на квикбаре). Отправитель сам уже знает об изменении и обновляет UI точечно.
+ipcMain.on('app:notesChanged', (e, { id } = {}) => {
+  for (const w of moduleWindows.values()) { if (w && !w.isDestroyed() && w.webContents !== e.sender) w.webContents.send('app:notesChanged', { id }); }
+  if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents !== e.sender) mainWindow.webContents.send('app:notesChanged', { id });
+});
 
 // ── Действия из окна модуля → переслать редактору (терминал) или окну вивера (файл/дерево) ──
 function forwardToEditor(ch, payload) { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(ch, payload); }
@@ -1867,6 +1873,17 @@ ipcMain.on('win:growBy', (e, { dx }) => {
   const width = Math.max(760, Math.min(growDesiredWidth, work.x + work.width - b.x)); // don't run off-screen
   growAppliedWidth = width;
   mainWindow.setBounds({ x: b.x, y: b.y, width, height: b.height });
+});
+
+// Расширить/сузить ОКНО-ОТПРАВИТЕЛЬ по ширине на dx (для окон модулей: напр. канбан-вид «Задач»
+// делает окно шире). В отличие от win:growBy (только окно редактора) — работает с любым окном-отправителем.
+ipcMain.on('win:resizeBy', (e, { dx } = {}) => {
+  const w = senderWin(e);
+  if (!w || w.isDestroyed() || w.isFullScreen() || w.isMaximized()) return;
+  const b = w.getBounds();
+  const work = screen.getDisplayMatching(b).workArea;
+  const width = Math.max(420, Math.min(b.width + (Number(dx) || 0), work.x + work.width - b.x));
+  w.setBounds({ x: b.x, y: b.y, width, height: b.height });
 });
 
 // ---------------------------------------------------------------- dialogs

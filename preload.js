@@ -24,6 +24,7 @@ contextBridge.exposeInMainWorld('lite', {
     show: () => ipcRenderer.send('win:show'),
     isMaximized: () => ipcRenderer.invoke('win:isMaximized'),
     growBy: (dx) => ipcRenderer.send('win:growBy', { dx }),
+    resizeBy: (dx) => ipcRenderer.send('win:resizeBy', { dx }), // расширить ОКНО-отправитель (окна модулей)
     onMaximizeChange: (cb) => {
       const h = (_e, v) => cb(v);
       ipcRenderer.on('win:maximized', h);

@@ -26,7 +26,7 @@ import { el, svgEl, icon, iconBtn, hydrateIcons, toast, makeModal, showConfirm, 
 import { initExtensions } from './modules/extensions.js';
 // initFiles — вивер+дерево мигрированы в отдельное окно (renderer/module-entry.js).
 
-const APP_VERSION = 'alpha v1.1.31';
+const APP_VERSION = 'alpha v1.1.32';
 const GUTTER = 5;
 // Системный терминал («Система · ~») мигрирован в отдельное окно (renderer/modules/scratch.js):
 // его id `__scratch__::tN` маршрутизируются main'ом в окно-владельца, в ядре их больше не обрабатываем.
@@ -1261,6 +1261,7 @@ function doSetActive(id) {
   // вивер живёт в своём окне и следует за проектом через app:activeProject (pushActiveProject ниже)
   try { Ext.notifyActiveProject(activeId); } catch (_) {} // пользовательские модули: ctx.projects.onChange
   pushActiveProject(proj); // окна модулей (git/ctx/notes/audit): следовать за активным проектом редактора
+  updateNotesBadge();      // бейдж задач — под новый активный проект
 }
 // Сообщить окнам модулей о текущем активном проекте (кэшируется в main, рассылается окнам).
 function pushActiveProject(proj) {
@@ -1374,7 +1375,9 @@ function renderQuickbar() {
     if (!m) continue; // модуль пропал (удалён пользовательский) — кнопку не рисуем, выбор в сторе не трогаем
     const b = el('button', 'icon-btn qb-btn');
     b.title = m.label;
+    b.dataset.mod = id;
     b.appendChild(icon(m.icon, 16));
+    if (id === 'notes') b.appendChild(el('span', 'qb-badge')); // бейдж активных задач активного проекта
     b.onclick = m.open;
     bar.appendChild(b);
     shown++;
@@ -1382,6 +1385,27 @@ function renderQuickbar() {
   const wasHidden = bar.classList.contains('hidden');
   bar.classList.toggle('hidden', !shown); // только разделители (без кнопок) панель не показывают
   if (wasHidden !== !shown) setTimeout(refitActiveTerminal, 60); // высота терминала изменилась
+  updateNotesBadge();
+}
+// Бейдж активных (не выполненных) задач АКТИВНОГО проекта на кнопке «Задачи» квикбара. Источник —
+// STORE.noteCounts (стартовый снимок в main.js + живые апдейты через refreshNotesCount по app:notesChanged).
+function updateNotesBadge() {
+  const b = document.querySelector('#quickbar .qb-btn[data-mod="notes"] .qb-badge');
+  if (!b) return;
+  const n = (activeId && STORE.noteCounts) ? (STORE.noteCounts[activeId] || 0) : 0;
+  b.textContent = n > 99 ? '99+' : String(n);
+  b.classList.toggle('show', n > 0);
+}
+// Список задач изменился (модуль/пульт) → пересчитать счётчик этого списка с диска и освежить бейдж.
+async function refreshNotesCount(id) {
+  if (!id) return;
+  try {
+    const arr = await lite.store.notesGet(id);
+    const n = Array.isArray(arr) ? arr.filter((x) => x && x.status !== 'done').length : 0;
+    if (!STORE.noteCounts) STORE.noteCounts = {};
+    STORE.noteCounts[id] = n;
+    if (id === activeId) updateNotesBadge();
+  } catch (_) {}
 }
 function showPanelSetup() {
   const { m, close } = makeModal(`
@@ -2257,7 +2281,9 @@ function init() {
   // Пульт: «Создать папку» → создаём на десктопе.
   try { if (lite.remote && lite.remote.onNewFolder) lite.remote.onNewFolder((name) => { try { handleRemoteNewFolder(name); } catch (_) {} }); } catch (_) {}
   try { if (lite.remote && lite.remote.onNoteToTerminal) lite.remote.onNoteToTerminal((projId, text) => { try { handleRemoteNoteToTerminal(projId, text); } catch (_) {} }); } catch (_) {}
-  try { if (lite.remote && lite.remote.onNotesChanged) lite.remote.onNotesChanged((id) => { try { lite.app.notesChanged(id); } catch (_) {} }); } catch (_) {}
+  try { if (lite.remote && lite.remote.onNotesChanged) lite.remote.onNotesChanged((id) => { try { lite.app.notesChanged(id); refreshNotesCount(id); } catch (_) {} }); } catch (_) {}
+  // Окно «Задачи» изменило список → пересчитать счётчик и освежить бейдж активных задач на квикбаре.
+  try { if (lite.app && lite.app.onNotesChanged) lite.app.onNotesChanged((id) => { try { refreshNotesCount(id); } catch (_) {} }); } catch (_) {}
   // Пульт просит одобрить устройство (pairing) → модалка одобрения.
   try { if (lite.remote && lite.remote.onPairRequest) lite.remote.onPairRequest((info) => { try { handleRemotePairRequest(info); } catch (_) {} }); } catch (_) {}
   // Бейдж «подключённые пульты» у версии: живёт на push-событиях из main + стартовый снимок.

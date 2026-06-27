@@ -418,7 +418,9 @@ body.viewer-zen #vcs-topbar { display: none !important; }
 }
 #quickbar.hidden { display: none; }
 #quickbar::-webkit-scrollbar { height: 0; }
-.qb-btn { flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 26px; }
+.qb-btn { flex: 0 0 auto; position: relative; display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 26px; }
+/* бейдж активных задач на кнопке «Задачи» */
+.qb-badge { display: none; position: absolute; top: -2px; right: -3px; min-width: 15px; height: 15px; padding: 0 4px; border-radius: 8px; background: var(--green); color: var(--accent-contrast); font-size: 9.5px; font-weight: 700; line-height: 15px; text-align: center; pointer-events: none; }
 .qb-sep { flex: 0 0 auto; width: 1px; height: 18px; margin: 0 5px; background: var(--border-strong); align-self: center; }
 
 /* модалка «Настройка панели» */
@@ -636,7 +638,10 @@ body.preview-split #preview-view { border-left: 1px solid var(--border); }
 .nt-card.pr-1 { border-left-color: var(--warn); }
 .nt-card.pr-2 { border-left-color: var(--danger); }
 .nt-card.done { opacity: .62; }
-.nt-card.done .nt-text { text-decoration: line-through; color: var(--text-mute); }
+.nt-card.done .nt-title { text-decoration: line-through; color: var(--text-mute); }
+.nt-card.nt-dragging { opacity: .4; }
+.nt-card.nt-drop-before { box-shadow: 0 -2px 0 0 var(--green); }
+.nt-card.nt-drop-after { box-shadow: 0 2px 0 0 var(--green); }
 
 .nt-top { display: flex; align-items: flex-start; gap: 10px; }
 .nt-status { flex: 0 0 auto; width: 20px; height: 20px; margin-top: 1px; border-radius: 6px; border: 2px solid var(--border-strong); background: transparent; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; padding: 0; color: var(--accent-contrast); transition: background .12s, border-color .12s; }
@@ -644,7 +649,58 @@ body.preview-split #preview-view { border-left: 1px solid var(--border); }
 .nt-status.st-doing { border-color: var(--warn); }
 .nt-status.st-doing::after { content: ''; width: 9px; height: 9px; border-radius: 3px; background: var(--warn); }
 .nt-status.st-done { background: var(--green); border-color: var(--green); }
-.nt-text { flex: 1; min-width: 0; white-space: pre-wrap; word-break: break-word; color: var(--text); font-size: 13px; line-height: 1.45; cursor: text; }
+.nt-textcol { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+/* заголовок задачи = первая строка (всегда виден, до 2 строк); тело = остальное (сворачивается) */
+.nt-title { min-width: 0; white-space: pre-wrap; word-break: break-word; color: var(--text); font-size: 13px; font-weight: 600; line-height: 1.4;
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; cursor: text; }
+.nt-body { min-width: 0; white-space: pre-wrap; word-break: break-word; color: var(--text-dim); font-size: 12.5px; line-height: 1.45; cursor: text; }
+.nt-body.clip { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 4; overflow: hidden; }
+.nt-body .nt-md { white-space: normal; }
+.nt-body .nt-md > :first-child { margin-top: 0; }
+.nt-body .nt-md > :last-child { margin-bottom: 0; }
+.nt-body .nt-md pre { background: var(--bg-input); padding: 8px 10px; border-radius: 7px; overflow-x: auto; }
+.nt-body .nt-md code { font-family: monospace; font-size: 12px; }
+.nt-expand { align-self: flex-start; padding: 1px 0; border: none; background: transparent; color: var(--info); cursor: pointer; font-size: 12px; }
+.nt-expand:hover { text-decoration: underline; }
+/* подзадачи (чеклист) на карточке */
+.nt-subs { display: flex; flex-direction: column; gap: 3px; padding-left: 30px; }
+.nt-subs-head { font-size: 11px; color: var(--text-mute); letter-spacing: .3px; }
+.nt-sub { display: flex; align-items: center; gap: 7px; }
+.nt-sub-txt { flex: 1; min-width: 0; font-size: 12.5px; color: var(--text-dim); word-break: break-word; }
+.nt-sub.done .nt-sub-txt { text-decoration: line-through; color: var(--text-mute); }
+.nt-sub-cb { flex: 0 0 auto; width: 16px; height: 16px; border-radius: 5px; border: 2px solid var(--border-strong); background: transparent;
+  cursor: pointer; display: inline-flex; align-items: center; justify-content: center; padding: 0; color: var(--accent-contrast); }
+.nt-sub-cb:hover { border-color: var(--text-dim); }
+.nt-sub-cb.on { background: var(--green); border-color: var(--green); }
+
+/* тулбар задач: поиск + переключатели вида/сортировки/markdown/очистки */
+.nt-toolbar { display: flex; align-items: center; gap: 6px; flex: 0 0 auto; }
+.nt-search { flex: 1; min-width: 0; background: var(--bg-input); border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px; color: var(--text); font-size: 12.5px; outline: none; }
+.nt-search:focus { border-color: var(--border-accent); }
+.nt-tbtn { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 4px; height: 30px; padding: 0 9px; border-radius: 8px; border: 1px solid var(--border); background: transparent; color: var(--text-dim); cursor: pointer; font-size: 11.5px; font-weight: 600; transition: color .12s, background .12s, border-color .12s; }
+.nt-tbtn:hover { color: var(--text); border-color: var(--border-strong); }
+.nt-tbtn.on { color: var(--accent-contrast); background: var(--green); border-color: var(--green); }
+.nt-tbtn.danger:hover { color: #fff; background: rgba(247,118,142,0.7); border-color: transparent; }
+.nt-chips.hidden { display: none; }
+
+/* канбан-вид: горизонтальные колонки по статусу */
+.nt-list.nt-kanban { flex-direction: row; gap: 10px; overflow-x: auto; align-items: stretch; }
+.nt-col { flex: 1 1 0; min-width: 240px; display: flex; flex-direction: column; gap: 8px; }
+.nt-col-head { display: flex; align-items: center; justify-content: space-between; padding: 2px 4px; font-size: 11px; letter-spacing: .4px; text-transform: uppercase; color: var(--text-mute); position: sticky; top: 0; }
+.nt-col-title { font-weight: 700; }
+.nt-col-cnt { font-size: 10.5px; padding: 0 7px; border-radius: 9px; background: var(--hover); color: var(--text-dim); }
+.nt-col-body { flex: 1; min-height: 60px; display: flex; flex-direction: column; gap: 8px; padding: 4px; border: 1px dashed transparent; border-radius: 10px; }
+.nt-col-body.nt-col-over { border-color: var(--green); background: var(--accent-soft); }
+.nt-col-empty { text-align: center; color: var(--text-mute); padding: 12px; font-size: 12px; }
+
+/* редактор подзадач в модалке */
+.nt-subs-edit { margin: 10px 0 4px; }
+.nt-subs-edit-head { font-size: 11.5px; color: var(--text-mute); margin-bottom: 6px; letter-spacing: .3px; }
+.nt-subs-list { display: flex; flex-direction: column; gap: 6px; }
+.nt-sub-edit { display: flex; align-items: center; gap: 7px; }
+.nt-sub-input { flex: 1; min-width: 0; background: var(--bg-input); border: 1px solid var(--border); border-radius: 7px; padding: 6px 9px; color: var(--text); font-size: 12.5px; outline: none; }
+.nt-sub-input:focus { border-color: var(--border-accent); }
+.nt-subadd { margin-top: 8px; }
 
 .nt-meta { display: flex; align-items: center; gap: 4px; }
 .nt-spacer { flex: 1; }
