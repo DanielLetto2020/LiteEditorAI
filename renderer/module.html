@@ -241,8 +241,18 @@
       </div>
       <!-- Разделитель между левой секцией и вивером: перетаскивание меняет ширину (--mw-left). -->
       <div id="mw-gutter" class="mw-gutter" title="Потяните, чтобы изменить ширину"></div>
-      <!-- Колонка табов открытых файлов (между деревом и вивером). Наполняет renderTabs(); пусто → ширина 0. -->
-      <section id="tabs-pane" class="file-tabs empty"></section>
+      <!-- Колонка табов открытых файлов (между деревом и вивером). Список наполняет renderTabs() в #tabs-list;
+           пусто → ширина 0. Внизу — контекст-бар просмотра (PhpStorm-style): кнопки для активного файла
+           (Превью/Рядом для md·html, Во весь экран·В браузере — только html). Показ — updatePreviewBar(). -->
+      <section id="tabs-pane" class="file-tabs empty">
+        <div id="tabs-list" class="tabs-list"></div>
+        <div id="tabs-foot" class="tabs-foot" style="display:none">
+          <button id="viewer-preview" class="tfoot-btn" title="Превью (Markdown / HTML)"></button>
+          <button id="viewer-split" class="tfoot-btn" title="Превью рядом с кодом (split)"></button>
+          <button id="viewer-full" class="tfoot-btn" title="Развернуть превью HTML на весь экран (Esc — выход)"></button>
+          <button id="viewer-browser" class="tfoot-btn" title="Открыть HTML в браузере"></button>
+        </div>
+      </section>
       <section id="viewer-pane" class="hidden">
         <div class="pane-head">
           <button id="viewer-back" class="icon-btn" title="Назад (Alt+←)" data-icon="chevron-left" disabled></button>
@@ -255,9 +265,6 @@
           <button id="viewer-todos" class="icon-btn" title="TODO / FIXME по проекту" data-icon="flag"></button>
           <button id="viewer-bookmark" class="icon-btn" title="Закладка на текущей строке (Ctrl+F2). Клик правой — список закладок" data-icon="star"></button>
           <button id="viewer-minimap" class="icon-btn" title="Миникарта кода (вкл/выкл)" data-icon="columns"></button>
-          <button id="viewer-preview" class="icon-btn" title="Превью (Markdown / картинка / HTML)" data-icon="eye"></button>
-          <button id="viewer-split" class="icon-btn" title="Превью рядом с кодом (split, Markdown/HTML)" data-icon="grid"></button>
-          <button id="viewer-full" class="icon-btn" title="Развернуть превью HTML на весь экран (Esc — выход)" style="display:none" data-icon="maximize"></button>
           <button id="viewer-agent" class="icon-btn" title="Режим агента — ревью правок агента, слой авторства, «спросить агента» (вкл/выкл)" data-icon="terminal"></button>
           <button id="viewer-blame" class="icon-btn" title="Git blame — автор строки (вкл/выкл)" data-icon="note"></button>
           <button id="viewer-diff" class="icon-btn" title="Дифф изменений vs HEAD (git)" data-icon="diff"></button>

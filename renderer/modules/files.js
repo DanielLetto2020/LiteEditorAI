@@ -412,11 +412,21 @@ export function initFiles(host) {
   // иначе при ошибке вивер показывал имя/подсветку файла без живого currentFile (рассинхрон).
   function commitOpenUI(filePath, kind) {
     $('#viewer-filename').textContent = baseName(filePath);
-    $('#viewer-preview').style.display = (kind && kind !== 'image') ? '' : 'none'; // toggle only when there's source too
-    $('#viewer-full').style.display = (kind === 'html') ? '' : 'none'; // «на весь экран» только для HTML-вёрстки
+    updatePreviewBar(kind);
     document.querySelectorAll('.tree-row.open').forEach((r) => r.classList.remove('open'));
     const row = document.querySelector(`.tree-row[data-path="${cssEscape(filePath)}"]`);
     if (row) row.classList.add('open');
+  }
+  // Контекст-бар просмотра (низ колонки табов): Превью/Рядом для md·html, Во весь экран·В браузере — только html.
+  // Картинки не рендерятся как исходник — у них превью и так единственный вид, тогглы не нужны → бар скрыт.
+  function updatePreviewBar(kind) {
+    const foot = $('#tabs-foot'); if (!foot) return;
+    const showable = kind === 'markdown' || kind === 'html';
+    foot.style.display = showable ? '' : 'none';
+    $('#viewer-preview').style.display = showable ? '' : 'none';
+    $('#viewer-split').style.display = showable ? '' : 'none';
+    $('#viewer-full').style.display = (kind === 'html') ? '' : 'none';
+    $('#viewer-browser').style.display = (kind === 'html') ? '' : 'none';
   }
   async function openFile(filePath, line) {
     const seq = ++openSeq;
@@ -445,10 +455,9 @@ export function initFiles(host) {
     updateGitGutter(filePath);
     refreshBlameIfOn();                              // A7: подгрузить blame нового файла, если режим включён
     if (splitMode) { const k = previewKind(filePath); if (k === 'markdown' || k === 'html') refreshSplitPreview(); else exitSplit(); } // B15: сплит следует за файлом
-    // md/html по умолчанию открываются рендером; но если явно просили строку (переход из аудита/поиска) —
-    // показываем исходник и прыгаем на строку, иначе номер строки потерялся бы в превью.
-    if (kind && !(line && line > 0)) await showPreview(kind, filePath, res.content);
-    else if (line && line > 0) requestAnimationFrame(() => { if (seq === openSeq) gotoLine(line); }); // не прыгать в чужом доке, если уже открыли другой файл
+    // md/html открываем КОДОМ (исходником) — превью включается вручную кнопкой в баре под табами.
+    // Раньше открывали сразу рендером, что мешало правке. Картинки — отдельной веткой выше (исходника нет).
+    if (line && line > 0) requestAnimationFrame(() => { if (seq === openSeq) gotoLine(line); }); // не прыгать в чужом доке, если уже открыли другой файл
   }
 
   // ---------------------------------------------------------------- viewer preview (md/image/html)
@@ -1417,8 +1426,9 @@ export function initFiles(host) {
   }
   function renderTabs() {
     const pane = $('#tabs-pane'); if (!pane) return;
+    const list = $('#tabs-list') || pane;   // табы — в список; футер-бар просмотра (#tabs-foot) НЕ трогаем
     const root = $('#module-root');
-    pane.replaceChildren();
+    list.replaceChildren();
     for (const t of [...pinnedTabs]) if (!openTabs.includes(t)) pinnedTabs.delete(t);  // прунинг исчезнувших
     // Колонку показываем только когда есть открытые файлы; иначе ширина 0 (грид-колонка схлопывается).
     if (root) root.style.setProperty('--tabs-w', openTabs.length ? '184px' : '0px');
@@ -1437,7 +1447,7 @@ export function initFiles(host) {
       tab.addEventListener('click', () => { if (t === currentFile) return; if (!viewerOpen) setViewerOpen(true); guardDirty(() => openFile(t)); });
       tab.addEventListener('auxclick', (e) => { if (e.button === 1) { e.preventDefault(); closeTab(t); } }); // средняя кнопка — закрыть
       tab.addEventListener('contextmenu', (e) => { e.preventDefault(); e.stopPropagation(); showTabMenu(e.clientX, e.clientY, t); });
-      pane.appendChild(tab);
+      list.appendChild(tab);
     }
   }
   function addRecent(p) { const i = recentFiles.indexOf(p); if (i >= 0) recentFiles.splice(i, 1); recentFiles.unshift(p); if (recentFiles.length > 30) recentFiles.pop(); }
@@ -1695,9 +1705,15 @@ export function initFiles(host) {
     $('#viewer-bookmark').addEventListener('click', toggleBookmarkHere);
     $('#viewer-bookmark').addEventListener('contextmenu', (e) => { e.preventDefault(); showBookmarks(); });
     $('#viewer-diff').addEventListener('click', toggleDiff);
+    // Контекст-бар просмотра под колонкой табов: строим «иконка + подпись» в JS (иконка идёт ПЕРЕД текстом).
+    for (const [sel, ic, label] of [['#viewer-preview', 'eye', 'Превью'], ['#viewer-split', 'grid', 'Рядом'],
+      ['#viewer-full', 'maximize', 'Во весь экран'], ['#viewer-browser', 'globe', 'В браузере']]) {
+      const b = $(sel); if (b) b.append(icon(ic, 15), el('span', 'tfoot-lbl', label));
+    }
     $('#viewer-preview').addEventListener('click', togglePreview);
     $('#viewer-split').addEventListener('click', togglePreviewSplit);
     $('#viewer-full').addEventListener('click', togglePreviewFull);
+    $('#viewer-browser').addEventListener('click', () => { if (currentFile) lite.openInBrowser(currentFile).then((r) => { if (r && r.error) toast(r.error, { kind: 'err' }); }); });
     $('#viewer-minimap').addEventListener('click', toggleMinimap);
     $('#viewer-minimap').classList.toggle('on', settings.minimap);
     $('#viewer-reload-apply').addEventListener('click', () => { hideReloadBar(); reloadCurrentFile(); });
