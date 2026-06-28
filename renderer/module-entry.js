@@ -16,6 +16,7 @@ import { initTools } from './modules/tools.js';
 import { initIterflow } from './modules/iterflow.js';
 import { initSeo } from './modules/seo.js';
 import { initAudit } from './modules/audit.js';
+import { initCompany } from './modules/company.js';
 import { initNotes } from './modules/notes.js';
 import { initDb } from './modules/db.js';
 import { initOpenRouter } from './modules/openrouter.js';
@@ -67,6 +68,10 @@ const MODULES = {
   audit: {
     title: 'Аудит проекта', init: initAudit, project: true,
     wire: (mod) => { bind('#audit-rescan', () => mod.rescan()); },
+  },
+  company: {
+    title: 'ИИ компания', init: initCompany, project: true,
+    wire: (mod) => { bind('#company-settings', () => mod.openSettings()); },
   },
   notes: {
     title: 'Задачи', init: initNotes, project: true,

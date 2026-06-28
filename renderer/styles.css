@@ -871,6 +871,110 @@ body.preview-split #preview-view { border-left: 1px solid var(--border); }
 .au-empty { color: var(--text-mute); text-align: center; padding: 24px 12px; font-size: 12.5px; line-height: 1.5; }
 .au-empty.au-err { color: var(--danger); }
 
+/* ---- «ИИ компания» (директор + сабагенты) ---- */
+#company-pane { flex: 0 0 480px; min-width: 320px; border-left: 1px solid var(--border); display: flex; flex-direction: column; background: var(--panel); }
+.company-body { flex: 1; min-height: 0; overflow: hidden; padding: 10px 12px; display: flex; flex-direction: column; gap: 10px; }
+.co-empty { color: var(--text-mute); text-align: center; padding: 24px 12px; font-size: 12.5px; line-height: 1.5; }
+/* цель + запуск */
+.co-goal { display: flex; flex-direction: column; gap: 6px; }
+.co-goal textarea { width: 100%; box-sizing: border-box; resize: vertical; min-height: 54px; max-height: 160px; background: var(--bg-input); color: var(--text); border: 1px solid var(--border); border-radius: var(--radius); padding: 8px 10px; font: inherit; font-size: 12.5px; }
+.co-goal textarea:focus { outline: none; border-color: var(--border-accent); }
+.co-runrow { display: flex; align-items: center; gap: 8px; }
+.co-run { display: inline-flex; align-items: center; gap: 6px; padding: 7px 14px; border: none; border-radius: var(--radius); background: var(--accent); color: var(--accent-contrast); cursor: pointer; font-size: 12.5px; }
+.co-run:hover { box-shadow: 0 0 0 3px var(--accent-glow); }
+.co-run.stop { background: var(--danger); color: #fff; }
+.co-run:disabled { opacity: .5; cursor: default; box-shadow: none; }
+.co-cost { margin-left: auto; color: var(--text-mute); font-size: 11.5px; }
+/* штат */
+.co-team { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.co-h { color: var(--text-dim); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; margin: 2px 0; }
+.co-chip { display: inline-flex; align-items: center; gap: 5px; padding: 4px 9px; border-radius: 999px; background: var(--surface-2); border: 1px solid var(--border); color: var(--text); font-size: 12px; cursor: default; }
+.co-chip.boss { background: var(--accent-soft); border-color: var(--border-accent); }
+.co-chip.hired { border-style: dashed; }
+.co-chip .co-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
+/* лог директора */
+.co-log { flex: 1; min-height: 80px; overflow: auto; background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); padding: 8px 10px; font-size: 12px; line-height: 1.5; display: flex; flex-direction: column; gap: 3px; }
+.co-line { display: flex; gap: 7px; align-items: baseline; }
+.co-line .co-ic { flex: 0 0 auto; color: var(--text-mute); }
+.co-line.boss .co-ic { color: var(--accent); }
+.co-line.hire .co-ic { color: var(--green-bright); }
+.co-line.tool .co-ic { color: var(--info); }
+.co-line.err { color: var(--danger); }
+.co-line .co-txt { white-space: pre-wrap; word-break: break-word; min-width: 0; }
+.co-sub { color: var(--text-mute); font-size: 11px; padding-left: 14px; }
+/* доска */
+.co-board { max-height: 160px; overflow: auto; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 8px 10px; font-size: 12px; line-height: 1.55; white-space: pre-wrap; word-break: break-word; color: var(--text); }
+.co-board.empty { color: var(--text-mute); white-space: normal; }
+/* настройки штата (модалка) */
+.co-roles { display: flex; flex-direction: column; gap: 8px; }
+.co-role { border: 1px solid var(--border); border-radius: var(--radius); padding: 8px 10px; display: flex; flex-direction: column; gap: 6px; background: var(--surface); }
+.co-role-top { display: flex; align-items: center; gap: 8px; }
+.co-role-top input { flex: 1; }
+.co-field { display: flex; flex-direction: column; gap: 3px; }
+.co-field label { color: var(--text-dim); font-size: 11px; }
+.co-modal input, .co-modal textarea, .co-modal select { background: var(--bg-input); color: var(--text); border: 1px solid var(--border); border-radius: var(--radius); padding: 6px 8px; font: inherit; font-size: 12px; box-sizing: border-box; width: 100%; }
+.co-modal textarea { resize: vertical; min-height: 48px; }
+.co-modal input:focus, .co-modal textarea:focus, .co-modal select:focus { outline: none; border-color: var(--border-accent); }
+.co-mtitle { margin: 0 0 10px; font-size: 15px; }
+.co-field-hint { color: var(--text-mute); font-size: 11.5px; line-height: 1.5; margin-bottom: 6px; }
+.co-check { display: flex; align-items: center; gap: 7px; font-size: 12px; color: var(--text); margin: 6px 0; cursor: pointer; }
+/* шаблоны целей */
+.co-tpls, .co-lib-row { display: flex; flex-wrap: wrap; gap: 5px; }
+.co-tpl { display: inline-flex; align-items: center; gap: 4px; padding: 3px 9px; border-radius: 999px; background: var(--surface-2); border: 1px solid var(--border); color: var(--text); font-size: 11.5px; cursor: pointer; }
+.co-tpl:hover { border-color: var(--border-accent); }
+.co-lib { margin-top: 6px; }
+/* доп-кнопки в строке запуска */
+.co-run.ghost { background: var(--surface-2); color: var(--text); border: 1px solid var(--border); }
+.co-run.ghost:hover { border-color: var(--border-accent); box-shadow: none; }
+.co-iconbtn { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; border-radius: var(--radius); background: var(--surface-2); border: 1px solid var(--border); color: var(--text); cursor: pointer; }
+.co-iconbtn:hover { border-color: var(--border-accent); }
+/* очередь */
+.co-queue { display: flex; flex-direction: column; gap: 4px; }
+.co-qrow { display: flex; align-items: center; gap: 7px; padding: 4px 8px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); font-size: 12px; }
+.co-qn { flex: 0 0 auto; width: 18px; height: 18px; border-radius: 50%; background: var(--accent-soft); color: var(--text); display: inline-flex; align-items: center; justify-content: center; font-size: 11px; }
+.co-qtext { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-dim); }
+.co-fact { color: var(--text-mute); }
+/* статус-точка на чипе сотрудника */
+.co-sdot { width: 7px; height: 7px; border-radius: 50%; background: var(--text-mute); flex: 0 0 auto; }
+.co-chip.st-working .co-sdot { background: var(--warn); animation: co-pulse 1.1s ease-in-out infinite; }
+.co-chip.st-done .co-sdot { background: var(--green-bright); }
+@keyframes co-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
+/* лог: время */
+.co-lwrap { display: flex; flex-direction: column; }
+.co-time { flex: 0 0 auto; color: var(--text-mute); font-size: 10.5px; font-variant-numeric: tabular-nums; }
+/* доска: чеклист + прогресс */
+.co-bhead { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.co-bcount { flex: 0 0 auto; color: var(--text-dim); font-size: 11.5px; font-variant-numeric: tabular-nums; }
+.co-bar-track { flex: 1; height: 6px; border-radius: 3px; background: var(--surface-2); overflow: hidden; }
+.co-bar-fill { height: 100%; background: var(--accent); border-radius: 3px; transition: width .3s ease; }
+.co-checks { display: flex; flex-direction: column; gap: 3px; }
+.co-check { margin: 0; cursor: default; color: var(--text); }
+.co-check.done { color: var(--text-mute); }
+.co-check.done .co-check-t { text-decoration: line-through; }
+.co-check .ic { flex: 0 0 auto; }
+.co-check.done .ic { color: var(--green-bright); }
+.co-board-raw { white-space: pre-wrap; word-break: break-word; }
+.co-board-raw.empty { color: var(--text-mute); }
+/* футер: изменения / память */
+.co-footer { display: flex; gap: 6px; }
+.co-fbtn { display: inline-flex; align-items: center; gap: 5px; padding: 5px 10px; border-radius: var(--radius); background: var(--surface-2); border: 1px solid var(--border); color: var(--text); cursor: pointer; font-size: 12px; }
+.co-fbtn:hover { border-color: var(--border-accent); }
+/* история прогонов */
+.co-hist { display: flex; flex-direction: column; gap: 6px; }
+.co-hist-head { display: flex; align-items: center; gap: 6px; padding: 4px 2px; background: none; border: none; color: var(--text-dim); cursor: pointer; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
+.co-hist-total { margin-left: auto; color: var(--text-mute); text-transform: none; letter-spacing: 0; }
+.co-hist-list { display: flex; flex-direction: column; gap: 3px; max-height: 160px; overflow: auto; }
+.co-hrow { display: flex; align-items: center; gap: 7px; font-size: 11.5px; color: var(--text); padding: 3px 6px; border-radius: var(--radius); background: var(--surface); }
+.co-hrow.err { color: var(--danger); }
+.co-htime { flex: 0 0 auto; color: var(--text-mute); font-variant-numeric: tabular-nums; }
+.co-hgoal { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-dim); }
+.co-hcost { flex: 0 0 auto; color: var(--text-mute); font-variant-numeric: tabular-nums; }
+/* обзор изменений */
+.co-difffiles { display: flex; flex-direction: column; gap: 2px; max-height: 240px; overflow: auto; }
+.co-diffrow { text-align: left; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 5px 9px; color: var(--text); cursor: pointer; font-size: 12px; font-family: var(--mono, monospace); }
+.co-diffrow:hover { border-color: var(--border-accent); }
+.co-diffstat { margin-top: 8px; background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); padding: 8px 10px; font-size: 11px; overflow: auto; max-height: 200px; color: var(--text-dim); }
+
 /* шапка: источник + кнопка скана + заметка */
 .au-controls { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; flex-wrap: wrap; }
 .au-seg { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }

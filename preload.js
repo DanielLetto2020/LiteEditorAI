@@ -197,6 +197,22 @@ contextBridge.exposeInMainWorld('lite', {
     export: (content, defaultName) => ipcRenderer.invoke('audit:export', { content, defaultName }), // → {ok,file}|{canceled}|{error}
   },
 
+  // «ИИ компания» — директор-агент + сабагенты над проектом (renderer/modules/company.js).
+  company: {
+    getData: (projId) => ipcRenderer.invoke('company:getData', { projId }),               // → data | null
+    setData: (projId, data) => ipcRenderer.invoke('company:setData', { projId, data }),    // → {ok}|{ok:false,error}
+    listRoles: (projPath) => ipcRenderer.invoke('company:listRoles', { projPath }),        // → {roles:[…]} (с диска)
+    boardGet: (projPath) => ipcRenderer.invoke('company:boardGet', { projPath }),          // → {text}
+    notesGet: (projPath) => ipcRenderer.invoke('company:notesGet', { projPath }),          // → {text} (память компании)
+    notesSet: (projPath, text) => ipcRenderer.invoke('company:notesSet', { projPath, text }), // → {ok}|{ok:false,error}
+    diff: (projPath) => ipcRenderer.invoke('company:diff', { projPath }),                  // → {ok,stat,files}|{ok:false,error}
+    run: (opts) => ipcRenderer.send('company:run', opts),                                   // {reqId,projPath,goal,roles,director,limitUsd,permission}
+    stop: (reqId) => ipcRenderer.send('company:stop', { reqId }),
+    onEvent: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('company:event', h); return () => ipcRenderer.removeListener('company:event', h); }, // {reqId,ev}
+    onDone: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('company:done', h); return () => ipcRenderer.removeListener('company:done', h); },    // {reqId,code,error}
+    onError: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('company:error', h); return () => ipcRenderer.removeListener('company:error', h); }, // {reqId,error}
+  },
+
   // IterFlow — таск-трекер исполнителя через /api/editor/* (см. renderer/modules/iterflow.js).
   // Все ответы — { ok, data } | { ok:false, error[, unauth] }. Токен живёт в main, сюда не приходит.
   iterflow: {

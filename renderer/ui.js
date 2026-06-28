@@ -50,6 +50,7 @@ export function svgEl(html) {
 // Exported: ядру нужен сам словарь (menuRow проверяет «glyph — имя иконки или текст?»).
 export const ICONS = {
   star: '<path d="M12 3.2l2.6 5.27 5.82.85-4.21 4.1.99 5.79L12 16.48 6.8 19.21l.99-5.79-4.21-4.1 5.82-.85z"/>',
+  users: '<path d="M16 19v-1.5a4 4 0 0 0-4-4H6.5a4 4 0 0 0-4 4V19"/><circle cx="9.25" cy="7" r="3.5"/><path d="M21.5 19v-1.5a4 4 0 0 0-3-3.87"/><path d="M16.5 3.63a4 4 0 0 1 0 7.74"/>',
   'dots-v': '<circle cx="12" cy="5" r="1.5" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.5" fill="currentColor" stroke="none"/><circle cx="12" cy="19" r="1.5" fill="currentColor" stroke="none"/>',
   'chevron-right': '<path d="M9 5l7 7-7 7"/>',
   'chevron-down': '<path d="M5 9l7 7 7-7"/>',

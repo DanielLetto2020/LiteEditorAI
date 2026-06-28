@@ -26,7 +26,7 @@ import { el, svgEl, icon, iconBtn, hydrateIcons, toast, makeModal, showConfirm, 
 import { initExtensions } from './modules/extensions.js';
 // initFiles — вивер+дерево мигрированы в отдельное окно (renderer/module-entry.js).
 
-const APP_VERSION = 'alpha v1.1.38';
+const APP_VERSION = 'alpha v1.1.39';
 const GUTTER = 5;
 // Системный терминал («Система · ~») мигрирован в отдельное окно (renderer/modules/scratch.js):
 // его id `__scratch__::tN` маршрутизируются main'ом в окно-владельца, в ядре их больше не обрабатываем.
@@ -1286,7 +1286,7 @@ const panels = new Map(); // id -> { isOpen(), setOpen(open, opts) }
 // Правый слот редактора теперь держит только «Мои модули» (ext); всё остальное — отдельные окна.
 const PANEL_ORDER = [];
 // Модули, мигрированные в отдельные окна (открываются через lite.module.open, не как панель правого слота).
-const WINDOW_MODULES = new Set(['tools', 'iterflow', 'seo', 'audit', 'notes', 'db', 'chat', 'doc', 'docker', 'rh', 'ctx', 'scratch', 'files']);
+const WINDOW_MODULES = new Set(['tools', 'iterflow', 'seo', 'audit', 'company', 'notes', 'db', 'chat', 'doc', 'docker', 'rh', 'ctx', 'scratch', 'files']);
 function registerPanel(id, api) { panels.set(id, api); }
 function closeOtherPanels(selfId) {
   for (const id of PANEL_ORDER) {
@@ -1350,6 +1350,7 @@ const QUICK_BUILTIN = [
   { id: 'rh',      icon: 'globe',    label: 'Удалённые хосты — SSH-сессии' },
   { id: 'notes',   icon: 'note',     label: 'Задачи — заметки проекта' },
   { id: 'audit',   icon: 'grid',     label: 'Аудит — анализ проекта' },
+  { id: 'company', icon: 'users',    label: 'ИИ компания — команда агентов над проектом' },
   { id: 'iterflow', icon: 'layers',  label: 'IterFlow — задачи итераций (трекер)' },
   { id: 'seo',     icon: 'globe',    label: 'WEB/SEO аудит — анализ сайта' },
   { id: 'tools',   icon: 'wrench',   label: 'Инструменты — base64, JSON/YAML, хэши, regex…' },
@@ -1694,6 +1695,7 @@ function buildModulesMenu(dd) {
     sub.appendChild(moduleRow('globe', 'Удалённые хосты', 'SSH-сессии к серверам', () => { closeMenus(); openModule('rh'); }));
     sub.appendChild(moduleRow('note', 'Задачи', 'заметки проекта и общие', () => { closeMenus(); openModule('notes'); }));
     sub.appendChild(moduleRow('grid', 'Аудит', 'типы файлов, крупные файлы, медиа', () => { closeMenus(); openModule('audit'); }));
+    sub.appendChild(moduleRow('users', 'ИИ компания', 'директор + сабагенты над проектом', () => { closeMenus(); openModule('company'); }));
     sub.appendChild(moduleRow('layers', 'IterFlow', 'задачи итераций из трекера', () => { closeMenus(); openModule('iterflow'); }));
     sub.appendChild(moduleRow('globe', 'WEB/SEO аудит', 'сайт: безопасность, SEO, сеть', () => { closeMenus(); openModule('seo'); }));
     sub.appendChild(moduleRow('wrench', 'Инструменты', 'base64, JSON/YAML, хэши, JWT, regex, diff', () => { closeMenus(); openModule('tools'); }));
@@ -2296,6 +2298,7 @@ function paletteActions() {
   acts.push({ label: 'Контейнеры (Docker / Podman)', run: () => openModule('docker') });
   acts.push({ label: 'Базы данных (Postgres / MySQL / SQLite)', run: () => openModule('db') });
   acts.push({ label: 'Задачи — заметки проекта', run: () => openModule('notes') });
+  acts.push({ label: 'ИИ компания — команда агентов над проектом', run: () => openModule('company') });
   acts.push({ label: 'Режим «один терминал»', run: toggleSingle });
   acts.push({ label: 'Поиск в терминале', run: openTermSearch });
   acts.push({ label: 'Очистить терминал', run: () => clearTerminal() });

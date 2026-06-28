@@ -614,6 +614,190 @@ ipcMain.on('tp:abort', (_e, { reqId } = {}) => {
   if (c) { tpReqs.delete(reqId); try { c.kill(); } catch (_) {} }
 });
 
+// ---------------------------------------------------------------- «ИИ компания» (company)
+// Модуль renderer/modules/company.js: агент-ДИРЕКТОР (claude -p, stream-json) над активным
+// проектом нанимает и зовёт сабагентов Claude (родная оркестровка, вариант А). Штат/настройки
+// per-project в ~/.LiteEditorAI/company/<projId>.json; роли-сотрудники МАТЕРИАЛИЗУЮТСЯ в
+// <proj>/.claude/agents/*.md (Claude понимает их нативно). Шина — доска-файл
+// <proj>/.lite/company/board.md (виден владельцу и команде). Поток событий stream-json
+// уходит в окно-владелец как company:event/done/error. Директор cwd = корень проекта,
+// иначе Claude не увидит .claude/agents/.
+const companyDir = path.join(storeDir, 'company');
+const companySafe = (s) => String(s).replace(/[^\w.-]/g, '_');
+const companyDataFile = (projId) => path.join(companyDir, companySafe(projId) + '.json');
+
+ipcMain.handle('company:getData', (_e, { projId } = {}) => {
+  try { return JSON.parse(fs.readFileSync(companyDataFile(projId), 'utf8')); } catch { return null; }
+});
+ipcMain.handle('company:setData', (_e, { projId, data } = {}) => {
+  try {
+    fs.mkdirSync(companyDir, { recursive: true });
+    atomicWriteSync(companyDataFile(projId), JSON.stringify(data));
+    return { ok: true };
+  } catch (e) { return { ok: false, error: String(e) }; }
+});
+// Текущая доска компании из проекта (read-only для UI).
+ipcMain.handle('company:boardGet', (_e, { projPath } = {}) => {
+  try { return { text: fs.readFileSync(path.join(projPath, '.lite', 'company', 'board.md'), 'utf8') }; }
+  catch { return { text: '' }; }
+});
+// Разбор сабагента .claude/agents/<name>.md в роль (для отображения штата, в т.ч. нанятых директором).
+function companyParseRole(raw, file) {
+  const role = { name: file.replace(/\.md$/, ''), description: '', model: '', tools: '', prompt: (raw || '').trim(), source: 'disk' };
+  const m = /^---\s*\n([\s\S]*?)\n---\s*\n?([\s\S]*)$/.exec(raw || '');
+  if (m) {
+    role.prompt = m[2].trim();
+    for (const ln of m[1].split('\n')) {
+      const kv = /^([A-Za-z_]+):\s*(.*)$/.exec(ln.trim());
+      if (!kv) continue;
+      const v = kv[2].replace(/^["']|["']$/g, '');
+      if (kv[1] === 'name') role.name = v;
+      else if (kv[1] === 'description') role.description = v;
+      else if (kv[1] === 'model') role.model = v;
+      else if (kv[1] === 'tools') role.tools = v;
+    }
+  }
+  return role;
+}
+ipcMain.handle('company:listRoles', (_e, { projPath } = {}) => {
+  try {
+    const agDir = path.join(projPath, '.claude', 'agents');
+    const roles = [];
+    for (const f of fs.readdirSync(agDir)) {
+      if (!f.endsWith('.md')) continue;
+      try { roles.push(companyParseRole(fs.readFileSync(path.join(agDir, f), 'utf8'), f)); } catch (_) {}
+    }
+    return { roles };
+  } catch { return { roles: [] }; }
+});
+// Роль штата → markdown-сабагент Claude.
+function companyRoleMd(role) {
+  const L = ['---', 'name: ' + companySafe(role.name), 'description: ' + JSON.stringify(role.description || '')];
+  if (role.model) L.push('model: ' + role.model);
+  if ((role.tools || '').trim()) L.push('tools: ' + role.tools.trim());
+  L.push('---', '', (role.prompt || '').trim(), '');
+  return L.join('\n');
+}
+// Система-промпт директора: роль, цель, команда, правила доски, право нанимать, память компании.
+function companyDirectorPrompt(goal, roles, notes) {
+  const team = (roles || []).filter((r) => r && r.name).map((r) => '- ' + companySafe(r.name) + ': ' + (r.description || '')).join('\n');
+  const L = [
+    'Ты — ДИРЕКТОР ИИ-компании, работающей над ЭТИМ проектом. Твоя задача — не писать код самому,',
+    'а управлять командой ИИ-сотрудников (сабагентов) и довести цель владельца до результата.',
+    '',
+    'ТВОЯ КОМАНДА — вызывай их как сабагентов (механизм Task) по имени и описанию:',
+    (team || '- (сотрудников ещё нет — наними нужных)'),
+  ];
+  if ((notes || '').trim()) {
+    L.push('', 'ПАМЯТЬ КОМПАНИИ (уроки и договорённости по этому проекту — учитывай их):', notes.trim());
+  }
+  L.push(
+    '',
+    'ПРАВИЛА:',
+    '1. Веди доску задач в файле .lite/company/board.md (создай каталоги при необходимости).',
+    '   Формат — markdown чек-лист (- [ ] задача / - [x] сделано). Сразу после декомпозиции запиши',
+    '   ВСЕ задачи на доску чекбоксами, по ходу отмечай выполненные. Это общий журнал для владельца и команды.',
+    '2. Декомпозируй цель на задачи и делегируй их подходящим сотрудникам-сабагентам. Сам пиши код',
+    '   только если задача совсем тривиальна.',
+    '3. Нет нужного специалиста — НАНИМИ его: создай файл .claude/agents/<имя>.md с YAML-шапкой',
+    '   (name, description, tools, model) и системным промптом роли, затем вызывай как сабагента.',
+    '4. По завершении допиши в .lite/company/notes.md краткие уроки на будущее (стек проекта, договорённости,',
+    '   грабли) — это память компании между прогонами. Не дублируй уже записанное.',
+    '5. В конце кратко отчитайся владельцу: что сделано, что осталось, что проверить.',
+    '6. Пиши по-русски.',
+  );
+  return L.join('\n');
+}
+// Память компании (.lite/company/notes.md) и обзор изменений (git diff --stat) — отдельные каналы.
+function companyNotesPath(projPath) { return path.join(projPath, '.lite', 'company', 'notes.md'); }
+ipcMain.handle('company:notesGet', (_e, { projPath } = {}) => {
+  try { return { text: fs.readFileSync(companyNotesPath(projPath), 'utf8') }; } catch { return { text: '' }; }
+});
+ipcMain.handle('company:notesSet', (_e, { projPath, text } = {}) => {
+  try {
+    fs.mkdirSync(path.dirname(companyNotesPath(projPath)), { recursive: true });
+    atomicWriteSync(companyNotesPath(projPath), String(text || ''));
+    return { ok: true };
+  } catch (e) { return { ok: false, error: String(e) }; }
+});
+ipcMain.handle('company:diff', async (_e, { projPath } = {}) => {
+  try {
+    const stat = await git(projPath, ['diff', '--stat']);
+    const names = await git(projPath, ['diff', '--name-only']);
+    if (stat == null && names == null) return { ok: false, error: 'git недоступен' };
+    return { ok: true, stat: stat || '', files: (names || '').split('\n').map((s) => s.trim()).filter(Boolean) };
+  } catch (e) { return { ok: false, error: String(e) }; }
+});
+
+const companyReqs = new Map(); // reqId -> ChildProcess
+// Убить директора вместе с деревом подпроцессов (process group), иначе Stop оставит сирот, жгущих бюджет.
+function companyKill(child) {
+  if (!child) return;
+  try {
+    if (process.platform !== 'win32' && child.pid) process.kill(-child.pid, 'SIGTERM');
+    else child.kill();
+  } catch (_) { try { child.kill(); } catch (_) {} }
+}
+ipcMain.on('company:run', (e, { reqId, projPath, goal, roles, director, limitUsd, permission, memoryOn } = {}) => {
+  const sender = e.sender;
+  if (!projPath) { safeSend(sender, 'company:error', { reqId, error: 'нет активного проекта' }); return; }
+  // материализуем штат в .claude/agents/ (нативные сабагенты)
+  try {
+    const agDir = path.join(projPath, '.claude', 'agents');
+    fs.mkdirSync(agDir, { recursive: true });
+    for (const r of (roles || [])) {
+      if (!r || !r.name) continue;
+      atomicWriteSync(path.join(agDir, companySafe(r.name) + '.md'), companyRoleMd(r));
+    }
+  } catch (err) { safeSend(sender, 'company:error', { reqId, error: 'не записать роли: ' + (err.message || err) }); return; }
+
+  let notes = '';
+  if (memoryOn) { try { notes = fs.readFileSync(companyNotesPath(projPath), 'utf8'); } catch (_) {} }
+  const args = ['-p', '--output-format', 'stream-json', '--verbose',
+    '--permission-mode', permission || 'acceptEdits',
+    '--append-system-prompt', companyDirectorPrompt(goal, roles, notes)];
+  if (limitUsd) args.push('--max-budget-usd', String(limitUsd));
+  if (director && director.model) args.push('--model', director.model);
+
+  let child;
+  // detached → свой process group: убиваем всё дерево (директор + его tool-подпроцессы), а не только claude.
+  try { child = spawn('claude', args, { cwd: projPath, env: tpEnv(), detached: process.platform !== 'win32' }); }
+  catch (err) { safeSend(sender, 'company:error', { reqId, error: 'не запустить «claude»: ' + (err.message || err) }); return; }
+  companyReqs.set(reqId, child);
+  let buf = '', errOut = '';
+  // сторож простоя: директор может думать долго, но если МОЛЧИТ 15 минут — считаем зависшим
+  let idle;
+  const bump = () => { clearTimeout(idle); idle = setTimeout(() => {
+    if (!companyReqs.has(reqId)) return; companyReqs.delete(reqId); companyKill(child);
+    safeSend(sender, 'company:error', { reqId, error: 'таймаут: директор молчит 15 минут' });
+  }, 15 * 60 * 1000); };
+  bump();
+  const emitLine = (line) => { const s = line.trim(); if (!s) return; let ev; try { ev = JSON.parse(s); } catch (_) { return; } safeSend(sender, 'company:event', { reqId, ev }); };
+  // stream-json идёт построчно (NDJSON) — режем по \n, парсим, шлём событиями
+  child.stdout.on('data', (c) => {
+    bump();
+    buf += c.toString('utf8');
+    let nl;
+    while ((nl = buf.indexOf('\n')) >= 0) { emitLine(buf.slice(0, nl)); buf = buf.slice(nl + 1); }
+  });
+  child.stderr.on('data', (c) => { bump(); errOut += c.toString('utf8'); });
+  child.stdin.on('error', () => {}); // claude не стартовал → async EPIPE на stdin не должен ронять main
+  child.on('error', (err) => {
+    if (!companyReqs.has(reqId)) return; companyReqs.delete(reqId); clearTimeout(idle);
+    safeSend(sender, 'company:error', { reqId, error: '«claude» не найден/не запустился: ' + (err.message || err) });
+  });
+  child.on('close', (code) => {
+    if (!companyReqs.has(reqId)) return; companyReqs.delete(reqId); clearTimeout(idle);
+    if (buf.trim()) emitLine(buf);   // флаш хвоста: финальный {type:'result'} может прийти без \n
+    safeSend(sender, 'company:done', { reqId, code, error: code ? (errOut.trim() || ('claude завершился с кодом ' + code)) : '' });
+  });
+  try { child.stdin.write(goal || ''); child.stdin.end(); } catch (_) {}
+});
+ipcMain.on('company:stop', (_e, { reqId } = {}) => {
+  const c = companyReqs.get(reqId);
+  if (c) { companyReqs.delete(reqId); companyKill(c); }
+});
+
 // ---------------------------------------------------------------- «Контекст» (граф контекста агента)
 // Модуль renderer/modules/contextgraph.js: per-project граф блоков контекста (канва как n8n).
 // Хранение: ~/.LiteEditorAI/contextgraph/{projects/<projId>/graph.json + blocks/*.md + seen-*.md,
@@ -1777,6 +1961,8 @@ app.on('window-all-closed', () => {
   cExecPtys.clear();
   for (const cp of cLogProcs.values()) { try { cp.kill(); } catch (_) {} }
   cLogProcs.clear();
+  for (const c of companyReqs.values()) { try { companyKill(c); } catch (_) {} } // detached-директора не должны пережить редактор
+  companyReqs.clear();
   try { dbApi.closeAll(); } catch (_) {}
   try { rhApi.closeAll(); } catch (_) {}
   for (const w of watchers.values()) { try { w.watcher.close(); } catch (_) {} }
