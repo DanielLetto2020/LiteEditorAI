@@ -26,7 +26,7 @@ import { el, svgEl, icon, iconBtn, hydrateIcons, toast, makeModal, showConfirm, 
 import { initExtensions } from './modules/extensions.js';
 // initFiles — вивер+дерево мигрированы в отдельное окно (renderer/module-entry.js).
 
-const APP_VERSION = 'alpha v1.1.37';
+const APP_VERSION = 'alpha v1.1.38';
 const GUTTER = 5;
 // Системный терминал («Система · ~») мигрирован в отдельное окно (renderer/modules/scratch.js):
 // его id `__scratch__::tN` маршрутизируются main'ом в окно-владельца, в ядре их больше не обрабатываем.
@@ -1707,6 +1707,188 @@ function buildModulesMenu(dd) {
   dd.appendChild(moduleRow('sliders', 'Настройка панели', 'быстрый доступ под терминалом', () => { closeMenus(); showPanelSetup(); }));
 }
 
+// ---------------------------------------------------------------- заготовленные промпты
+// Реплики для агента по правому клику в терминале. Делятся на ОБЩИЕ (видны в любом проекте) и
+// ПРОЕКТНЫЕ (только в своём проекте) — как задачи в модуле «Задачи». Хранятся в STORE.promptSnippets:
+//   { global: [{id,title,body}], byProject: { <projId>: [{id,title,body}] } }.
+// Клик по карточке ВСТАВЛЯЕТ текст в PTY без хвостового перевода строки — ничего не запускает.
+const DEFAULT_PROMPTS = [
+  { id: 'ps_explain', title: 'Объясни код', body: 'Объясни, что делает этот код, по шагам — без изменений.' },
+  { id: 'ps_bugs', title: 'Найди баги', body: 'Найди потенциальные баги и уязвимости в коде проекта и предложи исправления.' },
+  { id: 'ps_tests', title: 'Напиши тесты', body: 'Напиши модульные тесты для последних изменений.' },
+  { id: 'ps_refactor', title: 'Отрефактори', body: 'Предложи рефакторинг: чище и проще, без изменения поведения.' },
+];
+// Нормализует хранилище к {global, byProject}. Старый формат (плоский массив) мигрирует в global.
+function loadPromptStore() {
+  let v = STORE.promptSnippets;
+  if (Array.isArray(v)) { v = { global: v, byProject: {} }; persist('promptSnippets', v); return v; }
+  if (!v || typeof v !== 'object') { v = { global: DEFAULT_PROMPTS.map((p) => ({ ...p })), byProject: {} }; persist('promptSnippets', v); return v; }
+  if (!Array.isArray(v.global)) v.global = [];
+  if (!v.byProject || typeof v.byProject !== 'object') v.byProject = {};
+  return v;
+}
+function savePromptStore(s) { persist('promptSnippets', s); }
+function newPromptId() { return 'ps_' + Date.now().toString(36) + Math.floor(Math.random() * 1e4).toString(36); }
+// Вставка промпта в конкретную сессию (sid). Хвостовые переводы строк срезаем — ничего не запускаем.
+function insertPrompt(sid, body) {
+  const text = String(body || '').replace(/[\r\n]+$/, '');
+  if (text) lite.pty.write(sid, text);
+  const rec = terms.get(sid);
+  if (rec && rec.term) { try { rec.term.focus(); } catch (_) {} }
+}
+// Flyout-панель: проектные промпты (если есть) + общие, каждая группа со своей меткой; в шапке шестерёнка.
+function buildPromptPanel(sid, projId, schedClose, keepOpen) {
+  const sub = el('div', 'menu-dropdown menu-sub prompt-flyout');
+  sub.addEventListener('click', (e) => e.stopPropagation());
+  sub.addEventListener('mouseenter', keepOpen);
+  sub.addEventListener('mouseleave', schedClose);
+  const head = el('div', 'prompt-head');
+  head.appendChild(el('span', 'prompt-head-title', 'Промпты'));
+  const gear = iconBtn('prompt-gear', 'sliders', 'Управление промптами', 15);
+  gear.addEventListener('click', () => { closeMenus(); openPromptsManager(projId); });
+  head.appendChild(gear);
+  sub.appendChild(head);
+  const list = el('div', 'prompt-list');
+  const store = loadPromptStore();
+  const proj = projId ? (store.byProject[projId] || []) : [];
+  const glob = store.global || [];
+  const addCards = (arr) => {
+    for (const p of arr) {
+      const card = el('div', 'prompt-card');
+      card.appendChild(el('div', 'prompt-card-title', p.title || '(без названия)'));
+      if (p.body) card.appendChild(el('div', 'prompt-card-body', p.body));
+      card.addEventListener('click', () => { closeMenus(); insertPrompt(sid, p.body); });
+      list.appendChild(card);
+    }
+  };
+  if (!proj.length && !glob.length) {
+    list.appendChild(el('div', 'prompt-empty', 'Промптов пока нет'));
+  } else if (proj.length) {
+    // обе группы маркируем, чтобы было видно, что проектное, а что общее
+    list.appendChild(el('div', 'prompt-group', 'Проект'));
+    addCards(proj);
+    if (glob.length) { list.appendChild(el('div', 'prompt-group', 'Общие')); addCards(glob); }
+  } else {
+    addCards(glob); // только общие — без лишней метки
+  }
+  sub.appendChild(list);
+  return sub;
+}
+// Пункт «Промпты ▸» в контекстном меню: подменю раскрывается вправо по наведению (как в меню «Модули»).
+function addPromptsItem(dd, sid) {
+  const projId = (terms.get(sid) || {}).projId || String(sid).split('::')[0];
+  const row = el('div', 'menu-row menu-flyout');
+  const ic = el('span', 'menu-ic'); ic.appendChild(icon('chat', 16));
+  row.append(ic, el('span', null, 'Промпты'));
+  const arr = el('span', 'menu-arrow'); arr.appendChild(icon('chevron-right', 15)); row.appendChild(arr);
+  let sub = null, closeT = null;
+  const closeSub = () => { if (sub) { sub.remove(); sub = null; } row.classList.remove('sub-open'); };
+  const schedClose = () => { clearTimeout(closeT); closeT = setTimeout(closeSub, 240); };
+  const keepOpen = () => clearTimeout(closeT);
+  row.addEventListener('mouseenter', () => {
+    clearTimeout(closeT);
+    if (sub) return;
+    sub = buildPromptPanel(sid, projId, schedClose, keepOpen);
+    $('#menu-layer').appendChild(sub);
+    const rr = row.getBoundingClientRect();
+    sub.style.top = rr.top + 'px';
+    sub.style.left = (rr.right - 4) + 'px';
+    const sr = sub.getBoundingClientRect();
+    if (sr.right > window.innerWidth - 8) sub.style.left = Math.max(8, rr.left - sr.width + 4) + 'px';
+    if (sr.bottom > window.innerHeight - 8) sub.style.top = Math.max(8, window.innerHeight - 8 - sr.height) + 'px';
+    row.classList.add('sub-open');
+  });
+  row.addEventListener('mouseleave', schedClose);
+  dd.appendChild(row);
+}
+// Менеджер промптов: две колонки (Проект | Общие), каждая со своим скроллом; inline-правка названия+тела,
+// перемещение ↑/↓ внутри колонки, удаление и переброс между колонками (как перенос задач проект↔общие).
+function openPromptsManager(projId) {
+  const store = loadPromptStore();
+  const projName = (projects.find((p) => p.id === projId) || {}).name || 'Проект';
+  const clone = (arr) => (arr || []).map((p) => ({ id: p.id, title: p.title || '', body: p.body || '' }));
+  const cols = { proj: clone(store.byProject[projId]), glob: clone(store.global) };
+  const listEls = {};
+  const syncFromDom = () => {
+    for (const key of ['proj', 'glob']) {
+      if (!listEls[key]) continue;
+      for (const row of listEls[key].children) {
+        const it = cols[key].find((x) => x.id === row.dataset.id);
+        if (!it) continue;
+        it.title = row.querySelector('.pm-title').value;
+        it.body = row.querySelector('.pm-body').value;
+      }
+    }
+  };
+  const persistNow = () => {
+    if (cols.proj.length) store.byProject[projId] = cols.proj; else delete store.byProject[projId];
+    store.global = cols.glob;
+    savePromptStore(store);
+  };
+  const commit = () => { syncFromDom(); persistNow(); };
+  const { m, close } = makeModal(`
+    <h2>💬 Заготовленные промпты</h2>
+    <div class="pm-hint">Доступны по правому клику в терминале → «Промпты». Клик по карточке вставляет текст в активный терминал <b>без запуска</b>. Слева — промпты этого проекта, справа — общие для всех проектов.</div>
+    <div class="pm-cols">
+      <div class="pm-col">
+        <div class="pm-col-head" data-head="proj"></div>
+        <div class="pm-list" data-list="proj"></div>
+        <button class="btn pm-add" data-add="proj">＋ Добавить</button>
+      </div>
+      <div class="pm-col">
+        <div class="pm-col-head">Общие</div>
+        <div class="pm-list" data-list="glob"></div>
+        <button class="btn pm-add" data-add="glob">＋ Добавить</button>
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn primary" id="pm-done">Готово</button>
+    </div>`, commit);
+  m.querySelector('[data-head="proj"]').textContent = 'Проект — ' + projName;
+  listEls.proj = m.querySelector('[data-list="proj"]');
+  listEls.glob = m.querySelector('[data-list="glob"]');
+  const move = (key, i, d) => { syncFromDom(); const a = cols[key], j = i + d; if (j < 0 || j >= a.length) return; [a[i], a[j]] = [a[j], a[i]]; persistNow(); render(); };
+  const remove = (key, i) => { syncFromDom(); cols[key].splice(i, 1); persistNow(); render(); };
+  const add = (key) => { syncFromDom(); const it = { id: newPromptId(), title: '', body: '' }; cols[key].push(it); persistNow(); render(key, it.id); };
+  const transfer = (key, i) => { syncFromDom(); const dest = key === 'proj' ? 'glob' : 'proj'; const [it] = cols[key].splice(i, 1); cols[dest].push(it); persistNow(); render(dest, it.id); };
+  const buildRow = (key, it, i) => {
+    const row = el('div', 'pm-row'); row.dataset.id = it.id;
+    const head = el('div', 'pm-row-head');
+    const ti = el('input', 'pm-title'); ti.type = 'text'; ti.value = it.title; ti.placeholder = 'Название';
+    ti.addEventListener('change', commit);
+    const ctrl = el('div', 'pm-ctrl');
+    const up = iconBtn('pm-mini', 'chevron-up', 'Выше', 15); up.disabled = i === 0;
+    up.addEventListener('click', () => move(key, i, -1));
+    const down = iconBtn('pm-mini', 'chevron-down', 'Ниже', 15); down.disabled = i === cols[key].length - 1;
+    down.addEventListener('click', () => move(key, i, 1));
+    const toGlob = key === 'proj';
+    const mv = iconBtn('pm-mini', toGlob ? 'globe' : 'folder', toGlob ? 'В общие' : 'В проект', 15);
+    mv.addEventListener('click', () => transfer(key, i));
+    const del = iconBtn('pm-mini del', 'trash', 'Удалить', 15);
+    del.addEventListener('click', () => remove(key, i));
+    ctrl.append(up, down, mv, del);
+    head.append(ti, ctrl);
+    const body = el('textarea', 'pm-body'); body.value = it.body; body.placeholder = 'Текст промпта…';
+    body.addEventListener('change', commit);
+    row.append(head, body);
+    return row;
+  };
+  const render = (focusKey, focusId) => {
+    for (const key of ['proj', 'glob']) {
+      const listEl = listEls[key]; listEl.innerHTML = '';
+      if (!cols[key].length) { listEl.appendChild(el('div', 'pm-empty', key === 'proj' ? 'Нет промптов проекта' : 'Нет общих промптов')); continue; }
+      cols[key].forEach((it, i) => listEl.appendChild(buildRow(key, it, i)));
+    }
+    if (focusId && listEls[focusKey]) {
+      const r = listEls[focusKey].querySelector(`.pm-row[data-id="${focusId}"]`);
+      if (r) setTimeout(() => r.querySelector('.pm-title').focus(), 20);
+    }
+  };
+  m.querySelectorAll('.pm-add').forEach((b) => { b.onclick = () => add(b.dataset.add); });
+  m.querySelector('#pm-done').onclick = close;
+  render();
+}
+
 // terminal right-click menu
 function showTermMenu(x, y, term, projId) {
   closeMenus();
@@ -1719,6 +1901,8 @@ function showTermMenu(x, y, term, projId) {
     if (term.clearSelection) term.clearSelection();
   } : null, hasSel ? '' : 'disabled'));
   dd.appendChild(menuRow('clipboard', 'Вставить', () => { closeMenus(); pasteInto(projId); }));
+  dd.appendChild(el('div', 'menu-sep'));
+  addPromptsItem(dd, projId);
   dd.appendChild(el('div', 'menu-sep'));
   dd.appendChild(menuRow('eraser', 'Очистить', () => { closeMenus(); clearTerminal(projId); }));
   dd.appendChild(menuRow('refresh', 'Перезапустить', () => { closeMenus(); restartTerminal(projId); }));
