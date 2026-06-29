@@ -69,23 +69,46 @@
         </div>
       </section>
 
-      <!-- Обработка текста: документы + AI-правки фрагментов (renderer/modules/textproc.js) -->
+      <!-- Обработка текста: документ слева + чат с агентом справа (renderer/modules/textproc.js) -->
       <div id="gutter-doc" class="gutter hidden" data-resize="doc"></div>
       <section id="doc-pane" class="hidden">
         <div class="pane-head">
           <span id="doc-title" class="doc-title">Обработка текста</span>
           <div class="drag-space-static"></div>
           <span id="doc-saved" class="doc-saved"></span>
+          <button id="doc-bookmarks" class="icon-btn" title="Закладки" data-icon="bookmark"></button>
+          <button id="doc-history" class="icon-btn" title="История изменений" data-icon="history"></button>
           <button id="doc-settings" class="icon-btn" title="Промпты и агент" data-icon="sliders"></button>
         </div>
         <div id="doc-tabs" class="doc-tabs"></div><!-- вкладка на каждый документ (рендерит textproc.js) -->
+        <div id="doc-format" class="doc-format"></div><!-- панель форматирования (рендерит textproc.js) -->
         <div id="doc-toolbar">
           <div id="doc-modes" class="doc-modes"></div>
         </div>
-        <div id="doc-body" class="doc-body">
-          <div id="doc-editor" class="doc-editor"></div>
-          <div id="doc-preview" class="doc-preview prev-md" style="display:none"></div>
-          <button id="doc-ai-btn" class="doc-ai-btn" type="button" style="display:none">✦ AI</button>
+        <div id="doc-main" class="doc-main">
+          <div id="doc-workspace" class="doc-workspace">
+            <div id="doc-body" class="doc-body">
+              <div id="doc-editor" class="doc-editor"></div>
+              <div id="doc-preview" class="doc-preview prev-md" style="display:none"></div>
+              <button id="doc-ai-btn" class="doc-ai-btn" type="button" style="display:none">✦ AI</button>
+            </div>
+          </div>
+          <div id="gutter-doc-chat" class="doc-chat-gutter"></div>
+          <aside id="doc-chat" class="doc-chat">
+            <div class="doc-chat-head">
+              <span class="doc-chat-title"><span class="doc-chat-spark">✦</span> AI-обработка</span>
+              <div class="drag-space-static"></div>
+              <div id="doc-chat-agents" class="doc-chat-agents"></div>
+              <button id="doc-chat-collapse" class="icon-btn" title="Свернуть панель" data-icon="chevron-right"></button>
+            </div>
+            <div id="doc-chat-ctx" class="doc-chat-ctx"></div><!-- чип выделенного фрагмента -->
+            <div id="doc-chat-presets" class="doc-chat-presets"></div><!-- системный промпт + заготовки -->
+            <div id="doc-chat-log" class="doc-chat-log"></div>
+            <div class="doc-chat-input">
+              <textarea id="doc-chat-text" rows="2" placeholder="Что сделать с фрагментом…  (Enter — отправить, Shift+Enter — перенос)" spellcheck="false"></textarea>
+              <button id="doc-chat-send" class="btn primary doc-chat-send" type="button" title="Отправить">▶</button>
+            </div>
+          </aside>
         </div>
       </section>
 

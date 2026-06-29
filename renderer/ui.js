@@ -106,6 +106,22 @@ export const ICONS = {
   wrench: '<path d="M14.7 6.3a4 4 0 0 0-5.4 5.2L4 16.8 7.2 20l5.3-5.3a4 4 0 0 0 5.2-5.4l-2.6 2.6-2.3-.3-.3-2.3z"/>',
   image: '<rect x="3.5" y="4.5" width="17" height="15" rx="2.5"/><circle cx="9" cy="10" r="1.8"/><path d="M5 18l4.5-4.5 3 3L16 13l3 3.5"/>',
   braces: '<path d="M8 4.5c-2 0-2.5 1-2.5 3v1.5C5.5 10.5 5 11 3.5 11M3.5 11c1.5 0 2 .5 2 2v3c0 2 .5 3 2.5 3"/><path d="M16 4.5c2 0 2.5 1 2.5 3v1.5c0 1.5.5 2 2 2M20.5 11c-1.5 0-2 .5-2 2v3c0 2-.5 3-2.5 3"/>',
+  // --- «Обработка текста»: панель форматирования / закладки / история / формулы ---
+  bold: '<path d="M7 5h6.5a3.5 3.5 0 0 1 0 7H7zM7 12h7.5a3.5 3.5 0 0 1 0 7H7z"/>',
+  italic: '<path d="M10 5h7M7 19h7M14.5 5l-5 14"/>',
+  strikethrough: '<path d="M4 12h16"/><path d="M7.5 8c0-2 2-3.2 4.5-3.2 2 0 3.4.7 4 2M16 15c0 2.2-1.8 3.6-4.6 3.6-2 0-3.5-.6-4.3-1.8"/>',
+  heading: '<path d="M6 5v14M18 5v14M6 12h12"/>',
+  list: '<path d="M9 6h11M9 12h11M9 18h11"/><circle cx="4.5" cy="6" r="1.3" fill="currentColor" stroke="none"/><circle cx="4.5" cy="12" r="1.3" fill="currentColor" stroke="none"/><circle cx="4.5" cy="18" r="1.3" fill="currentColor" stroke="none"/>',
+  'list-ordered': '<path d="M10 6h10M10 12h10M10 18h10"/><path d="M4 5h1.4v3.7M3.7 8.7h1.7"/><path d="M3.6 14.4c0-.6.5-1 1.1-1s1.1.4 1.1 1c0 1-2.1 1.4-2.1 2.6h2.2"/>',
+  quote: '<path d="M5 5v14M9 8h10M9 12h10M9 16h6"/>',
+  link: '<path d="M9.5 14.5l5-5M8 11.5l-1.8 1.8a3.5 3.5 0 0 0 5 5l1.8-1.8M16 12.5l1.8-1.8a3.5 3.5 0 0 0-5-5L11 7.5"/>',
+  table: '<rect x="3.5" y="4.5" width="17" height="15" rx="2"/><path d="M3.5 9.5h17M3.5 14.5h17M9 4.5v15"/>',
+  code: '<path d="M9 8l-4 4 4 4M15 8l4 4-4 4"/>',
+  bookmark: '<path d="M7 4.5h10a1 1 0 0 1 1 1V20l-6-3.2L6 20V5.5a1 1 0 0 1 1-1z"/>',
+  sigma: '<path d="M16.5 5h-9l5 7-5 7h9.5"/>',
+  history: '<path d="M3.5 12a8.5 8.5 0 1 0 2.6-6.1"/><path d="M3.5 4.5v4h4"/><path d="M12 8v4.2l3 1.8"/>',
+  minus: '<path d="M5 12h14"/>',
+  pin: '<path d="M12 16.5V22M8.5 4.5h7l-1 5 2.5 2.5H7l2.5-2.5z"/>',
 };
 export function icon(name, size = 16) {
   return svgEl(`<svg class="ic" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name] || ''}</svg>`);
