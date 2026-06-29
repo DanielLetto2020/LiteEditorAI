@@ -26,7 +26,7 @@ import { el, svgEl, icon, iconBtn, hydrateIcons, toast, makeModal, showConfirm, 
 import { initExtensions } from './modules/extensions.js';
 // initFiles — вивер+дерево мигрированы в отдельное окно (renderer/module-entry.js).
 
-const APP_VERSION = 'alpha v1.1.39';
+const APP_VERSION = 'alpha v1.1.40';
 const GUTTER = 5;
 // Системный терминал («Система · ~») мигрирован в отдельное окно (renderer/modules/scratch.js):
 // его id `__scratch__::tN` маршрутизируются main'ом в окно-владельца, в ядре их больше не обрабатываем.
@@ -1286,7 +1286,7 @@ const panels = new Map(); // id -> { isOpen(), setOpen(open, opts) }
 // Правый слот редактора теперь держит только «Мои модули» (ext); всё остальное — отдельные окна.
 const PANEL_ORDER = [];
 // Модули, мигрированные в отдельные окна (открываются через lite.module.open, не как панель правого слота).
-const WINDOW_MODULES = new Set(['tools', 'iterflow', 'seo', 'audit', 'company', 'notes', 'db', 'chat', 'doc', 'docker', 'rh', 'ctx', 'scratch', 'files']);
+const WINDOW_MODULES = new Set(['tools', 'iterflow', 'seo', 'audit', 'company', 'notes', 'db', 'chat', 'doc', 'docker', 'rh', 'ctx', 'scratch', 'files', 'pomodoro']);
 function registerPanel(id, api) { panels.set(id, api); }
 function closeOtherPanels(selfId) {
   for (const id of PANEL_ORDER) {
@@ -1356,6 +1356,7 @@ const QUICK_BUILTIN = [
   { id: 'tools',   icon: 'wrench',   label: 'Инструменты — base64, JSON/YAML, хэши, regex…' },
   { id: 'chat',    icon: 'chat',     label: 'OpenRouter — чат по своим API-ключам' },
   { id: 'doc',     icon: 'note',     label: 'Обработка текста — документы + AI-правки' },
+  { id: 'pomodoro', icon: 'clock',   label: 'Помодоро — таймер работы/отдыха с блокировкой' },
   { id: 'scratch', icon: 'terminal', label: 'Системный терминал (вне проектов)' },
 ];
 function quickAllModules() {
@@ -1379,6 +1380,7 @@ function renderQuickbar() {
     b.dataset.mod = id;
     b.appendChild(icon(m.icon, 16));
     if (id === 'notes') b.appendChild(el('span', 'qb-badge')); // бейдж активных задач активного проекта
+    if (id === 'pomodoro') b.appendChild(el('span', 'qb-badge qb-badge-pomo')); // бейдж остатка времени помодоро
     b.onclick = m.open;
     bar.appendChild(b);
     shown++;
@@ -1387,6 +1389,7 @@ function renderQuickbar() {
   bar.classList.toggle('hidden', !shown); // только разделители (без кнопок) панель не показывают
   if (wasHidden !== !shown) setTimeout(refitActiveTerminal, 60); // высота терминала изменилась
   updateNotesBadge();
+  updatePomoUI(pomoLast); // перерисовали квикбар — восстановить бейдж остатка помодоро
 }
 // Бейдж активных (не выполненных) задач АКТИВНОГО проекта на кнопке «Задачи» квикбара. Источник —
 // STORE.noteCounts (стартовый снимок в main.js + живые апдейты через refreshNotesCount по app:notesChanged).
@@ -1701,6 +1704,7 @@ function buildModulesMenu(dd) {
     sub.appendChild(moduleRow('wrench', 'Инструменты', 'base64, JSON/YAML, хэши, JWT, regex, diff', () => { closeMenus(); openModule('tools'); }));
     sub.appendChild(moduleRow('chat', 'OpenRouter', 'чат по своим API-ключам', () => { closeMenus(); openModule('chat'); }));
     sub.appendChild(moduleRow('note', 'Обработка текста', 'документы + AI-правки фрагментов', () => { closeMenus(); openModule('doc'); }));
+    sub.appendChild(moduleRow('clock', 'Помодоро', 'таймер работы/отдыха с блокировкой', () => { closeMenus(); openModule('pomodoro'); }));
     sub.appendChild(el('div', 'menu-sep'));
     sub.appendChild(moduleRow('terminal', 'Системный терминал', 'вне проектов', () => { closeMenus(); openModule('scratch'); }));
   });
@@ -2299,6 +2303,7 @@ function paletteActions() {
   acts.push({ label: 'Базы данных (Postgres / MySQL / SQLite)', run: () => openModule('db') });
   acts.push({ label: 'Задачи — заметки проекта', run: () => openModule('notes') });
   acts.push({ label: 'ИИ компания — команда агентов над проектом', run: () => openModule('company') });
+  acts.push({ label: 'Помодоро — таймер работы/отдыха', run: () => openModule('pomodoro') });
   acts.push({ label: 'Режим «один терминал»', run: toggleSingle });
   acts.push({ label: 'Поиск в терминале', run: openTermSearch });
   acts.push({ label: 'Очистить терминал', run: () => clearTerminal() });
@@ -2415,6 +2420,111 @@ async function checkForUpdate({ manual = false } = {}) {
 }
 
 // ---------------------------------------------------------------- init
+// ── Помодоро: мини-таймер в титлбаре + бейдж квикбара + звон смены фазы ──────────────
+// Тик прилетает из main (lite.pomodoro.onTick) — движок таймера живёт там.
+let pomoLast = null;
+function fmtRest(sec) {
+  sec = Math.max(0, Math.round(sec || 0));
+  const m = Math.floor(sec / 60), s = sec % 60;
+  return String(m).padStart(2, '0') + ':' + String(s).padStart(2, '0');
+}
+const POMO_PHASE_SHORT = { work: 'Работа', short: 'Перерыв', long: 'Перерыв' };
+function updatePomoUI(s) {
+  pomoLast = s;
+  const running = !!(s && s.running);
+  const mini = $('#pomo-mini');
+  if (mini) {
+    mini.hidden = !running;
+    if (running) {
+      mini.innerHTML = '';
+      mini.classList.toggle('break', s.phase === 'short' || s.phase === 'long');
+      mini.append(icon('clock', 13), el('span', null, fmtRest(s.remaining) + (s.paused ? ' ⏸' : '') + ' · ' + (POMO_PHASE_SHORT[s.phase] || '')));
+    }
+  }
+  // бейдж квикбара: минуты до конца фазы (тиковый mm:ss не влезает в крошечный бейдж)
+  const badge = document.querySelector('#quickbar .qb-btn[data-mod="pomodoro"] .qb-badge-pomo');
+  if (badge) {
+    if (running) {
+      const min = Math.max(0, Math.ceil(s.remaining / 60));
+      badge.textContent = min >= 1 ? String(min) : '<1';
+      badge.classList.toggle('break', s.phase === 'short' || s.phase === 'long');
+      badge.classList.add('show');
+    } else { badge.classList.remove('show'); }
+  }
+}
+// Короткий звон при смене фазы (WebAudio — без файлов-ассетов). Восходящий мотив → за работу,
+// мягкий нисходящий → отдых.
+let pomoAudioCtx = null;
+function pomoChime(to) {
+  try {
+    pomoAudioCtx = pomoAudioCtx || new (window.AudioContext || window.webkitAudioContext)();
+    const ctx = pomoAudioCtx;
+    if (ctx.state === 'suspended') ctx.resume().catch(() => {});
+    const notes = to === 'work' ? [523.25, 659.25, 783.99] : [659.25, 523.25, 392.0];
+    let t = ctx.currentTime;
+    for (const f of notes) {
+      const osc = ctx.createOscillator(), g = ctx.createGain();
+      osc.type = 'sine'; osc.frequency.value = f;
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.exponentialRampToValueAtTime(0.18, t + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + 0.22);
+      osc.connect(g).connect(ctx.destination);
+      osc.start(t); osc.stop(t + 0.24);
+      t += 0.16;
+    }
+  } catch (_) {}
+}
+
+// ── Помодоро: оверлей отдыха над зоной терминалов ───────────────────────────────────
+// Полупрозрачный слой поверх #term-body. Блокирует ВВОД человека (перехват кликов
+// pointer-events + снятие фокуса с xterm), но PTY НЕ трогаем — агенты продолжают работать,
+// вывод виден сквозь оверлей. Состоянием управляет main (editor:restGuard): show/обновление/hide.
+// Прогресс-кольцо вокруг часов; затемнение фона усиливается к концу перерыва (доля пройдено).
+let restGuardEl = null;
+const REST_R = 70, REST_C = 2 * Math.PI * REST_R;
+function applyRestGuard(s) {
+  const host = $('#term-body');
+  if (!host) return;
+  if (!s || !s.show) {
+    if (restGuardEl) { restGuardEl.remove(); restGuardEl = null; }
+    return;
+  }
+  const justAppeared = !restGuardEl;
+  if (justAppeared) {
+    restGuardEl = el('div', 'rest-overlay');
+    restGuardEl.tabIndex = -1;
+    const card = el('div', 'rest-card');
+    const ringWrap = el('div', 'rest-ring');
+    ringWrap.innerHTML = `<svg viewBox="0 0 160 160" class="rest-ring-svg" aria-hidden="true">
+      <circle class="rest-ring-bg" cx="80" cy="80" r="${REST_R}"/>
+      <circle class="rest-ring-fg" cx="80" cy="80" r="${REST_R}" stroke-dasharray="${REST_C.toFixed(1)}" stroke-dashoffset="0"/>
+    </svg>`;
+    const center = el('div', 'rest-ring-center');
+    center.appendChild(el('div', 'rest-title'));
+    center.appendChild(el('div', 'rest-clock'));
+    ringWrap.appendChild(center);
+    card.appendChild(ringWrap);
+    card.appendChild(el('div', 'rest-sub', 'Отойдите от экрана — агенты продолжают работать'));
+    const skipBtn = el('button', 'rest-skip');
+    skipBtn.append(icon('skip', 16), el('span', null, 'Пропустить'));
+    skipBtn.onclick = () => { try { lite.editorBus.pomodoroSkip(); } catch (_) {} };
+    card.appendChild(skipBtn);
+    restGuardEl.appendChild(card);
+    host.appendChild(restGuardEl);
+    // снять фокус с терминала, чтобы клавиатура не уходила в xterm под оверлеем
+    try { if (document.activeElement && document.activeElement.blur) document.activeElement.blur(); } catch (_) {}
+    try { restGuardEl.focus(); } catch (_) {}
+  }
+  const done = s.total ? Math.max(0, Math.min(1, (s.total - s.remaining) / s.total)) : 0;
+  restGuardEl.querySelector('.rest-title').textContent = s.phase === 'long' ? 'Длинный перерыв' : 'Короткий перерыв';
+  restGuardEl.querySelector('.rest-clock').textContent = fmtRest(s.remaining) + (s.paused ? '  ⏸' : '');
+  restGuardEl.querySelector('.rest-skip').style.display = s.allowSkip ? '' : 'none';
+  // кольцо «осталось»: убывает от полного к нулю
+  restGuardEl.querySelector('.rest-ring-fg').style.strokeDashoffset = (REST_C * done).toFixed(1);
+  // затемнение усиливается к концу перерыва (#20): 0.45 → 0.82
+  restGuardEl.style.setProperty('--rest-dim', (0.45 + 0.37 * done).toFixed(2));
+}
+
 function init() {
   hydrateIcons(); // fill the static [data-icon] buttons (titlebar / pane toolbars) with SVG
   { const av = $('#app-ver'); if (av) av.textContent = APP_VERSION; } // version label in the titlebar
@@ -2497,6 +2607,11 @@ function init() {
   lite.editorBus.onSendToTerminal((text) => { const p = activeProject(); if (p) sendNoteToTerminal(p, text); });
   lite.editorBus.onSendNoteToTerminal((projId, text) => { const proj = projects.find((x) => x.id === projId) || activeProject(); if (proj) sendNoteToTerminal(proj, text); });
   lite.editorBus.onRefreshProjects(() => { try { renderProjects(); } catch (_) {} }); // git в окне вивера сделал commit/checkout → освежить бейджи
+  lite.editorBus.onRestGuard((s) => { try { applyRestGuard(s); } catch (e) { console.error(e); } }); // Помодоро: оверлей отдыха над терминалами
+  lite.pomodoro.onTick((s) => { try { updatePomoUI(s); } catch (_) {} });        // мини-таймер в титлбаре + бейдж квикбара
+  lite.pomodoro.onChime(({ to }) => { try { pomoChime(to); } catch (_) {} });     // звон смены фазы
+  { const mini = $('#pomo-mini'); if (mini) mini.onclick = () => openModule('pomodoro'); }
+  lite.pomodoro.getState().then((s) => updatePomoUI(s)).catch(() => {});          // стартовый снимок (таймер мог идти до открытия редактора)
   $('#term-clear').addEventListener('click', () => clearTerminal());
   $('#term-restart').addEventListener('click', () => restartTerminal());
   $('#attention-badge').addEventListener('click', () => {

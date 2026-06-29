@@ -1,6 +1,6 @@
 // LiteEditor — Electron main process.
 // Thin backend: project picker, PTY lifecycle, file ops, window controls.
-const { app, BrowserWindow, ipcMain, dialog, shell, Menu, clipboard, screen, Tray, nativeImage, crashReporter, safeStorage } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, Menu, clipboard, screen, Tray, nativeImage, crashReporter, safeStorage, Notification } = require('electron');
 const dbBackend = require('./lib/db');
 const rhBackend = require('./lib/remotehost');
 const path = require('path');
@@ -225,7 +225,7 @@ try {
   const legacy = path.join(os.homedir(), '.LiteEditor');
   if (!fs.existsSync(storeDir) && fs.existsSync(legacy)) fs.cpSync(legacy, storeDir, { recursive: true });
 } catch (_) {}
-const STORE_KEYS = ['projects', 'settings', 'layout', 'recents', 'lastParent', 'categories', 'sectionOrder', 'accordions', 'dismissed', 'uiState', 'projTabs', 'openrouter', 'remote', 'shares', 'pultBlocked', 'dockerUi', 'dbConnections', 'dbUi', 'rhConnections', 'rhUi', 'textproc', 'tpPrompts', 'extData', 'extEnabled', 'quickbar', 'seoTargets', 'seoSites', 'moduleWins', 'mwLeft', 'bookmarks', 'promptSnippets'];
+const STORE_KEYS = ['projects', 'settings', 'layout', 'recents', 'lastParent', 'categories', 'sectionOrder', 'accordions', 'dismissed', 'uiState', 'projTabs', 'openrouter', 'remote', 'shares', 'pultBlocked', 'dockerUi', 'dbConnections', 'dbUi', 'rhConnections', 'rhUi', 'textproc', 'tpPrompts', 'extData', 'extEnabled', 'quickbar', 'seoTargets', 'seoSites', 'moduleWins', 'mwLeft', 'bookmarks', 'promptSnippets', 'pomodoro', 'pomodoroLog'];
 // Папка-«стор» для шаринга с пультом (агент кладёт сюда файлы; в PTY доступна как $LITE_STORE).
 const pultStoreDir = path.join(storeDir, 'store');
 try { fs.mkdirSync(pultStoreDir, { recursive: true }); } catch (_) {}
@@ -1555,6 +1555,139 @@ function closeAllModuleWindows() {
   moduleWindows.clear();
 }
 
+// ── Помодоро: долгоживущий движок таймера в main ──────────────────────────────────────
+// Таймер живёт здесь (а не в окне модуля), чтобы отсчёт переживал закрытие окна «Помодоро»:
+// смысл фичи — «поставил и работаешь». Окно модуля = пульт; на каждом тике сюда летит снимок
+// состояния (pomodoro:tick). В фазе перерыва, если у техники включён `block`, main управляет
+// полупрозрачным оверлеем над терминалами в окне редактора (editor:restGuard) — оверлей блокирует
+// ВВОД человека, но НЕ PTY: агенты продолжают работать, вывод виден сквозь оверлей.
+const POMO = {
+  running: false, paused: false,
+  phase: 'idle',   // 'idle' | 'work' | 'short' | 'long'
+  remaining: 0,    // секунд до конца текущей фазы
+  cycle: 0,        // завершённых рабочих интервалов в текущем подходе
+  tech: null,      // снимок техники {name, work, short, long, cyclesBeforeLong, block, allowSkip}
+};
+let pomoTimer = null;
+
+// Длительность текущей фазы в секундах (для прогресс-кольца и затемнения оверлея).
+function pomoPhaseTotal() {
+  const t = POMO.tech || {};
+  const mins = POMO.phase === 'work' ? t.work : POMO.phase === 'long' ? t.long : POMO.phase === 'short' ? t.short : 0;
+  return Math.max(1, Math.round((mins || 0) * 60));
+}
+function pomoSnapshot() {
+  return { running: POMO.running, paused: POMO.paused, phase: POMO.phase, remaining: POMO.remaining, total: pomoPhaseTotal(), cycle: POMO.cycle, tech: POMO.tech };
+}
+// Тик уходит и в окна модулей (пульт), и в окно редактора (мини-таймер в титлбаре + бейдж квикбара).
+function pomoEmit() {
+  const snap = pomoSnapshot();
+  broadcastToModules('pomodoro:tick', snap);
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('pomodoro:tick', snap);
+}
+
+// Журнал завершённых помидоров (только main пишет; ключ отдельный от 'pomodoro', который пишет рендерер).
+function readPomoLog() { const v = readStoreKey('pomodoroLog'); return Array.isArray(v) ? v : []; }
+function pomoRecordDone() {
+  const log = readPomoLog();
+  log.push({
+    ts: Date.now(),
+    techName: (POMO.tech && POMO.tech.name) || '',
+    workMin: (POMO.tech && POMO.tech.work) || 0,
+    projId: (activeProjectInfo && activeProjectInfo.id) || null,
+    projName: (activeProjectInfo && activeProjectInfo.name) || null,
+  });
+  if (log.length > 5000) log.splice(0, log.length - 5000); // хвостовая обрезка — лог не растёт бесконечно
+  writeStoreKey('pomodoroLog', log);
+  broadcastToModules('pomodoro:logChanged', null);
+}
+// Уведомление ОС + звон при смене фазы. Звук играем в окне редактора (всегда открыто; модуль-пульт может
+// быть закрыт). Настройки soundOn/notifyOn читаем из общего ключа 'pomodoro' (его пишет рендерер).
+function pomoNotifyPhase(from, to) {
+  if (from === to) return;
+  const cfg = readStoreKey('pomodoro') || {};
+  const label = { work: 'Работа', short: 'Короткий перерыв', long: 'Длинный перерыв' };
+  if (cfg.notifyOn !== false && Notification.isSupported()) {
+    try {
+      new Notification({
+        title: to === 'work' ? 'Перерыв окончен — за работу' : 'Время отдыхать 🍅',
+        body: to === 'work' ? 'Возвращайтесь к делу' : (label[to] + ' — агенты продолжают работать'),
+        silent: true, // свой звон играем сами (ниже), чтобы он был и без системного звука уведомлений
+      }).show();
+    } catch (_) {}
+  }
+  if (cfg.soundOn !== false && mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('pomodoro:chime', { to });
+}
+// Оверлей отдыха в окне редактора: показываем на перерыве (если техника блокирует), иначе прячем.
+function pomoSyncOverlay() {
+  const onBreak = POMO.running && (POMO.phase === 'short' || POMO.phase === 'long');
+  const block = !!(POMO.tech && POMO.tech.block);
+  if (onBreak && block) {
+    forwardToEditor('editor:restGuard', {
+      show: true, phase: POMO.phase, remaining: POMO.remaining, total: pomoPhaseTotal(), paused: POMO.paused,
+      allowSkip: !!(POMO.tech && POMO.tech.allowSkip), techName: POMO.tech && POMO.tech.name,
+    });
+  } else {
+    forwardToEditor('editor:restGuard', { show: false });
+  }
+}
+function pomoSetPhase(phase) {
+  POMO.phase = phase;
+  const t = POMO.tech || {};
+  const mins = phase === 'work' ? t.work : phase === 'long' ? t.long : phase === 'short' ? t.short : 0;
+  POMO.remaining = Math.max(1, Math.round((mins || 0) * 60));
+}
+// Завершить текущую фазу и перейти к следующей (естественный конец отсчёта ИЛИ «Пропустить»).
+// viaSkip=true → рабочий интервал НЕ засчитывается в журнал (засчитываем только доведённые до конца).
+function pomoAdvance(viaSkip) {
+  const t = POMO.tech || {};
+  const from = POMO.phase;
+  if (from === 'work') {
+    if (!viaSkip) pomoRecordDone();   // завершённый помидор → в журнал
+    POMO.cycle += 1;
+    const beforeLong = Math.max(1, t.cyclesBeforeLong || 4);
+    pomoSetPhase((POMO.cycle % beforeLong === 0) ? 'long' : 'short');
+  } else {
+    // перерыв (short/long) закончился → новый рабочий интервал
+    pomoSetPhase('work');
+  }
+  pomoSyncOverlay();
+  pomoNotifyPhase(from, POMO.phase);
+  pomoEmit();
+}
+function pomoTick() {
+  if (!POMO.running || POMO.paused) return;
+  POMO.remaining -= 1;
+  if (POMO.remaining <= 0) { pomoAdvance(false); return; }
+  // на перерыве каждую секунду обновляем оверлей (и самовосстанавливаем его, если редактор перезагрузился)
+  if (POMO.phase === 'short' || POMO.phase === 'long') pomoSyncOverlay();
+  pomoEmit();
+}
+function pomoEnsureTimer() {
+  if (!pomoTimer) pomoTimer = setInterval(pomoTick, 1000);
+}
+function pomoStart(tech) {
+  if (!tech) return { ok: false, error: 'Не задана техника' };
+  POMO.tech = {
+    name: String(tech.name || 'Помодоро'),
+    work: Number(tech.work) || 25, short: Number(tech.short) || 5, long: Number(tech.long) || 15,
+    cyclesBeforeLong: Math.max(1, Number(tech.cyclesBeforeLong) || 4),
+    block: tech.block !== false, allowSkip: tech.allowSkip !== false,
+  };
+  POMO.running = true; POMO.paused = false; POMO.cycle = 0;
+  pomoSetPhase('work');
+  pomoEnsureTimer();
+  pomoSyncOverlay();
+  pomoEmit();
+  return { ok: true };
+}
+function pomoStop() {
+  POMO.running = false; POMO.paused = false; POMO.phase = 'idle'; POMO.remaining = 0; POMO.cycle = 0;
+  pomoSyncOverlay();   // спрячет оверлей
+  pomoEmit();
+  return { ok: true };
+}
+
 // Tray gives a quick way back to the window and surfaces how many agents need
 // attention while the window is minimised/behind others.
 function createTray() {
@@ -1990,6 +2123,43 @@ ipcMain.on('module:open', (_e, { modId } = {}) => { if (modId) openModuleWindow(
 ipcMain.on('module:close', (_e, { modId } = {}) => { const w = moduleWindows.get(String(modId)); if (w && !w.isDestroyed()) w.close(); });
 ipcMain.handle('module:openSet', () => ({ ids: [...moduleWindows.keys()] }));
 
+// ── Помодоро: пульт окна модуля управляет движком таймера в main ──────────────────────
+ipcMain.handle('pomodoro:start', (_e, { tech } = {}) => pomoStart(tech));
+ipcMain.handle('pomodoro:stop', () => pomoStop());
+ipcMain.handle('pomodoro:pause', () => { if (POMO.running) { POMO.paused = true; pomoSyncOverlay(); pomoEmit(); } return { ok: true }; });
+ipcMain.handle('pomodoro:resume', () => { if (POMO.running) { POMO.paused = false; pomoSyncOverlay(); pomoEmit(); } return { ok: true }; });
+ipcMain.handle('pomodoro:skip', () => { if (POMO.running) pomoAdvance(true); return { ok: true }; });
+ipcMain.handle('pomodoro:getState', () => pomoSnapshot());
+ipcMain.handle('pomodoro:history', () => readPomoLog());
+// Экспорт/импорт своих техник (JSON-файл через системный диалог).
+ipcMain.handle('pomodoro:exportFile', async (_e, { json, name } = {}) => {
+  const safe = String(name || 'lite-pomodoro').replace(/[\/\\:*?"<>|]+/g, '_').slice(0, 80);
+  const last = loadState().lastOpenDir;
+  const res = await dialog.showSaveDialog(mainWindow, {
+    title: 'Экспорт техник помодоро',
+    defaultPath: path.join(last && fs.existsSync(last) ? last : os.homedir(), `${safe}_${backupStamp()}.json`),
+    filters: [{ name: 'JSON', extensions: ['json'] }],
+  });
+  if (res.canceled || !res.filePath) return { canceled: true };
+  try { atomicWriteSync(res.filePath, String(json)); saveState({ lastOpenDir: path.dirname(res.filePath) }); return { ok: true, file: res.filePath }; }
+  catch (e) { return { ok: false, error: String(e.message || e) }; }
+});
+ipcMain.handle('pomodoro:importFile', async () => {
+  const res = await dialog.showOpenDialog(mainWindow, {
+    title: 'Импорт техник помодоро', properties: ['openFile'],
+    filters: [{ name: 'JSON', extensions: ['json'] }], ...lastDirOpts(),
+  });
+  if (res.canceled || res.filePaths.length === 0) return { canceled: true };
+  const file = res.filePaths[0];
+  try {
+    const stat = fs.statSync(file);
+    if (stat.size > IMPORT_MAX_BYTES) return { ok: false, error: `Файл слишком большой (${Math.round(stat.size / 1024)} КБ)` };
+    const content = fs.readFileSync(file, 'utf8');
+    saveState({ lastOpenDir: path.dirname(file) });
+    return { ok: true, content };
+  } catch (e) { return { ok: false, error: 'Не удалось прочитать файл: ' + String(e.message || e) }; }
+});
+
 // ── Кросс-оконная шина: активный проект редактора → окна модулей ──────────────────────
 ipcMain.on('app:setActiveProject', (_e, info) => { activeProjectInfo = info || null; broadcastToModules('app:activeProject', activeProjectInfo); });
 ipcMain.handle('app:getActiveProject', () => activeProjectInfo);
@@ -2032,6 +2202,8 @@ ipcMain.on('editor:viewerReady', () => {
   if (pendingFocusGit) { pendingFocusGit = false; const w = filesWindow(); if (w) { w.focus(); w.webContents.send('editor:focusGit'); } }
 });
 ipcMain.on('editor:sendToTerminal', (_e, payload) => forwardToEditor('editor:sendToTerminal', payload));
+// «Пропустить отдых» с оверлея в окне редактора → пропустить текущую фазу помодоро (движок в main).
+ipcMain.on('editor:pomodoroSkip', () => { if (POMO.running) pomoAdvance(); });
 ipcMain.on('editor:sendNoteToTerminal', (_e, payload) => forwardToEditor('editor:sendNoteToTerminal', payload));
 // Окно вивера (встроенный Git) попросило редактор перерисовать список проектов (git-бейджи после commit/checkout).
 ipcMain.on('editor:refreshProjects', () => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('editor:refreshProjects'); });
@@ -2070,6 +2242,23 @@ ipcMain.on('win:resizeBy', (e, { dx } = {}) => {
   const work = screen.getDisplayMatching(b).workArea;
   const width = Math.max(420, Math.min(b.width + (Number(dx) || 0), work.x + work.width - b.x));
   w.setBounds({ x: b.x, y: b.y, width, height: b.height });
+});
+// Компактный режим окна-модуля (кнопка «минимализм»): ужать окно до заданных габаритов, запомнив
+// прежние; off — вернуть запомненные. Габариты клампятся к minWidth/minHeight окна и к экрану.
+ipcMain.on('win:compact', (e, { on, width, height } = {}) => {
+  const w = senderWin(e);
+  if (!w || w.isDestroyed() || w.isFullScreen() || w.isMaximized()) return;
+  const b = w.getBounds();
+  const work = screen.getDisplayMatching(b).workArea;
+  if (on) {
+    w.__preCompact = { width: b.width, height: b.height };
+    const cw = Math.max(420, Math.min(Number(width) || 420, work.width));
+    const ch = Math.max(320, Math.min(Number(height) || 520, work.height));
+    w.setBounds({ x: b.x, y: b.y, width: cw, height: ch });
+  } else if (w.__preCompact) {
+    const pc = w.__preCompact; w.__preCompact = null;
+    w.setBounds({ x: b.x, y: b.y, width: pc.width, height: pc.height });
+  }
 });
 
 // ---------------------------------------------------------------- dialogs

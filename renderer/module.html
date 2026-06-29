@@ -216,6 +216,17 @@
         <div id="tools-body" class="tools-body"></div>
       </section>
 
+      <!-- Pomodoro module: пульт техники помодоро (движок таймера живёт в main) -->
+      <div id="gutter-pomodoro" class="gutter hidden" data-resize="pomodoro"></div>
+      <section id="pomodoro-pane" class="hidden">
+        <div class="pane-head">
+          <span>Помодоро</span>
+          <div class="drag-space-static"></div>
+          <button id="pomodoro-min" class="icon-btn" title="Минимализм — компактный вид" data-icon="compress"></button>
+        </div>
+        <div id="pomodoro-body" class="pomodoro-body"></div>
+      </section>
+
       <!-- IterFlow module: таск-трекер исполнителя (отдельный продукт через /api/editor/*) -->
       <div id="gutter-iterflow" class="gutter hidden" data-resize="iterflow"></div>
       <section id="iterflow-pane" class="hidden">

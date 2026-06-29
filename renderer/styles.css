@@ -2963,4 +2963,124 @@ body[data-theme="aurora"] .card.active .card-title { color: #fff; }
 .tl-img-meta { display: flex; flex-direction: column; gap: 4px; min-width: 0; flex: 1; }
 .tl-img-block { display: flex; flex-direction: column; gap: 4px; }
 
+/* ── Модуль «Помодоро» (окно-пульт) ──────────────────────────────────────────── */
+#pomodoro-pane { flex: 0 0 480px; min-width: 320px; border-left: 1px solid var(--border); display: flex; flex-direction: column; background: var(--panel); }
+.pomodoro-body { flex: 1; min-height: 0; overflow: auto; padding: 14px; display: flex; flex-direction: column; gap: 14px; }
+
+/* Карта текущей фазы / обратный отсчёт */
+.pm-card { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 22px 16px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-pop); }
+.pm-card.pm-phase-short, .pm-card.pm-phase-long { border-color: var(--border-accent); background: var(--accent-soft); }
+.pm-phase { font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: var(--text-dim); }
+.pm-card.pm-phase-short .pm-phase, .pm-card.pm-phase-long .pm-phase { color: var(--green); }
+.pm-clock { font-size: 52px; font-weight: 700; line-height: 1; font-variant-numeric: tabular-nums; color: var(--text); }
+.pm-meta { display: flex; flex-direction: column; align-items: center; gap: 2px; text-align: center; }
+.pm-meta-tech { font-size: 13px; color: var(--text); }
+.pm-meta-cycle { font-size: 11px; color: var(--text-dim); }
+.pm-controls { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; margin-top: 6px; }
+.pm-btn { display: inline-flex; align-items: center; gap: 6px; padding: 8px 14px; border-radius: 10px; border: 1px solid var(--border-strong); background: transparent; color: var(--text); cursor: pointer; font-size: 13px; transition: background .12s, color .12s, border-color .12s; }
+.pm-btn:hover { background: var(--hover); }
+.pm-btn-primary { border-color: var(--green-dim); color: var(--green); }
+.pm-btn-primary:hover { background: var(--green); color: var(--accent-contrast); border-color: var(--green); }
+.pm-btn-danger:hover { background: var(--danger); color: var(--accent-contrast); border-color: var(--danger); }
+
+/* Список техник */
+.pm-list { display: flex; flex-direction: column; gap: 8px; }
+.pm-list-head { display: flex; align-items: center; justify-content: space-between; font-size: 12px; letter-spacing: .06em; text-transform: uppercase; color: var(--text-dim); }
+.pm-add { display: inline-flex; align-items: center; gap: 5px; padding: 4px 9px; border-radius: 8px; border: 1px solid var(--border-strong); background: transparent; color: var(--text); cursor: pointer; font-size: 12px; }
+.pm-add:hover { background: var(--hover); }
+.pm-row { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 12px; background: var(--bg-pop); }
+.pm-row.sel { border-color: var(--border-accent); }
+.pm-radio { width: 16px; height: 16px; flex: 0 0 auto; border-radius: 50%; border: 2px solid var(--text-mute); background: transparent; cursor: pointer; padding: 0; }
+.pm-radio.on { border-color: var(--green); box-shadow: inset 0 0 0 3px var(--green); }
+.pm-row-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.pm-row-name { font-size: 14px; color: var(--text); }
+.pm-row-sub { font-size: 11.5px; color: var(--text-dim); }
+.pm-row-tags { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 2px; }
+.pm-tag { display: inline-flex; align-items: center; gap: 3px; font-size: 10.5px; color: var(--green); background: var(--accent-soft); border: 1px solid var(--border-accent); border-radius: 6px; padding: 1px 6px; }
+.pm-tag-soft { color: var(--text-dim); background: var(--hover); border-color: var(--border); }
+.pm-row-acts { display: flex; align-items: center; gap: 4px; flex: 0 0 auto; }
+.pm-iact { width: 30px; height: 30px; display: inline-flex; align-items: center; justify-content: center; border-radius: 8px; border: 0; background: transparent; color: var(--text-dim); cursor: pointer; }
+.pm-iact:hover { background: var(--hover); color: var(--text); }
+.pm-iact-danger:hover { color: var(--danger); }
+
+/* Форма своей техники */
+.pm-form { display: flex; flex-direction: column; gap: 12px; margin: 6px 0 14px; }
+.pm-f { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--text-dim); }
+.pm-f input { padding: 7px 10px; border-radius: 8px; border: 1px solid var(--border-strong); background: var(--bg-input); color: var(--text); font-size: 13px; }
+.pm-f input:focus { outline: none; border-color: var(--green); }
+.pm-f-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.pm-check { display: flex; align-items: flex-start; gap: 8px; font-size: 12.5px; color: var(--text); cursor: pointer; }
+.pm-check input { margin-top: 2px; flex: 0 0 auto; accent-color: var(--green); }
+
+/* ── Оверлей отдыха над терминалами (окно редактора) ─────────────────────────── */
+.rest-overlay { --rest-dim: 0.6; position: absolute; inset: 0; z-index: 40; display: flex; align-items: center; justify-content: center; background: color-mix(in srgb, var(--bg) calc(var(--rest-dim) * 100%), transparent); backdrop-filter: blur(2px); transition: background .9s linear; }
+.rest-card { display: flex; flex-direction: column; align-items: center; gap: 14px; padding: 30px 40px; border: 1px solid var(--border-accent); border-radius: var(--radius); background: color-mix(in srgb, var(--panel) 82%, transparent); box-shadow: 0 12px 48px rgba(0, 0, 0, 0.45); }
+.rest-ring { position: relative; width: 184px; height: 184px; }
+.rest-ring-svg { width: 100%; height: 100%; transform: rotate(-90deg); }
+.rest-ring-bg { fill: none; stroke: var(--border-strong); stroke-width: 8; }
+.rest-ring-fg { fill: none; stroke: var(--green); stroke-width: 8; stroke-linecap: round; transition: stroke-dashoffset .9s linear; }
+.rest-ring-center { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; }
+.rest-ring-center .rest-title { font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: var(--green); }
+.rest-ring-center .rest-clock { font-size: 46px; font-weight: 700; line-height: 1; font-variant-numeric: tabular-nums; color: var(--text); }
+.rest-sub { font-size: 12.5px; color: var(--text-dim); max-width: 280px; text-align: center; }
+.rest-skip { display: inline-flex; align-items: center; gap: 6px; padding: 8px 16px; border-radius: 10px; border: 1px solid var(--border-strong); background: transparent; color: var(--text-dim); cursor: pointer; font-size: 13px; transition: background .12s, color .12s; }
+.rest-skip:hover { background: var(--hover); color: var(--text); }
+
+/* Прогресс-кольцо в модуле (карта таймера + дневная цель) */
+.pm-ring { position: relative; width: 132px; height: 132px; }
+.pm-ring-svg { width: 100%; height: 100%; transform: rotate(-90deg); }
+.pm-ring-bg { fill: none; stroke: var(--border-strong); stroke-width: 7; }
+.pm-ring-fg { fill: none; stroke: var(--green); stroke-width: 7; stroke-linecap: round; transition: stroke-dashoffset .5s linear; }
+.pm-ring-center { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; }
+.pm-ring-val { font-size: 30px; font-weight: 700; line-height: 1; font-variant-numeric: tabular-nums; color: var(--text); }
+.pm-ring-sub { font-size: 10.5px; letter-spacing: .04em; text-transform: uppercase; color: var(--text-dim); text-align: center; max-width: 110px; }
+.pm-ring-phase-work .pm-ring-fg { stroke: var(--info); }
+.pm-ring-goal.done .pm-ring-fg { stroke: var(--green-bright); }
+
+/* Статистика: цель + факты + бары за 7 дней */
+.pm-stats { display: flex; flex-direction: column; gap: 12px; padding: 12px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-pop); }
+.pm-stats-top { display: flex; align-items: center; gap: 16px; }
+.pm-facts { display: flex; flex-direction: column; gap: 10px; }
+.pm-fact-n { font-size: 22px; font-weight: 700; color: var(--text); line-height: 1; }
+.pm-fact-l { font-size: 11px; color: var(--text-dim); }
+.pm-bars { display: flex; align-items: flex-end; justify-content: space-between; gap: 6px; height: 84px; }
+.pm-bar { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 3px; height: 100%; }
+.pm-bar-n { font-size: 10px; color: var(--text-dim); height: 12px; }
+.pm-bar-track { flex: 1; width: 100%; display: flex; align-items: flex-end; background: var(--hover); border-radius: 5px; overflow: hidden; }
+.pm-bar-fill { width: 100%; background: var(--green-dim); border-radius: 5px; min-height: 2px; transition: height .3s; }
+.pm-bar.today .pm-bar-fill { background: var(--green); }
+.pm-bar-d { font-size: 10px; color: var(--text-mute); }
+.pm-bar.today .pm-bar-d { color: var(--green); font-weight: 600; }
+
+/* Инструменты списка техник (импорт/экспорт/добавить) */
+.pm-list-tools { display: flex; align-items: center; gap: 4px; }
+
+/* Настройки модуля */
+.pm-settings { display: flex; flex-direction: column; gap: 8px; }
+.pm-set-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 13px; color: var(--text); cursor: pointer; }
+.pm-goal-input { width: 64px; padding: 5px 8px; border-radius: 8px; border: 1px solid var(--border-strong); background: var(--bg-input); color: var(--text); font-size: 13px; text-align: center; }
+.pm-goal-input:focus { outline: none; border-color: var(--green); }
+.pm-toggle { width: 16px; height: 16px; accent-color: var(--green); cursor: pointer; }
+
+/* Мини-таймер помодоро в титлбаре редактора */
+.pomo-mini { display: inline-flex; align-items: center; gap: 5px; height: 22px; padding: 0 9px; border-radius: 11px; border: 1px solid var(--border-accent); background: var(--accent-soft); color: var(--green); font-size: 12px; font-variant-numeric: tabular-nums; cursor: pointer; -webkit-app-region: no-drag; }
+.pomo-mini:hover { background: var(--green); color: var(--accent-contrast); }
+.pomo-mini.break { border-color: var(--border); background: var(--hover); color: var(--text-dim); }
+.pomo-mini.break:hover { background: var(--info); color: var(--accent-contrast); }
+
+/* Бейдж остатка времени помодоро на квикбаре */
+/* Режим «минимализм»: компактная карта таймера (первый блок), остальное скрыто из JS */
+body.pm-compact .pomodoro-body { padding: 10px; gap: 0; }
+body.pm-compact .pm-card { padding: 12px 12px 14px; gap: 6px; border-color: transparent; background: transparent; }
+body.pm-compact .pm-ring { width: 104px; height: 104px; }
+body.pm-compact .pm-ring-val { font-size: 24px; }
+body.pm-compact .pm-ring-sub { font-size: 9.5px; }
+body.pm-compact .pm-meta-tech { font-size: 12px; }
+body.pm-compact .pm-controls { gap: 6px; }
+body.pm-compact .pm-btn { padding: 6px 11px; font-size: 12px; }
+
+.qb-badge.show { display: block; }
+.qb-badge-pomo { background: var(--info); }
+.qb-badge-pomo.break { background: var(--green); }
+
 .hidden { display: none !important; }

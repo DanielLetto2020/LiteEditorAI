@@ -25,6 +25,7 @@ contextBridge.exposeInMainWorld('lite', {
     isMaximized: () => ipcRenderer.invoke('win:isMaximized'),
     growBy: (dx) => ipcRenderer.send('win:growBy', { dx }),
     resizeBy: (dx) => ipcRenderer.send('win:resizeBy', { dx }), // расширить ОКНО-отправитель (окна модулей)
+    compact: (on, width, height) => ipcRenderer.send('win:compact', { on, width, height }), // ужать/вернуть окно (режим «минимализм»)
     onMaximizeChange: (cb) => {
       const h = (_e, v) => cb(v);
       ipcRenderer.on('win:maximized', h);
@@ -75,6 +76,27 @@ contextBridge.exposeInMainWorld('lite', {
     onSendToTerminal: (cb) => { const h = (_e, p) => cb(p && p.text); ipcRenderer.on('editor:sendToTerminal', h); return () => ipcRenderer.removeListener('editor:sendToTerminal', h); },
     onSendNoteToTerminal: (cb) => { const h = (_e, p) => cb(p && p.projId, p && p.text); ipcRenderer.on('editor:sendNoteToTerminal', h); return () => ipcRenderer.removeListener('editor:sendNoteToTerminal', h); },
     onRefreshTree: (cb) => { const h = () => cb(); ipcRenderer.on('editor:refreshTree', h); return () => ipcRenderer.removeListener('editor:refreshTree', h); },
+    // Помодоро: оверлей отдыха в окне редактора. main шлёт состояние (показать/обновить/скрыть);
+    // кнопка «Пропустить» с оверлея → пропустить текущую фазу (движок таймера в main).
+    onRestGuard: (cb) => { const h = (_e, p) => cb(p || {}); ipcRenderer.on('editor:restGuard', h); return () => ipcRenderer.removeListener('editor:restGuard', h); },
+    pomodoroSkip: () => ipcRenderer.send('editor:pomodoroSkip', {}),
+  },
+
+  // Помодоро: пульт окна модуля управляет долгоживущим движком таймера в main; onTick — снимок
+  // состояния каждую секунду (и при каждом изменении фазы/паузы).
+  pomodoro: {
+    start: (tech) => ipcRenderer.invoke('pomodoro:start', { tech }),
+    stop: () => ipcRenderer.invoke('pomodoro:stop'),
+    pause: () => ipcRenderer.invoke('pomodoro:pause'),
+    resume: () => ipcRenderer.invoke('pomodoro:resume'),
+    skip: () => ipcRenderer.invoke('pomodoro:skip'),
+    getState: () => ipcRenderer.invoke('pomodoro:getState'),
+    history: () => ipcRenderer.invoke('pomodoro:history'),                                   // журнал завершённых помидоров
+    exportTechs: (json, name) => ipcRenderer.invoke('pomodoro:exportFile', { json, name }),  // → {ok,file}|{canceled}|{ok:false,error}
+    importTechs: () => ipcRenderer.invoke('pomodoro:importFile'),                            // → {ok,content}|{canceled}|{ok:false,error}
+    onTick: (cb) => { const h = (_e, s) => cb(s || {}); ipcRenderer.on('pomodoro:tick', h); return () => ipcRenderer.removeListener('pomodoro:tick', h); },
+    onLogChanged: (cb) => { const h = () => cb(); ipcRenderer.on('pomodoro:logChanged', h); return () => ipcRenderer.removeListener('pomodoro:logChanged', h); },
+    onChime: (cb) => { const h = (_e, p) => cb(p || {}); ipcRenderer.on('pomodoro:chime', h); return () => ipcRenderer.removeListener('pomodoro:chime', h); }, // звон смены фазы (играет окно редактора)
   },
 
   store: {
