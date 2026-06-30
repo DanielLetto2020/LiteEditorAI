@@ -1693,10 +1693,30 @@ export function initCtx(host) {
   const CONF_RU = { high: 'высокая', medium: 'средняя', low: 'низкая' };
   const CONF_ORD = { high: 3, medium: 2, low: 1 };
   const mineEl = $('#ctx-mine');
-  const mine = { scanned: null, scanPath: null, running: false, reqId: 0, result: null, raw: '', t0: 0, timer: null, q: '', cat: '', conf: '' };
+  // rules — накопленный реестр (персист в localStorage per-project); done — имена уже разобранных сессий
+  // (батчинг + «только новые»); ctx — содержимое существующих CLAUDE.md/AGENTS.md для дедупа; sel — выбор
+  // правил для записи в файлы. У правила могут быть поля status:'ignored', applied:true, exists:true (B).
+  const mine = { scanned: null, scanPath: null, running: false, reqId: 0, raw: '', t0: 0, timer: null, q: '', cat: '', conf: '',
+    rules: [], done: [], remaining: 0, totalFiles: 0, batches: 0, summary: '', ctx: null, showIgnored: false, hideExists: false, sel: new Set() };
   let curTab = 'canvas';
+  const hasRules = () => mine.rules.length > 0 || mine.batches > 0;
+
+  // ── Персист реестра между перезапусками (localStorage окна модуля, ключ по пути проекта) ──
+  const mineKey = (p) => 'lite.ctxmine.v1.' + (p || '');
+  function mineLoad(p) {
+    mine.rules = []; mine.done = []; mine.remaining = 0; mine.totalFiles = 0; mine.batches = 0; mine.summary = ''; mine.sel = new Set();
+    try {
+      const raw = localStorage.getItem(mineKey(p));
+      if (raw) { const d = JSON.parse(raw); if (d && Array.isArray(d.rules)) { mine.rules = d.rules; mine.done = Array.isArray(d.done) ? d.done : []; mine.summary = d.summary || ''; mine.totalFiles = d.totalFiles || 0; mine.batches = d.batches || 0; } }
+    } catch (_) {}
+  }
+  function mineSave() {
+    if (!mine.scanPath) return;
+    try { localStorage.setItem(mineKey(mine.scanPath), JSON.stringify({ rules: mine.rules, done: mine.done, summary: mine.summary, totalFiles: mine.totalFiles, batches: mine.batches, updatedAt: Date.now() })); } catch (_) {}
+  }
 
   function fmtBytes(n) { n = n || 0; if (n < 1024) return n + ' Б'; if (n < 1048576) return (n / 1024).toFixed(0) + ' КБ'; return (n / 1048576).toFixed(1) + ' МБ'; }
+  const plural = (n, one, few, many) => { const a = Math.abs(n) % 100, b = a % 10; return (a > 10 && a < 20) ? many : (b > 1 && b < 5) ? few : (b === 1) ? one : many; };
   const placeOf = (r) => (PLACE_KEYS.includes(r && r.placement) ? r.placement : 'skip');
 
   function setTab(name) {
@@ -1712,24 +1732,106 @@ export function initCtx(host) {
   async function mineScan() {
     const p = activeProject();
     if (!p) { mine.scanned = null; mine.scanPath = null; renderMine(); return; }
-    if (mine.scanPath && mine.scanPath !== p.path) { mine.result = null; mine.raw = ''; } // сменили проект — прежний реестр неактуален
-    mine.scanPath = p.path;
-    try { const r = await lite.ctxmine.scan(p.path); if (r && r.ok && curTab === 'mine') { mine.scanned = r; renderMine(); } }
+    if (mine.scanPath !== p.path) { mine.scanPath = p.path; mine.raw = ''; mine.ctx = null; mine.scanned = null; mineLoad(p.path); if (curTab === 'mine') renderMine(); } // новый проект — поднять его сохранённый реестр сразу
+    try { const r = await lite.ctxmine.scan(p.path); if (r && r.ok && mine.scanPath === p.path && curTab === 'mine') { mine.scanned = r; if (!mine.totalFiles) mine.totalFiles = r.sessions || 0; renderMine(); } }
     catch (_) {}
+    // подгрузить существующий контекст (CLAUDE.md/AGENTS.md) для дедупа (B) — однократно на проект
+    if (!mine.ctx && p) {
+      try { const c = await lite.ctxmine.context(p.path); if (c && c.ok && mine.scanPath === p.path) { mine.ctx = c; markExists(); if (curTab === 'mine') renderGroups(); } } catch (_) {}
+    }
   }
 
-  function mineRun() {
+  // Полный сброс накопленного реестра (анализ «Заново» / стирание сохранённого).
+  function mineReset() {
+    mine.rules = []; mine.done = []; mine.remaining = 0; mine.batches = 0; mine.summary = ''; mine.sel = new Set();
+    try { if (mine.scanPath) localStorage.removeItem(mineKey(mine.scanPath)); } catch (_) {}
+  }
+  // Слить правила нового батча в накопленный реестр: дубли по нормализованному заголовку — объединяем
+  // (суммируем occurrences, берём бóльшую уверенность; правки пользователя — edited — не перетираем).
+  const ruleKey = (r) => String((r && r.title) || '').toLowerCase().replace(/\s+/g, ' ').trim();
+  function mergeRules(incoming) {
+    const idx = new Map(mine.rules.map((r, i) => [ruleKey(r), i]));
+    let added = 0;
+    for (const r of incoming) {
+      const k = ruleKey(r); if (!k) continue;
+      if (idx.has(k)) {
+        const ex = mine.rules[idx.get(k)];
+        ex.occurrences = (ex.occurrences || 1) + (r.occurrences || 1);
+        if ((CONF_ORD[r.confidence] || 0) > (CONF_ORD[ex.confidence] || 0)) { ex.confidence = r.confidence; if (!ex.placementEdited) { ex.placement = r.placement; ex.placement_reason = r.placement_reason; } }
+        if (!ex.edited && (r.detail || '').length > (ex.detail || '').length) ex.detail = r.detail;
+        if (!ex.evidence && r.evidence) ex.evidence = r.evidence;
+      } else { mine.rules.push({ ...r }); idx.set(k, mine.rules.length - 1); added++; }
+    }
+    return { added };
+  }
+
+  // Дедуп (B): пометить правила, чьи заголовки уже встречаются в существующих CLAUDE.md/AGENTS.md.
+  const normTxt = (s) => String(s || '').toLowerCase().replace(/[^0-9a-zа-яё ]/gi, ' ').replace(/\s+/g, ' ').trim();
+  function markExists() {
+    if (!mine.ctx) return;
+    const files = { global: normTxt(mine.ctx.global), project: normTxt(mine.ctx.project), agents: normTxt(mine.ctx.agents) };
+    for (const r of mine.rules) {
+      const f = files[placeOf(r)]; const t = normTxt(r.title);
+      r.exists = !!(f && t && t.length > 6 && f.includes(t));
+    }
+  }
+
+  // cont=true — догрузить следующий батч НЕразобранных сессий (новые первыми) и слить; иначе — заново.
+  function mineRun(cont) {
     const p = activeProject();
     if (!p) { toast('Сначала открой проект'); return; }
     if (mine.running) return;
-    mine.running = true; mine.reqId = Date.now() * 1000 + Math.floor(Math.random() * 1000); mine.raw = ''; mine.result = null; mine.t0 = Date.now();
+    if (!cont) mineReset();
+    mine.running = true; mine.reqId = Date.now() * 1000 + Math.floor(Math.random() * 1000); mine.raw = ''; mine.t0 = Date.now();
     if (mine.timer) clearInterval(mine.timer);
     mine.timer = setInterval(() => { const e = $('#mine-elapsed'); if (e) e.textContent = Math.floor((Date.now() - mine.t0) / 1000) + ' с'; }, 1000);
-    lite.ctxmine.analyze(mine.reqId, p.path, {});
+    lite.ctxmine.analyze(mine.reqId, p.path, { done: cont ? mine.done : [] });
     renderMine();
   }
   function mineStop() { if (mine.running) lite.ctxmine.abort(mine.reqId); }
   function mineEnd() { mine.running = false; if (mine.timer) { clearInterval(mine.timer); mine.timer = null; } }
+
+  // ── Триаж (D): игнор/возврат и правка правила ──
+  function ignoreRule(r) { r.status = (r.status === 'ignored') ? '' : 'ignored'; if (r.status === 'ignored') mine.sel.delete(ruleKey(r)); mineSave(); renderGroups(); }
+  function editRule(r) {
+    const { m, close } = makeModal('<h2>Изменить правило</h2><div class="mine-edit"></div><div class="modal-actions"><button class="btn" id="me-cancel">Отмена</button><button class="btn primary" id="me-save">Сохранить</button></div>');
+    const box = m.querySelector('.mine-edit');
+    const ti = el('input', 'mine-edit-in'); ti.value = r.title || '';
+    const de = el('textarea', 'mine-edit-ta'); de.value = r.detail || '';
+    const pl = el('select', 'mine-edit-sel'); for (const P of PLACEMENTS) pl.appendChild(new Option(P.label, P.key)); pl.value = placeOf(r);
+    box.appendChild(el('label', 'mine-edit-l', 'Заголовок')); box.appendChild(ti);
+    box.appendChild(el('label', 'mine-edit-l', 'Детали')); box.appendChild(de);
+    box.appendChild(el('label', 'mine-edit-l', 'Куда положить')); box.appendChild(pl);
+    m.querySelector('#me-cancel').addEventListener('click', close);
+    m.querySelector('#me-save').addEventListener('click', () => {
+      r.title = ti.value.trim() || r.title; r.detail = de.value.trim(); r.placement = pl.value; r.edited = true; r.placementEdited = true;
+      close(); mineSave(); markExists(); renderGroups();
+    });
+    setTimeout(() => ti.focus(), 30);
+  }
+
+  // ── Применение (A): выбранные правила → дописать в нужный CLAUDE.md/AGENTS.md (с подтверждением) ──
+  const APPLY_PLACES = ['global', 'project', 'agents'];
+  const FILE_LABEL = { global: '~/.claude/CLAUDE.md', project: 'CLAUDE.md проекта', agents: 'AGENTS.md проекта' };
+  function selectedApplicable() { return mine.rules.filter((r) => mine.sel.has(ruleKey(r)) && r.status !== 'ignored' && APPLY_PLACES.includes(placeOf(r))); }
+  function applySelected() {
+    const items = selectedApplicable();
+    if (!items.length) { toast('Нет выбранных правил для записи (память и «на ревью» в файлы не пишутся)', { kind: 'warn' }); return; }
+    const by = {}; for (const r of items) (by[placeOf(r)] = by[placeOf(r)] || []).push(r);
+    const summary = Object.entries(by).map(([pl, arr]) => `${FILE_LABEL[pl]} — ${arr.length} ${plural(arr.length, 'правило', 'правила', 'правил')}`).join('; ');
+    showConfirm('Записать правила в файлы?', 'Будут дописаны: ' + summary + '. Файлы изменятся на диске.', 'Записать', async () => {
+      const p = activeProject(); if (!p) return;
+      const payload = items.map((r) => ({ placement: placeOf(r), title: r.title, detail: r.detail }));
+      let res; try { res = await lite.ctxmine.apply(p.path, payload); } catch (e) { res = { ok: false, error: String((e && e.message) || e) }; }
+      if (res && res.ok) {
+        for (const r of items) { r.applied = true; mine.sel.delete(ruleKey(r)); }
+        mineSave();
+        try { const c = await lite.ctxmine.context(p.path); if (c && c.ok) { mine.ctx = c; markExists(); } } catch (_) {}
+        renderMine();
+        toast('Записано: ' + (res.applied || []).reduce((s, a) => s + a.count, 0) + ' правил', { kind: 'ok' });
+      } else { toast((res && res.error) || 'Не удалось записать', { kind: 'err' }); }
+    });
+  }
 
   lite.ctxmine.onProgress((d) => {
     if (!d || d.reqId !== mine.reqId) return;
@@ -1737,9 +1839,19 @@ export function initCtx(host) {
   });
   lite.ctxmine.onResult((d) => {
     if (!d || d.reqId !== mine.reqId) return;
-    mineEnd(); mine.result = { summary: d.summary || '', rules: Array.isArray(d.rules) ? d.rules : [], meta: d.meta || {} };
+    mineEnd();
+    const meta = d.meta || {};
+    const { added } = mergeRules(Array.isArray(d.rules) ? d.rules : []);
+    for (const n of (meta.batchFiles || [])) if (!mine.done.includes(n)) mine.done.push(n);
+    mine.batches++;
+    mine.remaining = meta.remaining || 0;
+    mine.totalFiles = meta.totalFiles || mine.totalFiles;
+    if (d.summary) mine.summary = d.summary;
+    markExists();
+    mineSave();
     renderMine();
-    toast('Готово: правил — ' + mine.result.rules.length, { kind: 'ok' });
+    const tail = mine.remaining > 0 ? ` · ещё ${mine.remaining} — «Продолжить»` : '';
+    toast(`Часть ${mine.batches}: +${added} новых (всего ${mine.rules.length})${tail}`, { kind: 'ok' });
   });
   lite.ctxmine.onError((d) => {
     if (!d || d.reqId !== mine.reqId) return;
@@ -1753,22 +1865,34 @@ export function initCtx(host) {
   function ruleToText(r) { return `${r.title || ''}\n${r.detail || ''}${r.evidence ? '\n(где: ' + r.evidence + ')' : ''}`.trim(); }
 
   function ruleCard(r) {
-    const card = el('div', 'mine-card conf-' + (r.confidence || 'low'));
+    const k = ruleKey(r);
+    const card = el('div', 'mine-card conf-' + (r.confidence || 'low') + (r.status === 'ignored' ? ' is-ignored' : '') + (r.applied ? ' is-applied' : ''));
     const top = el('div', 'mine-card-top');
+    const cb = el('input', 'mine-cb'); cb.type = 'checkbox'; cb.checked = mine.sel.has(k); cb.disabled = r.status === 'ignored';
+    cb.title = APPLY_PLACES.includes(placeOf(r)) ? 'Выбрать для записи в файл' : 'Память/«на ревью» в файл не пишутся';
+    cb.addEventListener('change', () => { if (cb.checked) mine.sel.add(k); else mine.sel.delete(k); renderGroups(); });
+    top.appendChild(cb);
     top.appendChild(el('span', 'mine-card-title', r.title || '(без названия)'));
-    const cp = el('button', 'icon-btn mine-copy'); cp.title = 'Скопировать правило'; cp.appendChild(icon('copy', 15));
-    cp.addEventListener('click', () => { try { navigator.clipboard.writeText(ruleToText(r)); toast('Скопировано', { kind: 'ok' }); } catch (_) {} });
-    top.appendChild(cp); card.appendChild(top);
+    const acts = el('div', 'mine-card-acts');
+    const ed = el('button', 'icon-btn'); ed.title = 'Изменить'; ed.appendChild(icon('pencil', 14)); ed.addEventListener('click', () => editRule(r)); acts.appendChild(ed);
+    const ig = el('button', 'icon-btn'); ig.title = r.status === 'ignored' ? 'Вернуть' : 'Игнорировать'; ig.appendChild(icon(r.status === 'ignored' ? 'refresh' : 'x', 14)); ig.addEventListener('click', () => ignoreRule(r)); acts.appendChild(ig);
+    const cp = el('button', 'icon-btn'); cp.title = 'Скопировать'; cp.appendChild(icon('copy', 14)); cp.addEventListener('click', () => { try { navigator.clipboard.writeText(ruleToText(r)); toast('Скопировано', { kind: 'ok' }); } catch (_) {} }); acts.appendChild(cp);
+    top.appendChild(acts); card.appendChild(top);
     const chips = el('div', 'mine-chips');
     if (r.category) chips.appendChild(chip(CAT_RU[r.category] || r.category, 'cat'));
     chips.appendChild(chip(CONF_RU[r.confidence] || r.confidence || '—', 'conf c-' + (r.confidence || 'low')));
     if (r.occurrences > 1) chips.appendChild(chip('×' + r.occurrences, 'occ'));
+    if (r.edited) chips.appendChild(chip('изменено', 'edited'));
+    if (r.applied) chips.appendChild(chip('записано', 'applied'));
+    else if (r.exists) chips.appendChild(chip('уже есть', 'exists'));
     card.appendChild(chips);
     if (r.detail) card.appendChild(el('div', 'mine-detail', r.detail));
     if (r.evidence) { const ev = el('div', 'mine-evi', '💡 ' + r.evidence); if (r.placement_reason) ev.title = 'Куда положить: ' + r.placement_reason; card.appendChild(ev); }
     return card;
   }
   function matchFilter(r) {
+    if (r.status === 'ignored' && !mine.showIgnored) return false;
+    if (mine.hideExists && (r.exists || r.applied)) return false;
     if (mine.cat && r.category !== mine.cat) return false;
     if (mine.conf && r.confidence !== mine.conf) return false;
     if (mine.q) { const hay = ((r.title || '') + ' ' + (r.detail || '') + ' ' + (r.evidence || '')).toLowerCase(); if (!hay.includes(mine.q.toLowerCase())) return false; }
@@ -1776,10 +1900,24 @@ export function initCtx(host) {
   }
 
   function renderGroups() {
-    const box = $('#mine-groups'); if (!box || !mine.result) return;
+    const box = $('#mine-groups'); if (!box) return;
     box.textContent = '';
+    // панель массовых действий (A + триаж)
+    const bulk = el('div', 'mine-bulk');
+    const selN = selectedApplicable().length;
+    bulk.appendChild(el('span', 'mine-bulk-n', `Выбрано: ${mine.sel.size}`));
+    const selAll = el('button', 'btn sm', 'Выбрать видимые');
+    selAll.addEventListener('click', () => { for (const r of mine.rules.filter(matchFilter)) if (r.status !== 'ignored') mine.sel.add(ruleKey(r)); renderGroups(); });
+    bulk.appendChild(selAll);
+    const clr = el('button', 'btn sm', 'Снять'); clr.disabled = !mine.sel.size; clr.addEventListener('click', () => { mine.sel.clear(); renderGroups(); }); bulk.appendChild(clr);
+    const apply = el('button', 'btn primary sm', `Применить выбранные${selN ? ' (' + selN + ')' : ''}`); apply.disabled = !selN; apply.addEventListener('click', applySelected); bulk.appendChild(apply);
+    bulk.appendChild(el('div', 'mine-fl-sp'));
+    const ignChk = el('label', 'mine-toggle'); const ic = el('input'); ic.type = 'checkbox'; ic.checked = mine.showIgnored; ic.addEventListener('change', () => { mine.showIgnored = ic.checked; renderGroups(); }); ignChk.appendChild(ic); ignChk.appendChild(el('span', null, 'игнор')); bulk.appendChild(ignChk);
+    const exChk = el('label', 'mine-toggle'); const ec = el('input'); ec.type = 'checkbox'; ec.checked = mine.hideExists; ec.addEventListener('change', () => { mine.hideExists = ec.checked; renderGroups(); }); exChk.appendChild(ec); exChk.appendChild(el('span', null, 'скрыть «уже есть»')); bulk.appendChild(exChk);
+    box.appendChild(bulk);
+
     const buckets = {}; for (const k of PLACE_KEYS) buckets[k] = [];
-    for (const r of mine.result.rules.filter(matchFilter)) buckets[placeOf(r)].push(r);
+    for (const r of mine.rules.filter(matchFilter)) buckets[placeOf(r)].push(r);
     let shown = 0;
     for (const pl of PLACEMENTS) {
       const arr = buckets[pl.key]; if (!arr.length) continue;
@@ -1800,11 +1938,11 @@ export function initCtx(host) {
   }
 
   function mineExportText() {
-    const res = mine.result; if (!res) return '';
+    if (!mine.rules.length) return '';
     const lines = ['# Реестр правил из диалогов', ''];
-    if (res.summary) lines.push(res.summary, '');
+    if (mine.summary) lines.push(mine.summary, '');
     for (const pl of PLACEMENTS) {
-      const arr = res.rules.filter((r) => placeOf(r) === pl.key);
+      const arr = mine.rules.filter((r) => placeOf(r) === pl.key && r.status !== 'ignored');
       if (!arr.length) continue;
       lines.push('## ' + pl.label + ' (' + pl.sub + ')', '');
       for (const r of arr) { lines.push('- ' + (r.title || '')); if (r.detail) lines.push('  ' + r.detail); }
@@ -1813,9 +1951,9 @@ export function initCtx(host) {
     return lines.join('\n');
   }
   function mineExportJson() {
-    const res = mine.result; if (!res) return;
+    if (!mine.rules.length) return;
     try {
-      const blob = new Blob([JSON.stringify(res, null, 2)], { type: 'application/json' });
+      const blob = new Blob([JSON.stringify({ summary: mine.summary, rules: mine.rules }, null, 2)], { type: 'application/json' });
       const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
       const nm = (activeProject() && activeProject().name) || 'project';
       a.download = 'rules-' + nm.replace(/[^\w.-]/g, '_') + '.json';
@@ -1839,16 +1977,23 @@ export function initCtx(host) {
         head.appendChild(el('div', 'mine-scan mine-empty', 'Транскриптов Claude Code для этого проекта пока нет (~/.claude/projects/).'));
       }
     }
+    const total = (sc && sc.sessions) || mine.totalFiles || 0;
+    const pending = Math.max(0, total - mine.done.length); // сколько сессий ещё не разобрано (вкл. новые)
     const actions = el('div', 'mine-actions');
     if (mine.running) {
       const stop = el('button', 'btn danger', 'Стоп'); stop.addEventListener('click', mineStop); actions.appendChild(stop);
     } else {
-      const run = el('button', 'btn primary', mine.result ? 'Проанализировать заново' : 'Анализировать диалоги');
-      run.disabled = !(p && sc && sc.found && sc.sessions);
-      run.addEventListener('click', mineRun); actions.appendChild(run);
+      const canRun = !!(p && sc && sc.found && sc.sessions);
+      if (hasRules() && pending > 0) {
+        const fresh = mine.done.length > 0; // уже что-то разбирали → это «продолжить/новые»
+        const cont = el('button', 'btn primary', `${fresh ? 'Продолжить' : 'Анализировать'} — ещё ${pending} ${plural(pending, 'сессия', 'сессии', 'сессий')}`);
+        cont.disabled = !canRun; cont.addEventListener('click', () => mineRun(true)); actions.appendChild(cont);
+      }
+      const run = el('button', 'btn' + (hasRules() && pending > 0 ? '' : ' primary'), hasRules() ? 'Заново' : 'Анализировать диалоги');
+      run.disabled = !canRun; run.addEventListener('click', () => mineRun(false)); actions.appendChild(run);
     }
     head.appendChild(actions);
-    head.appendChild(el('div', 'mine-note', 'Обкатка: в реальные CLAUDE.md / память ничего не пишется — только сбор и показ реестра.'));
+    head.appendChild(el('div', 'mine-note', 'Реестр копится и сохраняется между перезапусками. Чтобы записать правила в CLAUDE.md/AGENTS.md — отметьте их галочками и нажмите «Применить выбранные» (с подтверждением).'));
     mineEl.appendChild(head);
 
     if (mine.running) {
@@ -1862,18 +2007,23 @@ export function initCtx(host) {
       mineEl.appendChild(prog);
     }
 
-    const res = mine.result;
-    if (res) {
+    if (hasRules()) {
       const body = el('div', 'mine-body');
       const summ = el('div', 'mine-summary');
-      if (res.summary) summ.appendChild(el('div', 'mine-summary-tx', res.summary));
+      if (mine.summary) summ.appendChild(el('div', 'mine-summary-tx', mine.summary));
       const counts = el('div', 'mine-counts');
       const byPlace = {}; for (const k of PLACE_KEYS) byPlace[k] = 0;
-      for (const r of res.rules) byPlace[placeOf(r)]++;
-      counts.appendChild(chip('всего: ' + res.rules.length, 'total'));
+      for (const r of mine.rules) byPlace[placeOf(r)]++;
+      counts.appendChild(chip('всего: ' + mine.rules.length, 'total'));
       for (const pl of PLACEMENTS) if (byPlace[pl.key]) counts.appendChild(chip(pl.label + ': ' + byPlace[pl.key], 'pl-' + pl.cls));
       summ.appendChild(counts);
-      if (res.meta && res.meta.truncated) summ.appendChild(el('div', 'mine-trunc', '⚠ История длинная — анализировалась только её часть (последние сессии).'));
+      const totalF = (sc && sc.sessions) || mine.totalFiles || 0;
+      if (totalF) {
+        const pr = el('div', 'mine-prog-info');
+        pr.appendChild(el('span', null, `Разобрано ${mine.done.length} из ${totalF} ${plural(totalF, 'сессии', 'сессий', 'сессий')}` + (mine.batches > 1 ? ` · частей: ${mine.batches}` : '')));
+        if (pending > 0) pr.appendChild(el('span', 'mine-prog-more', mine.done.length ? ' — есть неразобранные, «Продолжить»' : ''));
+        summ.appendChild(pr);
+      }
       body.appendChild(summ);
 
       const filters = el('div', 'mine-filters');
@@ -1901,7 +2051,7 @@ export function initCtx(host) {
     } else if (!mine.running) {
       const intro = el('div', 'mine-intro');
       intro.appendChild(el('div', 'mine-intro-h', 'Анализ диалогов с агентами'));
-      intro.appendChild(el('div', 'mine-intro-tx', 'Claude прочитает историю ваших диалогов по этому проекту (исправления, грабли, договорённости) и соберёт реестр правил с рекомендацией, куда каждое положить — в главный контекст, проектный, AGENTS.md или память. Это обкатка: реальные файлы не трогаются.'));
+      intro.appendChild(el('div', 'mine-intro-tx', 'Claude прочитает историю ваших диалогов по этому проекту (исправления, грабли, договорённости) и соберёт реестр правил с рекомендацией, куда каждое положить — в главный контекст, проектный, AGENTS.md или память. Длинную историю можно разбирать частями («Продолжить»). Реестр сохраняется; выбранные правила можно записать в файлы (с подтверждением).'));
       mineEl.appendChild(intro);
     }
   }

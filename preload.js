@@ -166,6 +166,8 @@ contextBridge.exposeInMainWorld('lite', {
     scan: (projPath) => ipcRenderer.invoke('ctxmine:scan', { projPath }),
     analyze: (reqId, projPath, opts) => ipcRenderer.send('ctxmine:analyze', { reqId, projPath, ...(opts || {}) }),
     abort: (reqId) => ipcRenderer.send('ctxmine:abort', { reqId }),
+    context: (projPath) => ipcRenderer.invoke('ctxmine:context', { projPath }), // → {global,project,agents} тексты (дедуп B)
+    apply: (projPath, items) => ipcRenderer.invoke('ctxmine:apply', { projPath, items }), // → {ok,applied,errors} (запись A)
     onProgress: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('ctxmine:progress', h); return () => ipcRenderer.removeListener('ctxmine:progress', h); },
     onResult: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('ctxmine:result', h); return () => ipcRenderer.removeListener('ctxmine:result', h); },
     onError: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('ctxmine:error', h); return () => ipcRenderer.removeListener('ctxmine:error', h); },

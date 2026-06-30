@@ -3467,6 +3467,8 @@ body.pm-compact .pm-btn { padding: 6px 11px; font-size: 12px; }
 .mine-summary-tx { font-size: 12.5px; line-height: 1.5; color: var(--text); }
 .mine-counts { display: flex; flex-wrap: wrap; gap: 6px; }
 .mine-trunc { font-size: 11.5px; color: var(--warn); }
+.mine-prog-info { font-size: 11.5px; color: var(--text-dim); }
+.mine-prog-more { color: var(--accent); }
 
 .mine-chip { display: inline-flex; align-items: center; font-size: 11px; padding: 2px 8px; border-radius: 999px; background: var(--surface); color: var(--text-dim); border: 1px solid var(--border); white-space: nowrap; }
 .mine-chip.total { font-weight: 600; color: var(--text); }
@@ -3486,6 +3488,27 @@ body.pm-compact .pm-btn { padding: 6px 11px; font-size: 12px; }
 .mine-search:focus { outline: none; border-color: var(--border-accent); }
 .mine-sel { background: var(--bg-input); border: 1px solid var(--border); border-radius: var(--radius); color: var(--text); padding: 5px 8px; font-size: 11.5px; }
 .mine-fl-sp { flex: 1 1 8px; }
+.mine-chip.exists { color: var(--text-mute); border-style: dashed; }
+.mine-chip.applied { color: var(--green-bright); border-color: var(--green-dim); background: var(--accent-soft); }
+.mine-chip.edited { color: var(--info); }
+
+/* панель массовых действий (выбор → применить в файлы; тумблеры фильтров триажа) */
+.mine-bulk { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 0 0 8px; margin-bottom: 4px; border-bottom: 1px dashed var(--border); }
+.mine-bulk-n { font-size: 11.5px; color: var(--text-dim); }
+.btn.sm { padding: 4px 10px; font-size: 11.5px; }
+.mine-toggle { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: var(--text-dim); cursor: pointer; }
+.mine-card-acts { display: flex; gap: 2px; opacity: 0; transition: opacity .12s; }
+.mine-card:hover .mine-card-acts { opacity: 1; }
+.mine-cb { margin: 2px 2px 0 0; accent-color: var(--accent); cursor: pointer; flex: 0 0 auto; }
+.mine-card.is-ignored { opacity: .5; }
+.mine-card.is-ignored .mine-card-title { text-decoration: line-through; }
+.mine-card.is-applied { border-left-color: var(--green); }
+/* модалка правки правила */
+.mine-edit { display: flex; flex-direction: column; gap: 4px; margin: 8px 0; }
+.mine-edit-l { font-size: 11px; color: var(--text-dim); margin-top: 6px; }
+.mine-edit-in, .mine-edit-ta, .mine-edit-sel { background: var(--bg-input); border: 1px solid var(--border); border-radius: var(--radius); color: var(--text); padding: 7px 9px; font-size: 12.5px; font-family: inherit; }
+.mine-edit-ta { min-height: 90px; resize: vertical; line-height: 1.4; }
+.mine-edit-in:focus, .mine-edit-ta:focus, .mine-edit-sel:focus { outline: none; border-color: var(--border-accent); }
 
 .mine-groups { padding: 8px 14px 18px; display: flex; flex-direction: column; gap: 16px; overflow: auto; }
 .mine-group { display: flex; flex-direction: column; gap: 8px; }
@@ -3500,7 +3523,8 @@ body.pm-compact .pm-btn { padding: 6px 11px; font-size: 12px; }
 .mine-group-sub { font-size: 11px; color: var(--text-mute); }
 .mine-group-n { margin-left: auto; font-size: 11px; color: var(--text-dim); background: var(--surface); border-radius: 999px; padding: 1px 8px; }
 
-.mine-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 10px; }
+.mine-cards { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+@media (max-width: 620px) { .mine-cards { grid-template-columns: 1fr; } } /* узкое окно → одна колонка */
 .mine-card { background: var(--panel); border: 1px solid var(--border); border-left: 3px solid var(--border-strong); border-radius: var(--radius); padding: 10px 11px; display: flex; flex-direction: column; gap: 7px; }
 .mine-card.conf-high { border-left-color: var(--green); }
 .mine-card.conf-medium { border-left-color: var(--warn); }
