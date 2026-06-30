@@ -26,7 +26,7 @@ import { el, icon, iconBtn, hydrateIcons, toast, makeModal, showConfirm, showPro
 import { initExtensions } from './modules/extensions.js';
 // initFiles — вивер+дерево мигрированы в отдельное окно (renderer/module-entry.js).
 
-const APP_VERSION = 'alpha v1.1.44';
+const APP_VERSION = 'alpha v1.1.45';
 const GUTTER = 5;
 // Системный терминал («Система · ~») мигрирован в отдельное окно (renderer/modules/scratch.js):
 // его id `__scratch__::tN` маршрутизируются main'ом в окно-владельца, в ядре их больше не обрабатываем.
@@ -900,10 +900,32 @@ function saveProjTabs() {
   }
   persist('projTabs', out);
 }
-function createSession(proj, name) {
-  const id = proj.id + '::t' + (++sessionSeq);
-  const container = el('div', 'term-instance');
-  $('#terminals').appendChild(container);
+// ── Реестр глобальных горячих клавиш ядра (идея 5) ────────────────────────────
+// Единый источник правды. Матч по физическим клавишам (e.code) → работает в любой
+// раскладке. Эти комбо перехватываются И на уровне document, И внутри терминала: фабрика
+// xterm зовёт runGlobalHotkey и, если перехвачено, глушит байт + stopPropagation (иначе
+// document-хендлер сработал бы вторично, а xterm отправил бы код в PTY — баг B1, из-за
+// которого Ctrl+\ слал SIGQUIT активному агенту, Ctrl+K — kill-line readline и т.п.).
+const HOTKEYS = [
+  { test: (e) => e.code === 'Backslash',                            run: () => toggleSingle() },
+  { test: (e) => e.code === 'KeyK',                                 run: () => showPalette() },
+  { test: (e) => e.code === 'Equal' || e.code === 'NumpadAdd',      run: () => bumpFont(1) },
+  { test: (e) => e.code === 'Minus' || e.code === 'NumpadSubtract', run: () => bumpFont(-1) },
+  { test: (e) => e.code === 'Tab',                                  run: (e) => cycleProject(e.shiftKey ? -1 : 1) },
+  { test: (e) => /^Digit[1-9]$/.test(e.code) && !e.shiftKey,        run: (e) => { const p = projects[+e.code.slice(5) - 1]; if (p) setActive(p.id); } },
+];
+function runGlobalHotkey(e) {
+  if (!e.ctrlKey || e.metaKey) return false;
+  for (const h of HOTKEYS) { if (h.test(e)) { e.preventDefault(); h.run(e); return true; } }
+  return false;
+}
+
+// ── Единая фабрика терминалов (идея 4) ────────────────────────────────────────
+// Общая сборка xterm для сессий проектов и dev-терминалов модулей: Terminal + аддоны +
+// рендерер + PTY + базовый обработчик клавиш. Вызывающий передаёт id/cwd, хук ввода и
+// набор «своих» клавиш (onKey) поверх базовых. Это убрало ~90% дубля между
+// createSession и createExtTerminal, который раньше норовил разъехаться.
+function buildXterm(container, id, { cwd, onInput, onKey } = {}) {
   const term = new Terminal({
     fontFamily: '"JetBrains Mono", "Fira Code", "Cascadia Code", Consolas, monospace',
     fontSize: settings.fontSize, cursorBlink: true, allowProposedApi: true, theme: termTheme(), scrollback: 5000,
@@ -917,29 +939,40 @@ function createSession(proj, name) {
   term.open(container);
   loadFastRenderer(term);
   fit.fit();
-  term.registerLinkProvider(fileLinkProvider(term, proj.path));
-  lite.pty.create({ id, cwd: proj.path, cols: term.cols, rows: term.rows });
-  term.onData((data) => {
-    const r = terms.get(id);
-    if (r) r.lastInputAt = Date.now();
-    lite.pty.write(id, data);
-  });
+  lite.pty.create({ id, cwd, cols: term.cols, rows: term.rows });
+  term.onData((data) => { if (onInput) onInput(data); lite.pty.write(id, data); });
   term.onResize(({ cols, rows }) => lite.pty.resize(id, cols, rows));
   term.attachCustomKeyEventHandler((e) => {
     if (e.type !== 'keydown') return true;
-    // Match by physical key (e.code), NOT e.key — so Ctrl+C/V/F etc. work in ANY keyboard
+    // Match by physical key (e.code), NOT e.key — so Ctrl+C/V etc. work in ANY keyboard
     // layout (in Russian layout Ctrl+V gives e.key='м', which the old e.key check missed).
-    if (e.ctrlKey && e.shiftKey && e.code === 'KeyT') { addTab(); return false; }
-    if (e.ctrlKey && e.shiftKey && e.code === 'KeyW') { const s = activeSessionId(); if (s) closeTab(s); return false; }
-    if (e.ctrlKey && (e.key === 'PageDown' || e.key === 'PageUp')) { cycleTab(e.key === 'PageDown' ? 1 : -1); return false; }
     if (e.ctrlKey && !e.shiftKey && !e.altKey && e.code === 'KeyC') return !copySelection(term); // copied → swallow; else SIGINT
     if (e.ctrlKey && !e.shiftKey && !e.altKey && e.code === 'KeyV') { e.preventDefault(); pasteInto(id); return false; } // preventDefault — иначе xterm вставит ещё раз нативно (дубль)
-    if (e.ctrlKey && !e.altKey && e.code === 'KeyF') { openTermSearch(); return false; }
     // Ctrl+Enter — перенос строки в вводе (продолжение команды), а не выполнение: \ + CR для bash/zsh, LF для ConPTY/PSReadLine (Win)
     if (e.ctrlKey && !e.shiftKey && !e.altKey && e.key === 'Enter') { lite.pty.write(id, lite.platform === 'win32' ? '\n' : '\\\r'); return false; }
+    if (onKey && onKey(e) === false) return false;            // клавиши вызывающего (вкладки/поиск проекта)
+    if (runGlobalHotkey(e)) { e.stopPropagation(); return false; } // глобальные хоткеи в фокусе терминала (B1)
     return true;
   });
   container.addEventListener('contextmenu', (e) => { e.preventDefault(); showTermMenu(e.clientX, e.clientY, term, id); });
+  return { term, fit, search };
+}
+
+function createSession(proj, name) {
+  const id = proj.id + '::t' + (++sessionSeq);
+  const container = el('div', 'term-instance');
+  $('#terminals').appendChild(container);
+  const { term, fit, search } = buildXterm(container, id, {
+    cwd: proj.path,
+    onInput: () => { const r = terms.get(id); if (r) r.lastInputAt = Date.now(); },
+    onKey: (e) => {
+      if (e.ctrlKey && e.shiftKey && e.code === 'KeyT') { addTab(); return false; }
+      if (e.ctrlKey && e.shiftKey && e.code === 'KeyW') { const s = activeSessionId(); if (s) closeTab(s); return false; }
+      if (e.ctrlKey && (e.key === 'PageDown' || e.key === 'PageUp')) { cycleTab(e.key === 'PageDown' ? 1 : -1); return false; }
+      if (e.ctrlKey && !e.altKey && e.code === 'KeyF') { openTermSearch(); return false; }
+    },
+  });
+  term.registerLinkProvider(fileLinkProvider(term, proj.path));
   const rec = { term, fit, search, container, projId: proj.id, name, idleTimer: null, sawBell: false, tail: '', busyStart: 0, lastInputAt: 0, activitySeq: 0 };
   terms.set(id, rec);
   tabsByProj.get(proj.id).sessions.push(id);
@@ -1163,30 +1196,9 @@ function restartTerminal(id) {
 // Возвращает handle для extensions.js; xterm в код модуля не утекает (правило изоляции).
 function createExtTerminal(container, cwd) {
   const id = EXT_TERM_ID + '::t' + (++extTermSeq);
-  const term = new Terminal({
-    fontFamily: '"JetBrains Mono", "Fira Code", "Cascadia Code", Consolas, monospace',
-    fontSize: settings.fontSize, cursorBlink: true, allowProposedApi: true, theme: termTheme(), scrollback: 5000,
-  });
-  const fit = new FitAddon();
-  const search = new SearchAddon();
-  term.loadAddon(fit);
-  term.loadAddon(search);
-  term.loadAddon(new WebLinksAddon((_e, uri) => lite.openExternal(uri)));
-  applyUnicode11(term);
-  term.open(container);
-  loadFastRenderer(term);
-  fit.fit();
-  lite.pty.create({ id, cwd, cols: term.cols, rows: term.rows });
-  term.onData((data) => lite.pty.write(id, data));
-  term.onResize(({ cols, rows }) => lite.pty.resize(id, cols, rows));
-  term.attachCustomKeyEventHandler((e) => {
-    if (e.type !== 'keydown') return true;
-    if (e.ctrlKey && !e.shiftKey && !e.altKey && e.code === 'KeyC') return !copySelection(term);
-    if (e.ctrlKey && !e.shiftKey && !e.altKey && e.code === 'KeyV') { e.preventDefault(); pasteInto(id); return false; }
-    if (e.ctrlKey && !e.shiftKey && !e.altKey && e.key === 'Enter') { lite.pty.write(id, lite.platform === 'win32' ? '\n' : '\\\r'); return false; }
-    return true;
-  });
-  container.addEventListener('contextmenu', (e) => { e.preventDefault(); showTermMenu(e.clientX, e.clientY, term, id); });
+  // Без onKey: у dev-терминала модуля нет вкладок, а Ctrl+F открыл бы поиск ЧУЖОГО
+  // (активного проектного) терминала — поэтому поиск здесь не перехватываем (как было).
+  const { term, fit, search } = buildXterm(container, id, { cwd });
   extTerms.set(id, { term, fit, search, container });
   return {
     id,
@@ -2628,18 +2640,9 @@ function init() {
 
   // OpenRouter (чат) живёт в окне модуля — bindControls/bindStream вызывает module-entry.js.
 
-  document.addEventListener('keydown', (e) => {
-    // Esc-выход из полноэкранного превью и Ctrl+S сохранения файла живут в окне вивера (его keydown).
-    if (e.ctrlKey && e.key === '\\') { e.preventDefault(); toggleSingle(); }
-    if (e.ctrlKey && e.code === 'KeyK') { e.preventDefault(); showPalette(); }   // то же: Ctrl+K → e.key='л' в русской раскладке
-    if (e.ctrlKey && (e.key === '=' || e.key === '+')) { e.preventDefault(); bumpFont(1); }
-    if (e.ctrlKey && e.key === '-') { e.preventDefault(); bumpFont(-1); }
-    if (e.ctrlKey && e.key === 'Tab') { e.preventDefault(); cycleProject(e.shiftKey ? -1 : 1); }
-    if (e.ctrlKey && /^[1-9]$/.test(e.key)) {
-      const p = projects[parseInt(e.key, 10) - 1];
-      if (p) { e.preventDefault(); setActive(p.id); }
-    }
-  });
+  // Esc-выход из полноэкранного превью и Ctrl+S сохранения файла живут в окне вивера (его keydown).
+  // Глобальные хоткеи — через единый реестр HOTKEYS (тот же, что перехватывает фабрика терминалов).
+  document.addEventListener('keydown', (e) => { runGlobalHotkey(e); });
 
   // drag a folder onto the window to open it as a project
   document.addEventListener('dragover', (e) => { e.preventDefault(); });
