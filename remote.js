@@ -274,9 +274,13 @@ function init(opts = {}) {
 
 // Применить конфиг (host/token/enabled). Поднимает или гасит соединение.
 function apply(cfg = {}) {
+  const prevHost = host, prevToken = token;
   if (cfg.host !== undefined) host = cfg.host || '';
   if (cfg.token !== undefined) token = cfg.token || '';
   if (cfg.enabled !== undefined) enabled = !!cfg.enabled;
+  // Сменили хост/токен на ЖИВОМ сокете → рвём его, иначе reconcile (if !ws → connect) не
+  // переподключится и редактор остался бы на старом релее/сессии до следующего разрыва (B-remote).
+  if (ws && (host !== prevHost || token !== prevToken)) { try { ws.close(); } catch (_) {} ws = null; }
   reconcile();
 }
 

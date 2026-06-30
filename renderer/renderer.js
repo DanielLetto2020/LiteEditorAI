@@ -26,7 +26,7 @@ import { el, icon, iconBtn, hydrateIcons, toast, makeModal, showConfirm, showPro
 import { initExtensions } from './modules/extensions.js';
 // initFiles — вивер+дерево мигрированы в отдельное окно (renderer/module-entry.js).
 
-const APP_VERSION = 'alpha v1.1.46';
+const APP_VERSION = 'alpha v1.1.47';
 const GUTTER = 5;
 // Системный терминал («Система · ~») мигрирован в отдельное окно (renderer/modules/scratch.js):
 // его id `__scratch__::tN` маршрутизируются main'ом в окно-владельца, в ядре их больше не обрабатываем.
@@ -1244,7 +1244,13 @@ function runTermSearch(dir) {
   const rec = terms.get(activeSessionId());
   const q = $('#term-search-input').value;
   if (!rec || !q) return;
-  const opts = { decorations: { matchOverviewRuler: '#e0af68', activeMatchColorOverviewRuler: '#3ddc84' } };
+  // Метки overview-ruler берём из токенов активной темы, а не хардкодим (контракт тем):
+  // --warn для совпадений, --add для активного — так они согласованы с любой темой.
+  const css = getComputedStyle(document.documentElement);
+  const opts = { decorations: {
+    matchOverviewRuler: (css.getPropertyValue('--warn') || '#e0af68').trim() || '#e0af68',
+    activeMatchColorOverviewRuler: (css.getPropertyValue('--add') || '#3ddc84').trim() || '#3ddc84',
+  } };
   if (dir < 0) rec.search.findPrevious(q, opts); else rec.search.findNext(q, opts);
 }
 
@@ -1261,8 +1267,13 @@ function doSetActive(id) {
   if (!proj) return;
   activeId = id;
   try { lite.errors.setContext(proj.path); } catch (_) {} // тег проекта для новых ошибок в реестре
-  if (watchedRoot && watchedRoot !== proj.path) lite.fs.unwatch(watchedRoot);
-  lite.fs.watch(proj.path); watchedRoot = proj.path;
+  // Перевешиваем вотчер ТОЛЬКО при смене корня — иначе повторная активация уже активного
+  // проекта (например, тап «+» с пульта зовёт doSetActive безусловно) плодила бы дубль fs.watch
+  // и дублирующиеся fs:changed (B6).
+  if (watchedRoot !== proj.path) {
+    if (watchedRoot) lite.fs.unwatch(watchedRoot);
+    lite.fs.watch(proj.path); watchedRoot = proj.path;
+  }
   ensureProjectTabs(proj);
   renderProjects();
   showActiveTerminal();
@@ -2495,7 +2506,7 @@ function applyRestGuard(s) {
   const host = $('#term-body');
   if (!host) return;
   if (!s || !s.show) {
-    if (restGuardEl) { restGuardEl.remove(); restGuardEl = null; }
+    if (restGuardEl) { restGuardEl.remove(); restGuardEl = null; try { showActiveTerminal(); const r = terms.get(activeSessionId()); if (r) r.term.focus(); } catch (_) {} } // вернуть фокус терминалу после перерыва
     return;
   }
   const justAppeared = !restGuardEl;

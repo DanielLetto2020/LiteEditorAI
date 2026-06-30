@@ -2401,6 +2401,16 @@ ipcMain.handle('dialog:pickDir', async () => {
 });
 
 // ---------------------------------------------------------------- PTY
+// Окружение для пользовательских шеллов/exec: НЕ протаскиваем внутренние переменные редактора
+// (порт «наследника» при рестарте, секреты релея) в каждый терминал и контейнер (B9) — там им
+// не место и они утекали бы в `env` любого процесса агента.
+const PTY_ENV_DENY = new Set(['LITE_HEIR_PORT', 'LITE_RELAY_TOKEN', 'LITE_RELAY_URL', 'RELAY_SECRET']);
+function userShellEnv(extra) {
+  const env = {};
+  for (const k of Object.keys(process.env)) if (!PTY_ENV_DENY.has(k)) env[k] = process.env[k];
+  return Object.assign(env, extra || {});
+}
+
 // owner = webContents окна, создавшего сессию (редактор для терминалов проектов, окно «Система · ~»
 // для scratch). Данные/выход маршрутизируем владельцу (sendToOwner; фолбэк — окно редактора).
 function spawnPtyFor(id, cwd, cols, rows, owner) {
@@ -2419,7 +2429,7 @@ function spawnPtyFor(id, cwd, cols, rows, owner) {
       rows: rows || 24,
       cwd: startCwd,
       // SHELL → реальный шелл; LITE_STORE → папка-стор (агент кладёт туда файлы для пульта).
-      env: { ...process.env, SHELL: shell, LITE_STORE: pultStoreDir },
+      env: userShellEnv({ SHELL: shell, LITE_STORE: pultStoreDir }),
     });
   } catch (err) {
     logger.log('error', 'pty', 'spawn failed', err);
@@ -2440,6 +2450,7 @@ function spawnPtyFor(id, cwd, cols, rows, owner) {
     ptySize.delete(id);
     mirrorDispose(id);
     sendToOwner(id, 'pty:exit', { id });
+    ownerBySession.delete(id); // сессия закрылась — не копим мёртвые id в карте маршрутизации (B4-LOW)
     try { remote.exit(id); remote.notifyState(); } catch (_) {}
   });
   ptys.set(id, proc);
@@ -4090,7 +4101,7 @@ ipcMain.handle('containers:execStart', (e, { engine, id, execId, cols, rows } = 
   let proc;
   try {
     proc = pty.spawn(engine, ['exec', '-it', id, 'sh', '-c', 'command -v bash >/dev/null 2>&1 && exec bash || exec sh'],
-      { name: 'xterm-color', cols: cols || 80, rows: rows || 24, env: process.env });
+      { name: 'xterm-color', cols: cols || 80, rows: rows || 24, env: userShellEnv() });
   } catch (e2) { return { error: String(e2.message || e2) }; }
   const sender = e.sender; // окно-владелец exec-терминала
   proc.onData((d) => safeSend(sender, 'containers:execData', { execId, data: d }));
