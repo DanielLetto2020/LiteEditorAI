@@ -15,7 +15,7 @@ import '@xterm/xterm/css/xterm.css';
 import { THEMES, TERM_THEME, DEFAULT_THEME } from './themes.js';
 import { loadFastRenderer, applyUnicode11, copySelection } from './termutil.js';
 // initTextProc — «Обработка текста» мигрирована в отдельное окно (renderer/module-entry.js).
-import { el, svgEl, icon, iconBtn, hydrateIcons, toast, makeModal, showConfirm, showPrompt, baseName, ICONS, setErrorSink, applyLayoutSwap } from './ui.js';
+import { el, icon, iconBtn, hydrateIcons, toast, makeModal, showConfirm, showPrompt, baseName, ICONS, setErrorSink } from './ui.js';
 // initGit — модуль «Git» мигрирован в отдельное окно (renderer/module-entry.js).
 // initCtx — модуль «Контекст» мигрирован в отдельное окно (renderer/module-entry.js).
 // initContainers — модуль «Контейнеры» мигрирован в отдельное окно (renderer/module-entry.js).
@@ -26,7 +26,7 @@ import { el, svgEl, icon, iconBtn, hydrateIcons, toast, makeModal, showConfirm, 
 import { initExtensions } from './modules/extensions.js';
 // initFiles — вивер+дерево мигрированы в отдельное окно (renderer/module-entry.js).
 
-const APP_VERSION = 'alpha v1.1.43';
+const APP_VERSION = 'alpha v1.1.44';
 const GUTTER = 5;
 // Системный терминал («Система · ~») мигрирован в отдельное окно (renderer/modules/scratch.js):
 // его id `__scratch__::tN` маршрутизируются main'ом в окно-владельца, в ядре их больше не обрабатываем.
@@ -105,9 +105,6 @@ function saveProjects() { persist('projects', projects); }
 function loadProjectsFromDisk() { return Array.isArray(STORE.projects) ? STORE.projects : []; }
 function loadLayout() { return { ...DEFAULT_LAYOUT, ...(STORE.layout || {}) }; }
 function saveLayout() { persist('layout', layout); }
-// Whether the viewer / system terminal panes are open — part of the backed-up state,
-// restored on startup (and on import) so the window reopens the way it was left.
-function saveUiState() { persist('uiState', {}); } // вивер теперь окно; набор открытых окон помнит main (moduleWins.__open)
 function applyLayout() {
   $('#sidebar').style.flexBasis = layout.sidebar + 'px';
   // вивер/дерево живут в своём окне — в редакторе этих панелей больше нет.

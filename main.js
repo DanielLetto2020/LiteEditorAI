@@ -1876,12 +1876,10 @@ function signalHeirReady() {
     } catch (_) {}
   };
   // did-finish-load = рендерер загрузился (редактор реально живой) → рапортуем.
-  if (mainWindow.webContents.isLoadingMainFrame && mainWindow.webContents.isLoadingMainFrame()) {
-    mainWindow.webContents.once('did-finish-load', () => setTimeout(ping, 400));
-  } else {
-    mainWindow.webContents.once('did-finish-load', () => setTimeout(ping, 400));
-    setTimeout(ping, 1500); // подстраховка, если did-finish-load уже прошёл
-  }
+  // ping идемпотентен, поэтому держим оба триггера: событие (если ещё грузится) +
+  // таймер-подстраховку (если did-finish-load уже прошёл и once больше не сработает).
+  mainWindow.webContents.once('did-finish-load', () => setTimeout(ping, 400));
+  setTimeout(ping, 1500);
 }
 
 // ----------------------------------------------------------- стор (файлы для пульта)
@@ -1946,16 +1944,12 @@ function pultStoreList(reqId, p) {
   entries.sort((a, b) => (b.isDir - a.isDir) || a.name.localeCompare(b.name));
   remote.send({ t: 'store:tree', reqId, path: abs, entries });
 }
+// Скачивание из стора: файл → стрим как есть, папка → zip. Один путь для onStoreGet и
+// onStoreGetZip (раньше был дубль pultStoreGetZip, отличавшийся лишь текстом ошибки).
 function pultStoreGet(reqId, p) {
   const abs = resolveInShares(p);
   if (!abs) { remote.send({ t: 'store:err', reqId, error: 'доступ запрещён' }); return; }
-  let st; try { st = fs.statSync(abs); } catch (_) { remote.send({ t: 'store:err', reqId, error: 'нет файла' }); return; }
-  if (st.isDirectory()) zipDirToPult(reqId, abs); else streamFileToPult(reqId, abs, path.basename(abs));
-}
-function pultStoreGetZip(reqId, p) {
-  const abs = resolveInShares(p);
-  if (!abs) { remote.send({ t: 'store:err', reqId, error: 'доступ запрещён' }); return; }
-  let st; try { st = fs.statSync(abs); } catch (_) { remote.send({ t: 'store:err', reqId, error: 'нет папки' }); return; }
+  let st; try { st = fs.statSync(abs); } catch (_) { remote.send({ t: 'store:err', reqId, error: 'нет файла или папки' }); return; }
   if (st.isDirectory()) zipDirToPult(reqId, abs); else streamFileToPult(reqId, abs, path.basename(abs));
 }
 
@@ -2013,7 +2007,6 @@ function remoteHistoryGet(reqId, sid, before, size) {
 }
 // Хост релея больше НЕ зашит — пользователь указывает свой (self-hosting). Пусто = пульт
 // не поднимается, пока не выполнен вход с хостом в модалке «Пульт».
-const REMOTE_DEFAULT_HOST = '';
 // Нормализуем введённый хост: срезаем схему (wss?://), путь и пробелы — остаётся голый host[:port].
 function normalizeRelayHost(s) {
   return String(s || '').trim().replace(/^wss?:\/\//i, '').replace(/^https?:\/\//i, '').replace(/\/.*$/, '').trim();
@@ -2054,7 +2047,7 @@ function startRemotePult() {
       onHistoryGet: (reqId, sid, before, size) => remoteHistoryGet(reqId, sid, before, size),
       onStoreList: (reqId, p) => pultStoreList(reqId, p),
       onStoreGet: (reqId, p) => pultStoreGet(reqId, p),
-      onStoreGetZip: (reqId, p) => pultStoreGetZip(reqId, p),
+      onStoreGetZip: (reqId, p) => pultStoreGet(reqId, p),
       onStoreCancel: (reqId) => { storeCancelled.add(reqId); },
       // Задачи на пульте: тот же notes/<id>.json, что и панель «Задачи» в редакторе.
       onTasksGet: (reqId, id) => pultTasksGet(reqId, id),
@@ -2100,7 +2093,7 @@ function relayPost(host, pathname, body, extraHeaders) {
 function remoteStoreState() {
   const r = readStoreKey('remote') || {};
   const st = remote.status();
-  return { loggedIn: !!r.token, login: r.login || '', enabled: r.enabled !== false, connected: st.connected, host: r.host || REMOTE_DEFAULT_HOST };
+  return { loggedIn: !!r.token, login: r.login || '', enabled: r.enabled !== false, connected: st.connected, host: r.host || '' };
 }
 
 // Регистрация/вход: дергаем указанный пользователем релей, сохраняем {login, token, host, enabled}, поднимаем соединение.
@@ -2125,7 +2118,7 @@ ipcMain.handle('remote:status', () => remoteStoreState());
 ipcMain.handle('remote:revokeAllDevices', async () => {
   const r = readStoreKey('remote') || {};
   if (!r.token) return { ok: false, error: 'не выполнен вход' };
-  const host = r.host || REMOTE_DEFAULT_HOST;
+  const host = r.host || '';
   const res = await relayPost(host, '/devices/revoke-all', {}, { Authorization: 'Bearer ' + r.token });
   if (res.status === 200) return { ok: true };
   return { ok: false, error: (res.body && (res.body.detail || res.body.error)) || res.error || `Ошибка (${res.status || 'нет связи'})` };
