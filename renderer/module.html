@@ -212,6 +212,17 @@
         <div id="notes-body" class="notes-body"></div>
       </section>
 
+      <!-- Monitor module: самонаблюдение редактора за потреблением ресурсов (Electron-процессы + PTY) -->
+      <div id="gutter-monitor" class="gutter hidden" data-resize="monitor"></div>
+      <section id="monitor-pane" class="hidden">
+        <div class="pane-head">
+          <span>Монитор ресурсов</span>
+          <div class="drag-space-static"></div>
+          <button id="monitor-copy" class="icon-btn" title="Скопировать снимок" data-icon="copy"></button>
+        </div>
+        <div id="monitor-body" class="monitor-body"></div>
+      </section>
+
       <!-- Audit module: базовый аудит активного проекта (следует за активным проектом редактора) -->
       <div id="gutter-audit" class="gutter hidden" data-resize="audit"></div>
       <section id="audit-pane" class="hidden">

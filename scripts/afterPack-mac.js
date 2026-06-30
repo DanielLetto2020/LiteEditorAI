@@ -1,24 +1,37 @@
-// electron-builder afterPack hook (macOS).
+// electron-builder afterPack hook (macOS). Делает mac-сборку рабочей без сертификата Apple.
 //
-// Почему он есть: build.mac.identity = null отключает собственную подпись electron-builder.
-// Главный бинарник Electron приходит ad-hoc-подписанным из дистрибутива, поэтому приложение
-// стартует. Но node-pty/native-модули (`pty.node`, и КРИТИЧНО — `spawn-helper`, который node-pty
-// запускает через posix_spawn при создании каждого терминала) компилируются на CI заново и
-// остаются БЕЗ подписи. На Apple Silicon ядро убивает любой неподписанный Mach-O при exec →
-// терминал падает с «posix_spawnp failed» (см. логи mac-пользователей до v1.1.5x). На Intel то же
-// даёт отказ Gatekeeper на вложенном бинарнике.
+// Чинит ДВЕ независимые причины «не удалось запустить шелл» / «posix_spawnp failed» при создании
+// терминала (node-pty запускает вспомогательный бинарник `spawn-helper` через posix_spawn):
 //
-// Фикс: после сборки бандла (но до упаковки в dmg/zip) проставляем всему .app ad-hoc-подпись
-// (`codesign --sign -`) с нашими entitlements. Подпись без сертификата Apple (ad-hoc) достаточна,
-// чтобы ядро разрешило exec вложенных бинарников. Карантин (Gatekeeper при скачивании) этим НЕ
-// снимается — пользователю всё ещё нужен `xattr -dr com.apple.quarantine` (это задокументировано),
-// но запуск терминала после де-карантина теперь работает.
+// 1) БИТ ИСПОЛНЕНИЯ. В npm-пакете node-pty `spawn-helper` в `prebuilds/darwin-*` лежит с правами
+//    0664 — БЕЗ +x. На Intel-Mac `build/Release/pty.node` (собран arm64 на CI-раннере) не грузится →
+//    node-pty падает в фолбэк `prebuilds/darwin-x64`, берёт оттуда неисполняемый `spawn-helper` →
+//    posix_spawn = EACCES. Детерминированно ломает терминал на Intel. `chmod +x` это и чинит.
+// 2) ПОДПИСЬ. build.mac.identity=null отключает подпись electron-builder. Главный бинарник Electron
+//    приходит ad-hoc-подписанным, поэтому окно стартует, а заново скомпилированные/prebuild-бинарники
+//    node-pty — нет. На Apple Silicon ядро убивает неподписанный Mach-O при exec. Ad-hoc подпись
+//    (`codesign --sign -`) с нашими entitlements этого достаточно, чтобы ядро разрешило exec.
 //
-// Хук вызывается electron-builder отдельно для каждой arch (arm64 и x64); codesign на arm64-раннере
-// умеет ad-hoc-подписывать и x64-бандл.
+// Карантин Gatekeeper (при скачивании) этим НЕ снимается — пользователю всё ещё нужен
+// `xattr -dr com.apple.quarantine ...` ИЛИ «Открыть всё равно» (см. README), но после де-карантина
+// терминал теперь запускается. Хук вызывается отдельно для каждой arch (arm64 и x64); codesign на
+// arm64-раннере умеет ad-hoc-подписывать и x64-бандл.
 
+const fs = require('fs');
 const path = require('path');
 const { execFileSync } = require('child_process');
+
+// Рекурсивно найти файлы с заданным базовым именем под dir (без внешних зависимостей).
+function findByName(dir, name, out = []) {
+  let entries;
+  try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch (_) { return out; }
+  for (const e of entries) {
+    const full = path.join(dir, e.name);
+    if (e.isDirectory()) findByName(full, name, out);
+    else if (e.name === name) out.push(full);
+  }
+  return out;
+}
 
 module.exports = async function afterPackMac(context) {
   if (context.electronPlatformName !== 'darwin') return; // только macOS
@@ -26,17 +39,29 @@ module.exports = async function afterPackMac(context) {
   const appName = context.packager.appInfo.productFilename; // "LiteEditorAI"
   const appPath = path.join(context.appOutDir, `${appName}.app`);
   const entitlements = path.join(__dirname, '..', 'assets', 'entitlements.mac.plist');
+  const ptyRoot = path.join(appPath, 'Contents', 'Resources', 'app.asar.unpacked', 'node_modules', 'node-pty');
 
-  // --force: перезаписать существующую (ad-hoc от Electron) подпись.
-  // --deep: подписать ВСЕ вложенные бинарники (pty.node, spawn-helper, фреймворки, хелперы).
-  // --sign -: ad-hoc (без сертификата Apple).
-  // Без --options runtime: hardened runtime требуется только для нотаризации, а её нет; зато
-  // наши entitlements (allow-unsigned-executable-memory / disable-library-validation) применяются.
-  const args = ['--force', '--deep', '--sign', '-', '--entitlements', entitlements, appPath];
+  // (1) +x всем spawn-helper (build/Release + все prebuilds/darwin-*) — критично для Intel-фолбэка.
+  const helpers = findByName(ptyRoot, 'spawn-helper');
+  for (const h of helpers) {
+    try { fs.chmodSync(h, 0o755); console.log(`[afterPack-mac] chmod +x: ${h}`); }
+    catch (e) { console.warn(`[afterPack-mac] chmod не удался для ${h}: ${e.message}`); }
+  }
+  if (!helpers.length) console.warn('[afterPack-mac] ⚠ spawn-helper не найден под ' + ptyRoot);
 
-  console.log(`[afterPack-mac] ad-hoc codesign (${context.arch}): ${appPath}`);
-  execFileSync('codesign', args, { stdio: 'inherit' });
+  // (2) Ad-hoc подпись. Сначала ЯВНО подписываем вложенные нативные бинарники node-pty (spawn-helper
+  // + *.node) — --deep не всегда надёжно спускается в Resources/app.asar.unpacked, поэтому не
+  // полагаемся только на него. Затем подписываем сам бандл целиком.
+  const nodeBins = findByName(ptyRoot, 'pty.node');
+  const sign = (target) => execFileSync('codesign', ['--force', '--sign', '-', '--entitlements', entitlements, target], { stdio: 'inherit' });
+  for (const t of [...helpers, ...nodeBins]) {
+    try { sign(t); console.log(`[afterPack-mac] signed: ${t}`); }
+    catch (e) { console.warn(`[afterPack-mac] codesign не удался для ${t}: ${e.message}`); }
+  }
 
-  // Санити-проверка: подпись валидна?
+  console.log(`[afterPack-mac] ad-hoc codesign bundle (${context.arch}): ${appPath}`);
+  execFileSync('codesign', ['--force', '--deep', '--sign', '-', '--entitlements', entitlements, appPath], { stdio: 'inherit' });
+
+  // Санити-проверка: подпись бандла валидна?
   execFileSync('codesign', ['--verify', '--verbose=2', appPath], { stdio: 'inherit' });
 };

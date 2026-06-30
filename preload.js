@@ -240,6 +240,10 @@ contextBridge.exposeInMainWorld('lite', {
     scan: (root, opts) => ipcRenderer.invoke('audit:scan', { root, opts }), // → агрегаты | { error }
     export: (content, defaultName) => ipcRenderer.invoke('audit:export', { content, defaultName }), // → {ok,file}|{canceled}|{error}
   },
+  // Монитор ресурсов: снимок Electron-процессов + деревьев PTY (окно-модуль «Монитор»).
+  monitor: {
+    sample: () => ipcRenderer.invoke('monitor:sample'), // → { ok, ts, editor:{procs,totalMem,totalCpu}, pty:{procs,totalMem,totalCpu,note} }
+  },
 
   // «ИИ компания» — директор-агент + сабагенты над проектом (renderer/modules/company.js).
   company: {

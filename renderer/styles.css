@@ -881,6 +881,38 @@ body.preview-split #preview-view { border-left: 1px solid var(--border); }
 /* ───────────────── Аудит проекта (модуль audit.js) ───────────────── */
 #audit-pane { flex: 0 0 460px; min-width: 300px; border-left: 1px solid var(--border); display: flex; flex-direction: column; background: var(--panel); }
 .audit-body { flex: 1; min-height: 0; overflow: hidden; padding: 10px 12px; display: flex; flex-direction: column; gap: 10px; }
+
+/* ── «Монитор ресурсов» (окно-модуль): самонаблюдение за памятью/CPU ────────────────── */
+#monitor-pane { flex: 0 0 460px; min-width: 320px; border-left: 1px solid var(--border); display: flex; flex-direction: column; background: var(--panel); }
+.monitor-body { flex: 1; min-height: 0; overflow: auto; padding: 12px 14px; display: flex; flex-direction: column; gap: 12px; }
+.mon-empty { color: var(--text-mute); text-align: center; padding: 20px 12px; font-size: 12.5px; }
+.mon-note { color: var(--text-mute); font-size: 11.5px; padding: 2px 2px 0; }
+/* сводка: две карточки рядом */
+.mon-summary { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.mon-card { background: var(--bg-input); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 12px; }
+.mon-card-label { font-size: 11.5px; color: var(--text-dim); }
+.mon-card-val { font-size: 20px; font-weight: 700; color: var(--text); margin: 2px 0; font-variant-numeric: tabular-nums; }
+.mon-card-sub { font-size: 11px; color: var(--text-mute); }
+/* спарклайн памяти редактора */
+.mon-spark-wrap { display: flex; flex-direction: column; gap: 2px; color: var(--accent); }
+.mon-spark { width: 100%; height: 36px; display: block; }
+.mon-spark-cap { font-size: 10.5px; color: var(--text-mute); }
+/* заголовок секции */
+.mon-sec { display: flex; align-items: baseline; gap: 8px; margin-top: 2px; }
+.mon-sec-t { font-size: 12px; font-weight: 600; color: var(--text); text-transform: uppercase; letter-spacing: .03em; }
+.mon-sec-n { font-size: 11px; color: var(--text-mute); }
+/* таблица процессов */
+.mon-table { display: flex; flex-direction: column; }
+.mon-row { display: grid; grid-template-columns: 1fr 58px 132px; align-items: center; gap: 8px; padding: 6px 4px; border-bottom: 1px solid var(--border); }
+.mon-row:last-child { border-bottom: none; }
+.mon-name { display: flex; flex-direction: column; min-width: 0; }
+.mon-name-main { font-size: 12.5px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mon-name-sub { font-size: 10.5px; color: var(--text-mute); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mon-cpu { font-size: 12px; color: var(--text-dim); text-align: right; font-variant-numeric: tabular-nums; }
+.mon-mem { display: flex; flex-direction: column; gap: 3px; }
+.mon-mem-val { font-size: 12px; color: var(--text); text-align: right; font-variant-numeric: tabular-nums; }
+.mon-bar { height: 4px; background: var(--bg-input); border-radius: 2px; overflow: hidden; }
+.mon-bar-fill { height: 100%; background: var(--accent); border-radius: 2px; }
 .au-empty { color: var(--text-mute); text-align: center; padding: 24px 12px; font-size: 12.5px; line-height: 1.5; }
 .au-empty.au-err { color: var(--danger); }
 

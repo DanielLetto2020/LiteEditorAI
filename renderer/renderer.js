@@ -26,7 +26,7 @@ import { el, icon, iconBtn, hydrateIcons, toast, makeModal, showConfirm, showPro
 import { initExtensions } from './modules/extensions.js';
 // initFiles — вивер+дерево мигрированы в отдельное окно (renderer/module-entry.js).
 
-const APP_VERSION = 'alpha v1.1.53';
+const APP_VERSION = 'alpha v1.1.54';
 const GUTTER = 5;
 // Системный терминал («Система · ~») мигрирован в отдельное окно (renderer/modules/scratch.js):
 // его id `__scratch__::tN` маршрутизируются main'ом в окно-владельца, в ядре их больше не обрабатываем.
@@ -1378,7 +1378,7 @@ const panels = new Map(); // id -> { isOpen(), setOpen(open, opts) }
 // Правый слот редактора теперь держит только «Мои модули» (ext); всё остальное — отдельные окна.
 const PANEL_ORDER = [];
 // Модули, мигрированные в отдельные окна (открываются через lite.module.open, не как панель правого слота).
-const WINDOW_MODULES = new Set(['tools', 'iterflow', 'seo', 'audit', 'company', 'notes', 'db', 'chat', 'doc', 'docker', 'rh', 'ctx', 'scratch', 'files', 'pomodoro']);
+const WINDOW_MODULES = new Set(['tools', 'iterflow', 'seo', 'audit', 'company', 'notes', 'db', 'chat', 'doc', 'docker', 'rh', 'ctx', 'scratch', 'files', 'pomodoro', 'monitor']);
 function registerPanel(id, api) { panels.set(id, api); }
 function closeOtherPanels(selfId) {
   for (const id of PANEL_ORDER) {
@@ -1809,6 +1809,7 @@ function buildModulesMenu(dd) {
     sub.appendChild(moduleRow('clock', 'Помодоро', 'таймер работы/отдыха с блокировкой', () => { closeMenus(); openModule('pomodoro'); }));
     sub.appendChild(el('div', 'menu-sep'));
     sub.appendChild(moduleRow('terminal', 'Системный терминал', 'вне проектов', () => { closeMenus(); openModule('scratch'); }));
+    sub.appendChild(moduleRow('graph', 'Монитор ресурсов', 'память/CPU редактора и агентов', () => { closeMenus(); openModule('monitor'); }));
   });
   flyout('layers', 'Мои модули', 'пользовательские плагины', (sub) => Ext.buildMenuSection(sub, { bare: true }));
   dd.appendChild(el('div', 'menu-sep'));

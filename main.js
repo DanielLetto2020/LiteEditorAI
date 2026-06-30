@@ -2663,6 +2663,121 @@ ipcMain.handle('pty:foregroundState', (_e, { id }) => {
   return p ? foregroundKind(p.pid) : null;
 });
 
+// ---------------------------------------------------------------- Монитор ресурсов
+// Самонаблюдение за потреблением. Снимок раздельно по двум мирам:
+//   • Electron-процессы (app.getAppMetrics, маппинг pid→окно) — это «сам редактор», что и можно
+//     оптимизировать (число окон-модулей, утечки в рендерерах);
+//   • деревья процессов терминалов (PTY-агенты, /proc — ТОЛЬКО Linux) — «полезная нагрузка», к
+//     редактору отношения почти не имеет (claude/codex молотят по делу). Не смешиваем, чтобы цифры
+//     агентов не выдавались за расход редактора.
+// CPU% PTY считаем дельтой между последовательными вызовами (UI опрашивает раз в ~3с) — без
+// искусственных sleep. getAppMetrics уже отдаёт cpu.percentCPUUsage за интервал с прошлого вызова.
+const MONITOR_PAGE = 4096;                    // размер страницы (rss в /proc/<pid>/stat — в страницах)
+const MODULE_TITLES = {
+  tools: 'Инструменты', iterflow: 'IterFlow', seo: 'WEB/SEO аудит', audit: 'Аудит',
+  pomodoro: 'Помодоро', company: 'ИИ компания', notes: 'Задачи', db: 'Базы данных',
+  chat: 'OpenRouter', doc: 'Обработка текста', docker: 'Контейнеры', rh: 'Удалённые хосты',
+  ctx: 'Контекст', scratch: 'Система · ~', files: 'Проект', monitor: 'Монитор',
+};
+let monPrev = null;   // { total, perSid: Map<sid,jiffies> } — для расчёта CPU% деревьев PTY
+
+// /proc/<pid>/stat → { comm, ppid, jiffies (utime+stime), rssBytes }; null если процесс исчез.
+function readPidStatFull(pid) {
+  try {
+    const data = fs.readFileSync(`/proc/${pid}/stat`, 'utf8');
+    const r = data.lastIndexOf(')');
+    const comm = data.slice(data.indexOf('(') + 1, r);
+    const f = data.slice(r + 2).split(' '); // [0]=state [1]=ppid … [11]=utime [12]=stime [21]=rss(стр.)
+    return { comm, ppid: +f[1] || 0, jiffies: (+f[11] || 0) + (+f[12] || 0), rssBytes: (+f[21] || 0) * MONITOR_PAGE };
+  } catch (_) { return null; }
+}
+// суммарные «джиффи» процессора из /proc/stat (для нормировки CPU% деревьев PTY)
+function readTotalJiffies() {
+  try {
+    const line = fs.readFileSync('/proc/stat', 'utf8').split('\n', 1)[0]; // "cpu  u n s i ..."
+    return line.trim().split(/\s+/).slice(1).reduce((a, b) => a + (+b || 0), 0);
+  } catch (_) { return 0; }
+}
+function monitorSessionLabel(sid) {
+  const s = String(sid);
+  const pid = s.split('::')[0];
+  try { const p = (readStoreKey('projects') || []).find((x) => x.id === pid); if (p) return 'Терминал: ' + p.name; } catch (_) {}
+  return 'Терминал: ' + s;
+}
+
+ipcMain.handle('monitor:sample', () => {
+  // ── Electron-процессы: pid → понятная метка (окно/модуль/GPU/служебный) ──
+  const pidLabel = new Map();
+  try { pidLabel.set(process.pid, { label: 'Ядро (main)', kind: 'main' }); } catch (_) {}
+  try { if (mainWindow && !mainWindow.isDestroyed()) pidLabel.set(mainWindow.webContents.getOSProcessId(), { label: 'Главное окно', kind: 'window' }); } catch (_) {}
+  for (const [modId, w] of moduleWindows) {
+    if (!w || w.isDestroyed()) continue;
+    try { pidLabel.set(w.webContents.getOSProcessId(), { label: 'Окно: ' + (MODULE_TITLES[modId] || modId), kind: 'window' }); } catch (_) {}
+  }
+  const TYPE_RU = { GPU: 'GPU', Utility: 'Служебный', Browser: 'Ядро (main)', Tab: 'Renderer', Pepper: 'Плагин' };
+  const electron = (app.getAppMetrics() || []).map((m) => {
+    const info = pidLabel.get(m.pid);
+    return {
+      pid: m.pid, type: m.type || '?',
+      kind: info ? info.kind : (m.type === 'GPU' ? 'gpu' : 'util'),
+      name: m.name || m.serviceName || '',
+      label: info ? info.label : (TYPE_RU[m.type] || m.type || 'Процесс'),
+      cpu: Math.round((m.cpu && m.cpu.percentCPUUsage || 0) * 10) / 10,
+      memBytes: (m.memory && m.memory.workingSetSize || 0) * 1024, // workingSetSize в КБ
+    };
+  }).sort((a, b) => b.memBytes - a.memBytes);
+
+  // ── PTY-агенты: деревья процессов терминалов (Linux) ──
+  const pty = [];
+  let ptyNote = null;
+  if (process.platform === 'linux') {
+    const all = new Map();
+    try {
+      for (const ent of fs.readdirSync('/proc')) {
+        if (ent.charCodeAt(0) < 48 || ent.charCodeAt(0) > 57) continue; // только числовые pid
+        const st = readPidStatFull(ent); if (st) all.set(+ent, st);
+      }
+    } catch (_) {}
+    const kids = new Map();
+    for (const [p, st] of all) { if (!kids.has(st.ppid)) kids.set(st.ppid, []); kids.get(st.ppid).push(p); }
+    const total = readTotalJiffies();
+    const dTotal = monPrev ? Math.max(0, total - monPrev.total) : 0;
+    const ncpu = (os.cpus() || []).length || 1;
+    const nowPer = new Map();
+    for (const [sid, proc] of ptys) {
+      const root = proc && proc.pid; if (!root) continue;
+      const seen = new Set(); const stack = [root]; let rss = 0, jif = 0, n = 0, topComm = '';
+      while (stack.length) {
+        const p = stack.pop(); if (seen.has(p)) continue; seen.add(p);
+        const st = all.get(p); if (!st) continue;
+        rss += st.rssBytes; jif += st.jiffies; n++;
+        if (p === root) topComm = st.comm;
+        for (const c of (kids.get(p) || [])) stack.push(c);
+      }
+      nowPer.set(sid, jif);
+      let cpu = 0;
+      if (monPrev && monPrev.perSid.has(sid) && dTotal > 0) {
+        cpu = Math.max(0, Math.round(((jif - monPrev.perSid.get(sid)) / dTotal) * ncpu * 100 * 10) / 10);
+      }
+      pty.push({ sid, pid: root, label: monitorSessionLabel(sid), comm: topComm, procs: n, state: foregroundKind(root), cpu, memBytes: rss });
+    }
+    pty.sort((a, b) => b.memBytes - a.memBytes);
+    monPrev = { total, perSid: nowPer };
+  } else {
+    ptyNote = 'Детализация процессов терминалов доступна только на Linux.';
+  }
+
+  const editorMem = electron.reduce((s, p) => s + p.memBytes, 0);
+  const editorCpu = Math.round(electron.reduce((s, p) => s + p.cpu, 0) * 10) / 10;
+  const ptyMem = pty.reduce((s, p) => s + p.memBytes, 0);
+  const ptyCpu = Math.round(pty.reduce((s, p) => s + p.cpu, 0) * 10) / 10;
+  return {
+    ok: true, ts: Date.now(),
+    editor: { procs: electron, totalMem: editorMem, totalCpu: editorCpu },
+    pty: { procs: pty, totalMem: ptyMem, totalCpu: ptyCpu, note: ptyNote },
+  };
+});
+
 // ---------------------------------------------------------------- filesystem
 ipcMain.handle('fs:readDir', async (_e, dir) => {
   try {

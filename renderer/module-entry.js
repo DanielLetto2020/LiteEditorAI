@@ -16,6 +16,7 @@ import { initTools } from './modules/tools.js';
 import { initIterflow } from './modules/iterflow.js';
 import { initSeo } from './modules/seo.js';
 import { initAudit } from './modules/audit.js';
+import { initMonitor } from './modules/monitor.js';
 import { initPomodoro } from './modules/pomodoro.js';
 import { initCompany } from './modules/company.js';
 import { initNotes } from './modules/notes.js';
@@ -69,6 +70,10 @@ const MODULES = {
   audit: {
     title: 'Аудит проекта', init: initAudit, project: true,
     wire: (mod) => { bind('#audit-rescan', () => mod.rescan()); },
+  },
+  monitor: {
+    title: 'Монитор ресурсов', init: initMonitor, project: false,
+    wire: (mod) => { bind('#monitor-copy', () => mod.copySnapshot()); },
   },
   pomodoro: {
     title: 'Помодоро', init: initPomodoro, project: false,
