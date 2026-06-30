@@ -102,6 +102,7 @@ contextBridge.exposeInMainWorld('lite', {
   store: {
     loadAll: () => ipcRenderer.sendSync('store:loadAll'),       // sync snapshot at startup
     set: (key, value) => ipcRenderer.send('store:set', { key, value }),
+    setSync: (key, value) => ipcRenderer.sendSync('store:setSync', { key, value }), // гарантированная запись (beforeunload)
     notesGet: (id) => ipcRenderer.invoke('store:notesGet', id),
     notesSet: (id, notes) => ipcRenderer.invoke('store:notesSet', { id, notes }),
     notesExport: (json, name) => ipcRenderer.invoke('notes:exportFile', { json, name }), // → {ok,file}|{canceled}|{error}
