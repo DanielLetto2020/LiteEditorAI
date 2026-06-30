@@ -1,0 +1,24 @@
+name: CI
+
+# Lightweight checks on every push / PR: pure-Node unit tests (shell selection,
+# anti-traversal name guard, pult SGR line codec) + a syntax/bundle smoke check.
+# These run WITHOUT Electron — no node-pty rebuild, no display — so they're fast.
+on:
+  push:
+    branches: [main, contrib]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Unit tests (pure Node, no Electron)
+        run: npm test
+      - name: Syntax check (main/preload/remote)
+        run: node -c main.js && node -c preload.js && node -c remote.js
+      - name: Install deps + bundle frontend
+        run: npm ci --ignore-scripts && npm run build
