@@ -419,6 +419,9 @@ body.viewer-zen #vcs-topbar { display: none !important; }
 #quickbar.hidden { display: none; }
 #quickbar::-webkit-scrollbar { height: 0; }
 .qb-btn { flex: 0 0 auto; position: relative; display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 26px; }
+/* модуль с открытым окном — акцентная точка-индикатор снизу кнопки (идея 3) */
+.qb-btn.open { color: var(--accent-glow); }
+.qb-btn.open::after { content: ''; position: absolute; bottom: 1px; left: 50%; transform: translateX(-50%); width: 4px; height: 4px; border-radius: 50%; background: var(--accent-glow); }
 /* бейдж активных задач на кнопке «Задачи» */
 .qb-badge { display: none; position: absolute; top: -2px; right: -3px; min-width: 15px; height: 15px; padding: 0 4px; border-radius: 8px; background: var(--green); color: var(--accent-contrast); font-size: 9.5px; font-weight: 700; line-height: 15px; text-align: center; pointer-events: none; }
 .qb-sep { flex: 0 0 auto; width: 1px; height: 18px; margin: 0 5px; background: var(--border-strong); align-self: center; }

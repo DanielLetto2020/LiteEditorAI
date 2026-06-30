@@ -26,7 +26,7 @@ import { el, icon, iconBtn, hydrateIcons, toast, makeModal, showConfirm, showPro
 import { initExtensions } from './modules/extensions.js';
 // initFiles — вивер+дерево мигрированы в отдельное окно (renderer/module-entry.js).
 
-const APP_VERSION = 'alpha v1.1.47';
+const APP_VERSION = 'alpha v1.1.48';
 const GUTTER = 5;
 // Системный терминал («Система · ~») мигрирован в отдельное окно (renderer/modules/scratch.js):
 // его id `__scratch__::tN` маршрутизируются main'ом в окно-владельца, в ядре их больше не обрабатываем.
@@ -1410,6 +1410,16 @@ function renderQuickbar() {
   if (wasHidden !== !shown) setTimeout(refitActiveTerminal, 60); // высота терминала изменилась
   updateNotesBadge();
   updatePomoUI(pomoLast); // перерисовали квикбар — восстановить бейдж остатка помодоро
+  markOpenModules();      // восстановить подсветку открытых окон-модулей (идея 3)
+}
+// Подсветка кнопок квикбара тех модулей, чьи окна сейчас открыты (main шлёт module:openSet).
+// Раньше событие рассылалось, но его никто не слушал (мёртвый мост onOpenSet) — теперь видно,
+// что открыто, не переключаясь по окнам.
+let openModuleIds = new Set();
+function markOpenModules() {
+  document.querySelectorAll('#quickbar .qb-btn').forEach((b) => {
+    b.classList.toggle('open', openModuleIds.has(b.dataset.mod));
+  });
 }
 // Бейдж активных (не выполненных) задач АКТИВНОГО проекта на кнопке «Задачи» квикбара. Источник —
 // STORE.noteCounts (стартовый снимок в main.js + живые апдейты через refreshNotesCount по app:notesChanged).
@@ -2630,6 +2640,8 @@ function init() {
   lite.editorBus.onRestGuard((s) => { try { applyRestGuard(s); } catch (e) { console.error(e); } }); // Помодоро: оверлей отдыха над терминалами
   lite.pomodoro.onTick((s) => { try { updatePomoUI(s); } catch (_) {} });        // мини-таймер в титлбаре + бейдж квикбара
   lite.pomodoro.onChime(({ to }) => { try { pomoChime(to); } catch (_) {} });     // звон смены фазы
+  // Набор открытых окон-модулей → подсветка кнопок квикбара (идея 3).
+  try { if (lite.module && lite.module.onOpenSet) lite.module.onOpenSet((ids) => { openModuleIds = new Set(ids || []); markOpenModules(); }); } catch (_) {}
   { const mini = $('#pomo-mini'); if (mini) mini.onclick = () => openModule('pomodoro'); }
   lite.pomodoro.getState().then((s) => updatePomoUI(s)).catch(() => {});          // стартовый снимок (таймер мог идти до открытия редактора)
   $('#term-clear').addEventListener('click', () => clearTerminal());
