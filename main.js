@@ -625,6 +625,11 @@ const DBAI_AGENTS = {
   codex: { cmd: 'codex', args: ['exec'], via: 'arg', stream: 'text' },
 };
 const dbaiReqs = new Map();
+// Глушит карту in-flight задач разом: значение — ChildProcess (.kill) или ClientRequest/сокет (.destroy).
+function killReqMap(m) {
+  for (const v of m.values()) { try { if (v && typeof v.kill === 'function') v.kill(); else if (v && typeof v.destroy === 'function') v.destroy(); } catch (_) {} }
+  m.clear();
+}
 ipcMain.on('dbai:run', (e, { reqId, agent, prompt } = {}) => {
   const sender = e.sender;
   const conf = DBAI_AGENTS[agent] || DBAI_AGENTS.claude;
@@ -1639,10 +1644,17 @@ function openModuleWindow(modId) {
   win.on('closed', () => {
     moduleWindows.delete(modId);
     if (modId === 'files') filesViewerReady = false; // окно вивера закрыто → следующее openInViewer переоткроет и переждёт готовность
+    if (modId === 'ctx') { for (const w of ctxOutWatchers.values()) { try { w.close(); } catch (_) {} } ctxOutWatchers.clear(); } // окно «Контекст» закрылось без unwatch → не течём fs.watch (B2)
     for (const [sid, wc] of ownerBySession) { try { if (wc.isDestroyed()) ownerBySession.delete(sid); } catch (_) { ownerBySession.delete(sid); } }
     broadcastModuleOpenSet();
   });
-  win.webContents.on('render-process-gone', (_e, d) => logger.log('error', 'module-window', `${modId} ${JSON.stringify(d)}`));
+  // Рендерер окна модуля умер → окно неюзабельно, dirty-guard (win:closeRequest) ждать некому.
+  // Снимаем гард и закрываем принудительно, иначе ✕ не сработает (B4). destroy() → сработает 'closed'.
+  win.webContents.on('render-process-gone', (_e, d) => {
+    logger.log('error', 'module-window', `${modId} ${JSON.stringify(d)}`);
+    win.__forceClose = true;
+    try { if (!win.isDestroyed()) win.destroy(); } catch (_) {}
+  });
   win.webContents.on('before-input-event', (event, input) => {
     if (input.type !== 'keyDown') return;
     if (input.key === 'F12') win.webContents.toggleDevTools();
@@ -1764,7 +1776,7 @@ function pomoTick() {
   pomoEmit();
 }
 function pomoEnsureTimer() {
-  if (!pomoTimer) pomoTimer = setInterval(pomoTick, 1000);
+  if (!pomoTimer) { pomoTimer = setInterval(pomoTick, 1000); if (pomoTimer.unref) pomoTimer.unref(); }
 }
 function pomoStart(tech) {
   if (!tech) return { ok: false, error: 'Не задана техника' };
@@ -1783,6 +1795,7 @@ function pomoStart(tech) {
 }
 function pomoStop() {
   POMO.running = false; POMO.paused = false; POMO.phase = 'idle'; POMO.remaining = 0; POMO.cycle = 0;
+  if (pomoTimer) { clearInterval(pomoTimer); pomoTimer = null; } // не крутим 1с-тик впустую после «Стоп»
   pomoSyncOverlay();   // спрячет оверлей
   pomoEmit();
   return { ok: true };
@@ -2189,10 +2202,16 @@ app.on('window-all-closed', () => {
   cLogProcs.clear();
   for (const c of companyReqs.values()) { try { companyKill(c); } catch (_) {} } // detached-директора не должны пережить редактор
   companyReqs.clear();
+  // In-flight агент-процессы/HTTP окон модулей (textproc/чат/AI-DB): окно могло крашнуться,
+  // не успев послать *:abort → не оставляем claude/codex/запрос сиротами после выхода (B3).
+  killReqMap(tpReqs); killReqMap(dbaiReqs); killReqMap(orReqs);
   try { dbApi.closeAll(); } catch (_) {}
   try { rhApi.closeAll(); } catch (_) {}
   for (const w of watchers.values()) { try { w.watcher.close(); } catch (_) {} }
   watchers.clear();
+  for (const w of ctxOutWatchers.values()) { try { w.close(); } catch (_) {} } // fs.watch выходных файлов «Контекста» (B2)
+  ctxOutWatchers.clear();
+  if (pomoTimer) { clearInterval(pomoTimer); pomoTimer = null; }
   if (process.platform !== 'darwin') app.quit();
 });
 
@@ -2653,14 +2672,19 @@ ipcMain.handle('files:diffPair', async (_e, { a, b } = {}) => {
 // Watch a project root and tell the renderer when files change on disk — so the
 // tree and the open file refresh live while an agent edits things in the terminal.
 const isIgnoredPath = (rel) => rel.split(/[\\/]/).some((seg) => IGNORE_DIRS.has(seg));
+// Сообщить окнам (редактор + вивер), что слежение за деревом отвалилось → ручной ⟳ (идея 11).
+function notifyWatchEnded(root) {
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('fs:watchEnded', { root });
+  const fw = filesWindow(); if (fw) fw.webContents.send('fs:watchEnded', { root });
+}
 ipcMain.on('fs:watch', (_e, root) => {
   if (!root || watchers.has(root) || !fs.existsSync(root)) return;
   let watcher;
   try {
     watcher = fs.watch(root, { recursive: true });
-  } catch (_) { return; } // inotify limits / unsupported — degrade to manual refresh
+  } catch (_) { notifyWatchEnded(root); return; } // inotify limits / unsupported — degrade to manual refresh
   const rec = { watcher, timer: null, pending: new Set() };
-  watcher.on('error', () => { try { watcher.close(); } catch (_) {} watchers.delete(root); });
+  watcher.on('error', () => { try { watcher.close(); } catch (_) {} watchers.delete(root); notifyWatchEnded(root); }); // рантайм-ошибка (B7/идея 11)
   watcher.on('change', (_type, filename) => {
     const rel = filename == null ? '' : String(filename);
     if (rel && isIgnoredPath(rel)) return;
@@ -3541,7 +3565,10 @@ ipcMain.handle('git:status', async (_e, root) => {
   const base = top.trim();
   // --untracked-files=all: перечислять КАЖДЫЙ новый файл по отдельности, а не схлопывать
   // содержимое неотслеживаемой папки в один элемент-каталог (во вкладке «Изменения» нужны файлы).
-  const out = await git(root, ['status', '--porcelain', '--untracked-files=all']);
+  // core.quotePath=false: иначе git октально экранирует не-ASCII имена и оборачивает в кавычки —
+  // снять кавычки мало, путь останется искажённым и не совпадёт с файлом на диске (декорации/диффы
+  // молча промахивались мимо русских/юникод-имён, B5).
+  const out = await git(root, ['-c', 'core.quotePath=false', 'status', '--porcelain', '--untracked-files=all']);
   const files = {};
   if (out) {
     for (const line of out.split('\n')) {
@@ -3708,7 +3735,7 @@ ipcMain.handle('git:conflicts', async (_e, root) => {
   const top = await git(root, ['rev-parse', '--show-toplevel']);
   if (top == null) return { repo: false, files: [] };
   const base = top.trim();
-  const out = await git(root, ['status', '--porcelain', '--untracked-files=no']);
+  const out = await git(root, ['-c', 'core.quotePath=false', 'status', '--porcelain', '--untracked-files=no']); // не-ASCII имена без октального экранирования (B5)
   const files = [];
   if (out) for (const line of out.split('\n')) {
     if (!line) continue;

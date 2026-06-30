@@ -425,6 +425,12 @@ contextBridge.exposeInMainWorld('lite', {
       ipcRenderer.on('fs:changed', h);
       return () => ipcRenderer.removeListener('fs:changed', h);
     },
+    // Слежение за деревом отвалилось (лимит inotify / ошибка вотчера) → UI подскажет про ручной ⟳.
+    onWatchEnded: (cb) => {
+      const h = (_e, payload) => cb(payload);
+      ipcRenderer.on('fs:watchEnded', h);
+      return () => ipcRenderer.removeListener('fs:watchEnded', h);
+    },
     // Вивер: рекурсивный листинг (Ctrl+P), поиск по проекту (grep), сравнение двух файлов.
     listAll: (root) => ipcRenderer.invoke('files:listAll', root),
     search: (root, query, opts) => ipcRenderer.invoke('files:search', { root, query, opts }),

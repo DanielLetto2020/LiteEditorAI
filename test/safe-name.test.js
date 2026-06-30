@@ -22,6 +22,7 @@ ok(safeChildName('/etc/passwd') === null, 'абсолютный POSIX-путь')
 ok(safeChildName('..') === null, 'просто ..');
 ok(safeChildName('.') === null, 'просто .');
 ok(safeChildName('C:\\Windows') === null, 'Windows-диск');
+ok(safeChildName('file:stream') === null, 'NTFS alternate data stream');
 ok(safeChildName('evil\0.txt') === null, 'null-байт');
 
 // --- Мусорный ввод ---

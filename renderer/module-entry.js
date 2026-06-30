@@ -130,6 +130,8 @@ const MODULES = {
       lite.editorBus.onRefreshTree(() => { try { if (activeProj) mod.renderTree(activeProj); } catch (_) {} });
       // живые изменения на диске активного проекта (агент тронул файл) → обновить дерево/перечитать
       lite.fs.onChange(({ root, files }) => { try { if (activeProj && activeProj.path === root) mod.onFsChange(activeProj, files); } catch (_) {} });
+      // слежение отвалилось (лимит inotify / ошибка вотчера) → подсказать ручное обновление дерева (идея 11)
+      if (lite.fs.onWatchEnded) lite.fs.onWatchEnded(({ root }) => { try { if (activeProj && activeProj.path === root) toast('Авто-слежение за деревом недоступно — обновляйте вручную (⟳)', { kind: 'warn', ttl: 6000 }); } catch (_) {} });
       try { lite.editorBus.viewerReady(); } catch (_) {} // флаш отложенных openInViewer из main
     },
   },
