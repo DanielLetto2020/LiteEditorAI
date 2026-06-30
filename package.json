@@ -1,6 +1,6 @@
 {
   "name": "liteeditor-ai",
-  "version": "1.1.41-alpha",
+  "version": "1.1.42-alpha",
   "description": "Lightweight editor for working with AI coding agents in the terminal",
   "main": "main.js",
   "author": "Максим Кузьминский <i@m-letto.ru>",
@@ -49,6 +49,7 @@
     "@xterm/headless": "^5.5.0",
     "@xterm/xterm": "^5.5.0",
     "basic-ftp": "^6.0.1",
+    "chart.js": "^4.5.1",
     "highlight.js": "^11.11.1",
     "js-yaml": "^4.2.0",
     "marked": "^18.0.4",

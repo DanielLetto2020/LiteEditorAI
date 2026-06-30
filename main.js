@@ -225,7 +225,7 @@ try {
   const legacy = path.join(os.homedir(), '.LiteEditor');
   if (!fs.existsSync(storeDir) && fs.existsSync(legacy)) fs.cpSync(legacy, storeDir, { recursive: true });
 } catch (_) {}
-const STORE_KEYS = ['projects', 'settings', 'layout', 'recents', 'lastParent', 'categories', 'sectionOrder', 'accordions', 'dismissed', 'uiState', 'projTabs', 'openrouter', 'remote', 'shares', 'pultBlocked', 'dockerUi', 'dbConnections', 'dbUi', 'rhConnections', 'rhUi', 'textproc', 'tpPrompts', 'extData', 'extEnabled', 'quickbar', 'seoTargets', 'seoSites', 'moduleWins', 'mwLeft', 'bookmarks', 'promptSnippets', 'pomodoro', 'pomodoroLog'];
+const STORE_KEYS = ['projects', 'settings', 'layout', 'recents', 'lastParent', 'categories', 'sectionOrder', 'accordions', 'dismissed', 'uiState', 'projTabs', 'openrouter', 'remote', 'shares', 'pultBlocked', 'dockerUi', 'dbConnections', 'dbUi', 'rhConnections', 'rhUi', 'textproc', 'tpPrompts', 'extData', 'extEnabled', 'quickbar', 'seoTargets', 'seoSites', 'moduleWins', 'mwLeft', 'bookmarks', 'promptSnippets', 'pomodoro', 'pomodoroLog', 'dbaiProviders'];
 // Папка-«стор» для шаринга с пультом (агент кладёт сюда файлы; в PTY доступна как $LITE_STORE).
 const pultStoreDir = path.join(storeDir, 'store');
 try { fs.mkdirSync(pultStoreDir, { recursive: true }); } catch (_) {}
@@ -612,6 +612,106 @@ ipcMain.on('tp:run', (e, { reqId, agent, prompt } = {}) => {
 ipcMain.on('tp:abort', (_e, { reqId } = {}) => {
   const c = tpReqs.get(reqId);
   if (c) { tpReqs.delete(reqId); try { c.kill(); } catch (_) {} }
+});
+
+// ---------------------------------------------------------------- AI-DB (read-only SQL chat)
+// Streaming variant of tp:run for the «Базы данных» → AI-DB tab: the agent only AUTHORS SQL/text
+// (it never touches the DB — the renderer executes read-only queries after explicit confirmation).
+// We stream stdout chunks so the chat feels live. Stateless: the renderer re-sends the full
+// transcript + schema each turn, so no agent-side session is needed.
+// Claude streams real tokens with stream-json + partial messages; codex stays plain-text.
+const DBAI_AGENTS = {
+  claude: { cmd: 'claude', args: ['-p', '--output-format', 'stream-json', '--verbose', '--include-partial-messages'], via: 'stdin', stream: 'json' },
+  codex: { cmd: 'codex', args: ['exec'], via: 'arg', stream: 'text' },
+};
+const dbaiReqs = new Map();
+ipcMain.on('dbai:run', (e, { reqId, agent, prompt } = {}) => {
+  const sender = e.sender;
+  const conf = DBAI_AGENTS[agent] || DBAI_AGENTS.claude;
+  const args = conf.via === 'arg' ? [...conf.args, prompt || ''] : [...conf.args];
+  let child;
+  try { child = spawn(conf.cmd, args, { cwd: os.homedir(), env: tpEnv() }); }
+  catch (err) { safeSend(sender, 'dbai:error', { reqId, error: 'не запустить «' + conf.cmd + '»: ' + (err.message || err) }); return; }
+  dbaiReqs.set(reqId, child);
+  let errOut = '', any = false, buf = '', sawDelta = false;
+  const to = setTimeout(() => { if (dbaiReqs.has(reqId)) { dbaiReqs.delete(reqId); try { child.kill(); } catch (_) {} safeSend(sender, 'dbai:error', { reqId, error: 'таймаут (агент не ответил вовремя)' }); } }, 300000);
+  const emit = (chunk) => { if (!chunk) return; any = true; safeSend(sender, 'dbai:data', { reqId, chunk }); };
+  // extract incremental assistant text from a claude stream-json NDJSON line
+  const handleLine = (line) => {
+    const s = line.trim(); if (!s) return; let ev; try { ev = JSON.parse(s); } catch (_) { return; }
+    if (ev.type === 'stream_event' && ev.event) {
+      const evt = ev.event;
+      if (evt.type === 'content_block_delta' && evt.delta && evt.delta.type === 'text_delta') { sawDelta = true; emit(evt.delta.text || ''); }
+      return;
+    }
+    // fallback when partial messages aren't supported: assistant block carries full text
+    if (ev.type === 'assistant' && ev.message && Array.isArray(ev.message.content) && !sawDelta) {
+      for (const b of ev.message.content) if (b && b.type === 'text' && b.text) emit(b.text);
+    }
+  };
+  if (conf.stream === 'json') {
+    child.stdout.on('data', (c) => { buf += c.toString('utf8'); let nl; while ((nl = buf.indexOf('\n')) >= 0) { handleLine(buf.slice(0, nl)); buf = buf.slice(nl + 1); } });
+  } else {
+    child.stdout.on('data', (c) => emit(c.toString('utf8')));
+  }
+  child.stderr.on('data', (c) => { errOut += c.toString('utf8'); });
+  child.on('error', (err) => { if (!dbaiReqs.has(reqId)) return; dbaiReqs.delete(reqId); clearTimeout(to); safeSend(sender, 'dbai:error', { reqId, error: 'агент «' + conf.cmd + '» не найден/не запустился: ' + (err.message || err) }); });
+  child.on('close', (code) => {
+    if (!dbaiReqs.has(reqId)) return; dbaiReqs.delete(reqId); clearTimeout(to);
+    if (conf.stream === 'json' && buf.trim()) handleLine(buf);
+    if (any) safeSend(sender, 'dbai:done', { reqId });
+    else safeSend(sender, 'dbai:error', { reqId, error: errOut.trim() || ('агент завершился с кодом ' + code) });
+  });
+  if (conf.via === 'stdin') { try { child.stdin.write(prompt || ''); child.stdin.end(); } catch (_) {} }
+});
+ipcMain.on('dbai:abort', (e, { reqId } = {}) => {
+  const c = dbaiReqs.get(reqId);
+  if (c) { dbaiReqs.delete(reqId); try { if (typeof c.kill === 'function') c.kill(); else if (typeof c.destroy === 'function') c.destroy(); } catch (_) {} safeSend(e.sender, 'dbai:done', { reqId, aborted: true }); }
+});
+
+// Generic OpenAI-compatible providers (OpenRouter / Ollama / LM Studio) for the AI-DB picker.
+// baseUrl is everything before «/chat/completions» (e.g. http://localhost:11434/v1). All three
+// share the OpenAI chat-completions wire format, so one path covers them; events reuse dbai:*.
+function dbaiHttpMod(u) { return u.protocol === 'https:' ? https : http; }
+ipcMain.handle('dbai:apiModels', async (_e, { baseUrl, key } = {}) => {
+  return await new Promise((resolve) => {
+    let u; try { u = new URL(String(baseUrl).replace(/\/$/, '') + '/models'); } catch (_) { return resolve({ error: 'неверный адрес' }); }
+    const headers = { 'Accept': 'application/json', ...(key ? { Authorization: 'Bearer ' + key } : {}) };
+    const req = dbaiHttpMod(u).request(u, { method: 'GET', headers }, (res) => {
+      let data = ''; res.on('data', (c) => { data += c; });
+      res.on('end', () => {
+        try { const j = JSON.parse(data); if (res.statusCode >= 400) return resolve({ error: (j.error && j.error.message) || ('HTTP ' + res.statusCode) }); const models = (j.data || j.models || []).map((m) => ({ id: m.id || m.name, name: m.id || m.name })); resolve({ models }); }
+        catch (_) { resolve({ error: 'не удалось разобрать список моделей (проверьте адрес/сервер)' }); }
+      });
+    });
+    req.on('error', (e2) => resolve({ error: String(e2.message || e2) }));
+    req.setTimeout(15000, () => { req.destroy(); resolve({ error: 'таймаут (сервер недоступен)' }); });
+    req.end();
+  });
+});
+ipcMain.on('dbai:apiRun', (e, { reqId, baseUrl, key, model, prompt } = {}) => {
+  const sender = e.sender;
+  let u; try { u = new URL(String(baseUrl).replace(/\/$/, '') + '/chat/completions'); } catch (_) { safeSend(sender, 'dbai:error', { reqId, error: 'неверный адрес провайдера' }); return; }
+  const body = JSON.stringify({ model, messages: [{ role: 'user', content: prompt || '' }], stream: true });
+  const headers = { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body), ...(key ? { Authorization: 'Bearer ' + key } : {}) };
+  const req = dbaiHttpMod(u).request(u, { method: 'POST', headers }, (res) => {
+    if (res.statusCode >= 400) { let err = ''; res.on('data', (c) => { err += c; }); res.on('end', () => { let msg = 'HTTP ' + res.statusCode; try { const j = JSON.parse(err); if (j.error && j.error.message) msg = j.error.message; } catch (_) {} if (!dbaiReqs.has(reqId)) return; dbaiReqs.delete(reqId); safeSend(sender, 'dbai:error', { reqId, error: msg }); }); return; }
+    let buf = '', any = false;
+    res.on('data', (chunk) => {
+      buf += chunk.toString('utf8'); let idx;
+      while ((idx = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, idx).trim(); buf = buf.slice(idx + 1);
+        if (!line.startsWith('data:')) continue;
+        const payload = line.slice(5).trim(); if (payload === '[DONE]') continue;
+        try { const j = JSON.parse(payload); const ch = j.choices && j.choices[0]; const delta = ch && ch.delta && ch.delta.content; if (delta) { any = true; safeSend(sender, 'dbai:data', { reqId, chunk: delta }); } } catch (_) {}
+      }
+    });
+    res.on('end', () => { if (!dbaiReqs.has(reqId)) return; dbaiReqs.delete(reqId); if (any) safeSend(sender, 'dbai:done', { reqId }); else safeSend(sender, 'dbai:error', { reqId, error: 'пустой ответ модели' }); });
+  });
+  req.on('error', (err) => { if (!dbaiReqs.has(reqId)) return; dbaiReqs.delete(reqId); safeSend(sender, 'dbai:error', { reqId, error: String(err.message || err) }); });
+  req.setTimeout(300000, () => { req.destroy(); if (!dbaiReqs.has(reqId)) return; dbaiReqs.delete(reqId); safeSend(sender, 'dbai:error', { reqId, error: 'таймаут запроса' }); });
+  dbaiReqs.set(reqId, req);
+  req.write(body); req.end();
 });
 
 // ---------------------------------------------------------------- «ИИ компания» (company)

@@ -4,6 +4,8 @@
 // автокомплит SQL по схеме, ER-диаграмма, конструктор запросов, сравнение схем, история.
 // Изоляция по образцу textproc.js: ядро — через host; UI-хелперы — из ui.js; бэкенд — window.lite.db.*.
 import { el, icon, iconBtn, toast, makeModal, showConfirm, showPrompt } from '../ui.js';
+import { marked } from 'marked';
+import Chart from 'chart.js/auto';   // static import: chart.js/auto auto-registers all controllers
 import { EditorView, keymap, lineNumbers, drawSelection } from '@codemirror/view';
 import { EditorState } from '@codemirror/state';
 import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands';
@@ -32,6 +34,24 @@ export function initDb(host) {
   let activeKey = null;
   const metaCache = new Map();   // "schema.table" -> meta
   let sqlSeq = 0;
+  // AI-DB: outer workspace view ('desk' | 'ai') + per-connection chat state
+  let wsView = 'desk';
+  const aiChats = new Map();      // connId -> { messages:[], busy, reqId, agent }
+  let aiSeq = 0;
+
+  // auto-refresh timer (DataGrip-style): reloads the active TABLE tab on an interval
+  let autoRefSec = (typeof dbUi.autoRefSec === 'number') ? dbUi.autoRefSec : 0;   // 0 = off/pause
+  let autoRefTimer = null;
+  function stopAutoRef() { if (autoRefTimer) { clearInterval(autoRefTimer); autoRefTimer = null; } }
+  function startAutoRef() {
+    stopAutoRef();
+    if (autoRefSec > 0) autoRefTimer = setInterval(() => {
+      const t = findTab(activeKey);
+      if (t && t.kind === 'table' && t.mode !== 'structure' && !pendingCount(t) && !document.getElementById('db-valpanel')) { t._force = true; renderTabBody($('#db-tabbody')); }
+    }, autoRefSec * 1000);
+  }
+  function setAutoRef(sec) { autoRefSec = sec; dbUi.autoRefSec = sec; saveDbUi(); startAutoRef(); }
+  function fmtInterval(s) { return s <= 0 ? 'выкл' : s < 60 ? s + 'с' : (s % 60 ? (Math.round(s / 6) / 10) : (s / 60)) + 'мин'; }
 
   function setDbOpen(open, opts = {}) {
     if (open === dbOpen) { if (open) renderDbPanel(); return; }
@@ -65,7 +85,7 @@ export function initDb(host) {
     activeKey = (dbUi.session.activeKey && findTab(dbUi.session.activeKey)) ? dbUi.session.activeKey : (tabs[0] && tabs[0].key) || null;
     renderDbPanel();
   }
-  function dbDispose() { destroyAllEditors(); }
+  function dbDispose() { stopAutoRef(); destroyAllEditors(); const vp = document.getElementById('db-valpanel'); if (vp) vp.remove(); for (const d of aiChats.values()) for (const s of (d.sessions || [])) { if (s._reqId) { try { lite.dbai.abort(s._reqId); } catch (_) {} s._reqId = null; s._busy = false; } } }
   function saveDbUi() { persist('dbUi', dbUi); }
   function dbCatHue(name) { let h = 0; for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) % 360; return h; }
 
@@ -73,8 +93,12 @@ export function initDb(host) {
   function qIdent(id) { return dbActiveConn && dbActiveConn.type === 'mysql' ? '`' + String(id).replace(/`/g, '``') + '`' : '"' + String(id).replace(/"/g, '""') + '"'; }
   function qual(schema, table) { if (dbActiveConn && dbActiveConn.type === 'sqlite') return qIdent(table); return (schema ? qIdent(schema) + '.' : '') + qIdent(table); }
   function lit(v) { if (v == null) return 'NULL'; if (typeof v === 'number') return String(v); if (/^-?\d+(\.\d+)?$/.test(String(v))) return String(v); return "'" + String(v).replace(/'/g, "''") + "'"; }
-  const DESTRUCTIVE_RE = /\b(insert|update|delete|drop|truncate|alter|create|grant|revoke|merge|replace)\b/i;
-  function isDestructiveSql(s) { const t = String(s).replace(/--[^\n]*/g, '').replace(/'(?:[^']|'')*'/g, "''"); return DESTRUCTIVE_RE.test(t); }
+  // kept in sync with lib/db.js DESTRUCTIVE — covers SELECT INTO / COPY / ATTACH / CALL / … that
+  // would otherwise slip past a SELECT-prefix check and write to the DB or filesystem.
+  const DESTRUCTIVE_RE = /\b(insert|update|delete|drop|truncate|alter|create|grant|revoke|copy|merge|call|do|vacuum|reindex|attach|detach|lock|rename|into|load|handler|replace)\b/i;
+  function isDestructiveSql(s) { const t = String(s).replace(/--[^\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, '').replace(/'(?:[^']|'')*'/g, "''").replace(/"(?:[^"]|"")*"/g, '""'); return DESTRUCTIVE_RE.test(t); }
+  // strict read-only gate for the AI tab: not destructive AND starts with a read statement
+  function isReadOnlyQuery(s) { return !isDestructiveSql(s) && /^\s*\(*\s*(select|with|explain|show|describe|desc|pragma|table|values)\b/i.test(String(s)); }
   // confirm before a writing statement on a PRODUCTION-flagged connection
   function prodGuard(sqlText, run) { if (dbActiveConn && dbActiveConn.isProd && isDestructiveSql(sqlText)) showConfirm('PRODUCTION', `Подключение «${dbActiveConn.name}» помечено как PRODUCTION. Выполнить изменяющий запрос?`, 'Выполнить', run); else run(); }
 
@@ -158,14 +182,27 @@ export function initDb(host) {
   function dbConnModal(existing) {
     const c = existing ? { ...existing } : { type: 'postgres', category: 'Все', port: 5432 };
     const { m, close } = makeModal(`<h2>${existing ? 'Изменить' : 'Новое'} подключение</h2><div id="dbf" class="db-form"></div>`);
-    m.classList.add('db-modal');
+    m.classList.add('db-modal', 'db-conn-modal');
     const f = m.querySelector('#dbf');
     const field = (label, node) => { const w = el('div', 'db-field'); w.appendChild(el('label', null, label)); w.appendChild(node); f.appendChild(w); return node; };
     const inp = (val, ph, type) => { const i = el('input'); i.type = type || 'text'; if (val != null) i.value = val; if (ph) i.placeholder = ph; return i; };
     const name = field('Имя', inp(c.name, 'Моя база'));
     const typeSel = el('select'); for (const [k, v] of Object.entries(DB_TYPES)) { const o = document.createElement('option'); o.value = k; o.textContent = v; if (k === c.type) o.selected = true; typeSel.appendChild(o); }
-    field('Тип', typeSel);
-    const cat = field('Категория', inp(c.category || 'Все', 'Все'));
+    // Категория — выбор из существующих или создание новой
+    const cats = [...new Set(dbConnsList.map((x) => (x.category || 'Все')).filter(Boolean))];
+    if (!cats.includes('Все')) cats.unshift('Все');
+    if (c.category && !cats.includes(c.category)) cats.push(c.category);
+    const catSel = el('select'); for (const cc of cats) { const o = new Option(cc, cc); if (cc === (c.category || 'Все')) o.selected = true; catSel.appendChild(o); }
+    const CAT_NEW = '__newcat__'; catSel.appendChild(new Option('➕ Новая категория…', CAT_NEW));
+    const catNew = inp('', 'Название новой категории'); catNew.style.display = 'none';
+    catSel.onchange = () => { const isNew = catSel.value === CAT_NEW; catNew.style.display = isNew ? '' : 'none'; if (isNew) catNew.focus(); };
+    const catWrap = el('div', 'db-cat-wrap'); catWrap.append(catSel, catNew);
+    const getCategory = () => (catSel.value === CAT_NEW ? catNew.value.trim() : catSel.value) || 'Все';
+    // Тип + Категория одним рядом (2 колонки)
+    const row2 = el('div', 'db-row2');
+    const cell = (label, node) => { const w = el('div', 'db-field'); w.append(el('label', null, label), node); return w; };
+    row2.append(cell('Тип', typeSel), cell('Категория', catWrap));
+    f.appendChild(row2);
     const hostWrap = el('div', 'db-group');
     const host2 = inp(c.host || '', 'localhost'); const port = inp(c.port || DB_DEF_PORT[c.type] || '', '5432', 'number');
     const user = inp(c.user || '', 'пользователь'); const pass = inp('', existing ? '(без изменений)' : 'пароль', 'password');
@@ -212,7 +249,7 @@ export function initDb(host) {
     typeSel.onchange = () => { if (!port.value || DEF_PORTS.has(+port.value)) port.value = DB_DEF_PORT[typeSel.value] || ''; syncType(); };
     sshOn.onchange = syncType; syncType();
     const collect = () => {
-      const o = { id: c.id, name: name.value.trim(), type: typeSel.value, category: cat.value.trim() || 'Все', readOnly: ro.checked, color: colorSel.value, isProd: prod.checked };
+      const o = { id: c.id, name: name.value.trim(), type: typeSel.value, category: getCategory(), readOnly: ro.checked, color: colorSel.value, isProd: prod.checked };
       if (typeSel.value === 'sqlite') { o.file = file.value.trim(); o.database = o.file; }
       else { o.host = host2.value.trim(); o.port = +port.value || DB_DEF_PORT[typeSel.value]; o.user = user.value.trim(); o.database = database.value.trim(); o.ssl = ssl.checked; o.sslInsecure = sslIns.checked; o.sshEnabled = sshOn.checked; o.sshHost = sshHost.value.trim(); o.sshPort = +sshPort.value || 22; o.sshUser = sshUser.value.trim(); if (sshPass.value) o.sshPassword = sshPass.value; }
       if (pass.value) o.password = pass.value;
@@ -244,14 +281,14 @@ export function initDb(host) {
     if (dbActiveConn.isProd) head.appendChild(el('span', 'db-prod-badge', 'PROD'));
     side.appendChild(head);
     const pingNow = () => { statusDot.className = 'db-status-dot'; lite.db.ping(dbActiveId).then((r) => { if (r && r.ok) { statusDot.classList.add('ok'); statusDot.title = 'Соединение активно'; } else { statusDot.classList.add('err'); statusDot.title = 'Нет соединения: ' + ((r && r.error) || '') + ' — клик для переподключения'; } }); };
-    statusDot.onclick = async () => { statusDot.className = 'db-status-dot'; statusDot.title = 'Переподключение…'; const r = await lite.db.reconnect(dbActiveId); if (r && r.ok) { toast('Переподключено'); dbSchema = null; dbColsCache = null; dbObjectsCache = null; metaCache.clear(); pingNow(); renderDbWorkspace(body); } else { statusDot.classList.add('err'); toast((r && r.error) || 'Не удалось', { kind: 'err' }); } };
+    statusDot.onclick = async () => { statusDot.className = 'db-status-dot'; statusDot.title = 'Переподключение…'; const r = await lite.db.reconnect(dbActiveId); if (r && r.ok) { toast('Переподключено'); dbSchema = null; dbColsCache = null; dbObjectsCache = null; metaCache.clear(); invalidateTableCaches(); pingNow(); renderDbWorkspace(body); } else { statusDot.classList.add('err'); toast((r && r.error) || 'Не удалось', { kind: 'err' }); } };
     pingNow();
     const tools = el('div', 'db-side-tools');
     const tNewSql = iconBtn('drow-act', 'terminal', 'Новый SQL-запрос', 15); tNewSql.onclick = () => openSqlTab();
     const tEr = iconBtn('drow-act', 'graph', 'ER-диаграмма', 15); tEr.onclick = () => openErTab();
     const tQb = iconBtn('drow-act', 'filter', 'Конструктор запроса', 15); tQb.onclick = () => openBuilderTab();
     const tDiff = iconBtn('drow-act', 'diff', 'Сравнить схемы', 15); tDiff.onclick = () => openDiffTab();
-    const tRefresh = iconBtn('drow-act', 'refresh', 'Обновить схему', 15); tRefresh.onclick = () => { dbSchema = null; dbColsCache = null; dbObjectsCache = null; metaCache.clear(); dbRelationsCache = null; renderDbWorkspace(body); };
+    const tRefresh = iconBtn('drow-act', 'refresh', 'Обновить схему (дерево объектов)', 15); tRefresh.onclick = () => { dbSchema = null; dbColsCache = null; dbObjectsCache = null; metaCache.clear(); dbRelationsCache = null; invalidateTableCaches(); renderDbWorkspace(body); };
     tools.append(tNewSql, tEr, tQb, tDiff, tRefresh);
     side.appendChild(tools);
     const search = el('input', 'db-tree-search'); search.placeholder = 'Поиск объекта…'; search.value = dbUi.treeSearch || '';
@@ -259,12 +296,28 @@ export function initDb(host) {
     const tree = el('div', 'db-tree'); side.appendChild(tree);
     // --- gutter ---
     const gut = el('div', 'db-side-gutter');
-    // --- main (tabs) ---
+    // --- main: outer-level tabs (Рабочий стол / AI-DB), shared tree on the left ---
     const main = el('div', 'db-main');
-    const tabbar = el('div', 'db-tabbar'); tabbar.id = 'db-tabbar'; main.appendChild(tabbar);
-    const tabbody = el('div', 'db-tabbody'); tabbody.id = 'db-tabbody'; main.appendChild(tabbody);
+    const wsTabs = el('div', 'db-ws-tabs');
+    const deskBtn = el('button', 'db-ws-tab'); deskBtn.append(icon('columns', 14), el('span', null, 'Рабочий стол'));
+    const aiBtn = el('button', 'db-ws-tab'); aiBtn.append(icon('sparkles', 14), el('span', null, 'AI-DB'));
+    wsTabs.append(deskBtn, aiBtn); main.appendChild(wsTabs);
+    const deskWrap = el('div', 'db-ws-view');
+    const tabbar = el('div', 'db-tabbar'); tabbar.id = 'db-tabbar'; deskWrap.appendChild(tabbar);
+    const tabbody = el('div', 'db-tabbody'); tabbody.id = 'db-tabbody'; deskWrap.appendChild(tabbody);
+    const aiWrap = el('div', 'db-ws-view db-ai-view hidden'); aiWrap.id = 'db-ai-view';
+    main.append(deskWrap, aiWrap);
     ide.append(side, gut, main);
     body.appendChild(ide);
+
+    const setWsView = (v) => {
+      wsView = v;
+      deskBtn.classList.toggle('on', v === 'desk'); aiBtn.classList.toggle('on', v === 'ai');
+      deskWrap.classList.toggle('hidden', v !== 'desk'); aiWrap.classList.toggle('hidden', v !== 'ai');
+      if (v === 'ai') { stopAutoRef(); renderAiChat(aiWrap); } else startAutoRef();
+    };
+    deskBtn.onclick = () => setWsView('desk'); aiBtn.onclick = () => setWsView('ai');
+    setWsViewFn = setWsView;
 
     sidebarGutter(gut, side);
     search.oninput = () => { dbUi.treeSearch = search.value; renderTree(tree, search.value.trim().toLowerCase()); };
@@ -283,6 +336,8 @@ export function initDb(host) {
     renderTree(tree, (search.value || '').trim().toLowerCase());
     renderTabBar(tabbar, tabbody);
     renderTabBody(tabbody);
+    startAutoRef();
+    setWsView(wsView || 'desk');
   }
 
   function sidebarGutter(gut, side) {
@@ -307,6 +362,7 @@ export function initDb(host) {
       if (filter && !ft.length && !fv.length) continue;
       tree.appendChild(schemaBlock(sch, ft, fv, !!filter));
     }
+    highlightTreeActive();
   }
   function schemaBlock(sch, tables, views, forceOpen) {
     const block = el('div', 'db-tree-sch');
@@ -346,7 +402,7 @@ export function initDb(host) {
   }
   function tableNode(sch, t, ic) {
     const node = el('div', 'db-tree-tablewrap');
-    const row = el('div', 'db-tree-table clickable');
+    const row = el('div', 'db-tree-table clickable'); row.dataset.tkey = (sch.name || '') + '.' + t.name;
     const exp = icon('chevron-right', 11); exp.classList.add('db-tcol-chev');
     const colsBox = el('div', 'db-tree-cols'); colsBox.style.display = 'none';
     let loaded = false;
@@ -378,7 +434,6 @@ export function initDb(host) {
   }
   function humanCount(n) { if (n < 1000) return String(n); if (n < 1e6) return (n / 1e3).toFixed(n < 1e4 ? 1 : 0) + 'k'; return (n / 1e6).toFixed(1) + 'M'; }
   function humanBytes(n) { if (n == null) return '—'; if (n < 1024) return n + ' B'; if (n < 1048576) return (n / 1024).toFixed(1) + ' KB'; if (n < 1073741824) return (n / 1048576).toFixed(1) + ' MB'; return (n / 1073741824).toFixed(2) + ' GB'; }
-  function setChev(node, name) { const nc = icon(name, 11); nc.classList.add('db-tcol-chev'); node.replaceWith(nc); nc.onclick = node.onclick; return nc; }
   function colRow(c) {
     const r = el('div', 'db-tree-col');
     const badge = c.pk ? '🔑' : c.fk ? '↗' : '';
@@ -401,7 +456,15 @@ export function initDb(host) {
   // ============================================================ tabs
   function tabKeyTable(schema, table) { return 'tbl:' + (schema || '') + '.' + table; }
   function findTab(key) { return tabs.find((t) => t.key === key); }
-  function activate(key) { activeKey = key; const body = $('#db-tabbody'); const bar = $('#db-tabbar'); if (bar) renderTabBar(bar, body); if (body) renderTabBody(body); }
+  function activate(key) { if (wsView === 'ai' && setWsViewFn) setWsViewFn('desk'); activeKey = key; const body = $('#db-tabbody'); const bar = $('#db-tabbar'); if (bar) renderTabBar(bar, body); if (body) renderTabBody(body); highlightTreeActive(); }
+  // mark the tree row matching the active table tab (visual aid)
+  function highlightTreeActive() {
+    const tree = $('#db-tree-root'); if (!tree) return;
+    const t = findTab(activeKey);
+    const key = (t && t.kind === 'table') ? (t.schema || '') + '.' + t.table : null;
+    tree.querySelectorAll('.db-tree-table.active').forEach((r) => r.classList.remove('active'));
+    if (key) { const row = tree.querySelector(`.db-tree-table[data-tkey="${(window.CSS && CSS.escape) ? CSS.escape(key) : key}"]`); if (row) row.classList.add('active'); }
+  }
   function closeTab(key) {
     const i = tabs.findIndex((t) => t.key === key); if (i < 0) return;
     if (tabs[i].editor) { try { tabs[i].editor.destroy(); } catch (_) {} }
@@ -450,7 +513,7 @@ export function initDb(host) {
     }
   }
   function renderTabBody(body) {
-    if (!body) return; destroyTabEditors(); body.innerHTML = '';
+    if (!body) return; body.innerHTML = '';
     saveSession();
     const t = findTab(activeKey);
     if (!t) { body.appendChild(el('div', 'db-tab-empty-body', 'Нет открытых вкладок')); return; }
@@ -461,7 +524,6 @@ export function initDb(host) {
     else if (t.kind === 'qbuilder') renderBuilderTab(body, t);
     else if (t.kind === 'diff') renderDiffTab(body, t);
   }
-  function destroyTabEditors() { /* table/SQL tabs recreate editors on render; SQL editor lives on tab.editor */ }
   function destroyAllEditors() { for (const t of tabs) if (t.editor) { try { t.editor.destroy(); } catch (_) {} t.editor = null; } }
   function refreshOpenSqlSchemas() { /* schema arrives async; re-render active SQL tab to enable autocomplete */ const t = findTab(activeKey); if (t && t.kind === 'sql') renderTabBody($('#db-tabbody')); }
 
@@ -479,10 +541,15 @@ export function initDb(host) {
     nav.append(navB, navF); bar.appendChild(nav);
     bar.appendChild(modes);
     bar.appendChild(el('span', 'db-table-title', t.table));
-    const refr = iconBtn('drow-act', 'refresh', 'Обновить', 14); refr.onclick = () => renderTabBody($('#db-tabbody'));
-    const chart = iconBtn('drow-act', 'graph', 'График', 14); chart.onclick = () => { if (t.lastResult) openChart(t.lastResult.columns, t.lastResult.colTypes, t.lastResult.rows); };
-    const exp = iconBtn('drow-act', 'download', 'Экспорт всей таблицы', 14); exp.onclick = () => exportTable(t);
-    bar.append(refr, chart, exp);
+    if (t.mode !== 'structure') {
+      const colsBtn = iconBtn('drow-act', 'columns', 'Столбцы (скрыть/показать, порядок)', 14); colsBtn.onclick = (e) => openColumnsMenu(e, t);
+      const chart = iconBtn('drow-act', 'graph', 'График', 14); chart.onclick = () => { if (t.lastResult) openChart(t.lastResult.columns, t.lastResult.colTypes, t.lastResult.rows); };
+      const exp = iconBtn('drow-act', 'download', 'Экспорт / копирование таблицы', 14); exp.onclick = () => exportTable(t);
+      bar.append(colsBtn, chart, exp, autoRefWidget(t));   // single (merged) refresh control lives here
+    } else {
+      const chart = iconBtn('drow-act', 'graph', 'График', 14); chart.onclick = () => { if (t.lastResult) openChart(t.lastResult.columns, t.lastResult.colTypes, t.lastResult.rows); };
+      bar.append(chart);
+    }
     body.appendChild(bar);
 
     if (t.mode === 'structure') { renderStructure(body, t); return; }
@@ -505,19 +572,33 @@ export function initDb(host) {
     const changesHost = el('div', 'db-changes-host'); body.appendChild(changesHost);
     const gridWrap = el('div', 'db-grid-host'); body.appendChild(gridWrap);
     const pager = el('div', 'db-pager'); body.appendChild(pager);
-    gridWrap.innerHTML = '<div class="git-loading">Загрузка…</div>';
 
-    const seq = ++dbRenderSeq;
-    const r = await lite.db.tableData(dbActiveId, t.schema, t.table, { limit: DB_PAGE, offset: t.page * DB_PAGE, orderBy: t.orderBy, orderDir: t.orderDir, where: t.where });
-    if (seq !== dbRenderSeq) return;
+    // local cache: a plain tab switch reuses t.lastResult; a genuine param change (page/sort/filter),
+    // the Обновить button, or the auto-refresh timer set t._force to re-query the backend.
+    const dataKey = JSON.stringify({ p: t.page, ob: t.orderBy, od: t.orderDir, w: t.where || '' });
+    const useCache = !t._force && t.lastResult && !t.lastResult.error && t._dataKey === dataKey;
+    let r;
+    if (useCache) { r = t.lastResult; }
+    else {
+      gridWrap.innerHTML = '<div class="git-loading">Загрузка…</div>';
+      const seq = ++dbRenderSeq;
+      r = await lite.db.tableData(dbActiveId, t.schema, t.table, { limit: DB_PAGE, offset: t.page * DB_PAGE, orderBy: t.orderBy, orderDir: t.orderDir, where: t.where });
+      if (seq !== dbRenderSeq) return;
+      gridWrap.innerHTML = '';
+      if (r.error) { gridWrap.appendChild(el('div', 'docker-err', r.error)); return; }
+      t.lastResult = r; t._dataKey = dataKey;
+    }
+    t._force = false;
     gridWrap.innerHTML = '';
-    if (r.error) { gridWrap.appendChild(el('div', 'docker-err', r.error)); return; }
-    t.lastResult = r;
     const meta = metaCache.get((t.schema ? t.schema + '.' : '') + t.table) || await getMeta(t.schema, t.table);
     const editable = !dbActiveConn.readOnly && !t.view && meta && !meta.error && meta.columns.some((c) => c.pk);
     const pkNames = (meta && meta.columns ? meta.columns.filter((c) => c.pk).map((c) => c.name) : []);
+    // column order / visibility / widths persisted per tab by NAME → resolve to indices for the grid
+    const colMap = colStateForGrid(t, r.columns);
     const grid = makeGrid({
       columns: r.columns, colTypes: r.colTypes, rows: r.rows,
+      colOrder: colMap.order, hiddenCols: colMap.hidden, colWidths: colMap.widths,
+      onColWidth: (ci, px) => { t.colW = t.colW || {}; if (px == null) delete t.colW[r.columns[ci]]; else t.colW[r.columns[ci]] = px; },
       sortState: t.orderBy ? { col: t.orderBy, dir: t.orderDir } : null,
       onSort: (col) => guard(() => { if (t.orderBy === col) t.orderDir = t.orderDir === 'asc' ? 'desc' : 'asc'; else { t.orderBy = col; t.orderDir = 'asc'; } t.page = 0; renderTabBody($('#db-tabbody')); }),
       meta, editable, buffer: editable ? t.buffer : null, pkNames,
@@ -540,11 +621,84 @@ export function initDb(host) {
     next.onclick = () => guard(() => { t.page++; renderTabBody($('#db-tabbody')); });
     pager.append(prev, next);
     if (t.where) pager.appendChild(el('span', 'db-pager-note', 'фильтр активен'));
+    const hiddenN = t.hidden ? t.hidden.size : 0;
+    if (hiddenN) pager.appendChild(el('span', 'db-pager-note2', `скрыто колонок: ${hiddenN}`));
+  }
+
+  // ---- merged refresh + auto-refresh interval control (DataGrip-style)
+  function autoRefWidget(t) {
+    const wrap = el('div', 'db-autoref');
+    const refr = iconBtn('drow-act', 'refresh', 'Обновить данные', 14); refr.onclick = () => { t._force = true; renderTabBody($('#db-tabbody')); };
+    const intBtn = el('button', 'db-autoref-int' + (autoRefSec > 0 ? ' on' : ''));
+    intBtn.append(icon(autoRefSec > 0 ? 'clock' : 'clock', 12), el('span', null, autoRefSec > 0 ? fmtInterval(autoRefSec) : 'авто'));
+    intBtn.title = 'Автообновление таблицы';
+    const PRESETS = [5, 10, 30, 60, 300];
+    const pick = (s) => { setAutoRef(s); renderTabBody($('#db-tabbody')); };
+    intBtn.onclick = (e) => {
+      e.stopPropagation();
+      const items = [
+        { label: (autoRefSec <= 0 ? '✓ ' : '') + 'Пауза / выкл', action: () => pick(0) },
+        { sep: true },
+        ...PRESETS.map((s) => ({ label: (autoRefSec === s ? '✓ ' : '') + fmtInterval(s), action: () => pick(s) })),
+        { sep: true },
+        { label: 'Свой интервал…', action: () => showPrompt('Автообновление', 'Интервал в секундах:', String(autoRefSec || 15), (val) => { const s = Math.max(1, Math.round(+val || 0)); if (s) pick(s); }) },
+      ];
+      showMenu(e.clientX, e.clientY, items);
+    };
+    wrap.append(refr, intBtn);
+    return wrap;
+  }
+
+  // ---- per-tab column order / visibility / widths (stored by name) → grid indices
+  function colStateForGrid(t, columns) {
+    const idx = new Map(columns.map((c, i) => [c, i]));
+    let order = (t.colOrder && t.colOrder.length ? t.colOrder.filter((n) => idx.has(n)).map((n) => idx.get(n)) : columns.map((_, i) => i));
+    for (let i = 0; i < columns.length; i++) if (!order.includes(i)) order.push(i);
+    const hidden = new Set([...(t.hidden || [])].map((n) => idx.get(n)).filter((i) => i != null));
+    const widths = {}; if (t.colW) for (const [n, px] of Object.entries(t.colW)) if (idx.has(n)) widths[idx.get(n)] = px;
+    return { order, hidden, widths };
+  }
+  function openColumnsMenu(e, t) {
+    const cols = (t.lastResult && t.lastResult.columns) || [];
+    if (!cols.length) { toast('Нет данных'); return; }
+    t.hidden = t.hidden instanceof Set ? t.hidden : new Set(t.hidden || []);
+    t.colOrder = (t.colOrder && t.colOrder.length ? t.colOrder.filter((n) => cols.includes(n)) : cols.slice());
+    for (const c of cols) if (!t.colOrder.includes(c)) t.colOrder.push(c);
+    const { m, close } = makeModal('<h2>Столбцы</h2>'); m.classList.add('db-modal');
+    const hint = el('div', 'db-cols-hint', 'Галочка — показать колонку. Стрелками или перетаскиванием меняйте порядок.');
+    m.appendChild(hint);
+    const list = el('div', 'db-cols-list');
+    const rebuild = () => {
+      list.innerHTML = '';
+      t.colOrder.forEach((name, pos) => {
+        const row = el('div', 'db-cols-row'); row.draggable = true; row.dataset.pos = pos;
+        const cb = el('input'); cb.type = 'checkbox'; cb.checked = !t.hidden.has(name);
+        cb.onchange = () => { if (cb.checked) t.hidden.delete(name); else t.hidden.add(name); };
+        const up = iconBtn('drow-act', 'chevron-up', 'Выше', 12); up.disabled = pos === 0; up.onclick = () => { if (pos > 0) { const a = t.colOrder; [a[pos - 1], a[pos]] = [a[pos], a[pos - 1]]; rebuild(); } };
+        const down = iconBtn('drow-act', 'chevron-down', 'Ниже', 12); down.disabled = pos === t.colOrder.length - 1; down.onclick = () => { const a = t.colOrder; if (pos < a.length - 1) { [a[pos + 1], a[pos]] = [a[pos], a[pos + 1]]; rebuild(); } };
+        row.append(cb, el('span', 'db-cols-name', name), up, down);
+        row.ondragstart = (ev) => { ev.dataTransfer.setData('text/plain', String(pos)); row.classList.add('drag'); };
+        row.ondragend = () => row.classList.remove('drag');
+        row.ondragover = (ev) => { ev.preventDefault(); row.classList.add('over'); };
+        row.ondragleave = () => row.classList.remove('over');
+        row.ondrop = (ev) => { ev.preventDefault(); row.classList.remove('over'); const from = +ev.dataTransfer.getData('text/plain'); const to = pos; if (from !== to) { const a = t.colOrder; const [it] = a.splice(from, 1); a.splice(to, 0, it); rebuild(); } };
+        list.appendChild(row);
+      });
+    };
+    rebuild();
+    m.appendChild(list);
+    const acts = el('div', 'gm-actions'); acts.style.marginTop = '12px';
+    const showAll = el('button', 'btn', 'Показать все'); showAll.onclick = () => { t.hidden.clear(); rebuild(); };
+    const reset = el('button', 'btn', 'Сбросить порядок'); reset.onclick = () => { t.colOrder = cols.slice(); rebuild(); };
+    const apply = el('button', 'btn primary', 'Применить'); apply.onclick = () => { close(); renderTabBody($('#db-tabbody')); };
+    acts.append(showAll, reset, apply); m.appendChild(acts);
   }
 
   // ---- edit buffer: pending edits / deletes / inserts → transactional commit
   function pendingCount(t) { const b = t.buffer; if (!b) return 0; return Object.keys(b.edits).length + b.deletes.size + b.inserts.filter((o) => Object.keys(o).length).length; }
   function clearBuffer(t) { t.buffer = { edits: {}, deletes: new Set(), inserts: [] }; }
+  // force every open table tab to re-query on its next render (after a commit / schema refresh)
+  function invalidateTableCaches() { for (const t of tabs) if (t.kind === 'table') t._force = true; }
   function pkWhere(meta, rowValues, columns) {
     const pk = meta.columns.filter((c) => c.pk);
     return pk.map((c) => `${qIdent(c.name)} = ${lit(rowValues[columns.indexOf(c.name)])}`).join(' AND ');
@@ -567,7 +721,7 @@ export function initDb(host) {
     const prev = el('button', 'btn', 'Просмотр SQL'); prev.onclick = () => { const sql = buildChangeStatements(t, meta).join('\n'); const { m } = makeModal(`<h2>Изменения (SQL)</h2><pre class="db-ddl-pre" style="max-height:60vh">${sql.replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]))}</pre>`); m.classList.add('db-modal'); };
     const apply = el('button', 'btn primary', 'Применить'); apply.onclick = () => {
       const stmts = buildChangeStatements(t, meta); if (!stmts.length) return;
-      const doApply = async () => { const r = await lite.db.transaction(dbActiveId, stmts); if (r && r.ok) { toast(`Применено: ${r.count}`); clearBuffer(t); renderTabBody($('#db-tabbody')); } else toast((r && r.error) || 'Ошибка применения', { kind: 'err' }); };
+      const doApply = async () => { const r = await lite.db.transaction(dbActiveId, stmts); if (r && r.ok) { toast(`Применено: ${r.count}`); clearBuffer(t); t._force = true; renderTabBody($('#db-tabbody')); } else toast((r && r.error) || 'Ошибка применения', { kind: 'err' }); };
       prodGuard(stmts.join(' '), doApply);
     };
     const roll = el('button', 'btn', 'Откатить'); roll.onclick = () => { clearBuffer(t); renderTabBody($('#db-tabbody')); };
@@ -623,20 +777,34 @@ export function initDb(host) {
   function makeGrid(opts) {
     const { columns, colTypes, rows, sortState, onSort, editable, onCellMenu, buffer, onBufferChange } = opts;
     const types = colTypes || columns.map(() => 'text');
+    // column order/visibility/widths (original indices) — see renderTableTab for name↔index mapping
+    const hidden = opts.hiddenCols instanceof Set ? opts.hiddenCols : new Set();
+    let order = (opts.colOrder && opts.colOrder.length ? opts.colOrder.slice() : columns.map((_, i) => i)).filter((i) => i >= 0 && i < columns.length);
+    for (let i = 0; i < columns.length; i++) if (!order.includes(i)) order.push(i);
+    const widths = opts.colWidths || {};
+    const vis = order.filter((i) => !hidden.has(i));   // visible original indices, in display order
     const wrap = el('div', 'db-grid');
     const tbl = document.createElement('table');
+    // apply a column width across header + all its body cells (px=null clears it).
+    // also mutate the local `widths` map so virtualized rows created later inherit it.
+    const applyW = (ci, px) => {
+      if (px == null) delete widths[ci]; else widths[ci] = px;
+      wrap.querySelectorAll(`[data-c="${ci}"]`).forEach((cell) => { cell.style.width = cell.style.minWidth = cell.style.maxWidth = px == null ? '' : px + 'px'; });
+    };
     // header
     const thead = document.createElement('thead'); const htr = document.createElement('tr');
     const corner = document.createElement('th'); corner.className = 'db-rownum-h'; corner.textContent = '#'; htr.appendChild(corner);
-    columns.forEach((c, ci) => {
-      const th = document.createElement('th'); th.className = 'db-c-' + (types[ci] || 'text');
+    for (const ci of vis) {
+      const c = columns[ci];
+      const th = document.createElement('th'); th.className = 'db-c-' + (types[ci] || 'text'); th.dataset.c = ci;
       const lab = el('span', 'db-th-label', c); th.appendChild(lab);
       if (sortState && sortState.col === c) th.appendChild(el('span', 'db-sort', sortState.dir === 'asc' ? ' ▲' : ' ▼'));
       if (onSort) { lab.style.cursor = 'pointer'; lab.onclick = () => onSort(c); }
       if (opts.onHeaderMenu) th.oncontextmenu = (e) => { e.preventDefault(); opts.onHeaderMenu(e, c, ci); };
-      const grip = el('span', 'db-col-grip'); th.appendChild(grip); colGrip(grip, th);
+      if (widths[ci]) { th.style.width = th.style.minWidth = th.style.maxWidth = widths[ci] + 'px'; }
+      const grip = el('span', 'db-col-grip'); th.appendChild(grip); colGrip(grip, th, ci, applyW, opts.onColWidth);
       htr.appendChild(th);
-    });
+    }
     thead.appendChild(htr); tbl.appendChild(thead);
     // body
     const tb = document.createElement('tbody');
@@ -654,8 +822,8 @@ export function initDb(host) {
     if (VIRT) {
       wrap.classList.add('db-grid-virtual');
       const ROWH = 23, OVER = 12;
-      const spacerTop = document.createElement('tr'); const stc = document.createElement('td'); stc.colSpan = columns.length + 1; spacerTop.appendChild(stc);
-      const spacerBot = document.createElement('tr'); const sbc = document.createElement('td'); sbc.colSpan = columns.length + 1; spacerBot.appendChild(sbc);
+      const spacerTop = document.createElement('tr'); const stc = document.createElement('td'); stc.colSpan = vis.length + 1; spacerTop.appendChild(stc);
+      const spacerBot = document.createElement('tr'); const sbc = document.createElement('td'); sbc.colSpan = vis.length + 1; spacerBot.appendChild(sbc);
       let lo = -1, hi = -1;
       const renderWindow = () => {
         const vh = wrap.clientHeight || Math.round(innerHeight * 0.6);
@@ -683,30 +851,34 @@ export function initDb(host) {
       if (buffer && buffer.deletes.has(ri)) tr.classList.add('db-row-del');
       const rn = document.createElement('td'); rn.className = 'db-rownum'; rn.textContent = String(ri + 1); tr.appendChild(rn);
       if (editable && buffer) rn.oncontextmenu = (e) => { e.preventDefault(); rowMenu(e, ri, tr); };
-      rowv.forEach((v0, ci) => {
+      for (const ci of vis) {
+        const v0 = rowv[ci];
         const edited = buffer && buffer.edits[ri] && (columns[ci] in buffer.edits[ri]);
         const v = edited ? buffer.edits[ri][columns[ci]] : v0;
         const td = document.createElement('td'); td.className = 'db-c-' + (types[ci] || 'text'); td.dataset.r = ri; td.dataset.c = ci;
         if (edited) td.classList.add('db-edited');
         if (opts.fkCols && opts.fkCols.has(columns[ci]) && v != null) td.classList.add('db-fk');
+        if (widths[ci]) { td.style.width = td.style.minWidth = td.style.maxWidth = widths[ci] + 'px'; }
         paintCell(td, v);
-        td.onmousedown = (e) => { if (e.button !== 0) return; dragging = true; sel.clear(); anchor = [ri, ci]; cur = [ri, ci]; sel.add(cellKey(ri, ci)); paintSel(); reportSel(); showCellValue(v, columns[ci]); wrap.focus({ preventScroll: true }); };
+        td.onmousedown = (e) => { if (e.button !== 0) return; dragging = true; sel.clear(); anchor = [ri, ci]; cur = [ri, ci]; sel.add(cellKey(ri, ci)); paintSel(); reportSel(); if (document.getElementById('db-valpanel')) showCellValue(v, columns[ci]); wrap.focus({ preventScroll: true }); };
         td.onmouseenter = () => { if (dragging && anchor) { sel.clear(); const [ar, ac] = anchor; for (let r = Math.min(ar, ri); r <= Math.max(ar, ri); r++) for (let c = Math.min(ac, ci); c <= Math.max(ac, ci); c++) sel.add(cellKey(r, c)); paintSel(); reportSel(); } };
         if (editable && buffer) td.ondblclick = () => startEdit(td, ri, ci, v, false);
         if (onCellMenu) td.oncontextmenu = (e) => { e.preventDefault(); onCellMenu(e, v, columns[ci], rowv, ri); };
         tr.appendChild(td);
-      });
+      }
       return tr;
     }
     function insertRow(obj, ii) {
       const tr = document.createElement('tr'); tr.classList.add('db-row-insert');
       const rn = document.createElement('td'); rn.className = 'db-rownum'; rn.textContent = '＋'; tr.appendChild(rn);
-      columns.forEach((col, ci) => {
-        const td = document.createElement('td'); td.className = 'db-c-' + (types[ci] || 'text');
+      for (const ci of vis) {
+        const col = columns[ci];
+        const td = document.createElement('td'); td.className = 'db-c-' + (types[ci] || 'text'); td.dataset.c = ci;
         const has = col in obj; paintCell(td, has ? obj[col] : null); if (!has) td.classList.add('db-null');
+        if (widths[ci]) { td.style.width = td.style.minWidth = td.style.maxWidth = widths[ci] + 'px'; }
         td.ondblclick = () => startEditInsert(td, ii, col);
         tr.appendChild(td);
-      });
+      }
       return tr;
     }
     function startEdit(td, ri, ci, v) {
@@ -738,10 +910,12 @@ export function initDb(host) {
     wrap.tabIndex = 0;
     function ensureVisible(r) { const td = tb.querySelector(`td[data-r="${r}"]`); if (td) td.scrollIntoView({ block: 'nearest' }); else wrap.scrollTop = Math.max(0, r * 23 - wrap.clientHeight / 2); }
     function setCur(r, c, extend) {
-      r = Math.max(0, Math.min(rows.length - 1, r)); c = Math.max(0, Math.min(columns.length - 1, c));
+      r = Math.max(0, Math.min(rows.length - 1, r));
+      if (!vis.includes(c)) c = vis.length ? vis[0] : 0;
       if (extend && anchor) { sel.clear(); const [ar, ac] = anchor; for (let rr = Math.min(ar, r); rr <= Math.max(ar, r); rr++) for (let cc = Math.min(ac, c); cc <= Math.max(ac, c); cc++) sel.add(cellKey(rr, cc)); }
       else { sel.clear(); anchor = [r, c]; sel.add(cellKey(r, c)); }
-      cur = [r, c]; ensureVisible(r); paintSel(); reportSel(); const rv = rows[r]; if (rv) showCellValue(rv[c], columns[c]);
+      cur = [r, c]; ensureVisible(r); paintSel(); reportSel();
+      if (document.getElementById('db-valpanel')) { const rv = rows[r]; if (rv) showCellValue(rv[c], columns[c]); }
     }
     wrap.addEventListener('keydown', (e) => {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'c' && sel.size) {
@@ -754,9 +928,11 @@ export function initDb(host) {
       }
       const NAV = ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Home', 'End', 'PageUp', 'PageDown'];
       if (NAV.includes(e.key)) {
-        e.preventDefault(); if (!cur) cur = [0, 0]; let [r, c] = cur;
-        if (e.key === 'ArrowUp') r--; else if (e.key === 'ArrowDown') r++; else if (e.key === 'ArrowLeft') c--; else if (e.key === 'ArrowRight') c++;
-        else if (e.key === 'Home') { c = 0; if (e.ctrlKey) r = 0; } else if (e.key === 'End') { c = columns.length - 1; if (e.ctrlKey) r = rows.length - 1; }
+        e.preventDefault(); if (!cur) cur = [0, vis[0] || 0]; let [r, c] = cur;
+        let vp = Math.max(0, vis.indexOf(c));   // position within visible order
+        if (e.key === 'ArrowUp') r--; else if (e.key === 'ArrowDown') r++;
+        else if (e.key === 'ArrowLeft') c = vis[Math.max(0, vp - 1)]; else if (e.key === 'ArrowRight') c = vis[Math.min(vis.length - 1, vp + 1)];
+        else if (e.key === 'Home') { c = vis[0]; if (e.ctrlKey) r = 0; } else if (e.key === 'End') { c = vis[vis.length - 1]; if (e.ctrlKey) r = rows.length - 1; }
         else if (e.key === 'PageUp') r -= 20; else if (e.key === 'PageDown') r += 20;
         setCur(r, c, e.shiftKey); return;
       }
@@ -766,31 +942,133 @@ export function initDb(host) {
     function addInsertRow() { if (!editable || !buffer) return; buffer.inserts.push({}); tb.appendChild(insertRow(buffer.inserts[buffer.inserts.length - 1], buffer.inserts.length - 1)); onBufferChange && onBufferChange(); }
     return { element: wrap, addInsertRow, selection: () => [...sel].map((k) => k.split(':').map(Number)) };
   }
-  function colGrip(grip, th) {
+  function colGrip(grip, th, ci, applyW, onColWidth) {
     grip.onmousedown = (e) => {
       e.preventDefault(); e.stopPropagation();
       const startX = e.clientX, startW = th.getBoundingClientRect().width;
-      const move = (ev) => { th.style.width = th.style.minWidth = th.style.maxWidth = Math.max(40, startW + ev.clientX - startX) + 'px'; };
-      const up = () => { document.removeEventListener('mousemove', move); document.removeEventListener('mouseup', up); };
+      let last = startW;
+      const move = (ev) => { last = Math.max(40, startW + ev.clientX - startX); applyW(ci, last); };
+      const up = () => { document.removeEventListener('mousemove', move); document.removeEventListener('mouseup', up); document.body.classList.remove('db-col-resizing'); if (onColWidth) onColWidth(ci, Math.round(last)); };
+      document.body.classList.add('db-col-resizing');
       document.addEventListener('mousemove', move); document.addEventListener('mouseup', up);
     };
+    // double-click the grip → auto-fit (clear fixed width for this column)
+    grip.ondblclick = (e) => { e.preventDefault(); e.stopPropagation(); applyW(ci, null); if (onColWidth) onColWidth(ci, null); };
   }
 
-  // cell value viewer (bottom dock of the active grid host)
+  // cell value viewer — right slide-in panel with JSON auto-detect, syntax highlight, fold/unfold
+  function detectValue(v) {
+    if (v == null) return { kind: 'null' };
+    if (typeof v === 'object') return { kind: 'json', data: v };
+    const s = String(v);
+    if (typeof v === 'boolean') return { kind: 'bool', text: s };
+    if (typeof v === 'number') return { kind: 'number', text: s };
+    if (/^\s*[[{]/.test(s)) { try { return { kind: 'json', data: JSON.parse(s) }; } catch (_) {} }
+    if (/^\s*<[a-zA-Z?!]/.test(s) && /<\/[a-zA-Z]|\/>/.test(s)) return { kind: 'xml', text: s };
+    if (/^-?\d+(\.\d+)?$/.test(s.trim())) return { kind: 'number', text: s.trim() };
+    return { kind: 'text', text: s };
+  }
+  // ---- JSON viewer model: a v-tree carrying persistent collapsed state per node
+  function jvBuild(val) {
+    if (Array.isArray(val)) return { kind: 'arr', collapsed: false, entries: val.map((v, i) => [i, jvBuild(v)]) };
+    if (val && typeof val === 'object') return { kind: 'obj', collapsed: false, entries: Object.entries(val).map(([k, v]) => [k, jvBuild(v)]) };
+    return { kind: 'prim', value: val };
+  }
+  function jvSetDeep(node, val) { if (node.kind === 'prim') return; node.collapsed = val; for (const [, c] of node.entries) jvSetDeep(c, val); }
+  function jvValSpan(val) {
+    if (val === null) return { cls: 'jv-null', text: 'null' };
+    const t = typeof val;
+    if (t === 'number') return { cls: 'jv-num', text: String(val) };
+    if (t === 'boolean') return { cls: 'jv-bool', text: String(val) };
+    return { cls: 'jv-str', text: JSON.stringify(val) };
+  }
+  // flatten v-tree → ordered line descriptors honouring each node's collapsed flag
+  function jvFlatten(node, key, depth, isLast, out) {
+    const comma = isLast ? '' : ',';
+    const keyParts = key != null ? [{ cls: 'jv-key', text: JSON.stringify(key) }, { cls: 'jv-colon', text: ': ' }] : [];
+    if (node.kind === 'prim') { out.push({ depth, foldable: false, parts: [...keyParts, jvValSpan(node.value), comma && { cls: 'jv-punc', text: comma }].filter(Boolean) }); return; }
+    const isArr = node.kind === 'arr'; const open = isArr ? '[' : '{', close = isArr ? ']' : '}'; const n = node.entries.length;
+    if (n === 0) { out.push({ depth, foldable: false, parts: [...keyParts, { cls: 'jv-brace', text: open + close }, comma && { cls: 'jv-punc', text: comma }].filter(Boolean) }); return; }
+    if (node.collapsed) { out.push({ depth, foldable: true, collapsed: true, node, parts: [...keyParts, { cls: 'jv-brace', text: open }, { cls: 'jv-ell', text: ' … ' }, { cls: 'jv-brace', text: close }, comma && { cls: 'jv-punc', text: comma }, { cls: 'jv-count', text: ` ${n}` }].filter(Boolean) }); return; }
+    out.push({ depth, foldable: true, collapsed: false, node, parts: [...keyParts, { cls: 'jv-brace', text: open }] });
+    node.entries.forEach(([k, c], i) => jvFlatten(c, isArr ? null : k, depth + 1, i === n - 1, out));
+    out.push({ depth, foldable: false, parts: [{ cls: 'jv-brace', text: close }, comma && { cls: 'jv-punc', text: comma }].filter(Boolean) });
+  }
+  function jvMetrics(data) {
+    const compact = JSON.stringify(data) || '';
+    let objects = 0, arrays = 0, totalKeys = 0, values = 0, maxDepth = 0;
+    (function walk(v, d) { if (d > maxDepth) maxDepth = d; if (Array.isArray(v)) { arrays++; v.forEach((x) => walk(x, d + 1)); } else if (v && typeof v === 'object') { objects++; const ks = Object.keys(v); totalKeys += ks.length; ks.forEach((k) => walk(v[k], d + 1)); } else values++; })(data, 1);
+    const topLevel = Array.isArray(data) ? data.length : (data && typeof data === 'object' ? Object.keys(data).length : 0);
+    const bytes = new TextEncoder().encode(compact).length;
+    return { chars: compact.length, bytes, topLevel, maxDepth, totalKeys, objects, arrays, values, rootType: Array.isArray(data) ? 'массив' : 'объект' };
+  }
+  function jvFmtBytes(n) { if (n < 1024) return n + ' Б'; if (n < 1048576) return (n / 1024).toFixed(1) + ' КБ'; return (n / 1048576).toFixed(2) + ' МБ'; }
+  // render the v-tree into a body element (gutter line-numbers + fold arrows, hover highlight)
+  function jvRender(body, root) {
+    const all = []; jvFlatten(root, null, 0, true, all);
+    body.innerHTML = '';
+    const CAP = 4000;   // guard against a huge jsonb cell freezing the UI with тысячи DOM-строк
+    const lines = all.length > CAP ? all.slice(0, CAP) : all;
+    lines.forEach((ln, i) => {
+      const row = el('div', 'jv-line' + (ln.foldable ? ' foldable' : ''));
+      const gut = el('div', 'jv-gutter');
+      gut.appendChild(el('span', 'jv-ln', String(i + 1)));
+      const fold = el('span', 'jv-fold');
+      if (ln.foldable) { const ch = icon(ln.collapsed ? 'chevron-right' : 'chevron-down', 11); ch.classList.add('jv-chev'); fold.appendChild(ch); }
+      gut.appendChild(fold);
+      const content = el('div', 'jv-content'); content.style.paddingLeft = (ln.depth * 16 + 4) + 'px';
+      for (const p of ln.parts) content.appendChild(el('span', p.cls, p.text));
+      row.append(gut, content);
+      if (ln.foldable) row.onclick = () => { if (ln.node.collapsed) ln.node.collapsed = false; else jvSetDeep(ln.node, true); jvRender(body, root); };
+      body.appendChild(row);
+    });
+    if (all.length > CAP) body.appendChild(el('div', 'jv-cap', `… показано ${CAP} из ${all.length} строк — сверните узлы или копируйте JSON целиком`));
+  }
   function showCellValue(v, colName) {
-    let dock = $('#db-cellview');
-    const body = $('#db-tabbody'); if (!body) return;
-    if (!dock) { dock = el('div', 'db-cellview'); dock.id = 'db-cellview'; body.appendChild(dock); }
-    dock.innerHTML = '';
-    const head = el('div', 'db-cellview-head'); head.append(el('span', 'db-cellview-col', colName || ''));
-    const copy = iconBtn('drow-act', 'copy', 'Копировать значение', 12); copy.onclick = () => { navigator.clipboard.writeText(v == null ? '' : (typeof v === 'object' ? JSON.stringify(v, null, 2) : String(v))); toast('Скопировано'); };
-    const hide = iconBtn('drow-act', 'x', 'Скрыть', 12); hide.onclick = () => dock.remove();
-    head.append(copy, hide); dock.appendChild(head);
-    const pre = el('pre', 'db-cellview-body');
-    if (v == null) { pre.textContent = 'NULL'; pre.classList.add('db-null'); }
-    else if (typeof v === 'object') pre.textContent = JSON.stringify(v, null, 2);
-    else { const s = String(v); try { if (/^\s*[[{]/.test(s)) { pre.textContent = JSON.stringify(JSON.parse(s), null, 2); pre.classList.add('db-json-pretty'); } else pre.textContent = s; } catch (_) { pre.textContent = s; } }
-    dock.appendChild(pre);
+    let panel = document.getElementById('db-valpanel');
+    const fresh = !panel;
+    if (fresh) { panel = el('div', 'db-valpanel'); panel.id = 'db-valpanel'; document.body.appendChild(panel); }
+    panel.innerHTML = '';
+    const det = detectValue(v);
+    const head = el('div', 'db-valpanel-head');
+    head.append(el('span', 'db-valpanel-col', colName || 'значение'));
+    head.appendChild(el('span', 'db-valpanel-badge', { 'null': 'NULL', json: 'JSON', xml: 'XML', number: 'число', bool: 'bool', text: 'текст' }[det.kind] || 'текст'));
+    head.appendChild((() => { const s = el('span'); s.style.flex = '1'; return s; })());
+    const body = el('div', 'db-valpanel-body');
+    const info = el('div', 'db-valpanel-info');
+    if (det.kind === 'json' && det.data && typeof det.data === 'object') {
+      const root = jvBuild(det.data);
+      const foldAll = iconBtn('drow-act', 'fold', 'Свернуть всё', 13); foldAll.onclick = () => { jvSetDeep(root, true); jvRender(body, root); };
+      const unfoldAll = iconBtn('drow-act', 'unfold', 'Развернуть всё', 13); unfoldAll.onclick = () => { jvSetDeep(root, false); jvRender(body, root); };
+      const firstLvl = iconBtn('drow-act', 'list-ordered', 'Развернуть первый уровень', 13); firstLvl.onclick = () => { jvSetDeep(root, true); root.collapsed = false; jvRender(body, root); };
+      const copyJson = iconBtn('drow-act', 'braces', 'Копировать весь JSON', 13); copyJson.onclick = () => { navigator.clipboard.writeText(JSON.stringify(det.data, null, 2)); toast('JSON скопирован'); };
+      const infoBtn = iconBtn('drow-act', 'info', 'Информация о JSON', 13);
+      const applyInfo = () => { const on = !!dbUi.jsonInfo; info.classList.toggle('on', on); infoBtn.classList.toggle('on', on); };
+      infoBtn.onclick = () => { dbUi.jsonInfo = !dbUi.jsonInfo; saveDbUi(); applyInfo(); };
+      head.append(foldAll, unfoldAll, firstLvl, copyJson, infoBtn);
+      // info bar content
+      const m = jvMetrics(det.data);
+      const chip = (k, val) => { const c = el('span', 'jv-chip'); c.append(el('span', 'jv-chip-k', k), el('span', 'jv-chip-v', String(val))); return c; };
+      info.append(
+        chip('тип', m.rootType), chip('верхний уровень', m.topLevel), chip('всего ключей', m.totalKeys),
+        chip('глубина', m.maxDepth), chip('объектов', m.objects), chip('массивов', m.arrays),
+        chip('значений', m.values), chip('символов', m.chars), chip('объём', jvFmtBytes(m.bytes)),
+      );
+      body.classList.add('jv');
+      panel.append(head, info, body);
+      applyInfo();
+      jvRender(body, root);
+    } else {
+      const copy = iconBtn('drow-act', 'copy', 'Копировать значение', 13);
+      copy.onclick = () => { navigator.clipboard.writeText(v == null ? '' : (typeof v === 'object' ? JSON.stringify(v, null, 2) : String(v))); toast('Скопировано'); };
+      head.append(copy);
+      if (det.kind === 'null') { const p = el('pre', 'db-valpanel-pre db-null'); p.textContent = 'NULL'; body.appendChild(p); }
+      else { const p = el('pre', 'db-valpanel-pre'); p.textContent = det.text; if (det.kind === 'number') p.classList.add('jv-num'); body.appendChild(p); }
+      panel.append(head, body);
+    }
+    const close = iconBtn('drow-act', 'x', 'Закрыть', 13); close.onclick = () => { panel.classList.remove('on'); setTimeout(() => panel.remove(), 180); };
+    head.append(close);
+    if (fresh) requestAnimationFrame(() => panel.classList.add('on')); else panel.classList.add('on');
   }
 
   // ============================================================ SQL tab
@@ -811,7 +1089,9 @@ export function initDb(host) {
     const imp = el('button', 'btn', '⬇ Импорт'); imp.title = 'Загрузить SQL-файл'; imp.onclick = async () => { const r = await lite.db.openText(); if (r && r.ok && t.editor) t.editor.dispatch({ changes: { from: 0, to: t.editor.state.doc.length, insert: r.content } }); else if (r && r.error) toast(r.error, { kind: 'err' }); };
     const cancel = el('button', 'btn db-cancel', '■ Отмена'); cancel.style.display = 'none'; cancel.onclick = () => lite.db.cancel(dbActiveId);
     bar.append(run, fmt, explain, save, hist, imp, cancel);
-    bar.appendChild(dbExportBar(() => t.lastResult, 'query'));
+    const expBtn = el('button', 'btn db-exp-open', 'Экспорт…'); expBtn.title = 'Экспорт / копирование результата'; expBtn.style.marginLeft = 'auto';
+    expBtn.onclick = () => { if (t.lastResult && t.lastResult.columns) openExportModal(t.lastResult, 'query'); else toast('Нет результата'); };
+    bar.appendChild(expBtn);
     body.appendChild(bar);
     const res = el('div', 'db-sql-result'); body.appendChild(res); t.resultEl = res; t.cancelBtn = cancel;
 
@@ -1067,7 +1347,7 @@ export function initDb(host) {
     host.append(el('div', 'db-ed-h', 'SQL'), out); refresh();
     const acts = el('div', 'gm-actions'); acts.style.marginTop = '10px';
     const undo = el('button', 'btn', 'Убрать последнее'); undo.onclick = () => { stmts.pop(); refresh(); };
-    const exec = el('button', 'btn primary', 'Выполнить'); exec.onclick = () => { if (!stmts.length) return; prodGuard(stmts.join(' '), async () => { const r = await lite.db.transaction(dbActiveId, stmts); if (r && r.ok) { toast('Применено'); close(); metaCache.delete((schema ? schema + '.' : '') + table); dbSchema = null; if (dbOpen) renderDbWorkspace($('#db-body')); } else toast((r && r.error) || 'Ошибка', { kind: 'err' }); }); };
+    const exec = el('button', 'btn primary', 'Выполнить'); exec.onclick = () => { if (!stmts.length) return; prodGuard(stmts.join(' '), async () => { const r = await lite.db.transaction(dbActiveId, stmts); if (r && r.ok) { toast('Применено'); close(); metaCache.delete((schema ? schema + '.' : '') + table); dbSchema = null; invalidateTableCaches(); if (dbOpen) renderDbWorkspace($('#db-body')); } else toast((r && r.error) || 'Ошибка', { kind: 'err' }); }); };
     acts.append(undo, exec); host.appendChild(acts);
   }
   function labelChk(text, node) { const w = el('label', 'db-check'); w.append(node, document.createTextNode(' ' + text)); return w; }
@@ -1114,45 +1394,66 @@ export function initDb(host) {
     }
   }
   // ---- mini charts (SVG, no deps)
+  // ── charts (Chart.js, statically imported): many types + PNG export ──
+  const _ChartLib = Chart;
+  async function loadChartLib() { return _ChartLib; }
+  const CHART_TYPES = [
+    { id: 'bar', label: 'Столбцы' }, { id: 'line', label: 'Линия' }, { id: 'area', label: 'Область' },
+    { id: 'horizontalBar', label: 'Гориз. столбцы' }, { id: 'pie', label: 'Круговая' }, { id: 'doughnut', label: 'Кольцо' },
+    { id: 'radar', label: 'Радар' }, { id: 'scatter', label: 'Точечная' },
+  ];
+  const CHART_ALIAS = { column: 'bar', columns: 'bar', donut: 'doughnut', hbar: 'horizontalBar', horizontal: 'horizontalBar', 'horizontal-bar': 'horizontalBar', point: 'scatter', dot: 'scatter' };
+  function normChartType(t) { t = String(t || 'bar').toLowerCase(); if (CHART_ALIAS[t]) t = CHART_ALIAS[t]; return CHART_TYPES.some((x) => x.id === t) ? t : 'bar'; }
+  const CHART_PALETTE = ['#6cb6ff', '#7ee787', '#f0883e', '#b794f6', '#ff7b72', '#39c5cf', '#e3b341', '#db61a2', '#a5d6ff', '#56d364'];
+  function cssVar(name, fb) { try { const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim(); return v || fb; } catch (_) { return fb; } }
+  function buildChartConfig(type, columns, rows, spec) {
+    type = normChartType(type);
+    const xi = columns.indexOf(spec.x);
+    const ys = (spec.y || []).map((c) => ({ name: c, i: columns.indexOf(c) })).filter((o) => o.i >= 0);
+    const data = rows.slice(0, 100);
+    const text = cssVar('--text', '#e6edf3'), grid = cssVar('--border', '#30363d');
+    const num = (v) => { const n = Number(v); return Number.isNaN(n) ? null : n; };
+    const labels = data.map((r) => r[xi] == null ? '∅' : String(r[xi]));
+    const common = { responsive: true, maintainAspectRatio: false, plugins: { legend: { labels: { color: text } }, title: spec.title ? { display: true, text: spec.title, color: text } : { display: false } } };
+    if (type === 'pie' || type === 'doughnut') { const yi = ys.length ? ys[0].i : -1; return { type, data: { labels, datasets: [{ data: data.map((r) => num(r[yi])), backgroundColor: labels.map((_, k) => CHART_PALETTE[k % CHART_PALETTE.length]) }] }, options: common }; }
+    if (type === 'radar') { const datasets = ys.map((o, k) => ({ label: o.name, data: data.map((r) => num(r[o.i])), borderColor: CHART_PALETTE[k % CHART_PALETTE.length], backgroundColor: CHART_PALETTE[k % CHART_PALETTE.length] + '55' })); return { type: 'radar', data: { labels, datasets }, options: { ...common, scales: { r: { angleLines: { color: grid }, grid: { color: grid }, pointLabels: { color: text }, ticks: { color: text, backdropColor: 'transparent' } } } } }; }
+    if (type === 'scatter') { const yi = ys.length ? ys[0].i : -1; return { type: 'scatter', data: { datasets: [{ label: (ys[0] && ys[0].name) || 'y', data: data.map((r) => ({ x: num(r[xi]), y: num(r[yi]) })).filter((p) => p.x != null && p.y != null), backgroundColor: CHART_PALETTE[0] }] }, options: { ...common, scales: { x: { ticks: { color: text }, grid: { color: grid } }, y: { ticks: { color: text }, grid: { color: grid } } } } }; }
+    const cfgType = type === 'area' ? 'line' : (type === 'horizontalBar' ? 'bar' : type);
+    const fill = type === 'area'; const indexAxis = type === 'horizontalBar' ? 'y' : 'x';
+    const datasets = ys.map((o, k) => ({ label: o.name, data: data.map((r) => num(r[o.i])), borderColor: CHART_PALETTE[k % CHART_PALETTE.length], backgroundColor: cfgType === 'line' ? CHART_PALETTE[k % CHART_PALETTE.length] + '33' : CHART_PALETTE[k % CHART_PALETTE.length], fill, tension: 0.25, pointRadius: 2, borderWidth: 2 }));
+    return { type: cfgType, data: { labels, datasets }, options: { ...common, indexAxis, scales: { x: { ticks: { color: text, maxRotation: 55, autoSkip: true }, grid: { color: grid } }, y: { ticks: { color: text }, grid: { color: grid } } } } };
+  }
+  async function renderChartCanvas(container, type, columns, rows, spec, opts = {}) {
+    container.innerHTML = '';
+    const Chart = await loadChartLib();
+    if (!Chart) { container.appendChild(el('div', 'docker-err', 'Библиотека графиков не загрузилась')); return null; }
+    const wrap = el('div', 'db-chart-canvaswrap'); const canvas = document.createElement('canvas'); wrap.appendChild(canvas); container.appendChild(wrap);
+    let instance = null;
+    try { instance = new Chart(canvas, buildChartConfig(type, columns, rows, spec)); }
+    catch (e) { container.innerHTML = ''; container.appendChild(el('div', 'docker-err', 'Не построить график: ' + (e.message || e))); return null; }
+    if (opts.download) { const dl = iconBtn('db-chart-dl', 'download', 'Скачать PNG', 14); dl.onclick = () => downloadCanvas(canvas, (spec.title || 'chart')); wrap.appendChild(dl); }
+    if (rows.length > 100) container.appendChild(el('div', 'db-er-note', `показаны первые 100 из ${rows.length} строк`));
+    return { instance, canvas };
+  }
+  function downloadCanvas(canvas, name) { try { const a = document.createElement('a'); a.href = canvas.toDataURL('image/png'); a.download = (name || 'chart').replace(/[^\w.-]+/g, '_') + '.png'; a.click(); } catch (_) { toast('Не удалось сохранить картинку', { kind: 'err' }); } }
+  // destroy Chart.js instances under a root before it's torn down (avoids leaking instances)
+  function destroyChartsIn(root) { if (!_ChartLib || !root) return; root.querySelectorAll('canvas').forEach((cv) => { const c = _ChartLib.getChart && _ChartLib.getChart(cv); if (c) { try { c.destroy(); } catch (_) {} } }); }
   function openChart(columns, colTypes, rows) {
     if (!rows || !rows.length) { toast('Нет данных для графика'); return; }
-    const { m } = makeModal('<h2>График</h2><div class="db-chart-ctrls"></div><div class="db-chart-area"></div>'); m.classList.add('db-modal', 'db-chart-modal');
-    const ctrls = m.querySelector('.db-chart-ctrls'); const area = m.querySelector('.db-chart-area');
+    const { m } = makeModal('<h2>График</h2>', () => { if (cur && cur.instance) { try { cur.instance.destroy(); } catch (_) {} } }); m.classList.add('db-modal', 'db-chart-modal');
+    const ctrls = el('div', 'db-chart-ctrls'); m.appendChild(ctrls);
+    const area = el('div', 'db-chart-area'); m.appendChild(area);
     const lab = (t, node) => { const w = el('div', 'db-field'); w.append(el('label', null, t), node); return w; };
-    const xSel = el('select'); columns.forEach((c, i) => xSel.appendChild(new Option(c, i)));
-    const ySel = el('select'); columns.forEach((c, i) => { if (!colTypes || colTypes[i] === 'number') ySel.appendChild(new Option(c, i)); });
-    if (!ySel.options.length) columns.forEach((c, i) => ySel.appendChild(new Option(c, i)));
-    const tSel = el('select'); tSel.append(new Option('Столбцы', 'bar'), new Option('Линия', 'line'));
-    ctrls.append(lab('Ось X', xSel), lab('Ось Y', ySel), lab('Тип', tSel));
-    const draw = () => renderChartSvg(area, rows, +xSel.value, +ySel.value, tSel.value);
-    [xSel, ySel, tSel].forEach((s) => s.onchange = draw);
+    const tSel = el('select'); CHART_TYPES.forEach((t) => tSel.appendChild(new Option(t.label, t.id)));
+    const xSel = el('select'); columns.forEach((c) => xSel.appendChild(new Option(c, c)));
+    const ySel = el('select'); columns.forEach((c, i) => { if (!colTypes || colTypes[i] === 'number') ySel.appendChild(new Option(c, c)); }); if (!ySel.options.length) columns.forEach((c) => ySel.appendChild(new Option(c, c)));
+    const dl = el('button', 'btn', 'Скачать PNG');
+    ctrls.append(lab('Тип', tSel), lab('Ось X', xSel), lab('Ось Y', ySel), dl);
+    let cur = null;
+    const draw = async () => { if (cur && cur.instance) { try { cur.instance.destroy(); } catch (_) {} } cur = await renderChartCanvas(area, tSel.value, columns, rows, { x: xSel.value, y: [ySel.value], title: '' }); };
+    [tSel, xSel, ySel].forEach((s) => s.onchange = draw);
+    dl.onclick = () => { if (cur && cur.canvas) downloadCanvas(cur.canvas, 'chart'); };
     draw();
-  }
-  function renderChartSvg(area, rows, xi, yi, type) {
-    area.innerHTML = '';
-    const all = rows.map((r) => ({ x: r[xi], y: Number(r[yi]) })).filter((d) => !Number.isNaN(d.y));
-    if (!all.length) { area.appendChild(el('div', 'docker-empty', 'Колонка Y не числовая.')); return; }
-    const data = all.slice(0, 60); const truncated = all.length > 60;
-    const W = 640, H = 280, padL = 52, padB = 66, padT = 12, padR = 12;
-    const iw = W - padL - padR, ih = H - padT - padB;
-    const maxY = Math.max(...data.map((d) => d.y), 0), minY = Math.min(...data.map((d) => d.y), 0);
-    const span = maxY - minY || 1; const yOf = (v) => padT + ih - (v - minY) / span * ih;
-    const ns = 'http://www.w3.org/2000/svg';
-    const svg = document.createElementNS(ns, 'svg'); svg.setAttribute('class', 'db-chart-svg'); svg.setAttribute('viewBox', `0 0 ${W} ${H}`); svg.setAttribute('width', '100%');
-    // axes + gridlines
-    for (let g = 0; g <= 4; g++) { const v = minY + span * g / 4; const y = yOf(v); const ln = document.createElementNS(ns, 'line'); ln.setAttribute('x1', padL); ln.setAttribute('x2', W - padR); ln.setAttribute('y1', y); ln.setAttribute('y2', y); ln.setAttribute('class', 'db-chart-grid'); svg.appendChild(ln); const tx = document.createElementNS(ns, 'text'); tx.setAttribute('x', padL - 6); tx.setAttribute('y', y + 3); tx.setAttribute('class', 'db-chart-ylab'); tx.textContent = trimNum(v); svg.appendChild(tx); }
-    const n = data.length; const step = iw / n;
-    const everyX = Math.ceil(n / 12);
-    if (type === 'bar') {
-      data.forEach((d, i) => { const bw = Math.max(1, step * 0.7); const x = padL + i * step + (step - bw) / 2; const y = yOf(Math.max(0, d.y)); const h = Math.abs(yOf(d.y) - yOf(0)); const rc = document.createElementNS(ns, 'rect'); rc.setAttribute('x', x); rc.setAttribute('y', y); rc.setAttribute('width', bw); rc.setAttribute('height', Math.max(1, h)); rc.setAttribute('class', 'db-chart-bar'); const ttl = document.createElementNS(ns, 'title'); ttl.textContent = `${d.x}: ${d.y}`; rc.appendChild(ttl); svg.appendChild(rc); });
-    } else {
-      const pts = data.map((d, i) => `${padL + i * step + step / 2},${yOf(d.y)}`).join(' ');
-      const pl = document.createElementNS(ns, 'polyline'); pl.setAttribute('points', pts); pl.setAttribute('class', 'db-chart-line'); svg.appendChild(pl);
-      data.forEach((d, i) => { const cc = document.createElementNS(ns, 'circle'); cc.setAttribute('cx', padL + i * step + step / 2); cc.setAttribute('cy', yOf(d.y)); cc.setAttribute('r', 2.5); cc.setAttribute('class', 'db-chart-dot'); const ttl = document.createElementNS(ns, 'title'); ttl.textContent = `${d.x}: ${d.y}`; cc.appendChild(ttl); svg.appendChild(cc); });
-    }
-    data.forEach((d, i) => { if (i % everyX) return; const tx = document.createElementNS(ns, 'text'); const cx = padL + i * step + step / 2; tx.setAttribute('x', cx); tx.setAttribute('y', H - padB + 14); tx.setAttribute('class', 'db-chart-xlab'); tx.setAttribute('transform', `rotate(40 ${cx} ${H - padB + 14})`); tx.textContent = String(d.x == null ? '∅' : d.x).slice(0, 14); svg.appendChild(tx); });
-    area.appendChild(svg);
-    if (truncated) area.appendChild(el('div', 'db-er-note', `показаны первые 60 из ${all.length} строк`));
   }
   function copyInList(colName, ci, rows) {
     const vals = [...new Set(rows.map((r) => r[ci]).filter((v) => v != null))];
@@ -1184,30 +1485,87 @@ export function initDb(host) {
   }
 
   // ============================================================ export (full table / current result)
-  function dbExportBar(getResult, name) {
-    const wrap = el('div', 'db-export');
-    for (const fmt of ['csv', 'json', 'sql']) { const b = el('button', 'db-exp-btn', fmt.toUpperCase()); b.title = 'Экспорт ' + fmt.toUpperCase(); b.onclick = (e) => { e.stopPropagation(); dbDoExport(getResult(), name, fmt); }; wrap.appendChild(b); }
-    return wrap;
+  // DataGrip-style: many formats, custom dropdown, remembered destination dir, copy-to-clipboard.
+  const EXPORT_FORMATS = [
+    { id: 'csv', ext: 'csv', label: 'CSV', desc: 'значения через запятую' },
+    { id: 'tsv', ext: 'tsv', label: 'TSV', desc: 'значения через табуляцию' },
+    { id: 'json', ext: 'json', label: 'JSON', desc: 'массив объектов' },
+    { id: 'jsonl', ext: 'jsonl', label: 'JSON Lines', desc: 'по объекту на строку (NDJSON)' },
+    { id: 'sql', ext: 'sql', label: 'SQL INSERT', desc: 'операторы INSERT' },
+    { id: 'markdown', ext: 'md', label: 'Markdown', desc: 'таблица Markdown' },
+    { id: 'html', ext: 'html', label: 'HTML', desc: '<table> для вставки' },
+    { id: 'xml', ext: 'xml', label: 'XML', desc: '<rows><row>…' },
+  ];
+  const xmlEsc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  function formatResult(fmt, columns, rows, name) {
+    const sqlV = (v) => v == null ? 'NULL' : typeof v === 'number' ? String(v) : "'" + String(v).replace(/'/g, "''") + "'";
+    const cell = (v) => v == null ? '' : (typeof v === 'object' ? JSON.stringify(v) : String(v));
+    if (fmt === 'csv') { const esc = (v) => v == null ? '' : /[",\n]/.test(cell(v)) ? '"' + cell(v).replace(/"/g, '""') + '"' : cell(v); return [columns.join(','), ...rows.map((r) => r.map(esc).join(','))].join('\n'); }
+    if (fmt === 'tsv') { const esc = (v) => cell(v).replace(/[\t\n\r]/g, ' '); return [columns.join('\t'), ...rows.map((r) => r.map(esc).join('\t'))].join('\n'); }
+    if (fmt === 'json') return JSON.stringify(rows.map((r) => Object.fromEntries(columns.map((c, i) => [c, r[i]]))), null, 2);
+    if (fmt === 'jsonl') return rows.map((r) => JSON.stringify(Object.fromEntries(columns.map((c, i) => [c, r[i]])))).join('\n');
+    if (fmt === 'sql') return rows.map((r) => `INSERT INTO ${name || 'tbl'} (${columns.map(qIdent).join(', ')}) VALUES (${r.map(sqlV).join(', ')});`).join('\n');
+    if (fmt === 'markdown') return '| ' + columns.join(' | ') + ' |\n| ' + columns.map(() => '---').join(' | ') + ' |\n' + rows.map((r) => '| ' + r.map((v) => cell(v).replace(/\|/g, '\\|').replace(/\n/g, ' ')).join(' | ') + ' |').join('\n');
+    if (fmt === 'html') return `<table>\n  <thead><tr>${columns.map((c) => `<th>${xmlEsc(c)}</th>`).join('')}</tr></thead>\n  <tbody>\n${rows.map((r) => '    <tr>' + r.map((v) => `<td>${xmlEsc(cell(v))}</td>`).join('') + '</tr>').join('\n')}\n  </tbody>\n</table>`;
+    if (fmt === 'xml') return `<rows>\n${rows.map((r) => '  <row>' + columns.map((c, i) => `<${c}>${xmlEsc(cell(r[i]))}</${c}>`).join('') + '</row>').join('\n')}\n</rows>`;
+    return '';
+  }
+  // lightweight custom dropdown (styled) — value/label/desc; calls onChange(id)
+  function customSelect(options, value, onChange) {
+    const wrap = el('div', 'db-csel'); let cur = value;
+    const btn = el('button', 'db-csel-btn');
+    const lab = el('span', 'db-csel-lab'); const car = icon('chevron-down', 13); car.classList.add('db-csel-car');
+    btn.append(lab, car);
+    const menu = el('div', 'db-csel-menu hidden');
+    const paint = () => { const o = options.find((x) => x.id === cur) || options[0]; lab.textContent = o.label; };
+    const closeMenu = () => { menu.classList.add('hidden'); document.removeEventListener('mousedown', onDoc); };
+    const onDoc = (e) => { if (!wrap.contains(e.target)) closeMenu(); };
+    btn.onclick = (e) => { e.preventDefault(); e.stopPropagation(); const hid = menu.classList.contains('hidden'); if (hid) { menu.classList.remove('hidden'); document.addEventListener('mousedown', onDoc); } else closeMenu(); };
+    for (const o of options) {
+      const it = el('div', 'db-csel-item' + (o.id === cur ? ' on' : ''));
+      it.append(el('span', 'db-csel-item-lab', o.label)); if (o.desc) it.append(el('span', 'db-csel-item-desc', o.desc));
+      it.onclick = () => { cur = o.id; paint(); menu.querySelectorAll('.db-csel-item.on').forEach((x) => x.classList.remove('on')); it.classList.add('on'); closeMenu(); onChange && onChange(o.id); };
+      menu.appendChild(it);
+    }
+    paint(); wrap.append(btn, menu);
+    return { element: wrap, get: () => cur };
   }
   async function exportTable(t) {
     toast('Выгрузка всей таблицы…');
     const r = await lite.db.fetchAll(dbActiveId, t.schema, t.table, { where: t.where, orderBy: t.orderBy, orderDir: t.orderDir });
     if (r.error) { toast(r.error, { kind: 'err' }); return; }
-    showMenu(innerWidth / 2, 120, [
-      { label: `CSV (${r.rows.length} строк)`, action: () => dbDoExport(r, t.table, 'csv') },
-      { label: `JSON (${r.rows.length} строк)`, action: () => dbDoExport(r, t.table, 'json') },
-      { label: `SQL INSERT (${r.rows.length} строк)`, action: () => dbDoExport(r, t.table, 'sql') },
-    ]);
+    openExportModal(r, t.table);
   }
-  async function dbDoExport(result, name, fmt) {
+  function openExportModal(result, name) {
     if (!result || !result.columns || !result.columns.length) { toast('Нет данных для экспорта'); return; }
-    const { columns, rows } = result; let text = '';
-    if (fmt === 'csv') { const esc = (v) => v == null ? '' : /[",\n]/.test(String(v)) ? '"' + String(v).replace(/"/g, '""') + '"' : String(v); text = [columns.join(','), ...rows.map((r) => r.map(esc).join(','))].join('\n'); }
-    else if (fmt === 'json') { text = JSON.stringify(rows.map((r) => Object.fromEntries(columns.map((c, i) => [c, r[i]]))), null, 2); }
-    else { const qv = (v) => v == null ? 'NULL' : typeof v === 'number' ? String(v) : "'" + String(v).replace(/'/g, "''") + "'"; text = rows.map((r) => `INSERT INTO ${name} (${columns.join(', ')}) VALUES (${r.map(qv).join(', ')});`).join('\n'); }
-    const r = await lite.db.saveText(`${name}.${fmt}`, text);
-    if (r && r.ok) toast('Сохранено: ' + r.path, { ttl: 7000 });
-    else if (r && r.error) toast(r.error, { kind: 'err' });
+    const { columns, rows } = result;
+    const { m, close } = makeModal('<h2>Экспорт данных</h2>'); m.classList.add('db-modal', 'db-export-modal');
+    m.appendChild(el('div', 'db-exp-sub', `${name || 'результат'} · строк: ${rows.length} · колонок: ${columns.length}`));
+    let fmtId = dbUi.exportFmt && EXPORT_FORMATS.some((f) => f.id === dbUi.exportFmt) ? dbUi.exportFmt : 'csv';
+    const fRow = el('div', 'db-exp-field'); fRow.append(el('label', null, 'Формат'));
+    const sel = customSelect(EXPORT_FORMATS, fmtId, (id) => { fmtId = id; dbUi.exportFmt = id; saveDbUi(); refreshPreview(); });
+    fRow.appendChild(sel.element); m.appendChild(fRow);
+    const pRow = el('div', 'db-exp-field'); pRow.append(el('label', null, 'Папка сохранения'));
+    const pathIn = el('input', 'db-exp-path'); pathIn.placeholder = 'по умолчанию — последняя'; pathIn.value = dbUi.exportDir || '';
+    const browse = iconBtn('drow-act', 'folder', 'Выбрать папку', 14); browse.onclick = async () => { const d = await lite.db.chooseDir(); if (d && d.ok) { pathIn.value = d.path; dbUi.exportDir = d.path; saveDbUi(); } };
+    const pWrap = el('div', 'db-exp-pathwrap'); pWrap.append(pathIn, browse); pRow.appendChild(pWrap); m.appendChild(pRow);
+    const prev = el('pre', 'db-exp-preview');
+    const refreshPreview = () => { const txt = formatResult(fmtId, columns, rows.slice(0, 30), name); prev.textContent = txt.length > 4000 ? txt.slice(0, 4000) + '\n…' : txt; };
+    refreshPreview();
+    m.appendChild(el('div', 'db-exp-prevhint', 'Предпросмотр (первые 30 строк)')); m.appendChild(prev);
+    const acts = el('div', 'gm-actions'); acts.style.marginTop = '12px';
+    const copy = el('button', 'btn', 'Копировать в буфер'); copy.onclick = () => { const text = formatResult(fmtId, columns, rows, name); navigator.clipboard.writeText(text); toast(`Скопировано строк: ${rows.length}`); };
+    const saveBtn = el('button', 'btn primary', 'Сохранить в файл…'); saveBtn.onclick = async () => {
+      const fmt = EXPORT_FORMATS.find((f) => f.id === fmtId); const text = formatResult(fmtId, columns, rows, name);
+      const dir = (pathIn.value || dbUi.exportDir || '').trim();
+      const fname = `${name || 'export'}.${fmt.ext}`;
+      const defPath = dir ? dir.replace(/[/\\]+$/, '') + '/' + fname : fname;
+      const r = await lite.db.saveText(defPath, text);
+      if (r && r.ok) { toast('Сохранено: ' + r.path, { ttl: 7000 }); const d = r.path.replace(/[/\\][^/\\]*$/, ''); if (d) { dbUi.exportDir = d; saveDbUi(); } close(); }
+      else if (r && r.error) toast(r.error, { kind: 'err' });
+    };
+    const cancel = el('button', 'btn', 'Отмена'); cancel.onclick = close;
+    acts.append(copy, saveBtn, cancel); m.appendChild(acts);
   }
 
   // ============================================================ SQL formatter (lightweight, no deps)
@@ -1367,7 +1725,464 @@ export function initDb(host) {
     return out.join('\n');
   }
 
-  function refresh() { dbSchema = null; dbColsCache = null; dbObjectsCache = null; metaCache.clear(); dbRelationsCache = null; if (dbOpen) renderDbPanel(); }
+  // ============================================================ AI-DB (read-only chat with the database)
+  let setWsViewFn = null;   // set by renderDbWorkspace so cards can switch back to «Рабочий стол»
+  // per-connection chat: multiple named sessions (create / switch / delete) + persistence in dbUi.
+  // session = { id, title, ts, messages[], _busy, _reqId, _streamEl }  (underscore = runtime-only)
+  function aiData() {
+    let d = aiChats.get(dbActiveId);
+    if (!d) {
+      const saved = (dbUi.aiSessions && dbUi.aiSessions[dbActiveId]) || null;
+      const sessions = (saved && saved.length) ? saved.map((s) => ({ id: s.id, title: s.title, ts: s.ts, pinned: !!s.pinned, messages: s.messages || [] })) : [{ id: 's' + (++aiSeq), title: 'Новый чат', ts: Date.now(), pinned: false, messages: [] }];
+      let activeId = (dbUi.aiActive && dbUi.aiActive[dbActiveId]) || sessions[0].id;
+      if (!sessions.some((s) => s.id === activeId)) activeId = sessions[0].id;
+      d = { sessions, activeId, agent: (dbUi.aiAgent || 'claude') };
+      aiChats.set(dbActiveId, d);
+    }
+    return d;
+  }
+  function aiSession() { const d = aiData(); let s = d.sessions.find((x) => x.id === d.activeId); if (!s) { s = d.sessions[0]; d.activeId = s.id; } return s; }
+  function serializeAiMsg(m) {
+    if (m.role === 'result') return { role: 'result', sql: m.sql, chart: m.chart || null, columns: m.columns || null, colTypes: m.colTypes || null, rows: m.rows ? m.rows.slice(0, 200) : null, rowsTrunc: !!(m.rows && m.rows.length > 200), error: m.error || null, summary: m.summary || '' };
+    return { role: m.role, text: m.text || '' };
+  }
+  function aiPersist() {
+    const d = aiChats.get(dbActiveId); if (!d) return;
+    dbUi.aiSessions = dbUi.aiSessions || {}; dbUi.aiActive = dbUi.aiActive || {};
+    dbUi.aiSessions[dbActiveId] = d.sessions.map((s) => ({ id: s.id, title: s.title, ts: s.ts, pinned: !!s.pinned, messages: (s.messages || []).map(serializeAiMsg) }));
+    dbUi.aiActive[dbActiveId] = d.activeId; saveDbUi();
+  }
+  function aiSessTitle(s) { if (s.title && s.title !== 'Новый чат') return s.title; const u = (s.messages || []).find((m) => m.role === 'user'); return (u && u.text) ? u.text.slice(0, 40) : 'Новый чат'; }
+  function aiNewSession(host) { const d = aiData(); const s = { id: 's' + (++aiSeq), title: 'Новый чат', ts: Date.now(), messages: [] }; d.sessions.unshift(s); d.activeId = s.id; aiPersist(); renderAiChat(host); }
+  function aiSwitchSession(host, id) { const d = aiData(); const cur = aiSession(); if (cur._reqId) { try { lite.dbai.abort(cur._reqId); } catch (_) {} cur._busy = false; cur._reqId = null; } d.activeId = id; aiPersist(); renderAiChat(host); }
+  function aiDeleteSession(host, id) {
+    const d = aiData(); const i = d.sessions.findIndex((x) => x.id === id); if (i < 0) return;
+    const s = d.sessions[i]; if (s._reqId) { try { lite.dbai.abort(s._reqId); } catch (_) {} }
+    d.sessions.splice(i, 1);
+    if (!d.sessions.length) d.sessions.push({ id: 's' + (++aiSeq), title: 'Новый чат', ts: Date.now(), messages: [] });
+    if (d.activeId === id) d.activeId = d.sessions[Math.max(0, i - 1)].id;
+    aiPersist(); renderAiChat(host);
+  }
+  function aiTyping() { const w = el('div', 'db-ai-typing'); w.append(el('span', 'db-ai-dot'), el('span', 'db-ai-dot'), el('span', 'db-ai-dot')); return w; }
+  const AI_SUGGEST = ['Какие таблицы есть в базе и сколько в них строк?', 'Покажи поля таблицы …', 'Сделай срез: топ-10 по …', 'Сколько записей за последний месяц?'];
+
+  // compact schema doc for the agent: per-table columns (+ types/PK/FK where known), row estimates
+  function buildAiSchemaDoc() {
+    const dialect = dbActiveConn ? dbActiveConn.type : 'postgres';
+    const lines = [`СУБД/диалект: ${DB_TYPES[dialect] || dialect}`];
+    const rels = dbRelationsCache || [];
+    const fkBy = new Map();
+    for (const r of rels) { const k = (r.fromSchema ? r.fromSchema + '.' : '') + r.fromTable + '.' + r.fromColumn; fkBy.set(k, `${r.toTable}.${r.toColumn}`); }
+    const est = (dbObjectsCache && dbObjectsCache.rowEstimates) || {};
+    const cols = dbColsCache || {};
+    const keys = Object.keys(cols).sort();
+    if (!keys.length) return lines.join('\n') + '\n(схема ещё читается)';
+    for (const key of keys) {
+      const meta = metaCache.get(key); const rc = est[key];
+      lines.push(`\n## ${key}${rc != null && rc >= 0 ? ` (~${humanCount(rc)} строк)` : ''}`);
+      if (meta && meta.columns) { for (const c of meta.columns) lines.push(`- ${c.name} ${c.type || ''}${c.pk ? ' PK' : ''}${c.fk ? ` FK→${c.fk.table}.${c.fk.column}` : ''}${c.nullable === false ? ' NOT NULL' : ''}`.trim()); }
+      else { for (const cn of cols[key]) { const fk = fkBy.get(key + '.' + cn); lines.push(`- ${cn}${fk ? ` FK→${fk}` : ''}`); } }
+    }
+    let doc = lines.join('\n');
+    if (doc.length > 16000) doc = doc.slice(0, 16000) + '\n… (схема обрезана — спрашивайте конкретные таблицы)';
+    return doc;
+  }
+  function buildAiPrompt(st) {
+    const dialect = dbActiveConn ? (DB_TYPES[dbActiveConn.type] || dbActiveConn.type) : 'SQL';
+    const sys = [
+      'Ты — ассистент-аналитик базы данных, работающий СТРОГО НА ЧТЕНИЕ.',
+      'Тебе дана структура всех таблиц. Помогай пользователю получать данные и понятные отчёты.',
+      'ЖЁСТКИЕ ПРАВИЛА:',
+      '1) НИКОГДА не предлагай изменяющие запросы (INSERT/UPDATE/DELETE/DROP/ALTER/CREATE/TRUNCATE/GRANT/REVOKE/MERGE). Только SELECT / WITH / EXPLAIN.',
+      `2) Диалект — ${dialect}: используй его синтаксис и правильное экранирование идентификаторов.`,
+      '3) Если для ответа нужен запрос — выведи РОВНО ОДИН SQL в блоке ```sql … ```. Запрос будет показан пользователю и выполнен ТОЛЬКО после подтверждения. НЕ выдумывай результаты заранее, дождись данных.',
+      '4) Ставь разумный LIMIT (напр. 200), если строк может быть много (кроме агрегатов COUNT/SUM/AVG/GROUP BY).',
+      '5) ГРАФИКИ. Когда нужен график — добавь спецификацию в исполняемом блоке ```chart с JSON:',
+      '   ```chart',
+      '   {"type":"bar","x":"<колонка_меток>","y":["<числовая_колонка>"],"title":"<заголовок>"}',
+      '   ```',
+      '   Типы: bar, line, area, horizontalBar, pie, doughnut, radar, scatter. y — массив из 1+ ЧИСЛОВЫХ колонок (несколько = серии; для pie/doughnut/scatter берётся первая). Имена x/y — как столбцы в SELECT. Приложение само нарисует КАРТИНКУ (Chart.js, есть «Скачать PNG») по данным последнего выполненного запроса. Блок ```chart можно дать в том же сообщении с ```sql, ИЛИ отдельным сообщением уже ПОСЛЕ того, как увидишь результат. НЕ описывай график словами и не рисуй ASCII — только блок ```chart. (Альтернатива одной строкой: @chart bar x=col y=col1,col2.)',
+      '6) ВЫБОР ФОРМАТА. Если пользователь НЕ указал формат, но ответ хорошо смотрелся бы графиком/таблицей — спроси формат через @ask с вариантами: «Текстом», «Таблицей» (если уместно), «Графиком». После выбора выдай нужное (для графика — SELECT + @chart). Если формат очевиден (короткий факт → текст; набор строк → таблица) — не спрашивай, выдай сразу.',
+      '7) Если вопрос чисто справочный (например «какие поля у таблицы»), отвечай ТЕКСТОМ по схеме без запроса.',
+      '8) После выполнения запроса тебе вернут результат (колонки + строки). Тогда дай краткий понятный вывод/отчёт на русском (markdown: заголовки, списки, выделения). Не дублируй всю таблицу — она уже показана пользователю.',
+      '9) Если тебе не хватает данных или вопрос неоднозначен — НЕ ГАДАЙ. Задай уточняющий вопрос пользователю строго в формате (каждая директива с новой строки):',
+      '@ask <твой короткий вопрос>     — если нужно выбрать ОДИН вариант;',
+      '@askmulti <твой вопрос>         — если можно выбрать НЕСКОЛЬКО вариантов;',
+      'затем перечисли варианты, каждый с новой строки:',
+      '@opt <вариант 1>',
+      '@opt <вариант 2>',
+      'Каждый @opt — короткий вариант (1–6 слов). Приложение само добавит поле «Свой ответ» и кнопку «Отправить» — их указывать не нужно. Используй этот механизм всегда, когда требуется уточнение.',
+      '',
+      '=== СТРУКТУРА БД ===',
+      buildAiSchemaDoc(),
+    ].join('\n');
+    const convo = st.messages.map((m) => {
+      if (m.role === 'assistant' && m.streaming) return '';   // skip the in-flight placeholder
+      if (m.role === 'user') return `\n[ПОЛЬЗОВАТЕЛЬ]:\n${m.text}`;
+      if (m.role === 'assistant') return `\n[ТЫ]:\n${m.text}`;
+      if (m.role === 'result') return `\n[РЕЗУЛЬТАТ ВЫПОЛНЕНИЯ ЗАПРОСА]:\n${m.summary}`;
+      return '';
+    }).join('\n');
+    return sys + '\n\n=== ДИАЛОГ ===' + convo + '\n\n[ТЫ]:';
+  }
+  function aiResultSummary(sql, r) {
+    if (!r || r.error) return `Ошибка выполнения: ${(r && r.error) || 'неизвестно'}\nSQL: ${sql}`;
+    const cols = r.columns || [], rows = r.rows || [];
+    let s = `Запрос вернул строк: ${rows.length}. Колонки: ${cols.join(', ')}.`;
+    if (rows.length) {
+      const sample = rows.slice(0, 30).map((row) => cols.map((_, i) => { const v = fmtVal(row[i]); return v == null ? 'NULL' : v; }).join(' | ')).join('\n');
+      s += `\nДанные (до 30 строк):\n${cols.join(' | ')}\n${sample}`;
+      if (rows.length > 30) s += `\n… ещё ${rows.length - 30} строк`;
+    }
+    return s.slice(0, 8000);
+  }
+  // best-effort resolution of a chart spec against actual result columns (never silently drop)
+  function resolveChartSpec(columns, colTypes, spec) {
+    const norm = (s) => String(s == null ? '' : s).toLowerCase().replace(/[^a-z0-9]/g, '');
+    const find = (name) => {
+      if (name == null) return null;
+      let i = columns.indexOf(name); if (i >= 0) return columns[i];
+      const lc = String(name).toLowerCase(); i = columns.findIndex((c) => c.toLowerCase() === lc); if (i >= 0) return columns[i];
+      const n = norm(name); i = columns.findIndex((c) => norm(c) === n); return i >= 0 ? columns[i] : null;
+    };
+    const numericCols = columns.filter((c, i) => colTypes ? colTypes[i] === 'number' : true);
+    let x = find(spec.x) || columns[0];
+    let ys = (Array.isArray(spec.y) ? spec.y : [spec.y]).map(find).filter(Boolean);
+    if (!ys.length) { ys = numericCols.filter((c) => c !== x).slice(0, 1); if (!ys.length) ys = [columns.find((c) => c !== x) || columns[0]]; }
+    return { type: normChartType(spec.type), x, y: ys, title: spec.title || '' };
+  }
+  // parse assistant text → [{type:'md',text} | {type:'sql',sql,chart} | {type:'chart',chart} | {type:'ask',ask}]
+  function parseAssistant(text) {
+    text = String(text || '');
+    let chart = null;
+    // preferred: an executable ```chart JSON block ; fallback: a one-line @chart directive
+    const fence = text.match(/```chart\s*([\s\S]*?)```/i);
+    if (fence) { try { const j = JSON.parse(fence[1].trim()); chart = { type: j.type, x: j.x, y: Array.isArray(j.y) ? j.y : [j.y].filter((v) => v != null), title: j.title || '' }; } catch (_) {} text = text.replace(fence[0], ''); }
+    if (!chart) { const cm = text.match(/@chart\s+(\w[\w-]*)\s+x=(\S+)\s+y=(\S+)(?:\s+title=([^\n]+))?/i); if (cm) { chart = { type: cm[1], x: cm[2], y: cm[3].split(',').map((s) => s.trim()).filter(Boolean), title: (cm[4] || '').trim() }; text = text.replace(cm[0], ''); } }
+    // clarification directive: @ask (single) / @askmulti (multiple) + @opt lines
+    let ask = null;
+    const askM = text.match(/^[ \t>*-]*@(askmulti|ask)[:\s]+(.+)$/im);
+    if (askM) {
+      const opts = []; const re = /^[ \t>*-]*@opt[:\s]+(.+)$/gim; let mm;
+      while ((mm = re.exec(text))) opts.push(mm[1].trim());
+      ask = { question: askM[2].trim(), options: opts, multi: askM[1].toLowerCase() === 'askmulti' };
+      text = text.replace(/^[ \t>*-]*@(?:askmulti|ask)[:\s]+.*$/im, '').replace(/^[ \t>*-]*@opt[:\s]+.*$/gim, '');
+    }
+    const parts = []; const re = /```sql\s*([\s\S]*?)```/gi; let last = 0, m, attached = false;
+    while ((m = re.exec(text))) { if (m.index > last) parts.push({ type: 'md', text: text.slice(last, m.index) }); parts.push({ type: 'sql', sql: m[1].trim(), chart: attached ? null : chart }); attached = true; last = re.lastIndex; }
+    if (last < text.length) parts.push({ type: 'md', text: text.slice(last) });
+    if (ask) parts.push({ type: 'ask', ask });
+    if (chart && !attached) parts.push({ type: 'chart', chart });   // standalone → render from last result
+    return parts;
+  }
+  // render agent markdown to sanitized HTML (defense-in-depth: CSP blocks scripts, we still
+  // strip dangerous tags / on*-handlers / non-allowlisted URL schemes — same pattern as openrouter.js)
+  function mdInto(node, src) {
+    let html;
+    try { html = marked.parse(String(src || ''), { gfm: true, breaks: true }); } catch (_) { node.textContent = src || ''; return; }
+    const tpl = document.createElement('template'); tpl.innerHTML = html;
+    tpl.content.querySelectorAll('script,style,iframe,object,embed,link,meta,form').forEach((n) => n.remove());
+    tpl.content.querySelectorAll('*').forEach((n) => {
+      [...n.attributes].forEach((a) => {
+        const name = a.name.toLowerCase();
+        if (name.startsWith('on')) { n.removeAttribute(a.name); return; }
+        if (name === 'href' || name === 'src') {
+          let proto = ''; try { proto = new URL(a.value, location.href).protocol; } catch (_) { n.removeAttribute(a.name); return; }
+          const ok = (name === 'src') ? ['http:', 'https:', 'data:'] : ['http:', 'https:', 'mailto:'];
+          if (!ok.includes(proto)) n.removeAttribute(a.name);
+        }
+      });
+    });
+    node.innerHTML = tpl.innerHTML;
+  }
+
+  // ── AI providers (global, shared by all DBs): CLI (claude/codex) + OpenAI-compatible APIs
+  //    (OpenRouter / Ollama / LM Studio). Config persists under STORE.dbaiProviders.
+  function aiProviders() {
+    const p = (STORE.dbaiProviders && typeof STORE.dbaiProviders === 'object') ? STORE.dbaiProviders : {};
+    return {
+      openrouter: { key: (p.openrouter && p.openrouter.key) || '', models: (p.openrouter && p.openrouter.models) || [] },
+      ollama: { baseUrl: (p.ollama && p.ollama.baseUrl) || 'http://localhost:11434', models: (p.ollama && p.ollama.models) || [] },
+      lmstudio: { baseUrl: (p.lmstudio && p.lmstudio.baseUrl) || 'http://localhost:1234', models: (p.lmstudio && p.lmstudio.models) || [] },
+    };
+  }
+  function saveProviders(cfg) { persist('dbaiProviders', cfg); }
+  function parseAgentId(id) { const i = String(id).indexOf('::'); return i < 0 ? { kind: id, model: null } : { kind: id.slice(0, i), model: id.slice(i + 2) }; }
+  function providerEndpoint(kind) {
+    const c = aiProviders();
+    if (kind === 'or') return { base: 'https://openrouter.ai/api/v1', key: c.openrouter.key };
+    if (kind === 'ollama') return { base: c.ollama.baseUrl.replace(/\/+$/, '') + '/v1', key: '' };
+    if (kind === 'lmstudio') return { base: c.lmstudio.baseUrl.replace(/\/+$/, '') + '/v1', key: '' };
+    return null;
+  }
+  const aiEnabled = (list, id) => list.some((x) => x.id === id);
+  function aiToggleModel(list, m, on) { const i = list.findIndex((x) => x.id === m.id); if (on) { if (i < 0) list.push({ id: m.id, name: m.name || m.id }); } else if (i >= 0) list.splice(i, 1); }
+  function aiModelRow(m, list, cfg, extra) {
+    const row = el('div', 'db-prov-mrow');
+    const cb = el('input'); cb.type = 'checkbox'; cb.checked = aiEnabled(list, m.id); cb.onchange = () => { aiToggleModel(list, m, cb.checked); saveProviders(cfg); };
+    const lab = el('label', 'db-prov-mcheck'); lab.appendChild(cb);
+    const info = el('div', 'db-prov-minfo'); info.appendChild(el('div', 'db-prov-mname', m.name || m.id));
+    if (extra) info.appendChild(el('div', 'db-prov-mmeta', extra)); else info.appendChild(el('div', 'db-prov-mmeta', m.id));
+    row.append(lab, info); return row;
+  }
+  function aiOrPanel(cfg) {
+    const wrap = el('div', 'db-prov-panel');
+    const keyRow = el('div', 'db-prov-field'); keyRow.appendChild(el('label', null, 'API-ключ OpenRouter'));
+    const keyIn = el('input', 'db-prov-input'); keyIn.type = 'password'; keyIn.placeholder = 'sk-or-…'; keyIn.value = cfg.openrouter.key || '';
+    keyIn.onchange = () => { cfg.openrouter.key = keyIn.value.trim(); saveProviders(cfg); };
+    keyRow.appendChild(keyIn); wrap.appendChild(keyRow);
+    const bar = el('div', 'db-prov-bar'); const load = el('button', 'btn', 'Загрузить модели'); const search = el('input', 'db-prov-search'); search.placeholder = 'Фильтр моделей…'; const status = el('span', 'db-prov-status'); bar.append(load, search, status); wrap.appendChild(bar);
+    const list = el('div', 'db-prov-list'); wrap.appendChild(list);
+    let all = cfg.openrouter.models.slice();
+    const draw = () => { const q = search.value.trim().toLowerCase(); list.innerHTML = ''; const shown = (q ? all.filter((m) => (m.id + ' ' + (m.name || '')).toLowerCase().includes(q)) : all).slice(0, 400); if (!shown.length) { list.appendChild(el('div', 'db-prov-empty', 'Нажмите «Загрузить модели»')); return; } for (const m of shown) { const meta = []; if (m.context) meta.push(Math.round(m.context / 1000) + 'k ctx'); if (m.pricing && m.pricing.prompt) meta.push('$' + (+m.pricing.prompt * 1e6).toFixed(2) + '/M in'); if (m.pricing && m.pricing.completion) meta.push('$' + (+m.pricing.completion * 1e6).toFixed(2) + '/M out'); list.appendChild(aiModelRow(m, cfg.openrouter.models, cfg, meta.join(' · '))); } };
+    search.oninput = draw;
+    load.onclick = async () => { const key = keyIn.value.trim(); if (!key) { status.textContent = 'нужен ключ'; return; } status.textContent = 'загрузка…'; const r = await lite.openrouter.models(key); if (r && r.models) { all = r.models; status.textContent = all.length + ' моделей'; draw(); } else { status.textContent = (r && r.error) || 'ошибка'; } };
+    draw(); return wrap;
+  }
+  function aiLocalPanel(kind, cfg) {
+    const def = cfg[kind]; const fallback = kind === 'ollama' ? 'http://localhost:11434' : 'http://localhost:1234';
+    const wrap = el('div', 'db-prov-panel');
+    wrap.appendChild(el('div', 'db-prov-hint', kind === 'ollama' ? 'Запустите Ollama (команда «ollama serve»), модели ставятся через «ollama pull <модель>». Адрес по умолчанию — http://localhost:11434.' : 'В LM Studio откройте вкладку Developer и нажмите «Start Server». Адрес по умолчанию — http://localhost:1234.'));
+    const urlRow = el('div', 'db-prov-field'); urlRow.appendChild(el('label', null, 'Адрес сервера'));
+    const urlIn = el('input', 'db-prov-input'); urlIn.placeholder = fallback; urlIn.value = def.baseUrl || fallback; urlIn.onchange = () => { def.baseUrl = urlIn.value.trim() || fallback; saveProviders(cfg); };
+    urlRow.appendChild(urlIn); wrap.appendChild(urlRow);
+    const bar = el('div', 'db-prov-bar'); const load = el('button', 'btn', 'Проверить и загрузить'); const status = el('span', 'db-prov-status'); bar.append(load, status); wrap.appendChild(bar);
+    const list = el('div', 'db-prov-list'); wrap.appendChild(list);
+    const draw = (models) => { list.innerHTML = ''; if (!models.length) { list.appendChild(el('div', 'db-prov-empty', 'Моделей не найдено — загрузите/установите модель на сервере')); return; } for (const m of models) list.appendChild(aiModelRow(m, def.models, cfg)); };
+    load.onclick = async () => { const base = (urlIn.value.trim() || fallback).replace(/\/+$/, '') + '/v1'; status.textContent = 'проверка…'; const r = await lite.dbai.apiModels({ baseUrl: base }); if (r && r.models) { status.className = 'db-prov-status ok'; status.textContent = '✓ ' + r.models.length + ' моделей'; draw(r.models); } else { status.className = 'db-prov-status err'; status.textContent = (r && r.error) || 'нет связи'; draw(def.models); } };
+    draw(def.models); return wrap;
+  }
+  function openProvidersModal(host) {
+    const cfg = aiProviders();
+    const { m, close } = makeModal('<h2>Модели и провайдеры</h2>'); m.classList.add('db-modal', 'db-prov-modal');
+    m.appendChild(el('div', 'db-prov-sub', 'Глобальные настройки — общие для всех баз. Отмеченные модели появятся в выпадашке выбора агента (OpenRouter с префиксом «OR»).'));
+    const tabsEl = el('div', 'db-prov-tabs'); const bodyEl = el('div', 'db-prov-bodywrap');
+    const panels = { openrouter: () => aiOrPanel(cfg), ollama: () => aiLocalPanel('ollama', cfg), lmstudio: () => aiLocalPanel('lmstudio', cfg) };
+    let active = 'openrouter';
+    const paint = () => { bodyEl.innerHTML = ''; bodyEl.appendChild(panels[active]()); [...tabsEl.children].forEach((b) => b.classList.toggle('on', b.dataset.k === active)); };
+    for (const [k, lbl] of [['openrouter', 'OpenRouter'], ['ollama', 'Ollama'], ['lmstudio', 'LM Studio']]) { const b = el('button', 'db-prov-tab', lbl); b.dataset.k = k; b.onclick = () => { active = k; paint(); }; tabsEl.appendChild(b); }
+    m.append(tabsEl, bodyEl);
+    const acts = el('div', 'gm-actions'); acts.style.marginTop = '12px'; const done = el('button', 'btn primary', 'Готово'); done.onclick = () => { close(); renderAiChat(host); }; acts.appendChild(done); m.appendChild(acts);
+    paint();
+  }
+  const RU_MONTHS = ['января', 'февраля', 'марта', 'апреля', 'мая', 'июня', 'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря'];
+  function aiDayKey(ts) { const dt = new Date(ts || 0); return dt.getFullYear() + '-' + dt.getMonth() + '-' + dt.getDate(); }
+  function aiDateLabel(ts) { const dt = new Date(ts || 0); return `${dt.getDate()} ${RU_MONTHS[dt.getMonth()]} ${dt.getFullYear()}`; }
+  function aiSessionRow(s, d, host) {
+    const row = el('div', 'db-ai-sess' + (s.id === d.activeId ? ' on' : ''));
+    if (s.pinned) row.appendChild(icon('pin', 12));
+    row.appendChild(el('div', 'db-ai-sess-t', aiSessTitle(s)));
+    const acts = el('div', 'db-ai-sess-acts');
+    const pin = iconBtn('db-ai-sess-act' + (s.pinned ? ' on' : ''), 'pin', s.pinned ? 'Открепить' : 'Закрепить', 13); pin.onclick = (e) => { e.stopPropagation(); s.pinned = !s.pinned; aiPersist(); renderAiChat(host); };
+    const del = iconBtn('db-ai-sess-act danger', 'trash', 'Удалить сессию', 13); del.onclick = (e) => { e.stopPropagation(); showConfirm('Удалить сессию?', `Сессия «${aiSessTitle(s)}» будет удалена безвозвратно.`, 'Удалить', () => aiDeleteSession(host, s.id)); };
+    acts.append(pin, del); row.appendChild(acts);
+    row.onclick = () => { if (s.id !== d.activeId) aiSwitchSession(host, s.id); };
+    return row;
+  }
+  function renderSessionList(list, d, host) {
+    list.innerHTML = '';
+    const pinned = d.sessions.filter((s) => s.pinned).sort((a, b) => (b.ts || 0) - (a.ts || 0));
+    const others = d.sessions.filter((s) => !s.pinned).sort((a, b) => (b.ts || 0) - (a.ts || 0));
+    if (pinned.length) { list.appendChild(el('div', 'db-ai-sess-group', 'Закреплённые')); for (const s of pinned) list.appendChild(aiSessionRow(s, d, host)); }
+    let lastKey = null;
+    for (const s of others) { const k = aiDayKey(s.ts); if (k !== lastKey) { list.appendChild(el('div', 'db-ai-sess-group', aiDateLabel(s.ts))); lastKey = k; } list.appendChild(aiSessionRow(s, d, host)); }
+  }
+  function renderAiChat(host) {
+    const d = aiData(); const st = aiSession(); st._streamEl = null;
+    destroyChartsIn(host);
+    host.innerHTML = '';
+    // ── left: sessions column (collapsible, state remembered) ──
+    const collapsed = !!dbUi.aiSessCollapsed;
+    const toggleSess = () => { dbUi.aiSessCollapsed = !dbUi.aiSessCollapsed; saveDbUi(); renderAiChat(host); };
+    const col = el('div', 'db-ai-sessions-col' + (collapsed ? ' collapsed' : ''));
+    if (collapsed) {
+      const exp = iconBtn('drow-act', 'chevron-right', 'Развернуть панель сессий', 16); exp.onclick = toggleSess;
+      const nb = iconBtn('drow-act', 'plus', 'Новая сессия', 16); nb.onclick = () => aiNewSession(host);
+      col.append(exp, nb);
+    } else {
+      const colHead = el('div', 'db-ai-sessions-head');
+      const collapseBtn = iconBtn('drow-act', 'chevron-left', 'Свернуть панель', 15); collapseBtn.onclick = toggleSess;
+      colHead.append(collapseBtn, el('span', 'db-ai-sessions-title', 'Сессии'));
+      const newBtn = el('button', 'db-ai-sessnew'); newBtn.append(icon('plus', 13), el('span', null, 'Новый')); newBtn.title = 'Новая сессия'; newBtn.onclick = () => aiNewSession(host);
+      colHead.appendChild(newBtn); col.appendChild(colHead);
+      const slist = el('div', 'db-ai-sessions-list'); renderSessionList(slist, d, host); col.appendChild(slist);
+    }
+    // ── right: chat column ──
+    const chat = el('div', 'db-ai-chat-col');
+    const head = el('div', 'db-ai-head');
+    head.append(icon('sparkles', 15), el('span', 'db-ai-title', 'Чат с базой'), el('span', 'db-ro-badge', 'read-only'));
+    const sp = el('span'); sp.style.flex = '1'; head.appendChild(sp);
+    const agentSel = el('select', 'db-ai-agent'); agentSel.title = 'Агент / модель';
+    const addOpt = (val, label, parent) => { const o = document.createElement('option'); o.value = val; o.textContent = label; if (val === d.agent) o.selected = true; (parent || agentSel).appendChild(o); };
+    addOpt('claude', 'Claude'); addOpt('codex', 'Codex');
+    const pc = aiProviders();
+    const grp = (label, models, prefix, kind) => { if (!models.length) return; const g = document.createElement('optgroup'); g.label = label; for (const mm of models) addOpt(kind + '::' + mm.id, prefix + ' ' + (mm.name || mm.id), g); agentSel.appendChild(g); };
+    grp('OpenRouter', pc.openrouter.models, 'OR', 'or');
+    grp('Ollama', pc.ollama.models, 'Ollama', 'ollama');
+    grp('LM Studio', pc.lmstudio.models, 'LMStudio', 'lmstudio');
+    const og = document.createElement('optgroup'); og.label = '—'; addOpt('__settings__', '⚙ Настроить модели…', og); agentSel.appendChild(og);
+    agentSel.onchange = () => { if (agentSel.value === '__settings__') { agentSel.value = d.agent; openProvidersModal(host); return; } d.agent = agentSel.value; dbUi.aiAgent = agentSel.value; saveDbUi(); };
+    head.append(agentSel);
+    const log = el('div', 'db-ai-log');
+    if (!st.messages.length) {
+      const w = el('div', 'db-ai-welcome');
+      w.append(el('div', 'db-ai-welcome-h', 'Спросите базу на обычном языке'), el('div', 'db-ai-welcome-s', 'Агент знает структуру всех таблиц, сам сформирует SELECT, покажет его и выполнит после вашего подтверждения. Только чтение — ничего не меняется.'));
+      const chips = el('div', 'db-ai-chips');
+      for (const s of AI_SUGGEST) { const c = el('button', 'db-ai-chip', s); c.onclick = () => { ta.value = s; ta.focus(); }; chips.appendChild(c); }
+      w.appendChild(chips); log.appendChild(w);
+    }
+    for (const msg of st.messages) log.appendChild(renderAiMsg(msg, host));
+    const inputBar = el('div', 'db-ai-inputbar');
+    const ta = el('textarea', 'db-ai-input'); ta.placeholder = 'Спросите о данных… (Enter — отправить, Shift+Enter — перенос)'; ta.rows = 2; ta.disabled = !!st._busy;
+    const send = el('button', 'btn primary db-ai-send'); send.textContent = st._busy ? 'Стоп' : 'Спросить';
+    send.onclick = () => { if (st._busy) { lite.dbai.abort(st._reqId); return; } const v = ta.value.trim(); if (v) { ta.value = ''; aiSend(host, v); } };
+    ta.onkeydown = (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send.onclick(); } };
+    inputBar.append(ta, send);
+    chat.append(head, log, inputBar);
+    host.append(col, chat);
+    log.scrollTop = log.scrollHeight;
+  }
+  // small "copy whole message" button (raw text) shown top-right of a bubble
+  function aiCopyBtn(text, title) { const b = iconBtn('db-ai-copy', 'copy', title || 'Копировать', 13); b.onclick = (e) => { e.stopPropagation(); navigator.clipboard.writeText(text || ''); toast('Скопировано'); }; return b; }
+  function renderAiMsg(msg, host) {
+    const st = aiSession();
+    if (msg.role === 'user') { const w = el('div', 'db-ai-msg user'); const bub = el('div', 'db-ai-bubble'); bub.appendChild(el('div', 'db-ai-text', msg.text)); bub.appendChild(aiCopyBtn(msg.text, 'Копировать сообщение')); w.appendChild(bub); return w; }
+    if (msg.role === 'result') return aiResultCard(msg, host);
+    const w = el('div', 'db-ai-msg asst'); const bub = el('div', 'db-ai-bubble md');
+    if (msg.streaming) { if (msg.text) bub.textContent = msg.text; else bub.appendChild(aiTyping()); st._streamEl = bub; }
+    else {
+      const parts = parseAssistant(msg.text || '');
+      if (!parts.length) bub.textContent = '(пусто)';
+      for (const p of parts) {
+        if (p.type === 'md') { if (p.text.trim()) { const seg = el('div', 'db-ai-md'); mdInto(seg, p.text); bub.appendChild(seg); } }
+        else if (p.type === 'ask') bub.appendChild(aiAskCard(host, p.ask));
+        else if (p.type === 'chart') bub.appendChild(aiStandaloneChart(host, p.chart));
+        else bub.appendChild(aiSqlCard(host, p.sql, p.chart));
+      }
+      if ((msg.text || '').trim()) bub.appendChild(aiCopyBtn(msg.text, 'Копировать ответ ИИ'));
+    }
+    w.appendChild(bub); return w;
+  }
+  // clarification card — Claude-terminal style: vertical option plaques (custom radio/checkbox),
+  // a free-text «свой ответ» field, and a «Отправить» button. Single- or multi-select.
+  function aiAskCard(host, ask) {
+    const card = el('div', 'db-ai-askcard');
+    const bar = el('div', 'db-ai-sqlbar'); bar.append(icon('sparkles', 13), el('span', 'db-ai-sqllabel', 'Нужно уточнение' + (ask.multi ? ' · можно выбрать несколько' : '')));
+    card.appendChild(bar);
+    if (ask.question) card.appendChild(el('div', 'db-ai-askq', ask.question));
+    const opts = el('div', 'db-ai-askopts');
+    const sel = new Set();
+    const askName = 'dbaiask-' + (++aiSeq);   // unique radio group per card
+    const send = el('button', 'btn primary db-ai-asksendbtn', 'Отправить');
+    const refresh = () => { send.disabled = !(sel.size || customTa.value.trim()); };
+    (ask.options || []).forEach((o) => {
+      const row = el('label', 'db-ai-optrow');
+      const inp = el('input', 'db-ai-optinput'); inp.type = ask.multi ? 'checkbox' : 'radio'; inp.name = askName;
+      const box = el('span', 'db-ai-optbox' + (ask.multi ? '' : ' radio'));
+      inp.onchange = () => { if (ask.multi) { inp.checked ? sel.add(o) : sel.delete(o); } else { sel.clear(); if (inp.checked) sel.add(o); } refresh(); };
+      row.append(inp, box, el('span', 'db-ai-optlabel', o));
+      opts.appendChild(row);
+    });
+    card.appendChild(opts);
+    const customWrap = el('div', 'db-ai-customrow');
+    const customTa = el('textarea', 'db-ai-custominput'); customTa.placeholder = 'Свой ответ…'; customTa.rows = 1;
+    customTa.oninput = () => { customTa.style.height = 'auto'; customTa.style.height = Math.min(140, customTa.scrollHeight) + 'px'; refresh(); };
+    customWrap.appendChild(customTa); card.appendChild(customWrap);
+    const submit = () => { const parts = [...sel]; const c = customTa.value.trim(); if (c) parts.push(c); if (!parts.length) return; aiSend(host, parts.join(', ')); };
+    customTa.onkeydown = (e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); submit(); } };
+    send.onclick = submit;
+    const sendRow = el('div', 'db-ai-asksend'); sendRow.appendChild(send); card.appendChild(sendRow);
+    refresh();
+    return card;
+  }
+  // a chart the agent attached without (or after) the SQL → draw it from the latest result in the session
+  function aiStandaloneChart(host, chart) {
+    const st = aiSession();
+    let data = null;
+    for (let i = st.messages.length - 1; i >= 0; i--) { const m = st.messages[i]; if (m.role === 'result' && m.columns && m.rows && m.rows.length) { data = m; break; } }
+    const wrap = el('div', 'db-ai-chart');
+    if (!data) { wrap.appendChild(el('div', 'db-ai-warn', 'Нет данных для графика — сначала выполните запрос.')); return wrap; }
+    const spec = resolveChartSpec(data.columns, data.colTypes, chart);
+    renderChartCanvas(wrap, spec.type, data.columns, data.rows, spec, { download: true });
+    return wrap;
+  }
+  function aiSqlCard(host, sql, chart) {
+    const card = el('div', 'db-ai-sqlcard');
+    const ro = isReadOnlyQuery(sql);
+    const bar = el('div', 'db-ai-sqlbar'); bar.append(icon('terminal', 13), el('span', 'db-ai-sqllabel', ro ? 'Предложенный запрос (чтение)' : 'Запрос отклонён: не только чтение'));
+    const pre = el('pre', 'db-ai-sql'); pre.textContent = sql;
+    const acts = el('div', 'db-ai-sqlacts');
+    const run = el('button', 'btn primary', 'Выполнить'); run.disabled = !ro; run.onclick = () => aiExecute(host, sql, chart);
+    const edit = el('button', 'btn', 'Изменить'); edit.onclick = () => showPrompt('Правка запроса', 'SQL (только чтение):', sql, (v) => { if (v && v.trim()) aiExecute(host, v.trim(), chart); });
+    const copy = iconBtn('drow-act', 'copy', 'Копировать', 13); copy.onclick = () => { navigator.clipboard.writeText(sql); toast('Скопировано'); };
+    const toCon = iconBtn('drow-act', 'arrow-right', 'Открыть в SQL-консоли', 13); toCon.onclick = () => { openSqlTab(sql); if (setWsViewFn) setWsViewFn('desk'); };
+    acts.append(run, edit, copy, toCon);
+    card.append(bar, pre, acts);
+    if (!ro) card.appendChild(el('div', 'db-ai-warn', 'Этот инструмент выполняет только читающие запросы.'));
+    return card;
+  }
+  async function aiExecute(host, sql, chart) {
+    if (!isReadOnlyQuery(sql)) { toast('Разрешены только читающие запросы (SELECT/WITH/EXPLAIN)', { kind: 'err' }); return; }
+    const st = aiSession();
+    const resMsg = { role: 'result', sql, chart, pending: true }; st.messages.push(resMsg); renderAiChat(host);
+    const r = await lite.db.query(dbActiveId, sql);
+    resMsg.pending = false;
+    if (r && r.error) resMsg.error = r.error; else if (r) { resMsg.columns = r.columns; resMsg.colTypes = r.colTypes; resMsg.rows = r.rows; }
+    resMsg.summary = aiResultSummary(sql, r || {});
+    aiPersist(); renderAiChat(host);
+    aiRun(host);   // feed the result back so the agent writes a conclusion / next step
+  }
+  function aiResultCard(msg, host) {
+    const card = el('div', 'db-ai-resultcard');
+    const bar = el('div', 'db-ai-resultbar');
+    bar.append(icon('database', 13), el('span', 'db-ai-resultlabel', msg.pending ? 'Выполняется…' : (msg.error ? 'Ошибка' : `Результат · строк: ${(msg.rows || []).length}`)));
+    const sp = el('span'); sp.style.flex = '1'; bar.appendChild(sp);
+    if (!msg.pending && !msg.error && msg.columns) {
+      const exp = iconBtn('drow-act', 'download', 'Экспорт / копирование', 13); exp.onclick = () => openExportModal({ columns: msg.columns, rows: msg.rows }, 'ai_query'); bar.appendChild(exp);
+      if (msg.rows && msg.rows.length) { const chartBtn = iconBtn('drow-act', 'graph', 'График', 13); chartBtn.onclick = () => openChart(msg.columns, msg.colTypes, msg.rows); bar.appendChild(chartBtn); }
+    }
+    card.appendChild(bar);
+    const sqlDet = el('details', 'db-ai-resultsql'); sqlDet.append(el('summary', null, 'SQL'), (() => { const p = el('pre', 'db-ai-sql'); p.textContent = msg.sql; return p; })()); card.appendChild(sqlDet);
+    if (msg.pending) { card.appendChild(el('div', 'git-loading', 'Запрос выполняется…')); return card; }
+    if (msg.error) { card.appendChild(el('div', 'docker-err', msg.error)); return card; }
+    if (!msg.columns) { card.appendChild(el('div', 'db-ai-warn', 'Результат не сохранён — выполните запрос снова.')); return card; }
+    if (msg.rowsTrunc) card.appendChild(el('div', 'db-ai-warn', 'Показаны первые 200 строк (полный результат не сохраняется).'));
+    // chart (if the agent attached one) + collapsed table below — best-effort, never silently dropped
+    let drewChart = false;
+    if (msg.chart && msg.columns && msg.rows && msg.rows.length) {
+      const spec = resolveChartSpec(msg.columns, msg.colTypes, msg.chart);
+      const area = el('div', 'db-ai-chart'); card.appendChild(area); renderChartCanvas(area, spec.type, msg.columns, msg.rows, spec, { download: true }); drewChart = true;
+    }
+    const gridWrap = el('div', 'db-ai-grid'); card.appendChild(gridWrap);
+    const grid = makeGrid({ columns: msg.columns, colTypes: msg.colTypes, rows: msg.rows, onCellMenu: (e, val, colName) => cellMenu(e, val, colName, null, null, msg.columns, null, null, { columns: msg.columns, rows: msg.rows }) });
+    gridWrap.appendChild(grid.element);
+    if (drewChart) gridWrap.classList.add('collapsed');
+    return card;
+  }
+  function aiSend(host, text) { const st = aiSession(); if (!st.messages.some((m) => m.role === 'user')) st.title = text.slice(0, 40); st.ts = Date.now(); st.messages.push({ role: 'user', text }); aiPersist(); renderAiChat(host); aiRun(host); }
+  async function aiRun(host) {
+    const data = aiData(); const st = aiSession(); if (st._busy) return; st._busy = true;
+    if (!dbColsCache) { const cr = await lite.db.columns(dbActiveId); if (cr && !cr.error) dbColsCache = cr.columns || {}; }
+    if (!dbRelationsCache) { try { await getRelations(); } catch (_) {} }
+    const asst = { role: 'assistant', text: '', streaming: true }; st.messages.push(asst);
+    renderAiChat(host);
+    const reqId = 'dbai-' + (++aiSeq) + '-' + dbActiveId; st._reqId = reqId;
+    let offData, offDone, offErr;
+    const cleanup = () => { offData && offData(); offDone && offDone(); offErr && offErr(); st._busy = false; st._reqId = null; };
+    offData = lite.dbai.onData((d) => { if (d.reqId !== reqId) return; asst.text += d.chunk || ''; if (st._streamEl) { st._streamEl.textContent = asst.text; const log = host.querySelector('.db-ai-log'); if (log) log.scrollTop = log.scrollHeight; } });
+    offDone = lite.dbai.onDone((d) => { if (d.reqId !== reqId) return; asst.streaming = false; cleanup(); aiPersist(); renderAiChat(host); });
+    offErr = lite.dbai.onError((d) => { if (d.reqId !== reqId) return; asst.streaming = false; if (!asst.text) asst.text = '⚠️ ' + (d.error || 'ошибка агента'); cleanup(); aiPersist(); renderAiChat(host); toast(d.error || 'Ошибка агента', { kind: 'err' }); });
+    const prompt = buildAiPrompt(st);
+    const ag = parseAgentId(data.agent);
+    if (ag.kind === 'claude' || ag.kind === 'codex') { lite.dbai.run(reqId, ag.kind, prompt); return; }
+    // API providers (OpenRouter / Ollama / LM Studio)
+    const ep = providerEndpoint(ag.kind);
+    if (!ep || !ag.model) { offErr({ reqId, error: 'Провайдер не настроен. Откройте «⚙ Настроить модели…».' }); return; }
+    if (ag.kind === 'or' && !ep.key) { offErr({ reqId, error: 'Не задан API-ключ OpenRouter (⚙ Настроить модели…).' }); return; }
+    lite.dbai.apiRun(reqId, { baseUrl: ep.base, key: ep.key, model: ag.model, prompt });
+  }
+
+  function refresh() { dbSchema = null; dbColsCache = null; dbObjectsCache = null; metaCache.clear(); dbRelationsCache = null; invalidateTableCaches(); if (dbOpen) renderDbPanel(); }
   document.addEventListener('keydown', (e) => { if (dbOpen && dbActiveId && (e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === 'p') { e.preventDefault(); openPalette(); } });
   return { isOpen: () => dbOpen, setOpen: setDbOpen, toggle: toggleDb, renderPanel: renderDbPanel, refresh };
 }

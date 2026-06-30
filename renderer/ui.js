@@ -58,6 +58,7 @@ export const ICONS = {
   'chevron-left': '<path d="M15 5l-7 7 7 7"/>',
   pencil: '<path d="M4 20h4L18.5 9.5a2 2 0 0 0-2.83-2.83L5 17v3z"/><path d="M13.5 6.5l4 4"/>',
   eye: '<path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="3"/>',
+  'eye-off': '<path d="M4 4l16 16"/><path d="M9.9 5.2A9.3 9.3 0 0 1 12 5c6 0 9.5 6.5 9.5 6.5a16 16 0 0 1-3 3.6M6.4 7.4A16 16 0 0 0 2.5 12S6 18.5 12 18.5a8.7 8.7 0 0 0 3.5-.7"/><path d="M9.8 9.9a3 3 0 0 0 4.2 4.2"/>',
   note: '<path d="M5.5 3.5h8L19 9v10.5a1 1 0 0 1-1 1H5.5a1 1 0 0 1-1-1v-15a1 1 0 0 1 1-1z"/><path d="M13 3.5V9h5.5"/><path d="M8 13h7M8 16.5h4.5"/>',
   git: '<circle cx="6.5" cy="6" r="2.3"/><circle cx="6.5" cy="18" r="2.3"/><circle cx="17.5" cy="9" r="2.3"/><path d="M6.5 8.3v7.4M17.5 11.3c0 3.2-3.3 3.9-6.4 3.9"/>',
   folder: '<path d="M3.5 7.5a2 2 0 0 1 2-2h3.6l2 2H18.5a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5.5a2 2 0 0 1-2-2z"/>',
@@ -121,6 +122,10 @@ export const ICONS = {
   sigma: '<path d="M16.5 5h-9l5 7-5 7h9.5"/>',
   history: '<path d="M3.5 12a8.5 8.5 0 1 0 2.6-6.1"/><path d="M3.5 4.5v4h4"/><path d="M12 8v4.2l3 1.8"/>',
   minus: '<path d="M5 12h14"/>',
+  info: '<circle cx="12" cy="12" r="9"/><path d="M12 11v5"/><circle cx="12" cy="7.6" r="1" fill="currentColor" stroke="none"/>',
+  sparkles: '<path d="M12 4l1.6 4.4L18 10l-4.4 1.6L12 16l-1.6-4.4L6 10l4.4-1.6z"/><path d="M18 14l.8 2.2L21 17l-2.2.8L18 20l-.8-2.2L15 17l2.2-.8z"/>',
+  unfold: '<path d="M8 4h8M8 20h8"/><path d="M12 9.5l-2.5-2.5M12 9.5l2.5-2.5"/><path d="M12 14.5l-2.5 2.5M12 14.5l2.5 2.5"/>',
+  fold: '<path d="M8 12h8"/><path d="M12 6.5l-2.5 2.5M12 6.5l2.5 2.5"/><path d="M12 17.5l-2.5-2.5M12 17.5l2.5-2.5"/>',
   pin: '<path d="M12 16.5V22M8.5 4.5h7l-1 5 2.5 2.5H7l2.5-2.5z"/>',
 };
 export function icon(name, size = 16) {

@@ -149,6 +149,17 @@ contextBridge.exposeInMainWorld('lite', {
     onError: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('tp:error', h); return () => ipcRenderer.removeListener('tp:error', h); },
   },
 
+  // AI-DB chat (streaming, read-only SQL author) for the «Базы данных» module.
+  dbai: {
+    run: (reqId, agent, prompt) => ipcRenderer.send('dbai:run', { reqId, agent, prompt }),
+    apiRun: (reqId, opts) => ipcRenderer.send('dbai:apiRun', { reqId, ...(opts || {}) }),
+    apiModels: (opts) => ipcRenderer.invoke('dbai:apiModels', opts || {}),
+    abort: (reqId) => ipcRenderer.send('dbai:abort', { reqId }),
+    onData: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('dbai:data', h); return () => ipcRenderer.removeListener('dbai:data', h); },
+    onDone: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('dbai:done', h); return () => ipcRenderer.removeListener('dbai:done', h); },
+    onError: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('dbai:error', h); return () => ipcRenderer.removeListener('dbai:error', h); },
+  },
+
   // «Контекст» — граф контекста агента (renderer/modules/contextgraph.js).
   ctx: {
     load: (projId, agent, profileId) => ipcRenderer.invoke('ctx:load', { projId, agent, profileId }),
@@ -357,6 +368,7 @@ contextBridge.exposeInMainWorld('lite', {
     query: (id, sql) => ipcRenderer.invoke('db:query', { id, sql }),
     saveText: (defaultName, text) => ipcRenderer.invoke('db:saveText', { defaultName, text }),
     openText: () => ipcRenderer.invoke('db:openText'),
+    chooseDir: () => ipcRenderer.invoke('db:chooseDir'),
   },
   // RemoteHost module — SSH connection profiles + live shell sessions.
   rh: {
