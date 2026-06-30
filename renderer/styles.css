@@ -52,6 +52,11 @@ html, body {
   -webkit-font-smoothing: antialiased;
 }
 
+/* Заставка «матрица»: полноэкранный оверлей поверх всего окна */
+#matrix-overlay { position: fixed; inset: 0; z-index: 99999; background: #000; display: block; cursor: none; }
+#matrix-overlay.hidden { display: none; }
+#btn-matrix.on { color: var(--green); }
+
 #app {
   display: flex;
   flex-direction: column;
@@ -881,6 +886,82 @@ body.preview-split #preview-view { border-left: 1px solid var(--border); }
 /* ───────────────── Аудит проекта (модуль audit.js) ───────────────── */
 #audit-pane { flex: 0 0 460px; min-width: 300px; border-left: 1px solid var(--border); display: flex; flex-direction: column; background: var(--panel); }
 .audit-body { flex: 1; min-height: 0; overflow: hidden; padding: 10px 12px; display: flex; flex-direction: column; gap: 10px; }
+
+/* ── «Мониторинг сайтов» (downdetector-стиль) ──────────────────────────────────────── */
+#sitemon-pane { flex: 0 0 460px; min-width: 340px; border-left: 1px solid var(--border); display: flex; flex-direction: column; background: var(--panel); }
+.sitemon-body { flex: 1; min-height: 0; overflow: auto; display: flex; flex-direction: column; }
+.sm-head { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--border); position: sticky; top: 0; background: var(--panel); z-index: 1; }
+.sm-h-title { font-weight: 600; font-size: 12.5px; color: var(--text); flex: 1; }
+.sm-empty { color: var(--text-mute); font-size: 12.5px; padding: 22px 16px; text-align: center; line-height: 1.5; }
+.sm-banner { display: flex; align-items: center; gap: 7px; margin: 10px 12px 0; padding: 7px 10px; border-radius: var(--radius); background: var(--danger-soft, var(--accent-soft)); color: var(--danger); font-size: 12px; font-weight: 600; }
+.sm-list { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; }
+.sm-card { border: 1px solid var(--border); border-left: 3px solid var(--text-mute); border-radius: var(--radius); padding: 9px 11px; display: flex; flex-direction: column; gap: 6px; background: var(--bg-input); }
+.sm-card.up { border-left-color: var(--green); }
+.sm-card.down { border-left-color: var(--danger); }
+.sm-top { display: flex; align-items: center; gap: 8px; }
+.sm-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--text-mute); flex: 0 0 auto; }
+.sm-dot.up { background: var(--green); box-shadow: 0 0 6px var(--green); }
+.sm-dot.down { background: var(--danger); box-shadow: 0 0 6px var(--danger); }
+.sm-main { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+.sm-name { font-size: 12.5px; font-weight: 600; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sm-url { font-size: 10.5px; color: var(--text-mute); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sm-acts { display: flex; gap: 2px; opacity: 0; transition: opacity .12s; }
+.sm-card:hover .sm-acts { opacity: 1; }
+.sm-stat { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; font-size: 11px; color: var(--text-dim); }
+.sm-state { font-weight: 600; }
+.sm-state.up { color: var(--green-bright, var(--green)); }
+.sm-state.down { color: var(--danger); }
+.sm-state.unknown { color: var(--text-mute); }
+.sm-ms { color: var(--text-dim); font-variant-numeric: tabular-nums; }
+.sm-err { color: var(--danger); }
+.sm-uptime { color: var(--text-mute); }
+.sm-meta { margin-left: auto; color: var(--text-mute); }
+.sm-hist { display: flex; gap: 1px; height: 14px; align-items: stretch; }
+.sm-tick { flex: 1 1 auto; min-width: 2px; border-radius: 1px; background: var(--border); }
+.sm-tick.up { background: var(--green); }
+.sm-tick.down { background: var(--danger); }
+.sm-form { display: flex; flex-direction: column; gap: 4px; margin: 8px 0; }
+.sm-l { font-size: 11px; color: var(--text-dim); margin-top: 6px; }
+.sm-in { background: var(--bg-input); border: 1px solid var(--border); border-radius: var(--radius); color: var(--text); padding: 7px 9px; font-size: 12.5px; }
+.sm-in:focus { outline: none; border-color: var(--border-accent); }
+
+/* ── «Сейф паролей» (KeePass) ──────────────────────────────────────────────────────── */
+#keepass-pane { flex: 0 0 460px; min-width: 340px; border-left: 1px solid var(--border); display: flex; flex-direction: column; background: var(--panel); }
+.keepass-body { flex: 1; min-height: 0; overflow: hidden; display: flex; flex-direction: column; }
+.kp-locked { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; padding: 24px; text-align: center; color: var(--text-dim); }
+.kp-locked-h { font-size: 16px; font-weight: 700; color: var(--text); }
+.kp-locked-tx { font-size: 12.5px; max-width: 320px; line-height: 1.5; }
+.kp-unlock { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; width: 100%; max-width: 340px; }
+.kp-pass { flex: 1 1 100%; background: var(--bg-input); border: 1px solid var(--border); border-radius: var(--radius); color: var(--text); padding: 9px 11px; font-size: 13px; }
+.kp-pass:focus { outline: none; border-color: var(--border-accent); }
+.kp-recent { margin-top: 10px; width: 100%; max-width: 340px; }
+.kp-recent-h { font-size: 11px; color: var(--text-mute); text-align: left; margin-bottom: 4px; }
+.kp-recent-row { display: flex; align-items: center; gap: 7px; width: 100%; background: var(--bg-input); border: 1px solid var(--border); border-radius: var(--radius); color: var(--text); padding: 7px 10px; font-size: 12px; cursor: pointer; margin-bottom: 4px; text-align: left; }
+.kp-recent-row:hover { border-color: var(--border-accent); }
+.kp-recent-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.kp-head { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--border); flex: 0 0 auto; }
+.kp-db-name { font-weight: 600; font-size: 12.5px; color: var(--text); white-space: nowrap; }
+.kp-search { flex: 1; background: var(--bg-input); border: 1px solid var(--border); border-radius: var(--radius); color: var(--text); padding: 6px 10px; font-size: 12px; }
+.kp-search:focus { outline: none; border-color: var(--border-accent); }
+.kp-split { flex: 1; min-height: 0; display: grid; grid-template-columns: 1fr 1fr; }
+.kp-list { overflow: auto; border-right: 1px solid var(--border); }
+.kp-detail { overflow: auto; padding: 12px 14px; display: flex; flex-direction: column; gap: 8px; }
+.kp-empty { color: var(--text-mute); font-size: 12px; padding: 18px 12px; text-align: center; }
+.kp-row { display: flex; align-items: center; gap: 6px; padding: 8px 10px; border-bottom: 1px solid var(--border); cursor: pointer; }
+.kp-row:hover { background: var(--hover); }
+.kp-row.active { background: var(--accent-soft); }
+.kp-row-main { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+.kp-row-title { font-size: 12.5px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.kp-row-sub { font-size: 10.5px; color: var(--text-mute); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.kp-quick { opacity: 0; transition: opacity .12s; }
+.kp-row:hover .kp-quick, .kp-row.active .kp-quick { opacity: 1; }
+.kp-detail-title { font-size: 14px; font-weight: 700; color: var(--text); margin-bottom: 2px; }
+.kp-field { display: flex; align-items: center; gap: 8px; padding: 6px 0; border-bottom: 1px solid var(--border); }
+.kp-field-l { font-size: 10.5px; color: var(--text-mute); flex: 0 0 64px; }
+.kp-field-v { font-size: 12.5px; color: var(--text); flex: 1; word-break: break-all; }
+.kp-field-v.mono { font-family: var(--mono, monospace); }
+.kp-field-acts { display: flex; gap: 2px; }
+.kp-notes { font-size: 12px; color: var(--text-dim); white-space: pre-wrap; line-height: 1.45; }
 
 /* ── «Монитор ресурсов» (окно-модуль): самонаблюдение за памятью/CPU ────────────────── */
 #monitor-pane { flex: 0 0 460px; min-width: 320px; border-left: 1px solid var(--border); display: flex; flex-direction: column; background: var(--panel); }

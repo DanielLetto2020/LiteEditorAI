@@ -13,6 +13,9 @@ const lite = window.lite;
 
 export function initGit(host) {
   const { renderProjects, activeProject, getActiveId, refreshTree, createCodeEditor, languageFor } = host;
+  // openFile(abs,line) — открыть файл в вивере; menuRow/placeMenu/closeMenus — меню-слой окна (контекст-меню строки изменённого файла).
+  const { openFile: hostOpenFile, menuRow, placeMenu, closeMenus } = host;
+  const joinAbs = (root, rel) => String(root || '').replace(/[\\/]+$/, '') + '/' + String(rel || '');
 
   let containers = null;     // { topbar, commit, branchlog } — задаются вивером через setContainers
   // Какие секции рендерить: коммит (левая колонка) и/или лог (нижняя панель) — могут быть открыты вместе.
@@ -571,6 +574,17 @@ export function initGit(host) {
           }
           r.appendChild(acts);
           r.addEventListener('click', () => showDiff(f));
+          // контекст-меню: открыть сам файл (не дифф) в вивере
+          if (menuRow && placeMenu && hostOpenFile) {
+            r.addEventListener('contextmenu', (e) => {
+              e.preventDefault(); e.stopPropagation();
+              const dd = el('div', 'menu-dropdown'); dd.style.minWidth = '180px';
+              dd.appendChild(menuRow('eye', 'Открыть файл', () => { closeMenus(); hostOpenFile(joinAbs(p.path, f)); }));
+              dd.appendChild(menuRow('diff', 'Показать дифф', () => { closeMenus(); showDiff(f); }));
+              dd.appendChild(menuRow('copy', 'Копировать путь', () => { closeMenus(); try { lite.copyText(joinAbs(p.path, f)); toast('Путь скопирован'); } catch (_) {} }));
+              placeMenu(dd, e.clientX, e.clientY);
+            });
+          }
           box.appendChild(r);
         }
         syncGroupCb();

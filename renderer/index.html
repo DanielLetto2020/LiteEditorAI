@@ -11,6 +11,8 @@
 <body data-theme="neumorphism">
   <div id="app">
     <!-- Custom frameless titlebar: menu (left) + window controls (right). Draggable. -->
+    <!-- Заставка «матрица»: полноэкранный canvas-оверлей (вкл кнопкой/по бездействию). -->
+    <canvas id="matrix-overlay" class="hidden" aria-hidden="true"></canvas>
     <header id="topbar">
       <span class="brand"><span class="brand-mark">▍</span>LiteEditorAI</span>
       <nav id="menubar">
@@ -27,6 +29,7 @@
         <span id="app-ver" class="app-ver" title="Версия приложения"></span>
         <button id="update-badge" class="update-badge" title="Доступна новая версия — открыть страницу загрузки" hidden></button>
         <button id="btn-single" class="icon-btn" title="Один терминал (Ctrl+\)" data-icon="columns"></button>
+        <button id="btn-matrix" class="icon-btn" title="Заставка «матрица» (вкл/выкл)" data-icon="sparkles"></button>
         <span class="win-sep"></span>
         <button id="win-min" class="win-btn" title="Свернуть" aria-label="Свернуть"></button>
         <button id="win-max" class="win-btn" title="Развернуть" aria-label="Развернуть"></button>

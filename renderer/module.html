@@ -212,6 +212,30 @@
         <div id="notes-body" class="notes-body"></div>
       </section>
 
+      <!-- Sitemon module: мониторинг доступности сайтов (фоновые проверки + уведомления) -->
+      <div id="gutter-sitemon" class="gutter hidden" data-resize="sitemon"></div>
+      <section id="sitemon-pane" class="hidden">
+        <div class="pane-head">
+          <span>Мониторинг сайтов</span>
+          <div class="drag-space-static"></div>
+          <button id="sitemon-add" class="icon-btn" title="Добавить сайт" data-icon="plus"></button>
+          <button id="sitemon-check" class="icon-btn" title="Проверить все" data-icon="refresh"></button>
+        </div>
+        <div id="sitemon-body" class="sitemon-body"></div>
+      </section>
+
+      <!-- KeePass module: сейф паролей (.kdbx) — открыть, посмотреть, скопировать поле -->
+      <div id="gutter-keepass" class="gutter hidden" data-resize="keepass"></div>
+      <section id="keepass-pane" class="hidden">
+        <div class="pane-head">
+          <span>Сейф паролей</span>
+          <div class="drag-space-static"></div>
+          <button id="keepass-open" class="icon-btn" title="Открыть .kdbx" data-icon="folder"></button>
+          <button id="keepass-lock" class="icon-btn" title="Закрыть базу (стереть из памяти)" data-icon="key"></button>
+        </div>
+        <div id="keepass-body" class="keepass-body"></div>
+      </section>
+
       <!-- Monitor module: самонаблюдение редактора за потреблением ресурсов (Electron-процессы + PTY) -->
       <div id="gutter-monitor" class="gutter hidden" data-resize="monitor"></div>
       <section id="monitor-pane" class="hidden">

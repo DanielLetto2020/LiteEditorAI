@@ -26,7 +26,7 @@ import { el, icon, iconBtn, hydrateIcons, toast, makeModal, showConfirm, showPro
 import { initExtensions } from './modules/extensions.js';
 // initFiles — вивер+дерево мигрированы в отдельное окно (renderer/module-entry.js).
 
-const APP_VERSION = 'alpha v1.1.55';
+const APP_VERSION = 'alpha v1.1.56';
 const GUTTER = 5;
 // Системный терминал («Система · ~») мигрирован в отдельное окно (renderer/modules/scratch.js):
 // его id `__scratch__::tN` маршрутизируются main'ом в окно-владельца, в ядре их больше не обрабатываем.
@@ -1378,7 +1378,7 @@ const panels = new Map(); // id -> { isOpen(), setOpen(open, opts) }
 // Правый слот редактора теперь держит только «Мои модули» (ext); всё остальное — отдельные окна.
 const PANEL_ORDER = [];
 // Модули, мигрированные в отдельные окна (открываются через lite.module.open, не как панель правого слота).
-const WINDOW_MODULES = new Set(['tools', 'iterflow', 'seo', 'audit', 'company', 'notes', 'db', 'chat', 'doc', 'docker', 'rh', 'ctx', 'scratch', 'files', 'pomodoro', 'monitor']);
+const WINDOW_MODULES = new Set(['tools', 'iterflow', 'seo', 'audit', 'company', 'notes', 'db', 'chat', 'doc', 'docker', 'rh', 'ctx', 'scratch', 'files', 'pomodoro', 'monitor', 'keepass', 'sitemon']);
 function registerPanel(id, api) { panels.set(id, api); }
 function closeOtherPanels(selfId) {
   for (const id of PANEL_ORDER) {
@@ -1810,6 +1810,8 @@ function buildModulesMenu(dd) {
     sub.appendChild(el('div', 'menu-sep'));
     sub.appendChild(moduleRow('terminal', 'Системный терминал', 'вне проектов', () => { closeMenus(); openModule('scratch'); }));
     sub.appendChild(moduleRow('graph', 'Монитор ресурсов', 'память/CPU редактора и агентов', () => { closeMenus(); openModule('monitor'); }));
+    sub.appendChild(moduleRow('key', 'Сейф паролей', 'KeePass .kdbx: копировать пароль/токен', () => { closeMenus(); openModule('keepass'); }));
+    sub.appendChild(moduleRow('globe', 'Мониторинг сайтов', 'доступность сайтов + уведомления', () => { closeMenus(); openModule('sitemon'); }));
   });
   flyout('layers', 'Мои модули', 'пользовательские плагины', (sub) => Ext.buildMenuSection(sub, { bare: true }));
   dd.appendChild(el('div', 'menu-sep'));
@@ -2301,6 +2303,8 @@ function showSettings() {
     <label class="set-row"><span>Звук уведомлений</span><input type="checkbox" id="st-sound"></label>
     <label class="set-row"><span>Тишина до «готов», мс</span><input type="number" id="st-idle" min="300" max="6000" step="100"></label>
     <label class="set-row"><span>Размер шрифта</span><input type="number" id="st-font" min="9" max="24"></label>
+    <label class="set-row"><span>Заставка «матрица» по бездействию</span><input type="checkbox" id="st-ss"></label>
+    <label class="set-row"><span>Запускать после простоя, мин</span><input type="number" id="st-ss-min" min="1" max="180" step="1"></label>
     <label class="set-row"><span>Тема</span><select id="st-theme"></select></label>
     <div class="set-row col"><span>Оболочка терминала — применяется к новым терминалам (старые — ⟳)</span>
       <div class="path-pick">
@@ -2324,6 +2328,8 @@ function showSettings() {
   const sound = m.querySelector('#st-sound'); sound.checked = settings.sound;
   const idle = m.querySelector('#st-idle'); idle.value = settings.idleMs;
   const font = m.querySelector('#st-font'); font.value = settings.fontSize;
+  const ssOn = m.querySelector('#st-ss'); ssOn.checked = settings.screensaver !== false;
+  const ssMin = m.querySelector('#st-ss-min'); ssMin.value = settings.screensaverMins || 5;
   const themeSel = m.querySelector('#st-theme');
   for (const [key, t] of Object.entries(THEMES)) { const o = document.createElement('option'); o.value = key; o.textContent = t.label; themeSel.appendChild(o); }
   themeSel.value = THEMES[settings.theme] ? settings.theme : DEFAULT_THEME;
@@ -2385,6 +2391,8 @@ function showSettings() {
     settings.sound = sound.checked;
     settings.idleMs = Math.max(300, Math.min(6000, parseInt(idle.value, 10) || 1200));
     settings.fontSize = Math.max(9, Math.min(24, parseInt(font.value, 10) || 13));
+    settings.screensaver = ssOn.checked;
+    settings.screensaverMins = Math.max(1, Math.min(180, parseInt(ssMin.value, 10) || 5));
     settings.workingDir = wd.value || '';
     settings.scanDirs = scan;
     settings.shell = shellSel.value === '__custom__' ? shellPath.value.trim() : shellSel.value;
@@ -2700,6 +2708,64 @@ function init() {
   // событие и редактору, и окну вивера. В самом редакторе вивера/дерева больше нет — подписку убрали.
 
   $('#btn-single').addEventListener('click', toggleSingle);
+
+  // ── Заставка «матрица» (скринсейвер) ───────────────────────────────────────────────
+  // Полноэкранный canvas-«дождь» зелёных глифов. Кнопка в шапке (вкл/выкл вручную) +
+  // авто-запуск по бездействию во ВСЕХ окнах (координирует main: активность в любом окне
+  // сбрасывает таймер, main шлёт screensaver:set). Ручной запуск гасится только кнопкой/Esc,
+  // авто — любым действием. Цвет — токен темы (--green).
+  const matrix = (() => {
+    const cv = $('#matrix-overlay'); const btn = $('#btn-matrix');
+    if (!cv) return { toggle() {}, dismissIfAuto() {} };
+    const ctx = cv.getContext('2d');
+    const GLYPHS = 'アイウエオカキクケコサシスセソタチツテトナニヌネノﾊﾋﾌﾍﾎ0123456789:."=*+-<>¦｜LITEAI';
+    const FS = 16;
+    const STEP_MS = 75; // шаг анимации по времени (а не каждый кадр RAF ~16мс) → спокойнее в ~4–5 раз
+    let raf = null, cols = 0, drops = [], active = false, auto = false, lastStep = 0;
+    const green = () => (getComputedStyle(document.body).getPropertyValue('--green') || '').trim() || '#3ad353';
+    function resize() { cv.width = window.innerWidth; cv.height = window.innerHeight; cols = Math.ceil(cv.width / FS); drops = new Array(cols).fill(0).map(() => Math.floor(Math.random() * cv.height / FS)); }
+    function frame(ts) {
+      raf = requestAnimationFrame(frame);
+      if (ts - lastStep < STEP_MS) return; // продвигаем дождь только раз в STEP_MS — медленно и плавно
+      lastStep = ts;
+      ctx.fillStyle = 'rgba(0,0,0,0.07)'; ctx.fillRect(0, 0, cv.width, cv.height);
+      ctx.font = FS + 'px monospace'; const g = green();
+      for (let i = 0; i < cols; i++) {
+        const x = i * FS, y = drops[i] * FS;
+        ctx.fillStyle = '#d7ffe0'; ctx.fillText(GLYPHS[(Math.random() * GLYPHS.length) | 0], x, y);   // яркая голова струи
+        ctx.fillStyle = g; ctx.fillText(GLYPHS[(Math.random() * GLYPHS.length) | 0], x, y - FS);       // хвост — зелёный
+        if (y > cv.height && Math.random() > 0.975) drops[i] = 0; else drops[i]++;
+      }
+    }
+    function start(isAuto) {
+      if (active) { if (!isAuto) auto = false; return; }
+      active = true; auto = !!isAuto;
+      cv.classList.remove('hidden'); resize();
+      ctx.fillStyle = '#000'; ctx.fillRect(0, 0, cv.width, cv.height);
+      window.addEventListener('resize', resize);
+      raf = requestAnimationFrame(frame);
+      if (btn) btn.classList.add('on');
+    }
+    function stop() {
+      if (!active) return; active = false; auto = false;
+      if (raf) cancelAnimationFrame(raf); raf = null;
+      cv.classList.add('hidden'); window.removeEventListener('resize', resize);
+      if (btn) btn.classList.remove('on');
+    }
+    cv.addEventListener('mousedown', stop); // клик по заставке — выйти
+    try { lite.screensaver.onSet(({ on }) => { if (on) start(true); else if (auto) stop(); }); } catch (_) {}
+    return { toggle: () => (active ? stop() : start(false)), stop, dismissIfAuto: () => { if (active && auto) stop(); } };
+  })();
+  if ($('#btn-matrix')) $('#btn-matrix').addEventListener('click', () => matrix.toggle());
+  // Репорт активности в main (троттл) + мгновенный сброс авто-заставки на любое действие.
+  let __ssActReport = 0;
+  function reportUserActivity() {
+    matrix.dismissIfAuto();
+    const now = Date.now();
+    if (now - __ssActReport > 1500) { __ssActReport = now; try { lite.screensaver.activity(); } catch (_) {} }
+  }
+  for (const ev of ['mousemove', 'mousedown', 'keydown', 'wheel', 'touchstart']) window.addEventListener(ev, reportUserActivity, { passive: true });
+  window.addEventListener('keydown', (e) => { if (e.key === 'Escape') matrix.stop(); });
   // scratch (системный терминал) живёт в окне модуля — кнопки привязывает module-entry.js.
   // вивер+дерево (files) живут в окне модуля — их DOM/кнопки строит Files.mount() в module-entry.js.
   // git живёт в окне модуля (module.html) — кнопки привязывает module-entry.js.

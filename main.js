@@ -225,7 +225,7 @@ try {
   const legacy = path.join(os.homedir(), '.LiteEditor');
   if (!fs.existsSync(storeDir) && fs.existsSync(legacy)) fs.cpSync(legacy, storeDir, { recursive: true });
 } catch (_) {}
-const STORE_KEYS = ['projects', 'settings', 'layout', 'recents', 'lastParent', 'categories', 'sectionOrder', 'accordions', 'dismissed', 'uiState', 'projTabs', 'openrouter', 'remote', 'shares', 'pultBlocked', 'dockerUi', 'dbConnections', 'dbUi', 'rhConnections', 'rhUi', 'textproc', 'tpPrompts', 'extData', 'extEnabled', 'quickbar', 'seoTargets', 'seoSites', 'moduleWins', 'mwLeft', 'bookmarks', 'promptSnippets', 'pomodoro', 'pomodoroLog', 'dbaiProviders', 'sessionSnaps'];
+const STORE_KEYS = ['projects', 'settings', 'layout', 'recents', 'lastParent', 'categories', 'sectionOrder', 'accordions', 'dismissed', 'uiState', 'projTabs', 'openrouter', 'remote', 'shares', 'pultBlocked', 'dockerUi', 'dbConnections', 'dbUi', 'rhConnections', 'rhUi', 'textproc', 'tpPrompts', 'extData', 'extEnabled', 'quickbar', 'seoTargets', 'seoSites', 'moduleWins', 'mwLeft', 'bookmarks', 'promptSnippets', 'pomodoro', 'pomodoroLog', 'dbaiProviders', 'sessionSnaps', 'siteMon'];
 // Папка-«стор» для шаринга с пультом (агент кладёт сюда файлы; в PTY доступна как $LITE_STORE).
 const pultStoreDir = path.join(storeDir, 'store');
 try { fs.mkdirSync(pultStoreDir, { recursive: true }); } catch (_) {}
@@ -2834,6 +2834,162 @@ ipcMain.handle('monitor:sample', () => {
     pty: { procs: pty, totalMem: ptyMem, totalCpu: ptyCpu, note: ptyNote },
   };
 });
+
+// ---------------------------------------------------------------- «Сейф паролей» (KeePass/.kdbx)
+// Расшифровка целиком в main (Node: kdbxweb + node crypto, без бандлинга). Мастер-пароль приходит по
+// IPC и НИГДЕ не логируется. Пароли записей в рендерер НЕ уходят: список содержит только метаданные
+// (заголовок/логин/URL/имена полей), а копирование в буфер и показ конкретного поля делает main по
+// запросу. Argon2 (KDBX4) — чистый JS из @noble/hashes (без нативщины/wasm).
+let _kdbxweb = null, _nobleArgon = null;
+function ensureKdbx() {
+  if (_kdbxweb) return _kdbxweb;
+  _kdbxweb = require('kdbxweb');
+  _nobleArgon = require('@noble/hashes/argon2.js');
+  _kdbxweb.CryptoEngine.setArgon2Impl((password, salt, memory, iterations, length, parallelism, type, version) => {
+    const fn = type === 0 ? _nobleArgon.argon2d : _nobleArgon.argon2id; // 0=Argon2d, 2=Argon2id; memory уже в KiB
+    const out = fn(new Uint8Array(password), new Uint8Array(salt), { t: iterations, m: memory, p: parallelism, dkLen: length, version });
+    return Promise.resolve(out.buffer.slice(out.byteOffset, out.byteOffset + out.byteLength));
+  });
+  return _kdbxweb;
+}
+let kpDb = null; let kpClipTimer = null;
+const kpEntryById = new Map(); // uuid.id -> entry (живёт в main, в рендерер не отдаём)
+function kpVal(en, field) { const v = en.fields.get(field); return v && typeof v.getText === 'function' ? v.getText() : (v == null ? '' : String(v)); }
+
+ipcMain.handle('keepass:pick', async () => {
+  const res = await dialog.showOpenDialog(mainWindow, {
+    title: 'Открыть базу KeePass', properties: ['openFile'],
+    filters: [{ name: 'KeePass', extensions: ['kdbx'] }, { name: 'Все файлы', extensions: ['*'] }], ...lastDirOpts(),
+  });
+  if (res.canceled || !res.filePaths.length) return { canceled: true };
+  const file = res.filePaths[0];
+  saveState({ lastOpenDir: path.dirname(file) });
+  return { ok: true, path: file, name: path.basename(file) };
+});
+ipcMain.handle('keepass:open', async (_e, { path: file, password } = {}) => {
+  try {
+    if (!file || !fs.existsSync(file)) return { ok: false, error: 'Файл не найден' };
+    const kw = ensureKdbx();
+    const buf = fs.readFileSync(file);
+    const ab = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
+    const cred = new kw.Credentials(kw.ProtectedValue.fromString(String(password || '')));
+    const db = await kw.Kdbx.load(ab, cred);   // мастер-пароль использован только здесь, не сохраняем
+    kpDb = db; kpEntryById.clear();
+    const entries = [];
+    const walk = (g, prefix) => {
+      const gp = prefix ? prefix + ' / ' + (g.name || '') : (g.name || '');
+      for (const en of g.entries) {
+        const id = en.uuid && en.uuid.id; if (!id) continue;
+        kpEntryById.set(id, en);
+        const fields = [];
+        for (const [k, v] of en.fields) {
+          if (k === 'Title') continue;
+          const secret = !!(v && typeof v.getText === 'function');
+          if (secret || (v != null && String(v) !== '')) fields.push({ name: k, secret, value: secret ? null : String(v) }); // секретные значения НЕ отдаём
+        }
+        entries.push({ id, title: kpVal(en, 'Title') || '(без названия)', username: kpVal(en, 'UserName'), group: gp, fields });
+      }
+      for (const sg of g.groups) walk(sg, gp);
+    };
+    walk(db.getDefaultGroup(), '');
+    return { ok: true, name: path.basename(file), entries };
+  } catch (err) {
+    const code = err && err.code;
+    return { ok: false, error: code === 'InvalidKey' ? 'Неверный мастер-пароль' : ('Не удалось открыть базу: ' + ((err && err.message) || err)) };
+  }
+});
+ipcMain.handle('keepass:reveal', (_e, { id, field } = {}) => {
+  const en = kpEntryById.get(id); if (!en) return { ok: false, error: 'нет записи' };
+  return { ok: true, value: kpVal(en, field) };
+});
+ipcMain.handle('keepass:copy', (_e, { id, field } = {}) => {
+  const en = kpEntryById.get(id); if (!en) return { ok: false, error: 'нет записи' };
+  const val = kpVal(en, field);
+  try { clipboard.writeText(val); } catch (_) { return { ok: false, error: 'буфер недоступен' }; }
+  if (kpClipTimer) clearTimeout(kpClipTimer);
+  kpClipTimer = setTimeout(() => { try { if (clipboard.readText() === val) clipboard.writeText(''); } catch (_) {} }, 20000); // авто-очистка
+  return { ok: true };
+});
+ipcMain.on('keepass:lock', () => { kpDb = null; kpEntryById.clear(); if (kpClipTimer) { clearTimeout(kpClipTimer); kpClipTimer = null; } });
+
+// ---------------------------------------------------------------- заставка «матрица» (кросс-оконный простой)
+// Активность ЛЮБОГО окна (редактор + окна модулей) шлёт screensaver:activity → обновляем метку простоя
+// и, если заставка показана авто, гасим её. Тик раз в 5с: если включено в настройках и простой дольше
+// порога — показываем заставку на ГЛАВНОМ окне (screensaver:set on). Настройки: settings.screensaver
+// (вкл, по умолчанию ДА) + settings.screensaverMins (минуты, по умолчанию 5).
+let ssLast = Date.now();
+let ssActive = false;
+function ssConfig() { const s = readStoreKey('settings') || {}; return { on: s.screensaver !== false, mins: Math.max(1, Math.min(180, Number(s.screensaverMins) || 5)) }; }
+function ssSet(on) { ssActive = on; if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('screensaver:set', { on }); }
+ipcMain.on('screensaver:activity', () => { ssLast = Date.now(); if (ssActive) ssSet(false); });
+const ssTimer = setInterval(() => {
+  const { on, mins } = ssConfig();
+  if (!on || ssActive) return;
+  if (Date.now() - ssLast > mins * 60000) ssSet(true);
+}, 5000);
+if (ssTimer.unref) ssTimer.unref();
+
+// ---------------------------------------------------------------- мониторинг сайтов (downdetector-стиль)
+// Список сайтов в STORE 'siteMon'. main в ФОНЕ (даже если окно закрыто) по интервалу каждого сайта
+// делает HTTP-запрос, меряет задержку, держит up/down + короткую историю. На СМЕНУ состояния —
+// нативное уведомление + событие 'sitemon:update' в окна. Редактирование — из окна модуля по IPC.
+const SM_HISTORY = 60;
+let smSites = [];
+function smPublic() { return smSites.map((s) => ({ id: s.id, name: s.name, url: s.url, intervalSec: s.intervalSec, up: s.up, code: s.code, ms: s.ms, checkedAt: s.checkedAt, error: s.error, history: (s.history || []).slice(-SM_HISTORY) })); }
+function smPersist() { try { writeStoreKey('siteMon', smSites.map(({ checking, nextAt, ...s }) => s)); } catch (_) {} }
+function smLoad() { const raw = readStoreKey('siteMon'); smSites = Array.isArray(raw) ? raw.map((s) => ({ history: [], ...s, checking: false, nextAt: 0 })) : []; }
+function smBroadcast() {
+  const p = smPublic();
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('sitemon:update', p);
+  for (const w of moduleWindows.values()) { if (w && !w.isDestroyed()) w.webContents.send('sitemon:update', p); }
+}
+function smNotify(s, up) {
+  try {
+    if (Notification.isSupported && !Notification.isSupported()) return;
+    new Notification({ title: (up ? '✅ ' : '🔴 ') + (s.name || s.url) + (up ? ' снова доступен' : ' недоступен'), body: up ? 'Сайт снова отвечает' : 'Сайт не отвечает — проверьте', silent: false }).show();
+  } catch (_) {}
+}
+async function smCheckOne(s) {
+  if (!s || s.checking) return; s.checking = true;
+  const ctrl = new AbortController(); const to = setTimeout(() => ctrl.abort(), 12000);
+  const t0 = Date.now(); let up = false, code = 0, error = '';
+  try {
+    let res;
+    try { res = await fetch(s.url, { method: 'HEAD', redirect: 'follow', signal: ctrl.signal }); }
+    catch (_) { res = await fetch(s.url, { method: 'GET', redirect: 'follow', signal: ctrl.signal }); } // часть серверов не отвечает на HEAD
+    code = res.status; up = res.status < 400; if (!up) error = 'HTTP ' + code;
+  } catch (e) { up = false; code = 0; error = (e && e.name === 'AbortError') ? 'таймаут' : ((e && e.message) || 'нет связи'); }
+  clearTimeout(to);
+  const ms = Date.now() - t0; const was = s.up;
+  s.up = up; s.code = code; s.ms = ms; s.error = up ? '' : error; s.checkedAt = Date.now(); s.checking = false;
+  s.history = (s.history || []).concat({ t: s.checkedAt, up, code, ms }).slice(-SM_HISTORY);
+  s.nextAt = Date.now() + Math.max(15, s.intervalSec || 60) * 1000;
+  if (was !== undefined && was !== up) smNotify(s, up); // уведомляем только на СМЕНУ (не на первом замере)
+  smPersist(); smBroadcast();
+}
+const smTimer = setInterval(() => { const now = Date.now(); for (const s of smSites) if (!s.checking && (!s.nextAt || now >= s.nextAt)) smCheckOne(s); }, 5000);
+if (smTimer.unref) smTimer.unref();
+smLoad();
+setTimeout(() => { for (const s of smSites) smCheckOne(s); }, 3000); // первый прогон вскоре после старта
+
+function smNormUrl(url) { let u = String(url || '').trim(); if (!u) return null; if (!/^https?:\/\//i.test(u)) u = 'https://' + u; try { new URL(u); return u; } catch (_) { return null; } }
+ipcMain.handle('sitemon:list', () => smPublic());
+ipcMain.handle('sitemon:add', (_e, { name, url, intervalSec } = {}) => {
+  const u = smNormUrl(url); if (!u) return { ok: false, error: 'Некорректный URL' };
+  const id = 'sm' + Date.now().toString(36) + Math.floor(Math.random() * 1e4).toString(36);
+  const s = { id, name: String(name || '').trim() || new URL(u).hostname, url: u, intervalSec: Math.max(15, Math.min(3600, Number(intervalSec) || 60)), history: [], checking: false, nextAt: 0 };
+  smSites.push(s); smPersist(); smBroadcast(); smCheckOne(s);
+  return { ok: true, id };
+});
+ipcMain.handle('sitemon:edit', (_e, { id, name, url, intervalSec } = {}) => {
+  const s = smSites.find((x) => x.id === id); if (!s) return { ok: false, error: 'нет сайта' };
+  if (name != null) s.name = String(name).trim() || s.name;
+  if (url != null) { const u = smNormUrl(url); if (!u) return { ok: false, error: 'Некорректный URL' }; s.url = u; }
+  if (intervalSec != null) s.intervalSec = Math.max(15, Math.min(3600, Number(intervalSec) || 60));
+  s.nextAt = 0; smPersist(); smBroadcast(); smCheckOne(s); return { ok: true };
+});
+ipcMain.handle('sitemon:remove', (_e, { id } = {}) => { smSites = smSites.filter((x) => x.id !== id); smPersist(); smBroadcast(); return { ok: true }; });
+ipcMain.handle('sitemon:checkNow', (_e, { id } = {}) => { if (id) { const s = smSites.find((x) => x.id === id); if (s) { s.nextAt = 0; smCheckOne(s); } } else { for (const s of smSites) { s.nextAt = 0; smCheckOne(s); } } return { ok: true }; });
 
 // ---------------------------------------------------------------- filesystem
 ipcMain.handle('fs:readDir', async (_e, dir) => {

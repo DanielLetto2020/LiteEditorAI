@@ -246,6 +246,28 @@ contextBridge.exposeInMainWorld('lite', {
   monitor: {
     sample: () => ipcRenderer.invoke('monitor:sample'), // → { ok, ts, editor:{procs,totalMem,totalCpu}, pty:{procs,totalMem,totalCpu,note} }
   },
+  // «Сейф паролей»: расшифровка/копирование в main; пароли записей в рендерер не уходят.
+  keepass: {
+    pick: () => ipcRenderer.invoke('keepass:pick'),                          // выбрать файл → {ok,path,name}|{canceled}
+    open: (p, password) => ipcRenderer.invoke('keepass:open', { path: p, password }), // → {ok,name,entries:[{id,title,username,url,group,fields}]}|{ok:false,error}
+    reveal: (id, field) => ipcRenderer.invoke('keepass:reveal', { id, field }),       // показать конкретное поле → {ok,value}
+    copy: (id, field) => ipcRenderer.invoke('keepass:copy', { id, field }),           // скопировать поле в буфер (авто-очистка) → {ok}
+    lock: () => ipcRenderer.send('keepass:lock'),                            // стереть базу из памяти main
+  },
+  // Мониторинг сайтов (downdetector-стиль): список/правка + фоновые проверки и события в main.
+  sitemon: {
+    list: () => ipcRenderer.invoke('sitemon:list'),
+    add: (name, url, intervalSec) => ipcRenderer.invoke('sitemon:add', { name, url, intervalSec }),
+    edit: (id, patch) => ipcRenderer.invoke('sitemon:edit', { id, ...(patch || {}) }),
+    remove: (id) => ipcRenderer.invoke('sitemon:remove', { id }),
+    checkNow: (id) => ipcRenderer.invoke('sitemon:checkNow', { id }),
+    onUpdate: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('sitemon:update', h); return () => ipcRenderer.removeListener('sitemon:update', h); },
+  },
+  // Заставка «матрица»: репорт активности (любое окно) + команда вкл/выкл от main по бездействию.
+  screensaver: {
+    activity: () => ipcRenderer.send('screensaver:activity'),
+    onSet: (cb) => { const h = (_e, p) => cb(p || {}); ipcRenderer.on('screensaver:set', h); return () => ipcRenderer.removeListener('screensaver:set', h); },
+  },
 
   // «ИИ компания» — директор-агент + сабагенты над проектом (renderer/modules/company.js).
   company: {

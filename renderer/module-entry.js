@@ -17,6 +17,8 @@ import { initIterflow } from './modules/iterflow.js';
 import { initSeo } from './modules/seo.js';
 import { initAudit } from './modules/audit.js';
 import { initMonitor } from './modules/monitor.js';
+import { initKeepass } from './modules/keepass.js';
+import { initSitemon } from './modules/sitemon.js';
 import { initPomodoro } from './modules/pomodoro.js';
 import { initCompany } from './modules/company.js';
 import { initNotes } from './modules/notes.js';
@@ -55,6 +57,11 @@ function menuRow(glyph, text, onClick, cls) {
 document.addEventListener('click', closeMenus);
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeMenus(); });
 
+// Активность в окне модуля сбрасывает кросс-оконный таймер заставки «матрица» (троттл).
+let __ssAct = 0;
+function reportActivity() { const now = Date.now(); if (now - __ssAct > 1500) { __ssAct = now; try { lite.screensaver.activity(); } catch (_) {} } }
+for (const ev of ['mousemove', 'mousedown', 'keydown', 'wheel', 'touchstart']) window.addEventListener(ev, reportActivity, { passive: true });
+
 // Registry of window-hosted modules. `project:true` → re-render on active-project change.
 // `wire(mod)` binds the pane-head buttons (the #<id>-close button is wired generically).
 const MODULES = {
@@ -74,6 +81,14 @@ const MODULES = {
   monitor: {
     title: 'Монитор ресурсов', init: initMonitor, project: false,
     wire: (mod) => { bind('#monitor-copy', () => mod.copySnapshot()); },
+  },
+  keepass: {
+    title: 'Сейф паролей', init: initKeepass, project: false,
+    wire: (mod) => { bind('#keepass-open', () => mod.openFile()); bind('#keepass-lock', () => mod.lock()); },
+  },
+  sitemon: {
+    title: 'Мониторинг сайтов', init: initSitemon, project: false,
+    wire: (mod) => { bind('#sitemon-add', () => mod.addSite()); bind('#sitemon-check', () => mod.checkAll()); },
   },
   pomodoro: {
     title: 'Помодоро', init: initPomodoro, project: false,

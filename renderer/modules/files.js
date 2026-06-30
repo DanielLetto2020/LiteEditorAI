@@ -1685,6 +1685,9 @@ export function initFiles(host) {
       showCommitPane: () => showCommitPane(),         // git-компонент просит показать секцию коммита (после merge/resolve)
       fileIcon: (name) => fileSvg(colorFor(name)),    // иконки типов файлов для дерева изменённых файлов коммита
       folderIcon: () => folderSvg(false),
+      // открыть изменённый файл из списка коммита в вивере (контекст-меню git-секции)
+      openFile: (abs, line) => { if (!viewerOpen) setViewerOpen(true); guardDirty(() => openFile(abs, line)); },
+      menuRow, placeMenu, closeMenus, // меню-слой окна вивера — для контекст-меню строки файла
     });
     git.setContainers({ topbar: $('#vcs-topbar'), commit: $('#commit-body'), branchlog: $('#branchlog-body') });
     document.querySelectorAll('.vcs-strip .strip-btn').forEach((b) => b.addEventListener('click', () => showSection(b.dataset.section)));
