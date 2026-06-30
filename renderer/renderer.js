@@ -8,7 +8,6 @@ import { WebLinksAddon } from '@xterm/addon-web-links';
 import { WebglAddon } from '@xterm/addon-webgl';
 import { CanvasAddon } from '@xterm/addon-canvas';
 import { Unicode11Addon } from '@xterm/addon-unicode11';
-import { SerializeAddon } from '@xterm/addon-serialize';
 import '@xterm/xterm/css/xterm.css';
 
 // CodeMirror/marked/showMinimap/codeedit — переехали в окно вивера (renderer/modules/files.js).
@@ -27,7 +26,7 @@ import { el, icon, iconBtn, hydrateIcons, toast, makeModal, showConfirm, showPro
 import { initExtensions } from './modules/extensions.js';
 // initFiles — вивер+дерево мигрированы в отдельное окно (renderer/module-entry.js).
 
-const APP_VERSION = 'alpha v1.1.50';
+const APP_VERSION = 'alpha v1.1.53';
 const GUTTER = 5;
 // Системный терминал («Система · ~») мигрирован в отдельное окно (renderer/modules/scratch.js):
 // его id `__scratch__::tN` маршрутизируются main'ом в окно-владельца, в ядре их больше не обрабатываем.
@@ -902,56 +901,11 @@ function saveProjTabs() {
   persist('projTabs', out);
 }
 
-// ── Снимки сессий между перезапусками (идея 7) ────────────────────────────────
-// Живой PTY перезапуск приложения не переживает (дочерний процесс умирает с родителем), но
-// ВЫВОД пережить может: сериализуем scrollback каждой сессии (capped) и при следующем старте
-// показываем его как «историю до перезапуска» НАД свежим терминалом — агент/пользователь видит,
-// на чём остановились. Это снимок-история, не живой процесс.
-const SNAP_TTL_MS = 24 * 60 * 60 * 1000;  // снимки старше суток игнорируем
-const SNAP_SCROLLBACK = 800;              // сколько строк хвоста сериализовать
-const SNAP_PER_CAP = 80 * 1024;           // потолок на сессию, символов
-const SNAP_TOTAL_CAP = 1536 * 1024;       // общий потолок (бережём стор)
-// Снимки прошлого запуска, загруженные один раз; восстанавливаются по мере открытия проектов.
-const restoreSnaps = (() => {
-  const s = STORE.sessionSnaps;
-  if (s && s.ts && (Date.now() - s.ts) < SNAP_TTL_MS && s.data) return { ...s.data };
-  return {};
-})();
-function snapshotSessions() {
-  try {
-    const data = {};
-    let total = 0;
-    for (const [pid, t] of tabsByProj) {
-      t.sessions.forEach((sid, i) => {
-        if (total >= SNAP_TOTAL_CAP) return;
-        const rec = terms.get(sid);
-        if (!rec || !rec.serialize) return;
-        let str = '';
-        try { str = rec.serialize.serialize({ scrollback: SNAP_SCROLLBACK, excludeAltBuffer: true, excludeModes: true }); } catch (_) { return; }
-        if (!str) return;
-        if (str.length > SNAP_PER_CAP) str = str.slice(str.length - SNAP_PER_CAP); // храним хвост
-        (data[pid] = data[pid] || [])[i] = str;
-        total += str.length;
-      });
-    }
-    const payload = { ts: Date.now(), data };
-    STORE.sessionSnaps = payload;
-    // setSync — чтобы запись прошла даже на beforeunload (async send мог бы не успеть).
-    try { lite.store.setSync('sessionSnaps', payload); } catch (_) { try { lite.store.set('sessionSnaps', payload); } catch (_) {} }
-  } catch (_) {}
-}
-// Восстановить историю в только что созданную сессию (индекс i вкладки проекта).
-function restoreSessionSnapshot(projId, idx, sid) {
-  const arr = restoreSnaps[projId];
-  const snap = arr && arr[idx];
-  if (!snap) return;
-  const rec = terms.get(sid);
-  if (!rec) return;
-  try {
-    rec.term.write(snap);
-    rec.term.write('\r\n\x1b[2m' + '─'.repeat(16) + ' снимок до перезапуска редактора ' + '─'.repeat(16) + '\x1b[0m\r\n');
-  } catch (_) {}
-}
+// ── Снимки сессий между перезапусками — УБРАНО ────────────────────────────────
+// Раньше (идея 7) scrollback каждой сессии сериализовался и при старте подгружался НАД свежим
+// терминалом как «история до перезапуска». От этого отказались: подгрузка прошлой истории мешает.
+// Чистим разово стор от ранее накопленных снимков (могли весить до ~1.5 МБ).
+try { if (STORE.sessionSnaps) { STORE.sessionSnaps = null; lite.store.set('sessionSnaps', null); } } catch (_) {}
 // ── Реестр глобальных горячих клавиш ядра (идея 5) ────────────────────────────
 // Единый источник правды. Матч по физическим клавишам (e.code) → работает в любой
 // раскладке. Эти комбо перехватываются И на уровне document, И внутри терминала: фабрика
@@ -985,10 +939,8 @@ function buildXterm(container, id, { cwd, onInput, onKey } = {}) {
   });
   const fit = new FitAddon();
   const search = new SearchAddon();
-  const serialize = new SerializeAddon();
   term.loadAddon(fit);
   term.loadAddon(search);
-  term.loadAddon(serialize);
   term.loadAddon(new WebLinksAddon((_e, uri) => lite.openExternal(uri)));
   applyUnicode11(term);
   term.open(container);
@@ -1010,14 +962,14 @@ function buildXterm(container, id, { cwd, onInput, onKey } = {}) {
     return true;
   });
   container.addEventListener('contextmenu', (e) => { e.preventDefault(); showTermMenu(e.clientX, e.clientY, term, id); });
-  return { term, fit, search, serialize };
+  return { term, fit, search };
 }
 
 function createSession(proj, name) {
   const id = proj.id + '::t' + (++sessionSeq);
   const container = el('div', 'term-instance');
   $('#terminals').appendChild(container);
-  const { term, fit, search, serialize } = buildXterm(container, id, {
+  const { term, fit, search } = buildXterm(container, id, {
     cwd: proj.path,
     onInput: () => { const r = terms.get(id); if (r) r.lastInputAt = Date.now(); },
     onKey: (e) => {
@@ -1028,7 +980,7 @@ function createSession(proj, name) {
     },
   });
   term.registerLinkProvider(fileLinkProvider(term, proj.path));
-  const rec = { term, fit, search, serialize, container, projId: proj.id, name, idleTimer: null, sawBell: false, tail: '', busyStart: 0, lastInputAt: 0, activitySeq: 0 };
+  const rec = { term, fit, search, container, projId: proj.id, name, idleTimer: null, sawBell: false, tail: '', busyStart: 0, lastInputAt: 0, activitySeq: 0 };
   terms.set(id, rec);
   tabsByProj.get(proj.id).sessions.push(id);
   // «Контекст»: тихая автосборка — новая сессия агента должна найти готовый CLAUDE.md/AGENTS.md,
@@ -1062,8 +1014,7 @@ function ensureProjectTabs(proj) {
   tabsByProj.set(proj.id, { sessions: [], active: null });
   const saved = (STORE.projTabs || {})[proj.id];
   const names = saved && Array.isArray(saved.names) && saved.names.length ? saved.names : ['Терминал 1'];
-  names.forEach((n, i) => { const sid = createSession(proj, n); restoreSessionSnapshot(proj.id, i, sid); }); // история до перезапуска (идея 7)
-  delete restoreSnaps[proj.id]; // снимок потреблён — не восстанавливать повторно при переоткрытии проекта
+  names.forEach((n) => createSession(proj, n)); // только имена вкладок; история до перезапуска НЕ восстанавливается
   const t = tabsByProj.get(proj.id);
   const ai = saved && Number.isInteger(saved.active) ? saved.active : 0;
   t.active = t.sessions[Math.max(0, Math.min(ai, t.sessions.length - 1))] || t.sessions[0];
@@ -2803,10 +2754,6 @@ function init() {
   new ResizeObserver(() => { clearTimeout(rezTimer); rezTimer = setTimeout(() => refitActiveTerminal(), 80); }).observe($('#terminal-pane'));
   // scratch/rh ресайз теперь в окнах модулей — обрабатывается module-entry.js.
 
-  // Снимок вывода сессий — на закрытие/перезагрузку и периодически (краш-страховка), чтобы при
-  // следующем старте показать историю до перезапуска над свежими терминалами (идея 7).
-  window.addEventListener('beforeunload', snapshotSessions);
-  setInterval(snapshotSessions, 30000);
 
   applyFontSize();
   projects = loadProjectsFromDisk();

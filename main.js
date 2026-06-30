@@ -722,6 +722,182 @@ ipcMain.on('dbai:apiRun', (e, { reqId, baseUrl, key, model, prompt } = {}) => {
   req.write(body); req.end();
 });
 
+// ---------------------------------------------------------------- «Анализ диалогов» (ctxmine)
+// Майнинг ДОЛГОИГРАЮЩИХ ПРАВИЛ из транскриптов Claude Code (~/.claude/projects/<enc>/*.jsonl).
+// Кодирование пути проекта в имя каталога: каждый НЕ-alnum символ → '-' (формула Claude Code,
+// проверена на реальных каталогах). scan — быстрый стат по транскриптам активного проекта;
+// analyze — спавн `claude -p` над ДИСТИЛЛЯТОМ диалога (только реальные реплики разработчика +
+// текст агента, без thinking/tool-шума) с промптом «вытащи правила и порекомендуй, куда положить».
+// Модель отдаёт JSON-реестр. Стоп-кран и поток как у dbai. Цель — ОБКАТКА: в реальные CLAUDE.md/
+// память НИЧЕГО не пишем, только собираем и показываем.
+const CLAUDE_PROJECTS_DIR = path.join(os.homedir(), '.claude', 'projects');
+const ctxmineEnc = (p) => String(p || '').replace(/[^a-zA-Z0-9]/g, '-');
+function ctxmineDirFor(projPath) {
+  if (!projPath) return null;
+  const d = path.join(CLAUDE_PROJECTS_DIR, ctxmineEnc(projPath));
+  try { return fs.existsSync(d) && fs.statSync(d).isDirectory() ? d : null; } catch (_) { return null; }
+}
+function ctxmineFiles(dir) {
+  return fs.readdirSync(dir).filter((f) => f.endsWith('.jsonl'))
+    .map((f) => { const fp = path.join(dir, f); let mt = 0; try { mt = fs.statSync(fp).mtimeMs; } catch (_) {} return { fp, mt }; })
+    .sort((a, b) => b.mt - a.mt); // новые сессии первыми
+}
+// служебный мусор CLI (не слова разработчика) — system-reminder'ы и command-обёртки
+function ctxmineCleanUser(t) {
+  return String(t)
+    .replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, ' ')
+    .replace(/<command-[a-z-]+>[\s\S]*?<\/command-[a-z-]+>/g, ' ')
+    .replace(/<local-command[\s\S]*?<\/local-command[a-z-]*>/g, ' ')
+    .trim();
+}
+// одна строка JSONL → {role,text} либо null (берём только содержательный текст user/assistant)
+function ctxmineMsg(o) {
+  const m = o && o.message; if (!m || typeof m !== 'object') return null;
+  const role = m.role; if (role !== 'user' && role !== 'assistant') return null;
+  const c = m.content; let text = '';
+  if (typeof c === 'string') text = c;
+  else if (Array.isArray(c)) text = c.filter((b) => b && b.type === 'text' && b.text).map((b) => b.text).join('\n');
+  text = text.trim(); if (!text) return null;
+  if (role === 'user') { text = ctxmineCleanUser(text); if (text.length < 2) return null; }
+  return { role, text };
+}
+function ctxmineStat(dir) {
+  const files = ctxmineFiles(dir); let messages = 0, bytes = 0, first = 0, last = 0;
+  for (const { fp, mt } of files) {
+    let st; try { st = fs.statSync(fp); } catch (_) { continue; }
+    bytes += st.size; if (!first || mt < first) first = mt; if (mt > last) last = mt;
+    let txt = ''; try { txt = fs.readFileSync(fp, 'utf8'); } catch (_) { continue; }
+    for (const line of txt.split('\n')) { const s = line.trim(); if (!s) continue; let o; try { o = JSON.parse(s); } catch (_) { continue; } if (ctxmineMsg(o)) messages++; }
+  }
+  return { sessions: files.length, messages, bytes, first, last };
+}
+// собрать дистиллят диалога под промпт (новые сессии первыми, в пределах лимита символов)
+function ctxmineDistill(dir, capChars) {
+  const files = ctxmineFiles(dir);
+  const chunks = []; let total = 0, used = 0, messages = 0, truncated = false;
+  for (const { fp } of files) {
+    if (total >= capChars) { truncated = true; break; }
+    let txt = ''; try { txt = fs.readFileSync(fp, 'utf8'); } catch (_) { continue; }
+    const parts = ['\n----- новая сессия -----'];
+    let any = false;
+    for (const line of txt.split('\n')) {
+      const s = line.trim(); if (!s) continue; let o; try { o = JSON.parse(s); } catch (_) { continue; }
+      const mm = ctxmineMsg(o); if (!mm) continue;
+      let body = mm.text;
+      if (mm.role === 'assistant' && body.length > 800) body = body.slice(0, 800) + ' …[обрезано]';
+      parts.push((mm.role === 'user' ? 'РАЗРАБОТЧИК: ' : 'АГЕНТ: ') + body);
+      messages++; any = true;
+    }
+    if (!any) continue;
+    used++; const chunk = parts.join('\n\n'); chunks.push(chunk); total += chunk.length;
+  }
+  if (used < files.length) truncated = true;
+  let text = chunks.join('\n');
+  if (text.length > capChars) { text = text.slice(0, capChars) + '\n…[история обрезана по лимиту]'; truncated = true; }
+  return { text, sessions: used, messages, truncated };
+}
+function ctxminePrompt(distill, projName) {
+  return `Ты — аналитик. Изучи ИСТОРИЮ ДИАЛОГОВ между разработчиком и ИИ-агентом (Claude Code) в проекте «${projName}» и извлеки из неё ДОЛГОИГРАЮЩИЕ ПРАВИЛА — то, что стоит занести в контекст агента, чтобы он сразу работал правильно и не повторял ошибок.
+
+Что искать (приоритет по убыванию ценности):
+1. ИСПРАВЛЕНИЯ разработчика («нет, не так», откаты, «всегда/никогда», поправки стиля) — самый ценный сигнал, каждое = правило.
+2. Ошибки и то, КАК их починили (грабли, которые не надо повторять).
+3. Соглашения по коду/стилю/именованию, принятые в проекте.
+4. Предпочтения по инструментам, командам, рабочему процессу.
+5. Архитектурные договорённости.
+
+Для КАЖДОГО правила реши, КУДА его положить (placement):
+- "global"  — личное правило, применимо ко ВСЕМ проектам (привычки разработчика) → главный ~/.claude/CLAUDE.md
+- "project" — специфично для этого проекта → CLAUDE.md проекта
+- "agents"  — то же, но для Codex/других агентов → AGENTS.md
+- "memory"  — разовый факт/контекст, полезный для памяти, но не правило поведения → авто-память
+- "skip"    — сомнительное/противоречивое/слишком частное — на ревью человеку, пока никуда
+
+ВЕРНИ СТРОГО ОДИН JSON-объект, без текста до/после и без markdown-обёртки. Схема:
+{
+  "summary": "1-2 предложения: что за проект и какие правила преобладают",
+  "rules": [
+    {
+      "title": "короткое правило в повелительном наклонении",
+      "detail": "развёрнуто: суть + как применять",
+      "category": "code-style|error-fix|workflow|preference|tooling|architecture|other",
+      "placement": "global|project|agents|memory|skip",
+      "placement_reason": "почему именно туда",
+      "confidence": "high|medium|low",
+      "occurrences": 1,
+      "evidence": "краткий пересказ момента, где это проявилось"
+    }
+  ]
+}
+Не выдумывай правил, которых нет в диалоге. Мало правил в истории — верни мало. Дубли объединяй и повышай occurrences.
+
+=== ИСТОРИЯ ДИАЛОГОВ ===
+${distill}`;
+}
+function ctxmineParse(raw) {
+  let s = String(raw || '').trim();
+  const fence = s.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fence) s = fence[1].trim();
+  const i = s.indexOf('{'), j = s.lastIndexOf('}');
+  if (i >= 0 && j > i) s = s.slice(i, j + 1);
+  return JSON.parse(s);
+}
+
+ipcMain.handle('ctxmine:scan', (_e, { projPath } = {}) => {
+  try {
+    const dir = ctxmineDirFor(projPath);
+    if (!dir) return { ok: true, found: false, sessions: 0, messages: 0, bytes: 0, first: 0, last: 0 };
+    return { ok: true, found: true, ...ctxmineStat(dir) };
+  } catch (err) { return { ok: false, error: String((err && err.message) || err) }; }
+});
+
+const ctxmineReqs = new Map();
+ipcMain.on('ctxmine:analyze', (e, { reqId, projPath, capChars } = {}) => {
+  const sender = e.sender; if (!reqId) return;
+  const dir = ctxmineDirFor(projPath);
+  if (!dir) { safeSend(sender, 'ctxmine:error', { reqId, error: 'Для этого проекта не найдено транскриптов Claude Code (~/.claude/projects/).' }); return; }
+  let distill;
+  try { distill = ctxmineDistill(dir, Math.max(5000, Math.min(120000, capChars || 60000))); }
+  catch (err) { safeSend(sender, 'ctxmine:error', { reqId, error: 'Не прочитать транскрипты: ' + ((err && err.message) || err) }); return; }
+  if (!distill.text.trim()) { safeSend(sender, 'ctxmine:error', { reqId, error: 'В транскриптах нет содержательных реплик для анализа.' }); return; }
+  const projName = path.basename(projPath || '') || 'проект';
+  let child;
+  try { child = spawn('claude', ['-p', '--output-format', 'stream-json', '--verbose', '--include-partial-messages'], { cwd: os.homedir(), env: tpEnv() }); }
+  catch (err) { safeSend(sender, 'ctxmine:error', { reqId, error: 'не запустить «claude»: ' + ((err && err.message) || err) }); return; }
+  ctxmineReqs.set(reqId, child);
+  safeSend(sender, 'ctxmine:progress', { reqId, stage: 'start', sessions: distill.sessions, messages: distill.messages, truncated: distill.truncated, chars: distill.text.length });
+  let full = '', errOut = '', buf = '', sawDelta = false;
+  const to = setTimeout(() => { if (ctxmineReqs.has(reqId)) { ctxmineReqs.delete(reqId); try { child.kill(); } catch (_) {} safeSend(sender, 'ctxmine:error', { reqId, error: 'таймаут (модель не ответила за 5 минут)' }); } }, 300000);
+  const emit = (t) => { if (!t) return; full += t; safeSend(sender, 'ctxmine:progress', { reqId, stage: 'delta', delta: t }); };
+  const handleLine = (line) => {
+    const s = line.trim(); if (!s) return; let ev; try { ev = JSON.parse(s); } catch (_) { return; }
+    if (ev.type === 'stream_event' && ev.event) {
+      const evt = ev.event;
+      if (evt.type === 'content_block_delta' && evt.delta && evt.delta.type === 'text_delta') { sawDelta = true; emit(evt.delta.text || ''); }
+      return;
+    }
+    if (ev.type === 'assistant' && ev.message && Array.isArray(ev.message.content) && !sawDelta) {
+      for (const b of ev.message.content) if (b && b.type === 'text' && b.text) emit(b.text);
+    }
+  };
+  child.stdout.on('data', (c) => { buf += c.toString('utf8'); let nl; while ((nl = buf.indexOf('\n')) >= 0) { handleLine(buf.slice(0, nl)); buf = buf.slice(nl + 1); } });
+  child.stderr.on('data', (c) => { errOut += c.toString('utf8'); });
+  child.on('error', (err) => { if (!ctxmineReqs.has(reqId)) return; ctxmineReqs.delete(reqId); clearTimeout(to); safeSend(sender, 'ctxmine:error', { reqId, error: 'claude не найден/не запустился: ' + ((err && err.message) || err) }); });
+  child.on('close', (code) => {
+    if (!ctxmineReqs.has(reqId)) return; ctxmineReqs.delete(reqId); clearTimeout(to);
+    if (buf.trim()) handleLine(buf);
+    if (!full.trim()) { safeSend(sender, 'ctxmine:error', { reqId, error: errOut.trim() || ('claude завершился с кодом ' + code) }); return; }
+    let parsed; try { parsed = ctxmineParse(full); } catch (err) { safeSend(sender, 'ctxmine:error', { reqId, error: 'Модель вернула не-JSON: ' + ((err && err.message) || err), raw: full.slice(0, 4000) }); return; }
+    const rules = Array.isArray(parsed && parsed.rules) ? parsed.rules : [];
+    safeSend(sender, 'ctxmine:result', { reqId, summary: (parsed && parsed.summary) || '', rules, meta: { sessions: distill.sessions, messages: distill.messages, truncated: distill.truncated } });
+  });
+  child.stdin.write(ctxminePrompt(distill.text, projName)); child.stdin.end();
+});
+ipcMain.on('ctxmine:abort', (e, { reqId } = {}) => {
+  const c = ctxmineReqs.get(reqId);
+  if (c) { ctxmineReqs.delete(reqId); try { c.kill(); } catch (_) {} safeSend(e.sender, 'ctxmine:error', { reqId, error: 'Отменено.', aborted: true }); }
+});
+
 // ---------------------------------------------------------------- «ИИ компания» (company)
 // Модуль renderer/modules/company.js: агент-ДИРЕКТОР (claude -p, stream-json) над активным
 // проектом нанимает и зовёт сабагентов Claude (родная оркестровка, вариант А). Штат/настройки

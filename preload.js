@@ -161,6 +161,16 @@ contextBridge.exposeInMainWorld('lite', {
     onError: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('dbai:error', h); return () => ipcRenderer.removeListener('dbai:error', h); },
   },
 
+  // «Анализ диалогов» — майнинг правил из транскриптов Claude Code (вкладка модуля «Контекст»).
+  ctxmine: {
+    scan: (projPath) => ipcRenderer.invoke('ctxmine:scan', { projPath }),
+    analyze: (reqId, projPath, opts) => ipcRenderer.send('ctxmine:analyze', { reqId, projPath, ...(opts || {}) }),
+    abort: (reqId) => ipcRenderer.send('ctxmine:abort', { reqId }),
+    onProgress: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('ctxmine:progress', h); return () => ipcRenderer.removeListener('ctxmine:progress', h); },
+    onResult: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('ctxmine:result', h); return () => ipcRenderer.removeListener('ctxmine:result', h); },
+    onError: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('ctxmine:error', h); return () => ipcRenderer.removeListener('ctxmine:error', h); },
+  },
+
   // «Контекст» — граф контекста агента (renderer/modules/contextgraph.js).
   ctx: {
     load: (projId, agent, profileId) => ipcRenderer.invoke('ctx:load', { projId, agent, profileId }),

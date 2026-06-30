@@ -261,7 +261,7 @@ export function initCtx(host) {
     }
     if (changed) renderAll();
   }
-  function onProjectChange(p) { if (open && p) loadGraph(p); }
+  function onProjectChange(p) { if (open && p) loadGraph(p); if (open && curTab === 'mine') mineScan(); }
 
   // ---------------------------------------------------------------- переключатель агента
   function renderAgents() {
@@ -1676,6 +1676,237 @@ export function initCtx(host) {
   $('#ctx-extern').addEventListener('click', openReconcile);
   // агент дописал/правил выходной файл вне модуля → перепроверяем расхождение для текущего агента
   lite.ctx.onOutputChanged(({ projId, agent: ag } = {}) => { if (open && proj && projId === proj.id && ag === agent) checkExternal(); });
+
+  // ============================================================ вкладка «Анализ диалогов» (ctxmine)
+  // Извлечение долгоиграющих правил из истории диалогов агента по проекту. Ничего в реальные файлы НЕ
+  // пишет — только собирает реестр и показывает, сгруппировав по рекомендации «куда положить». Бэкенд —
+  // window.lite.ctxmine (main: ctxmine:scan/analyze/abort), чтение транскриптов ~/.claude/projects/*.jsonl.
+  const PLACEMENTS = [
+    { key: 'global', label: 'Главный контекст', sub: '~/.claude/CLAUDE.md — личное, для всех проектов', cls: 'glob' },
+    { key: 'project', label: 'Проектный контекст', sub: 'CLAUDE.md этого проекта', cls: 'proj' },
+    { key: 'agents', label: 'AGENTS.md', sub: 'для Codex и других агентов', cls: 'agents' },
+    { key: 'memory', label: 'Память', sub: 'разовый факт, полезный для памяти', cls: 'mem' },
+    { key: 'skip', label: 'На ревью', sub: 'спорное/частное — пока никуда', cls: 'skip' },
+  ];
+  const PLACE_KEYS = PLACEMENTS.map((p) => p.key);
+  const CAT_RU = { 'code-style': 'стиль кода', 'error-fix': 'грабли', workflow: 'процесс', preference: 'предпочтение', tooling: 'инструменты', architecture: 'архитектура', other: 'прочее' };
+  const CONF_RU = { high: 'высокая', medium: 'средняя', low: 'низкая' };
+  const CONF_ORD = { high: 3, medium: 2, low: 1 };
+  const mineEl = $('#ctx-mine');
+  const mine = { scanned: null, scanPath: null, running: false, reqId: 0, result: null, raw: '', t0: 0, timer: null, q: '', cat: '', conf: '' };
+  let curTab = 'canvas';
+
+  function fmtBytes(n) { n = n || 0; if (n < 1024) return n + ' Б'; if (n < 1048576) return (n / 1024).toFixed(0) + ' КБ'; return (n / 1048576).toFixed(1) + ' МБ'; }
+  const placeOf = (r) => (PLACE_KEYS.includes(r && r.placement) ? r.placement : 'skip');
+
+  function setTab(name) {
+    curTab = name;
+    document.querySelectorAll('#ctx-tabs .ctx-tab').forEach((b) => b.classList.toggle('active', b.dataset.tab === name));
+    const canvasMode = name === 'canvas';
+    for (const sel of ['#ctx-agents', '#ctx-profiles', '#ctx-stats', '#ctx-canvas']) { const e = $(sel); if (e) e.style.display = canvasMode ? '' : 'none'; }
+    if (mineEl) mineEl.style.display = canvasMode ? 'none' : 'flex';
+    const setBtn = $('#ctx-settings'); if (setBtn) setBtn.style.display = canvasMode ? '' : 'none';
+    if (name === 'mine') { renderMine(); mineScan(); }
+  }
+
+  async function mineScan() {
+    const p = activeProject();
+    if (!p) { mine.scanned = null; mine.scanPath = null; renderMine(); return; }
+    if (mine.scanPath && mine.scanPath !== p.path) { mine.result = null; mine.raw = ''; } // сменили проект — прежний реестр неактуален
+    mine.scanPath = p.path;
+    try { const r = await lite.ctxmine.scan(p.path); if (r && r.ok && curTab === 'mine') { mine.scanned = r; renderMine(); } }
+    catch (_) {}
+  }
+
+  function mineRun() {
+    const p = activeProject();
+    if (!p) { toast('Сначала открой проект'); return; }
+    if (mine.running) return;
+    mine.running = true; mine.reqId = Date.now() * 1000 + Math.floor(Math.random() * 1000); mine.raw = ''; mine.result = null; mine.t0 = Date.now();
+    if (mine.timer) clearInterval(mine.timer);
+    mine.timer = setInterval(() => { const e = $('#mine-elapsed'); if (e) e.textContent = Math.floor((Date.now() - mine.t0) / 1000) + ' с'; }, 1000);
+    lite.ctxmine.analyze(mine.reqId, p.path, {});
+    renderMine();
+  }
+  function mineStop() { if (mine.running) lite.ctxmine.abort(mine.reqId); }
+  function mineEnd() { mine.running = false; if (mine.timer) { clearInterval(mine.timer); mine.timer = null; } }
+
+  lite.ctxmine.onProgress((d) => {
+    if (!d || d.reqId !== mine.reqId) return;
+    if (d.stage === 'delta') { mine.raw = (mine.raw + (d.delta || '')).slice(-12000); const pre = $('#mine-live'); if (pre) { pre.textContent = mine.raw; pre.scrollTop = pre.scrollHeight; } }
+  });
+  lite.ctxmine.onResult((d) => {
+    if (!d || d.reqId !== mine.reqId) return;
+    mineEnd(); mine.result = { summary: d.summary || '', rules: Array.isArray(d.rules) ? d.rules : [], meta: d.meta || {} };
+    renderMine();
+    toast('Готово: правил — ' + mine.result.rules.length, { kind: 'ok' });
+  });
+  lite.ctxmine.onError((d) => {
+    if (!d || d.reqId !== mine.reqId) return;
+    mineEnd();
+    if (d.raw) mine.raw = d.raw;
+    renderMine();
+    if (!d.aborted) toast(d.error || 'Ошибка анализа', { kind: 'err' });
+  });
+
+  function chip(text, cls) { return el('span', 'mine-chip' + (cls ? ' ' + cls : ''), text); }
+  function ruleToText(r) { return `${r.title || ''}\n${r.detail || ''}${r.evidence ? '\n(где: ' + r.evidence + ')' : ''}`.trim(); }
+
+  function ruleCard(r) {
+    const card = el('div', 'mine-card conf-' + (r.confidence || 'low'));
+    const top = el('div', 'mine-card-top');
+    top.appendChild(el('span', 'mine-card-title', r.title || '(без названия)'));
+    const cp = el('button', 'icon-btn mine-copy'); cp.title = 'Скопировать правило'; cp.appendChild(icon('copy', 15));
+    cp.addEventListener('click', () => { try { navigator.clipboard.writeText(ruleToText(r)); toast('Скопировано', { kind: 'ok' }); } catch (_) {} });
+    top.appendChild(cp); card.appendChild(top);
+    const chips = el('div', 'mine-chips');
+    if (r.category) chips.appendChild(chip(CAT_RU[r.category] || r.category, 'cat'));
+    chips.appendChild(chip(CONF_RU[r.confidence] || r.confidence || '—', 'conf c-' + (r.confidence || 'low')));
+    if (r.occurrences > 1) chips.appendChild(chip('×' + r.occurrences, 'occ'));
+    card.appendChild(chips);
+    if (r.detail) card.appendChild(el('div', 'mine-detail', r.detail));
+    if (r.evidence) { const ev = el('div', 'mine-evi', '💡 ' + r.evidence); if (r.placement_reason) ev.title = 'Куда положить: ' + r.placement_reason; card.appendChild(ev); }
+    return card;
+  }
+  function matchFilter(r) {
+    if (mine.cat && r.category !== mine.cat) return false;
+    if (mine.conf && r.confidence !== mine.conf) return false;
+    if (mine.q) { const hay = ((r.title || '') + ' ' + (r.detail || '') + ' ' + (r.evidence || '')).toLowerCase(); if (!hay.includes(mine.q.toLowerCase())) return false; }
+    return true;
+  }
+
+  function renderGroups() {
+    const box = $('#mine-groups'); if (!box || !mine.result) return;
+    box.textContent = '';
+    const buckets = {}; for (const k of PLACE_KEYS) buckets[k] = [];
+    for (const r of mine.result.rules.filter(matchFilter)) buckets[placeOf(r)].push(r);
+    let shown = 0;
+    for (const pl of PLACEMENTS) {
+      const arr = buckets[pl.key]; if (!arr.length) continue;
+      shown += arr.length;
+      const sec = el('section', 'mine-group pl-' + pl.cls);
+      const h = el('header', 'mine-group-head');
+      h.appendChild(el('span', 'mine-group-dot'));
+      h.appendChild(el('span', 'mine-group-label', pl.label));
+      h.appendChild(el('span', 'mine-group-sub', pl.sub));
+      h.appendChild(el('span', 'mine-group-n', String(arr.length)));
+      sec.appendChild(h);
+      const cards = el('div', 'mine-cards');
+      arr.sort((a, b) => (CONF_ORD[b.confidence] || 0) - (CONF_ORD[a.confidence] || 0) || (b.occurrences || 0) - (a.occurrences || 0));
+      for (const r of arr) cards.appendChild(ruleCard(r));
+      sec.appendChild(cards); box.appendChild(sec);
+    }
+    if (!shown) box.appendChild(el('div', 'mine-empty', 'Под фильтр ничего не подходит.'));
+  }
+
+  function mineExportText() {
+    const res = mine.result; if (!res) return '';
+    const lines = ['# Реестр правил из диалогов', ''];
+    if (res.summary) lines.push(res.summary, '');
+    for (const pl of PLACEMENTS) {
+      const arr = res.rules.filter((r) => placeOf(r) === pl.key);
+      if (!arr.length) continue;
+      lines.push('## ' + pl.label + ' (' + pl.sub + ')', '');
+      for (const r of arr) { lines.push('- ' + (r.title || '')); if (r.detail) lines.push('  ' + r.detail); }
+      lines.push('');
+    }
+    return lines.join('\n');
+  }
+  function mineExportJson() {
+    const res = mine.result; if (!res) return;
+    try {
+      const blob = new Blob([JSON.stringify(res, null, 2)], { type: 'application/json' });
+      const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
+      const nm = (activeProject() && activeProject().name) || 'project';
+      a.download = 'rules-' + nm.replace(/[^\w.-]/g, '_') + '.json';
+      document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+    } catch (_) { toast('Не удалось экспортировать', { kind: 'err' }); }
+  }
+
+  function renderMine() {
+    if (!mineEl) return;
+    mineEl.textContent = '';
+    const p = activeProject();
+    const sc = mine.scanned;
+
+    const head = el('div', 'mine-head');
+    head.appendChild(el('div', 'mine-proj', p ? 'Проект: ' + p.name : 'Проект не открыт'));
+    if (p && sc) {
+      if (sc.found && sc.sessions) {
+        const period = sc.first ? (fmtTs(sc.first) + ' — ' + fmtTs(sc.last)) : '';
+        head.appendChild(el('div', 'mine-scan', `${sc.sessions} сессий · ${sc.messages} реплик · ${fmtBytes(sc.bytes)}${period ? ' · ' + period : ''}`));
+      } else {
+        head.appendChild(el('div', 'mine-scan mine-empty', 'Транскриптов Claude Code для этого проекта пока нет (~/.claude/projects/).'));
+      }
+    }
+    const actions = el('div', 'mine-actions');
+    if (mine.running) {
+      const stop = el('button', 'btn danger', 'Стоп'); stop.addEventListener('click', mineStop); actions.appendChild(stop);
+    } else {
+      const run = el('button', 'btn primary', mine.result ? 'Проанализировать заново' : 'Анализировать диалоги');
+      run.disabled = !(p && sc && sc.found && sc.sessions);
+      run.addEventListener('click', mineRun); actions.appendChild(run);
+    }
+    head.appendChild(actions);
+    head.appendChild(el('div', 'mine-note', 'Обкатка: в реальные CLAUDE.md / память ничего не пишется — только сбор и показ реестра.'));
+    mineEl.appendChild(head);
+
+    if (mine.running) {
+      const prog = el('div', 'mine-progress');
+      const line = el('div', 'mine-prog-line');
+      line.appendChild(el('span', 'mine-spinner'));
+      line.appendChild(el('span', 'mine-prog-tx', 'Claude анализирует историю диалогов…'));
+      const elapsed = el('span', 'mine-elapsed', '0 с'); elapsed.id = 'mine-elapsed'; line.appendChild(elapsed);
+      prog.appendChild(line);
+      const pre = el('pre', 'mine-live'); pre.id = 'mine-live'; pre.textContent = mine.raw || '…'; prog.appendChild(pre);
+      mineEl.appendChild(prog);
+    }
+
+    const res = mine.result;
+    if (res) {
+      const body = el('div', 'mine-body');
+      const summ = el('div', 'mine-summary');
+      if (res.summary) summ.appendChild(el('div', 'mine-summary-tx', res.summary));
+      const counts = el('div', 'mine-counts');
+      const byPlace = {}; for (const k of PLACE_KEYS) byPlace[k] = 0;
+      for (const r of res.rules) byPlace[placeOf(r)]++;
+      counts.appendChild(chip('всего: ' + res.rules.length, 'total'));
+      for (const pl of PLACEMENTS) if (byPlace[pl.key]) counts.appendChild(chip(pl.label + ': ' + byPlace[pl.key], 'pl-' + pl.cls));
+      summ.appendChild(counts);
+      if (res.meta && res.meta.truncated) summ.appendChild(el('div', 'mine-trunc', '⚠ История длинная — анализировалась только её часть (последние сессии).'));
+      body.appendChild(summ);
+
+      const filters = el('div', 'mine-filters');
+      const q = el('input', 'mine-search'); q.type = 'search'; q.placeholder = 'Поиск по правилам…'; q.value = mine.q;
+      q.addEventListener('input', () => { mine.q = q.value; renderGroups(); });
+      filters.appendChild(q);
+      const catSel = el('select', 'mine-sel'); catSel.appendChild(new Option('все категории', ''));
+      for (const [k, v] of Object.entries(CAT_RU)) catSel.appendChild(new Option(v, k));
+      catSel.value = mine.cat; catSel.addEventListener('change', () => { mine.cat = catSel.value; renderGroups(); });
+      filters.appendChild(catSel);
+      const confSel = el('select', 'mine-sel'); confSel.appendChild(new Option('любая уверенность', ''));
+      for (const [k, v] of Object.entries(CONF_RU)) confSel.appendChild(new Option(v, k));
+      confSel.value = mine.conf; confSel.addEventListener('change', () => { mine.conf = confSel.value; renderGroups(); });
+      filters.appendChild(confSel);
+      filters.appendChild(el('div', 'mine-fl-sp'));
+      const cpAll = el('button', 'btn', 'Копировать всё'); cpAll.addEventListener('click', () => { try { navigator.clipboard.writeText(mineExportText()); toast('Реестр скопирован', { kind: 'ok' }); } catch (_) {} });
+      filters.appendChild(cpAll);
+      const exp = el('button', 'btn', 'Экспорт JSON'); exp.addEventListener('click', mineExportJson);
+      filters.appendChild(exp);
+      body.appendChild(filters);
+
+      const groups = el('div', 'mine-groups'); groups.id = 'mine-groups'; body.appendChild(groups);
+      mineEl.appendChild(body);
+      renderGroups();
+    } else if (!mine.running) {
+      const intro = el('div', 'mine-intro');
+      intro.appendChild(el('div', 'mine-intro-h', 'Анализ диалогов с агентами'));
+      intro.appendChild(el('div', 'mine-intro-tx', 'Claude прочитает историю ваших диалогов по этому проекту (исправления, грабли, договорённости) и соберёт реестр правил с рекомендацией, куда каждое положить — в главный контекст, проектный, AGENTS.md или память. Это обкатка: реальные файлы не трогаются.'));
+      mineEl.appendChild(intro);
+    }
+  }
+
+  document.querySelectorAll('#ctx-tabs .ctx-tab').forEach((b) => b.addEventListener('click', () => setTab(b.dataset.tab)));
 
   // dirty-guard на закрытие окна: пока есть неподтверждённые правки канвы — спросить перед закрытием.
   function confirmClose(proceed) {

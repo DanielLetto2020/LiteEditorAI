@@ -3403,4 +3403,83 @@ body.pm-compact .pm-btn { padding: 6px 11px; font-size: 12px; }
 .qb-badge-pomo { background: var(--info); }
 .qb-badge-pomo.break { background: var(--green); }
 
+/* ── «Контекст»: вкладки модуля (Канва ↔ Анализ диалогов) ─────────────────────────────── */
+.ctx-tabs { display: flex; gap: 2px; padding: 6px 8px 0; border-bottom: 1px solid var(--border); flex: 0 0 auto; }
+.ctx-tab { background: none; border: none; color: var(--text-dim); font-size: 12.5px; padding: 7px 14px; border-radius: 8px 8px 0 0; cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px; }
+.ctx-tab:hover { background: var(--hover); color: var(--text); }
+.ctx-tab.active { color: var(--text); border-bottom-color: var(--green); font-weight: 600; }
+
+/* ── вкладка «Анализ диалогов» (реестр правил из истории) ─────────────────────────────── */
+.ctx-mine { display: none; flex-direction: column; flex: 1 1 auto; min-height: 0; overflow: auto; }
+.mine-head { display: flex; flex-direction: column; gap: 6px; padding: 12px 14px; border-bottom: 1px solid var(--border); flex: 0 0 auto; }
+.mine-proj { font-weight: 600; color: var(--text); font-size: 13px; }
+.mine-scan { font-size: 12px; color: var(--text-dim); }
+.mine-scan.mine-empty { color: var(--text-mute); }
+.mine-actions { display: flex; gap: 8px; align-items: center; margin-top: 2px; }
+.ctx-mine .btn.danger { background: var(--danger); border-color: var(--danger); color: #fff; font-weight: 600; }
+.mine-note { font-size: 11px; color: var(--text-mute); }
+
+.mine-progress { padding: 12px 14px; border-bottom: 1px solid var(--border); display: flex; flex-direction: column; gap: 8px; }
+.mine-prog-line { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--text); }
+.mine-spinner { width: 13px; height: 13px; border: 2px solid var(--border-strong); border-top-color: var(--green); border-radius: 50%; animation: mineSpin 0.8s linear infinite; }
+@keyframes mineSpin { to { transform: rotate(360deg); } }
+.mine-elapsed { margin-left: auto; font-size: 11.5px; color: var(--text-mute); font-variant-numeric: tabular-nums; }
+.mine-live { margin: 0; max-height: 150px; overflow: auto; background: var(--bg-input); border: 1px solid var(--border); border-radius: var(--radius); padding: 8px 10px; font-size: 11px; line-height: 1.45; color: var(--text-dim); white-space: pre-wrap; word-break: break-word; }
+
+.mine-intro { padding: 26px 22px; color: var(--text-dim); max-width: 560px; }
+.mine-intro-h { font-size: 14px; font-weight: 600; color: var(--text); margin-bottom: 8px; }
+.mine-intro-tx { font-size: 12.5px; line-height: 1.55; }
+
+.mine-body { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }
+.mine-summary { padding: 12px 14px; border-bottom: 1px solid var(--border); display: flex; flex-direction: column; gap: 8px; }
+.mine-summary-tx { font-size: 12.5px; line-height: 1.5; color: var(--text); }
+.mine-counts { display: flex; flex-wrap: wrap; gap: 6px; }
+.mine-trunc { font-size: 11.5px; color: var(--warn); }
+
+.mine-chip { display: inline-flex; align-items: center; font-size: 11px; padding: 2px 8px; border-radius: 999px; background: var(--surface); color: var(--text-dim); border: 1px solid var(--border); white-space: nowrap; }
+.mine-chip.total { font-weight: 600; color: var(--text); }
+.mine-chip.cat { background: var(--accent-soft); color: var(--text); border-color: transparent; }
+.mine-chip.occ { color: var(--text-mute); }
+.mine-chip.conf.c-high { color: var(--green-bright); border-color: var(--green-dim); }
+.mine-chip.conf.c-medium { color: var(--warn); }
+.mine-chip.conf.c-low { color: var(--text-mute); }
+.mine-chip.pl-glob { border-left: 3px solid var(--green); }
+.mine-chip.pl-proj { border-left: 3px solid var(--info); }
+.mine-chip.pl-agents { border-left: 3px solid var(--warn); }
+.mine-chip.pl-mem { border-left: 3px solid var(--star); }
+.mine-chip.pl-skip { border-left: 3px solid var(--text-mute); }
+
+.mine-filters { display: flex; align-items: center; gap: 8px; padding: 10px 14px; border-bottom: 1px solid var(--border); flex-wrap: wrap; flex: 0 0 auto; }
+.mine-search { flex: 1 1 160px; min-width: 120px; background: var(--bg-input); border: 1px solid var(--border); border-radius: var(--radius); color: var(--text); padding: 6px 10px; font-size: 12px; }
+.mine-search:focus { outline: none; border-color: var(--border-accent); }
+.mine-sel { background: var(--bg-input); border: 1px solid var(--border); border-radius: var(--radius); color: var(--text); padding: 5px 8px; font-size: 11.5px; }
+.mine-fl-sp { flex: 1 1 8px; }
+
+.mine-groups { padding: 8px 14px 18px; display: flex; flex-direction: column; gap: 16px; overflow: auto; }
+.mine-group { display: flex; flex-direction: column; gap: 8px; }
+.mine-group-head { display: flex; align-items: baseline; gap: 8px; padding-bottom: 4px; border-bottom: 1px solid var(--border); }
+.mine-group-dot { width: 8px; height: 8px; border-radius: 50%; align-self: center; background: var(--text-mute); }
+.mine-group.pl-glob .mine-group-dot { background: var(--green); }
+.mine-group.pl-proj .mine-group-dot { background: var(--info); }
+.mine-group.pl-agents .mine-group-dot { background: var(--warn); }
+.mine-group.pl-mem .mine-group-dot { background: var(--star); }
+.mine-group.pl-skip .mine-group-dot { background: var(--text-mute); }
+.mine-group-label { font-weight: 600; color: var(--text); font-size: 12.5px; }
+.mine-group-sub { font-size: 11px; color: var(--text-mute); }
+.mine-group-n { margin-left: auto; font-size: 11px; color: var(--text-dim); background: var(--surface); border-radius: 999px; padding: 1px 8px; }
+
+.mine-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 10px; }
+.mine-card { background: var(--panel); border: 1px solid var(--border); border-left: 3px solid var(--border-strong); border-radius: var(--radius); padding: 10px 11px; display: flex; flex-direction: column; gap: 7px; }
+.mine-card.conf-high { border-left-color: var(--green); }
+.mine-card.conf-medium { border-left-color: var(--warn); }
+.mine-card.conf-low { border-left-color: var(--text-mute); }
+.mine-card-top { display: flex; align-items: flex-start; gap: 6px; }
+.mine-card-title { font-weight: 600; font-size: 12.5px; color: var(--text); line-height: 1.35; flex: 1 1 auto; }
+.mine-copy { flex: 0 0 auto; padding: 2px; opacity: 0.5; }
+.mine-card:hover .mine-copy { opacity: 1; }
+.mine-chips { display: flex; flex-wrap: wrap; gap: 5px; }
+.mine-detail { font-size: 11.5px; line-height: 1.5; color: var(--text-dim); }
+.mine-evi { font-size: 11px; line-height: 1.45; color: var(--text-mute); font-style: italic; }
+.mine-empty { color: var(--text-mute); font-size: 12px; padding: 12px 2px; }
+
 .hidden { display: none !important; }

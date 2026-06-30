@@ -123,6 +123,10 @@
           <button id="ctx-help" class="icon-btn" title="Как это работает?" data-icon="help"></button>
           <button id="ctx-settings" class="icon-btn" title="Настройки (бекапы, автосборка)" data-icon="sliders"></button>
         </div>
+        <div id="ctx-tabs" class="ctx-tabs"><!-- верхние вкладки модуля: Канва ↔ Анализ диалогов -->
+          <button class="ctx-tab active" data-tab="canvas" title="Канва контекста агента (блоки → CLAUDE.md/AGENTS.md)">Канва</button>
+          <button class="ctx-tab" data-tab="mine" title="Извлечь правила из истории диалогов с агентами по этому проекту">Анализ диалогов</button>
+        </div>
         <div id="ctx-agents" class="ctx-agents"></div><!-- переключатель агента (Claude/Codex): рендерится в contextgraph.js -->
         <div id="ctx-profiles" class="ctx-profiles"></div><!-- вкладки-профили текущего агента -->
         <div id="ctx-stats" class="ctx-stats"></div>
@@ -154,6 +158,7 @@
             <button id="ctx-ob-close" class="icon-btn" title="Скрыть подсказку" data-icon="x"></button>
           </div>
         </div>
+        <div id="ctx-mine" class="ctx-mine"><!-- вкладка «Анализ диалогов»: реестр правил из истории (рендерится в contextgraph.js) --></div>
       </section>
 
       <!-- Git больше НЕ отдельное окно: вселён в окно вивера (#commit-pane слева / #log-pane снизу / #vcs-topbar). -->
