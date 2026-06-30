@@ -44,8 +44,14 @@ jobs:
         run: node build.js
 
       - name: Build installers
-        # --publish never: electron-builder только собирает; релиз публикуем шагом ниже
-        run: npx --no-install electron-builder ${{ matrix.target }} --publish never
+        # --publish never: electron-builder только собирает; релиз публикуем шагом ниже.
+        # Retry: macOS-раннеры периодически роняют dmgbuild с «hdiutil: create failed - Device not
+        # configured» (флака виртуализации, не дефект сборки) — одна повторная попытка обычно проходит.
+        shell: bash
+        run: |
+          npx --no-install electron-builder ${{ matrix.target }} --publish never \
+            || (echo "::warning::electron-builder упал, повтор (флака macOS hdiutil/dmgbuild)…" \
+                && sleep 15 && npx --no-install electron-builder ${{ matrix.target }} --publish never)
 
       - name: Attach to release
         uses: softprops/action-gh-release@v2
