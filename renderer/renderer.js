@@ -26,7 +26,7 @@ import { el, icon, iconBtn, hydrateIcons, toast, makeModal, showConfirm, showPro
 import { initExtensions } from './modules/extensions.js';
 // initFiles — вивер+дерево мигрированы в отдельное окно (renderer/module-entry.js).
 
-const APP_VERSION = 'alpha v1.1.48';
+const APP_VERSION = 'alpha v1.1.49';
 const GUTTER = 5;
 // Системный терминал («Система · ~») мигрирован в отдельное окно (renderer/modules/scratch.js):
 // его id `__scratch__::tN` маршрутизируются main'ом в окно-владельца, в ядре их больше не обрабатываем.
@@ -912,6 +912,7 @@ const HOTKEYS = [
   { test: (e) => e.code === 'Equal' || e.code === 'NumpadAdd',      run: () => bumpFont(1) },
   { test: (e) => e.code === 'Minus' || e.code === 'NumpadSubtract', run: () => bumpFont(-1) },
   { test: (e) => e.code === 'Tab',                                  run: (e) => cycleProject(e.shiftKey ? -1 : 1) },
+  { test: (e) => e.code === 'KeyF' && e.shiftKey,                   run: () => showGlobalSearch() }, // Ctrl+Shift+F — поиск по всем сессиям (идея 9)
   { test: (e) => /^Digit[1-9]$/.test(e.code) && !e.shiftKey,        run: (e) => { const p = projects[+e.code.slice(5) - 1]; if (p) setActive(p.id); } },
 ];
 function runGlobalHotkey(e) {
@@ -969,7 +970,7 @@ function createSession(proj, name) {
       if (e.ctrlKey && e.shiftKey && e.code === 'KeyT') { addTab(); return false; }
       if (e.ctrlKey && e.shiftKey && e.code === 'KeyW') { const s = activeSessionId(); if (s) closeTab(s); return false; }
       if (e.ctrlKey && (e.key === 'PageDown' || e.key === 'PageUp')) { cycleTab(e.key === 'PageDown' ? 1 : -1); return false; }
-      if (e.ctrlKey && !e.altKey && e.code === 'KeyF') { openTermSearch(); return false; }
+      if (e.ctrlKey && !e.altKey && !e.shiftKey && e.code === 'KeyF') { openTermSearch(); return false; } // Ctrl+F (без Shift) — поиск в этом терминале; Ctrl+Shift+F уходит в глобальный (реестр)
     },
   });
   term.registerLinkProvider(fileLinkProvider(term, proj.path));
@@ -1252,6 +1253,71 @@ function runTermSearch(dir) {
     activeMatchColorOverviewRuler: (css.getPropertyValue('--add') || '#3ddc84').trim() || '#3ddc84',
   } };
   if (dir < 0) rec.search.findPrevious(q, opts); else rec.search.findNext(q, opts);
+}
+
+// ── Глобальный поиск по выводу ВСЕХ открытых сессий (идея 9) ───────────────────
+// Когда параллельно работают несколько агентов, важно быстро найти «где это проскочило».
+// Сканируем scrollback каждого терминала (read-only, PTY не трогаем), показываем совпадения
+// сгруппированно по сессии; клик переключает на сессию и подсвечивает строку.
+const GS_PER_SESSION = 60;   // потолок совпадений на одну сессию
+const GS_TOTAL = 400;        // общий потолок строк в выдаче
+function scanTermBuffer(term, q) {
+  const out = [];
+  try {
+    const buf = term.buffer.active;
+    const ql = q.toLowerCase();
+    for (let y = 0; y < buf.length && out.length < GS_PER_SESSION; y++) {
+      const line = buf.getLine(y);
+      if (!line) continue;
+      const text = line.translateToString(true);
+      if (text.toLowerCase().includes(ql)) out.push({ y, text: text.trim().slice(0, 200) });
+    }
+  } catch (_) {}
+  return out;
+}
+function jumpToSession(projId, sid) {
+  setActive(projId);
+  const t = tabsByProj.get(projId);
+  if (t && t.sessions.includes(sid)) { t.active = sid; saveProjTabs(); }
+  showActiveTerminal();
+}
+function showGlobalSearch() {
+  const { m, close } = makeModal(`
+    <h2>🔎 Поиск по всем терминалам</h2>
+    <input type="text" id="gs-q" placeholder="искать в выводе всех открытых сессий…" spellcheck="false" autocomplete="off">
+    <div id="gs-results" class="gs-results"></div>`);
+  const input = m.querySelector('#gs-q');
+  const box = m.querySelector('#gs-results');
+  let timer = null;
+  const run = () => {
+    const q = input.value.trim();
+    box.innerHTML = '';
+    if (q.length < 2) { box.appendChild(el('div', 'gs-empty', 'Введите минимум 2 символа')); return; }
+    let total = 0;
+    for (const [sid, rec] of terms) {
+      if (total >= GS_TOTAL) break;
+      const hits = scanTermBuffer(rec.term, q);
+      if (!hits.length) continue;
+      const proj = projects.find((p) => p.id === rec.projId);
+      box.appendChild(el('div', 'gs-group', `${proj ? proj.name : '—'} · ${rec.name} — совпадений: ${hits.length}`));
+      for (const h of hits) {
+        if (total >= GS_TOTAL) break;
+        const row = el('div', 'gs-hit');
+        row.appendChild(el('span', 'gs-ln', String(h.y)));
+        row.appendChild(el('span', 'gs-text', h.text));
+        row.onclick = () => {
+          jumpToSession(rec.projId, sid);
+          requestAnimationFrame(() => { try { rec.term.scrollToLine(Math.max(0, h.y - 2)); rec.search.findNext(q); } catch (_) {} });
+          close();
+        };
+        box.appendChild(row); total++;
+      }
+    }
+    if (!total) box.appendChild(el('div', 'gs-empty', 'Ничего не найдено в открытых сессиях'));
+  };
+  input.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(run, 160); });
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { clearTimeout(timer); run(); } });
+  setTimeout(() => input.focus(), 30);
 }
 
 // guardDirty (защита несохранённых правок вивера при переключении) переехал в files.js → Files.guardDirty.
@@ -2335,7 +2401,8 @@ function paletteActions() {
   acts.push({ label: 'ИИ компания — команда агентов над проектом', run: () => openModule('company') });
   acts.push({ label: 'Помодоро — таймер работы/отдыха', run: () => openModule('pomodoro') });
   acts.push({ label: 'Режим «один терминал»', run: toggleSingle });
-  acts.push({ label: 'Поиск в терминале', run: openTermSearch });
+  acts.push({ label: 'Поиск в терминале', hint: 'Ctrl+F', run: openTermSearch });
+  acts.push({ label: 'Поиск по всем терминалам', hint: 'Ctrl+Shift+F', run: showGlobalSearch });
   acts.push({ label: 'Очистить терминал', run: () => clearTerminal() });
   acts.push({ label: 'Перезапустить терминал', run: () => restartTerminal() });
   acts.push({ label: 'Настройки…', run: showSettings });

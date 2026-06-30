@@ -419,6 +419,16 @@ body.viewer-zen #vcs-topbar { display: none !important; }
 #quickbar.hidden { display: none; }
 #quickbar::-webkit-scrollbar { height: 0; }
 .qb-btn { flex: 0 0 auto; position: relative; display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 26px; }
+/* модалка глобального поиска по терминалам (идея 9) */
+#gs-q { width: 100%; box-sizing: border-box; margin-bottom: 10px; }
+.gs-results { max-height: 50vh; overflow-y: auto; }
+.gs-group { font-size: 11px; font-weight: 700; color: var(--accent-glow); margin: 10px 0 4px; padding-bottom: 3px; border-bottom: 1px solid var(--border-strong); }
+.gs-hit { display: flex; gap: 8px; align-items: baseline; padding: 3px 4px; border-radius: 5px; cursor: pointer; font-family: "JetBrains Mono", monospace; font-size: 12px; }
+.gs-hit:hover { background: var(--accent-soft); }
+.gs-ln { flex: 0 0 auto; min-width: 34px; text-align: right; color: var(--text-dim); font-size: 10.5px; }
+.gs-text { flex: 1 1 auto; white-space: pre; overflow: hidden; text-overflow: ellipsis; color: var(--text); }
+.gs-empty { color: var(--text-dim); font-size: 12px; padding: 8px 2px; }
+
 /* модуль с открытым окном — акцентная точка-индикатор снизу кнопки (идея 3) */
 .qb-btn.open { color: var(--accent-glow); }
 .qb-btn.open::after { content: ''; position: absolute; bottom: 1px; left: 50%; transform: translateX(-50%); width: 4px; height: 4px; border-radius: 50%; background: var(--accent-glow); }
