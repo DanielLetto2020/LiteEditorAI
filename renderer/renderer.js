@@ -26,7 +26,7 @@ import { el, icon, iconBtn, hydrateIcons, toast, makeModal, showConfirm, showPro
 import { initExtensions } from './modules/extensions.js';
 // initFiles — вивер+дерево мигрированы в отдельное окно (renderer/module-entry.js).
 
-const APP_VERSION = 'alpha v1.1.56';
+const APP_VERSION = 'alpha v1.1.57';
 const GUTTER = 5;
 // Системный терминал («Система · ~») мигрирован в отдельное окно (renderer/modules/scratch.js):
 // его id `__scratch__::tN` маршрутизируются main'ом в окно-владельца, в ядре их больше не обрабатываем.
@@ -2299,30 +2299,63 @@ function showLogs() {
 function showSettings() {
   const { m, close } = makeModal(`
     <h2>🎚 Настройки</h2>
-    <label class="set-row"><span>Уведомления о завершении агента</span><input type="checkbox" id="st-notif"></label>
-    <label class="set-row"><span>Звук уведомлений</span><input type="checkbox" id="st-sound"></label>
-    <label class="set-row"><span>Тишина до «готов», мс</span><input type="number" id="st-idle" min="300" max="6000" step="100"></label>
-    <label class="set-row"><span>Размер шрифта</span><input type="number" id="st-font" min="9" max="24"></label>
-    <label class="set-row"><span>Заставка «матрица» по бездействию</span><input type="checkbox" id="st-ss"></label>
-    <label class="set-row"><span>Запускать после простоя, мин</span><input type="number" id="st-ss-min" min="1" max="180" step="1"></label>
-    <label class="set-row"><span>Тема</span><select id="st-theme"></select></label>
-    <div class="set-row col"><span>Оболочка терминала — применяется к новым терминалам (старые — ⟳)</span>
-      <div class="path-pick">
-        <select id="st-shell"></select>
-        <input type="text" id="st-shell-path" placeholder="путь к исполняемому файлу" spellcheck="false" style="display:none">
-      </div></div>
-    <div class="set-row col"><span>Рабочая папка — куда создаются новые проекты</span>
-      <div class="path-pick">
-        <input type="text" id="st-wd" readonly placeholder="не задана">
-        <button class="btn" id="st-wd-pick">Выбрать</button>
-        <button class="btn" id="st-wd-clear" title="Очистить">✕</button>
-      </div></div>
-    <div class="set-row col"><span>Папки для скана — их подпапки добавляются как проекты при запуске</span>
-      <div id="st-scan" class="scan-list"></div>
-      <button class="btn" id="st-scan-add">＋ Добавить папку</button></div>
-    <div class="set-row col"><span>Доступ с пульта — папки, которые можно смотреть/скачивать с планшета (только чтение). «Стор» доступен всегда.</span>
-      <div id="st-shares" class="scan-list"></div>
-      <button class="btn" id="st-share-add">＋ Открыть папку пульту</button></div>
+    <div class="set-groups">
+      <section class="set-group">
+        <div class="set-group-h"><span class="set-ic">🔔</span> Уведомления</div>
+        <div class="set-group-body">
+          <label class="set-row"><span>Уведомления о завершении агента</span><input type="checkbox" id="st-notif"></label>
+          <label class="set-row"><span>Звук уведомлений</span><input type="checkbox" id="st-sound"></label>
+          <label class="set-row"><span>Тишина до «готов», мс</span><input type="number" id="st-idle" min="300" max="6000" step="100"></label>
+        </div>
+      </section>
+      <section class="set-group">
+        <div class="set-group-h"><span class="set-ic">🎨</span> Внешний вид</div>
+        <div class="set-group-body">
+          <label class="set-row"><span>Тема</span><select id="st-theme"></select></label>
+          <label class="set-row"><span>Размер шрифта</span><input type="number" id="st-font" min="9" max="24"></label>
+        </div>
+      </section>
+      <section class="set-group">
+        <div class="set-group-h"><span class="set-ic">🟩</span> Заставка «матрица»</div>
+        <div class="set-group-body">
+          <label class="set-row"><span>Запускать по бездействию</span><input type="checkbox" id="st-ss"></label>
+          <label class="set-row"><span>Порог простоя, мин</span><input type="number" id="st-ss-min" min="1" max="180" step="1"></label>
+          <div class="set-hint">Кнопка «матрица» в шапке запускает заставку вручную в любой момент. Выход — клик, движение мыши или Esc.</div>
+        </div>
+      </section>
+      <section class="set-group">
+        <div class="set-group-h"><span class="set-ic">🖥️</span> Терминал</div>
+        <div class="set-group-body">
+          <div class="set-row col"><span>Оболочка терминала — применяется к новым терминалам (старые — ⟳)</span>
+            <div class="path-pick">
+              <select id="st-shell"></select>
+              <input type="text" id="st-shell-path" placeholder="путь к исполняемому файлу" spellcheck="false" style="display:none">
+            </div></div>
+        </div>
+      </section>
+      <section class="set-group">
+        <div class="set-group-h"><span class="set-ic">📁</span> Проекты и папки</div>
+        <div class="set-group-body">
+          <div class="set-row col"><span>Рабочая папка — куда создаются новые проекты</span>
+            <div class="path-pick">
+              <input type="text" id="st-wd" readonly placeholder="не задана">
+              <button class="btn" id="st-wd-pick">Выбрать</button>
+              <button class="btn" id="st-wd-clear" title="Очистить">✕</button>
+            </div></div>
+          <div class="set-row col"><span>Папки для скана — их подпапки добавляются как проекты при запуске</span>
+            <div id="st-scan" class="scan-list"></div>
+            <button class="btn" id="st-scan-add">＋ Добавить папку</button></div>
+        </div>
+      </section>
+      <section class="set-group">
+        <div class="set-group-h"><span class="set-ic">📱</span> Пульт</div>
+        <div class="set-group-body">
+          <div class="set-row col"><span>Доступ с пульта — папки, которые можно смотреть/скачивать с планшета (только чтение). «Стор» доступен всегда.</span>
+            <div id="st-shares" class="scan-list"></div>
+            <button class="btn" id="st-share-add">＋ Открыть папку пульту</button></div>
+        </div>
+      </section>
+    </div>
     <div class="modal-actions"><button class="btn primary" id="st-ok">Готово</button></div>`);
   const notif = m.querySelector('#st-notif'); notif.checked = settings.notifications;
   const sound = m.querySelector('#st-sound'); sound.checked = settings.sound;
