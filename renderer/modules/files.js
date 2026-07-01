@@ -186,6 +186,7 @@ export function initFiles(host) {
       set = set.map(tr.changes);
       for (const e of tr.effects) {
         if (!e.is(setAuthorEffect)) continue;
+        if (e.value.reset) set = RangeSet.empty;   // загрузка нового файла → сбросить пометки прошлого (иначе маппятся на строку 1)
         const doc = tr.state.doc;
         const byPos = new Map();
         const it = set.iter(); while (it.value) { byPos.set(it.from, it.value); it.next(); }   // существующие
@@ -205,6 +206,9 @@ export function initFiles(host) {
     if (!editor) return;
     editor.dispatch({ effects: authComp.reconfigure(agentMode ? [authorField, authorGutter] : []) });
   }
+  // Смена файла в режиме агента → снять пометки авторства прошлого файла (при полной замене дока они
+  // иначе схлопываются на строку 1 и залипают). Вне режима агента поле не в state — диспатч безвреден.
+  function clearAuthors() { if (agentMode && editor) editor.dispatch({ effects: setAuthorEffect.of({ marks: [], reset: true }) }); }
   // diff концов: общий префикс/суффикс строк → изменённый блок в НОВОМ тексте (для пометки правок агента).
   function diffChangedLines(oldText, newText) {
     const a = oldText.split('\n'), b = newText.split('\n');
@@ -434,6 +438,7 @@ export function initFiles(host) {
     if (diffMode) exitDiff(false);
     exitPreview();
     hideReloadBar();
+    clearAuthors();                  // новый файл → снять слой авторства прошлого (live-reload агента идёт мимо openFile)
     const kind = previewKind(filePath);
 
     if (kind === 'image') { // binary — no editable source
@@ -621,7 +626,9 @@ export function initFiles(host) {
   }
   function setEditorText(text, lang) {
     loadingDoc = true;
-    editor.dispatch({ changes: { from: 0, to: editor.state.doc.length, insert: text }, effects: langComp.reconfigure(lang) });
+    // git-метки чистим В ТОЙ ЖЕ транзакции: иначе при полной замене дока старые маппятся на строку 1 и
+    // мелькают до прихода свежих из updateGitGutter (async). Закладки перерисует refreshBookmarkGutter ниже.
+    editor.dispatch({ changes: { from: 0, to: editor.state.doc.length, insert: text }, effects: [langComp.reconfigure(lang), setGitGutterEffect.of([])] });
     loadingDoc = false;
     symCacheFile = null;
     updateStatus(editor.state);
@@ -1603,8 +1610,7 @@ export function initFiles(host) {
   function showRawDiff(label, diff) {
     if (!viewerOpen) setViewerOpen(true);
     guardDirty(() => {
-      const seq = ++openSeq; clearGitDiff();
-      void seq;
+      ++openSeq; clearGitDiff();      // инвалидируем возможный in-flight openFile/showGitDiff (без await — токен не сверяем)
       currentFile = null;
       $('#viewer-filename').textContent = label || 'diff';
       setEditorText('', []); markDirty(false); clearGitGutter();
@@ -1779,12 +1785,7 @@ export function initFiles(host) {
 
   return {
     mount, setOpen,
-    // состояние для ядра
-    isOpen: () => viewerOpen,
-    isDirty: () => dirty,
-    currentFilePath: () => currentFile,
-    editorHasFocus: () => !!(editor && editor.hasFocus),
-    previewKindOfCurrent: () => previewKind(currentFile || ''),
+    isOpen: () => viewerOpen,   // generic-хук жизненного цикла модуля-окна
     // действия
     setViewerOpen, openFile, guardDirty, saveCurrent, clearViewer,
     renderTree, refreshTree, refreshViewerForActive,
