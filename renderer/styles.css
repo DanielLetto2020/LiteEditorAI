@@ -2439,7 +2439,8 @@ body.resizing { cursor: col-resize; user-select: none; }
 #viewer-diff.on { color: var(--green); border-color: var(--border-accent); }
 
 /* side-by-side дифф (@codemirror/merge): тумблер вида + контейнер MergeView */
-#diff-view.split { display: flex; flex-direction: column; overflow: hidden; padding: 0; }
+/* display диффа задаёт JS инлайном (flex для сплита / block для unified) — класс даёт остальное */
+#diff-view.split { flex-direction: column; overflow: hidden; padding: 0; }
 .diff-toolbar {
   display: flex; gap: 4px; padding: 5px 10px; flex: 0 0 auto;
   border-bottom: 1px solid var(--border); background: var(--panel);
@@ -2452,10 +2453,11 @@ body.resizing { cursor: col-resize; user-select: none; }
 }
 .diff-viewbtn:hover { color: var(--text); background: var(--hover); }
 .diff-viewbtn.on { color: var(--green); border-color: var(--border-accent); background: var(--hover); }
-.diff-merge { flex: 1; min-height: 0; }
-.diff-merge .cm-mergeView, .diff-merge .cm-mergeViewEditors { height: 100%; }
-.diff-merge .cm-mergeViewEditor { overflow: hidden; }
-.diff-merge .cm-editor { height: 100%; }
+/* MergeView скроллится ВНЕШНИМ .cm-mergeView (его база даёт внутренним скроллерам
+   height:auto/overflow:visible !important) — внутренним панелям высоту НЕ фиксировать,
+   иначе скролл пропадает. Контейнеру — фикс. высота, .cm-mergeView — 100% + overflow:auto. */
+.diff-merge { flex: 1; min-height: 0; overflow: hidden; }
+.diff-merge .cm-mergeView { height: 100%; overflow-y: auto; }
 
 /* Blame-гаттер (аннотация «автор · возраст» слева, PhpStorm Annotate) */
 .cm-blame-gutter { min-width: 148px; max-width: 190px; border-right: 1px solid var(--border); }
@@ -2493,9 +2495,7 @@ body.resizing { cursor: col-resize; user-select: none; }
 .hist-right { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .hist-collabels { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 0 2px 6px; color: var(--text-dim); font-size: 11px; }
 .hist-diff { flex: 1; min-height: 0; border: 1px solid var(--border); border-radius: 9px; overflow: hidden; }
-.hist-diff .cm-mergeView, .hist-diff .cm-mergeViewEditors { height: 100%; }
-.hist-diff .cm-mergeViewEditor { overflow: hidden; }
-.hist-diff .cm-editor { height: 100%; }
+.hist-diff .cm-mergeView { height: 100%; overflow-y: auto; } /* скролл — внешний .cm-mergeView (см. .diff-merge) */
 
 /* ---------------- viewer preview (md / image / html) ---------------- */
 #preview-view { display: none; flex: 1; overflow: auto; background: var(--panel); }

@@ -6,7 +6,7 @@
 import {
   el, icon, iconBtn, toast, makeModal, showConfirm, showPrompt, hydrateIcons, setErrorSink, applyLayoutSwap, ICONS,
 } from './ui.js';
-import { createCodeEditor, languageFor } from './codeedit.js';
+import { createCodeEditor } from './codeedit.js';
 import { THEMES, TERM_THEME, DEFAULT_THEME, termThemeFor } from './themes.js';
 import { loadFastRenderer, applyUnicode11, copySelection } from './termutil.js';
 import '@xterm/xterm/css/xterm.css';
@@ -180,7 +180,7 @@ const layoutProxy = new Proxy({}, { get: () => 480 });
 function buildHost() {
   return {
     el, icon, iconBtn, makeModal, showConfirm, showPrompt, toast, applyLayoutSwap,
-    createCodeEditor, languageFor,
+    createCodeEditor, // языковая поддержка — модули импортируют languageFor/ensureLanguage из codeedit.js напрямую
     termTheme: () => termThemeFor(settings.theme), applyUnicode11, loadFastRenderer, copySelection,
     STORE, persist, settings, saveSettings,
     layout: layoutProxy, GUTTER: 0,

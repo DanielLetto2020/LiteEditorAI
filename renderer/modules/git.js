@@ -4,15 +4,16 @@
 // ahead/behind + fetch/pull/push), секция «Коммит» (изменения + сообщение + commit/stash), секция
 // «Ветки/Лог» (под-вкладки История/Ветки). Дифф выбранного файла показывается в ЦЕНТРЕ вивера
 // (host.gitDiff). Разрешение конфликтов merge — отдельная модалка (3 окна).
-// host: { activeProject, getActiveId, renderProjects, refreshTree, createCodeEditor, languageFor,
+// host: { activeProject, getActiveId, renderProjects, refreshTree, createCodeEditor,
 //         gitDiff(projPath, file, label) — показать дифф файла в центре вивера }
 import { el, icon, toast, showConfirm, showPrompt, baseName, makeModal } from '../ui.js';
+import { ensureLanguage } from '../codeedit.js';
 
 const $ = (sel) => document.querySelector(sel);
 const lite = window.lite;
 
 export function initGit(host) {
-  const { renderProjects, activeProject, getActiveId, refreshTree, createCodeEditor, languageFor } = host;
+  const { renderProjects, activeProject, getActiveId, refreshTree, createCodeEditor } = host;
   // openFile(abs,line) — открыть файл в вивере; menuRow/placeMenu/closeMenus — меню-слой окна (контекст-меню строки изменённого файла).
   const { openFile: hostOpenFile, menuRow, placeMenu, closeMenus } = host;
 
@@ -996,6 +997,8 @@ export function initGit(host) {
     const raw = read.content || '';
     const parsed0 = parseConflicts(raw);
     if (!parsed0.blocks.length) { toast('В файле нет маркеров конфликта', { kind: 'err' }); return; }
+    // язык грузим ДО makeModal: await после неё — окно для onClose в TDZ констант ed* (закрыли во время await)
+    const lang = await ensureLanguage(fileAbs);
 
     const { m, close } = makeModal(`
       <div class="mrg-head">
@@ -1025,7 +1028,6 @@ export function initGit(host) {
       () => { [edOurs, edTheirs, edResult].forEach((e) => { try { e && e.destroy(); } catch (_) {} }); }); // снять CodeMirror при закрытии — иначе утечка трёх инстансов на каждое открытие модалки
     m.classList.add('modal-merge');
     m.querySelector('.mrg-title').textContent = fname;
-    const lang = languageFor ? languageFor(fileAbs) : [];
 
     // три редактора (наше/их — read-only справочно; результат — редактируемый, сырой текст с маркерами)
     const oursSide = buildSide(parsed0, 'ours');

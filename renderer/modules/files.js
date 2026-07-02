@@ -4,7 +4,7 @@
 // живут вместе в одном модуле. DOM-скелет — в module.html (#viewer-pane/#tree-pane/#commit-pane/
 // #log-pane); host — window-host из module-entry.js; действия редактора идут через lite.editorBus.
 import { el, svgEl, icon, toast, showConfirm, showPrompt, baseName, makeModal } from '../ui.js';
-import { languageFor } from '../codeedit.js';
+import { languageFor, ensureLanguage } from '../codeedit.js';
 import { initGit } from './git.js';
 import { EditorView, keymap, lineNumbers, highlightActiveLine, highlightActiveLineGutter, drawSelection, gutter, GutterMarker, rectangularSelection, crosshairCursor, Decoration, ViewPlugin, WidgetType } from '@codemirror/view';
 import { EditorState, Compartment, StateField, StateEffect, RangeSet } from '@codemirror/state';
@@ -23,7 +23,7 @@ const $ = (sel) => document.querySelector(sel);
 
 export function initFiles(host) {
   // host (window-host из module-entry): { activeProject, getActiveId, settings, saveSettings,
-  //   STORE, persist, createCodeEditor, languageFor, closeWindow, menuRow, placeMenu, closeMenus }
+  //   STORE, persist, createCodeEditor, closeWindow, menuRow, placeMenu, closeMenus }
   const { menuRow, placeMenu, closeMenus } = host;
   const activeProject = () => host.activeProject();
   const settings = host.settings;
@@ -515,7 +515,8 @@ export function initFiles(host) {
     currentFile = filePath;
     commitOpenUI(filePath, kind);
     afterOpen(filePath);
-    setEditorText(res.content, languageFor(filePath));
+    // язык может грузиться лениво (первое открытие типа) → по готовности переконфигурируем, если файл ещё открыт
+    setEditorText(res.content, languageFor(filePath, langOnLoad(filePath)));
     markDirty(false);
     updateGitGutter(filePath);
     refreshBlameIfOn();                              // A7: подгрузить blame нового файла, если режим включён
@@ -667,7 +668,7 @@ export function initFiles(host) {
     const head = editor.state.selection.main.head;
     const oldText = editor.state.doc.toString();        // C21: до подмены — чтобы пометить, что тронул агент
     if (res.content === oldText) { markDirty(false); hideReloadBar(); return; } // эхо нашего же автосейва — не перезаливаем док (иначе сброс folds/курсора)
-    setEditorText(res.content, languageFor(currentFile));
+    setEditorText(res.content, languageFor(f, langOnLoad(f)));
     markDirty(false);
     hideReloadBar();
     updateGitGutter(currentFile);
@@ -685,6 +686,8 @@ export function initFiles(host) {
     if (!diffMode || currentFile !== f) return; // режим/файл могли смениться за время await
     showDiff(d.unified, d.pair, f);
   }
+  // Колбэк ленивой загрузки языка: переконфигурировать редактор, если этот файл всё ещё открыт.
+  const langOnLoad = (path) => (sup) => { if (currentFile === path && editor) editor.dispatch({ effects: langComp.reconfigure(sup) }); };
   function setEditorText(text, lang) {
     loadingDoc = true;
     // git-метки чистим В ТОЙ ЖЕ транзакции: иначе при полной замене дока старые маппятся на строку 1 и
@@ -735,9 +738,20 @@ export function initFiles(host) {
   let mergeView = null;    // живой MergeView сплит-вида (дестроим при перерисовке/выходе)
   let lastDiff = null;     // { unified, pair:{oldText,newText}|null, file } — для переключения вида без повторного IPC
   function destroyMergeView() { if (mergeView) { try { mergeView.destroy(); } catch (_) {} mergeView = null; } }
-  // Дифф рабочего файла vs HEAD: unified + пара для сплита одним заходом.
+  // Базовые read-only расширения панелей MergeView (сплит-дифф и модалка локальной истории) —
+  // один набор, чтобы файл выглядел одинаково во всех дифф-вьюхах. Массив иммутабелен, шарится.
+  function mergeRoExtensions(file, onLangLoad) {
+    return [
+      EditorState.readOnly.of(true), EditorView.editable.of(false),
+      lineNumbers(), drawSelection(),
+      syntaxHighlighting(defaultHighlightStyle, { fallback: true }), oneDark,
+      ...(file ? [].concat(languageFor(file, onLangLoad)) : []),
+    ];
+  }
+  // Дифф рабочего файла vs HEAD: unified + пара для сплита одним заходом. Заодно прогреваем язык —
+  // сплит тогда строится сразу с подсветкой, без страховочного перерендера.
   async function fetchWorkingDiff(projPath, file) {
-    const [r, pr] = await Promise.all([lite.git.fileDiff(projPath, file), lite.git.filePair(projPath, file)]);
+    const [r, pr] = await Promise.all([lite.git.fileDiff(projPath, file), lite.git.filePair(projPath, file), ensureLanguage(file)]);
     return { unified: (r && r.diff) || '', pair: (pr && pr.ok) ? { oldText: pr.oldText, newText: pr.newText } : null };
   }
   async function toggleDiff() {
@@ -772,6 +786,7 @@ export function initFiles(host) {
     const { unified, pair, file } = lastDiff;
     const split = pair && diffSplitOn();
     view.classList.toggle('split', !!split);
+    view.style.display = split ? 'flex' : 'block'; // сплиту нужен flex-контекст (тулбар + растянутый MergeView)
     if (pair && unified.trim()) view.appendChild(diffToolbar(!!split));
     if (!unified.trim()) {
       view.appendChild(el('div', 'diff-empty', 'Нет изменений относительно HEAD (или это не git-репозиторий).'));
@@ -780,13 +795,9 @@ export function initFiles(host) {
     if (split) {
       const box = el('div', 'diff-merge');
       view.appendChild(box);
-      // расширения иммутабельны — один массив можно шарить между обеими панелями
-      const ro = [
-        EditorState.readOnly.of(true), EditorView.editable.of(false),
-        lineNumbers(), drawSelection(),
-        syntaxHighlighting(defaultHighlightStyle, { fallback: true }), oneDark,
-        ...(file ? [].concat(languageFor(file)) : []),
-      ];
+      // Язык обычно уже прогрет (ensureLanguage в fetch-путях); если нет — страховочный
+      // одноразовый перерендер по готовности (второй заход берёт язык из кэша).
+      const ro = mergeRoExtensions(file, () => { if (diffMode && lastDiff && lastDiff.file === file) renderDiffBody(); });
       mergeView = new MergeView({
         a: { doc: pair.oldText, extensions: ro },
         b: { doc: pair.newText, extensions: ro },
@@ -819,9 +830,8 @@ export function initFiles(host) {
     if (previewMode) exitPreview(); // preview и diff взаимоисключающие — иначе оба оверлея накладываются
     diffMode = true;
     lastDiff = { unified: text || '', pair: pair || null, file: file || null };
-    renderDiffBody();
+    renderDiffBody();               // display (flex для сплита / block для unified) выставляет рендер
     $('#editor').style.display = 'none';
-    $('#diff-view').style.display = 'block';
     $('#viewer-diff').classList.add('on');
     updateStatus(editor.state);
   }
@@ -1712,6 +1722,7 @@ export function initFiles(host) {
     const r = await lite.fs.histList(file);
     const items = (r && r.items) || [];
     if (!items.length) { toast('Локальная история пуста — версии копятся по мере правок файла'); return; }
+    await ensureLanguage(file);      // прогреть язык до модалки: MergeView версий строится без reconfigure
     let cur = '';
     try { const rf = await lite.fs.readFile(file); if (rf && !rf.error) cur = rf.content; } catch (_) {}
     let mv = null;
@@ -1752,12 +1763,7 @@ export function initFiles(host) {
       selContent = rr.content;
       restoreBtn.disabled = false;
       destroyMv(); diffEl.replaceChildren();
-      const ro = [
-        EditorState.readOnly.of(true), EditorView.editable.of(false),
-        lineNumbers(), drawSelection(),
-        syntaxHighlighting(defaultHighlightStyle, { fallback: true }), oneDark,
-        ...[].concat(languageFor(file)),
-      ];
+      const ro = mergeRoExtensions(file); // язык прогрет ensureLanguage'ом при открытии модалки
       mv = new MergeView({ a: { doc: rr.content, extensions: ro }, b: { doc: cur, extensions: ro }, parent: diffEl, highlightChanges: true, gutter: true });
     };
     items.forEach((it, i) => {
@@ -1808,7 +1814,7 @@ export function initFiles(host) {
     if (!viewerOpen) setViewerOpen(true);
     guardDirty(async () => {                         // не затереть несохранённые правки открытого файла
       const seq = ++openSeq;                         // токен гонки: за время diffPair могли открыть другой файл
-      const [r, ra, rb] = await Promise.all([lite.fs.diffPair(a, b), lite.fs.readFile(a), lite.fs.readFile(b)]);
+      const [r, ra, rb] = await Promise.all([lite.fs.diffPair(a, b), lite.fs.readFile(a), lite.fs.readFile(b), ensureLanguage(b)]);
       if (seq !== openSeq) return;                   // обогнал более свежий open/дифф — не затираем его
       if (r && r.error) { toast(r.error, { kind: 'err' }); return; }
       currentFile = null; clearGitDiff();            // это сравнение, не редактируемый файл
@@ -1907,6 +1913,7 @@ export function initFiles(host) {
       const [r, pr] = await Promise.all([
         lite.git.commitFileDiff(projPath, hash, file),
         lite.git.commitFilePair(projPath, hash, file),
+        ensureLanguage(file),                        // прогрев подсветки для сплита
       ]);
       if (seq !== openSeq) return;
       currentFile = null;
@@ -1965,7 +1972,7 @@ export function initFiles(host) {
       activeProject, getActiveId: host.getActiveId,
       renderProjects: () => { try { lite.editorBus.refreshProjects(); } catch (_) {} }, // обновить git-бейджи в сайдбаре редактора
       refreshTree: () => { const p = activeProject(); if (p) renderTree(p); },             // прямой рендер дерева (без IPC-петли)
-      createCodeEditor: host.createCodeEditor, languageFor: host.languageFor,
+      createCodeEditor: host.createCodeEditor,
       STORE: host.STORE, persist: host.persist,
       gitDiff: (projPath, file, label) => showGitDiff(projPath, file, label),
       commitDiff: (projPath, hash, file, label) => showCommitDiff(projPath, hash, file, label), // дифф файла из коммита (дерево лога)

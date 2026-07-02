@@ -4,25 +4,46 @@
 import { EditorView, keymap, lineNumbers, drawSelection, Decoration } from '@codemirror/view';
 import { EditorState, StateField, StateEffect } from '@codemirror/state';
 import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands';
-import { syntaxHighlighting, defaultHighlightStyle, indentOnInput, bracketMatching } from '@codemirror/language';
+import { syntaxHighlighting, defaultHighlightStyle, indentOnInput, bracketMatching, LanguageDescription } from '@codemirror/language';
 import { oneDark } from '@codemirror/theme-one-dark';
-import { javascript } from '@codemirror/lang-javascript';
-import { python } from '@codemirror/lang-python';
-import { json } from '@codemirror/lang-json';
-import { markdown } from '@codemirror/lang-markdown';
-import { html } from '@codemirror/lang-html';
-import { css } from '@codemirror/lang-css';
+import { languages as LANG_REGISTRY } from '@codemirror/language-data';
 
-function extOf(name) { if (!name) return ''; const i = name.lastIndexOf('.'); return i > 0 ? name.slice(i + 1).toLowerCase() : ''; }
-
-const LANGS = {
-  js: javascript, jsx: javascript, mjs: javascript, cjs: javascript,
-  ts: () => javascript({ typescript: true }), tsx: () => javascript({ typescript: true, jsx: true }),
-  py: python, json, md: markdown, markdown, html, htm: html, css, scss: css,
-};
-export function languageFor(file) {
-  const make = LANGS[extOf(file)];
-  return make ? make() : [];
+// Полный реестр языков CodeMirror (@codemirror/language-data): PHP, Go, Rust, YAML, Shell и
+// сотни других через lezer-пакеты + legacy-modes. Дескрипторы матчатся по имени файла
+// (расширения + спец-имена вроде Dockerfile). ⚠️ Весь языковой корпус инлайнится esbuild'ом в
+// module-bundle (iife без code-splitting): import() лишь откладывает ПОСТРОЕНИЕ LanguageSupport
+// (резолв — следующий микротаск), а не загрузку кода — это осознанный трейдофф ради подсветки
+// любых файлов офлайн.
+const langCache = new Map();                    // desc.name -> LanguageSupport
+function langDescFor(file) {
+  const base = String(file || '').split(/[\\/]/).pop() || '';
+  if (!base) return null;
+  // matchFilename регистрозависим по расширению (реестр — в нижнем), а имена файлов приходят
+  // всякие (NOTES.MD, Main.PY). Сначала матчим как есть (спец-имена вроде Dockerfile), затем в
+  // нижнем регистре.
+  return LanguageDescription.matchFilename(LANG_REGISTRY, base)
+    || LanguageDescription.matchFilename(LANG_REGISTRY, base.toLowerCase());
+}
+// Синхронный вариант: отдаёт язык из кэша (или готовый support дескриптора); если поддержка ещё
+// не загружена — возвращает [] и грузит в фоне, по готовности зовёт onLoad(support) (вызывающий
+// сам переконфигурирует редактор). Для одноразовых вьюх без reconfigure — ensureLanguage ниже.
+export function languageFor(file, onLoad) {
+  const desc = langDescFor(file);
+  if (!desc) return [];
+  const cached = langCache.get(desc.name);
+  if (cached) return cached;
+  if (desc.support) { langCache.set(desc.name, desc.support); return desc.support; }
+  desc.load().then((sup) => { langCache.set(desc.name, sup); if (onLoad) onLoad(sup); }).catch(() => {});
+  return [];
+}
+// Await-вариант: дождаться загрузки поддержки языка (для MergeView/модалок, создаваемых один раз).
+export function ensureLanguage(file) {
+  const desc = langDescFor(file);
+  if (!desc) return Promise.resolve([]);
+  const cached = langCache.get(desc.name);
+  if (cached) return Promise.resolve(cached);
+  if (desc.support) { langCache.set(desc.name, desc.support); return Promise.resolve(desc.support); }
+  return desc.load().then((sup) => { langCache.set(desc.name, sup); return sup; }).catch(() => []);
 }
 
 const setMarksEffect = StateEffect.define();
