@@ -3180,6 +3180,48 @@ ipcMain.handle('files:search', async (_e, { root, query, opts } = {}) => {
   } catch (err) { return { error: String(err.message || err) }; }
   return { matches, capped };
 });
+// Замена по проекту: рендерер присылает итог files:search с галочками — список целей
+// { file(rel), lines[1-based] }. Заменяем ТОЛЬКО в этих строках (та же регэксп-логика, что у
+// поиска, + флаг g — несколько совпадений на строке заменяются разом). Перед записью каждого
+// файла — снапшот в локальную историю. Пути целей зажаты внутрь root (без ../-побегов).
+ipcMain.handle('files:replace', async (_e, { root, query, opts, replacement, targets } = {}) => {
+  if (!root || !query || !Array.isArray(targets) || !targets.length) return { error: 'нет целей замены' };
+  const o = opts || {};
+  let re;
+  try {
+    const src = o.regex ? query : query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    re = new RegExp(src, o.caseSensitive ? 'g' : 'gi');
+  } catch { return { error: 'некорректное регулярное выражение' }; }
+  // не-regex режим: replacement литеральный — экранируем $, иначе "$&" в тексте замены сработал бы как группа
+  const repl = o.regex ? String(replacement ?? '') : String(replacement ?? '').replace(/\$/g, '$$$$');
+  const rootNorm = path.resolve(root);
+  let files = 0, lines = 0;
+  for (const t of targets) {
+    if (!t || !t.file || !Array.isArray(t.lines) || !t.lines.length) continue;
+    const full = path.resolve(rootNorm, t.file);
+    if (full !== rootNorm && !full.startsWith(rootNorm + path.sep)) continue;
+    let st; try { st = await fs.promises.stat(full); } catch { continue; }
+    if (!st.isFile() || st.size > FILES_SEARCH_FILE_MAX) continue;
+    let text; try { text = await fs.promises.readFile(full, 'utf8'); } catch { continue; }
+    if (text.includes('\0')) continue;
+    const rows = text.split('\n');
+    let touched = 0;
+    for (const ln of t.lines) {
+      const i = (ln | 0) - 1;
+      if (i < 0 || i >= rows.length) continue;
+      re.lastIndex = 0;
+      const next = rows[i].replace(re, repl);
+      if (next !== rows[i]) { rows[i] = next; touched++; }
+    }
+    if (!touched) continue;
+    try {
+      await histSnapshot(full, text, 'save');       // локальная история: состояние до замены
+      await fs.promises.writeFile(full, rows.join('\n'), 'utf8');
+      files++; lines += touched;
+    } catch (err) { return { error: String(err.message || err) + ' (' + t.file + ')', files, lines }; }
+  }
+  return { ok: true, files, lines };
+});
 ipcMain.handle('files:diffPair', async (_e, { a, b } = {}) => {
   if (!a || !b) return { error: 'нужны два файла' };
   // git diff --no-index сравнивает произвольные файлы вне репозитория; exit 1 = «есть отличия» (норма).

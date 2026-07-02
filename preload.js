@@ -475,6 +475,7 @@ contextBridge.exposeInMainWorld('lite', {
     // Вивер: рекурсивный листинг (Ctrl+P), поиск по проекту (grep), сравнение двух файлов.
     listAll: (root) => ipcRenderer.invoke('files:listAll', root),
     search: (root, query, opts) => ipcRenderer.invoke('files:search', { root, query, opts }),
+    replace: (root, query, opts, replacement, targets) => ipcRenderer.invoke('files:replace', { root, query, opts, replacement, targets }),
     diffPair: (a, b) => ipcRenderer.invoke('files:diffPair', { a, b }),
     // Локальная история файла (снапшоты автосейва/внешних правок).
     histList: (file) => ipcRenderer.invoke('hist:list', file),

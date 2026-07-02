@@ -2457,6 +2457,12 @@ body.resizing { cursor: col-resize; user-select: none; }
 .diff-merge .cm-mergeViewEditor { overflow: hidden; }
 .diff-merge .cm-editor { height: 100%; }
 
+/* ---------------- замена по проекту (Ctrl+Shift+R) ---------------- */
+.replace-row { display: flex; align-items: center; gap: 8px; }
+.rr-check { flex: 0 0 auto; accent-color: var(--green); }
+.replace-foot { display: flex; align-items: center; gap: 8px; padding: 8px 2px 0; border-top: 1px solid var(--border); margin-top: 6px; }
+.replace-foot-space { flex: 1; }
+
 /* ---------------- локальная история файла (PhpStorm Local History) ---------------- */
 .modal-hist { width: min(1180px, 94vw); height: min(760px, 88vh); display: flex; flex-direction: column; }
 .hist-head { display: flex; align-items: baseline; gap: 10px; padding: 2px 2px 10px; }

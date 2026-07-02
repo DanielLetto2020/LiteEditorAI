@@ -1303,6 +1303,79 @@ export function initFiles(host) {
     inp.focus();
   }
 
+  // --- Ctrl+Shift+R: замена по проекту — поиск, галочки на строках, замена выбранных на бэкенде ---
+  function openProjectReplace() {
+    const p = activeProject(); if (!p) { toast('Нет активного проекта'); return; }
+    closeOverlay();
+    const root = el('div', 'viewer-ov'), box = el('div', 'viewer-ov-box wide');
+    const inp = el('input', 'viewer-ov-input'); inp.placeholder = 'Найти в проекте…  (Enter — искать)'; inp.spellcheck = false;
+    const rinp = el('input', 'viewer-ov-input'); rinp.placeholder = 'Заменить на…'; rinp.spellcheck = false;
+    const csCb = el('input'); csCb.type = 'checkbox';
+    const rxCb = el('input'); rxCb.type = 'checkbox';
+    const cs = el('label', 'search-opt'); cs.title = 'Учитывать регистр'; cs.appendChild(csCb); cs.appendChild(el('span', null, 'Aa'));
+    const rx = el('label', 'search-opt'); rx.title = 'Регулярное выражение ($1… в замене)'; rx.appendChild(rxCb); rx.appendChild(el('span', null, '.*'));
+    const optsRow = el('div', 'search-opts'); optsRow.appendChild(cs); optsRow.appendChild(rx);
+    const head = el('div', 'search-head'); head.appendChild(inp); head.appendChild(optsRow);
+    const head2 = el('div', 'search-head'); head2.appendChild(rinp);
+    const info = el('div', 'search-info');
+    const list = el('div', 'viewer-ov-list search-list');
+    const foot = el('div', 'replace-foot');
+    const allBtn = el('button', 'btn', 'Все');
+    const noneBtn = el('button', 'btn', 'Ничего');
+    const goBtn = el('button', 'btn primary', 'Заменить'); goBtn.disabled = true;
+    foot.append(allBtn, noneBtn, el('span', 'replace-foot-space'), goBtn);
+    box.append(head, head2, info, list, foot); root.appendChild(box); document.body.appendChild(root);
+    let seq = 0, t, matches = [];
+    const off = new Set();                                 // снятые галочки (file:line)
+    const key = (mt) => mt.file + ':' + mt.line;
+    const updateGo = () => { const n = matches.length - off.size; goBtn.disabled = !n; goBtn.textContent = n ? `Заменить (${n})` : 'Заменить'; };
+    async function run() {
+      const q = inp.value; if (!q) { matches = []; off.clear(); list.replaceChildren(); info.textContent = ''; updateGo(); return; }
+      const my = ++seq; info.textContent = 'Поиск…';
+      const r = await lite.fs.search(p.path, q, { caseSensitive: csCb.checked, regex: rxCb.checked });
+      if (my !== seq) return;
+      if (r && r.error) { info.textContent = r.error; matches = []; list.replaceChildren(); updateGo(); return; }
+      matches = ((r && r.matches) || []).map((mt) => ({ ...mt, file: mt.file.replace(/\\/g, '/') }));
+      off.clear();
+      info.textContent = matches.length ? `Строк с совпадениями: ${matches.length}${r.capped ? '+ (показаны первые)' : ''}` : 'Ничего не найдено';
+      list.replaceChildren();
+      for (const mt of matches) {
+        const row = el('div', 'viewer-ov-row search-row replace-row');
+        const cb = el('input', 'rr-check'); cb.type = 'checkbox'; cb.checked = true;
+        cb.addEventListener('click', (e) => { e.stopPropagation(); if (cb.checked) off.delete(key(mt)); else off.add(key(mt)); updateGo(); });
+        row.appendChild(cb);
+        row.appendChild(el('span', 'sr-loc', mt.file + ':' + mt.line));
+        row.appendChild(el('span', 'sr-text', mt.text.trim().slice(0, 200)));
+        row.addEventListener('mousedown', (e) => { if (e.target === cb) return; e.preventDefault(); cb.checked = !cb.checked; if (cb.checked) off.delete(key(mt)); else off.add(key(mt)); updateGo(); });
+        list.appendChild(row);
+      }
+      updateGo();
+    }
+    allBtn.onclick = () => { off.clear(); list.querySelectorAll('.rr-check').forEach((c) => { c.checked = true; }); updateGo(); };
+    noneBtn.onclick = () => { for (const mt of matches) off.add(key(mt)); list.querySelectorAll('.rr-check').forEach((c) => { c.checked = false; }); updateGo(); };
+    goBtn.onclick = async () => {
+      const q = inp.value; if (!q) return;
+      const sel = matches.filter((mt) => !off.has(key(mt)));
+      if (!sel.length) return;
+      const by = new Map();                                // file → [lines]
+      for (const mt of sel) { if (!by.has(mt.file)) by.set(mt.file, []); by.get(mt.file).push(mt.line); }
+      goBtn.disabled = true; goBtn.textContent = 'Заменяю…';
+      const r = await lite.fs.replace(p.path, q, { caseSensitive: csCb.checked, regex: rxCb.checked }, rinp.value,
+        [...by.entries()].map(([file, lines]) => ({ file, lines })));
+      if (!r || r.error) { toast((r && r.error) || 'замена не прошла', { kind: 'err', ttl: 8000 }); updateGo(); return; }
+      closeOverlay();
+      fileListCache = null;                                // содержимое проекта изменилось
+      toast(`Заменено: ${shortCountRu(r.lines, 'строка', 'строки', 'строк')} в ${shortCountRu(r.files, 'файле', 'файлах', 'файлах')}`);
+      // открытый файл перечитается вотчером; при несохранённых правках покажется плашка-конфликт
+    };
+    inp.addEventListener('input', () => { clearTimeout(t); t = setTimeout(run, 250); });
+    inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); clearTimeout(t); run(); } else if (e.key === 'Escape') { e.preventDefault(); closeOverlay(); } });
+    rinp.addEventListener('keydown', (e) => { if (e.key === 'Escape') { e.preventDefault(); closeOverlay(); } });
+    csCb.addEventListener('change', run); rxCb.addEventListener('change', run);
+    root.addEventListener('mousedown', (e) => { if (e.target === root) closeOverlay(); });
+    inp.focus();
+  }
+
   // --- B12: список TODO/FIXME по проекту (grep на бэкенде) ---
   function showTodos() {
     const p = activeProject(); if (!p) { toast('Нет активного проекта'); return; }
@@ -1835,6 +1908,8 @@ export function initFiles(host) {
     $('#viewer-back').addEventListener('click', navBack);
     $('#viewer-fwd').addEventListener('click', navFwd);
     $('#viewer-find').addEventListener('click', openProjectSearch);
+    $('#viewer-find').addEventListener('contextmenu', (e) => { e.preventDefault(); openProjectReplace(); }); // ПКМ — замена по проекту
+    $('#viewer-find').title = 'Найти в проекте (Ctrl+Shift+F) · ПКМ — заменить (Ctrl+Shift+R)';
     $('#viewer-outline').addEventListener('click', showOutline);
     $('#viewer-todos').addEventListener('click', showTodos);
     $('#viewer-blame').addEventListener('click', toggleBlame);
@@ -1893,6 +1968,7 @@ export function initFiles(host) {
       // e.code (а не e.key) — иначе в русской раскладке буквы не совпадут.
       if (e.ctrlKey && !e.shiftKey && !e.altKey && e.code === 'KeyP') { e.preventDefault(); openPalette(); return; }
       if (e.ctrlKey && e.shiftKey && e.code === 'KeyF') { e.preventDefault(); openProjectSearch(); return; }
+      if (e.ctrlKey && e.shiftKey && e.code === 'KeyR') { e.preventDefault(); openProjectReplace(); return; }
       if (e.ctrlKey && e.shiftKey && e.code === 'KeyO') { e.preventDefault(); showOutline(); return; }
       // Alt+←/→ — назад/вперёд по истории файлов.
       if (e.altKey && e.code === 'ArrowLeft') { e.preventDefault(); navBack(); return; }
