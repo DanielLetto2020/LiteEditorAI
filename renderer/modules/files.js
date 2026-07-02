@@ -1068,6 +1068,7 @@ export function initFiles(host) {
       if (['html', 'htm'].includes(extOf(ent.name))) dd.appendChild(menuRow('globe', 'Открыть в браузере', () => { closeMenus(); lite.openInBrowser(ent.path).then((r) => { if (r && r.error) toast(r.error, { kind: 'err' }); }); }));
       dd.appendChild(compareMenuRow(ent));
       dd.appendChild(menuRow('history', 'Локальная история…', () => { closeMenus(); showLocalHistory(ent.path); }));
+      dd.appendChild(menuRow('git', 'История файла (git)…', () => { closeMenus(); showFileGitHistory(ent.path); }));
       dd.appendChild(el('div', 'menu-sep'));
     }
     if (!ent.root) {
@@ -1721,6 +1722,27 @@ export function initFiles(host) {
     return n + ' ' + many;
   }
 
+  // --- история файла в git (git log --follow): список коммитов, клик → дифф файла в этом коммите ---
+  async function showFileGitHistory(file) {
+    const p = activeProject(); if (!p) { toast('Нет активного проекта'); return; }
+    const r = await lite.git.fileLog(p.path, file, 100);
+    if (!r || r.error) { toast((r && r.error) || 'не удалось получить историю файла', { kind: 'err' }); return; }
+    const commits = r.commits || [];
+    if (!commits.length) { toast('История файла в git пуста'); return; }
+    const rel = relTo(p.path, file);
+    openListOverlay({
+      placeholder: `История «${baseName(file)}» в git (${commits.length})…`,
+      wide: true,
+      filter: (q) => { const ql = q.toLowerCase(); return q ? commits.filter((c) => (c.hash + ' ' + c.subject + ' ' + c.author).toLowerCase().includes(ql)) : commits; },
+      renderRow: (row, c) => {
+        row.appendChild(el('span', 'ov-kind', c.hash.slice(0, 7)));
+        row.appendChild(el('span', 'ov-name', c.subject));
+        row.appendChild(el('span', 'ov-path', c.when + ' · ' + c.author));
+      },
+      onPick: (c) => showCommitDiff(p.path, c.hash, rel, { name: baseName(file) }),
+    });
+  }
+
   // --- сравнение двух файлов (через git diff --no-index) ---
   function compareMenuRow(ent) {
     if (cmpFirst && cmpFirst !== ent.path) return menuRow('columns', `Сравнить с «${baseName(cmpFirst)}»`, () => { closeMenus(); const a = cmpFirst; cmpFirst = null; runCompare(a, ent.path); });
@@ -1914,6 +1936,8 @@ export function initFiles(host) {
     $('#viewer-todos').addEventListener('click', showTodos);
     $('#viewer-blame').addEventListener('click', toggleBlame);
     $('#viewer-hist').addEventListener('click', () => { if (currentFile) showLocalHistory(currentFile); else toast('Нет открытого файла'); });
+    $('#viewer-hist').addEventListener('contextmenu', (e) => { e.preventDefault(); if (currentFile) showFileGitHistory(currentFile); else toast('Нет открытого файла'); });
+    $('#viewer-hist').title = 'Локальная история файла · ПКМ — история файла в git';
     $('#viewer-zen').addEventListener('click', toggleZen);
     $('#viewer-agent').addEventListener('click', toggleAgentMode);
     // C20: контекстное меню кода (агентские действия по выделению + копировать)

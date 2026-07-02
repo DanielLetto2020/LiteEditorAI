@@ -481,7 +481,7 @@ export function initGit(host) {
     if (selectedChangeFile && !keys.includes(selectedChangeFile)) selectedChangeFile = null;
     if (!selectedChangeFile && keys.length) selectedChangeFile = keys[0];
 
-    let commit = null, commitPush = null, commitCount = null;
+    let commit = null, commitPush = null, commitCount = null, amendCb = null;
 
     // ---- тулбар НАД списком (PhpStorm-style, иконки): stash · список stash · вкл/снять все · откат · обновить
     const toolbar = el('div', 'git-commit-toolbar');
@@ -515,10 +515,11 @@ export function initGit(host) {
     const updateCommitState = () => {
       const n = selectedFiles().length;
       const blockedByConflicts = conflictSet.size > 0;
+      const amending = amendCb && amendCb.checked;                 // amend без файлов = правка сообщения
       if (commit && commitPush) {
-        commit.disabled = !n || blockedByConflicts;
-        commitPush.disabled = !n || blockedByConflicts;
-        const title = blockedByConflicts ? 'Сначала разрешите конфликты' : (!n ? 'Не выбрано ни одного файла' : 'Закоммитить выбранные изменения');
+        commit.disabled = (!n && !amending) || blockedByConflicts;
+        commitPush.disabled = (!n && !amending) || blockedByConflicts;
+        const title = blockedByConflicts ? 'Сначала разрешите конфликты' : ((!n && !amending) ? 'Не выбрано ни одного файла' : 'Закоммитить выбранные изменения');
         commit.title = title;
         commitPush.title = blockedByConflicts ? title : 'Закоммитить выбранное и сразу запушить';
       }
@@ -625,25 +626,41 @@ export function initGit(host) {
     const commitRow = el('div', 'git-tools git-tools-commit');
     commit = gitTool('check', 'Commit', 'Закоммитить выбранные изменения', 'primary');
     commitPush = gitTool('upload', 'Commit & Push', 'Закоммитить выбранное и сразу запушить');
+    // Amend (PhpStorm-style): дописать выбранное в ПОСЛЕДНИЙ коммит; без выбранных файлов — только
+    // поправить сообщение. Включение при пустом поле подставляет последнее сообщение коммита.
+    amendCb = el('input', 'gm-check'); amendCb.type = 'checkbox';
+    const amendLb = el('label', 'gm-amend');
+    amendLb.title = 'Дописать в последний коммит (git commit --amend). Осторожно с уже запушенными коммитами: история перепишется.';
+    amendLb.append(amendCb, el('span', null, 'Amend'));
+    amendCb.addEventListener('change', async () => {
+      updateCommitState();
+      if (amendCb.checked && !msg.value.trim()) {
+        const r = await lite.git.lastMessage(p.path);
+        if (r && r.ok && amendCb.checked && !msg.value.trim()) { msg.value = r.message; commitDraft[p.path] = r.message; }
+      }
+    });
     const doCommit = async (withPush) => {
       const message = msg.value.trim();
       if (!message) { toast('Введи сообщение коммита', { kind: 'err' }); return; }
       const sel = selectedFiles();
+      const amend = amendCb.checked;
       if (conflictSet.size) { toast('Сначала разрешите конфликты', { kind: 'err' }); return; }
-      if (!sel.length) { toast('Не выбрано ни одного файла', { kind: 'err' }); return; }
+      if (!sel.length && !amend) { toast('Не выбрано ни одного файла', { kind: 'err' }); return; }
       const allIncluded = sel.length === committableKeys.length;
       const btn = withPush ? commitPush : commit;
       btn.disabled = true; btn.classList.add('loading');
-      const r = await lite.git.commit(p.path, message, withPush, allIncluded ? null : sel);
+      // amend без файлов → files:[] (маркер «только сообщение», main ничего не добавляет)
+      const filesArg = (amend && !sel.length) ? [] : (allIncluded ? null : sel);
+      const r = await lite.git.commit(p.path, message, withPush, filesArg, amend);
       btn.classList.remove('loading');
-      if (r.ok) { toast(withPush ? 'Закоммичено и запушено' : 'Закоммичено'); msg.value = ''; commitDraft[p.path] = ''; selectedChangeFile = null; renderGitPanel(p); renderProjects(); }
+      if (r.ok) { toast(amend ? 'Коммит переписан (amend)' : (withPush ? 'Закоммичено и запушено' : 'Закоммичено')); msg.value = ''; commitDraft[p.path] = ''; selectedChangeFile = null; renderGitPanel(p); renderProjects(); }
       // Коммит лёг, но push не прошёл: список ОБЯЗАН обновиться (файлы уже в коммите), плюс показываем ошибку.
       else if (r.committed) { toast(r.error || 'push не прошёл', { kind: 'err', ttl: 9000 }); msg.value = ''; commitDraft[p.path] = ''; selectedChangeFile = null; renderGitPanel(p); renderProjects(); }
       else { btn.disabled = false; toast(r.error || 'ошибка коммита', { kind: 'err', ttl: 8000 }); updateCommitState(); }
     };
     commit.onclick = () => doCommit(false);
     commitPush.onclick = () => doCommit(true);
-    commitRow.append(commit, commitPush);
+    commitRow.append(commit, commitPush, amendLb);
     commitPanel.appendChild(commitRow);
     content.appendChild(commitPanel);
 
@@ -769,6 +786,25 @@ export function initGit(host) {
       copyBtn.onclick = (e) => { e.stopPropagation(); lite.copyText(c.hash); toast('Хеш скопирован: ' + c.hash); };
       const acts = el('div', 'git-commit-acts'); acts.appendChild(copyBtn); cr.appendChild(acts);
       cr.addEventListener('click', () => selectCommit(c, cr));
+      // контекст-меню коммита: cherry-pick / revert / копирование (PhpStorm-style)
+      if (menuRow && placeMenu) {
+        cr.addEventListener('contextmenu', (e) => {
+          e.preventDefault(); e.stopPropagation();
+          closeMenus();
+          const dd = el('div', 'menu-dropdown'); dd.style.minWidth = '240px';
+          dd.appendChild(menuRow('git', 'Cherry-pick в текущую ветку', () => { closeMenus(); cherryPickCommit(p, c); }));
+          dd.appendChild(menuRow('eraser', 'Revert — обратный коммит', () => { closeMenus(); revertCommitUi(p, c); }));
+          dd.appendChild(el('div', 'menu-sep'));
+          dd.appendChild(menuRow('copy', 'Копировать хеш', () => { closeMenus(); lite.copyText(c.hash); toast('Хеш скопирован'); }));
+          dd.appendChild(menuRow('copy', 'Копировать сообщение', async () => {
+            closeMenus();
+            const r = await lite.git.commitMsg(p.path, c.hash);
+            if (r && r.ok) { lite.copyText(r.message); toast('Сообщение скопировано'); }
+            else toast((r && r.error) || 'не удалось получить сообщение', { kind: 'err' });
+          }));
+          placeMenu(dd, e.clientX, e.clientY);
+        });
+      }
       const hay = (c.hash + ' ' + c.subject + ' ' + c.when + ' ' + c.author + ' ' + (c.refs || '')).toLowerCase();
       rows.push({ el: cr, hay });
       logBox.appendChild(cr);
@@ -780,6 +816,22 @@ export function initGit(host) {
     // авто-выбор: ранее выбранный коммит или первый → сразу показать его файлы справа
     const initIdx = selectedCommit ? commits.findIndex((c) => c.hash === selectedCommit) : 0;
     if (initIdx >= 0 && rows[initIdx]) selectCommit(commits[initIdx], rows[initIdx].el);
+  }
+
+  // Cherry-pick/revert коммита из лога. Конфликт → секция «Коммит» (unmerged-файлы с кнопкой Resolve).
+  async function cherryPickCommit(p, c) {
+    const r = await lite.git.cherryPick(p.path, c.hash);
+    if (r && r.ok) { toast('Cherry-pick: ' + c.hash); renderGitPanel(p); renderProjects(); return; }
+    const conf = await lite.git.conflicts(p.path);
+    if (conf.files && conf.files.length) { toast('Конфликты cherry-pick — разрешите в секции «Коммит»', { kind: 'err', ttl: 9000 }); goCommitView(); renderGitPanel(p); }
+    else toast((r && r.error) || 'cherry-pick не прошёл', { kind: 'err', ttl: 9000 });
+  }
+  async function revertCommitUi(p, c) {
+    const r = await lite.git.revertCommit(p.path, c.hash);
+    if (r && r.ok) { toast('Revert создан: ' + c.hash); renderGitPanel(p); renderProjects(); return; }
+    const conf = await lite.git.conflicts(p.path);
+    if (conf.files && conf.files.length) { toast('Конфликты revert — разрешите в секции «Коммит»', { kind: 'err', ttl: 9000 }); goCommitView(); renderGitPanel(p); }
+    else toast((r && r.error) || 'revert не прошёл', { kind: 'err', ttl: 9000 });
   }
 
   // Дерево изменённых файлов выбранного коммита (иконки типов; клик по файлу → дифф файла в центре вивера).

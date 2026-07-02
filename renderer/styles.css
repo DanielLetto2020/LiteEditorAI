@@ -2457,6 +2457,11 @@ body.resizing { cursor: col-resize; user-select: none; }
 .diff-merge .cm-mergeViewEditor { overflow: hidden; }
 .diff-merge .cm-editor { height: 100%; }
 
+/* Amend в панели коммита */
+.gm-amend { display: inline-flex; align-items: center; gap: 5px; color: var(--text-dim); font-size: 12px; cursor: pointer; user-select: none; margin-left: auto; }
+.gm-amend input { accent-color: var(--green); }
+.gm-amend:hover { color: var(--text); }
+
 /* ---------------- замена по проекту (Ctrl+Shift+R) ---------------- */
 .replace-row { display: flex; align-items: center; gap: 8px; }
 .rr-check { flex: 0 0 auto; accent-color: var(--green); }

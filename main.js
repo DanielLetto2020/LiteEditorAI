@@ -4371,16 +4371,49 @@ async function gitPush(root) {
   }
   return first;
 }
-ipcMain.handle('git:commit', async (_e, { root, message, push, files }) => {
+ipcMain.handle('git:commit', async (_e, { root, message, push, files, amend }) => {
   // files передан → коммитим только выбранное (git add -- <files>), иначе всё (git add -A, как раньше).
+  // amend + files:[] (пустой массив) — особый случай «только поправить сообщение»: ничего не добавляем.
   const sel = Array.isArray(files) && files.length;
-  const add = await gitRun(root, sel ? ['add', '--', ...files] : ['add', '-A']); if (!add.ok) return add;
+  const msgOnly = amend && Array.isArray(files) && !files.length;
+  if (!msgOnly) { const add = await gitRun(root, sel ? ['add', '--', ...files] : ['add', '-A']); if (!add.ok) return add; }
   // sel → коммитим РОВНО выбранные пути (pathspec), иначе `git commit` забрал бы и всё прочее,
   // что уже лежит в индексе (напр. файл, застейдженный при разрешении конфликта и затем снятый галкой).
-  const c = await gitRun(root, sel ? ['commit', '-m', message || 'update', '--', ...files] : ['commit', '-m', message || 'update']); if (!c.ok) return c;
+  const base = amend ? ['commit', '--amend', '-m', message || 'update'] : ['commit', '-m', message || 'update'];
+  const c = await gitRun(root, sel ? [...base, '--', ...files] : base); if (!c.ok) return c;
   // committed:true даже при провале пуша — фронт обязан обновить список (коммит-то уже лёг).
   if (push) { const p = await gitPush(root); if (!p.ok) return { ok: false, committed: true, error: 'Коммит создан, push не прошёл: ' + p.error }; }
   return { ok: true, out: c.out };
+});
+// Последнее сообщение коммита (для подстановки при включении Amend).
+ipcMain.handle('git:lastMessage', async (_e, root) => {
+  const out = await git(root, ['log', '-1', '--format=%B']);
+  return out == null ? { ok: false, message: '' } : { ok: true, message: out.trim() };
+});
+// История одного файла (--follow: переживает переименования) для оверлея «История файла».
+ipcMain.handle('git:fileLog', async (_e, { root, file, limit } = {}) => {
+  if (!root || !file) return { error: 'no root/file' };
+  const n = Math.max(1, Math.min(200, parseInt(limit, 10) || 100));
+  const out = await git(root, ['log', '--follow', `-${n}`, '--pretty=format:%h%x1f%s%x1f%cr%x1f%an', '--', file]);
+  if (out == null) return { error: 'не git-репозиторий или файл не отслеживается' };
+  const commits = [];
+  for (const rec of out.split('\n')) {
+    if (!rec) continue;
+    const [hash, subject, when, author] = rec.split('\x1f');
+    commits.push({ hash, subject, when, author });
+  }
+  return { ok: true, commits };
+});
+// Cherry-pick / revert коммита из лога + полное сообщение коммита (для «Копировать сообщение»).
+const OK_HASH = (h) => /^[0-9a-fA-F]{4,40}$/.test(String(h || '').trim());
+ipcMain.handle('git:cherryPick', async (_e, { root, hash } = {}) =>
+  OK_HASH(hash) ? gitRun(root, ['cherry-pick', String(hash).trim()]) : { ok: false, error: 'bad hash' });
+ipcMain.handle('git:revertCommit', async (_e, { root, hash } = {}) =>
+  OK_HASH(hash) ? gitRun(root, ['revert', '--no-edit', String(hash).trim()]) : { ok: false, error: 'bad hash' });
+ipcMain.handle('git:commitMsg', async (_e, { root, hash } = {}) => {
+  if (!OK_HASH(hash)) return { error: 'bad hash' };
+  const out = await git(root, ['log', '-1', '--format=%B', String(hash).trim()]);
+  return out == null ? { error: 'коммит не найден' } : { ok: true, message: out.trim() };
 });
 // Стейджинг выбранных путей (для пометки конфликта разрешённым и выборочного коммита).
 ipcMain.handle('git:add', async (_e, { root, files }) =>
@@ -4491,7 +4524,9 @@ ipcMain.handle('git:commitFiles', async (_e, { root, hash } = {}) => {
 ipcMain.handle('git:commitFileDiff', async (_e, { root, hash, file } = {}) => {
   const h = String(hash || '').trim();
   if (!/^[0-9a-fA-F]{4,40}$/.test(h)) return { error: 'bad hash' };
-  const out = await git(root, ['show', '--no-color', h, '--', file]);
+  // --format= убирает заголовок коммита из вывода — в центре вивера нужен чистый дифф
+  // (сообщение и так видно в списке истории и в имени вкладки).
+  const out = await git(root, ['show', '--no-color', '--format=', h, '--', file]);
   return { diff: out || '' };
 });
 
