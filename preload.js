@@ -343,7 +343,6 @@ contextBridge.exposeInMainWorld('lite', {
     discardFile: (root, file) => ipcRenderer.invoke('git:discardFile', { root, file }),
     discardAll: (root) => ipcRenderer.invoke('git:discardAll', root),
     stash: (root) => ipcRenderer.invoke('git:stash', root),
-    stashPop: (root) => ipcRenderer.invoke('git:stashPop', root),
     blame: (root, file) => ipcRenderer.invoke('git:blame', { root, file }), // A7: пер-строчный git blame
     revertHunk: (root, patch) => ipcRenderer.invoke('git:revertHunk', { root, patch }), // C18: откат ханка
     // stash-управление (PhpStorm-style: список + просмотр файлов + apply/pop/drop по индексу)

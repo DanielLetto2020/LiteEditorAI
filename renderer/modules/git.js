@@ -15,7 +15,6 @@ export function initGit(host) {
   const { renderProjects, activeProject, getActiveId, refreshTree, createCodeEditor, languageFor } = host;
   // openFile(abs,line) — открыть файл в вивере; menuRow/placeMenu/closeMenus — меню-слой окна (контекст-меню строки изменённого файла).
   const { openFile: hostOpenFile, menuRow, placeMenu, closeMenus } = host;
-  const joinAbs = (root, rel) => String(root || '').replace(/[\\/]+$/, '') + '/' + String(rel || '');
 
   let containers = null;     // { topbar, commit, branchlog } — задаются вивером через setContainers
   // Какие секции рендерить: коммит (левая колонка) и/или лог (нижняя панель) — могут быть открыты вместе.
@@ -221,7 +220,7 @@ export function initGit(host) {
     if (!cur) {
       sep();
       add('Влить в текущую (merge)', () => mergeBranch(p, full));
-      add('Перебазировать текущую на «' + full + '»', () => run(lite.git.rebaseOnto(p.path, full), 'Rebase выполнен'));
+      add('Перебазировать текущую на «' + full + '»', () => rebaseOntoBranch(p, full));
       if (kind === 'remote') {
         add('Подтянуть «' + full + '» в текущую (merge)', () => run(lite.git.pullMerge(p.path, full), 'Pull (merge) готов'));
         add('Подтянуть «' + full + '» в текущую (rebase)', () => run(lite.git.pullRebase(p.path, full), 'Pull (rebase) готов'));
@@ -274,6 +273,25 @@ export function initGit(host) {
     const c = await lite.git.conflicts(p.path);
     if (c.files && c.files.length) { toast('Конфликты — разрешите в секции «Коммит»', { kind: 'err', ttl: 9000 }); goCommitView(); renderGitPanel(p); }
     else toast(r.error || 'merge не прошёл', { kind: 'err', ttl: 9000 });
+  }
+  // Rebase на ветку. Провал (обычно конфликт) оставляет репозиторий в состоянии rebase —
+  // молча бросать его так нельзя: предлагаем сразу прервать (git rebase --abort) или оставить
+  // для ручного разрешения в терминале.
+  async function rebaseOntoBranch(p, branch) {
+    const r = await lite.git.rebaseOnto(p.path, branch);
+    if (r && r.ok) { toast('Rebase выполнен'); renderGitPanel(p); renderProjects(); return; }
+    showConfirm(
+      'Rebase не прошёл',
+      (r && r.error ? r.error + '\n\n' : '') + 'Репозиторий мог остаться в состоянии rebase. Прервать (git rebase --abort) или оставить для ручного разрешения?',
+      'Прервать rebase',
+      async () => {
+        const a = await lite.git.rebaseAbort(p.path);
+        if (a && a.ok) toast('Rebase прерван'); else toast((a && a.error) || 'не удалось прервать', { kind: 'err', ttl: 8000 });
+        renderGitPanel(p); renderProjects();
+      },
+      'Оставить как есть',
+      () => { renderGitPanel(p); renderProjects(); },
+    );
   }
   async function showBranchDiff(p, branch) {
     const r = await lite.git.branchDiffWorktree(p.path, branch);
@@ -574,14 +592,16 @@ export function initGit(host) {
           }
           r.appendChild(acts);
           r.addEventListener('click', () => showDiff(f));
-          // контекст-меню: открыть сам файл (не дифф) в вивере
+          // контекст-меню: открыть сам файл (не дифф) в вивере. f — уже АБСОЛЮТНЫЙ путь
+          // (ключи git:status абсолютные) — не приклеивать к нему p.path повторно.
           if (menuRow && placeMenu && hostOpenFile) {
             r.addEventListener('contextmenu', (e) => {
               e.preventDefault(); e.stopPropagation();
               const dd = el('div', 'menu-dropdown'); dd.style.minWidth = '180px';
-              dd.appendChild(menuRow('eye', 'Открыть файл', () => { closeMenus(); hostOpenFile(joinAbs(p.path, f)); }));
+              if (kind !== 'deleted') dd.appendChild(menuRow('eye', 'Открыть файл', () => { closeMenus(); hostOpenFile(f); }));
               dd.appendChild(menuRow('diff', 'Показать дифф', () => { closeMenus(); showDiff(f); }));
-              dd.appendChild(menuRow('copy', 'Копировать путь', () => { closeMenus(); try { lite.copyText(joinAbs(p.path, f)); toast('Путь скопирован'); } catch (_) {} }));
+              dd.appendChild(menuRow('copy', 'Копировать путь', () => { closeMenus(); try { lite.copyText(f); toast('Путь скопирован'); } catch (_) {} }));
+              if (kind !== 'deleted') dd.appendChild(menuRow('folder', 'Показать в проводнике', () => { closeMenus(); lite.showItemInFolder(f).then((r2) => { if (!r2 || r2.ok === false) toast((r2 && r2.error) || 'Не удалось открыть папку', { kind: 'err' }); }); }));
               placeMenu(dd, e.clientX, e.clientY);
             });
           }

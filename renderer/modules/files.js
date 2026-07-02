@@ -1,12 +1,8 @@
-// Files module (v1.1+): code viewer (CodeMirror) + file tree.
-// Изначально вивер+дерево жили прямо в ядре (renderer.js). Вынесены сюда как модуль `initFiles(host)`,
-// чтобы (как остальные модули) уехать в отдельное окно. Вивер и дерево делят ИЗМЕНЯЕМОЕ состояние
-// (currentFile/gitFiles/expandedDirs/dirty), поэтому живут вместе в одном модуле.
-//
-// Шаг 1 (embedded-first): редактор зовёт initFiles(host) и mount() — вивер работает как раньше,
-// встроенно в #viewer-pane/#tree-pane index.html. Связь с ядром — только через host-колбэки
-// (right-slot-машинерия: growBy/closeOtherPanels/renderProjects/saveUiState/refitActiveTerminal/меню).
-// Шаг 2 — флип в окно: те же #viewer-pane/#tree-pane переедут в module.html, host станет window-host.
+// Files module («Проект», v1.1.13+): отдельное проектозависимое ОКНО — вивер кода (CodeMirror) +
+// дерево файлов + встроенный Git (git.js: VCS-полоса, секция «Коммит», нижняя панель «Ветки·История»).
+// Вивер и дерево делят ИЗМЕНЯЕМОЕ состояние (currentFile/gitFiles/expandedDirs/dirty), поэтому
+// живут вместе в одном модуле. DOM-скелет — в module.html (#viewer-pane/#tree-pane/#commit-pane/
+// #log-pane); host — window-host из module-entry.js; действия редактора идут через lite.editorBus.
 import { el, svgEl, icon, toast, showConfirm, showPrompt, baseName } from '../ui.js';
 import { languageFor } from '../codeedit.js';
 import { initGit } from './git.js';
@@ -14,7 +10,7 @@ import { EditorView, keymap, lineNumbers, highlightActiveLine, highlightActiveLi
 import { EditorState, Compartment, StateField, StateEffect, RangeSet } from '@codemirror/state';
 import { defaultKeymap, history, historyKeymap, indentWithTab, moveLineUp, moveLineDown, copyLineUp, copyLineDown, deleteLine, toggleComment, toggleBlockComment } from '@codemirror/commands';
 import { syntaxHighlighting, defaultHighlightStyle, indentOnInput, bracketMatching, foldGutter, codeFolding, foldKeymap, foldService } from '@codemirror/language';
-import { search, searchKeymap, highlightSelectionMatches, openSearchPanel } from '@codemirror/search';
+import { search, searchKeymap, highlightSelectionMatches } from '@codemirror/search';
 import { oneDark } from '@codemirror/theme-one-dark';
 import { showMinimap } from '@replit/codemirror-minimap';
 import { indentationMarkers } from '@replit/codemirror-indentation-markers';
@@ -24,8 +20,8 @@ const lite = window.lite;
 const $ = (sel) => document.querySelector(sel);
 
 export function initFiles(host) {
-  // host: { activeProject, layout, GUTTER, settings, saveSettings, growBy, closeOtherPanels,
-  //         renderProjects, saveUiState, refitActiveTerminal, menuRow, placeMenu, closeMenus }
+  // host (window-host из module-entry): { activeProject, getActiveId, settings, saveSettings,
+  //   STORE, persist, createCodeEditor, languageFor, closeWindow, menuRow, placeMenu, closeMenus }
   const { menuRow, placeMenu, closeMenus } = host;
   const activeProject = () => host.activeProject();
   const settings = host.settings;
@@ -432,16 +428,20 @@ export function initFiles(host) {
     $('#viewer-full').style.display = (kind === 'html') ? '' : 'none';
     $('#viewer-browser').style.display = (kind === 'html') ? '' : 'none';
   }
-  async function openFile(filePath, line) {
-    const seq = ++openSeq;
+  // Снять с центра всё, что не редактируемый файл (git-дифф/превью/плашка-конфликт/слой авторства).
+  function resetCenterView() {
     clearGitDiff();                  // открываем реальный файл — это больше не git-дифф в центре
     if (diffMode) exitDiff(false);
     exitPreview();
     hideReloadBar();
     clearAuthors();                  // новый файл → снять слой авторства прошлого (live-reload агента идёт мимо openFile)
+  }
+  async function openFile(filePath, line) {
+    const seq = ++openSeq;
     const kind = previewKind(filePath);
 
     if (kind === 'image') { // binary — no editable source
+      resetCenterView();
       currentFile = filePath;
       commitOpenUI(filePath, kind);
       afterOpen(filePath);
@@ -449,9 +449,12 @@ export function initFiles(host) {
       await showPreview('image', filePath, '');
       return;
     }
+    // Сначала читаем и только при УСПЕХЕ разбираем текущий вид: иначе ошибка чтения оставляла бы
+    // пустой центр с именем несуществующего файла (выглядело как «открыл пустой файл»).
     const res = await lite.fs.readFile(filePath);
     if (seq !== openSeq) return; // обогнал более свежий openFile — выходим, не затирая его результат
-    if (res.error) { toast(res.error, { kind: 'err', ttl: 6000 }); return; } // оставляем текущий файл нетронутым
+    if (res.error) { toast(res.error, { kind: 'err', ttl: 6000 }); return; } // оставляем текущий вид нетронутым
+    resetCenterView();
     currentFile = filePath;
     commitOpenUI(filePath, kind);
     afterOpen(filePath);
@@ -781,26 +784,22 @@ export function initFiles(host) {
 
   // Возвращает промис первичной отрисовки (renderTree + clearViewer), чтобы вызывающий мог
   // дождаться её и лишь потом грузить файл — иначе clearViewer() затрёт свежезагруженный файл.
-  function setViewerOpen(open, opts = {}) {
-    if (open === viewerOpen) {
-      const p = open ? refreshViewerForActive() : null;
-      host.renderProjects();
-      return p;
-    }
-    // Right slot holds one module — opening the viewer closes the others (chat is separate).
-    if (open) host.closeOtherPanels('files');
-    else exitPreviewFull(); // закрытие вивера (в т.ч. через closeOtherPanels) должно снять плавающую «✕ Esc» полноэкранного превью
-    const delta = host.layout.viewer + host.layout.tree + host.GUTTER * 2;
+  // Вивер живёт в собственном окне (v1.1.13+): панели просто показываются/прячутся; right-slot-
+  // математика embedded-эры (growBy/closeOtherPanels/гаттеры .gutter-v) здесь больше не нужна.
+  function setViewerOpen(open) {
+    if (open === viewerOpen) return open ? refreshViewerForActive() : null;
+    if (!open) exitPreviewFull(); // закрытие должно снять плавающую «✕ Esc» полноэкранного превью
     viewerOpen = open;
     $('#viewer-pane').classList.toggle('hidden', !open);
     $('#tree-pane').classList.toggle('hidden', !open);
-    document.querySelectorAll('.gutter-v').forEach((g) => g.classList.toggle('hidden', !open));
-    if (opts.grow !== false) host.growBy(open ? delta : -delta); // grow:false on restore — saved width already counts these panes
-    host.saveUiState();
-    host.renderProjects();
-    const pending = open ? refreshViewerForActive() : null;
-    setTimeout(host.refitActiveTerminal, 150);
-    return pending;
+    return open ? refreshViewerForActive() : null;
+  }
+
+  // Канонический путь «открыть файл»: показать вивер (первичный рендер) + защитить несохранённые
+  // правки. Все входы (дерево, табы, Ctrl+P, поиск, закладки, editorBus, git-меню) идут через него.
+  function openFileGuarded(filePath, line) {
+    if (!viewerOpen) setViewerOpen(true);
+    guardDirty(() => openFile(filePath, line));
   }
 
   // Don't lose unsaved viewer edits when switching away — ask first.
@@ -944,8 +943,7 @@ export function initFiles(host) {
         if (ent.path === currentFile) row.classList.add('open');
         row.addEventListener('click', () => {
           if (ent.path === currentFile && viewerOpen) return;
-          if (!viewerOpen) setViewerOpen(true);
-          guardDirty(() => openFile(ent.path));
+          openFileGuarded(ent.path);
         });
         row.addEventListener('contextmenu', (e) => { e.preventDefault(); e.stopPropagation(); showTreeMenu(e.clientX, e.clientY, { name: ent.name, path: ent.path, dir: false }); });
         makeRowDraggable(row, ent.path); makeRowDropTarget(row, dirName(ent.path)); // тащить файл; drop на него = в его папку
@@ -1010,7 +1008,7 @@ export function initFiles(host) {
       dd.appendChild(menuRow('folder', 'Новая папка…', () => { closeMenus(); treeNewFolder(ent.path); }));
       dd.appendChild(el('div', 'menu-sep'));
     } else {
-      dd.appendChild(menuRow('eye', 'Открыть', () => { closeMenus(); if (!viewerOpen) setViewerOpen(true); guardDirty(() => openFile(ent.path)); }));
+      dd.appendChild(menuRow('eye', 'Открыть', () => { closeMenus(); openFileGuarded(ent.path); }));
       if (['html', 'htm'].includes(extOf(ent.name))) dd.appendChild(menuRow('globe', 'Открыть в браузере', () => { closeMenus(); lite.openInBrowser(ent.path).then((r) => { if (r && r.error) toast(r.error, { kind: 'err' }); }); }));
       dd.appendChild(compareMenuRow(ent));
       dd.appendChild(el('div', 'menu-sep'));
@@ -1141,14 +1139,13 @@ export function initFiles(host) {
   }
 
   // --- универсальный оверлей со списком и фильтром (палитра Ctrl+P, структура, закладки) ---
-  let _overlay = null;
-  function closeOverlay() { document.querySelectorAll('.viewer-ov').forEach((n) => n.remove()); _overlay = null; }
+  function closeOverlay() { document.querySelectorAll('.viewer-ov').forEach((n) => n.remove()); }
   function openListOverlay(o) {
     closeOverlay();
     const root = el('div', 'viewer-ov'), box = el('div', 'viewer-ov-box' + (o.wide ? ' wide' : ''));
     const inp = el('input', 'viewer-ov-input'); inp.placeholder = o.placeholder || ''; inp.spellcheck = false;
     const list = el('div', 'viewer-ov-list');
-    box.appendChild(inp); box.appendChild(list); root.appendChild(box); document.body.appendChild(root); _overlay = root;
+    box.appendChild(inp); box.appendChild(list); root.appendChild(box); document.body.appendChild(root);
     let items = [], active = 0;
     const highlight = () => { [...list.children].forEach((c, i) => c.classList.toggle('active', i === active)); const a = list.children[active]; if (a) a.scrollIntoView({ block: 'nearest' }); };
     const pick = (i) => { const it = items[i]; closeOverlay(); if (it) o.onPick(it); };
@@ -1204,7 +1201,7 @@ export function initFiles(host) {
         return fuzzyRank(all, q).slice(0, 200);
       },
       renderRow: (row, rel) => { const segs = rel.split('/'); row.appendChild(el('span', 'ov-name', segs[segs.length - 1])); if (segs.length > 1) row.appendChild(el('span', 'ov-path', segs.slice(0, -1).join('/'))); },
-      onPick: (rel) => { const abs = joinPath(p.path, rel); if (!viewerOpen) setViewerOpen(true); guardDirty(() => openFile(abs)); },
+      onPick: (rel) => openFileGuarded(joinPath(p.path, rel)),
     });
   }
 
@@ -1222,7 +1219,7 @@ export function initFiles(host) {
     const head = el('div', 'search-head'); head.appendChild(inp); head.appendChild(opts);
     const info = el('div', 'search-info');
     const list = el('div', 'viewer-ov-list search-list');
-    box.appendChild(head); box.appendChild(info); box.appendChild(list); root.appendChild(box); document.body.appendChild(root); _overlay = root;
+    box.appendChild(head); box.appendChild(info); box.appendChild(list); root.appendChild(box); document.body.appendChild(root);
     let seq = 0, t;
     async function run() {
       const q = inp.value; if (!q) { list.replaceChildren(); info.textContent = ''; return; }
@@ -1238,7 +1235,7 @@ export function initFiles(host) {
         const row = el('div', 'viewer-ov-row search-row');
         row.appendChild(el('span', 'sr-loc', file + ':' + mt.line));
         row.appendChild(el('span', 'sr-text', mt.text.trim().slice(0, 200)));
-        row.addEventListener('mousedown', (e) => { e.preventDefault(); closeOverlay(); const abs = joinPath(p.path, file); if (!viewerOpen) setViewerOpen(true); guardDirty(() => openFile(abs, mt.line)); });
+        row.addEventListener('mousedown', (e) => { e.preventDefault(); closeOverlay(); openFileGuarded(joinPath(p.path, file), mt.line); });
         list.appendChild(row);
       });
     }
@@ -1266,7 +1263,7 @@ export function initFiles(host) {
           row.appendChild(el('span', 'ov-name', mt.text.trim().slice(0, 90)));
           row.appendChild(el('span', 'ov-path', mt.file + ':' + mt.line));
         },
-        onPick: (mt) => { const abs = joinPath(p.path, mt.file); if (!viewerOpen) setViewerOpen(true); guardDirty(() => openFile(abs, mt.line)); },
+        onPick: (mt) => openFileGuarded(joinPath(p.path, mt.file), mt.line),
       });
     });
   }
@@ -1451,7 +1448,7 @@ export function initFiles(host) {
       x.appendChild(icon(pinnedTabs.has(t) ? 'flag' : 'x', 12));
       x.addEventListener('click', (e) => { e.stopPropagation(); if (pinnedTabs.has(t)) togglePin(t); else closeTab(t); });
       tab.appendChild(x);
-      tab.addEventListener('click', () => { if (t === currentFile) return; if (!viewerOpen) setViewerOpen(true); guardDirty(() => openFile(t)); });
+      tab.addEventListener('click', () => { if (t !== currentFile) openFileGuarded(t); });
       tab.addEventListener('auxclick', (e) => { if (e.button === 1) { e.preventDefault(); closeTab(t); } }); // средняя кнопка — закрыть
       tab.addEventListener('contextmenu', (e) => { e.preventDefault(); e.stopPropagation(); showTabMenu(e.clientX, e.clientY, t); });
       list.appendChild(tab);
@@ -1517,7 +1514,7 @@ export function initFiles(host) {
       placeholder: 'Закладки проекта…',
       filter: (q) => { const ql = q.toLowerCase(); const items = list.map((b) => ({ ...b, rel: p ? relTo(p.path, b.file) : b.file })); return q ? items.filter((it) => (it.rel + ':' + it.line).toLowerCase().includes(ql)) : items; },
       renderRow: (row, b) => { row.appendChild(el('span', 'ov-name', baseName(b.file) + ':' + b.line)); row.appendChild(el('span', 'ov-path', b.rel)); },
-      onPick: (b) => { if (!viewerOpen) setViewerOpen(true); guardDirty(() => openFile(b.file, b.line)); },
+      onPick: (b) => openFileGuarded(b.file, b.line),
     });
   }
 
@@ -1692,7 +1689,7 @@ export function initFiles(host) {
       fileIcon: (name) => fileSvg(colorFor(name)),    // иконки типов файлов для дерева изменённых файлов коммита
       folderIcon: () => folderSvg(false),
       // открыть изменённый файл из списка коммита в вивере (контекст-меню git-секции)
-      openFile: (abs, line) => { if (!viewerOpen) setViewerOpen(true); guardDirty(() => openFile(abs, line)); },
+      openFile: (abs, line) => openFileGuarded(abs, line),
       menuRow, placeMenu, closeMenus, // меню-слой окна вивера — для контекст-меню строки файла
     });
     git.setContainers({ topbar: $('#vcs-topbar'), commit: $('#commit-body'), branchlog: $('#branchlog-body') });
@@ -1773,24 +1770,22 @@ export function initFiles(host) {
 
   // Контракт окна модуля (module-entry зовёт setOpen при загрузке и при смене активного проекта).
   // Первый вызов строит редактор и рендерит вивер; повторный (смена проекта) — с защитой несохранённого.
-  function setOpen(open, opts = {}) {
+  function setOpen(open) {
     if (!open) { if (host.closeWindow) host.closeWindow(); else setViewerOpen(false); return; }
     if (!mounted) mount();
     if (viewerOpen) { // окно уже открыто → это смена активного проекта: защитить правки и перерисовать
       guardDirty(() => { const p = activeProject(); pruneExpandedDirs(p ? p.path : ''); refreshViewerForActive(); });
       return;
     }
-    return setViewerOpen(true, opts);
+    return setViewerOpen(true);
   }
 
+  // API окна — только то, что реально зовёт module-entry (boot/wire/closeRequest); остальное — внутреннее.
   return {
-    mount, setOpen,
-    isOpen: () => viewerOpen,   // generic-хук жизненного цикла модуля-окна
-    // действия
-    setViewerOpen, openFile, guardDirty, saveCurrent, clearViewer,
-    renderTree, refreshTree, refreshViewerForActive,
-    toggleDiff, togglePreview, exitPreviewFull,
-    showTreeMenu, onFsChange, pruneExpandedDirs,
+    setOpen,
+    openFile: openFileGuarded,  // editorBus.openInViewer → открыть с защитой несохранённых правок
+    renderTree,                 // editorBus.refreshTree → перерисовать дерево активного проекта
+    onFsChange,                 // fs:changed активного проекта → live-обновление дерева/файла/диффа
     // dirty-guard на закрытие окна вивера: несохранённый файл → спросить (сохранить/не сохранять).
     confirmClose: (proceed) => { cancelAutosave(); clearTimeout(splitTimer); clearTimeout(fsTimer); guardDirty(proceed); },
     // «Git» из редактора → переключить левую секцию на «Коммит».

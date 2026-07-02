@@ -3010,6 +3010,8 @@ ipcMain.handle('fs:readDir', async (_e, dir) => {
 ipcMain.handle('fs:readFile', async (_e, file) => {
   try {
     const stat = await fs.promises.stat(file);
+    // Сокеты/FIFO/девайсы — не открываем: socket даёт ENXIO, а readFile FIFO повис бы навсегда.
+    if (!stat.isFile()) return { error: 'Это не обычный файл (сокет/FIFO/каталог)' };
     if (stat.size > MAX_VIEW_BYTES) return { error: `Файл слишком большой (${Math.round(stat.size / 1024)} КБ)` };
     return { content: await fs.promises.readFile(file, 'utf8') };
   } catch (err) { return { error: String(err.message || err) }; }
@@ -4148,9 +4150,6 @@ ipcMain.handle('git:info', async (_e, root) => {
   let ahead = 0, behind = 0, upstream = false;
   const counts = await git(root, ['rev-list', '--left-right', '--count', '@{upstream}...HEAD']);
   if (counts != null) { const m = counts.trim().split(/\s+/); behind = +m[0] || 0; ahead = +m[1] || 0; upstream = true; }
-  const last = await git(root, ['log', '-1', '--format=%h\t%s\t%cr\t%an']);
-  let lastCommit = null;
-  if (last && last.trim()) { const [hash, subject, when, author] = last.trim().split('\t'); lastCommit = { hash, subject, when, author }; }
   // Per-branch upstream tracking: имя + upstream + [ahead N, behind M] (по уже зафетченным
   // remote-tracking ref'ам, без сети — как PhpStorm после fetch). Таб-разделитель безопасен:
   // имя ветки таб не содержит, а %(upstream:track) — только пробелы/скобки/запятые.
@@ -4171,7 +4170,7 @@ ipcMain.handle('git:info', async (_e, root) => {
     branchTrack[name] = { upstream: (up || '').trim(), ahead: a, behind: bh, gone };
   }
   const remote = ((await git(root, ['remote'])) || '').trim().split('\n').filter(Boolean);
-  return { repo: true, branch, ahead, behind, upstream, lastCommit, branches, branchTrack, hasRemote: remote.length > 0 };
+  return { repo: true, branch, ahead, behind, upstream, branches, branchTrack, hasRemote: remote.length > 0 };
 });
 // Recent commit history for the Git module's log view (PhpStorm-style). Read-only.
 ipcMain.handle('git:log', async (_e, { root, limit } = {}) => {
@@ -4274,7 +4273,6 @@ ipcMain.handle('git:push', async (_e, root) => gitPush(root));
 ipcMain.handle('git:pull', async (_e, root) => gitRun(root, ['pull', '--ff-only']));
 // Stash including untracked (-u) so a quick "спрятать всё" doesn't leave new files behind.
 ipcMain.handle('git:stash', async (_e, root) => gitRun(root, ['stash', 'push', '-u']));
-ipcMain.handle('git:stashPop', async (_e, root) => gitRun(root, ['stash', 'pop']));
 // Revert tracked edits only ('checkout -- .'); untracked files are deliberately kept (no -fd clean).
 ipcMain.handle('git:discardAll', async (_e, root) => gitRun(root, ['checkout', '--', '.']));
 
