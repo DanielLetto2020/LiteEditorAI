@@ -2457,6 +2457,27 @@ body.resizing { cursor: col-resize; user-select: none; }
 .diff-merge .cm-mergeViewEditor { overflow: hidden; }
 .diff-merge .cm-editor { height: 100%; }
 
+/* ---------------- локальная история файла (PhpStorm Local History) ---------------- */
+.modal-hist { width: min(1180px, 94vw); height: min(760px, 88vh); display: flex; flex-direction: column; }
+.hist-head { display: flex; align-items: baseline; gap: 10px; padding: 2px 2px 10px; }
+.hist-title { font-weight: 600; color: var(--text); }
+.hist-count { color: var(--text-dim); font-size: 12px; }
+.hist-grid { flex: 1; min-height: 0; display: grid; grid-template-columns: 240px 1fr; gap: 10px; }
+.hist-list { overflow: auto; border: 1px solid var(--border); border-radius: 9px; background: var(--ink); }
+.hist-item { padding: 7px 10px; display: flex; flex-direction: column; gap: 2px; cursor: pointer; border-bottom: 1px solid var(--border); }
+.hist-item:hover { background: var(--hover); }
+.hist-item.active { background: var(--hover); box-shadow: inset 2px 0 0 var(--green); }
+.hist-when { color: var(--text); font-size: 12px; }
+.hist-tag { font-size: 11px; color: var(--text-dim); }
+.hist-tag.t-ext { color: var(--info); }
+.hist-size { font-size: 11px; color: var(--text-mute); }
+.hist-right { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.hist-collabels { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 0 2px 6px; color: var(--text-dim); font-size: 11px; }
+.hist-diff { flex: 1; min-height: 0; border: 1px solid var(--border); border-radius: 9px; overflow: hidden; }
+.hist-diff .cm-mergeView, .hist-diff .cm-mergeViewEditors { height: 100%; }
+.hist-diff .cm-mergeViewEditor { overflow: hidden; }
+.hist-diff .cm-editor { height: 100%; }
+
 /* ---------------- viewer preview (md / image / html) ---------------- */
 #preview-view { display: none; flex: 1; overflow: auto; background: var(--panel); }
 .prev-empty { padding: 18px; color: var(--text-dim); text-align: center; }

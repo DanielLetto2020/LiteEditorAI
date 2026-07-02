@@ -3,7 +3,7 @@
 // Вивер и дерево делят ИЗМЕНЯЕМОЕ состояние (currentFile/gitFiles/expandedDirs/dirty), поэтому
 // живут вместе в одном модуле. DOM-скелет — в module.html (#viewer-pane/#tree-pane/#commit-pane/
 // #log-pane); host — window-host из module-entry.js; действия редактора идут через lite.editorBus.
-import { el, svgEl, icon, toast, showConfirm, showPrompt, baseName } from '../ui.js';
+import { el, svgEl, icon, toast, showConfirm, showPrompt, baseName, makeModal } from '../ui.js';
 import { languageFor } from '../codeedit.js';
 import { initGit } from './git.js';
 import { EditorView, keymap, lineNumbers, highlightActiveLine, highlightActiveLineGutter, drawSelection, gutter, GutterMarker, rectangularSelection, crosshairCursor, Decoration, ViewPlugin, WidgetType } from '@codemirror/view';
@@ -1067,6 +1067,7 @@ export function initFiles(host) {
       dd.appendChild(menuRow('eye', 'Открыть', () => { closeMenus(); openFileGuarded(ent.path); }));
       if (['html', 'htm'].includes(extOf(ent.name))) dd.appendChild(menuRow('globe', 'Открыть в браузере', () => { closeMenus(); lite.openInBrowser(ent.path).then((r) => { if (r && r.error) toast(r.error, { kind: 'err' }); }); }));
       dd.appendChild(compareMenuRow(ent));
+      dd.appendChild(menuRow('history', 'Локальная история…', () => { closeMenus(); showLocalHistory(ent.path); }));
       dd.appendChild(el('div', 'menu-sep'));
     }
     if (!ent.root) {
@@ -1574,6 +1575,79 @@ export function initFiles(host) {
     });
   }
 
+  // --- локальная история (PhpStorm Local History): снапшоты main-процесса (автосейв + внешние правки) ---
+  const HIST_TAG_LABEL = { save: 'автосейв', ext: 'внешняя правка' };
+  function fmtHistTime(ts) { const d = new Date(ts); return d.toLocaleDateString() + ' ' + d.toLocaleTimeString(); }
+  async function showLocalHistory(file) {
+    const r = await lite.fs.histList(file);
+    const items = (r && r.items) || [];
+    if (!items.length) { toast('Локальная история пуста — версии копятся по мере правок файла'); return; }
+    let cur = '';
+    try { const rf = await lite.fs.readFile(file); if (rf && !rf.error) cur = rf.content; } catch (_) {}
+    let mv = null;
+    const destroyMv = () => { if (mv) { try { mv.destroy(); } catch (_) {} mv = null; } };
+    const { m, close } = makeModal(`
+      <div class="hist-head"><span class="hist-title"></span><span class="hist-count"></span></div>
+      <div class="hist-grid">
+        <div class="hist-list"></div>
+        <div class="hist-right">
+          <div class="hist-collabels"><span>Выбранная версия</span><span>Текущий файл</span></div>
+          <div class="hist-diff"></div>
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button class="btn" id="hist-close">Закрыть</button>
+        <button class="btn primary" id="hist-restore" disabled>Откатить к этой версии</button>
+      </div>`, destroyMv);
+    m.classList.add('modal-hist');
+    m.querySelector('.hist-title').textContent = 'Локальная история — ' + baseName(file);
+    m.querySelector('.hist-count').textContent = shortCountRu(items.length, 'версия', 'версии', 'версий');
+    m.querySelector('#hist-close').onclick = close;
+    const listEl = m.querySelector('.hist-list');
+    const diffEl = m.querySelector('.hist-diff');
+    const restoreBtn = m.querySelector('#hist-restore');
+    let selContent = null;
+    restoreBtn.onclick = async () => {
+      if (selContent == null) return;
+      const w = await lite.fs.writeFile(file, selContent); // текущее состояние снапшотится само (tag save)
+      if (w && w.error) { toast(w.error, { kind: 'err', ttl: 7000 }); return; }
+      close();
+      toast('Файл откатан к выбранной версии');
+      if (currentFile === file) reloadCurrentFile();       // вотчер тоже поймает, но форсим сразу
+    };
+    const show = async (it, row) => {
+      listEl.querySelectorAll('.hist-item').forEach((x) => x.classList.toggle('active', x === row));
+      const rr = await lite.fs.histRead(file, it.name);
+      if (!rr || rr.error) { toast((rr && rr.error) || 'не удалось прочитать версию', { kind: 'err' }); return; }
+      selContent = rr.content;
+      restoreBtn.disabled = false;
+      destroyMv(); diffEl.replaceChildren();
+      const ro = [
+        EditorState.readOnly.of(true), EditorView.editable.of(false),
+        lineNumbers(), drawSelection(),
+        syntaxHighlighting(defaultHighlightStyle, { fallback: true }), oneDark,
+        ...[].concat(languageFor(file)),
+      ];
+      mv = new MergeView({ a: { doc: rr.content, extensions: ro }, b: { doc: cur, extensions: ro }, parent: diffEl, highlightChanges: true, gutter: true });
+    };
+    items.forEach((it, i) => {
+      const row = el('div', 'hist-item');
+      row.appendChild(el('span', 'hist-when', fmtHistTime(it.ts)));
+      row.appendChild(el('span', 'hist-tag t-' + it.tag, HIST_TAG_LABEL[it.tag] || it.tag));
+      row.appendChild(el('span', 'hist-size', Math.max(1, Math.round(it.size / 1024)) + ' КБ'));
+      row.addEventListener('click', () => show(it, row));
+      listEl.appendChild(row);
+      if (i === 0) show(it, row); // сразу показать самую свежую версию
+    });
+  }
+  function shortCountRu(n, one, few, many) {
+    const v = Math.abs(n) % 100, d = v % 10;
+    if (v > 10 && v < 20) return n + ' ' + many;
+    if (d === 1) return n + ' ' + one;
+    if (d >= 2 && d <= 4) return n + ' ' + few;
+    return n + ' ' + many;
+  }
+
   // --- сравнение двух файлов (через git diff --no-index) ---
   function compareMenuRow(ent) {
     if (cmpFirst && cmpFirst !== ent.path) return menuRow('columns', `Сравнить с «${baseName(cmpFirst)}»`, () => { closeMenus(); const a = cmpFirst; cmpFirst = null; runCompare(a, ent.path); });
@@ -1764,6 +1838,7 @@ export function initFiles(host) {
     $('#viewer-outline').addEventListener('click', showOutline);
     $('#viewer-todos').addEventListener('click', showTodos);
     $('#viewer-blame').addEventListener('click', toggleBlame);
+    $('#viewer-hist').addEventListener('click', () => { if (currentFile) showLocalHistory(currentFile); else toast('Нет открытого файла'); });
     $('#viewer-zen').addEventListener('click', toggleZen);
     $('#viewer-agent').addEventListener('click', toggleAgentMode);
     // C20: контекстное меню кода (агентские действия по выделению + копировать)

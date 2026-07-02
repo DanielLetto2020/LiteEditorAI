@@ -3017,8 +3017,11 @@ ipcMain.handle('fs:readFile', async (_e, file) => {
   } catch (err) { return { error: String(err.message || err) }; }
 });
 ipcMain.handle('fs:writeFile', async (_e, { file, content }) => {
-  try { await fs.promises.writeFile(file, content, 'utf8'); return { ok: true }; }
-  catch (err) { return { error: String(err.message || err) }; }
+  try {
+    await histSnapshotFromDisk(file, 'save');   // локальная история: состояние ДО записи (best-effort)
+    await fs.promises.writeFile(file, content, 'utf8');
+    return { ok: true };
+  } catch (err) { return { error: String(err.message || err) }; }
 });
 ipcMain.handle('fs:mkdir', async (_e, { parent, name }) => {
   const safe = safeChildName(name);                       // блокируем ../ и сепараторы (PC-3)
@@ -3188,6 +3191,65 @@ ipcMain.handle('files:diffPair', async (_e, { a, b } = {}) => {
   return { diff: out };
 });
 
+// ---------------------------------------------------------------- локальная история файлов (PhpStorm Local History)
+// Снапшоты текстовых файлов в ~/.LiteEditorAI/history/<sha1(absPath)>/<ts>-<tag>.snap.
+// Точки съёма: fs:writeFile — состояние ДО записи (tag 'save', правка из вивера/замены по проекту);
+// вотчер проекта — состояние ПОСЛЕ внешнего изменения (tag 'ext' — агент/git/другой редактор).
+// Best-effort: любая ошибка истории молча глотается, работе редактора не мешает.
+const HIST_DIR = path.join(storeDir, 'history');
+const HIST_MAX_PER_FILE = 25;                   // ротация: столько версий держим на файл
+const HIST_MAX_BYTES = MAX_VIEW_BYTES;          // крупнее лимита вивера — не снапшотим
+const HIST_MIN_GAP_MS = { save: 45000, ext: 15000 }; // троттл на файл: серия автосейвов ≠ серия версий
+const HIST_BATCH_CAP = 20;                      // пачка вотчера крупнее — массовая операция (checkout/npm), шум
+const histKey = (absFile) => crypto.createHash('sha1').update(String(absFile)).digest('hex').slice(0, 20);
+const HIST_NAME_RE = /^(\d{10,16})-(save|ext)\.snap$/;
+async function histSnapshot(absFile, content, tag) {
+  try {
+    if (typeof content !== 'string' || Buffer.byteLength(content) > HIST_MAX_BYTES || content.includes('\0')) return;
+    const dir = path.join(HIST_DIR, histKey(absFile));
+    await fs.promises.mkdir(dir, { recursive: true });
+    const names = (await fs.promises.readdir(dir)).filter((n) => HIST_NAME_RE.test(n)).sort();
+    if (names.length) {
+      const last = names[names.length - 1];
+      const m = HIST_NAME_RE.exec(last);
+      // дедуп по содержимому + троттл по времени (свежий снапшот уже есть — серию не плодим)
+      if (Date.now() - Number(m[1]) < (HIST_MIN_GAP_MS[tag] || 15000)) return;
+      const prev = await fs.promises.readFile(path.join(dir, last), 'utf8');
+      if (prev === content) return;
+    }
+    await fs.promises.writeFile(path.join(dir, `${Date.now()}-${tag}.snap`), content, 'utf8');
+    fs.promises.writeFile(path.join(dir, 'meta.json'), JSON.stringify({ file: absFile }), 'utf8').catch(() => {});
+    const all = (await fs.promises.readdir(dir)).filter((n) => HIST_NAME_RE.test(n)).sort();
+    for (const n of all.slice(0, Math.max(0, all.length - HIST_MAX_PER_FILE)))
+      fs.promises.unlink(path.join(dir, n)).catch(() => {});
+  } catch (_) { /* история — best-effort */ }
+}
+// Снапшот текущего состояния файла на диске (для внешних изменений из вотчера).
+async function histSnapshotFromDisk(absFile, tag) {
+  try {
+    const st = await fs.promises.stat(absFile);
+    if (!st.isFile() || st.size > HIST_MAX_BYTES) return;
+    await histSnapshot(absFile, await fs.promises.readFile(absFile, 'utf8'), tag);
+  } catch (_) { /* удалён/не читается — пропускаем */ }
+}
+ipcMain.handle('hist:list', async (_e, file) => {
+  try {
+    const dir = path.join(HIST_DIR, histKey(file));
+    const names = (await fs.promises.readdir(dir)).filter((n) => HIST_NAME_RE.test(n)).sort().reverse();
+    const items = await Promise.all(names.map(async (n) => {
+      const m = HIST_NAME_RE.exec(n);
+      let size = 0; try { size = (await fs.promises.stat(path.join(dir, n))).size; } catch (_) {}
+      return { name: n, ts: Number(m[1]), tag: m[2], size };
+    }));
+    return { ok: true, items };
+  } catch (_) { return { ok: true, items: [] }; } // истории ещё нет — пустой список, не ошибка
+});
+ipcMain.handle('hist:read', async (_e, { file, name } = {}) => {
+  if (!HIST_NAME_RE.test(String(name || ''))) return { error: 'bad name' }; // защита от traversal
+  try { return { ok: true, content: await fs.promises.readFile(path.join(HIST_DIR, histKey(file), name), 'utf8') }; }
+  catch (err) { return { error: String(err.message || err) }; }
+});
+
 // ---------------------------------------------------------------- file watching
 // Watch a project root and tell the renderer when files change on disk — so the
 // tree and the open file refresh live while an agent edits things in the terminal.
@@ -3214,6 +3276,8 @@ ipcMain.on('fs:watch', (_e, root) => {
       const files = [...rec.pending]; rec.pending.clear();
       if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('fs:changed', { root, files });
       const fw = filesWindow(); if (fw) fw.webContents.send('fs:changed', { root, files }); // окно вивера обновляет дерево/файл
+      // локальная история: внешняя правка (агент/git). Большая пачка = массовая операция — шум, пропускаем.
+      if (files.length <= HIST_BATCH_CAP) for (const f of files) histSnapshotFromDisk(f, 'ext');
     }, 180);
   });
   watchers.set(root, rec);

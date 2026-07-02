@@ -476,5 +476,8 @@ contextBridge.exposeInMainWorld('lite', {
     listAll: (root) => ipcRenderer.invoke('files:listAll', root),
     search: (root, query, opts) => ipcRenderer.invoke('files:search', { root, query, opts }),
     diffPair: (a, b) => ipcRenderer.invoke('files:diffPair', { a, b }),
+    // Локальная история файла (снапшоты автосейва/внешних правок).
+    histList: (file) => ipcRenderer.invoke('hist:list', file),
+    histRead: (file, name) => ipcRenderer.invoke('hist:read', { file, name }),
   },
 });
