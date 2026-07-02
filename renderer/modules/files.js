@@ -11,6 +11,7 @@ import { EditorState, Compartment, StateField, StateEffect, RangeSet } from '@co
 import { defaultKeymap, history, historyKeymap, indentWithTab, moveLineUp, moveLineDown, copyLineUp, copyLineDown, deleteLine, toggleComment, toggleBlockComment } from '@codemirror/commands';
 import { syntaxHighlighting, defaultHighlightStyle, indentOnInput, bracketMatching, foldGutter, codeFolding, foldKeymap, foldService } from '@codemirror/language';
 import { search, searchKeymap, highlightSelectionMatches } from '@codemirror/search';
+import { autocompletion, completionKeymap } from '@codemirror/autocomplete';
 import { MergeView } from '@codemirror/merge';
 import { oneDark } from '@codemirror/theme-one-dark';
 import { showMinimap } from '@replit/codemirror-minimap';
@@ -216,6 +217,32 @@ export function initFiles(host) {
     return lines;
   }
 
+  // Автодополнение по словам документа (anyword, честная эвристика без LSP): слова ≥3 символов
+  // из текущего файла; кэш на doc-инстанс (иммутабелен — правка = новый doc = пересчёт при
+  // следующем запросе попапа). Огромные доки пропускаем, чтобы не тормозить ввод.
+  const COMPLETE_DOC_MAX = 500000;
+  const WORD_RE = /[A-Za-zА-Яа-яЁё_$][\wА-Яа-яЁё$]{2,}/g;
+  let wordCacheDoc = null, wordCacheList = [];
+  function docWords(state) {
+    if (wordCacheDoc === state.doc) return wordCacheList;
+    const seen = new Set();
+    const text = state.doc.toString();
+    WORD_RE.lastIndex = 0;
+    let m, guard = 0;
+    while ((m = WORD_RE.exec(text)) && guard++ < 50000) seen.add(m[0]);
+    wordCacheDoc = state.doc;
+    wordCacheList = [...seen].map((w) => ({ label: w, type: 'text' }));
+    return wordCacheList;
+  }
+  function anywordSource(context) {
+    if (context.state.doc.length > COMPLETE_DOC_MAX) return null;
+    const w = context.matchBefore(/[\wА-Яа-яЁё$]{2,}/);
+    if (!w && !context.explicit) return null;                    // руками (Ctrl+Space) — можно и с 0 символов
+    const from = w ? w.from : context.pos;
+    const cur = w ? context.state.sliceDoc(w.from, w.to) : '';
+    return { from, options: docWords(context.state).filter((o) => o.label !== cur), validFor: /[\wА-Яа-яЁё$]*$/ };
+  }
+
   function makeEditor() {
     const state = EditorState.create({
       doc: '',
@@ -226,6 +253,7 @@ export function initFiles(host) {
         // мульти-курсоры + колоночное (Alt+клик добавляет курсор, Alt+drag — прямоугольное выделение)
         EditorState.allowMultipleSelections.of(true), rectangularSelection(), crosshairCursor(),
         indentOnInput(), bracketMatching(), highlightSelectionMatches(), search({ top: true }),
+        autocompletion({ override: [anywordSource], activateOnTyping: true, icons: false }),
         colorPreview, todoHighlight,
         syntaxHighlighting(defaultHighlightStyle, { fallback: true }), oneDark,
         minimapComp.of(settings.minimap ? minimapExt : []),
@@ -240,7 +268,7 @@ export function initFiles(host) {
           { key: 'Alt-ArrowUp', run: moveLineUp }, { key: 'Alt-ArrowDown', run: moveLineDown },
           { key: 'Shift-Alt-ArrowUp', run: copyLineUp }, { key: 'Shift-Alt-ArrowDown', run: copyLineDown },
           { key: 'Mod-Shift-k', run: deleteLine },
-          indentWithTab, ...foldKeymap, ...searchKeymap, ...defaultKeymap, ...historyKeymap,
+          indentWithTab, ...completionKeymap, ...foldKeymap, ...searchKeymap, ...defaultKeymap, ...historyKeymap,
         ]),
         EditorView.updateListener.of((u) => {
           if (u.docChanged && !loadingDoc) { markDirty(true); scheduleAutosave(); }
