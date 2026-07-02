@@ -11,6 +11,7 @@ import { EditorState, Compartment, StateField, StateEffect, RangeSet } from '@co
 import { defaultKeymap, history, historyKeymap, indentWithTab, moveLineUp, moveLineDown, copyLineUp, copyLineDown, deleteLine, toggleComment, toggleBlockComment } from '@codemirror/commands';
 import { syntaxHighlighting, defaultHighlightStyle, indentOnInput, bracketMatching, foldGutter, codeFolding, foldKeymap, foldService } from '@codemirror/language';
 import { search, searchKeymap, highlightSelectionMatches } from '@codemirror/search';
+import { MergeView } from '@codemirror/merge';
 import { oneDark } from '@codemirror/theme-one-dark';
 import { showMinimap } from '@replit/codemirror-minimap';
 import { indentationMarkers } from '@replit/codemirror-indentation-markers';
@@ -623,9 +624,10 @@ export function initFiles(host) {
   async function reloadCurrentDiff() {
     if (!currentFile || !diffMode) return;
     const p = activeProject(); if (!p) return;
-    const res = await lite.git.fileDiff(p.path, currentFile);
-    if (!diffMode || !currentFile) return; // режим мог смениться за время await
-    showDiff(res && res.diff ? res.diff : '');
+    const f = currentFile;
+    const d = await fetchWorkingDiff(p.path, f);
+    if (!diffMode || currentFile !== f) return; // режим/файл могли смениться за время await
+    showDiff(d.unified, d.pair, f);
   }
   function setEditorText(text, lang) {
     loadingDoc = true;
@@ -672,53 +674,107 @@ export function initFiles(host) {
   }
 
   // ---------------------------------------------------------------- git diff in the viewer
+  // Дифф одного файла показывается в двух видах: side-by-side (MergeView, по умолчанию) и unified
+  // (плюс откат ханков в режиме агента). Мульти-файловые диффы (ветка vs дерево) — только unified.
+  let mergeView = null;    // живой MergeView сплит-вида (дестроим при перерисовке/выходе)
+  let lastDiff = null;     // { unified, pair:{oldText,newText}|null, file } — для переключения вида без повторного IPC
+  function destroyMergeView() { if (mergeView) { try { mergeView.destroy(); } catch (_) {} mergeView = null; } }
+  // Дифф рабочего файла vs HEAD: unified + пара для сплита одним заходом.
+  async function fetchWorkingDiff(projPath, file) {
+    const [r, pr] = await Promise.all([lite.git.fileDiff(projPath, file), lite.git.filePair(projPath, file)]);
+    return { unified: (r && r.diff) || '', pair: (pr && pr.ok) ? { oldText: pr.oldText, newText: pr.newText } : null };
+  }
   async function toggleDiff() {
     if (diffMode) { exitDiff(true); return; }
     if (!currentFile) return;
     const p = activeProject(); if (!p) return;
     const file = currentFile;
-    const res = await lite.git.fileDiff(p.path, file);
+    const d = await fetchWorkingDiff(p.path, file);
     if (currentFile !== file) return; // переключили файл за время await — не показываем устаревший дифф
     diffRevertTarget = null;          // дифф-кнопка из режима редактирования — не показываем откат ханка (стейл от «Коммита» сбрасываем)
-    showDiff(res && res.diff ? res.diff : '');
+    showDiff(d.unified, d.pair, file);
   }
-  function showDiff(text) {
+  function diffSplitOn() { return settings.diffView !== 'unified'; } // дефолт — side-by-side (PhpStorm-style)
+  function setDiffViewMode(mode) {
+    settings.diffView = mode;
+    host.saveSettings();
+    if (diffMode && lastDiff) renderDiffBody(); // перерисовать текущий дифф в новом виде
+  }
+  function diffToolbar(splitActive) {
+    const bar = el('div', 'diff-toolbar');
+    for (const [label, mode, on] of [['Рядом', 'split', splitActive], ['Единый', 'unified', !splitActive]]) {
+      const b = el('button', 'diff-viewbtn' + (on ? ' on' : ''), label);
+      b.addEventListener('click', () => { if (!on) setDiffViewMode(mode); });
+      bar.appendChild(b);
+    }
+    return bar;
+  }
+  function renderDiffBody() {
+    const view = $('#diff-view');
+    destroyMergeView();
+    view.innerHTML = '';
+    const { unified, pair, file } = lastDiff;
+    const split = pair && diffSplitOn();
+    view.classList.toggle('split', !!split);
+    if (pair && unified.trim()) view.appendChild(diffToolbar(!!split));
+    if (!unified.trim()) {
+      view.appendChild(el('div', 'diff-empty', 'Нет изменений относительно HEAD (или это не git-репозиторий).'));
+      return;
+    }
+    if (split) {
+      const box = el('div', 'diff-merge');
+      view.appendChild(box);
+      // расширения иммутабельны — один массив можно шарить между обеими панелями
+      const ro = [
+        EditorState.readOnly.of(true), EditorView.editable.of(false),
+        lineNumbers(), drawSelection(),
+        syntaxHighlighting(defaultHighlightStyle, { fallback: true }), oneDark,
+        ...(file ? [].concat(languageFor(file)) : []),
+      ];
+      mergeView = new MergeView({
+        a: { doc: pair.oldText, extensions: ro },
+        b: { doc: pair.newText, extensions: ro },
+        parent: box, highlightChanges: true, gutter: true,
+      });
+      return;
+    }
+    const lines = unified.split('\n');
+    // C18: откат ханка доступен только для ЖИВОГО diff'а рабочего файла vs HEAD (gitDiffFile) в режиме агента.
+    const canRevert = agentMode && diffRevertTarget;
+    let firstHunk = lines.findIndex((l) => l.startsWith('@@')); if (firstHunk < 0) firstHunk = lines.length;
+    const header = lines.slice(0, firstHunk);
+    lines.forEach((ln, i) => {
+      let cls = '';
+      if (ln.startsWith('@@')) cls = 'hunk';
+      else if (ln.startsWith('+++') || ln.startsWith('---') || ln.startsWith('diff ') || ln.startsWith('index ')) cls = 'meta';
+      else if (ln.startsWith('+')) cls = 'add';
+      else if (ln.startsWith('-')) cls = 'del';
+      const row = el('div', 'diff-line ' + cls, ln || ' ');
+      if (cls === 'hunk' && canRevert) {
+        const btn = el('button', 'diff-hunk-revert'); btn.title = 'Откатить этот ханк (вернуть к версии до агента)';
+        btn.appendChild(icon('eraser', 12));
+        btn.addEventListener('click', (e) => { e.stopPropagation(); revertHunk(header, lines, i); });
+        row.appendChild(btn);
+      }
+      view.appendChild(row);
+    });
+  }
+  function showDiff(text, pair, file) {
     if (previewMode) exitPreview(); // preview и diff взаимоисключающие — иначе оба оверлея накладываются
     diffMode = true;
-    const view = $('#diff-view');
-    view.innerHTML = '';
-    if (!text.trim()) {
-      view.appendChild(el('div', 'diff-empty', 'Нет изменений относительно HEAD (или это не git-репозиторий).'));
-    } else {
-      const lines = text.split('\n');
-      // C18: откат ханка доступен только для ЖИВОГО diff'а рабочего файла vs HEAD (gitDiffFile) в режиме агента.
-      const canRevert = agentMode && diffRevertTarget;
-      let firstHunk = lines.findIndex((l) => l.startsWith('@@')); if (firstHunk < 0) firstHunk = lines.length;
-      const header = lines.slice(0, firstHunk);
-      lines.forEach((ln, i) => {
-        let cls = '';
-        if (ln.startsWith('@@')) cls = 'hunk';
-        else if (ln.startsWith('+++') || ln.startsWith('---') || ln.startsWith('diff ') || ln.startsWith('index ')) cls = 'meta';
-        else if (ln.startsWith('+')) cls = 'add';
-        else if (ln.startsWith('-')) cls = 'del';
-        const row = el('div', 'diff-line ' + cls, ln || ' ');
-        if (cls === 'hunk' && canRevert) {
-          const btn = el('button', 'diff-hunk-revert'); btn.title = 'Откатить этот ханк (вернуть к версии до агента)';
-          btn.appendChild(icon('eraser', 12));
-          btn.addEventListener('click', (e) => { e.stopPropagation(); revertHunk(header, lines, i); });
-          row.appendChild(btn);
-        }
-        view.appendChild(row);
-      });
-    }
+    lastDiff = { unified: text || '', pair: pair || null, file: file || null };
+    renderDiffBody();
     $('#editor').style.display = 'none';
-    view.style.display = 'block';
+    $('#diff-view').style.display = 'block';
     $('#viewer-diff').classList.add('on');
     updateStatus(editor.state);
   }
   function exitDiff(refocus) {
     diffMode = false;
-    $('#diff-view').style.display = 'none';
+    destroyMergeView();
+    lastDiff = null;
+    const view = $('#diff-view');
+    view.innerHTML = ''; view.classList.remove('split'); view.style.display = 'none';
     $('#editor').style.display = '';
     $('#viewer-diff').classList.remove('on');
     if (refocus) editor.focus();
@@ -1046,7 +1102,7 @@ export function initFiles(host) {
       // живой git-дифф в центре: показанный файл изменился на диске (агент правит) → перечитать дифф
       if (gitDiffFile && diffMode && gitDiffProj && files.includes(gitDiffFile)) {
         const f = gitDiffFile;
-        lite.git.fileDiff(gitDiffProj, f).then((r) => { if (gitDiffFile === f && diffMode) showDiff(r && r.diff ? r.diff : ''); });
+        fetchWorkingDiff(gitDiffProj, f).then((d) => { if (gitDiffFile === f && diffMode) showDiff(d.unified, d.pair, f); });
       }
       if (currentFile && files.includes(currentFile)) {
         if (diffMode) reloadCurrentDiff();              // в режиме диффа — обновляем дифф (редактор не трогаем)
@@ -1330,9 +1386,9 @@ export function initFiles(host) {
     const r = await lite.git.revertHunk(proj, patch);
     if (!r || !r.ok) { toast((r && r.error) || 'не удалось откатить ханк', { kind: 'err', ttl: 8000 }); return; }
     toast('Ханк откачен');
-    const rr = await lite.git.fileDiff(proj, f);
+    const d = await fetchWorkingDiff(proj, f);
     if (diffMode && diffRevertTarget && diffRevertTarget.file === f) {
-      if (rr && rr.diff && rr.diff.trim()) showDiff(rr.diff);
+      if (d.unified.trim()) showDiff(d.unified, d.pair, f);
       else { exitDiff(false); clearGitDiff(); $('#viewer-filename').textContent = '—'; toast('Файл полностью возвращён к HEAD'); }
     }
     const p = activeProject(); if (p) renderTree(p);
@@ -1527,13 +1583,14 @@ export function initFiles(host) {
     if (!viewerOpen) setViewerOpen(true);
     guardDirty(async () => {                         // не затереть несохранённые правки открытого файла
       const seq = ++openSeq;                         // токен гонки: за время diffPair могли открыть другой файл
-      const r = await lite.fs.diffPair(a, b);
+      const [r, ra, rb] = await Promise.all([lite.fs.diffPair(a, b), lite.fs.readFile(a), lite.fs.readFile(b)]);
       if (seq !== openSeq) return;                   // обогнал более свежий open/дифф — не затираем его
       if (r && r.error) { toast(r.error, { kind: 'err' }); return; }
       currentFile = null; clearGitDiff();            // это сравнение, не редактируемый файл
       $('#viewer-filename').textContent = `${baseName(a)} ↔ ${baseName(b)}`;
       setEditorText('', []); markDirty(false); clearGitGutter();
-      showDiff(r && r.diff ? r.diff : '');
+      const pair = (!ra.error && !rb.error) ? { oldText: ra.content, newText: rb.content } : null; // бинарь/огромный → unified
+      showDiff(r && r.diff ? r.diff : '', pair, b);
       if (!(r && r.diff && r.diff.trim())) toast('Файлы идентичны');
     });
   }
@@ -1592,13 +1649,13 @@ export function initFiles(host) {
     guardDirty(async () => {
       const seq = ++openSeq;                         // общий с openFile токен гонки «дифф ↔ открытие файла»
       gitDiffFile = file; gitDiffProj = projPath;
-      const r = await lite.git.fileDiff(projPath, file);
+      const d = await fetchWorkingDiff(projPath, file);
       if (seq !== openSeq || gitDiffFile !== file) return; // обогнал более свежий показ/открытие
       currentFile = null;                            // это дифф, не редактируемый файл
       diffRevertTarget = { proj: projPath, file };   // HEAD-vs-working → откат ханка доступен
       $('#viewer-filename').textContent = (label && label.name) || baseName(file);
       setEditorText('', []); markDirty(false); clearGitGutter();
-      showDiff(r && r.diff ? r.diff : '');
+      showDiff(d.unified, d.pair, file);
     });
   }
   function clearGitDiff() { gitDiffFile = null; gitDiffProj = null; diffRevertTarget = null; }
@@ -1622,12 +1679,15 @@ export function initFiles(host) {
     guardDirty(async () => {
       const seq = ++openSeq;
       clearGitDiff();
-      const r = await lite.git.commitFileDiff(projPath, hash, file);
+      const [r, pr] = await Promise.all([
+        lite.git.commitFileDiff(projPath, hash, file),
+        lite.git.commitFilePair(projPath, hash, file),
+      ]);
       if (seq !== openSeq) return;
       currentFile = null;
       $('#viewer-filename').textContent = ((label && label.name) || baseName(file)) + ' @ ' + String(hash).slice(0, 8);
       setEditorText('', []); markDirty(false); clearGitGutter();
-      showDiff(r && r.diff ? r.diff : '');
+      showDiff(r && r.diff ? r.diff : '', pr && pr.ok ? { oldText: pr.oldText, newText: pr.newText } : null, file);
     });
   }
 

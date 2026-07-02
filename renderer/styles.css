@@ -2438,6 +2438,25 @@ body.resizing { cursor: col-resize; user-select: none; }
 .diff-empty { padding: 18px; color: var(--text-dim); text-align: center; }
 #viewer-diff.on { color: var(--green); border-color: var(--border-accent); }
 
+/* side-by-side дифф (@codemirror/merge): тумблер вида + контейнер MergeView */
+#diff-view.split { display: flex; flex-direction: column; overflow: hidden; padding: 0; }
+.diff-toolbar {
+  display: flex; gap: 4px; padding: 5px 10px; flex: 0 0 auto;
+  border-bottom: 1px solid var(--border); background: var(--panel);
+  position: sticky; top: -6px; z-index: 3;
+}
+#diff-view.split .diff-toolbar { position: static; }
+.diff-viewbtn {
+  border: 1px solid var(--border); background: transparent; color: var(--text-dim);
+  font-size: 11px; padding: 2px 10px; border-radius: 7px; cursor: pointer;
+}
+.diff-viewbtn:hover { color: var(--text); background: var(--hover); }
+.diff-viewbtn.on { color: var(--green); border-color: var(--border-accent); background: var(--hover); }
+.diff-merge { flex: 1; min-height: 0; }
+.diff-merge .cm-mergeView, .diff-merge .cm-mergeViewEditors { height: 100%; }
+.diff-merge .cm-mergeViewEditor { overflow: hidden; }
+.diff-merge .cm-editor { height: 100%; }
+
 /* ---------------- viewer preview (md / image / html) ---------------- */
 #preview-view { display: none; flex: 1; overflow: auto; background: var(--panel); }
 .prev-empty { padding: 18px; color: var(--text-dim); text-align: center; }

@@ -4128,6 +4128,39 @@ ipcMain.handle('git:fileDiff', async (_e, { root, file }) => {
   }
   return { diff: out || '' };
 });
+// Пара «до/после» одного файла для side-by-side диффа: old = версия из HEAD, new = рабочий файл.
+// Новый (untracked) файл → old:'' ; удалённый с диска → new:''. Бинарь/огромный файл → error (UI
+// откатится на unified-вид).
+ipcMain.handle('git:filePair', async (_e, { root, file } = {}) => {
+  if (!root || !file) return { error: 'no root/file' };
+  const top = await git(root, ['rev-parse', '--show-toplevel']);
+  if (top == null) return { error: 'не git-репозиторий' };
+  const rel = path.relative(top.trim(), file).replace(/\\/g, '/');
+  const oldText = await git(root, ['show', 'HEAD:' + rel]);      // null → файла не было в HEAD
+  let newText = null;
+  try {
+    const st = await fs.promises.stat(file);
+    if (st.isFile() && st.size <= MAX_VIEW_BYTES) newText = await fs.promises.readFile(file, 'utf8');
+    else if (st.isFile()) return { error: 'файл слишком большой' };
+  } catch (_) { /* удалён с диска → null */ }
+  if (oldText == null && newText == null) return { error: 'нет содержимого' };
+  if ((oldText || '').includes('\0') || (newText || '').includes('\0')) return { error: 'бинарный файл' };
+  if ((oldText || '').length > MAX_VIEW_BYTES) return { error: 'файл слишком большой' };
+  return { ok: true, oldText: oldText || '', newText: newText || '' };
+});
+// Пара «родитель/коммит» файла (rel-путь из git:commitFiles) для side-by-side диффа истории.
+ipcMain.handle('git:commitFilePair', async (_e, { root, hash, file } = {}) => {
+  const h = String(hash || '').trim();
+  if (!/^[0-9a-fA-F]{4,40}$/.test(h)) return { error: 'bad hash' };
+  const rel = String(file || '').replace(/\\/g, '/');
+  if (!rel) return { error: 'no file' };
+  const oldText = await git(root, ['show', h + '^:' + rel]);     // null → нет в родителе (новый / первый коммит)
+  const newText = await git(root, ['show', h + ':' + rel]);      // null → удалён этим коммитом
+  if (oldText == null && newText == null) return { error: 'нет содержимого' };
+  if ((oldText || '').includes('\0') || (newText || '').includes('\0')) return { error: 'бинарный файл' };
+  if ((oldText || '').length > MAX_VIEW_BYTES || (newText || '').length > MAX_VIEW_BYTES) return { error: 'файл слишком большой' };
+  return { ok: true, oldText: oldText || '', newText: newText || '' };
+});
 
 // Mutating git for the light panel. GIT_TERMINAL_PROMPT=0 + timeout so a command
 // that would block on auth fails fast with a message instead of hanging the app.

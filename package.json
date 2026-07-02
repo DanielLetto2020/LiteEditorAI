@@ -1,6 +1,6 @@
 {
   "name": "liteeditor-ai",
-  "version": "1.1.59-alpha",
+  "version": "1.1.60-alpha",
   "description": "Lightweight editor for working with AI coding agents in the terminal",
   "main": "main.js",
   "author": "Максим Кузьминский <i@m-letto.ru>",
@@ -25,6 +25,7 @@
     "release": "node scripts/release.js"
   },
   "dependencies": {
+    "@codemirror/autocomplete": "^6.20.3",
     "@codemirror/commands": "^6.7.1",
     "@codemirror/lang-css": "^6.3.0",
     "@codemirror/lang-html": "^6.4.9",
@@ -34,6 +35,7 @@
     "@codemirror/lang-python": "^6.1.6",
     "@codemirror/lang-sql": "^6.10.0",
     "@codemirror/language": "^6.10.6",
+    "@codemirror/merge": "^6.12.2",
     "@codemirror/search": "^6.7.0",
     "@codemirror/state": "^6.5.0",
     "@codemirror/theme-one-dark": "^6.1.2",

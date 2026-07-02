@@ -354,6 +354,9 @@ contextBridge.exposeInMainWorld('lite', {
     // лог: файлы коммита (дерево) + дифф файла в коммите
     commitFiles: (root, hash) => ipcRenderer.invoke('git:commitFiles', { root, hash }),
     commitFileDiff: (root, hash, file) => ipcRenderer.invoke('git:commitFileDiff', { root, hash, file }),
+    // пары «до/после» для side-by-side диффа
+    filePair: (root, file) => ipcRenderer.invoke('git:filePair', { root, file }),
+    commitFilePair: (root, hash, file) => ipcRenderer.invoke('git:commitFilePair', { root, hash, file }),
     // ветки (local+remote) + операции PhpStorm-style
     branches: (root) => ipcRenderer.invoke('git:branches', root),
     branchRename: (root, from, to) => ipcRenderer.invoke('git:branchRename', { root, from, to }),
