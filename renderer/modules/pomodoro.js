@@ -33,14 +33,14 @@ function dayKey(ts) { const d = new Date(ts); return d.getFullYear() + '-' + (d.
 function ring(fraction, centerVal, centerSub, cls) {
   const R = 52, C = 2 * Math.PI * R;
   const off = C * (1 - Math.max(0, Math.min(1, fraction || 0)));
-  const wrap = el('div', 'pm-ring' + (cls ? ' ' + cls : ''));
-  wrap.innerHTML = `<svg viewBox="0 0 120 120" class="pm-ring-svg" aria-hidden="true">
-    <circle class="pm-ring-bg" cx="60" cy="60" r="${R}"/>
-    <circle class="pm-ring-fg" cx="60" cy="60" r="${R}" stroke-dasharray="${C.toFixed(1)}" stroke-dashoffset="${off.toFixed(1)}"/>
+  const wrap = el('div', 'pomo-ring' + (cls ? ' ' + cls : ''));
+  wrap.innerHTML = `<svg viewBox="0 0 120 120" class="pomo-ring-svg" aria-hidden="true">
+    <circle class="pomo-ring-bg" cx="60" cy="60" r="${R}"/>
+    <circle class="pomo-ring-fg" cx="60" cy="60" r="${R}" stroke-dasharray="${C.toFixed(1)}" stroke-dashoffset="${off.toFixed(1)}"/>
   </svg>`;
-  const center = el('div', 'pm-ring-center');
-  center.appendChild(el('div', 'pm-ring-val', centerVal));
-  if (centerSub) center.appendChild(el('div', 'pm-ring-sub', centerSub));
+  const center = el('div', 'pomo-ring-center');
+  center.appendChild(el('div', 'pomo-ring-val', centerVal));
+  if (centerSub) center.appendChild(el('div', 'pomo-ring-sub', centerSub));
   wrap.appendChild(center);
   return wrap;
 }
@@ -113,7 +113,7 @@ export function initPomodoro(host) {
     if (!body) return;
     applyCompactUI();
     body.innerHTML = '';
-    const slot = el('div', 'pm-card-slot'); // карта таймера обновляется отдельно (каждую секунду),
+    const slot = el('div', 'pomo-card-slot'); // карта таймера обновляется отдельно (каждую секунду),
     slot.appendChild(renderTimerCard());     // чтобы тик не перерисовывал поля настроек и не сбрасывал фокус
     body.appendChild(slot);
     if (!state.compact) {                     // «минимализм»: только таймер, без статистики/техник/настроек
@@ -124,7 +124,7 @@ export function initPomodoro(host) {
   }
   // Режим «минимализм»: класс на body (компактные стили) + иконка/подсказка кнопки шапки.
   function applyCompactUI() {
-    document.body.classList.toggle('pm-compact', state.compact);
+    document.body.classList.toggle('pomo-compact', state.compact);
     const btn = $('#pomodoro-min');
     if (btn) {
       btn.innerHTML = '';
@@ -139,7 +139,7 @@ export function initPomodoro(host) {
   }
   // Лёгкое обновление по тику: только карта таймера (кольцо/часы/кнопки), без статистики/настроек.
   function updateTimer() {
-    const slot = $('#pomodoro-body .pm-card-slot');
+    const slot = $('#pomodoro-body .pomo-card-slot');
     if (!slot) { renderBody(); return; }
     slot.innerHTML = '';
     slot.appendChild(renderTimerCard());
@@ -154,47 +154,47 @@ export function initPomodoro(host) {
 
   // Большая карта: кольцо прогресса фазы + обратный отсчёт + управление.
   function renderTimerCard() {
-    const card = el('div', 'pm-card pm-phase-' + live.phase);
+    const card = el('div', 'pomo-card pomo-phase-' + live.phase);
     const running = live.running;
     const frac = running ? (live.total ? (live.total - live.remaining) / live.total : 0) : 0;
-    card.appendChild(ring(frac, running ? fmtClock(live.remaining) : '—', PHASE_LABEL[live.phase] || '', 'pm-ring-phase-' + live.phase));
+    card.appendChild(ring(frac, running ? fmtClock(live.remaining) : '—', PHASE_LABEL[live.phase] || '', 'pomo-ring-phase-' + live.phase));
 
-    const meta = el('div', 'pm-meta');
+    const meta = el('div', 'pomo-meta');
     if (running && live.tech) {
-      meta.appendChild(el('span', 'pm-meta-tech', live.tech.name + (live.paused ? ' · пауза' : '')));
-      meta.appendChild(el('span', 'pm-meta-cycle', cycleLabel()));
+      meta.appendChild(el('span', 'pomo-meta-tech', live.tech.name + (live.paused ? ' · пауза' : '')));
+      meta.appendChild(el('span', 'pomo-meta-cycle', cycleLabel()));
     } else {
-      meta.appendChild(el('span', 'pm-meta-tech', 'Выберите технику и нажмите «Запустить»'));
+      meta.appendChild(el('span', 'pomo-meta-tech', 'Выберите технику и нажмите «Запустить»'));
     }
     card.appendChild(meta);
 
-    const ctl = el('div', 'pm-controls');
+    const ctl = el('div', 'pomo-controls');
     if (!running) {
       const sel = findTech(state.selectedId) || BUILTIN[0];
-      const startBtn = el('button', 'pm-btn pm-btn-primary');
+      const startBtn = el('button', 'pomo-btn pomo-btn-primary');
       startBtn.append(icon('play', 16), el('span', null, 'Запустить: ' + sel.name));
       startBtn.onclick = () => start(sel);
       ctl.appendChild(startBtn);
     } else {
       if (live.paused) {
-        const resume = el('button', 'pm-btn pm-btn-primary');
+        const resume = el('button', 'pomo-btn pomo-btn-primary');
         resume.append(icon('play', 16), el('span', null, 'Продолжить'));
         resume.onclick = () => lite.pomodoro.resume();
         ctl.appendChild(resume);
       } else {
-        const pause = el('button', 'pm-btn');
+        const pause = el('button', 'pomo-btn');
         pause.append(icon('pause', 16), el('span', null, 'Пауза'));
         pause.onclick = () => lite.pomodoro.pause();
         ctl.appendChild(pause);
       }
       const allowSkip = !live.tech || live.tech.allowSkip !== false;
       if (allowSkip) {
-        const skip = el('button', 'pm-btn');
+        const skip = el('button', 'pomo-btn');
         skip.append(icon('skip', 16), el('span', null, live.phase === 'work' ? 'К перерыву' : 'Пропустить'));
         skip.onclick = () => lite.pomodoro.skip();
         ctl.appendChild(skip);
       }
-      const stop = el('button', 'pm-btn pm-btn-danger');
+      const stop = el('button', 'pomo-btn pomo-btn-danger');
       stop.append(icon('stop', 16), el('span', null, 'Стоп'));
       stop.onclick = () => lite.pomodoro.stop();
       ctl.appendChild(stop);
@@ -205,20 +205,20 @@ export function initPomodoro(host) {
 
   // Статистика: дневная цель (кольцо), серия дней, бары за 7 дней.
   function renderStats() {
-    const wrap = el('div', 'pm-stats');
+    const wrap = el('div', 'pomo-stats');
     const today = todayCount();
     const goal = Math.max(1, state.goal || 8);
 
-    const top = el('div', 'pm-stats-top');
-    const goalRing = ring(today / goal, String(today), 'из ' + goal, 'pm-ring-goal' + (today >= goal ? ' done' : ''));
+    const top = el('div', 'pomo-stats-top');
+    const goalRing = ring(today / goal, String(today), 'из ' + goal, 'pomo-ring-goal' + (today >= goal ? ' done' : ''));
     top.appendChild(goalRing);
-    const facts = el('div', 'pm-facts');
-    const f1 = el('div', 'pm-fact');
-    f1.appendChild(el('div', 'pm-fact-n', String(streakDays())));
-    f1.appendChild(el('div', 'pm-fact-l', 'дней подряд'));
-    const f2 = el('div', 'pm-fact');
-    f2.appendChild(el('div', 'pm-fact-n', String(logCache.length)));
-    f2.appendChild(el('div', 'pm-fact-l', 'всего помидоров'));
+    const facts = el('div', 'pomo-facts');
+    const f1 = el('div', 'pomo-fact');
+    f1.appendChild(el('div', 'pomo-fact-n', String(streakDays())));
+    f1.appendChild(el('div', 'pomo-fact-l', 'дней подряд'));
+    const f2 = el('div', 'pomo-fact');
+    f2.appendChild(el('div', 'pomo-fact-n', String(logCache.length)));
+    f2.appendChild(el('div', 'pomo-fact-l', 'всего помидоров'));
     facts.append(f1, f2);
     top.appendChild(facts);
     wrap.appendChild(top);
@@ -226,16 +226,16 @@ export function initPomodoro(host) {
     // бары за 7 дней
     const days = last7();
     const max = Math.max(1, ...days.map((d) => d.n));
-    const bars = el('div', 'pm-bars');
+    const bars = el('div', 'pomo-bars');
     for (const d of days) {
-      const col = el('div', 'pm-bar' + (d.today ? ' today' : ''));
-      const track = el('div', 'pm-bar-track');
-      const fill = el('div', 'pm-bar-fill');
+      const col = el('div', 'pomo-bar' + (d.today ? ' today' : ''));
+      const track = el('div', 'pomo-bar-track');
+      const fill = el('div', 'pomo-bar-fill');
       fill.style.height = (d.n ? Math.max(8, Math.round(d.n / max * 100)) : 0) + '%';
       track.appendChild(fill);
-      col.appendChild(el('div', 'pm-bar-n', d.n ? String(d.n) : ''));
+      col.appendChild(el('div', 'pomo-bar-n', d.n ? String(d.n) : ''));
       col.appendChild(track);
-      col.appendChild(el('div', 'pm-bar-d', d.label));
+      col.appendChild(el('div', 'pomo-bar-d', d.label));
       bars.appendChild(col);
     }
     wrap.appendChild(bars);
@@ -244,13 +244,13 @@ export function initPomodoro(host) {
 
   // Список техник: стандартные + свои; запуск, выбор по умолчанию, редактирование/удаление, импорт/экспорт.
   function renderTechList() {
-    const wrap = el('div', 'pm-list');
-    const head = el('div', 'pm-list-head');
+    const wrap = el('div', 'pomo-list');
+    const head = el('div', 'pomo-list-head');
     head.appendChild(el('span', null, 'Техники'));
-    const tools = el('div', 'pm-list-tools');
-    const imp = iconBtn('pm-iact', 'upload', 'Импорт техник из файла', 15); imp.onclick = importTechs; tools.appendChild(imp);
-    const exp = iconBtn('pm-iact', 'download', 'Экспорт своих техник в файл', 15); exp.onclick = exportTechs; tools.appendChild(exp);
-    const add = el('button', 'pm-add');
+    const tools = el('div', 'pomo-list-tools');
+    const imp = iconBtn('pomo-iact', 'upload', 'Импорт техник из файла', 15); imp.onclick = importTechs; tools.appendChild(imp);
+    const exp = iconBtn('pomo-iact', 'download', 'Экспорт своих техник в файл', 15); exp.onclick = exportTechs; tools.appendChild(exp);
+    const add = el('button', 'pomo-add');
     add.append(icon('plus', 14), el('span', null, 'Своя'));
     add.onclick = () => openForm(null);
     tools.appendChild(add);
@@ -263,31 +263,31 @@ export function initPomodoro(host) {
 
   function renderTechRow(t) {
     const isSel = t.id === state.selectedId;
-    const row = el('div', 'pm-row' + (isSel ? ' sel' : ''));
+    const row = el('div', 'pomo-row' + (isSel ? ' sel' : ''));
 
-    const radio = el('button', 'pm-radio' + (isSel ? ' on' : ''));
+    const radio = el('button', 'pomo-radio' + (isSel ? ' on' : ''));
     radio.title = 'Сделать техникой по умолчанию';
     radio.onclick = () => { state.selectedId = t.id; save(); renderBody(); };
     row.appendChild(radio);
 
-    const info = el('div', 'pm-row-info');
-    info.appendChild(el('div', 'pm-row-name', t.name));
-    info.appendChild(el('div', 'pm-row-sub', t.work + ' · ' + t.short + ' · ' + t.long + ' мин · ' + Math.max(1, t.cyclesBeforeLong || 4) + ' цикла до длинного'));
-    const tags = el('div', 'pm-row-tags');
-    if (t.block) { const b = el('span', 'pm-tag'); b.append(icon('clock', 12), el('span', null, 'блокирует ввод')); tags.appendChild(b); }
-    if (t.allowSkip !== false) tags.appendChild(el('span', 'pm-tag pm-tag-soft', 'можно пропустить'));
+    const info = el('div', 'pomo-row-info');
+    info.appendChild(el('div', 'pomo-row-name', t.name));
+    info.appendChild(el('div', 'pomo-row-sub', t.work + ' · ' + t.short + ' · ' + t.long + ' мин · ' + Math.max(1, t.cyclesBeforeLong || 4) + ' цикла до длинного'));
+    const tags = el('div', 'pomo-row-tags');
+    if (t.block) { const b = el('span', 'pomo-tag'); b.append(icon('clock', 12), el('span', null, 'блокирует ввод')); tags.appendChild(b); }
+    if (t.allowSkip !== false) tags.appendChild(el('span', 'pomo-tag pomo-tag-soft', 'можно пропустить'));
     info.appendChild(tags);
     row.appendChild(info);
 
-    const acts = el('div', 'pm-row-acts');
-    const play = iconBtn('pm-iact', 'play', 'Запустить эту технику', 16);
+    const acts = el('div', 'pomo-row-acts');
+    const play = iconBtn('pomo-iact', 'play', 'Запустить эту технику', 16);
     play.onclick = () => start(t);
     acts.appendChild(play);
     if (!t.builtin) {
-      const edit = iconBtn('pm-iact', 'pencil', 'Редактировать', 15);
+      const edit = iconBtn('pomo-iact', 'pencil', 'Редактировать', 15);
       edit.onclick = () => openForm(t);
       acts.appendChild(edit);
-      const del = iconBtn('pm-iact pm-iact-danger', 'trash', 'Удалить', 15);
+      const del = iconBtn('pomo-iact pomo-iact-danger', 'trash', 'Удалить', 15);
       del.onclick = () => removeTech(t);
       acts.appendChild(del);
     }
@@ -305,13 +305,13 @@ export function initPomodoro(host) {
 
   // Настройки: дневная цель + звук + уведомления.
   function renderSettings() {
-    const wrap = el('div', 'pm-settings');
-    wrap.appendChild(el('div', 'pm-list-head', 'Настройки'));
+    const wrap = el('div', 'pomo-settings');
+    wrap.appendChild(el('div', 'pomo-list-head', 'Настройки'));
 
-    const goalRow = el('label', 'pm-set-row');
+    const goalRow = el('label', 'pomo-set-row');
     goalRow.appendChild(el('span', null, 'Цель в день, помидоров'));
     const goalInp = el('input'); goalInp.type = 'number'; goalInp.min = '1'; goalInp.max = '50'; goalInp.value = String(state.goal);
-    goalInp.className = 'pm-goal-input';
+    goalInp.className = 'pomo-goal-input';
     goalInp.onchange = () => { state.goal = clampNum(goalInp.value, 1, 50, 8); save(); renderBody(); };
     goalRow.appendChild(goalInp);
     wrap.appendChild(goalRow);
@@ -321,9 +321,9 @@ export function initPomodoro(host) {
     return wrap;
   }
   function toggleRow(label, on, onChange) {
-    const row = el('label', 'pm-set-row');
+    const row = el('label', 'pomo-set-row');
     row.appendChild(el('span', null, label));
-    const cb = el('input'); cb.type = 'checkbox'; cb.checked = !!on; cb.className = 'pm-toggle';
+    const cb = el('input'); cb.type = 'checkbox'; cb.checked = !!on; cb.className = 'pomo-toggle';
     cb.onchange = () => onChange(cb.checked);
     row.appendChild(cb);
     return row;
@@ -366,16 +366,16 @@ export function initPomodoro(host) {
     const t = existing || { name: '', work: 25, short: 5, long: 15, cyclesBeforeLong: 4, block: true, allowSkip: true };
     const html = `
       <h3 class="modal-h">${existing ? 'Редактировать технику' : 'Своя техника'}</h3>
-      <div class="pm-form">
-        <label class="pm-f"><span>Название</span><input id="pmf-name" type="text" maxlength="40" placeholder="Моя техника"></label>
-        <div class="pm-f-grid">
-          <label class="pm-f"><span>Работа, мин</span><input id="pmf-work" type="number" min="1" max="240"></label>
-          <label class="pm-f"><span>Короткий, мин</span><input id="pmf-short" type="number" min="1" max="120"></label>
-          <label class="pm-f"><span>Длинный, мин</span><input id="pmf-long" type="number" min="1" max="240"></label>
-          <label class="pm-f"><span>Циклов до длинного</span><input id="pmf-cycles" type="number" min="1" max="12"></label>
+      <div class="pomo-form">
+        <label class="pomo-f"><span>Название</span><input id="pmf-name" type="text" maxlength="40" placeholder="Моя техника"></label>
+        <div class="pomo-f-grid">
+          <label class="pomo-f"><span>Работа, мин</span><input id="pmf-work" type="number" min="1" max="240"></label>
+          <label class="pomo-f"><span>Короткий, мин</span><input id="pmf-short" type="number" min="1" max="120"></label>
+          <label class="pomo-f"><span>Длинный, мин</span><input id="pmf-long" type="number" min="1" max="240"></label>
+          <label class="pomo-f"><span>Циклов до длинного</span><input id="pmf-cycles" type="number" min="1" max="12"></label>
         </div>
-        <label class="pm-check"><input id="pmf-block" type="checkbox"><span>Блокировать работу — на перерыве над терминалами появляется оверлей (ввод заблокирован, агенты работают)</span></label>
-        <label class="pm-check"><input id="pmf-skip" type="checkbox"><span>Разрешить кнопку «Пропустить» во время перерыва</span></label>
+        <label class="pomo-check"><input id="pmf-block" type="checkbox"><span>Блокировать работу — на перерыве над терминалами появляется оверлей (ввод заблокирован, агенты работают)</span></label>
+        <label class="pomo-check"><input id="pmf-skip" type="checkbox"><span>Разрешить кнопку «Пропустить» во время перерыва</span></label>
       </div>
       <div class="modal-actions">
         <button class="btn" id="pmf-cancel">Отмена</button>
