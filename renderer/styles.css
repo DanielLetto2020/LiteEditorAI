@@ -2457,6 +2457,14 @@ body.resizing { cursor: col-resize; user-select: none; }
 .diff-merge .cm-mergeViewEditor { overflow: hidden; }
 .diff-merge .cm-editor { height: 100%; }
 
+/* Blame-гаттер (аннотация «автор · возраст» слева, PhpStorm Annotate) */
+.cm-blame-gutter { min-width: 148px; max-width: 190px; border-right: 1px solid var(--border); }
+.cm-blame-mark {
+  padding: 0 8px 0 6px; font-size: 11px; color: var(--text-mute);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: default;
+}
+.cm-blame-mark.unc { color: var(--green); text-align: center; }
+
 /* Amend в панели коммита */
 .gm-amend { display: inline-flex; align-items: center; gap: 5px; color: var(--text-dim); font-size: 12px; cursor: pointer; user-select: none; margin-left: auto; }
 .gm-amend input { accent-color: var(--green); }

@@ -247,7 +247,7 @@ export function initFiles(host) {
     const state = EditorState.create({
       doc: '',
       extensions: [
-        lineNumbers(), bmGutterField, bmGutterExt, gitGutterField, gitGutterExt, highlightActiveLine(), highlightActiveLineGutter(),
+        blameComp.of([]), lineNumbers(), bmGutterField, bmGutterExt, gitGutterField, gitGutterExt, highlightActiveLine(), highlightActiveLineGutter(),
         codeFolding(), foldGutter(), regionFoldService, indentationMarkers({ hideFirstIndent: true, highlightActiveBlock: false }),
         drawSelection(), history(),
         // мульти-курсоры + колоночное (Alt+клик добавляет курсор, Alt+drag — прямоугольное выделение)
@@ -315,13 +315,41 @@ export function initFiles(host) {
     blameData = (r && r.ok) ? r.lines : null;
     if (r && r.error) { blameData = null; toast(r.error, { kind: 'err', ttl: 5000 }); }
   }
+  // Гаттер-аннотация blame (PhpStorm Annotate): колонка «автор · возраст» слева на каждой строке.
+  // Данные — из того же blameData, что и статус-бар; после правок пересчитывается на сохранении
+  // (refreshBlameIfOn), до пересчёта показывает прежние метки.
+  const blameComp = new Compartment();
+  class BlameMarker extends GutterMarker {
+    constructor(b) { super(); this.b = b; }
+    eq(o) { return o.b === this.b; }
+    toDOM() {
+      const d = document.createElement('div');
+      d.className = 'cm-blame-mark' + (this.b.uncommitted ? ' unc' : '');
+      d.textContent = this.b.uncommitted ? '●' : `${(this.b.author || '?').slice(0, 16)} · ${fmtAgo(this.b.time)}`;
+      d.title = this.b.uncommitted ? 'Не закоммичено' : `${this.b.hash} · ${this.b.author}\n${this.b.summary || ''}`;
+      return d;
+    }
+  }
+  const blameGutter = gutter({
+    class: 'cm-blame-gutter',
+    lineMarker: (view, block) => {
+      if (!blameData) return null;
+      const b = blameData[view.state.doc.lineAt(block.from).number - 1];
+      return b ? new BlameMarker(b) : null;
+    },
+  });
+  function updateBlameGutter() {
+    if (!editor) return;
+    editor.dispatch({ effects: blameComp.reconfigure(blameOn && blameData ? [blameGutter] : []) });
+  }
   async function toggleBlame() {
     blameOn = !blameOn;
     $('#viewer-blame').classList.toggle('on', blameOn);
     if (blameOn) await loadBlame(); else blameData = null;
+    updateBlameGutter();
     if (editor) updateStatus(editor.state);
   }
-  function refreshBlameIfOn() { if (blameOn) loadBlame().then(() => { if (editor) updateStatus(editor.state); }); }
+  function refreshBlameIfOn() { if (blameOn) loadBlame().then(() => { updateBlameGutter(); if (editor) updateStatus(editor.state); }); }
   // Нижняя статус-строка вивера: позиция курсора (строка:колонка), число строк, выделение, blame, язык.
   function updateStatus(state) {
     const bar = $('#viewer-status'); if (!bar) return;
