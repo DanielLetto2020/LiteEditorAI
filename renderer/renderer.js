@@ -26,7 +26,7 @@ import { el, icon, iconBtn, hydrateIcons, toast, makeModal, showConfirm, showPro
 import { initExtensions } from './modules/extensions.js';
 // initFiles — вивер+дерево мигрированы в отдельное окно (renderer/module-entry.js).
 
-const APP_VERSION = 'alpha v1.1.67';
+const APP_VERSION = 'alpha v1.1.68';
 const GUTTER = 5;
 // Системный терминал («Система · ~») мигрирован в отдельное окно (renderer/modules/scratch.js):
 // его id `__scratch__::tN` маршрутизируются main'ом в окно-владельца, в ядре их больше не обрабатываем.
@@ -126,6 +126,15 @@ function isCollapsed(key) { return !!(STORE.accordions || {})[key]; }
 function setCollapsed(key, v) { persist('accordions', { ...(STORE.accordions || {}), [key]: v }); }
 function loadSectionOrder() { return Array.isArray(STORE.sectionOrder) ? STORE.sectionOrder.slice() : null; }
 function saveSectionOrder(o) { persist('sectionOrder', o); }
+// Ручной порядок карточек в «Избранном» (DnD): массив id. Кто не в списке — в конец
+// в исходном порядке projects (стабильная сортировка). Снятие ★ удаляет id из списка,
+// поэтому повторное добавление ставит карточку в самый низ группы.
+function loadFavOrder() { return Array.isArray(STORE.favOrder) ? STORE.favOrder : []; }
+function saveFavOrder(ids) { persist('favOrder', ids); }
+function sortFavs(list) {
+  const idx = new Map(loadFavOrder().map((id, i) => [id, i]));
+  return list.slice().sort((a, b) => (idx.has(a.id) ? idx.get(a.id) : Infinity) - (idx.has(b.id) ? idx.get(b.id) : Infinity));
+}
 
 // Section display order. Default = "избранное / <категории> / все"; persisted once
 // reordered. effectiveOrder() reconciles the stored order with the keys that exist
@@ -152,7 +161,7 @@ function effectiveOrder() {
 // Sections that actually render now, in display order (★ Избранное only when non-empty).
 function buildSections() {
   const cats = loadCategories();
-  const favs = projects.filter((p) => p.favorite);
+  const favs = sortFavs(projects.filter((p) => p.favorite));
   return effectiveOrder().map((key) => {
     if (key === FAV_KEY) return favs.length ? { key, label: 'Избранное', list: favs, pinned: true } : null;
     if (key === UNCATEGORIZED) return { key, label: UNCATEGORIZED, pinned: false, list: projects.filter((p) => !p.favorite && !cats.includes(p.category)) };
@@ -216,9 +225,46 @@ function renderSection(s, index, sections) {
   });
   if (key !== FAV_KEY && key !== UNCATEGORIZED && key !== ARCHIVE) // custom categories can be renamed/deleted (Архив — нет)
     head.addEventListener('contextmenu', (e) => { e.preventDefault(); showCategoryMenu(e.clientX, e.clientY, key); });
-  for (const p of list) body.appendChild(makeCard(p));
+  for (const p of list) {
+    const c = makeCard(p);
+    if (key === FAV_KEY) enableFavDnD(c, body);
+    body.appendChild(c);
+  }
   sec.appendChild(head); sec.appendChild(body);
   return sec;
+}
+// DnD-сортировка карточек ТОЛЬКО внутри «Избранного»: перетаскивание живьём двигает карточку
+// в теле группы, на dragend порядок из DOM пишется в favOrder. Esc/бросок мимо — откат без записи.
+let favDragCard = null; // тянут максимум одну карточку на окно
+function enableFavDnD(card, body) {
+  card.draggable = true;
+  card.addEventListener('dragstart', (e) => {
+    favDragCard = card;
+    card.classList.add('dragging');
+    e.dataTransfer.effectAllowed = 'move';
+    try { e.dataTransfer.setData('text/plain', card.dataset.id); } catch (_) {}
+  });
+  card.addEventListener('dragend', (e) => {
+    card.classList.remove('dragging');
+    if (!favDragCard) return;
+    favDragCard = null;
+    if (e.dataTransfer.dropEffect !== 'none') // 'none' = отмена (Esc/мимо) — порядок не трогаем
+      saveFavOrder([...body.querySelectorAll('.card')].map((c) => c.dataset.id));
+    renderProjects();
+  });
+  card.addEventListener('dragover', (e) => {
+    if (!favDragCard || favDragCard === card || card.parentElement !== body) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    const r = card.getBoundingClientRect();
+    body.insertBefore(favDragCard, e.clientY < r.top + r.height / 2 ? card : card.nextSibling);
+  });
+  // preventDefault на теле группы: разрешить drop между карточками/на паддинге (иначе курсор «нельзя»)
+  if (!body.dataset.favDnd) {
+    body.dataset.favDnd = '1';
+    body.addEventListener('dragover', (e) => { if (favDragCard) { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; } });
+    body.addEventListener('drop', (e) => { if (favDragCard) e.preventDefault(); });
+  }
 }
 function makeCard(p) {
   const card = el('div', 'card');
@@ -502,6 +548,13 @@ function toggleFavorite(id) {
   const p = projects.find((x) => x.id === id);
   if (!p) return;
   p.favorite = !p.favorite;
+  if (p.favorite) {
+    // материализуем текущий видимый порядок группы и ставим новую карточку в самый низ
+    const cur = sortFavs(projects.filter((x) => x.favorite && x.id !== id)).map((x) => x.id);
+    saveFavOrder([...cur, id]);
+  } else {
+    saveFavOrder(loadFavOrder().filter((x) => x !== id)); // снятие ★ сбрасывает ручную позицию
+  }
   saveProjects(); renderProjects();
 }
 function moveToCategory(id, cat) {
@@ -734,6 +787,7 @@ function doCloseProject(id) {
     tabsByProj.delete(id);
   }
   const pt = { ...(STORE.projTabs || {}) }; delete pt[id]; persist('projTabs', pt);
+  if (loadFavOrder().includes(id)) saveFavOrder(loadFavOrder().filter((x) => x !== id));
   missing.delete(id);
   projects = projects.filter((p) => p.id !== id);
   saveProjects();

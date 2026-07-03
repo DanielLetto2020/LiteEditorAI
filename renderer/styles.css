@@ -353,6 +353,9 @@ body.viewer-zen #vcs-topbar { display: none !important; }
 @keyframes pind-spin { to { transform: rotate(360deg); } }
 @keyframes pind-pulse { 70% { box-shadow: 0 0 0 7px rgba(224,175,104,0); } 100% { box-shadow: 0 0 0 0 rgba(224,175,104,0); } }
 
+/* card being dragged (DnD-сортировка внутри «Избранного») */
+.card.dragging { opacity: .4; }
+
 /* project whose folder was deleted on disk */
 .card.missing { border-color: rgba(247,118,142,0.45); opacity: 0.72; }
 .card.missing .card-title { color: var(--danger); text-decoration: line-through; }
