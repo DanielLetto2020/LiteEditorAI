@@ -169,6 +169,21 @@ export function initFiles(host) {
     }
   }, { decorations: (v) => v.decorations });
 
+  // B17: зеркальная подсветка в исходнике (сплит md) — фрагмент, выделенный в превью. Не выделение,
+  // а mark-декорация: реальное выделение (и Ctrl+C) остаётся в превью, где выделял пользователь.
+  const setMirrorHL = StateEffect.define();       // {from,to} — подсветить диапазон; null — снять
+  const mirrorHLMark = Decoration.mark({ class: 'cm-mirror-hl' });
+  const mirrorHLField = StateField.define({
+    create: () => Decoration.none,
+    update(deco, tr) {
+      deco = deco.map(tr.changes);
+      for (const e of tr.effects) if (e.is(setMirrorHL))
+        deco = e.value && e.value.to > e.value.from ? Decoration.set([mirrorHLMark.range(e.value.from, e.value.to)]) : Decoration.none;
+      return deco;
+    },
+    provide: (f) => EditorView.decorations.from(f),
+  });
+
   // C21: слой авторства — гаттер, где строки, тронутые агентом (правки с диска при live-reload) и тобой
   // (правки в редакторе) помечены разными красками + таймстампом по ховеру. Включается режимом агента.
   const authComp = new Compartment();
@@ -254,7 +269,7 @@ export function initFiles(host) {
         EditorState.allowMultipleSelections.of(true), rectangularSelection(), crosshairCursor(),
         indentOnInput(), bracketMatching(), highlightSelectionMatches(), search({ top: true }),
         autocompletion({ override: [anywordSource], activateOnTyping: true, icons: false }),
-        colorPreview, todoHighlight,
+        colorPreview, todoHighlight, mirrorHLField,
         syntaxHighlighting(defaultHighlightStyle, { fallback: true }), oneDark,
         minimapComp.of(settings.minimap ? minimapExt : []),
         authComp.of([]),
@@ -280,12 +295,15 @@ export function initFiles(host) {
           if (u.docChanged) { symCacheFile = null; remapBookmarks(u); }
           if (u.docChanged || u.selectionSet) { updateStatus(u.state); updateBreadcrumb(u.state); updateSticky(); }
           if (u.docChanged && splitMode) { clearTimeout(splitTimer); splitTimer = setTimeout(refreshSplitPreview, 300); } // B15: живой рендер сплита
-
+          if (u.selectionSet && splitMode) scheduleMirrorFromSource(); // B17: зеркало выделения исходник → превью
         }),
       ],
     });
     editor = new EditorView({ state, parent: $('#editor') });
     editor.scrollDOM.addEventListener('scroll', updateSticky);   // A6: пересчитывать sticky-заголовок на скролле
+    // B17: взаимный скролл двух колонок сплита (пропорционально доле прокрутки, эхо гасит claimSync)
+    editor.scrollDOM.addEventListener('scroll', () => { if (splitMode) syncScrollFrom(editor.scrollDOM, $('#preview-view')); });
+    $('#preview-view').addEventListener('scroll', () => { if (splitMode && editor) syncScrollFrom($('#preview-view'), editor.scrollDOM); });
     if (settings.minimap) kickMinimap();   // минимап включён на старте → форсим первый render после раскладки
   }
   // Метки языка для статус-строки (по расширению; '' → «Текст»).
@@ -474,7 +492,8 @@ export function initFiles(host) {
     const row = document.querySelector(`.tree-row[data-path="${cssEscape(filePath)}"]`);
     if (row) row.classList.add('open');
   }
-  // Контекст-бар просмотра (низ колонки табов): Превью/Рядом для md·html, Во весь экран·В браузере — только html.
+  // Контекст-бар просмотра (низ колонки табов): Превью/Рядом/Оригинал (радио-группа режимов) для md·html,
+  // Во весь экран·В браузере — только html. Оригинал — режим по умолчанию (файл открывается исходником).
   // Картинки не рендерятся как исходник — у них превью и так единственный вид, тогглы не нужны → бар скрыт.
   function updatePreviewBar(kind) {
     const foot = $('#tabs-foot'); if (!foot) return;
@@ -482,8 +501,22 @@ export function initFiles(host) {
     foot.style.display = showable ? '' : 'none';
     $('#viewer-preview').style.display = showable ? '' : 'none';
     $('#viewer-split').style.display = showable ? '' : 'none';
+    $('#viewer-original').style.display = showable ? '' : 'none';
     $('#viewer-full').style.display = (kind === 'html') ? '' : 'none';
     $('#viewer-browser').style.display = (kind === 'html') ? '' : 'none';
+    updateViewButtons();
+  }
+  // Подсветка активного режима в радио-группе Превью/Рядом/Оригинал — единственное место, где ставится .on.
+  function updateViewButtons() {
+    $('#viewer-preview').classList.toggle('on', previewMode);
+    $('#viewer-split').classList.toggle('on', splitMode);
+    $('#viewer-original').classList.toggle('on', !previewMode && !splitMode);
+  }
+  // Радио-переключение режима просмотра md/html: 'preview' | 'split' | 'original' (клик по активному — no-op).
+  function setViewMode(mode) {
+    if (mode === 'preview') { if (!previewMode) togglePreview(); }
+    else if (mode === 'split') { if (!splitMode) togglePreviewSplit(); }
+    else { if (previewMode) exitPreview(); if (splitMode) exitSplit(); if (editor) editor.focus(); }
   }
   // Снять с центра всё, что не редактируемый файл (git-дифф/превью/плашка-конфликт/слой авторства).
   function resetCenterView() {
@@ -542,6 +575,9 @@ export function initFiles(host) {
   // Наполнить #preview-view рендером (без переключения display/previewMode) — переиспользуется полным превью и сплитом.
   async function fillPreview(kind, file, content) {
     const view = $('#preview-view');
+    // живой ре-рендер того же md (ввод в сплите) не должен сбрасывать прокрутку превью
+    const keepScroll = (kind === 'markdown' && file === lastPreviewFile) ? view.scrollTop : 0;
+    clearPreviewMirror();
     view.innerHTML = '';
     if (kind === 'image') {
       const res = await lite.fs.readDataUrl(file);
@@ -567,6 +603,9 @@ export function initFiles(host) {
       frame.src = fileUrl(file);
       view.appendChild(frame);
     }
+    lastPreviewFile = file;
+    // восстановление прокрутки — программное, эхо в scroll-синк не пускаем (ведёт «редактор»)
+    if (keepScroll) { if (editor) claimSync(editor.scrollDOM); view.scrollTop = keepScroll; }
   }
   async function showPreview(kind, file, content) {
     if (diffMode) exitDiff(false); // diff и preview взаимоисключающие — иначе оба оверлея накладываются
@@ -576,16 +615,16 @@ export function initFiles(host) {
     if (file !== currentFile) { previewMode = false; return; } // за время await (image: readDataUrl) открыли другой файл — не трогаем видимость
     $('#editor').style.display = 'none';
     $('#preview-view').style.display = 'block';
-    $('#viewer-preview').classList.add('on');
+    updateViewButtons();
     updateStatus(editor.state);
   }
   function exitPreview() {
     exitPreviewFull(); // на всякий случай свернуть полноэкранный режим
     previewMode = false;
     const v = $('#preview-view');
-    if (v && !splitMode) { v.style.display = 'none'; v.innerHTML = ''; }
+    if (v && !splitMode) { v.style.display = 'none'; v.innerHTML = ''; lastPreviewFile = null; }
     $('#editor').style.display = '';
-    $('#viewer-preview').classList.remove('on');
+    updateViewButtons();
     updateStatus(editor.state);
   }
   function togglePreview() {
@@ -594,14 +633,15 @@ export function initFiles(host) {
     if (kind) showPreview(kind, currentFile, editor.state.doc.toString());
   }
   // B15: превью рядом с кодом (split) — редактор слева, живой рендер справа. Markdown обновляется по вводу,
-  // HTML перезагружается из файла (после автосейва). Esc/повтор кнопки — выход.
+  // HTML перезагружается из файла (после автосейва). Выход — кнопка «Оригинал» (радио-группа режимов).
   let splitMode = false, splitTimer = null;
   function exitSplit() {
     if (!splitMode) return;
     splitMode = false;
     document.body.classList.remove('preview-split');
-    $('#viewer-split').classList.remove('on');
-    const v = $('#preview-view'); if (v && !previewMode) { v.style.display = 'none'; v.innerHTML = ''; }
+    clearPreviewMirror(); clearSourceMirror(); // зеркальная подсветка живёт только в сплите
+    const v = $('#preview-view'); if (v && !previewMode) { v.style.display = 'none'; v.innerHTML = ''; lastPreviewFile = null; }
+    updateViewButtons();
     setTimeout(() => { try { editor.requestMeasure(); } catch (_) {} }, 50);
   }
   function refreshSplitPreview() {
@@ -617,10 +657,11 @@ export function initFiles(host) {
     if (diffMode) exitDiff(false);
     splitMode = true;
     document.body.classList.add('preview-split');
-    $('#viewer-split').classList.add('on');
+    updateViewButtons();
     $('#editor').style.display = '';
     $('#preview-view').style.display = 'block';
-    fillPreview(kind, currentFile, editor.state.doc.toString());
+    // после рендера догнать превью до текущей позиции редактора (взаимный скролл стартует синхронно)
+    fillPreview(kind, currentFile, editor.state.doc.toString()).then(() => { if (splitMode) syncScrollFrom(editor.scrollDOM, $('#preview-view')); });
     setTimeout(() => { try { editor.requestMeasure(); } catch (_) {} }, 50);
   }
   // «Превью HTML на весь экран» — оверлей поверх всего окна для быстрой проверки вёрстки (Esc / ✕ — выход).
@@ -647,6 +688,121 @@ export function initFiles(host) {
     if (document.body.classList.contains('preview-full')) exitPreviewFull();
     else enterPreviewFull();
   }
+
+  // ---------------------------------------------------------------- B17: сплит md — взаимный скролл + зеркало выделения
+  // Скролл двух колонок связан пропорционально (доля прокрутки), эхо программной прокрутки гасится:
+  // «ведущий» элемент захватывает синк на 140 мс, ответные scroll-события ведомого игнорируются.
+  let lastPreviewFile = null;        // чей рендер сейчас в #preview-view (для сохранения скролла при живом ре-рендере)
+  let syncSrc = null, syncSrcTimer = null;
+  function claimSync(elm) { syncSrc = elm; clearTimeout(syncSrcTimer); syncSrcTimer = setTimeout(() => { syncSrc = null; }, 140); }
+  function syncScrollFrom(from, to) {
+    if (!from || !to || (syncSrc && syncSrc !== from)) return;
+    claimSync(from);
+    const fm = from.scrollHeight - from.clientHeight, tm = to.scrollHeight - to.clientHeight;
+    if (fm > 0 && tm > 0) to.scrollTop = (from.scrollTop / fm) * tm;
+  }
+  // Зеркало выделения: выделил в одной колонке → во второй тот же фрагмент ПОДСВЕЧИВАЕТСЯ (не выделяется!),
+  // чтобы Ctrl+C всегда копировал из колонки, где выделял пользователь (в исходнике есть разметка, в превью — нет).
+  // Сопоставление текстов — эвристика «только буквы/цифры»: нормализуем обе стороны (разметка **, #, |, URL
+  // ссылок и ЛЮБЫЕ пробелы исчезают), ищем нормализованное выделение в нормализованной второй стороне,
+  // из повторов берём ближайший к пропорционально ожидаемой позиции, индексы мапим обратно в оригинал.
+  const MIRROR_MAX = 400000;         // на гигантских md зеркалo отключаем (посимвольная нормализация)
+  const WORDCHAR_RE = /[\p{L}\p{N}]/u;
+  function normIndex(s) {
+    const out = [], map = [];
+    for (let i = 0; i < s.length; i++) { const c = s[i]; if (WORDCHAR_RE.test(c)) { out.push(c.toLowerCase()); map.push(i); } }
+    return { text: out.join(''), map };
+  }
+  // URL из [текст](url) не видны в рендере — гасим пробелами ТОЙ ЖЕ длины, чтобы индексы не поплыли.
+  function blankMdUrls(src) { return src.replace(/\]\(([^)\n]*)\)/g, (m, u) => '](' + ' '.repeat(u.length) + ')'); }
+  // Первый нормализованный индекс, чей оригинальный >= orig (бинарный поиск по возрастающему map).
+  function normPos(map, orig) {
+    let lo = 0, hi = map.length;
+    while (lo < hi) { const mid = (lo + hi) >> 1; if (map[mid] < orig) lo = mid + 1; else hi = mid; }
+    return lo;
+  }
+  function findNearest(hay, needle, expected) {
+    let best = -1, bestD = Infinity, i = -1, guard = 0;
+    while ((i = hay.indexOf(needle, i + 1)) !== -1 && guard++ < 200) {
+      const d = Math.abs(i - expected);
+      if (d < bestD) { bestD = d; best = i; }
+    }
+    return best;
+  }
+  // Текстовые узлы рендера: конкатенация nodeValue (в порядке документа) + стартовые смещения — общая
+  // «система координат» и для поиска, и для построения Range подсветки.
+  function collectPreviewText() {
+    const md = $('#preview-view') && $('#preview-view').querySelector('.prev-md');
+    if (!md) return null;
+    const walker = document.createTreeWalker(md, NodeFilter.SHOW_TEXT);
+    const nodes = [], starts = []; let text = '', n;
+    while ((n = walker.nextNode())) { nodes.push(n); starts.push(text.length); text += n.nodeValue; }
+    return { md, nodes, starts, text };
+  }
+  function posToNode(pv, pos) { // последний узел со starts[i] <= pos
+    let lo = 0, hi = pv.starts.length - 1, idx = 0;
+    while (lo <= hi) { const mid = (lo + hi) >> 1; if (pv.starts[mid] <= pos) { idx = mid; lo = mid + 1; } else hi = mid - 1; }
+    const node = pv.nodes[idx];
+    return node ? { node, off: Math.min(pos - pv.starts[idx], node.nodeValue.length) } : null;
+  }
+  // Подсветка в превью — CSS Custom Highlight API: не трогает DOM (span-обёртки ломали бы живое выделение).
+  function highlightPreviewRange(pv, from, to) {
+    if (!(window.CSS && CSS.highlights)) return;
+    const sp = posToNode(pv, from), ep = posToNode(pv, to);
+    if (!sp || !ep) return;
+    const range = document.createRange();
+    range.setStart(sp.node, sp.off); range.setEnd(ep.node, ep.off);
+    CSS.highlights.set('lite-mirror', new Highlight(range));
+  }
+  function clearPreviewMirror() { try { if (window.CSS && CSS.highlights) CSS.highlights.delete('lite-mirror'); } catch (_) {} }
+  function clearSourceMirror() { if (editor) { try { editor.dispatch({ effects: setMirrorHL.of(null) }); } catch (_) {} } }
+  function mirrorActive() { return splitMode && editor && previewKind(currentFile) === 'markdown'; }
+  // Исходник → превью (дёргается из updateListener по selectionSet, с дебаунсом).
+  let srcSelTimer = null;
+  function scheduleMirrorFromSource() { clearTimeout(srcSelTimer); srcSelTimer = setTimeout(mirrorFromSource, 120); }
+  function mirrorFromSource() {
+    if (!mirrorActive()) return;
+    const sel = editor.state.selection.main;
+    if (sel.empty) { clearPreviewMirror(); return; }
+    const srcRaw = editor.state.doc.toString();
+    if (srcRaw.length > MIRROR_MAX) return;
+    const src = normIndex(blankMdUrls(srcRaw));
+    const a = normPos(src.map, sel.from), b = normPos(src.map, sel.to);
+    const needle = src.text.slice(a, b);
+    if (needle.length < 3) { clearPreviewMirror(); return; } // слишком коротко — сплошные ложные совпадения
+    const pv = collectPreviewText(); if (!pv || pv.text.length > MIRROR_MAX) return;
+    const prev = normIndex(pv.text);
+    const hit = findNearest(prev.text, needle, prev.text.length * (a / Math.max(1, src.text.length)));
+    if (hit < 0) { clearPreviewMirror(); return; }
+    highlightPreviewRange(pv, prev.map[hit], prev.map[hit + needle.length - 1] + 1);
+  }
+  // Превью → исходник (selectionchange документа, с дебаунсом). Выделение ушло из превью → снять подсветку.
+  let pvSelTimer = null;
+  function scheduleMirrorFromPreview() { clearTimeout(pvSelTimer); pvSelTimer = setTimeout(mirrorFromPreview, 120); }
+  function mirrorFromPreview() {
+    if (!mirrorActive()) return;
+    const sel = document.getSelection();
+    const pv = collectPreviewText();
+    if (!pv || !sel || !sel.rangeCount || sel.isCollapsed || !pv.md.contains(sel.anchorNode)) { clearSourceMirror(); return; }
+    const r = sel.getRangeAt(0);
+    if (!pv.md.contains(r.startContainer) || !pv.md.contains(r.endContainer)) { clearSourceMirror(); return; }
+    // смещение начала выделения в «координатах текстовых узлов»: Range.toString() = те же узлы в том же порядке
+    const pre = document.createRange();
+    pre.selectNodeContents(pv.md); pre.setEnd(r.startContainer, r.startOffset);
+    const startOff = pre.toString().length;
+    if (pv.text.length > MIRROR_MAX) return;
+    const prev = normIndex(pv.text);
+    const a = normPos(prev.map, startOff), b = normPos(prev.map, startOff + r.toString().length);
+    const needle = prev.text.slice(a, b);
+    if (needle.length < 3) { clearSourceMirror(); return; }
+    const srcRaw = editor.state.doc.toString();
+    if (srcRaw.length > MIRROR_MAX) return;
+    const src = normIndex(blankMdUrls(srcRaw));
+    const hit = findNearest(src.text, needle, src.text.length * (a / Math.max(1, prev.text.length)));
+    if (hit < 0) { clearSourceMirror(); return; }
+    editor.dispatch({ effects: setMirrorHL.of({ from: src.map[hit], to: src.map[hit + needle.length - 1] + 1 }) });
+  }
+
   function gotoLine(line) {
     const doc = editor.state.doc;
     const pos = doc.line(Math.max(1, Math.min(line, doc.lines))).from;
@@ -2010,11 +2166,14 @@ export function initFiles(host) {
     $('#viewer-diff').addEventListener('click', toggleDiff);
     // Контекст-бар просмотра под колонкой табов: строим «иконка + подпись» в JS (иконка идёт ПЕРЕД текстом).
     for (const [sel, ic, label] of [['#viewer-preview', 'eye', 'Превью'], ['#viewer-split', 'grid', 'Рядом'],
-      ['#viewer-full', 'maximize', 'Во весь экран'], ['#viewer-browser', 'globe', 'В браузере']]) {
+      ['#viewer-original', 'code', 'Оригинал'], ['#viewer-full', 'maximize', 'Во весь экран'], ['#viewer-browser', 'globe', 'В браузере']]) {
       const b = $(sel); if (b) b.append(icon(ic, 15), el('span', 'tfoot-lbl', label));
     }
-    $('#viewer-preview').addEventListener('click', togglePreview);
-    $('#viewer-split').addEventListener('click', togglePreviewSplit);
+    $('#viewer-preview').addEventListener('click', () => setViewMode('preview'));
+    $('#viewer-split').addEventListener('click', () => setViewMode('split'));
+    $('#viewer-original').addEventListener('click', () => setViewMode('original'));
+    // B17: зеркало выделения превью → исходник (сплит md); дебаунс внутри
+    document.addEventListener('selectionchange', () => { if (splitMode) scheduleMirrorFromPreview(); });
     $('#viewer-full').addEventListener('click', togglePreviewFull);
     $('#viewer-browser').addEventListener('click', () => { if (currentFile) lite.openInBrowser(currentFile).then((r) => { if (r && r.error) toast(r.error, { kind: 'err' }); }); });
     $('#viewer-minimap').addEventListener('click', toggleMinimap);

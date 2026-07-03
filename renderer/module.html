@@ -329,12 +329,14 @@
       <div id="mw-gutter" class="mw-gutter" title="Потяните, чтобы изменить ширину"></div>
       <!-- Колонка табов открытых файлов (между деревом и вивером). Список наполняет renderTabs() в #tabs-list;
            пусто → ширина 0. Внизу — контекст-бар просмотра (PhpStorm-style): кнопки для активного файла
-           (Превью/Рядом для md·html, Во весь экран·В браузере — только html). Показ — updatePreviewBar(). -->
+           (Превью/Рядом/Оригинал для md·html — радио-группа режимов, Во весь экран·В браузере — только html).
+           Показ — updatePreviewBar(). -->
       <section id="tabs-pane" class="file-tabs empty">
         <div id="tabs-list" class="tabs-list"></div>
         <div id="tabs-foot" class="tabs-foot" style="display:none">
           <button id="viewer-preview" class="tfoot-btn" title="Превью (Markdown / HTML)"></button>
           <button id="viewer-split" class="tfoot-btn" title="Превью рядом с кодом (split)"></button>
+          <button id="viewer-original" class="tfoot-btn" title="Оригинал — исходник без рендера (режим по умолчанию)"></button>
           <button id="viewer-full" class="tfoot-btn" title="Развернуть превью HTML на весь экран (Esc — выход)"></button>
           <button id="viewer-browser" class="tfoot-btn" title="Открыть HTML в браузере"></button>
         </div>
