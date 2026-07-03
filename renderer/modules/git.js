@@ -26,7 +26,19 @@ export function initGit(host) {
   let lastPath = null;       // путь проекта прошлого рендера — на смену сбрасываем выбор файлов
   let selectedChangeFile = null; // выделенный файл во вкладке «Изменения»
   const excluded = new Set();// abs-пути файлов, исключённых из коммита (по умолчанию включены все)
-  const commitDraft = {};    // projPath -> черновик сообщения коммита (переживает re-render панели)
+  // projPath -> черновик сообщения коммита: переживает re-render панели, перезагрузку окна вивера
+  // и рестарт редактора (STORE.commitDrafts). Пишем с дебаунсом (не на каждый символ); если окно
+  // закрывают с несброшенным таймером — дописываем синхронно (store.setSync, как задумано для beforeunload).
+  const commitDraft = { ...((host.STORE && host.STORE.commitDrafts) || {}) };
+  let draftTimer = null;
+  function setDraft(path, val) {
+    if (val) commitDraft[path] = val; else delete commitDraft[path];
+    clearTimeout(draftTimer);
+    draftTimer = setTimeout(() => { draftTimer = null; if (host.persist) host.persist('commitDrafts', commitDraft); }, 400);
+  }
+  window.addEventListener('beforeunload', () => {
+    if (draftTimer) { clearTimeout(draftTimer); draftTimer = null; try { lite.store.setSync('commitDrafts', commitDraft); } catch (_) {} }
+  });
 
   const STATUS_LABEL = {
     conflict: 'Конфликты',
@@ -618,8 +630,8 @@ export function initGit(host) {
 
     // ---- панель коммита СНИЗУ: счётчик + сообщение + Commit / Commit & Push (PhpStorm: сообщение под списком)
     const msg = el('textarea', 'gm-msg'); msg.placeholder = 'Сообщение коммита…';
-    msg.value = commitDraft[p.path] || '';           // восстановить черновик (re-render не теряет ввод)
-    msg.addEventListener('input', () => { commitDraft[p.path] = msg.value; });
+    msg.value = commitDraft[p.path] || '';           // восстановить черновик (re-render/перезапуск не теряет ввод)
+    msg.addEventListener('input', () => setDraft(p.path, msg.value));
     const commitPanel = el('div', 'git-commit-panel');
     const commitTop = el('div', 'git-commit-top');
     commitTop.append(el('div', 'git-sec', 'Сообщение коммита'), (commitCount = el('div', 'git-commit-count')));
@@ -637,7 +649,7 @@ export function initGit(host) {
       updateCommitState();
       if (amendCb.checked && !msg.value.trim()) {
         const r = await lite.git.lastMessage(p.path);
-        if (r && r.ok && amendCb.checked && !msg.value.trim()) { msg.value = r.message; commitDraft[p.path] = r.message; }
+        if (r && r.ok && amendCb.checked && !msg.value.trim()) { msg.value = r.message; setDraft(p.path, r.message); }
       }
     });
     const doCommit = async (withPush) => {
@@ -654,9 +666,9 @@ export function initGit(host) {
       const filesArg = (amend && !sel.length) ? [] : (allIncluded ? null : sel);
       const r = await lite.git.commit(p.path, message, withPush, filesArg, amend);
       btn.classList.remove('loading');
-      if (r.ok) { toast(amend ? 'Коммит переписан (amend)' : (withPush ? 'Закоммичено и запушено' : 'Закоммичено')); msg.value = ''; commitDraft[p.path] = ''; selectedChangeFile = null; renderGitPanel(p); renderProjects(); }
+      if (r.ok) { toast(amend ? 'Коммит переписан (amend)' : (withPush ? 'Закоммичено и запушено' : 'Закоммичено')); msg.value = ''; setDraft(p.path, ''); selectedChangeFile = null; renderGitPanel(p); renderProjects(); }
       // Коммит лёг, но push не прошёл: список ОБЯЗАН обновиться (файлы уже в коммите), плюс показываем ошибку.
-      else if (r.committed) { toast(r.error || 'push не прошёл', { kind: 'err', ttl: 9000 }); msg.value = ''; commitDraft[p.path] = ''; selectedChangeFile = null; renderGitPanel(p); renderProjects(); }
+      else if (r.committed) { toast(r.error || 'push не прошёл', { kind: 'err', ttl: 9000 }); msg.value = ''; setDraft(p.path, ''); selectedChangeFile = null; renderGitPanel(p); renderProjects(); }
       else { btn.disabled = false; toast(r.error || 'ошибка коммита', { kind: 'err', ttl: 8000 }); updateCommitState(); }
     };
     commit.onclick = () => doCommit(false);
