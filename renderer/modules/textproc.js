@@ -174,9 +174,10 @@ export function initTextProc(host) {
   function currentMarkdown() { return mode === 'wysiwyg' ? htmlToMd($('#doc-editor-wysiwyg')) : $('#doc-editor-md').textContent; }
   function currentHtml() { return mode === 'wysiwyg' ? $('#doc-editor-wysiwyg').innerHTML : mdToHtml($('#doc-editor-md').textContent); }
   function htmlDocWrap(inner) { return '<!doctype html><html><head><meta charset="utf-8"></head><body>' + inner + '</body></html>'; }
-  function markDirty() { 
-    dirty = true; 
+  function markDirty() {
+    dirty = true;
     if (typeof saveCurrentTabState === 'function') { saveCurrentTabState(); if (typeof renderTabsUI === 'function') renderTabsUI(); }
+    scheduleAutosave();
   }
   function updateStatus(text) {
     if (text != null) $('#doc-status-label').textContent = text;
@@ -321,6 +322,9 @@ export function initTextProc(host) {
 
     $('#doc-open-btn').onclick = openFile;
     $('#doc-save-btn').onclick = saveFile;
+    document.addEventListener('keydown', (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') { e.preventDefault(); saveFile(); }
+    });
 
     $('#doc-ai-chat-send').onclick = sendChat;
     $('#doc-ai-chat-input').onkeydown = (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendChat(); } };
@@ -505,6 +509,44 @@ export function initTextProc(host) {
     }
     updateStatus('Сохранено · ' + new Date().toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }));
     toast('Файл сохранён');
+    return true;
+  }
+
+  // ---- Автосейв (Obsidian-style): вкладка с файлом пишется на диск через 1.5с тишины ----
+  // Безымянные вкладки автосейва не имеют (некуда писать) — их защищает confirm при закрытии.
+  let autosaveT = null;
+  function scheduleAutosave() {
+    if (!currentFile) return;
+    clearTimeout(autosaveT);
+    autosaveT = setTimeout(async () => {
+      if (!currentFile || !dirty) return;
+      const isHtml = /\.html?$/i.test(currentFile);
+      const content = isHtml ? htmlDocWrap(currentHtml()) : currentMarkdown();
+      const r = await lite.fs.writeFile(currentFile, content);
+      if (r && !r.error) {
+        dirty = false;
+        saveCurrentTabState(); renderTabsUI();
+        updateStatus('Автосохранено · ' + new Date().toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }));
+      }
+    }, 1500);
+  }
+  // Сохранить произвольную вкладку (в т.ч. фоновую) — для confirm'ов закрытия.
+  async function saveTabToDisk(tab) {
+    if (!tab.absPath) {
+      if (tab.id !== activeTabId) switchToTab(tab.id); // saveFileAs работает с активным контентом
+      return await saveFileAs();
+    }
+    const isHtml = /\.html?$/i.test(tab.absPath);
+    let content;
+    if (tab.id === activeTabId) content = isHtml ? htmlDocWrap(currentHtml()) : currentMarkdown();
+    else if (isHtml) content = htmlDocWrap(tab.html);
+    else if (tab.mode === 'markdown') content = tab.md;
+    else { const d = document.createElement('div'); d.innerHTML = tab.html; content = htmlToMd(d); } // wysiwyg-снапшот → md
+    const r = await lite.fs.writeFile(tab.absPath, content);
+    if (r && r.error) { toast('Ошибка сохранения: ' + r.error, { kind: 'err' }); return false; }
+    tab.dirty = false;
+    if (tab.id === activeTabId) dirty = false;
+    renderTabsUI();
     return true;
   }
 
@@ -787,12 +829,18 @@ export function initTextProc(host) {
     setTimeout(refitActiveTerminal, 150);
   }
   function confirmClose(proceed) {
-    if (!dirty) { proceed(); return; }
+    saveCurrentTabState(); // свежие правки активной вкладки → в снапшот
+    const dirtyTabs = openTabs.filter((t) => t.dirty);
+    if (!dirtyTabs.length) { proceed(); return; }
+    const names = dirtyTabs.map((t) => '«' + t.name + '»').join(', ');
     showConfirm(
       'Несохранённые изменения',
-      'В документе есть несохранённые изменения. Закрыть без сохранения?',
+      'Не сохранено: ' + names + '. Закрыть окно?',
+      'Сохранить и закрыть', async () => {
+        for (const t of dirtyTabs) { if (!(await saveTabToDisk(t))) return; } // отмена/ошибка = не закрываем
+        proceed();
+      },
       'Закрыть без сохранения', proceed,
-      'Сохранить и закрыть', async () => { const ok = await saveFile(); if (ok) proceed(); },
     );
   }
 
@@ -1114,17 +1162,24 @@ export function initTextProc(host) {
   }
 
   async function closeTab(id) {
+    const tab = openTabs.find(t => t.id === id);
+    if (!tab) return;
+    if (tab.id === activeTabId) saveCurrentTabState(); // снять свежие правки в снапшот перед проверкой
+    if (tab.dirty) {
+      showConfirm(
+        'Несохранённые изменения',
+        `«${tab.name}» не сохранён. Сохранить перед закрытием?`,
+        'Сохранить и закрыть', async () => { if (await saveTabToDisk(tab)) reallyCloseTab(id); },
+        'Закрыть без сохранения', () => reallyCloseTab(id),
+      );
+      return;
+    }
+    reallyCloseTab(id);
+  }
+  function reallyCloseTab(id) {
     const tabIdx = openTabs.findIndex(t => t.id === id);
     if (tabIdx === -1) return;
-    const tab = openTabs[tabIdx];
-    
-    if (tab.dirty) {
-      // For simplicity, we assume we just close without save for now, or prompt
-      // We can use native confirmClose logic, but let's just close it.
-    }
-    
     openTabs.splice(tabIdx, 1);
-    
     if (activeTabId === id) {
       activeTabId = null;
       if (openTabs.length > 0) {
