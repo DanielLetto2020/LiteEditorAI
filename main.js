@@ -3,7 +3,8 @@
 const { app, BrowserWindow, ipcMain, dialog, shell, Menu, clipboard, screen, Tray, nativeImage, crashReporter, safeStorage, Notification } = require('electron');
 const dbBackend = require('./lib/db');
 const rhBackend = require('./lib/remotehost');
-const { guessDbKind, dbPrefillFromInspect } = require('./lib/dbdetect'); // «Контейнеры» → «Базы данных»
+const { guessDbKind, dbPrefillFromInspect, guessMqKind, rmqPrefillFromInspect } = require('./lib/dbdetect'); // «Контейнеры» → «Базы данных»/«RabbitMQ»
+const rmqBackend = require('./lib/rmq');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
@@ -226,7 +227,7 @@ try {
   const legacy = path.join(os.homedir(), '.LiteEditor');
   if (!fs.existsSync(storeDir) && fs.existsSync(legacy)) fs.cpSync(legacy, storeDir, { recursive: true });
 } catch (_) {}
-const STORE_KEYS = ['projects', 'settings', 'layout', 'recents', 'lastParent', 'categories', 'sectionOrder', 'favOrder', 'accordions', 'dismissed', 'uiState', 'projTabs', 'openrouter', 'remote', 'shares', 'pultBlocked', 'dockerUi', 'dbConnections', 'dbUi', 'rhConnections', 'rhUi', 'textproc', 'tpPrompts', 'extData', 'extEnabled', 'quickbar', 'seoTargets', 'seoSites', 'moduleWins', 'mwLeft', 'mwLogH', 'gitFav', 'commitDrafts', 'bookmarks', 'promptSnippets', 'pomodoro', 'pomodoroLog', 'dbaiProviders', 'sessionSnaps', 'siteMon'];
+const STORE_KEYS = ['projects', 'settings', 'layout', 'recents', 'lastParent', 'categories', 'sectionOrder', 'favOrder', 'accordions', 'dismissed', 'uiState', 'projTabs', 'openrouter', 'remote', 'shares', 'pultBlocked', 'dockerUi', 'dbConnections', 'dbUi', 'rhConnections', 'rhUi', 'textproc', 'tpPrompts', 'extData', 'extEnabled', 'quickbar', 'seoTargets', 'seoSites', 'moduleWins', 'mwLeft', 'mwLogH', 'gitFav', 'commitDrafts', 'bookmarks', 'promptSnippets', 'pomodoro', 'pomodoroLog', 'dbaiProviders', 'sessionSnaps', 'siteMon', 'rmqConnections', 'rmqUi'];
 // Папка-«стор» для шаринга с пультом (агент кладёт сюда файлы; в PTY доступна как $LITE_STORE).
 const pultStoreDir = path.join(storeDir, 'store');
 try { fs.mkdirSync(pultStoreDir, { recursive: true }); } catch (_) {}
@@ -315,6 +316,13 @@ const dbApi = dbBackend.registerDbIpc({
   ipcMain, safeStorage, dialog,
   getConnections: () => readStoreKey('dbConnections'),
   setConnections: (v) => writeStoreKey('dbConnections', v),
+});
+
+// «RabbitMQ» backend (профили + management HTTP API, без зависимостей) — lib/rmq.js.
+rmqBackend.registerRmqIpc({
+  ipcMain, safeStorage,
+  getConnections: () => readStoreKey('rmqConnections'),
+  setConnections: (v) => writeStoreKey('rmqConnections', v),
 });
 
 // «RemoteHost» backend (интерактивные SSH-сессии + safeStorage-секреты) — lib/remotehost.js.
@@ -1882,6 +1890,7 @@ function openModuleWindow(modId) {
     moduleWindows.delete(modId);
     if (modId === 'files') filesViewerReady = false; // окно вивера закрыто → следующее openInViewer переоткроет и переждёт готовность
     if (modId === 'db') dbPanelReady = false;        // окно БД закрыто → следующий openFromContainer переоткроет и переждёт готовность
+    if (modId === 'rmq') rmqPanelReady = false;      // аналогично для окна RabbitMQ
     if (modId === 'ctx') { for (const w of ctxOutWatchers.values()) { try { w.close(); } catch (_) {} } ctxOutWatchers.clear(); } // окно «Контекст» закрылось без unwatch → не течём fs.watch (B2)
     for (const [sid, wc] of ownerBySession) { try { if (wc.isDestroyed()) ownerBySession.delete(sid); } catch (_) { ownerBySession.delete(sid); } }
     broadcastModuleOpenSet();
@@ -2567,6 +2576,22 @@ ipcMain.on('db:panelReady', () => {
   dbPanelReady = true;
   const w = dbModWindow();
   while (w && pendingDbOpens.length) { w.focus(); w.webContents.send('db:openFromContainer', pendingDbOpens.shift()); }
+});
+// «Контейнеры» → «RabbitMQ»: тот же паттерн, что и с БД выше.
+let rmqPanelReady = false;
+const pendingRmqOpens = [];
+function rmqModWindow() { const w = moduleWindows.get('rmq'); return (w && !w.isDestroyed()) ? w : null; }
+ipcMain.on('rmq:openFromContainer', (_e, payload) => {
+  if (!payload || typeof payload !== 'object') return;
+  if (!rmqModWindow()) openModuleWindow('rmq');
+  const w = rmqModWindow();
+  if (w && rmqPanelReady) { if (w.isMinimized()) w.restore(); w.focus(); w.webContents.send('rmq:openFromContainer', payload); }
+  else pendingRmqOpens.push(payload);
+});
+ipcMain.on('rmq:panelReady', () => {
+  rmqPanelReady = true;
+  const w = rmqModWindow();
+  while (w && pendingRmqOpens.length) { w.focus(); w.webContents.send('rmq:openFromContainer', pendingRmqOpens.shift()); }
 });
 ipcMain.on('editor:sendToTerminal', (_e, payload) => forwardToEditor('editor:sendToTerminal', payload));
 // «Пропустить отдых» с оверлея в окне редактора → пропустить текущую фазу помодоро (движок в main).
@@ -4690,14 +4715,14 @@ async function cListContainers(engine) {
     const r = await containerRun('docker', ['ps', '-a', '--format', '{{json .}}'], { timeout: 12000 });
     if (!r.ok) return { error: r.error };
     return { items: cParseLines(r.out).map((c) => { const L = cLabelMap(c.Labels);
-      return { id: c.ID, name: c.Names, image: c.Image, state: String(c.State || '').toLowerCase(), status: c.Status, ports: c.Ports || '', project: L[C_PROJECT] || '', service: L[C_SERVICE] || '', dbKind: guessDbKind(c.Image, c.Ports) }; }) };
+      return { id: c.ID, name: c.Names, image: c.Image, state: String(c.State || '').toLowerCase(), status: c.Status, ports: c.Ports || '', project: L[C_PROJECT] || '', service: L[C_SERVICE] || '', dbKind: guessDbKind(c.Image, c.Ports), mqKind: guessMqKind(c.Image, c.Ports) }; }) };
   }
   const r = await containerRun('podman', ['ps', '-a', '--format', 'json'], { timeout: 12000 });
   if (!r.ok) return { error: r.error };
   return { items: cParseJson(r.out).map((c) => { const L = c.Labels || {};
     const name = Array.isArray(c.Names) ? c.Names[0] : (c.Names || c.Name || '');
     const ports = Array.isArray(c.Ports) ? c.Ports.map((p) => `${p.host_port || p.hostPort || ''}${(p.host_port || p.hostPort) ? ':' : ''}${p.container_port || p.containerPort || ''}`).filter((s) => s && s !== ':').join(', ') : '';
-    return { id: c.Id || c.ID, name, image: c.Image, state: String(c.State || '').toLowerCase(), status: c.Status || c.State, ports, project: L[C_PROJECT] || L['io.podman.compose.project'] || '', service: L[C_SERVICE] || '', dbKind: guessDbKind(c.Image, ports) }; }) };
+    return { id: c.Id || c.ID, name, image: c.Image, state: String(c.State || '').toLowerCase(), status: c.Status || c.State, ports, project: L[C_PROJECT] || L['io.podman.compose.project'] || '', service: L[C_SERVICE] || '', dbKind: guessDbKind(c.Image, ports), mqKind: guessMqKind(c.Image, ports) }; }) };
 }
 async function cListPods() {
   const r = await containerRun('podman', ['pod', 'ps', '--format', 'json'], { timeout: 10000 });
@@ -4835,6 +4860,18 @@ ipcMain.handle('containers:inspectDb', async (_e, { engine, id } = {}) => {
   if (!info) return { ok: false, error: 'inspect вернул пустой ответ' };
   const res = dbPrefillFromInspect(info, engine);
   if (!res) return { ok: false, error: 'В контейнере не распознана поддерживаемая БД (PostgreSQL / MySQL / MariaDB)' };
+  return { ok: true, ...res };
+});
+// «Открыть в модуле RabbitMQ»: inspect контейнера → заготовка профиля (management-порт/лог/пас/vhost).
+ipcMain.handle('containers:inspectMq', async (_e, { engine, id } = {}) => {
+  if (engine !== 'docker' && engine !== 'podman') return { ok: false, error: 'bad engine' };
+  if (!id || typeof id !== 'string') return { ok: false, error: 'no id' };
+  const r = await containerRun(engine, ['inspect', id], { timeout: 12000 });
+  if (!r.ok) return { ok: false, error: r.error };
+  const info = cParseJson(r.out)[0];
+  if (!info) return { ok: false, error: 'inspect вернул пустой ответ' };
+  const res = rmqPrefillFromInspect(info, engine);
+  if (!res) return { ok: false, error: 'В контейнере не распознан RabbitMQ' };
   return { ok: true, ...res };
 });
 

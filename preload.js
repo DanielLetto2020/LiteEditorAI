@@ -392,6 +392,7 @@ contextBridge.exposeInMainWorld('lite', {
     onExecData: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('containers:execData', h); return () => ipcRenderer.removeListener('containers:execData', h); },
     onExecExit: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('containers:execExit', h); return () => ipcRenderer.removeListener('containers:execExit', h); },
     inspectDb: (engine, id) => ipcRenderer.invoke('containers:inspectDb', { engine, id }), // заготовка подключения к БД контейнера
+    inspectMq: (engine, id) => ipcRenderer.invoke('containers:inspectMq', { engine, id }), // заготовка профиля RabbitMQ контейнера
   },
 
   db: {
@@ -420,6 +421,28 @@ contextBridge.exposeInMainWorld('lite', {
     openFromContainer: (payload) => ipcRenderer.send('db:openFromContainer', payload),
     onOpenFromContainer: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('db:openFromContainer', h); return () => ipcRenderer.removeListener('db:openFromContainer', h); },
     panelReady: () => ipcRenderer.send('db:panelReady'),
+  },
+  // RabbitMQ module — server profiles + management HTTP API (lib/rmq.js).
+  rmq: {
+    list: () => ipcRenderer.invoke('rmq:list'),
+    save: (conn) => ipcRenderer.invoke('rmq:save', { conn }),
+    delete: (id) => ipcRenderer.invoke('rmq:delete', { id }),
+    test: (conn) => ipcRenderer.invoke('rmq:test', { conn }),
+    overview: (id) => ipcRenderer.invoke('rmq:overview', { id }),
+    vhosts: (id) => ipcRenderer.invoke('rmq:vhosts', { id }),
+    queues: (id, vhost) => ipcRenderer.invoke('rmq:queues', { id, vhost }),
+    exchanges: (id, vhost) => ipcRenderer.invoke('rmq:exchanges', { id, vhost }),
+    connections: (id) => ipcRenderer.invoke('rmq:connections', { id }),
+    queueBindings: (id, vhost, queue) => ipcRenderer.invoke('rmq:queueBindings', { id, vhost, queue }),
+    peek: (id, vhost, queue, count) => ipcRenderer.invoke('rmq:peek', { id, vhost, queue, count }),
+    publish: (id, vhost, exchange, routingKey, payload, properties) => ipcRenderer.invoke('rmq:publish', { id, vhost, exchange, routingKey, payload, properties }),
+    purge: (id, vhost, queue) => ipcRenderer.invoke('rmq:purge', { id, vhost, queue }),
+    deleteQueue: (id, vhost, queue) => ipcRenderer.invoke('rmq:deleteQueue', { id, vhost, queue }),
+    killConnection: (id, name) => ipcRenderer.invoke('rmq:killConnection', { id, name }),
+    // «Контейнеры» → RabbitMQ: маршрут через main (окно откроется само, очередь до готовности)
+    openFromContainer: (payload) => ipcRenderer.send('rmq:openFromContainer', payload),
+    onOpenFromContainer: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('rmq:openFromContainer', h); return () => ipcRenderer.removeListener('rmq:openFromContainer', h); },
+    panelReady: () => ipcRenderer.send('rmq:panelReady'),
   },
   // RemoteHost module — SSH connection profiles + live shell sessions.
   rh: {

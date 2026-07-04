@@ -131,6 +131,11 @@ export function initContainers(host) {
       b.onclick = (e) => { e.stopPropagation(); openContainerDb(c); };
       acts.appendChild(b);
     }
+    if (c.mqKind) { // задетектили RabbitMQ → «открыть в модуле RabbitMQ»
+      const b = iconBtn('drow-act dmq', 'rabbit', 'Открыть в модуле «RabbitMQ»', 14);
+      b.onclick = (e) => { e.stopPropagation(); openContainerMq(c); };
+      acts.appendChild(b);
+    }
     if (running) acts.append(dActBtn('container', 'pause', 'pause', 'Пауза', c.id), dActBtn('container', 'restart', 'refresh', 'Перезапуск', c.id), dActBtn('container', 'stop', 'stop', 'Стоп', c.id));
     else if (paused) acts.append(dActBtn('container', 'unpause', 'play', 'Возобновить', c.id), dActBtn('container', 'stop', 'stop', 'Стоп', c.id));
     else acts.appendChild(dActBtn('container', 'start', 'play', 'Старт', c.id));
@@ -145,6 +150,15 @@ export function initContainers(host) {
     if (!r.published) { toast('Порт БД не проброшен на хост (нет -p) — с хоста не подключиться', { kind: 'err', ttl: 9000 }); return; }
     if (!r.running) toast('Контейнер остановлен — подключение создастся, но оживёт после старта', { ttl: 6000 });
     lite.db.openFromContainer(r);
+  }
+  // Клик по иконке кролика: inspect → заготовка профиля → окно модуля «RabbitMQ» (маршрут через main).
+  async function openContainerMq(c) {
+    let r;
+    try { r = await lite.containers.inspectMq(dockerEngine, c.id); } catch (e) { r = { ok: false, error: String(e) }; }
+    if (!r || !r.ok) { toast((r && r.error) || 'Не удалось прочитать параметры контейнера', { kind: 'err', ttl: 8000 }); return; }
+    if (!r.published) { toast('Порт management (15672) не проброшен на хост — включи management-плагин / добавь -p', { kind: 'err', ttl: 9000 }); return; }
+    if (!r.running) toast('Контейнер остановлен — профиль создастся, но оживёт после старта', { ttl: 6000 });
+    lite.rmq.openFromContainer(r);
   }
   function dockerContainerRow(c) {
     const row = el('div', 'docker-row clickable'); row.dataset.st = c.state; row._c = c; row.title = 'Открыть: логи и терминал';

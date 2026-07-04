@@ -23,6 +23,7 @@ import { initPomodoro } from './modules/pomodoro.js';
 import { initCompany } from './modules/company.js';
 import { initNotes } from './modules/notes.js';
 import { initDb } from './modules/db.js';
+import { initRmq } from './modules/rmq.js';
 import { initOpenRouter } from './modules/openrouter.js';
 import { initTextProc } from './modules/textproc.js';
 import { initContainers } from './modules/containers.js';
@@ -114,6 +115,15 @@ const MODULES = {
       // «Контейнеры» → БД: заготовка подключения из контейнера (маршрут через main, очередь до готовности)
       lite.db.onOpenFromContainer((p) => { try { mod.openFromContainer(p); } catch (_) {} });
       try { lite.db.panelReady(); } catch (_) {} // флаш отложенных openFromContainer из main
+    },
+  },
+  rmq: {
+    title: 'RabbitMQ', init: initRmq, project: false,
+    wire: (mod) => {
+      bind('#rmq-refresh', () => mod.refresh());
+      // «Контейнеры» → RabbitMQ: заготовка профиля из контейнера (маршрут через main, очередь до готовности)
+      lite.rmq.onOpenFromContainer((p) => { try { mod.openFromContainer(p); } catch (_) {} });
+      try { lite.rmq.panelReady(); } catch (_) {} // флаш отложенных openFromContainer из main
     },
   },
   chat: {

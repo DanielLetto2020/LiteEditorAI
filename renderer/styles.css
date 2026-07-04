@@ -1404,6 +1404,8 @@ body.preview-split #preview-view { border-left: 1px solid var(--border); }
 .drow-act.danger:hover { color: var(--danger); border-color: var(--danger); }
 .drow-act.ddb { color: var(--green); }                                        /* задетекчена БД → акцентная иконка «открыть в модуле БД» */
 .drow-act.ddb:hover { color: var(--green-bright); border-color: var(--green); }
+.drow-act.dmq { color: var(--warn); }                                         /* задетекчен RabbitMQ → акцентная иконка «открыть в модуле RabbitMQ» */
+.drow-act.dmq:hover { color: var(--warn); border-color: var(--warn); background: var(--bg-input); }
 .docker-empty, .docker-err { font-size: 12px; padding: 8px 6px; }
 .docker-empty { color: var(--text-mute); }
 .docker-err { color: var(--danger); white-space: pre-wrap; word-break: break-word; }
@@ -1438,6 +1440,64 @@ body.preview-split #preview-view { border-left: 1px solid var(--border); }
 
 /* ---------------- Databases module (Postgres/MySQL/SQLite) ---------------- */
 #db-pane { flex: 0 0 560px; min-width: 340px; border-left: 1px solid var(--border); display: flex; flex-direction: column; background: var(--panel); }
+
+/* ---------- модуль «RabbitMQ» ---------- */
+#rmq-pane { flex: 0 0 560px; min-width: 340px; border-left: 1px solid var(--border); display: flex; flex-direction: column; background: var(--panel); }
+.rmq-sec { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 8px; }
+.rmq-toolbar { display: flex; gap: 8px; align-items: center; flex: 0 0 auto; }
+.rmq-filter { flex: 1; min-width: 0; background: var(--bg-input); color: var(--text); border: 1px solid var(--border); border-radius: 7px; padding: 5px 9px; font-size: 12px; }
+.rmq-pub-btn { display: inline-flex; align-items: center; gap: 5px; }
+.rmq-vhost-sel { margin-left: auto; max-width: 160px; background: var(--bg-input); color: var(--text); border: 1px solid var(--border); border-radius: 7px; padding: 3px 6px; font-size: 11.5px; }
+.rmq-data { flex: 1; min-height: 0; overflow: auto; display: flex; flex-direction: column; gap: 2px; }
+.rmq-row { display: grid; gap: 8px; align-items: center; padding: 4px 8px; border-radius: 8px; font-size: 12px; color: var(--text); }
+.rmq-row.clickable:hover { background: var(--bg-input); cursor: pointer; }
+.rmq-qgrid { grid-template-columns: minmax(140px, 1fr) 56px 60px 56px 48px 56px 56px auto; }
+.rmq-exgrid { grid-template-columns: minmax(160px, 1fr) 90px 90px auto; }
+.rmq-cngrid { grid-template-columns: minmax(150px, 1fr) minmax(90px, auto) 90px 120px auto; }
+.rmq-head { position: sticky; top: 0; background: var(--panel); color: var(--text-mute); font-size: 10.5px; text-transform: uppercase; letter-spacing: .04em; z-index: 1; }
+.rmq-sortable { cursor: pointer; user-select: none; }
+.rmq-sortable:hover, .rmq-sortable.on { color: var(--text); }
+.rmq-cell { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rmq-cell.num { text-align: right; font-variant-numeric: tabular-nums; }
+.rmq-cell.dim { color: var(--text-mute); }
+.rmq-cell.warn { color: var(--warn); }
+.rmq-namecell { display: flex; align-items: center; gap: 6px; }
+.rmq-qname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rmq-badge { flex: 0 0 auto; font-size: 9px; line-height: 14px; padding: 0 5px; border-radius: 6px; border: 1px solid var(--border-strong); color: var(--text-mute); background: var(--bg-input); }
+.rmq-badge.warn { color: var(--warn); border-color: var(--warn); }
+.rmq-badge.ok { color: var(--green); border-color: var(--green); }
+.rmq-badge.err { color: var(--danger); border-color: var(--danger); }
+.rmq-badge.type { color: var(--info); border-color: var(--info); }
+/* обзор */
+.rmq-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
+.rmq-card { background: var(--bg-input); border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; }
+.rmq-card.alarm { border-color: var(--danger); }
+.rmq-card-t { font-size: 10.5px; color: var(--text-mute); text-transform: uppercase; letter-spacing: .04em; }
+.rmq-card-v { font-size: 20px; font-weight: 600; margin-top: 2px; font-variant-numeric: tabular-nums; }
+.rmq-card-s { font-size: 11px; color: var(--text-mute); margin-top: 2px; }
+.rmq-meta { display: flex; gap: 14px; font-size: 11px; color: var(--text-mute); padding: 2px 2px; flex-wrap: wrap; }
+.rmq-node { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; font-size: 11.5px; padding: 6px 8px; border: 1px solid var(--border); border-radius: 8px; }
+.rmq-node.alarm { border-color: var(--danger); }
+.rmq-node-name { font-weight: 600; }
+.rmq-node-kv { color: var(--text-mute); }
+/* peek-панель сообщений */
+.rmq-peek { flex: 0 0 auto; max-height: 45%; display: flex; flex-direction: column; border-top: 1px solid var(--border-strong); padding-top: 6px; gap: 6px; }
+.rmq-peek-head { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; }
+.rmq-peek-title { font-size: 12px; font-weight: 600; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rmq-peek-cnt { background: var(--bg-input); color: var(--text); border: 1px solid var(--border); border-radius: 7px; padding: 2px 6px; font-size: 11px; }
+.rmq-peek-list { overflow: auto; min-height: 0; display: flex; flex-direction: column; gap: 6px; }
+.rmq-msg { border: 1px solid var(--border); border-radius: 8px; padding: 6px 8px; }
+.rmq-msg-head { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--text-mute); flex-wrap: wrap; }
+.rmq-msg-idx { font-weight: 600; color: var(--text); }
+.rmq-msg-route { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rmq-msg-bytes { margin-left: auto; }
+.rmq-msg-body { margin: 6px 0 0; font-size: 11.5px; max-height: 180px; overflow: auto; white-space: pre-wrap; word-break: break-word; background: var(--bg-input); border-radius: 6px; padding: 6px 8px; }
+.rmq-msg-props { display: flex; flex-direction: column; gap: 2px; margin-top: 4px; font-size: 10.5px; color: var(--text-mute); }
+.rmq-peek-note { font-size: 10.5px; color: var(--text-mute); padding: 2px; }
+/* публикация */
+.rmq-payload { width: 100%; resize: vertical; background: var(--bg-input); color: var(--text); border: 1px solid var(--border); border-radius: 7px; padding: 6px 8px; font-family: "JetBrains Mono", Consolas, monospace; font-size: 12px; }
+.rmq-pl-row { display: flex; align-items: center; justify-content: space-between; }
+.rmq-fmt-btn { font-size: 10.5px; padding: 2px 8px; }
 #db-title { color: var(--green-bright); font-size: 12px; font-weight: 600; }
 .db-body { flex: 1; min-height: 0; overflow: auto; padding: 10px; display: flex; flex-direction: column; gap: 8px; }
 .db-topbar { display: flex; align-items: center; gap: 8px; }
