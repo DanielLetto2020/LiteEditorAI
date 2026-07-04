@@ -109,7 +109,12 @@ const MODULES = {
   },
   db: {
     title: 'Базы данных', init: initDb, project: false,
-    wire: (mod) => { bind('#db-refresh', () => mod.refresh()); },
+    wire: (mod) => {
+      bind('#db-refresh', () => mod.refresh());
+      // «Контейнеры» → БД: заготовка подключения из контейнера (маршрут через main, очередь до готовности)
+      lite.db.onOpenFromContainer((p) => { try { mod.openFromContainer(p); } catch (_) {} });
+      try { lite.db.panelReady(); } catch (_) {} // флаш отложенных openFromContainer из main
+    },
   },
   chat: {
     title: 'OpenRouter', init: initOpenRouter, project: false,

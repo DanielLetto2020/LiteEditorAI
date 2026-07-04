@@ -178,10 +178,46 @@ export function initDb(host) {
     renderDbPanel();
   }
 
+  // ============================================================ «Контейнеры» → «Базы данных»
+  // Приём заготовки подключения из модуля «Контейнеры» (payload — ответ containers:inspectDb,
+  // приходит через main по db:openFromContainer). Счастливый путь — один клик до воркспейса:
+  // молча тестируем → сохраняем → открываем. Повторный клик не плодит дубли (метка source).
+  // Пароль неизвестен или тест упал → обычная форма подключения с заполненными полями.
+  async function openFromContainer(payload) {
+    const p = payload && payload.prefill;
+    if (!p || !p.type) return;
+    restoredOnce = true; // явное намерение юзера главнее авто-восстановления прошлой сессии
+    let list = [];
+    try { const r = await lite.db.list(); list = r.connections || []; dbConnsList = list; dbSecure = r.secure !== false; } catch (_) {}
+    const existing = list.find((x) => x.source && x.source === p.source);
+    if (existing) { toast(`«${existing.name}» уже создано из этого контейнера — открываю`); openConnection(existing); return; }
+    const toList = () => { dbActiveId = null; dbActiveConn = null; dbSchema = null; tabs = []; activeKey = null; dbDispose(); renderDbPanel(); };
+    const draft = { ...p };
+    if (payload.passwordUnknown || draft.password == null) { // секрет вне env (…_FILE / secrets)
+      delete draft.password;
+      toList(); dbConnModal(draft);
+      return;
+    }
+    toast(`Проверяю подключение к «${draft.name}»…`, { ttl: 2500 });
+    let t;
+    try { t = await lite.db.test(draft); } catch (e) { t = { ok: false, error: String(e) }; }
+    if (t && t.ok) {
+      const r = await lite.db.save(draft);
+      if (r && r.error) { toast(r.error, { kind: 'err' }); return; }
+      toast(`✓ ${t.version || 'Подключено'} — подключение создано из контейнера`);
+      openConnection(r.connection);
+    } else {
+      toast('Автопроверка не прошла: ' + ((t && t.error) || 'нет ответа') + ' — проверь поля', { kind: 'err', ttl: 9000 });
+      toList(); dbConnModal(draft);
+    }
+  }
+
   // ============================================================ connection modal (host + SSH)
   function dbConnModal(existing) {
+    // existing: сохранённое подключение (есть id) ИЛИ черновик-префилл из контейнера (без id,
+    // может нести password/source) — заголовок и поле пароля различаем по c.id, не по truthiness.
     const c = existing ? { ...existing } : { type: 'postgres', category: 'Все', port: 5432 };
-    const { m, close } = makeModal(`<h2>${existing ? 'Изменить' : 'Новое'} подключение</h2><div id="dbf" class="db-form"></div>`);
+    const { m, close } = makeModal(`<h2>${c.id ? 'Изменить' : 'Новое'} подключение</h2><div id="dbf" class="db-form"></div>`);
     m.classList.add('db-modal', 'db-conn-modal');
     const f = m.querySelector('#dbf');
     const field = (label, node) => { const w = el('div', 'db-field'); w.appendChild(el('label', null, label)); w.appendChild(node); f.appendChild(w); return node; };
@@ -205,7 +241,7 @@ export function initDb(host) {
     f.appendChild(row2);
     const hostWrap = el('div', 'db-group');
     const host2 = inp(c.host || '', 'localhost'); const port = inp(c.port || DB_DEF_PORT[c.type] || '', '5432', 'number');
-    const user = inp(c.user || '', 'пользователь'); const pass = inp('', existing ? '(без изменений)' : 'пароль', 'password');
+    const user = inp(c.user || '', 'пользователь'); const pass = inp(c.password || '', c.id ? '(без изменений)' : 'пароль', 'password');
     const database = inp(c.database || '', 'имя базы (опц.)');
     const ssl = el('input'); ssl.type = 'checkbox'; ssl.checked = !!c.ssl;
     const sslIns = el('input'); sslIns.type = 'checkbox'; sslIns.checked = !!c.sslInsecure;
@@ -224,7 +260,7 @@ export function initDb(host) {
     f.appendChild(sshLabel);
     const sshWrap = el('div', 'db-group');
     const sshHost = inp(c.sshHost || '', 'ssh-хост'); const sshPort = inp(c.sshPort || 22, '22', 'number');
-    const sshUser = inp(c.sshUser || '', 'ssh-пользователь'); const sshPass = inp('', existing ? '(без изменений)' : 'пароль/passphrase', 'password');
+    const sshUser = inp(c.sshUser || '', 'ssh-пользователь'); const sshPass = inp('', c.id ? '(без изменений)' : 'пароль/passphrase', 'password');
     sshWrap.append(mk('SSH хост', sshHost), mk('SSH порт', sshPort), mk('SSH пользователь', sshUser), mk('SSH пароль', sshPass));
     f.appendChild(sshWrap);
     const ro = el('input'); ro.type = 'checkbox'; ro.checked = !!c.readOnly;
@@ -253,6 +289,7 @@ export function initDb(host) {
       if (typeSel.value === 'sqlite') { o.file = file.value.trim(); o.database = o.file; }
       else { o.host = host2.value.trim(); o.port = +port.value || DB_DEF_PORT[typeSel.value]; o.user = user.value.trim(); o.database = database.value.trim(); o.ssl = ssl.checked; o.sslInsecure = sslIns.checked; o.sshEnabled = sshOn.checked; o.sshHost = sshHost.value.trim(); o.sshPort = +sshPort.value || 22; o.sshUser = sshUser.value.trim(); if (sshPass.value) o.sshPassword = sshPass.value; }
       if (pass.value) o.password = pass.value;
+      if (c.source) o.source = c.source; // метка «создано из контейнера X» — для дедупа повторных кликов
       return o;
     };
     const row = el('div', 'gm-actions'); row.style.marginTop = '12px';
@@ -2184,5 +2221,5 @@ export function initDb(host) {
 
   function refresh() { dbSchema = null; dbColsCache = null; dbObjectsCache = null; metaCache.clear(); dbRelationsCache = null; invalidateTableCaches(); if (dbOpen) renderDbPanel(); }
   document.addEventListener('keydown', (e) => { if (dbOpen && dbActiveId && (e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === 'p') { e.preventDefault(); openPalette(); } });
-  return { isOpen: () => dbOpen, setOpen: setDbOpen, toggle: toggleDb, renderPanel: renderDbPanel, refresh };
+  return { isOpen: () => dbOpen, setOpen: setDbOpen, toggle: toggleDb, renderPanel: renderDbPanel, refresh, openFromContainer };
 }

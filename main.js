@@ -3,6 +3,7 @@
 const { app, BrowserWindow, ipcMain, dialog, shell, Menu, clipboard, screen, Tray, nativeImage, crashReporter, safeStorage, Notification } = require('electron');
 const dbBackend = require('./lib/db');
 const rhBackend = require('./lib/remotehost');
+const { guessDbKind, dbPrefillFromInspect } = require('./lib/dbdetect'); // «Контейнеры» → «Базы данных»
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
@@ -1880,6 +1881,7 @@ function openModuleWindow(modId) {
   win.on('closed', () => {
     moduleWindows.delete(modId);
     if (modId === 'files') filesViewerReady = false; // окно вивера закрыто → следующее openInViewer переоткроет и переждёт готовность
+    if (modId === 'db') dbPanelReady = false;        // окно БД закрыто → следующий openFromContainer переоткроет и переждёт готовность
     if (modId === 'ctx') { for (const w of ctxOutWatchers.values()) { try { w.close(); } catch (_) {} } ctxOutWatchers.clear(); } // окно «Контекст» закрылось без unwatch → не течём fs.watch (B2)
     for (const [sid, wc] of ownerBySession) { try { if (wc.isDestroyed()) ownerBySession.delete(sid); } catch (_) { ownerBySession.delete(sid); } }
     broadcastModuleOpenSet();
@@ -2548,6 +2550,23 @@ ipcMain.on('editor:viewerReady', () => {
   filesViewerReady = true;
   while (pendingViewerOpens.length) { const p = pendingViewerOpens.shift(); const w = filesWindow(); if (w) w.webContents.send('editor:openInViewer', p); }
   if (pendingFocusGit) { pendingFocusGit = false; const w = filesWindow(); if (w) { w.focus(); w.webContents.send('editor:focusGit'); } }
+});
+// «Контейнеры» → «Базы данных»: открыть окно модуля БД с заготовкой подключения из контейнера.
+// Паттерн тот же, что у вивера выше: окно может быть не готово сразу → очередь до db:panelReady.
+let dbPanelReady = false;
+const pendingDbOpens = [];
+function dbModWindow() { const w = moduleWindows.get('db'); return (w && !w.isDestroyed()) ? w : null; }
+ipcMain.on('db:openFromContainer', (_e, payload) => {
+  if (!payload || typeof payload !== 'object') return;
+  if (!dbModWindow()) openModuleWindow('db');
+  const w = dbModWindow();
+  if (w && dbPanelReady) { if (w.isMinimized()) w.restore(); w.focus(); w.webContents.send('db:openFromContainer', payload); }
+  else pendingDbOpens.push(payload);
+});
+ipcMain.on('db:panelReady', () => {
+  dbPanelReady = true;
+  const w = dbModWindow();
+  while (w && pendingDbOpens.length) { w.focus(); w.webContents.send('db:openFromContainer', pendingDbOpens.shift()); }
 });
 ipcMain.on('editor:sendToTerminal', (_e, payload) => forwardToEditor('editor:sendToTerminal', payload));
 // «Пропустить отдых» с оверлея в окне редактора → пропустить текущую фазу помодоро (движок в main).
@@ -4671,14 +4690,14 @@ async function cListContainers(engine) {
     const r = await containerRun('docker', ['ps', '-a', '--format', '{{json .}}'], { timeout: 12000 });
     if (!r.ok) return { error: r.error };
     return { items: cParseLines(r.out).map((c) => { const L = cLabelMap(c.Labels);
-      return { id: c.ID, name: c.Names, image: c.Image, state: String(c.State || '').toLowerCase(), status: c.Status, ports: c.Ports || '', project: L[C_PROJECT] || '', service: L[C_SERVICE] || '' }; }) };
+      return { id: c.ID, name: c.Names, image: c.Image, state: String(c.State || '').toLowerCase(), status: c.Status, ports: c.Ports || '', project: L[C_PROJECT] || '', service: L[C_SERVICE] || '', dbKind: guessDbKind(c.Image, c.Ports) }; }) };
   }
   const r = await containerRun('podman', ['ps', '-a', '--format', 'json'], { timeout: 12000 });
   if (!r.ok) return { error: r.error };
   return { items: cParseJson(r.out).map((c) => { const L = c.Labels || {};
     const name = Array.isArray(c.Names) ? c.Names[0] : (c.Names || c.Name || '');
     const ports = Array.isArray(c.Ports) ? c.Ports.map((p) => `${p.host_port || p.hostPort || ''}${(p.host_port || p.hostPort) ? ':' : ''}${p.container_port || p.containerPort || ''}`).filter((s) => s && s !== ':').join(', ') : '';
-    return { id: c.Id || c.ID, name, image: c.Image, state: String(c.State || '').toLowerCase(), status: c.Status || c.State, ports, project: L[C_PROJECT] || L['io.podman.compose.project'] || '', service: L[C_SERVICE] || '' }; }) };
+    return { id: c.Id || c.ID, name, image: c.Image, state: String(c.State || '').toLowerCase(), status: c.Status || c.State, ports, project: L[C_PROJECT] || L['io.podman.compose.project'] || '', service: L[C_SERVICE] || '', dbKind: guessDbKind(c.Image, ports) }; }) };
 }
 async function cListPods() {
   const r = await containerRun('podman', ['pod', 'ps', '--format', 'json'], { timeout: 10000 });
@@ -4803,6 +4822,20 @@ ipcMain.handle('containers:action', async (_e, { engine, kind, action, id } = {}
   if (!args) return { ok: false, error: 'bad action' };
   const r = await containerRun(engine, args, { timeout: 60000 });
   return { ok: r.ok, error: r.error };
+});
+
+// «Открыть в модуле БД»: inspect контейнера → заготовка подключения (тип/хост-порт/лог/пас/база).
+// Разбор — в lib/dbdetect.js; пароль берётся из env контейнера (он и так виден любому с доступом к CLI).
+ipcMain.handle('containers:inspectDb', async (_e, { engine, id } = {}) => {
+  if (engine !== 'docker' && engine !== 'podman') return { ok: false, error: 'bad engine' };
+  if (!id || typeof id !== 'string') return { ok: false, error: 'no id' };
+  const r = await containerRun(engine, ['inspect', id], { timeout: 12000 });
+  if (!r.ok) return { ok: false, error: r.error };
+  const info = cParseJson(r.out)[0];
+  if (!info) return { ok: false, error: 'inspect вернул пустой ответ' };
+  const res = dbPrefillFromInspect(info, engine);
+  if (!res) return { ok: false, error: 'В контейнере не распознана поддерживаемая БД (PostgreSQL / MySQL / MariaDB)' };
+  return { ok: true, ...res };
 });
 
 ipcMain.handle('shell:openPath', (_e, target) => {

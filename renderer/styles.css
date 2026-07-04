@@ -1402,6 +1402,8 @@ body.preview-split #preview-view { border-left: 1px solid var(--border); }
 .drow-act { display: flex; align-items: center; justify-content: center; width: 26px; height: 26px; border-radius: 7px; border: 1px solid transparent; background: transparent; color: var(--text-dim); cursor: pointer; transition: all .12s; }
 .drow-act:hover { color: var(--text); background: var(--bg-input); border-color: var(--border-strong); }
 .drow-act.danger:hover { color: var(--danger); border-color: var(--danger); }
+.drow-act.ddb { color: var(--green); }                                        /* задетекчена БД → акцентная иконка «открыть в модуле БД» */
+.drow-act.ddb:hover { color: var(--green-bright); border-color: var(--green); }
 .docker-empty, .docker-err { font-size: 12px; padding: 8px 6px; }
 .docker-empty { color: var(--text-mute); }
 .docker-err { color: var(--danger); white-space: pre-wrap; word-break: break-word; }

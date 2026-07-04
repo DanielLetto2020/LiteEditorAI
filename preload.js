@@ -391,6 +391,7 @@ contextBridge.exposeInMainWorld('lite', {
     execKill: (execId) => ipcRenderer.send('containers:execKill', { execId }),
     onExecData: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('containers:execData', h); return () => ipcRenderer.removeListener('containers:execData', h); },
     onExecExit: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('containers:execExit', h); return () => ipcRenderer.removeListener('containers:execExit', h); },
+    inspectDb: (engine, id) => ipcRenderer.invoke('containers:inspectDb', { engine, id }), // заготовка подключения к БД контейнера
   },
 
   db: {
@@ -415,6 +416,10 @@ contextBridge.exposeInMainWorld('lite', {
     saveText: (defaultName, text) => ipcRenderer.invoke('db:saveText', { defaultName, text }),
     openText: () => ipcRenderer.invoke('db:openText'),
     chooseDir: () => ipcRenderer.invoke('db:chooseDir'),
+    // «Контейнеры» → «Базы данных»: маршрут через main (окно БД откроется само, очередь до готовности)
+    openFromContainer: (payload) => ipcRenderer.send('db:openFromContainer', payload),
+    onOpenFromContainer: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('db:openFromContainer', h); return () => ipcRenderer.removeListener('db:openFromContainer', h); },
+    panelReady: () => ipcRenderer.send('db:panelReady'),
   },
   // RemoteHost module — SSH connection profiles + live shell sessions.
   rh: {
