@@ -3,6 +3,17 @@
 Все заметные изменения LiteEditorAI. Формат — [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/),
 нумерация — [SemVer](https://semver.org/lang/ru/). Проект в стадии **alpha**.
 
+## [1.1.84] — 2026-07-04
+
+**Follow-up к v1.1.83: титлбары модульных окон вернулись к прежнему виду.**
+
+### 🔄 Изменено
+- **Титлбары модульных окон** — откат macOS-«светофоров», появившихся с редизайном v1.1.83:
+  вернулись прежние три кнопки-глифа справа (свернуть / развернуть / закрыть), как в главном
+  окне редактора.
+- **README**: раздел «Благодарности» перенесён в начало файла; описание «Обработки текста»
+  в таблице возможностей актуализировано под Obsidian-редизайн.
+
 ## [1.1.83] — 2026-07-04
 
 **«Обработка текста» перерождена в стиле Obsidian — сайдбар с деревом документов проекта,
@@ -1472,6 +1483,7 @@ AGENTS.md как граф на канве), и **цветной пульт** —
 - Первые публичные alpha-сборки: терминал на проект (xterm + node-pty), вивер кода (CodeMirror), дерево
   файлов, дистрибуция под Linux (`.deb`) и Windows (portable `.zip`) через GitHub Actions.
 
+[1.1.84]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.1.84
 [1.1.83]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.1.83
 [1.1.78]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.1.78
 [1.1.77]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.1.77
