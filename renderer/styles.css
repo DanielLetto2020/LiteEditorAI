@@ -161,17 +161,6 @@ html, body {
 .win-btn.close::after { width: 13px; height: 0; border-top: 1.6px solid var(--text); transform: translate(-50%, -50%) rotate(-45deg); }
 .win-btn.close:hover::before, .win-btn.close:hover::after { border-top-color: #fff; }
 
-/* macOS traffic lights */
-.win-tools.mac-style { display: flex; align-items: center; gap: 8px; margin-left: 14px; margin-right: 14px; }
-.win-tools.mac-style .win-btn { width: 12px; height: 12px; border-radius: 50%; padding: 0; position: relative; display: flex; align-items: center; justify-content: center; }
-.win-tools.mac-style .win-btn::before, .win-tools.mac-style .win-btn::after { display: none; }
-.win-tools.mac-style .win-btn.close { background-color: #ff5f56; }
-.win-tools.mac-style .win-btn.min { background-color: #ffbd2e; }
-.win-tools.mac-style .win-btn.max { background-color: #27c93f; }
-.win-tools.mac-style:hover .win-btn.close::before { content: ""; display: block; width: 7px; height: 1px; background: #4d0000; border: none; transform: translate(-50%, -50%) rotate(45deg); position: absolute; top: 50%; left: 50%; }
-.win-tools.mac-style:hover .win-btn.close::after { content: ""; display: block; width: 7px; height: 1px; background: #4d0000; border: none; transform: translate(-50%, -50%) rotate(-45deg); position: absolute; top: 50%; left: 50%; }
-.win-tools.mac-style:hover .win-btn.min::before { content: ""; display: block; width: 7px; height: 1px; background: #995700; border: none; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); }
-.win-tools.mac-style:hover .win-btn.max::before { content: ""; display: block; width: 6px; height: 6px; border: 1px solid #006500; background: transparent; box-sizing: border-box; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); }
 
 /* ---------------- module window (v1.1+) ---------------- */
 /* Окно одного модуля: титлбар сверху + единственная панель, заполняющая окно. Переиспользует
