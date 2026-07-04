@@ -1646,6 +1646,29 @@ body.preview-split #preview-view { border-left: 1px solid var(--border); }
 .db-grid-virtual { overflow: auto; }   /* height comes from the flex parent (db-grid-host) now */
 .db-grid-virtual td { height: 23px; white-space: nowrap; }
 /* connection status dot */
+/* полоса вкладок-подключений (несколько открытых воркспейсов БД) */
+.db-conn-strip { display: flex; align-items: center; gap: 4px; flex: 0 0 auto; flex-wrap: wrap; padding-bottom: 2px; border-bottom: 1px solid var(--border); }
+.db-ctab { display: inline-flex; align-items: center; gap: 6px; max-width: 190px; padding: 3px 6px 3px 8px; border-radius: 8px 8px 0 0; border: 1px solid var(--border); border-bottom: none; background: var(--bg-input); color: var(--text-mute); font-size: 11.5px; cursor: pointer; }
+.db-ctab:hover { color: var(--text); border-color: var(--border-strong); }
+.db-ctab.on { color: var(--text); background: var(--panel); border-color: var(--border-strong); font-weight: 600; }
+.db-ctab-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--text-mute); flex: 0 0 auto; }
+.db-ctab-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.db-ctab-x { display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px; border-radius: 5px; border: none; background: transparent; color: var(--text-mute); cursor: pointer; flex: 0 0 auto; }
+.db-ctab-x:hover { color: var(--danger); background: var(--bg); }
+.db-ctab-add { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; border-radius: 7px; border: 1px dashed var(--border-strong); background: transparent; color: var(--text-mute); cursor: pointer; }
+.db-ctab-add:hover { color: var(--text); border-color: var(--text-mute); }
+.db-list-wrap, .db-ws-wrap { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 8px; }
+/* выпадашка выбора подключения */
+.db-conndd { position: fixed; z-index: 1000; min-width: 240px; max-width: 320px; max-height: 55vh; overflow: auto; background: var(--panel); border: 1px solid var(--border-strong); border-radius: 10px; padding: 4px; display: flex; flex-direction: column; gap: 1px; }
+.db-conndd-row { display: flex; align-items: center; gap: 7px; padding: 6px 8px; border-radius: 7px; font-size: 12px; color: var(--text); cursor: pointer; }
+.db-conndd-row:hover { background: var(--bg-input); }
+.db-conndd-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.db-conndd-sub { margin-left: auto; font-size: 10.5px; color: var(--text-mute); flex: 0 0 auto; }
+.db-conndd-mark { flex: 0 0 auto; font-size: 9px; line-height: 14px; padding: 0 5px; border-radius: 6px; color: var(--green); border: 1px solid var(--green); }
+.db-conndd-new { border-top: 1px solid var(--border); border-radius: 0 0 7px 7px; color: var(--text-mute); }
+.db-conndd-new:hover { color: var(--text); }
+.db-conndd-load { padding: 8px; font-size: 11.5px; color: var(--text-mute); }
+
 .db-status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-mute); flex: 0 0 auto; cursor: pointer; }
 .db-status-dot.ok { background: var(--green-bright); box-shadow: 0 0 5px var(--green-bright); }
 .db-status-dot.err { background: var(--danger); box-shadow: 0 0 5px var(--danger); }

@@ -32,7 +32,7 @@ export function initDb(host) {
   // workspace state (per active connection)
   let tabs = [];            // { key, kind:'table'|'sql'|'ddl'|'er'|'diff'|'qbuilder', title, ... }
   let activeKey = null;
-  const metaCache = new Map();   // "schema.table" -> meta
+  let metaCache = new Map();     // "schema.table" -> meta (per-подключение, свапается вкладками)
   let sqlSeq = 0;
   // AI-DB: outer workspace view ('desk' | 'ai') + per-connection chat state
   let wsView = 'desk';
@@ -68,22 +68,26 @@ export function initDb(host) {
   }
   function toggleDb() { setDbOpen(!dbOpen); }
   let restoredOnce = false;
-  function saveSession() {
+  // ---- вкладки подключений: несколько открытых воркспейсов, полоса сверху панели
+  let openConns = [];              // порядок вкладок: [connId]
+  let connListMode = false;        // при открытых вкладках показать список подключений («домой»)
+  const connStates = new Map();    // connId -> снапшот воркспейса (схема/вкладки/кэши/навигация)
+  function saveSession() {         // персист: набор вкладок-подключений + сессия активного
     if (!dbActiveId) return;
     const ser = tabs.filter((t) => t.kind === 'table' || t.kind === 'sql').map((t) => t.kind === 'table'
       ? { kind: 'table', schema: t.schema, table: t.table, view: t.view, title: t.title, where: t.where, orderBy: t.orderBy, orderDir: t.orderDir, mode: t.mode }
       : { kind: 'sql', title: t.title, sql: t.sql });
-    dbUi.session = { connId: dbActiveId, tabs: ser, activeKey }; saveDbUi();
+    dbUi.sessions = dbUi.sessions || {};
+    dbUi.sessions[dbActiveId] = { tabs: ser, activeKey };
+    dbUi.openTabs = openConns.slice(); dbUi.activeTab = dbActiveId;
+    delete dbUi.session; // старый одноконнектный формат вытеснен
+    saveDbUi();
   }
-  function restoreSession(conn) {
-    dbActiveId = conn.id; dbActiveConn = conn; dbSchema = null; dbColsCache = null; dbObjectsCache = null;
-    metaCache.clear(); dbRelationsCache = null; navStack = []; navPtr = -1; tabs = [];
-    for (const s of (dbUi.session.tabs || [])) {
-      if (s.kind === 'table') tabs.push({ key: tabKeyTable(s.schema, s.table), kind: 'table', schema: s.schema, table: s.table, view: s.view, title: s.title, page: 0, orderBy: s.orderBy || null, orderDir: s.orderDir || 'asc', where: s.where || '', mode: s.mode || 'data' });
-      else tabs.push({ key: 'sql:' + (++sqlSeq), kind: 'sql', title: s.title || ('Запрос ' + sqlSeq), sql: s.sql || '' });
-    }
-    activeKey = (dbUi.session.activeKey && findTab(dbUi.session.activeKey)) ? dbUi.session.activeKey : (tabs[0] && tabs[0].key) || null;
-    renderDbPanel();
+  // Текущий воркспейс → в память: переключение вкладок не теряет схему/вкладки/кэши.
+  function snapshotCurrent() {
+    if (!dbActiveId) return;
+    connStates.set(dbActiveId, { conn: dbActiveConn, schema: dbSchema, cols: dbColsCache, objects: dbObjectsCache,
+      relations: dbRelationsCache, tabs, activeKey, meta: metaCache, navStack, navPtr, wsView });
   }
   function dbDispose() { stopAutoRef(); destroyAllEditors(); const vp = document.getElementById('db-valpanel'); if (vp) vp.remove(); for (const d of aiChats.values()) for (const s of (d.sessions || [])) { if (s._reqId) { try { lite.dbai.abort(s._reqId); } catch (_) {} s._reqId = null; s._busy = false; } } }
   function saveDbUi() { persist('dbUi', dbUi); }
@@ -106,15 +110,38 @@ export function initDb(host) {
   async function renderDbPanel() {
     const seq = ++dbRenderSeq;
     const body = $('#db-body');
-    if (!dbActiveId) {
+    if (!dbActiveId || connListMode) {
       body.innerHTML = '<div class="git-loading">Загрузка подключений…</div>';
       try { const r = await lite.db.list(); dbConnsList = r.connections || []; dbSecure = r.secure !== false; }
       catch (_) { dbConnsList = []; }
       if (seq !== dbRenderSeq || !dbOpen) return;
-      if (!restoredOnce && dbUi.session && dbUi.session.connId) { restoredOnce = true; const conn = dbConnsList.find((c) => c.id === dbUi.session.connId); if (conn) { restoreSession(conn); return; } }
-      renderDbConnections(body);
+      if (!restoredOnce) { // восстановление набора вкладок прошлого запуска
+        restoredOnce = true;
+        if (dbUi.session && dbUi.session.connId) { // миграция старого одноконнектного формата
+          dbUi.sessions = dbUi.sessions || {};
+          dbUi.sessions[dbUi.session.connId] = { tabs: dbUi.session.tabs, activeKey: dbUi.session.activeKey };
+          dbUi.openTabs = [dbUi.session.connId]; dbUi.activeTab = dbUi.session.connId;
+          delete dbUi.session; saveDbUi();
+        }
+        const ids = (Array.isArray(dbUi.openTabs) ? dbUi.openTabs : []).filter((id) => dbConnsList.some((c) => c.id === id));
+        if (ids.length && !connListMode) {
+          openConns = ids;
+          const actId = (dbUi.activeTab && ids.includes(dbUi.activeTab)) ? dbUi.activeTab : ids[ids.length - 1];
+          const act = dbConnsList.find((c) => c.id === actId);
+          if (act) { openConnection(act); return; }
+        }
+      }
+      body.innerHTML = '';
+      renderConnStrip(body);
+      const wrap = el('div', 'db-list-wrap');
+      body.appendChild(wrap);
+      renderDbConnections(wrap);
     } else {
-      renderDbWorkspace(body);
+      body.innerHTML = '';
+      renderConnStrip(body);
+      const wrap = el('div', 'db-ws-wrap');
+      body.appendChild(wrap);
+      renderDbWorkspace(wrap);
     }
   }
 
@@ -163,19 +190,118 @@ export function initDb(host) {
       : `${DB_TYPES[c.type] || c.type} · ${c.host || 'localhost'}:${c.port || DB_DEF_PORT[c.type] || ''}${c.sshEnabled ? ' · SSH' : ''}${c.readOnly ? ' · RO' : ''}`;
     main.appendChild(el('span', 'drow-sub', sub));
     row.appendChild(main);
+    if (openConns.includes(c.id)) row.appendChild(el('span', 'db-ro-badge', 'открыто'));
     const acts = el('div', 'drow-acts');
     const edit = iconBtn('drow-act', 'pencil', 'Изменить', 13); edit.onclick = (e) => { e.stopPropagation(); dbConnModal(c); };
     const del = iconBtn('drow-act danger', 'trash', 'Удалить', 13);
-    del.onclick = (e) => { e.stopPropagation(); showConfirm('Удалить подключение?', `«${c.name}» удалится из списка (сама БД не трогается).`, 'Удалить', async () => { await lite.db.delete(c.id); renderDbPanel(); }); };
+    del.onclick = (e) => { e.stopPropagation(); showConfirm('Удалить подключение?', `«${c.name}» удалится из списка (сама БД не трогается).`, 'Удалить', async () => {
+      await lite.db.delete(c.id);
+      openConns = openConns.filter((x) => x !== c.id); connStates.delete(c.id); // вкладку тоже закрываем
+      if (dbUi.sessions) delete dbUi.sessions[c.id];
+      dbUi.openTabs = openConns.slice(); saveDbUi();
+      if (dbActiveId === c.id) { dbActiveId = null; dbActiveConn = null; tabs = []; activeKey = null; }
+      renderDbPanel();
+    }); };
     acts.append(edit, del); row.appendChild(acts);
     row.addEventListener('click', () => openConnection(c));
     return row;
   }
 
+  // Открыть/активировать вкладку подключения. Состояние воркспейса: из памяти (уже открывали
+  // в этой сессии) или свежее + вкладки таблиц/SQL из персиста прошлого запуска (dbUi.sessions).
   function openConnection(c) {
-    dbActiveId = c.id; dbActiveConn = c; dbSchema = null; dbColsCache = null; dbObjectsCache = null;
-    tabs = []; activeKey = null; metaCache.clear(); dbRelationsCache = null; navStack = []; navPtr = -1;
+    if (dbActiveId === c.id && !connListMode) { renderDbPanel(); return; }
+    if (dbActiveId) { snapshotCurrent(); destroyAllEditors(); stopAutoRef(); }
+    connListMode = false;
+    if (!openConns.includes(c.id)) openConns.push(c.id);
+    const s = connStates.get(c.id);
+    dbActiveId = c.id; dbActiveConn = (s && s.conn) || c;
+    if (s) {
+      dbSchema = s.schema; dbColsCache = s.cols; dbObjectsCache = s.objects; dbRelationsCache = s.relations;
+      tabs = s.tabs; activeKey = s.activeKey; metaCache = s.meta; navStack = s.navStack; navPtr = s.navPtr; wsView = s.wsView || 'desk';
+    } else {
+      dbSchema = null; dbColsCache = null; dbObjectsCache = null; dbRelationsCache = null;
+      tabs = []; activeKey = null; metaCache = new Map(); navStack = []; navPtr = -1; wsView = 'desk';
+      const saved = dbUi.sessions && dbUi.sessions[c.id];
+      for (const sv of ((saved && saved.tabs) || [])) {
+        if (sv.kind === 'table') tabs.push({ key: tabKeyTable(sv.schema, sv.table), kind: 'table', schema: sv.schema, table: sv.table, view: sv.view, title: sv.title, page: 0, orderBy: sv.orderBy || null, orderDir: sv.orderDir || 'asc', where: sv.where || '', mode: sv.mode || 'data' });
+        else tabs.push({ key: 'sql:' + (++sqlSeq), kind: 'sql', title: sv.title || ('Запрос ' + sqlSeq), sql: sv.sql || '' });
+      }
+      if (saved) activeKey = (saved.activeKey && tabs.some((t) => t.key === saved.activeKey)) ? saved.activeKey : (tabs[0] && tabs[0].key) || null;
+    }
+    saveSession();
     renderDbPanel();
+  }
+  function closeConnTab(id) {
+    const wasActive = id === dbActiveId;
+    if (wasActive) { destroyAllEditors(); stopAutoRef(); }
+    openConns = openConns.filter((x) => x !== id);
+    connStates.delete(id);
+    dbUi.openTabs = openConns.slice();
+    if (wasActive) {
+      dbActiveId = null; dbActiveConn = null; dbSchema = null; dbColsCache = null; dbObjectsCache = null;
+      dbRelationsCache = null; tabs = []; activeKey = null; metaCache = new Map(); navStack = []; navPtr = -1; wsView = 'desk';
+      dbUi.activeTab = null; saveDbUi();
+      const nextId = openConns[openConns.length - 1];
+      if (nextId) {
+        const st = connStates.get(nextId);
+        const next = (st && st.conn) || dbConnsList.find((x) => x.id === nextId);
+        if (next) { openConnection(next); return; }
+      }
+      connListMode = false;
+    } else saveDbUi();
+    renderDbPanel();
+  }
+  // Полоса вкладок-подключений над списком/воркспейсом (рисуется, когда есть открытые).
+  function renderConnStrip(hostEl) {
+    if (!openConns.length) return;
+    const strip = el('div', 'db-conn-strip');
+    for (const id of openConns) {
+      const st = connStates.get(id);
+      const c = (dbActiveId === id ? dbActiveConn : (st && st.conn)) || dbConnsList.find((x) => x.id === id) || { id, name: '…' };
+      const tab = el('div', 'db-ctab' + (id === dbActiveId && !connListMode ? ' on' : ''));
+      const dot = el('span', 'db-ctab-dot'); if (c.color) dot.style.background = c.color;
+      tab.append(dot, el('span', 'db-ctab-name', c.name || id));
+      const x = iconBtn('db-ctab-x', 'x', 'Закрыть подключение', 11);
+      x.onclick = (e) => { e.stopPropagation(); closeConnTab(id); };
+      tab.appendChild(x);
+      tab.onclick = () => { if (id !== dbActiveId || connListMode) openConnection(c); };
+      strip.appendChild(tab);
+    }
+    const add = iconBtn('db-ctab-add', 'plus', 'Открыть ещё подключение…', 14);
+    add.onclick = (e) => { e.stopPropagation(); connDropdown(add); };
+    strip.appendChild(add);
+    hostEl.appendChild(strip);
+  }
+  // Выпадашка «+»: существующие подключения (открытые помечены) + «Новое подключение…».
+  function closeConnDd() { const d = document.getElementById('db-conndd'); if (d) d.remove(); }
+  async function connDropdown(anchor) {
+    closeConnDd();
+    const dd = el('div', 'db-conndd'); dd.id = 'db-conndd';
+    dd.appendChild(el('div', 'db-conndd-load', 'Загружаю…'));
+    document.body.appendChild(dd);
+    const r0 = anchor.getBoundingClientRect();
+    dd.style.left = Math.max(8, Math.min(r0.left, window.innerWidth - 300)) + 'px';
+    dd.style.top = (r0.bottom + 4) + 'px';
+    setTimeout(() => document.addEventListener('click', closeConnDd, { once: true }), 0);
+    let list = dbConnsList;
+    try { const r = await lite.db.list(); list = r.connections || []; dbConnsList = list; } catch (_) {}
+    if (!document.getElementById('db-conndd')) return; // успели закрыть, пока грузился список
+    dd.innerHTML = '';
+    for (const c of list) {
+      const row = el('div', 'db-conndd-row');
+      const dot = el('span', 'db-ctab-dot'); if (c.color) dot.style.background = c.color;
+      row.append(dot, el('span', 'db-conndd-name', c.name || '(без имени)'));
+      row.appendChild(el('span', 'db-conndd-sub', c.type === 'sqlite' ? 'SQLite' : `${c.host || 'localhost'}:${c.port || ''}`));
+      if (openConns.includes(c.id)) row.appendChild(el('span', 'db-conndd-mark', 'открыто'));
+      row.onclick = () => { closeConnDd(); openConnection(c); };
+      dd.appendChild(row);
+    }
+    if (!list.length) dd.appendChild(el('div', 'db-conndd-load', 'Нет сохранённых подключений'));
+    const nw = el('div', 'db-conndd-row db-conndd-new');
+    nw.append(icon('plus', 13), el('span', 'db-conndd-name', 'Новое подключение…'));
+    nw.onclick = () => { closeConnDd(); dbConnModal(null); };
+    dd.appendChild(nw);
   }
 
   // ============================================================ «Контейнеры» → «Базы данных»
@@ -190,8 +316,12 @@ export function initDb(host) {
     let list = [];
     try { const r = await lite.db.list(); list = r.connections || []; dbConnsList = list; dbSecure = r.secure !== false; } catch (_) {}
     const existing = list.find((x) => x.source && x.source === p.source);
-    if (existing) { toast(`«${existing.name}» уже создано из этого контейнера — открываю`); openConnection(existing); return; }
-    const toList = () => { dbActiveId = null; dbActiveConn = null; dbSchema = null; tabs = []; activeKey = null; dbDispose(); renderDbPanel(); };
+    if (existing) { // повторный клик из «Контейнеров» = переключение на вкладку, не пересоздание
+      toast(`Переключаюсь на «${existing.name}»`, { ttl: 2200 });
+      openConnection(existing);
+      return;
+    }
+    const toList = () => { if (dbActiveId) { snapshotCurrent(); destroyAllEditors(); stopAutoRef(); } connListMode = true; renderDbPanel(); };
     const draft = { ...p };
     if (payload.passwordUnknown || draft.password == null) { // секрет вне env (…_FILE / secrets)
       delete draft.password;
@@ -310,8 +440,8 @@ export function initDb(host) {
     const side = el('div', 'db-side'); side.style.flexBasis = (dbUi.sideW || 240) + 'px';
     const head = el('div', 'db-ws-head');
     if (dbActiveConn.color) head.style.borderBottom = `2px solid ${dbActiveConn.color}`;
-    const back = iconBtn('drow-act', 'chevron-left', 'К подключениям', 16);
-    back.onclick = () => { dbActiveId = null; dbActiveConn = null; dbSchema = null; tabs = []; activeKey = null; dbDispose(); renderDbPanel(); };
+    const back = iconBtn('drow-act', 'chevron-left', 'К списку подключений (вкладка останется открытой)', 16);
+    back.onclick = () => { snapshotCurrent(); destroyAllEditors(); stopAutoRef(); connListMode = true; renderDbPanel(); };
     const statusDot = el('span', 'db-status-dot'); statusDot.title = 'Проверка соединения…';
     head.append(back, statusDot, icon('database', 15), el('span', 'db-ws-name', dbActiveConn.name));
     if (dbActiveConn.readOnly) head.appendChild(el('span', 'db-ro-badge', 'RO'));
