@@ -591,11 +591,51 @@ ipcMain.on('openrouter:chatAbort', (e, { reqId } = {}) => {
 // пользователя, БЕЗ API-ключей (ключевая идея фичи).
 const tpDir = path.join(storeDir, 'textproc');
 ipcMain.handle('tp:dir', () => { try { fs.mkdirSync(tpDir, { recursive: true }); } catch (_) {} return tpDir; });
+// Обработка текста: нативные Открыть/Сохранить как (вместо браузерного File API/download — см. handoff design).
+ipcMain.handle('tp:openFile', async () => {
+  const res = await dialog.showOpenDialog(mainWindow, {
+    title: 'Открыть документ', properties: ['openFile'],
+    filters: [
+      { name: 'Документы', extensions: ['md', 'markdown', 'txt', 'html', 'htm'] },
+      { name: 'Все файлы', extensions: ['*'] },
+    ],
+    ...lastDirOpts(),
+  });
+  if (res.canceled || !res.filePaths.length) return { canceled: true };
+  const file = res.filePaths[0];
+  try {
+    const stat = fs.statSync(file);
+    if (stat.size > IMPORT_MAX_BYTES) return { ok: false, error: `Файл слишком большой (${Math.round(stat.size / 1024)} КБ)` };
+    const content = fs.readFileSync(file, 'utf8');
+    saveState({ lastOpenDir: path.dirname(file) });
+    return { ok: true, file, name: path.basename(file), content };
+  } catch (e) { return { ok: false, error: 'Не удалось прочитать файл: ' + String(e.message || e) }; }
+});
+ipcMain.handle('tp:saveFileAs', async (_e, { content, name, ext } = {}) => {
+  const last = loadState().lastOpenDir;
+  const base = String(name || 'Безымянный').replace(/[\/\\:*?"<>|]+/g, '_').replace(/\.[^.]+$/, '');
+  const res = await dialog.showSaveDialog(mainWindow, {
+    title: 'Сохранить документ как',
+    defaultPath: path.join(last && fs.existsSync(last) ? last : os.homedir(), `${base}.${ext || 'md'}`),
+    filters: [
+      { name: 'Markdown', extensions: ['md'] },
+      { name: 'HTML', extensions: ['html'] },
+      { name: 'Текст', extensions: ['txt'] },
+    ],
+  });
+  if (res.canceled || !res.filePath) return { canceled: true };
+  try {
+    atomicWriteSync(res.filePath, String(content || ''));
+    saveState({ lastOpenDir: path.dirname(res.filePath) });
+    return { ok: true, file: res.filePath, name: path.basename(res.filePath) };
+  } catch (e) { return { ok: false, error: String(e.message || e) }; }
+});
 
 // Как звать CLI в неинтерактивном режиме и куда подавать промпт (stdin/arg).
 const TP_AGENTS = {
   claude: { cmd: 'claude', args: ['-p', '--output-format', 'text'], via: 'stdin' },
   codex: { cmd: 'codex', args: ['exec'], via: 'arg' },
+  antigravity: { cmd: '/Applications/Antigravity.app/Contents/Resources/app/bin/antigravity', args: ['chat', '-m', 'agent', '-'], via: 'stdin' }
 };
 // GUI-сессия часто не видит ~/.local/bin и nvm-bin → дополняем PATH, чтобы claude/codex нашлись.
 function tpEnv() {
@@ -609,24 +649,34 @@ ipcMain.on('tp:run', (e, { reqId, agent, prompt } = {}) => {
   const conf = TP_AGENTS[agent] || TP_AGENTS.claude;
   const args = conf.via === 'arg' ? [...conf.args, prompt || ''] : [...conf.args];
   let child;
-  try { child = spawn(conf.cmd, args, { cwd: os.homedir(), env: tpEnv() }); }
+  try { child = pty.spawn(conf.cmd, args, { cwd: os.homedir(), env: tpEnv(), cols: 80, rows: 24 }); }
   catch (err) { safeSend(sender, 'tp:error', { reqId, error: 'не запустить «' + conf.cmd + '»: ' + (err.message || err) }); return; }
   tpReqs.set(reqId, child);
-  let out = '', errOut = '';
+  let out = '';
   const to = setTimeout(() => { if (tpReqs.has(reqId)) { tpReqs.delete(reqId); try { child.kill(); } catch (_) {} safeSend(sender, 'tp:error', { reqId, error: 'таймаут (агент не ответил вовремя)' }); } }, 240000);
-  child.stdout.on('data', (c) => { out += c.toString('utf8'); });
-  child.stderr.on('data', (c) => { errOut += c.toString('utf8'); });
-  child.on('error', (err) => {
-    if (!tpReqs.has(reqId)) return; tpReqs.delete(reqId); clearTimeout(to);
-    safeSend(sender, 'tp:error', { reqId, error: 'агент «' + conf.cmd + '» не найден/не запустился: ' + (err.message || err) });
+  child.onData((c) => { 
+    const chunk = c.replace(/\x1b\[[0-9;]*m/g, ''); // strip ansi
+    out += chunk; 
+    safeSend(sender, 'tp:data', { reqId, chunk }); 
   });
-  child.on('close', (code) => {
+  child.onExit(({ exitCode }) => {
     if (!tpReqs.has(reqId)) return; tpReqs.delete(reqId); clearTimeout(to);
-    const text = out.trim();
-    if (text) safeSend(sender, 'tp:done', { reqId, text }); // непустой вывод = результат (даже при ненулевом коде)
-    else safeSend(sender, 'tp:error', { reqId, error: errOut.trim() || ('агент завершился с кодом ' + code) });
+    
+    // Attempt to strip echoed prompt if via stdin
+    let text = out.trim();
+    if (conf.via === 'stdin' && prompt) {
+      const promptLines = prompt.split('\n');
+      const firstLine = promptLines[0].trim();
+      if (firstLine && text.includes(firstLine)) {
+         const idx = text.indexOf('\x04');
+         if (idx !== -1) text = text.substring(idx + 1).trim();
+      }
+    }
+    
+    if (text) safeSend(sender, 'tp:done', { reqId, text }); 
+    else safeSend(sender, 'tp:error', { reqId, error: 'агент завершился с кодом ' + exitCode });
   });
-  if (conf.via === 'stdin') { try { child.stdin.write(prompt || ''); child.stdin.end(); } catch (_) {} }
+  if (conf.via === 'stdin') { try { child.write((prompt || '') + '\r\n\x04'); } catch (_) {} }
 });
 ipcMain.on('tp:abort', (_e, { reqId } = {}) => {
   const c = tpReqs.get(reqId);

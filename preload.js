@@ -146,8 +146,11 @@ contextBridge.exposeInMainWorld('lite', {
     dir: () => ipcRenderer.invoke('tp:dir'),
     run: (opts) => ipcRenderer.send('tp:run', opts),
     abort: (reqId) => ipcRenderer.send('tp:abort', { reqId }),
+    onData: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('tp:data', h); return () => ipcRenderer.removeListener('tp:data', h); },
     onDone: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('tp:done', h); return () => ipcRenderer.removeListener('tp:done', h); },
     onError: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('tp:error', h); return () => ipcRenderer.removeListener('tp:error', h); },
+    openFile: () => ipcRenderer.invoke('tp:openFile'),               // → {ok,file,name,content}|{canceled}|{ok:false,error}
+    saveFileAs: (opts) => ipcRenderer.invoke('tp:saveFileAs', opts), // {content,name,ext} → {ok,file,name}|{canceled}|{ok:false,error}
   },
 
   // AI-DB chat (streaming, read-only SQL author) for the «Базы данных» module.
