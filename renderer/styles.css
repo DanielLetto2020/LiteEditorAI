@@ -1451,7 +1451,7 @@ body.preview-split #preview-view { border-left: 1px solid var(--border); }
 .rmq-data { flex: 1; min-height: 0; overflow: auto; display: flex; flex-direction: column; gap: 2px; }
 .rmq-row { display: grid; gap: 8px; align-items: center; padding: 4px 8px; border-radius: 8px; font-size: 12px; color: var(--text); }
 .rmq-row.clickable:hover { background: var(--bg-input); cursor: pointer; }
-.rmq-qgrid { grid-template-columns: minmax(140px, 1fr) 56px 60px 56px 48px 56px 56px auto; }
+.rmq-qgrid { grid-template-columns: minmax(140px, 1fr) 74px 56px 60px 56px 48px 56px 56px auto; }
 .rmq-exgrid { grid-template-columns: minmax(160px, 1fr) 90px 90px auto; }
 .rmq-cngrid { grid-template-columns: minmax(150px, 1fr) minmax(90px, auto) 90px 120px auto; }
 .rmq-head { position: sticky; top: 0; background: var(--panel); color: var(--text-mute); font-size: 10.5px; text-transform: uppercase; letter-spacing: .04em; z-index: 1; }
@@ -1468,7 +1468,20 @@ body.preview-split #preview-view { border-left: 1px solid var(--border); }
 .rmq-badge.ok { color: var(--green); border-color: var(--green); }
 .rmq-badge.err { color: var(--danger); border-color: var(--danger); }
 .rmq-badge.type { color: var(--info); border-color: var(--info); }
+/* спарклайны глубины в списке очередей */
+.rmq-spark { display: inline-flex; align-items: center; gap: 2px; }
+.rmq-spark.dim { color: var(--text-mute); }
+.rmq-spark.bad { color: var(--danger); }
+.rmq-spark.good { color: var(--green); }
+.rmq-spark-svg { width: 68px; height: 16px; flex: 0 0 auto; }
+.rmq-trend { font-size: 11px; font-weight: 700; }
 /* обзор */
+.rmq-ov { display: flex; flex-direction: column; gap: 10px; }
+.rmq-ch-bar { display: flex; align-items: center; gap: 8px; margin-top: 2px; }
+.rmq-ch-title { font-size: 11px; color: var(--text-mute); text-transform: uppercase; letter-spacing: .04em; }
+.rmq-ch-cap { font-size: 11px; color: var(--text-dim); font-weight: 600; margin-top: 2px; }
+.rmq-chart { position: relative; height: 170px; min-height: 170px; background: var(--bg-input); border: 1px solid var(--border); border-radius: 10px; padding: 6px; }
+.rmq-nodes { display: flex; flex-direction: column; gap: 6px; }
 .rmq-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
 .rmq-card { background: var(--bg-input); border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; }
 .rmq-card.alarm { border-color: var(--danger); }

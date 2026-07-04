@@ -5,6 +5,7 @@
 // purge/delete/kill с confirm и PRODUCTION-гардом. Приём заготовки профиля из модуля «Контейнеры».
 // Изоляция по образцу db.js: ядро — через host; UI-хелперы — из ui.js; бэкенд — window.lite.rmq.*.
 import { el, icon, iconBtn, toast, makeModal, showConfirm } from '../ui.js';
+import Chart from 'chart.js/auto';   // уже в бандле (модуль БД), auto-регистрация контроллеров
 
 const $ = (sel) => document.querySelector(sel);
 const lite = window.lite;
@@ -35,6 +36,8 @@ export function initRmq(host) {
   let pollTimer = null, pollBusy = false;
   let peekQ = null;              // имя очереди с открытой панелью сообщений
   let dataBox = null, peekBox = null, statusEl = null, vhostSel = null;
+  let chartAge = 600;            // диапазон графиков обзора, сек (per-профиль, свапается вкладками)
+  let ovEls = null;              // скелет обзора: карточки + Chart-инстансы (строится один раз на маунт)
 
   // --- live-tail: per-профильный объект (свапается вкладками); стрим ЖИВЁТ в фоне у неактивных
   // вкладок — сообщения копятся в msgs (кап 500) и доигрываются при возврате на вкладку/секцию.
@@ -61,6 +64,8 @@ export function initRmq(host) {
     return Math.floor(h / 24) + 'д ' + (h % 24) + 'ч';
   }
   function catHue(name) { let h = 0; for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) % 360; return h; }
+  // токены темы для графиков (правило тем: никакого хардкода — цвета читаем из CSS-переменных)
+  function cssVar(name, fb) { try { const v = getComputedStyle(document.body).getPropertyValue(name).trim(); return v || fb; } catch (_) { return fb; } }
   function badge(txt, title, cls) { const b = el('span', 'rmq-badge' + (cls ? ' ' + cls : ''), txt); if (title) b.title = title; return b; }
   // PRODUCTION-гард поверх обычного confirm для разрушающих действий
   function guardedConfirm(title, msg, btnLabel, run) {
@@ -197,11 +202,11 @@ export function initRmq(host) {
     activeId = c.id; activeConn = (s && s.conn) || c;
     if (s) {
       section = s.section; vhost = s.vhost; vhosts = s.vhosts; filterText = s.filterText;
-      sortKey = s.sortKey; sortDir = s.sortDir; cur = s.cur; peekQ = s.peekQ; tail = s.tail;
+      sortKey = s.sortKey; sortDir = s.sortDir; cur = s.cur; peekQ = s.peekQ; tail = s.tail; chartAge = s.chartAge || 600;
     } else {
       section = 'queues'; filterText = ''; sortKey = 'name'; sortDir = 1;
       vhost = (c.vhost && c.vhost !== '/') ? c.vhost : '';
-      vhosts = []; cur = {}; peekQ = null; tail = freshTail();
+      vhosts = []; cur = {}; peekQ = null; tail = freshTail(); chartAge = 600;
     }
     lastSig = ''; tailEls = null;
     saveOpenSet();
@@ -210,7 +215,7 @@ export function initRmq(host) {
   function saveOpenSet() { rmqUi.openTabs = openProfs.slice(); rmqUi.activeTab = activeId; saveUi(); }
   function snapshotProf() {
     if (!activeId) return;
-    profStates.set(activeId, { conn: activeConn, section, vhost, vhosts, filterText, sortKey, sortDir, cur, peekQ, tail });
+    profStates.set(activeId, { conn: activeConn, section, vhost, vhosts, filterText, sortKey, sortDir, cur, peekQ, tail, chartAge });
   }
   function closeProfTab(id) {
     const st = profStates.get(id);
@@ -436,6 +441,7 @@ export function initRmq(host) {
   // которую полл перерисовывает только при изменении данных (сигнатура).
   function mountSection() {
     const box = document.getElementById('rmq-secbox'); if (!box) return;
+    destroyOvCharts(); // Chart-инстансы обзора не должны пережить перемонтаж секции
     box.innerHTML = ''; dataBox = null; peekBox = null; tailEls = null; lastSig = ''; // tail НЕ стопаем — живёт в фоне
     if (section === 'tail') { stopPoll(); mountTail(box); return; }
     if (section === 'queues' || section === 'exchanges' || section === 'connections') {
@@ -471,8 +477,8 @@ export function initRmq(host) {
     const id = activeId, sec = section, seq = ++renderSeq;
     let r, err = null;
     try {
-      if (sec === 'overview') r = await lite.rmq.overview(id);
-      else if (sec === 'queues') r = await lite.rmq.queues(id, vhost);
+      if (sec === 'overview') r = await lite.rmq.overview(id, chartAge);
+      else if (sec === 'queues') r = await lite.rmq.queues(id, vhost, true); // + спарклайны глубины
       else if (sec === 'exchanges') r = await lite.rmq.exchanges(id, vhost);
       else r = await lite.rmq.connections(id);
       if (r && r.error) err = r.error;
@@ -481,19 +487,21 @@ export function initRmq(host) {
     if (activeId !== id || section !== sec || !dataBox) return; // контекст сменился во время запроса
     if (err) {
       setStatus(false, err);
-      if (!silent || !dataBox.querySelector('[data-k], .rmq-cards')) { dataBox.innerHTML = ''; dataBox.appendChild(el('div', 'docker-err', err)); lastSig = ''; }
+      if (!silent || !dataBox.querySelector('[data-k], .rmq-ov')) { destroyOvCharts(); dataBox.innerHTML = ''; dataBox.appendChild(el('div', 'docker-err', err)); lastSig = ''; }
       return;
     }
     setStatus(true);
-    cur[sec] = sec === 'overview' ? r : (r.items || []);
+    if (sec === 'overview') { cur.overview = r; renderOverviewLive(); return; } // графики обновляются in-place, без пересборки DOM
+    cur[sec] = r.items || [];
     const sig = JSON.stringify(cur[sec]);
     if (sig !== lastSig || seq === renderSeq && !dataBox.childElementCount) { lastSig = sig; renderData(); }
   }
 
   function renderData() {
     if (!dataBox) return;
+    if (section === 'overview') return renderOverviewLive();
+    const scroll0 = dataBox.scrollTop; // спарклайны меняются каждый полл → перерисовка не должна сбивать скролл
     dataBox.innerHTML = '';
-    if (section === 'overview') return renderOverview(dataBox, cur.overview);
     const q = (filterText || '').toLowerCase();
     if (section === 'queues') {
       let items = (cur.queues || []).filter((x) => !q || x.name.toLowerCase().includes(q));
@@ -506,6 +514,7 @@ export function initRmq(host) {
       const items = (cur.connections || []).filter((x) => !q || (x.client + x.user + x.peer).toLowerCase().includes(q));
       renderConnections(dataBox, items);
     }
+    dataBox.scrollTop = scroll0;
   }
   function sortItems(items) {
     const k = sortKey, d = sortDir;
@@ -516,39 +525,114 @@ export function initRmq(host) {
     });
   }
 
-  // ---------------------------------------------------------------- Обзор
-  function card(title, value, sub, alarm) {
-    const cEl = el('div', 'rmq-card' + (alarm ? ' alarm' : ''));
-    cEl.append(el('div', 'rmq-card-t', title), el('div', 'rmq-card-v', value));
-    if (sub) cEl.appendChild(el('div', 'rmq-card-s', sub));
-    return cEl;
+  // ---------------------------------------------------------------- Обзор (KPI + графики)
+  // Скелет строится один раз на маунт секции; полл обновляет значения и точки графиков
+  // in-place (Chart.update без анимации) — DOM не пересобирается, ничего не мигает.
+  function destroyOvCharts() {
+    if (ovEls) { for (const ch of [ovEls.chLen, ovEls.chRate]) { try { ch && ch.destroy(); } catch (_) {} } }
+    ovEls = null;
   }
-  function renderOverview(box, ov) {
-    if (!ov) { box.appendChild(el('div', 'docker-empty', 'Нет данных.')); return; }
+  function renderOverviewLive() {
+    if (!dataBox || section !== 'overview') return;
+    if (!ovEls || !dataBox.contains(ovEls.root)) buildOverview(dataBox);
+    updateOverview(cur.overview);
+  }
+  function buildOverview(box) {
+    destroyOvCharts();
+    box.innerHTML = '';
+    const root = el('div', 'rmq-ov');
     const cards = el('div', 'rmq-cards');
-    cards.append(
-      card('Сообщений', fmtN(ov.messages), `ready ${fmtN(ov.ready)} · unacked ${fmtN(ov.unacked)}`),
-      card('Publish', fmtRate(ov.rates.publish) + '/с', 'входящий поток'),
-      card('Deliver', fmtRate(ov.rates.deliver) + '/с', `ack ${fmtRate(ov.rates.ack)}/с`),
-      card('Очереди', fmtN(ov.totals.queues), `exchanges ${fmtN(ov.totals.exchanges)}`),
-      card('Подключения', fmtN(ov.totals.connections), `каналы ${fmtN(ov.totals.channels)} · консюмеры ${fmtN(ov.totals.consumers)}`),
-    );
-    box.appendChild(cards);
-    const meta = el('div', 'rmq-meta');
-    meta.append(el('span', null, `RabbitMQ ${ov.version}`), el('span', null, `Erlang ${ov.erlang}`), el('span', null, ov.cluster || ov.node || ''));
-    box.appendChild(meta);
-    for (const n of (ov.nodes || [])) {
-      const row = el('div', 'rmq-node' + (n.memAlarm || n.diskAlarm ? ' alarm' : ''));
-      row.append(
-        el('span', 'rmq-node-name', n.name),
-        badge(n.running ? 'running' : 'down', '', n.running ? 'ok' : 'err'),
-        el('span', 'rmq-node-kv', `память ${fmtB(n.memUsed)} / ${fmtB(n.memLimit)}${n.memAlarm ? ' ⚠ ALARM' : ''}`),
-        el('span', 'rmq-node-kv', `диск свободно ${fmtB(n.diskFree)} (лимит ${fmtB(n.diskLimit)})${n.diskAlarm ? ' ⚠ ALARM' : ''}`),
-        el('span', 'rmq-node-kv', `fd ${fmtN(n.fdUsed)}/${fmtN(n.fdTotal)}`),
-        el('span', 'rmq-node-kv', `аптайм ${fmtUp(n.uptime)}`),
-      );
-      box.appendChild(row);
+    const mkCard = (title) => {
+      const cEl = el('div', 'rmq-card');
+      cEl.appendChild(el('div', 'rmq-card-t', title));
+      const v = el('div', 'rmq-card-v', '—'); const s = el('div', 'rmq-card-s', '');
+      cEl.append(v, s); cards.appendChild(cEl);
+      return { v, s };
+    };
+    const cMsg = mkCard('Сообщений'), cPub = mkCard('Publish'), cDel = mkCard('Deliver'), cQ = mkCard('Очереди'), cCon = mkCard('Подключения');
+    root.appendChild(cards);
+    // диапазон графиков — как в стандартном UI (retention-политики: 10м/1ч/8ч/24ч)
+    const chBar = el('div', 'rmq-ch-bar');
+    chBar.appendChild(el('span', 'rmq-ch-title', 'Графики'));
+    const rangeSel = el('select', 'rmq-peek-cnt');
+    for (const [a, lbl] of [[600, '10 минут'], [3600, '1 час'], [28800, '8 часов'], [86400, '24 часа']]) rangeSel.appendChild(new Option(lbl, a, a === chartAge, a === chartAge));
+    rangeSel.onchange = () => { chartAge = +rangeSel.value; loadSection(false); };
+    chBar.appendChild(rangeSel);
+    root.appendChild(chBar);
+    const wrapLen = el('div', 'rmq-chart'); const cvLen = document.createElement('canvas'); wrapLen.appendChild(cvLen);
+    const wrapRate = el('div', 'rmq-chart'); const cvRate = document.createElement('canvas'); wrapRate.appendChild(cvRate);
+    root.append(el('div', 'rmq-ch-cap', 'Сообщения в очередях'), wrapLen, el('div', 'rmq-ch-cap', 'Скорости, сообщ./с'), wrapRate);
+    root.appendChild(el('div', 'rmq-ch-cap', 'Ноды'));
+    const nodesBox = el('div', 'rmq-nodes'); root.appendChild(nodesBox);
+    const meta = el('div', 'rmq-meta'); root.appendChild(meta);
+    box.appendChild(root);
+    // тонкие линии, рецессивная сетка, легенда снизу, crosshair-тултип; цвета — токены темы,
+    // соответствие серия→цвет фиксировано (смена диапазона серии не перекрашивает)
+    const mkChart = (canvas, series) => new Chart(canvas, {
+      type: 'line',
+      data: { labels: [], datasets: series.map((s0) => ({ label: s0.label, data: [], borderColor: s0.color, backgroundColor: s0.color, borderWidth: 2, pointRadius: 0, pointHitRadius: 8, tension: 0.25, fill: false, spanGaps: true })) },
+      options: {
+        responsive: true, maintainAspectRatio: false, animation: false, normalized: true,
+        interaction: { mode: 'index', intersect: false },
+        plugins: {
+          legend: { position: 'bottom', labels: { color: cssVar('--text-dim', '#8d949d'), boxWidth: 10, boxHeight: 10, font: { size: 10 } } },
+          tooltip: { mode: 'index', intersect: false },
+        },
+        scales: {
+          x: { ticks: { color: cssVar('--text-mute', '#626a73'), font: { size: 9 }, maxTicksLimit: 8, maxRotation: 0, autoSkip: true }, grid: { color: cssVar('--border', 'rgba(128,128,128,.08)') } },
+          y: { beginAtZero: true, ticks: { color: cssVar('--text-mute', '#626a73'), font: { size: 9 }, maxTicksLimit: 5 }, grid: { color: cssVar('--border', 'rgba(128,128,128,.08)') } },
+        },
+      },
+    });
+    const chLen = mkChart(cvLen, [
+      { label: 'Ready', color: cssVar('--info', '#7aa2f7') },
+      { label: 'Unacked', color: cssVar('--warn', '#e0af68') },
+    ]);
+    const chRate = mkChart(cvRate, [
+      { label: 'Publish', color: cssVar('--green', '#34d399') },
+      { label: 'Deliver', color: cssVar('--info', '#7aa2f7') },
+      { label: 'Ack', color: cssVar('--add', '#9ece6a') },
+      { label: 'Redeliver', color: cssVar('--danger', '#f7768e') },
+    ]);
+    ovEls = { root, cMsg, cPub, cDel, cQ, cCon, rangeSel, chLen, chRate, nodesBox, meta, nodesSig: '' };
+  }
+  function updateOverview(ov) {
+    if (!ovEls || !ov) return;
+    ovEls.cMsg.v.textContent = fmtN(ov.messages); ovEls.cMsg.s.textContent = `ready ${fmtN(ov.ready)} · unacked ${fmtN(ov.unacked)}`;
+    ovEls.cPub.v.textContent = fmtRate(ov.rates.publish) + '/с'; ovEls.cPub.s.textContent = 'входящий поток';
+    ovEls.cDel.v.textContent = fmtRate(ov.rates.deliver) + '/с'; ovEls.cDel.s.textContent = `ack ${fmtRate(ov.rates.ack)}/с`;
+    ovEls.cQ.v.textContent = fmtN(ov.totals.queues); ovEls.cQ.s.textContent = `exchanges ${fmtN(ov.totals.exchanges)}`;
+    ovEls.cCon.v.textContent = fmtN(ov.totals.connections); ovEls.cCon.s.textContent = `каналы ${fmtN(ov.totals.channels)} · консюмеры ${fmtN(ov.totals.consumers)}`;
+    const se = ov.series || {};
+    const fmtT = (t) => { const d = new Date(t); const s = d.toTimeString(); return chartAge > 3600 ? s.slice(0, 5) : s.slice(0, 8); };
+    const apply = (chart, seriesArr) => {
+      const base = seriesArr.reduce((a, b) => (b.length > a.length ? b : a), []);
+      chart.data.labels = base.map((p) => fmtT(p.t));
+      // серии одного графика идут по одной сэмпл-сетке; rate-серии на 1 точку короче — выравниваем с конца
+      seriesArr.forEach((s0, i) => { const pad = base.length - s0.length; chart.data.datasets[i].data = [...new Array(Math.max(0, pad)).fill(null), ...s0.map((p) => p.v)]; });
+      chart.update('none');
+    };
+    const L = se.lengths || {}, R = se.rates || {};
+    apply(ovEls.chLen, [L.ready || [], L.unacked || []]);
+    apply(ovEls.chRate, [R.publish || [], R.deliver || [], R.ack || [], R.redeliver || []]);
+    const nSig = JSON.stringify(ov.nodes || []);
+    if (nSig !== ovEls.nodesSig) { // ноды меняются редко — пересобираем только по факту
+      ovEls.nodesSig = nSig;
+      ovEls.nodesBox.innerHTML = '';
+      for (const n of (ov.nodes || [])) {
+        const row = el('div', 'rmq-node' + (n.memAlarm || n.diskAlarm ? ' alarm' : ''));
+        row.append(
+          el('span', 'rmq-node-name', n.name),
+          badge(n.running ? 'running' : 'down', '', n.running ? 'ok' : 'err'),
+          el('span', 'rmq-node-kv', `память ${fmtB(n.memUsed)} / ${fmtB(n.memLimit)}${n.memAlarm ? ' ⚠ ALARM' : ''}`),
+          el('span', 'rmq-node-kv', `диск свободно ${fmtB(n.diskFree)} (лимит ${fmtB(n.diskLimit)})${n.diskAlarm ? ' ⚠ ALARM' : ''}`),
+          el('span', 'rmq-node-kv', `fd ${fmtN(n.fdUsed)}/${fmtN(n.fdTotal)}`),
+          el('span', 'rmq-node-kv', `аптайм ${fmtUp(n.uptime)}`),
+        );
+        ovEls.nodesBox.appendChild(row);
+      }
     }
+    ovEls.meta.textContent = `RabbitMQ ${ov.version} · Erlang ${ov.erlang}${ov.cluster ? ' · ' + ov.cluster : ''}`;
   }
 
   // ---------------------------------------------------------------- Очереди
@@ -556,13 +640,40 @@ export function initRmq(host) {
     ['name', 'Очередь'], ['ready', 'Ready'], ['unacked', 'Unacked'], ['messages', 'Всего'],
     ['consumers', 'Конс.'], ['inRate', 'In/с'], ['outRate', 'Out/с'],
   ];
+  // Спарклайн глубины очереди (12 точек за 2 мин, инлайн-SVG — дёшево для сотен строк).
+  // Тревога = рост при ready>0 (красный + ↑), спад = зелёный + ↓; стрелка — вторичное
+  // кодирование, чтобы смысл не держался на одном цвете.
+  function sparkCell(qi) {
+    const cell = el('span', 'rmq-cell rmq-spark');
+    const vals = (qi.spark || []).map((p) => p.v);
+    if (vals.length < 2) { cell.textContent = '—'; cell.classList.add('dim'); return cell; }
+    const min = Math.min(...vals), max = Math.max(...vals);
+    const W = 68, H = 16;
+    const pts = vals.map((v, i) =>
+      `${(i / (vals.length - 1) * W).toFixed(1)},${(H - 2 - (max === min ? (H - 4) / 2 : (v - min) / (max - min) * (H - 4))).toFixed(1)}`).join(' ');
+    const NS = 'http://www.w3.org/2000/svg';
+    const svg = document.createElementNS(NS, 'svg');
+    svg.setAttribute('viewBox', `0 0 ${W} ${H}`); svg.setAttribute('class', 'rmq-spark-svg');
+    const pl = document.createElementNS(NS, 'polyline');
+    pl.setAttribute('points', pts); pl.setAttribute('fill', 'none'); pl.setAttribute('stroke', 'currentColor'); pl.setAttribute('stroke-width', '1.5');
+    svg.appendChild(pl);
+    cell.appendChild(svg);
+    const first = vals[0], last = vals[vals.length - 1];
+    const grow = last > first * 1.1 && last - first >= 5;
+    const fall = first > last * 1.1 && first - last >= 5;
+    if (grow && qi.ready > 0) { cell.classList.add('bad'); cell.title = `Глубина растёт: ${first} → ${last} за 2 мин`; cell.appendChild(el('span', 'rmq-trend', '↑')); }
+    else if (fall) { cell.classList.add('good'); cell.title = `Глубина падает: ${first} → ${last} за 2 мин`; cell.appendChild(el('span', 'rmq-trend', '↓')); }
+    else { cell.classList.add('dim'); cell.title = `Глубина за 2 мин: ${min}…${max}`; }
+    return cell;
+  }
   function renderQueues(box, items) {
     const headRow = el('div', 'rmq-row rmq-qgrid rmq-head');
-    for (const [k, t] of Q_COLS) {
+    Q_COLS.forEach(([k, t], idx) => {
       const hCell = el('span', 'rmq-cell rmq-sortable' + (sortKey === k ? ' on' : ''), t + (sortKey === k ? (sortDir > 0 ? ' ↑' : ' ↓') : ''));
       hCell.onclick = () => { if (sortKey === k) sortDir = -sortDir; else { sortKey = k; sortDir = k === 'name' ? 1 : -1; } renderData(); };
       headRow.appendChild(hCell);
-    }
+      if (idx === 0) headRow.appendChild(el('span', 'rmq-cell', 'Тренд')); // колонка спарклайнов (не сортируется)
+    });
     headRow.appendChild(el('span', 'rmq-cell', ''));
     box.appendChild(headRow);
     if (!items.length) { box.appendChild(el('div', 'docker-empty', filterText ? 'Ничего не найдено.' : 'Нет очередей.')); return; }
@@ -578,7 +689,9 @@ export function initRmq(host) {
       if (qi.exclusive) nameCell.appendChild(badge('Excl', 'exclusive'));
       if (qi.dlx) nameCell.appendChild(badge('DLX', 'dead-letter exchange: ' + qi.dlx, 'warn'));
       if (qi.ttl != null) nameCell.appendChild(badge('TTL', 'message TTL: ' + qi.ttl + ' мс'));
+      if (qi.ready > 0 && !qi.consumers) nameCell.appendChild(badge('нет консюмеров', 'в очереди есть сообщения, но их никто не читает', 'err'));
       row.appendChild(nameCell);
+      row.appendChild(sparkCell(qi));
       row.appendChild(el('span', 'rmq-cell num' + (qi.ready ? '' : ' dim'), fmtN(qi.ready)));
       row.appendChild(el('span', 'rmq-cell num' + (qi.unacked ? ' warn' : ' dim'), fmtN(qi.unacked)));
       row.appendChild(el('span', 'rmq-cell num' + (qi.messages ? '' : ' dim'), fmtN(qi.messages)));
