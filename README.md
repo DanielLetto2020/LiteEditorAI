@@ -188,6 +188,19 @@ npm start          # сборка фронта + запуск
 **Alpha** — активно дорабатывается. Несколько терминалов-вкладок на проект (имена переживают перезапуск,
 сами процессы — нет). Баги и идеи — в [Issues](https://github.com/DanielLetto2020/LiteEditorAI/issues).
 
+## Благодарности
+
+Проект развивается в том числе благодаря сообществу — спасибо каждому, кто помогает.
+
+**За pull request'ы**
+- [@Ainour108](https://github.com/Ainour108) — редизайн модуля «Обработка текста»: сайдбар с деревом документов, вкладки, живой стриминг ответа агента, нативные диалоги файлов ([#6](https://github.com/DanielLetto2020/LiteEditorAI/pull/6))
+
+**За баг-репорты**
+- [@Eurgen](https://github.com/Eurgen) — emoji в статус-строке ([#1](https://github.com/DanielLetto2020/LiteEditorAI/issues/1)), падение из-за отсутствующего файла в дистрибутиве ([#5](https://github.com/DanielLetto2020/LiteEditorAI/issues/5))
+
+**За идеи и предложения**
+- [@Eurgen](https://github.com/Eurgen) — выбор оболочки терминала ([#2](https://github.com/DanielLetto2020/LiteEditorAI/issues/2)), перенос строки по `Ctrl+Enter` ([#4](https://github.com/DanielLetto2020/LiteEditorAI/issues/4)) и другие предложения ([#3](https://github.com/DanielLetto2020/LiteEditorAI/issues/3))
+
 ## Лицензия
 
 [Apache License 2.0](LICENSE) © 2026 Максим Кузьминский. При использовании и в производных работах
