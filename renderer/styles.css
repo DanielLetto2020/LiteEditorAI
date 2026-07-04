@@ -1494,6 +1494,16 @@ body.preview-split #preview-view { border-left: 1px solid var(--border); }
 .rmq-msg-body { margin: 6px 0 0; font-size: 11.5px; max-height: 180px; overflow: auto; white-space: pre-wrap; word-break: break-word; background: var(--bg-input); border-radius: 6px; padding: 6px 8px; }
 .rmq-msg-props { display: flex; flex-direction: column; gap: 2px; margin-top: 4px; font-size: 10.5px; color: var(--text-mute); }
 .rmq-peek-note { font-size: 10.5px; color: var(--text-mute); padding: 2px; }
+/* live-tail */
+.rmq-tail-ex { max-width: 220px; background: var(--bg-input); color: var(--text); border: 1px solid var(--border); border-radius: 7px; padding: 4px 6px; font-size: 12px; }
+.rmq-tail-btn { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+.rmq-tail-cnt { flex: 0 0 auto; font-size: 11px; color: var(--text-mute); font-variant-numeric: tabular-nums; }
+.rmq-tail-note { font-size: 10.5px; color: var(--text-mute); padding: 0 2px; }
+.rmq-tail-list { gap: 4px; }
+.rmq-msg.rmq-tl { cursor: pointer; }
+.rmq-msg.rmq-tl:hover { border-color: var(--border-strong); }
+.rmq-tl-prev { font-size: 11px; color: var(--text-mute); font-family: "JetBrains Mono", Consolas, monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: 3px; }
+.drow-act.on { color: var(--warn); border-color: var(--warn); }
 /* публикация */
 .rmq-payload { width: 100%; resize: vertical; background: var(--bg-input); color: var(--text); border: 1px solid var(--border); border-radius: 7px; padding: 6px 8px; font-family: "JetBrains Mono", Consolas, monospace; font-size: 12px; }
 .rmq-pl-row { display: flex; align-items: center; justify-content: space-between; }

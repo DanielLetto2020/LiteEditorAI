@@ -439,6 +439,11 @@ contextBridge.exposeInMainWorld('lite', {
     purge: (id, vhost, queue) => ipcRenderer.invoke('rmq:purge', { id, vhost, queue }),
     deleteQueue: (id, vhost, queue) => ipcRenderer.invoke('rmq:deleteQueue', { id, vhost, queue }),
     killConnection: (id, name) => ipcRenderer.invoke('rmq:killConnection', { id, name }),
+    // live-tail exchange: временная очередь → стрим сообщений в окно
+    tailStart: (id, vhost, exchange, routingKey, streamId) => ipcRenderer.invoke('rmq:tailStart', { id, vhost, exchange, routingKey, streamId }),
+    tailStop: (streamId) => ipcRenderer.send('rmq:tailStop', { streamId }),
+    onTailData: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('rmq:tailData', h); return () => ipcRenderer.removeListener('rmq:tailData', h); },
+    onTailExit: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('rmq:tailExit', h); return () => ipcRenderer.removeListener('rmq:tailExit', h); },
     // «Контейнеры» → RabbitMQ: маршрут через main (окно откроется само, очередь до готовности)
     openFromContainer: (payload) => ipcRenderer.send('rmq:openFromContainer', payload),
     onOpenFromContainer: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('rmq:openFromContainer', h); return () => ipcRenderer.removeListener('rmq:openFromContainer', h); },
