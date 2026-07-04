@@ -1668,6 +1668,7 @@ body.preview-split #preview-view { border-left: 1px solid var(--border); }
 .db-conndd-new { border-top: 1px solid var(--border); border-radius: 0 0 7px 7px; color: var(--text-mute); }
 .db-conndd-new:hover { color: var(--text); }
 .db-conndd-load { padding: 8px; font-size: 11.5px; color: var(--text-mute); }
+.db-ctab-live { display: inline-flex; align-items: center; color: var(--warn); flex: 0 0 auto; } /* на вкладке идёт live-tail */
 
 .db-status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-mute); flex: 0 0 auto; cursor: pointer; }
 .db-status-dot.ok { background: var(--green-bright); box-shadow: 0 0 5px var(--green-bright); }

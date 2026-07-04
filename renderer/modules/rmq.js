@@ -16,6 +16,11 @@ export function initRmq(host) {
   let connsList = [], secure = true;
   let activeId = null, activeConn = null;
   let renderSeq = 0;
+  let restoredOnce = false;
+  // ---- вкладки профилей: несколько открытых брокеров одновременно (модель как в «Базах данных»)
+  let openProfs = [];             // порядок вкладок: [profileId]
+  let profListMode = false;       // при открытых вкладках показать список профилей («домой»)
+  const profStates = new Map();   // profileId -> снапшот воркспейса (секция/vhost/данные/tail)
   let rmqUi = (STORE.rmqUi && typeof STORE.rmqUi === 'object') ? STORE.rmqUi : {};
   const saveUi = () => persist('rmqUi', rmqUi);
 
@@ -31,14 +36,14 @@ export function initRmq(host) {
   let peekQ = null;              // имя очереди с открытой панелью сообщений
   let dataBox = null, peekBox = null, statusEl = null, vhostSel = null;
 
-  // --- live-tail state
-  let tailId = null;             // streamId активного прослушивания (null = не слушаем)
+  // --- live-tail: per-профильный объект (свапается вкладками); стрим ЖИВЁТ в фоне у неактивных
+  // вкладок — сообщения копятся в msgs (кап 500) и доигрываются при возврате на вкладку/секцию.
   let tailUid = 0;
-  let tailPaused = false;
-  let tailBuf = [];              // сообщения, накопленные на паузе (кап 1000)
-  let tailCount = 0;
-  let tailEls = null;            // { exSel, pat, startBtn, pauseBtn, list, counter, note }
-  let tailPreset = null;         // { exchange, vhost } — автозапуск из строки exchange
+  let tailEls = null;            // DOM активной секции tail (null вне секции)
+  let tailPreset = null;         // { exchange } — автозапуск из строки exchange
+  const freshTail = () => ({ id: null, paused: false, buf: [], count: 0, msgs: [], exchange: '', pattern: '#', note: '' });
+  let tail = freshTail();        // tail АКТИВНОГО профиля
+  const tailStreams = new Map(); // streamId -> tail-объект своего профиля (роутинг фоновых сообщений)
 
   // ---------------------------------------------------------------- helpers
   const fmtN = (n) => n == null ? '—' : n >= 1e6 ? (n / 1e6).toFixed(1) + 'M' : n >= 1e4 ? (n / 1e3).toFixed(1) + 'k' : String(n);
@@ -72,7 +77,7 @@ export function initRmq(host) {
   function setRmqOpen(open, opts = {}) {
     if (open === rmqOpen) { if (open) renderPanel(); return; }
     if (open) closeOtherPanels('rmq');
-    else { stopPoll(); stopTail(); }
+    else { stopPoll(); stopAllTails(); }
     const delta = layout.rmq + GUTTER;
     rmqOpen = open;
     $('#rmq-pane').classList.toggle('hidden', !open);
@@ -88,15 +93,33 @@ export function initRmq(host) {
   async function renderPanel() {
     const seq = ++renderSeq;
     const body = $('#rmq-body');
-    if (!activeId) {
+    if (!activeId || profListMode) {
       stopPoll();
       body.innerHTML = '<div class="git-loading">Загрузка профилей…</div>';
       try { const r = await lite.rmq.list(); connsList = r.connections || []; secure = r.secure !== false; }
       catch (_) { connsList = []; }
       if (seq !== renderSeq || !rmqOpen) return;
-      renderProfiles(body);
+      if (!restoredOnce) { // восстановление набора вкладок прошлого запуска
+        restoredOnce = true;
+        const ids = (Array.isArray(rmqUi.openTabs) ? rmqUi.openTabs : []).filter((id) => connsList.some((c) => c.id === id));
+        if (ids.length && !profListMode) {
+          openProfs = ids;
+          const actId = (rmqUi.activeTab && ids.includes(rmqUi.activeTab)) ? rmqUi.activeTab : ids[ids.length - 1];
+          const act = connsList.find((c) => c.id === actId);
+          if (act) { openProfile(act); return; }
+        }
+      }
+      body.innerHTML = '';
+      renderProfStrip(body);
+      const wrap = el('div', 'db-list-wrap');
+      body.appendChild(wrap);
+      renderProfiles(wrap);
     } else {
-      renderWorkspace(body);
+      body.innerHTML = '';
+      renderProfStrip(body);
+      const wrap = el('div', 'db-ws-wrap');
+      body.appendChild(wrap);
+      renderWorkspace(wrap);
     }
   }
 
@@ -143,21 +166,124 @@ export function initRmq(host) {
     main.appendChild(el('span', 'drow-name', c.name || '(без имени)'));
     main.appendChild(el('span', 'drow-sub', `${c.host || '127.0.0.1'}:${c.port || 15672} · vhost ${c.vhost || '/'} · ${c.user || 'guest'}${c.isProd ? ' · PROD' : ''}`));
     row.appendChild(main);
+    if (openProfs.includes(c.id)) row.appendChild(el('span', 'db-ro-badge', 'открыто'));
     const acts = el('div', 'drow-acts');
     const edit = iconBtn('drow-act', 'pencil', 'Изменить', 13); edit.onclick = (e) => { e.stopPropagation(); connModal(c); };
     const del = iconBtn('drow-act danger', 'trash', 'Удалить', 13);
-    del.onclick = (e) => { e.stopPropagation(); showConfirm('Удалить профиль?', `«${c.name}» удалится из списка (сам сервер не трогается).`, 'Удалить', async () => { await lite.rmq.delete(c.id); renderPanel(); }); };
+    del.onclick = (e) => { e.stopPropagation(); showConfirm('Удалить профиль?', `«${c.name}» удалится из списка (сам сервер не трогается).`, 'Удалить', async () => {
+      await lite.rmq.delete(c.id);
+      const st = profStates.get(c.id);
+      const tl = activeId === c.id ? tail : (st && st.tail);
+      if (tl) stopTail(tl); // вкладку и её фоновый стрим тоже закрываем
+      openProfs = openProfs.filter((x) => x !== c.id); profStates.delete(c.id);
+      if (activeId === c.id) { activeId = null; activeConn = null; cur = {}; tail = freshTail(); tailEls = null; }
+      saveOpenSet();
+      renderPanel();
+    }); };
     acts.append(edit, del); row.appendChild(acts);
     row.addEventListener('click', () => openProfile(c));
     return row;
   }
 
+  // Открыть/активировать вкладку профиля. Состояние (секция/vhost/данные/tail) — из памяти,
+  // если уже открывали; live-tail неактивной вкладки продолжает копить сообщения в фоне.
   function openProfile(c) {
-    activeId = c.id; activeConn = c;
-    section = 'queues'; filterText = ''; sortKey = 'name'; sortDir = 1;
-    vhost = (c.vhost && c.vhost !== '/') ? c.vhost : '';
-    vhosts = []; cur = {}; lastSig = ''; peekQ = null;
+    if (activeId === c.id && !profListMode) { renderPanel(); return; }
+    if (activeId) snapshotProf();
+    stopPoll();
+    profListMode = false;
+    if (!openProfs.includes(c.id)) openProfs.push(c.id);
+    const s = profStates.get(c.id);
+    activeId = c.id; activeConn = (s && s.conn) || c;
+    if (s) {
+      section = s.section; vhost = s.vhost; vhosts = s.vhosts; filterText = s.filterText;
+      sortKey = s.sortKey; sortDir = s.sortDir; cur = s.cur; peekQ = s.peekQ; tail = s.tail;
+    } else {
+      section = 'queues'; filterText = ''; sortKey = 'name'; sortDir = 1;
+      vhost = (c.vhost && c.vhost !== '/') ? c.vhost : '';
+      vhosts = []; cur = {}; peekQ = null; tail = freshTail();
+    }
+    lastSig = ''; tailEls = null;
+    saveOpenSet();
     renderPanel();
+  }
+  function saveOpenSet() { rmqUi.openTabs = openProfs.slice(); rmqUi.activeTab = activeId; saveUi(); }
+  function snapshotProf() {
+    if (!activeId) return;
+    profStates.set(activeId, { conn: activeConn, section, vhost, vhosts, filterText, sortKey, sortDir, cur, peekQ, tail });
+  }
+  function closeProfTab(id) {
+    const st = profStates.get(id);
+    const tl = id === activeId ? tail : (st && st.tail);
+    if (tl) stopTail(tl); // фоновый стрим закрываем вместе с вкладкой
+    const wasActive = id === activeId;
+    openProfs = openProfs.filter((x) => x !== id);
+    profStates.delete(id);
+    if (wasActive) {
+      stopPoll();
+      activeId = null; activeConn = null; cur = {}; peekQ = null; tail = freshTail(); tailEls = null;
+      const nextId = openProfs[openProfs.length - 1];
+      if (nextId) {
+        const ns = profStates.get(nextId);
+        const next = (ns && ns.conn) || connsList.find((x) => x.id === nextId);
+        if (next) { saveOpenSet(); openProfile(next); return; }
+      }
+      profListMode = false;
+    }
+    saveOpenSet();
+    renderPanel();
+  }
+  // Полоса вкладок-профилей (классы переиспользуем из БД: db-conn-strip / db-ctab / db-conndd).
+  function renderProfStrip(hostEl) {
+    if (!openProfs.length) return;
+    const strip = el('div', 'db-conn-strip');
+    for (const id of openProfs) {
+      const st = profStates.get(id);
+      const c = (activeId === id ? activeConn : (st && st.conn)) || connsList.find((x) => x.id === id) || { id, name: '…' };
+      const tl = activeId === id ? tail : (st && st.tail);
+      const tab = el('div', 'db-ctab' + (id === activeId && !profListMode ? ' on' : ''));
+      const dot = el('span', 'db-ctab-dot'); if (c.color) dot.style.background = c.color;
+      tab.append(dot, el('span', 'db-ctab-name', c.name || id));
+      if (tl && tl.id) { const live = el('span', 'db-ctab-live'); live.appendChild(icon('play', 10)); live.title = 'Live-tail работает в фоне'; tab.appendChild(live); }
+      const x = iconBtn('db-ctab-x', 'x', 'Закрыть вкладку (её live-tail остановится)', 11);
+      x.onclick = (e) => { e.stopPropagation(); closeProfTab(id); };
+      tab.appendChild(x);
+      tab.onclick = () => { if (id !== activeId || profListMode) openProfile(c); };
+      strip.appendChild(tab);
+    }
+    const add = iconBtn('db-ctab-add', 'plus', 'Открыть ещё профиль…', 14);
+    add.onclick = (e) => { e.stopPropagation(); profDropdown(add); };
+    strip.appendChild(add);
+    hostEl.appendChild(strip);
+  }
+  function closeProfDd() { const d = document.getElementById('rmq-conndd'); if (d) d.remove(); }
+  async function profDropdown(anchor) {
+    closeProfDd();
+    const dd = el('div', 'db-conndd'); dd.id = 'rmq-conndd';
+    dd.appendChild(el('div', 'db-conndd-load', 'Загружаю…'));
+    document.body.appendChild(dd);
+    const r0 = anchor.getBoundingClientRect();
+    dd.style.left = Math.max(8, Math.min(r0.left, window.innerWidth - 300)) + 'px';
+    dd.style.top = (r0.bottom + 4) + 'px';
+    setTimeout(() => document.addEventListener('click', closeProfDd, { once: true }), 0);
+    let list = connsList;
+    try { const r = await lite.rmq.list(); list = r.connections || []; connsList = list; } catch (_) {}
+    if (!document.getElementById('rmq-conndd')) return; // успели закрыть, пока грузился список
+    dd.innerHTML = '';
+    for (const c of list) {
+      const row = el('div', 'db-conndd-row');
+      const dot = el('span', 'db-ctab-dot'); if (c.color) dot.style.background = c.color;
+      row.append(dot, el('span', 'db-conndd-name', c.name || '(без имени)'));
+      row.appendChild(el('span', 'db-conndd-sub', `${c.host || '127.0.0.1'}:${c.port || 15672}`));
+      if (openProfs.includes(c.id)) row.appendChild(el('span', 'db-conndd-mark', 'открыто'));
+      row.onclick = () => { closeProfDd(); openProfile(c); };
+      dd.appendChild(row);
+    }
+    if (!list.length) dd.appendChild(el('div', 'db-conndd-load', 'Нет сохранённых профилей'));
+    const nw = el('div', 'db-conndd-row db-conndd-new');
+    nw.append(icon('plus', 13), el('span', 'db-conndd-name', 'Новый профиль…'));
+    nw.onclick = () => { closeProfDd(); connModal(null); };
+    dd.appendChild(nw);
   }
 
   // ---------------------------------------------------------------- profile modal
@@ -236,11 +362,12 @@ export function initRmq(host) {
   async function openFromContainer(payload) {
     const p = payload && payload.prefill;
     if (!p || !p.name) return;
+    restoredOnce = true; // явное намерение юзера главнее авто-восстановления вкладок
     let list = [];
     try { const r = await lite.rmq.list(); list = r.connections || []; connsList = list; secure = r.secure !== false; } catch (_) {}
     const existing = list.find((x) => x.source && x.source === p.source);
     if (existing) { toast(`Переключаюсь на «${existing.name}»`, { ttl: 2200 }); openProfile(existing); return; } // повтор клика = переключение
-    const toList = () => { stopPoll(); activeId = null; activeConn = null; renderPanel(); };
+    const toList = () => { if (activeId) { stopPoll(); snapshotProf(); } profListMode = true; renderPanel(); };
     const draft = { ...p };
     toast(`Проверяю подключение к «${draft.name}»…`, { ttl: 2500 });
     let t;
@@ -263,8 +390,8 @@ export function initRmq(host) {
     body.innerHTML = '';
     const head = el('div', 'db-ws-head');
     if (activeConn.color) head.style.borderBottom = `2px solid ${activeConn.color}`;
-    const back = iconBtn('drow-act', 'chevron-left', 'К профилям', 16);
-    back.onclick = () => { stopPoll(); stopTail(); activeId = null; activeConn = null; cur = {}; renderPanel(); };
+    const back = iconBtn('drow-act', 'chevron-left', 'К списку профилей (вкладка останется открытой)', 16);
+    back.onclick = () => { stopPoll(); snapshotProf(); profListMode = true; renderPanel(); };
     statusEl = el('span', 'db-status-dot'); statusEl.title = 'Проверка соединения…';
     head.append(back, statusEl, icon('rabbit', 15), el('span', 'db-ws-name', activeConn.name));
     if (activeConn.isProd) head.appendChild(el('span', 'db-ro-badge', 'PROD'));
@@ -309,8 +436,7 @@ export function initRmq(host) {
   // которую полл перерисовывает только при изменении данных (сигнатура).
   function mountSection() {
     const box = document.getElementById('rmq-secbox'); if (!box) return;
-    stopTail(); // уход с секции / перемонтирование = конец прослушивания
-    box.innerHTML = ''; dataBox = null; peekBox = null; tailEls = null; lastSig = '';
+    box.innerHTML = ''; dataBox = null; peekBox = null; tailEls = null; lastSig = ''; // tail НЕ стопаем — живёт в фоне
     if (section === 'tail') { stopPoll(); mountTail(box); return; }
     if (section === 'queues' || section === 'exchanges' || section === 'connections') {
       const bar = el('div', 'rmq-toolbar');
@@ -626,78 +752,94 @@ export function initRmq(host) {
     const bar = el('div', 'rmq-toolbar');
     const exSel = el('select', 'rmq-tail-ex');
     exSel.appendChild(new Option('— выбери exchange —', ''));
-    const pat = el('input', 'rmq-filter'); pat.type = 'text'; pat.value = '#';
+    const pat = el('input', 'rmq-filter'); pat.type = 'text'; pat.value = tail.pattern || '#';
     pat.placeholder = 'binding key: topic → # или app.*, direct → точный ключ';
     pat.title = 'topic: # (всё) / app.*.err; fanout: игнорируется; direct: точный routing key';
     const startBtn = el('button', 'btn primary rmq-tail-btn');
-    const setStartBtn = () => { startBtn.innerHTML = ''; startBtn.append(icon(tailId ? 'stop' : 'play', 13), document.createTextNode(tailId ? ' Стоп' : ' Слушать')); };
-    const pauseBtn = iconBtn('drow-act', 'pause', 'Пауза — сообщения копятся и доиграются', 14);
+    const setStartBtn = () => { startBtn.innerHTML = ''; startBtn.append(icon(tail.id ? 'stop' : 'play', 13), document.createTextNode(tail.id ? ' Стоп' : ' Слушать')); };
+    const pauseBtn = iconBtn('drow-act' + (tail.paused ? ' on' : ''), 'pause', 'Пауза — сообщения копятся и доиграются', 14);
     const clearBtn = iconBtn('drow-act', 'eraser', 'Очистить вывод', 14);
     const counter = el('span', 'rmq-tail-cnt', '0 сообщ.');
     bar.append(exSel, pat, startBtn, pauseBtn, clearBtn, counter);
     box.appendChild(bar);
-    const note = el('div', 'rmq-tail-note', `vhost: ${tailVhost()} · временная очередь биндится на exchange — реальные консюмеры ничего не теряют`);
+    const note = el('div', 'rmq-tail-note', (tail.id && tail.note) ? tail.note : `vhost: ${tailVhost()} · временная очередь биндится на exchange — реальные консюмеры ничего не теряют`);
     box.appendChild(note);
     const list = el('div', 'rmq-data rmq-tail-list');
-    list.appendChild(el('div', 'docker-empty', 'Выбери exchange и нажми «Слушать». Поток сообщений появится здесь.'));
     box.appendChild(list);
     tailEls = { exSel, pat, startBtn, pauseBtn, list, counter, note, setStartBtn };
-    setStartBtn();
+    setStartBtn(); updateTailCounter();
+    // доигрываем накопленное — стрим мог работать в фоне, пока смотрели другие секции/вкладки
+    if (tail.msgs.length) { for (const p of tail.msgs) appendTailRowDom(p); list.scrollTop = list.scrollHeight; }
+    else list.appendChild(el('div', 'docker-empty', 'Выбери exchange и нажми «Слушать». Поток сообщений появится здесь.'));
     const autoPattern = () => {
       const ex = (cur.exchanges || []).find((x) => x.name === exSel.value);
       pat.value = ex && ex.type === 'topic' ? '#' : '';
     };
     exSel.onchange = autoPattern;
-    startBtn.onclick = () => { if (tailId) stopTail(); else startTail(); };
+    startBtn.onclick = () => { if (tail.id) stopTail(); else startTail(); };
     pauseBtn.onclick = () => {
-      tailPaused = !tailPaused;
-      pauseBtn.classList.toggle('on', tailPaused);
-      if (!tailPaused) { const buf = tailBuf.splice(0); for (const p of buf) appendTailRow(p); updateTailCounter(); }
+      tail.paused = !tail.paused;
+      pauseBtn.classList.toggle('on', tail.paused);
+      if (!tail.paused) { const buf = tail.buf.splice(0); for (const p of buf) { tail.msgs.push(p); if (tail.msgs.length > 500) tail.msgs.shift(); appendTailRowDom(p); } updateTailCounter(); }
       else toast('Пауза: сообщения копятся (до 1000)', { ttl: 2500 });
     };
-    clearBtn.onclick = () => { list.innerHTML = ''; tailBuf = []; tailCount = 0; updateTailCounter(); };
-    // список exchanges нужного vhost'а для селекта (+ автозапуск из строки exchange)
+    clearBtn.onclick = () => { list.innerHTML = ''; tail.buf = []; tail.msgs = []; tail.count = 0; updateTailCounter(); };
+    // список exchanges нужного vhost'а для селекта (+ восстановление выбора / автозапуск из строки exchange)
     lite.rmq.exchanges(activeId, tailVhost()).then((r) => {
-      if (!tailEls || r.error) return;
+      if (!tailEls || tailEls.exSel !== exSel || r.error) return; // секцию успели перемонтировать
       cur.exchanges = r.items || [];
       for (const ex of cur.exchanges) if (ex.name) exSel.appendChild(new Option(`${ex.name} · ${ex.type}`, ex.name));
-      if (tailPreset) { exSel.value = tailPreset.exchange; autoPattern(); tailPreset = null; if (exSel.value) startTail(); }
+      if (tail.exchange) {
+        if (![...exSel.options].some((o) => o.value === tail.exchange)) exSel.appendChild(new Option(tail.exchange, tail.exchange));
+        exSel.value = tail.exchange;
+      }
+      if (tailPreset) { exSel.value = tailPreset.exchange; autoPattern(); tailPreset = null; if (exSel.value && !tail.id) startTail(); }
     }).catch(() => {});
   }
   async function startTail() {
-    if (!tailEls || tailId) return;
+    if (!tailEls || tail.id) return;
     const exchange = tailEls.exSel.value;
     if (!exchange) { toast('Выбери exchange для прослушивания', { kind: 'err' }); return; }
     const sid = 'tl' + (++tailUid) + Date.now().toString(36);
-    tailId = sid; tailPaused = false; tailBuf = []; tailCount = 0;
-    tailEls.setStartBtn(); updateTailCounter();
+    const t = tail; // фиксируем объект: к моменту ответа юзер мог переключить вкладку профиля
+    t.id = sid; t.paused = false; t.buf = []; t.count = 0; t.msgs = [];
+    t.exchange = exchange; t.pattern = tailEls.pat.value;
+    tailStreams.set(sid, t);
+    tailEls.setStartBtn(); tailEls.pauseBtn.classList.remove('on'); updateTailCounter();
     tailEls.list.innerHTML = '';
     tailEls.list.appendChild(el('div', 'docker-empty', 'Слушаю… жду сообщений.'));
+    const vh0 = tailVhost();
     let r;
-    try { r = await lite.rmq.tailStart(activeId, tailVhost(), exchange, tailEls.pat.value, sid); }
+    try { r = await lite.rmq.tailStart(activeId, vh0, exchange, t.pattern, sid); }
     catch (e) { r = { ok: false, error: String(e) }; }
     if (!r || !r.ok) {
-      tailId = null;
-      if (tailEls) { tailEls.setStartBtn(); tailEls.list.innerHTML = ''; tailEls.list.appendChild(el('div', 'docker-err', (r && r.error) || 'Не удалось начать прослушивание')); }
+      tailStreams.delete(sid); t.id = null;
+      if (t === tail && tailEls) { tailEls.setStartBtn(); tailEls.list.innerHTML = ''; tailEls.list.appendChild(el('div', 'docker-err', (r && r.error) || 'Не удалось начать прослушивание')); }
       toast((r && r.error) || 'Live-tail не запустился (проверь AMQP-порт в профиле)', { kind: 'err', ttl: 9000 });
       return;
     }
-    if (tailEls) tailEls.note.textContent = `Слушаю «${exchange}» (ключ: ${tailEls.pat.value || '—'}) · vhost ${tailVhost()} · AMQP-порт ${(activeConn && activeConn.amqpPort) || 5672}`;
+    t.note = `Слушаю «${exchange}» (ключ: ${t.pattern || '—'}) · vhost ${vh0} · AMQP-порт ${(activeConn && activeConn.amqpPort) || 5672}`;
+    if (t === tail && tailEls) tailEls.note.textContent = t.note;
   }
-  function stopTail() {
-    if (tailId) { try { lite.rmq.tailStop(tailId); } catch (_) {} tailId = null; }
-    tailPaused = false; tailBuf = [];
-    if (tailEls) { tailEls.setStartBtn(); tailEls.pauseBtn.classList.remove('on'); }
+  function stopTail(t = tail) {
+    if (t.id) { try { lite.rmq.tailStop(t.id); } catch (_) {} tailStreams.delete(t.id); t.id = null; }
+    t.paused = false; t.buf = [];
+    if (t === tail && tailEls) { tailEls.setStartBtn(); tailEls.pauseBtn.classList.remove('on'); }
   }
+  function stopAllTails() { for (const t of [...tailStreams.values()]) stopTail(t); }
   function updateTailCounter() {
-    if (tailEls) tailEls.counter.textContent = `${tailCount} сообщ.${tailPaused ? ` · пауза (+${tailBuf.length})` : ''}`;
+    if (tailEls) tailEls.counter.textContent = `${tail.count} сообщ.${tail.paused ? ` · пауза (+${tail.buf.length})` : ''}`;
   }
-  function handleTailMsg(p) {
-    tailCount++;
-    if (tailPaused) { tailBuf.push(p); if (tailBuf.length > 1000) tailBuf.shift(); updateTailCounter(); return; }
-    appendTailRow(p); updateTailCounter();
+  // Приём кадра: t — tail-объект СВОЕГО профиля (не обязательно активного). В DOM пишем
+  // только когда его вкладка активна и открыта секция tail; иначе копим в msgs.
+  function handleTailMsg(t, p) {
+    t.count++;
+    if (t.paused) { t.buf.push(p); if (t.buf.length > 1000) t.buf.shift(); if (t === tail) updateTailCounter(); return; }
+    t.msgs.push(p); if (t.msgs.length > 500) t.msgs.shift();
+    if (t === tail && tailEls && section === 'tail') appendTailRowDom(p);
+    if (t === tail) updateTailCounter();
   }
-  function appendTailRow(p) {
+  function appendTailRowDom(p) {
     if (!tailEls) return;
     const list = tailEls.list;
     const ph = list.querySelector('.docker-empty'); if (ph) ph.remove();
@@ -731,13 +873,13 @@ export function initRmq(host) {
     while (list.children.length > 500) list.removeChild(list.firstChild); // кап буфера DOM
     if (atBottom) list.scrollTop = list.scrollHeight;
   }
-  // подписки на поток — один раз на весь модуль, фильтр по актуальному streamId
-  lite.rmq.onTailData((p) => { if (p && p.streamId === tailId) handleTailMsg(p); });
+  // подписки на поток — один раз на весь модуль; кадры роутятся в tail-объект своего профиля
+  lite.rmq.onTailData((p) => { const t = p && tailStreams.get(p.streamId); if (t) handleTailMsg(t, p); });
   lite.rmq.onTailExit((p) => {
-    if (!p || p.streamId !== tailId) return;
-    tailId = null;
-    if (tailEls) { tailEls.setStartBtn(); tailEls.note.textContent += ' · поток закрыт сервером'; }
-    toast('Live-tail: соединение закрыто', { kind: 'err', ttl: 6000 });
+    const t = p && tailStreams.get(p.streamId); if (!t) return;
+    tailStreams.delete(p.streamId); t.id = null;
+    if (t === tail && tailEls) { tailEls.setStartBtn(); tailEls.note.textContent += ' · поток закрыт сервером'; }
+    toast(`Live-tail («${t.exchange}»): соединение закрыто`, { kind: 'err', ttl: 6000 });
   });
 
   // ---------------------------------------------------------------- публикация
@@ -819,7 +961,7 @@ export function initRmq(host) {
   function refresh() {
     if (!rmqOpen) return;
     if (activeId) {
-      if (section === 'tail') { loadVhosts(); mountSection(); return; } // перемонтаж (стоп + свежий список exchanges)
+      if (section === 'tail') { loadVhosts(); mountSection(); return; } // перемонтаж: свежий список exchanges, стрим живёт
       lastSig = ''; loadVhosts(); loadSection(false);
     } else renderPanel();
   }
