@@ -670,7 +670,8 @@ export function initTextProc(host) {
   }
   function renderModels() {
     const box = $('#doc-ai-models');
-    if (box.children.length === 0) {
+    // в разметке уже лежит .tp-seg-thumb → children.length===0 не срабатывало никогда, кнопки моделей не строились
+    if (!box.querySelector('.tp-seg-btn')) {
       box.innerHTML = '<span class="tp-seg-thumb"></span>';
       [['claude', 'Claude'], ['codex', 'Codex'], ['gemini', 'Gemini']].forEach(([id, lbl]) => {
         const btn = el('button', 'tp-seg-btn', lbl);
