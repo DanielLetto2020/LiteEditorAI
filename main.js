@@ -591,9 +591,10 @@ ipcMain.on('openrouter:chatAbort', (e, { reqId } = {}) => {
 // пользователя, БЕЗ API-ключей (ключевая идея фичи).
 const tpDir = path.join(storeDir, 'textproc');
 ipcMain.handle('tp:dir', () => { try { fs.mkdirSync(tpDir, { recursive: true }); } catch (_) {} return tpDir; });
-// Обработка текста: нативные Открыть/Сохранить как (вместо браузерного File API/download — см. handoff design).
-ipcMain.handle('tp:openFile', async () => {
-  const res = await dialog.showOpenDialog(mainWindow, {
+// Обработка текста: нативные Открыть/Сохранить как (вместо браузерного File API/download — PR #6).
+// Родитель диалога — окно-отправитель (модульное окно doc), НЕ mainWindow; лимит — как у текстовых панелей.
+ipcMain.handle('tp:openFile', async (e) => {
+  const res = await dialog.showOpenDialog(senderWin(e) || mainWindow, {
     title: 'Открыть документ', properties: ['openFile'],
     filters: [
       { name: 'Документы', extensions: ['md', 'markdown', 'txt', 'html', 'htm'] },
@@ -605,16 +606,16 @@ ipcMain.handle('tp:openFile', async () => {
   const file = res.filePaths[0];
   try {
     const stat = fs.statSync(file);
-    if (stat.size > IMPORT_MAX_BYTES) return { ok: false, error: `Файл слишком большой (${Math.round(stat.size / 1024)} КБ)` };
+    if (stat.size > MAX_VIEW_BYTES) return { ok: false, error: `Файл слишком большой (${Math.round(stat.size / 1024)} КБ, лимит ${Math.round(MAX_VIEW_BYTES / 1024 / 1024)} МБ)` };
     const content = fs.readFileSync(file, 'utf8');
     saveState({ lastOpenDir: path.dirname(file) });
     return { ok: true, file, name: path.basename(file), content };
-  } catch (e) { return { ok: false, error: 'Не удалось прочитать файл: ' + String(e.message || e) }; }
+  } catch (e2) { return { ok: false, error: 'Не удалось прочитать файл: ' + String(e2.message || e2) }; }
 });
-ipcMain.handle('tp:saveFileAs', async (_e, { content, name, ext } = {}) => {
+ipcMain.handle('tp:saveFileAs', async (e, { content, name, ext } = {}) => {
   const last = loadState().lastOpenDir;
   const base = String(name || 'Безымянный').replace(/[\/\\:*?"<>|]+/g, '_').replace(/\.[^.]+$/, '');
-  const res = await dialog.showSaveDialog(mainWindow, {
+  const res = await dialog.showSaveDialog(senderWin(e) || mainWindow, {
     title: 'Сохранить документ как',
     defaultPath: path.join(last && fs.existsSync(last) ? last : os.homedir(), `${base}.${ext || 'md'}`),
     filters: [
@@ -628,14 +629,15 @@ ipcMain.handle('tp:saveFileAs', async (_e, { content, name, ext } = {}) => {
     atomicWriteSync(res.filePath, String(content || ''));
     saveState({ lastOpenDir: path.dirname(res.filePath) });
     return { ok: true, file: res.filePath, name: path.basename(res.filePath) };
-  } catch (e) { return { ok: false, error: String(e.message || e) }; }
+  } catch (e2) { return { ok: false, error: String(e2.message || e2) }; }
 });
 
 // Как звать CLI в неинтерактивном режиме и куда подавать промпт (stdin/arg).
+// gemini — официальный Gemini CLI из PATH (идея из PR #6; там был захардкожен macOS-путь Antigravity).
 const TP_AGENTS = {
   claude: { cmd: 'claude', args: ['-p', '--output-format', 'text'], via: 'stdin' },
   codex: { cmd: 'codex', args: ['exec'], via: 'arg' },
-  antigravity: { cmd: '/Applications/Antigravity.app/Contents/Resources/app/bin/antigravity', args: ['chat', '-m', 'agent', '-'], via: 'stdin' }
+  gemini: { cmd: 'gemini', args: ['-p'], via: 'arg' },
 };
 // GUI-сессия часто не видит ~/.local/bin и nvm-bin → дополняем PATH, чтобы claude/codex нашлись.
 function tpEnv() {
@@ -644,39 +646,32 @@ function tpEnv() {
   return { ...process.env, PATH: extra.join(sep) + sep + (process.env.PATH || '') };
 }
 const tpReqs = new Map(); // reqId -> ChildProcess
+// Живой стриминг ответа в чат (tp:data, идея из PR #6), но через spawn как раньше — БЕЗ PTY:
+// под PTY stderr сливается в stdout, CLI видит TTY (спиннеры/контрол-коды), терминал эхоит промпт,
+// а \x04 не является EOF под ConPTY (Windows зависал бы до таймаута). stdout чист — стримим как есть.
 ipcMain.on('tp:run', (e, { reqId, agent, prompt } = {}) => {
   const sender = e.sender;
   const conf = TP_AGENTS[agent] || TP_AGENTS.claude;
   const args = conf.via === 'arg' ? [...conf.args, prompt || ''] : [...conf.args];
   let child;
-  try { child = pty.spawn(conf.cmd, args, { cwd: os.homedir(), env: tpEnv(), cols: 80, rows: 24 }); }
+  try { child = spawn(conf.cmd, args, { cwd: os.homedir(), env: tpEnv() }); }
   catch (err) { safeSend(sender, 'tp:error', { reqId, error: 'не запустить «' + conf.cmd + '»: ' + (err.message || err) }); return; }
   tpReqs.set(reqId, child);
-  let out = '';
+  let out = '', errOut = '';
   const to = setTimeout(() => { if (tpReqs.has(reqId)) { tpReqs.delete(reqId); try { child.kill(); } catch (_) {} safeSend(sender, 'tp:error', { reqId, error: 'таймаут (агент не ответил вовремя)' }); } }, 240000);
-  child.onData((c) => { 
-    const chunk = c.replace(/\x1b\[[0-9;]*m/g, ''); // strip ansi
-    out += chunk; 
-    safeSend(sender, 'tp:data', { reqId, chunk }); 
-  });
-  child.onExit(({ exitCode }) => {
+  child.stdout.on('data', (c) => { const chunk = c.toString('utf8'); out += chunk; safeSend(sender, 'tp:data', { reqId, chunk }); });
+  child.stderr.on('data', (c) => { errOut += c.toString('utf8'); });
+  child.on('error', (err) => {
     if (!tpReqs.has(reqId)) return; tpReqs.delete(reqId); clearTimeout(to);
-    
-    // Attempt to strip echoed prompt if via stdin
-    let text = out.trim();
-    if (conf.via === 'stdin' && prompt) {
-      const promptLines = prompt.split('\n');
-      const firstLine = promptLines[0].trim();
-      if (firstLine && text.includes(firstLine)) {
-         const idx = text.indexOf('\x04');
-         if (idx !== -1) text = text.substring(idx + 1).trim();
-      }
-    }
-    
-    if (text) safeSend(sender, 'tp:done', { reqId, text }); 
-    else safeSend(sender, 'tp:error', { reqId, error: 'агент завершился с кодом ' + exitCode });
+    safeSend(sender, 'tp:error', { reqId, error: 'агент «' + conf.cmd + '» не найден/не запустился: ' + (err.message || err) });
   });
-  if (conf.via === 'stdin') { try { child.write((prompt || '') + '\r\n\x04'); } catch (_) {} }
+  child.on('close', (code) => {
+    if (!tpReqs.has(reqId)) return; tpReqs.delete(reqId); clearTimeout(to);
+    const text = out.trim();
+    if (text) safeSend(sender, 'tp:done', { reqId, text }); // непустой вывод = результат (даже при ненулевом коде)
+    else safeSend(sender, 'tp:error', { reqId, error: errOut.trim() || ('агент завершился с кодом ' + code) });
+  });
+  if (conf.via === 'stdin') { try { child.stdin.write(prompt || ''); child.stdin.end(); } catch (_) {} }
 });
 ipcMain.on('tp:abort', (_e, { reqId } = {}) => {
   const c = tpReqs.get(reqId);

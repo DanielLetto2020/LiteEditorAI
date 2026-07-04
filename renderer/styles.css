@@ -3198,7 +3198,7 @@ body.preview-full .prev-frame { width: 100%; height: 100%; }
   --tp-glass-shadow-sm: 0 8px 24px rgba(30,40,80,0.12);
   --tp-glass-inset: inset 0 1px 0 rgba(255,255,255,0.9);
   --tp-page-shadow: 0 24px 60px rgba(30,40,80,0.2), 0 2px 6px rgba(0,0,0,.06), inset 0 1px 0 rgba(255,255,255,0.9);
-  --tp-text: #1c1c1e; --tp-text-2: #5a5a5e; --tp-text-mute: #8a8a8e;
+  --tp-text: #1c1c1e; --tp-text-1: #1c1c1e; --tp-text-2: #5a5a5e; --tp-text-3: #a0a0a6; --tp-text-mute: #8a8a8e;
   --tp-border: rgba(0,0,0,.08); --tp-border-soft: rgba(0,0,0,.05);
   --tp-hover: rgba(0,0,0,.05);
   --tp-input-bg: rgba(255,255,255,0.7);
@@ -3218,9 +3218,14 @@ body.preview-full .prev-frame { width: 100%; height: 100%; }
 .tp-root * {
   color: inherit;
 }
-.tp-root select, .tp-root button, .tp-root input, .tp-root textarea {
+.tp-root select, .tp-root input, .tp-root textarea {
   color: var(--tp-text) !important;
   box-shadow: none !important;
+}
+/* у кнопок box-shadow БЕЗ !important — иначе гаснут собственные стейты (.tp-pill-btn.on, :focus-visible) */
+.tp-root button {
+  color: var(--tp-text) !important;
+  box-shadow: none;
 }
 .tp-select {
   appearance: none; -webkit-appearance: none;
@@ -4090,6 +4095,13 @@ body.mw-doc .modal .btn.primary {
   color: #fff !important;
   border: none !important;
 }
+/* контролы общих модалок (showPrompt и т.п.) — иначе на тёмной теме останутся тёмными на белой карточке */
+body.mw-doc .modal input, body.mw-doc .modal textarea, body.mw-doc .modal select {
+  background: rgba(255,255,255,0.8) !important;
+  color: #1a1a1c !important;
+  border: 1px solid rgba(0,0,0,0.15) !important;
+}
+body.mw-doc .modal label { color: #1a1a1c !important; }
 
 /* --- Document Content Styles (Columns, Tables, Zoom) --- */
 .tp-columns {

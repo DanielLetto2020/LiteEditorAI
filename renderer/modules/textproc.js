@@ -137,7 +137,7 @@ export function initTextProc(host) {
   let activeTabId = null;
   let nextTabId = 1;
   let activeProj = null;
-  let chatAgent = ['claude', 'codex', 'antigravity'].includes(settings.tpAgent) ? settings.tpAgent : 'claude';
+  let chatAgent = ['claude', 'codex', 'gemini'].includes(settings.tpAgent) ? settings.tpAgent : 'claude';
   let chatRole = 'Без роли';
   let chatLog = [];
   let aiSeq = 0;
@@ -209,7 +209,10 @@ export function initTextProc(host) {
   }
 
   // ---- UI Setup ----
+  let uiWired = false; // повторный setOpen не должен дублировать addEventListener (wheel-зум, input и т.д.)
   function setupUI() {
+    if (uiWired) { updateModeUI(); return; }
+    uiWired = true;
     try { document.execCommand('defaultParagraphSeparator', false, 'p'); } catch (_) {}
 
     $$('.tp-seg-btn[data-mode]').forEach((b) => { b.onclick = () => setMode(b.dataset.mode); });
@@ -429,8 +432,8 @@ export function initTextProc(host) {
     if (cmd === 'toggleColumns') {
       const s = window.getSelection();
       if (!s.rangeCount) return;
-      const html = s.toString();
-      if (html) document.execCommand('insertHTML', false, `<div class="tp-columns">${html}</div>`);
+      const text = s.toString(); // Selection.toString() = plain text → экранируем перед insertHTML
+      if (text) document.execCommand('insertHTML', false, `<div class="tp-columns">${escapeHtml(text).replace(/\n/g, '<br>')}</div>`);
       return markDirty();
     }
     if (cmd === 'insertTable') {
@@ -555,6 +558,7 @@ export function initTextProc(host) {
     box.innerHTML = '';
     chatLog.forEach((m) => {
       const w = el('div', 'tp-msg ' + m.role);
+      if (m.reqId) w.dataset.req = m.reqId; // якорь для in-place стриминга (tp:data)
       const b = el('div', 'tp-bubble');
       b.textContent = m.busy ? (m.text + ' ⏳') : m.text;
       if (m.role === 'agent' && !m.busy) {
@@ -575,15 +579,28 @@ export function initTextProc(host) {
     });
     box.scrollTop = box.scrollHeight;
   }
+  // Стрим-чанк: правим текст пузыря на месте (пересборка чата на каждый чанк сбрасывала бы скролл
+  // и мигала DOM); к низу липнем, только если читатель и так внизу.
+  function updateStreamBubble(am) {
+    const box = $('#doc-ai-chat-log');
+    const b = box && box.querySelector(`[data-req="${am.reqId}"] .tp-bubble`);
+    if (!b) { renderChatLog(); return; }
+    b.textContent = am.text + (am.busy ? ' ⏳' : '');
+    const nearBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 48;
+    if (nearBottom) box.scrollTop = box.scrollHeight;
+  }
   async function composePrompt(sel, instruction) {
     const parts = [];
-    if (chatRole !== 'Без роли') {
+    if (chatRole !== 'Без роли' && activeProj) {
+      // fs:readFile резолвится {content}|{error} и не реджектится — в промпт идёт СОДЕРЖИМОЕ, не объект
       try {
-        const content = await lite.fs.readFile(`${activeProj.path}/Roles/${chatRole}.md`);
-        parts.push(`Действуй в роли: ${chatRole}\n${content}`);
+        const r = await lite.fs.readFile(`${activeProj.path}/Roles/${chatRole}.md`);
+        parts.push(`Действуй в роли: ${chatRole}` + (r && r.content != null ? `\n${r.content}` : ''));
       } catch (e) {
         parts.push(`Действуй в роли: ${chatRole}`);
       }
+    } else if (chatRole !== 'Без роли') {
+      parts.push(`Действуй в роли: ${chatRole}`);
     }
     parts.push(instruction);
     parts.push('Ниже — ' + (sel.whole ? 'весь документ (Markdown)' : 'фрагмент текста') + '. Верни ТОЛЬКО итоговый текст для замены: без пояснений, без приветствий.');
@@ -599,8 +616,9 @@ export function initTextProc(host) {
     chatLog.push({ role: 'user', text: instruction });
     const am = { role: 'agent', text: '', busy: true, reqId: 'tpq' + (++aiSeq) };
     chatLog.push(am);
+    while (chatLog.length > 200) chatLog.shift(); // кап истории: чат не растёт бесконечно
     renderChatLog();
-    const offData = lite.tp.onData(({ reqId: r, chunk }) => { if (r !== am.reqId) return; am.text += chunk; renderChatLog(); });
+    const offData = lite.tp.onData(({ reqId: r, chunk }) => { if (r !== am.reqId) return; am.text += chunk; updateStreamBubble(am); });
     const offDone = lite.tp.onDone(({ reqId: r, text }) => { if (r !== am.reqId) return; am.busy = false; am.text = text || ''; cleanup(); renderChatLog(); });
     const offErr = lite.tp.onError(({ reqId: r, error }) => { if (r !== am.reqId) return; am.busy = false; am.text = 'Ошибка: ' + String(error); cleanup(); renderChatLog(); });
     const cleanup = () => { try { offData(); offDone(); offErr(); } catch (_) {} };
@@ -612,7 +630,7 @@ export function initTextProc(host) {
     const box = $('#doc-ai-models');
     if (box.children.length === 0) {
       box.innerHTML = '<span class="tp-seg-thumb"></span>';
-      [['claude', 'Claude'], ['codex', 'Codex'], ['antigravity', 'Gemini']].forEach(([id, lbl]) => {
+      [['claude', 'Claude'], ['codex', 'Codex'], ['gemini', 'Gemini']].forEach(([id, lbl]) => {
         const btn = el('button', 'tp-seg-btn', lbl);
         btn.type = 'button';
         btn.dataset.id = id;
@@ -645,8 +663,9 @@ export function initTextProc(host) {
       }
       const entries = await lite.fs.readDir(rolesPath);
       dynamicRoles = ['Без роли'];
-      for (const ent of entries) {
-        if (!ent.isDir && ent.name.endsWith('.md')) {
+      // fs:readDir отдаёт {name, path, dir} (не isDir); при ошибке — {error}, не массив
+      for (const ent of (Array.isArray(entries) ? entries : [])) {
+        if (!ent.dir && ent.name.endsWith('.md')) {
           dynamicRoles.push(ent.name.replace(/\.md$/, ''));
         }
       }
@@ -949,7 +968,8 @@ export function initTextProc(host) {
           nameSpan.textContent = f.name;
           item.appendChild(nameSpan);
           
-          if (activeTab && f.path === activeTab.path) {
+          const curTab = openTabs.find((t) => t.id === activeTabId);
+          if (curTab && f.path === curTab.absPath) {
             item.classList.add('active');
           }
           
@@ -993,13 +1013,21 @@ export function initTextProc(host) {
     const id = nextTabId++;
     const name = baseName(absPath);
     const isHtml = /\.html?$/i.test(name);
-    
+    // HTML с диска = внешний контент: санитизация ДО хранения (иначе innerHTML в switchToTab исполнит
+    // разметку с onerror и т.п.); htmlToMd ждёт DOM-корень, не строку.
+    let safeHtml = null, mdSrc = r.content;
+    if (isHtml) {
+      safeHtml = DOMPurify.sanitize(r.content, { ADD_ATTR: ['contenteditable', 'data-tex'] });
+      const root = document.createElement('div');
+      root.innerHTML = safeHtml;
+      mdSrc = htmlToMd(root);
+    }
     tab = {
       id,
       absPath,
       name,
-      html: isHtml ? r.content : mdToHtml(r.content),
-      md: isHtml ? htmlToMd(r.content) : r.content,
+      html: isHtml ? safeHtml : mdToHtml(r.content),
+      md: mdSrc,
       mode: 'wysiwyg',
       dirty: false
     };
@@ -1076,8 +1104,8 @@ export function initTextProc(host) {
     mode = tab.mode;
     dirty = tab.dirty;
     
-    // Load content without resetting mode
-    $('#doc-editor-wysiwyg').innerHTML = tab.html;
+    // Load content without resetting mode (sanitize при каждой инъекции — как в setMode/loadDocument)
+    $('#doc-editor-wysiwyg').innerHTML = DOMPurify.sanitize(tab.html, { ADD_ATTR: ['contenteditable', 'data-tex'] });
     $('#doc-editor-md').textContent = tab.md;
     updateModeUI();
     updateStatus(dirty ? 'Изменено' : (tab.absPath ? 'Открыт' : 'Новый файл'));
