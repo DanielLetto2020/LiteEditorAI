@@ -393,6 +393,7 @@ contextBridge.exposeInMainWorld('lite', {
     onExecExit: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('containers:execExit', h); return () => ipcRenderer.removeListener('containers:execExit', h); },
     inspectDb: (engine, id) => ipcRenderer.invoke('containers:inspectDb', { engine, id }), // заготовка подключения к БД контейнера
     inspectMq: (engine, id) => ipcRenderer.invoke('containers:inspectMq', { engine, id }), // заготовка профиля RabbitMQ контейнера
+    inspectKafka: (engine, id) => ipcRenderer.invoke('containers:inspectKafka', { engine, id }), // заготовка профиля Kafka контейнера
   },
 
   db: {
@@ -448,6 +449,36 @@ contextBridge.exposeInMainWorld('lite', {
     openFromContainer: (payload) => ipcRenderer.send('rmq:openFromContainer', payload),
     onOpenFromContainer: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('rmq:openFromContainer', h); return () => ipcRenderer.removeListener('rmq:openFromContainer', h); },
     panelReady: () => ipcRenderer.send('rmq:panelReady'),
+  },
+  // Kafka module — cluster profiles + kafkajs admin/consumer/producer (lib/kafka.js).
+  kafka: {
+    list: () => ipcRenderer.invoke('kafka:list'),
+    save: (conn) => ipcRenderer.invoke('kafka:save', { conn }),
+    delete: (id) => ipcRenderer.invoke('kafka:delete', { id }),
+    test: (conn) => ipcRenderer.invoke('kafka:test', { conn }),
+    overview: (id) => ipcRenderer.invoke('kafka:overview', { id }),
+    topics: (id, internal) => ipcRenderer.invoke('kafka:topics', { id, internal }),
+    topicDetail: (id, topic) => ipcRenderer.invoke('kafka:topicDetail', { id, topic }),
+    createTopic: (id, opts) => ipcRenderer.invoke('kafka:createTopic', { id, ...(opts || {}) }),
+    deleteTopic: (id, topic) => ipcRenderer.invoke('kafka:deleteTopic', { id, topic }),
+    addPartitions: (id, topic, count) => ipcRenderer.invoke('kafka:addPartitions', { id, topic, count }),
+    purgeTopic: (id, topic) => ipcRenderer.invoke('kafka:purgeTopic', { id, topic }),
+    setTopicConfig: (id, topic, name, value) => ipcRenderer.invoke('kafka:setTopicConfig', { id, topic, name, value }),
+    groups: (id) => ipcRenderer.invoke('kafka:groups', { id }),
+    groupDetail: (id, groupId) => ipcRenderer.invoke('kafka:groupDetail', { id, groupId }),
+    resetOffsets: (id, groupId, topic, to) => ipcRenderer.invoke('kafka:resetOffsets', { id, groupId, topic, to }),
+    deleteGroup: (id, groupId) => ipcRenderer.invoke('kafka:deleteGroup', { id, groupId }),
+    peek: (id, topic, count, from) => ipcRenderer.invoke('kafka:peek', { id, topic, count, from }),
+    produce: (id, opts) => ipcRenderer.invoke('kafka:produce', { id, ...(opts || {}) }),
+    // live-tail топика: эфемерная группа с конца → стрим сообщений в окно
+    tailStart: (id, topic, streamId) => ipcRenderer.invoke('kafka:tailStart', { id, topic, streamId }),
+    tailStop: (streamId) => ipcRenderer.send('kafka:tailStop', { streamId }),
+    onTailData: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('kafka:tailData', h); return () => ipcRenderer.removeListener('kafka:tailData', h); },
+    onTailExit: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('kafka:tailExit', h); return () => ipcRenderer.removeListener('kafka:tailExit', h); },
+    // «Контейнеры» → Kafka: маршрут через main (окно откроется само, очередь до готовности)
+    openFromContainer: (payload) => ipcRenderer.send('kafka:openFromContainer', payload),
+    onOpenFromContainer: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('kafka:openFromContainer', h); return () => ipcRenderer.removeListener('kafka:openFromContainer', h); },
+    panelReady: () => ipcRenderer.send('kafka:panelReady'),
   },
   // RemoteHost module — SSH connection profiles + live shell sessions.
   rh: {

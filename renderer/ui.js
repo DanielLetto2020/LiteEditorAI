@@ -100,6 +100,7 @@ export const ICONS = {
   layers: '<path d="M12 3l8.5 4.5L12 12 3.5 7.5z"/><path d="M3.5 12L12 16.5 20.5 12M3.5 16.5L12 21l8.5-4.5"/>',
   database: '<ellipse cx="12" cy="6" rx="7" ry="3"/><path d="M5 6v12c0 1.66 3.13 3 7 3s7-1.34 7-3V6"/><path d="M5 12c0 1.66 3.13 3 7 3s7-1.34 7-3"/>',
   rabbit: '<path d="M13 16a3 3 0 0 1 2.24 5"/><path d="M18 12h.01"/><path d="M18 21h-8a4 4 0 0 1-4-4 7 7 0 0 1 7-7h.2L9.6 6.4a1 1 0 1 1 2.8-2.8L15.8 7h.2c3.3 0 6 2.7 6 6v1a2 2 0 0 1-2 2h-1a3 3 0 0 0-3 3"/><path d="M20 8.54V4a2 2 0 1 0-4 0v3"/><path d="M7.612 12.524a3 3 0 1 0-1.6 4.3"/>',
+  kafka: '<circle cx="17.5" cy="5" r="2.5"/><circle cx="17.5" cy="19" r="2.5"/><circle cx="6" cy="12" r="2.5"/><path d="M8.2 10.8l7-4.3"/><path d="M8.2 13.2l7 4.3"/>',
   power: '<path d="M12 4v8"/><path d="M7.5 7.5a6.5 6.5 0 1 0 9 0"/>',
   flag: '<path d="M6 21V4.5h11l-2 4 2 4H6"/>',
   graph: '<rect x="3" y="4" width="6" height="5" rx="1.5"/><rect x="3" y="15" width="6" height="5" rx="1.5"/><rect x="15" y="9.5" width="6" height="5" rx="1.5"/><path d="M9 6.5h2.5a1.5 1.5 0 0 1 1.5 1.5v2.5M9 17.5h2.5a1.5 1.5 0 0 0 1.5-1.5v-2.5M13 12h2"/>',

@@ -26,7 +26,7 @@ import { el, icon, iconBtn, hydrateIcons, toast, makeModal, showConfirm, showPro
 import { initExtensions } from './modules/extensions.js';
 // initFiles — вивер+дерево мигрированы в отдельное окно (renderer/module-entry.js).
 
-const APP_VERSION = 'alpha v1.1.77';
+const APP_VERSION = 'alpha v1.1.78';
 const GUTTER = 5;
 // Системный терминал («Система · ~») мигрирован в отдельное окно (renderer/modules/scratch.js):
 // его id `__scratch__::tN` маршрутизируются main'ом в окно-владельца, в ядре их больше не обрабатываем.
@@ -1432,7 +1432,7 @@ const panels = new Map(); // id -> { isOpen(), setOpen(open, opts) }
 // Правый слот редактора теперь держит только «Мои модули» (ext); всё остальное — отдельные окна.
 const PANEL_ORDER = [];
 // Модули, мигрированные в отдельные окна (открываются через lite.module.open, не как панель правого слота).
-const WINDOW_MODULES = new Set(['tools', 'iterflow', 'seo', 'audit', 'company', 'notes', 'db', 'rmq', 'chat', 'doc', 'docker', 'rh', 'ctx', 'scratch', 'files', 'pomodoro', 'monitor', 'keepass', 'sitemon']);
+const WINDOW_MODULES = new Set(['tools', 'iterflow', 'seo', 'audit', 'company', 'notes', 'db', 'rmq', 'kafka', 'chat', 'doc', 'docker', 'rh', 'ctx', 'scratch', 'files', 'pomodoro', 'monitor', 'keepass', 'sitemon']);
 function registerPanel(id, api) { panels.set(id, api); }
 function closeOtherPanels(selfId) {
   for (const id of PANEL_ORDER) {
@@ -1494,6 +1494,7 @@ const QUICK_BUILTIN = [
   { id: 'docker',  icon: 'box',      label: 'Контейнеры — Docker / Podman' },
   { id: 'db',      icon: 'database', label: 'Базы данных — Postgres / MySQL / SQLite' },
   { id: 'rmq',     icon: 'rabbit',   label: 'RabbitMQ — очереди, сообщения, подключения' },
+  { id: 'kafka',   icon: 'kafka',    label: 'Kafka — топики, группы, live-tail' },
   { id: 'rh',      icon: 'globe',    label: 'Удалённые хосты — SSH-сессии' },
   { id: 'notes',   icon: 'note',     label: 'Задачи — заметки проекта' },
   { id: 'audit',   icon: 'grid',     label: 'Аудит — анализ проекта' },
@@ -1853,6 +1854,7 @@ function buildModulesMenu(dd) {
     sub.appendChild(moduleRow('box', 'Контейнеры', 'Docker / Podman', () => { closeMenus(); openModule('docker'); }));
     sub.appendChild(moduleRow('database', 'Базы данных', 'Postgres · MySQL · SQLite', () => { closeMenus(); openModule('db'); }));
     sub.appendChild(moduleRow('rabbit', 'RabbitMQ', 'очереди · сообщения · подключения', () => { closeMenus(); openModule('rmq'); }));
+    sub.appendChild(moduleRow('kafka', 'Kafka', 'топики · группы · live-tail', () => { closeMenus(); openModule('kafka'); }));
     sub.appendChild(moduleRow('globe', 'Удалённые хосты', 'SSH-сессии к серверам', () => { closeMenus(); openModule('rh'); }));
     sub.appendChild(moduleRow('note', 'Задачи', 'заметки проекта и общие', () => { closeMenus(); openModule('notes'); }));
     sub.appendChild(moduleRow('grid', 'Аудит', 'типы файлов, крупные файлы, медиа', () => { closeMenus(); openModule('audit'); }));

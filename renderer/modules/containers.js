@@ -131,9 +131,14 @@ export function initContainers(host) {
       b.onclick = (e) => { e.stopPropagation(); openContainerDb(c); };
       acts.appendChild(b);
     }
-    if (c.mqKind) { // задетектили RabbitMQ → «открыть в модуле RabbitMQ»
+    if (c.mqKind === 'rabbitmq') { // задетектили RabbitMQ → «открыть в модуле RabbitMQ»
       const b = iconBtn('drow-act dmq', 'rabbit', 'Открыть в модуле «RabbitMQ»', 14);
       b.onclick = (e) => { e.stopPropagation(); openContainerMq(c); };
+      acts.appendChild(b);
+    }
+    if (c.mqKind === 'kafka') { // задетектили Kafka → «открыть в модуле Kafka»
+      const b = iconBtn('drow-act dmq', 'kafka', 'Открыть в модуле «Kafka»', 14);
+      b.onclick = (e) => { e.stopPropagation(); openContainerKafka(c); };
       acts.appendChild(b);
     }
     if (running) acts.append(dActBtn('container', 'pause', 'pause', 'Пауза', c.id), dActBtn('container', 'restart', 'refresh', 'Перезапуск', c.id), dActBtn('container', 'stop', 'stop', 'Стоп', c.id));
@@ -159,6 +164,15 @@ export function initContainers(host) {
     if (!r.published) { toast('Порт management (15672) не проброшен на хост — включи management-плагин / добавь -p', { kind: 'err', ttl: 9000 }); return; }
     if (!r.running) toast('Контейнер остановлен — профиль создастся, но оживёт после старта', { ttl: 6000 });
     lite.rmq.openFromContainer(r);
+  }
+  // Клик по иконке Kafka: inspect → заготовка профиля → окно модуля «Kafka» (маршрут через main).
+  async function openContainerKafka(c) {
+    let r;
+    try { r = await lite.containers.inspectKafka(dockerEngine, c.id); } catch (e) { r = { ok: false, error: String(e) }; }
+    if (!r || !r.ok) { toast((r && r.error) || 'Не удалось прочитать параметры контейнера', { kind: 'err', ttl: 8000 }); return; }
+    if (!r.published) { toast('Клиентский порт Kafka (9092) не проброшен на хост — добавь -p', { kind: 'err', ttl: 9000 }); return; }
+    if (!r.running) toast('Контейнер остановлен — профиль создастся, но оживёт после старта', { ttl: 6000 });
+    lite.kafka.openFromContainer(r);
   }
   function dockerContainerRow(c) {
     const row = el('div', 'docker-row clickable'); row.dataset.st = c.state; row._c = c; row.title = 'Открыть: логи и терминал';

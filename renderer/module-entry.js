@@ -24,6 +24,7 @@ import { initCompany } from './modules/company.js';
 import { initNotes } from './modules/notes.js';
 import { initDb } from './modules/db.js';
 import { initRmq } from './modules/rmq.js';
+import { initKafka } from './modules/kafka.js';
 import { initOpenRouter } from './modules/openrouter.js';
 import { initTextProc } from './modules/textproc.js';
 import { initContainers } from './modules/containers.js';
@@ -124,6 +125,15 @@ const MODULES = {
       // «Контейнеры» → RabbitMQ: заготовка профиля из контейнера (маршрут через main, очередь до готовности)
       lite.rmq.onOpenFromContainer((p) => { try { mod.openFromContainer(p); } catch (_) {} });
       try { lite.rmq.panelReady(); } catch (_) {} // флаш отложенных openFromContainer из main
+    },
+  },
+  kafka: {
+    title: 'Kafka', init: initKafka, project: false,
+    wire: (mod) => {
+      bind('#kafka-refresh', () => mod.refresh());
+      // «Контейнеры» → Kafka: заготовка профиля из контейнера (маршрут через main, очередь до готовности)
+      lite.kafka.onOpenFromContainer((p) => { try { mod.openFromContainer(p); } catch (_) {} });
+      try { lite.kafka.panelReady(); } catch (_) {} // флаш отложенных openFromContainer из main
     },
   },
   chat: {

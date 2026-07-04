@@ -1517,6 +1517,21 @@ body.preview-split #preview-view { border-left: 1px solid var(--border); }
 .rmq-msg.rmq-tl:hover { border-color: var(--border-strong); }
 .rmq-tl-prev { font-size: 11px; color: var(--text-mute); font-family: "JetBrains Mono", Consolas, monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: 3px; }
 .drow-act.on { color: var(--warn); border-color: var(--warn); }
+/* ---- Kafka module (переиспользует rmq-* и db-*; свои — гриды таблиц и мелочи) */
+#kafka-pane { flex: 0 0 560px; min-width: 340px; border-left: 1px solid var(--border); display: flex; flex-direction: column; background: var(--panel); }
+.kfk-tgrid { grid-template-columns: minmax(150px, 1fr) 74px 48px 76px 56px auto; }
+.kfk-ggrid { grid-template-columns: minmax(150px, 1fr) 74px 52px 44px 68px auto; }
+.kfk-pgrid { grid-template-columns: 30px 46px 72px 84px 66px 66px 78px; }
+.kfk-lgrid { grid-template-columns: minmax(120px, 1fr) 34px 84px 84px 72px; }
+.kfk-int-check { flex: 0 0 auto; font-size: 11px; color: var(--text-mute); white-space: nowrap; }
+.kfk-ch-note { font-size: 10.5px; color: var(--text-mute); }
+.kfk-detail-modal { width: 660px; max-width: 96vw; }
+.kfk-detail { display: flex; flex-direction: column; gap: 8px; max-height: 70vh; overflow: auto; }
+.kfk-cfgs { display: flex; flex-direction: column; gap: 2px; }
+.kfk-cfg { display: flex; justify-content: space-between; gap: 10px; font-size: 11px; padding: 2px 6px; border-radius: 6px; color: var(--text); }
+.kfk-cfg.dim { color: var(--text-mute); }
+.kfk-cfg-n { font-family: "JetBrains Mono", Consolas, monospace; flex: 0 0 auto; }
+.kfk-cfg-v { font-family: "JetBrains Mono", Consolas, monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* публикация */
 .rmq-payload { width: 100%; resize: vertical; background: var(--bg-input); color: var(--text); border: 1px solid var(--border); border-radius: 7px; padding: 6px 8px; font-family: "JetBrains Mono", Consolas, monospace; font-size: 12px; }
 .rmq-pl-row { display: flex; align-items: center; justify-content: space-between; }

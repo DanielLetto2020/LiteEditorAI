@@ -3,8 +3,9 @@
 const { app, BrowserWindow, ipcMain, dialog, shell, Menu, clipboard, screen, Tray, nativeImage, crashReporter, safeStorage, Notification } = require('electron');
 const dbBackend = require('./lib/db');
 const rhBackend = require('./lib/remotehost');
-const { guessDbKind, dbPrefillFromInspect, guessMqKind, rmqPrefillFromInspect } = require('./lib/dbdetect'); // «Контейнеры» → «Базы данных»/«RabbitMQ»
+const { guessDbKind, dbPrefillFromInspect, guessMqKind, rmqPrefillFromInspect, kafkaPrefillFromInspect } = require('./lib/dbdetect'); // «Контейнеры» → «Базы данных»/«RabbitMQ»/«Kafka»
 const rmqBackend = require('./lib/rmq');
+const kafkaBackend = require('./lib/kafka');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
@@ -227,7 +228,7 @@ try {
   const legacy = path.join(os.homedir(), '.LiteEditor');
   if (!fs.existsSync(storeDir) && fs.existsSync(legacy)) fs.cpSync(legacy, storeDir, { recursive: true });
 } catch (_) {}
-const STORE_KEYS = ['projects', 'settings', 'layout', 'recents', 'lastParent', 'categories', 'sectionOrder', 'favOrder', 'accordions', 'dismissed', 'uiState', 'projTabs', 'openrouter', 'remote', 'shares', 'pultBlocked', 'dockerUi', 'dbConnections', 'dbUi', 'rhConnections', 'rhUi', 'textproc', 'tpPrompts', 'extData', 'extEnabled', 'quickbar', 'seoTargets', 'seoSites', 'moduleWins', 'mwLeft', 'mwLogH', 'gitFav', 'commitDrafts', 'bookmarks', 'promptSnippets', 'pomodoro', 'pomodoroLog', 'dbaiProviders', 'sessionSnaps', 'siteMon', 'rmqConnections', 'rmqUi'];
+const STORE_KEYS = ['projects', 'settings', 'layout', 'recents', 'lastParent', 'categories', 'sectionOrder', 'favOrder', 'accordions', 'dismissed', 'uiState', 'projTabs', 'openrouter', 'remote', 'shares', 'pultBlocked', 'dockerUi', 'dbConnections', 'dbUi', 'rhConnections', 'rhUi', 'textproc', 'tpPrompts', 'extData', 'extEnabled', 'quickbar', 'seoTargets', 'seoSites', 'moduleWins', 'mwLeft', 'mwLogH', 'gitFav', 'commitDrafts', 'bookmarks', 'promptSnippets', 'pomodoro', 'pomodoroLog', 'dbaiProviders', 'sessionSnaps', 'siteMon', 'rmqConnections', 'rmqUi', 'kafkaConnections', 'kafkaUi'];
 // Папка-«стор» для шаринга с пультом (агент кладёт сюда файлы; в PTY доступна как $LITE_STORE).
 const pultStoreDir = path.join(storeDir, 'store');
 try { fs.mkdirSync(pultStoreDir, { recursive: true }); } catch (_) {}
@@ -318,6 +319,12 @@ const dbApi = dbBackend.registerDbIpc({
   setConnections: (v) => writeStoreKey('dbConnections', v),
 });
 
+// «Kafka» backend (профили кластеров + kafkajs) — lib/kafka.js.
+kafkaBackend.registerKafkaIpc({
+  ipcMain, safeStorage,
+  getConnections: () => readStoreKey('kafkaConnections'),
+  setConnections: (v) => writeStoreKey('kafkaConnections', v),
+});
 // «RabbitMQ» backend (профили + management HTTP API, без зависимостей) — lib/rmq.js.
 rmqBackend.registerRmqIpc({
   ipcMain, safeStorage,
@@ -1891,6 +1898,7 @@ function openModuleWindow(modId) {
     if (modId === 'files') filesViewerReady = false; // окно вивера закрыто → следующее openInViewer переоткроет и переждёт готовность
     if (modId === 'db') dbPanelReady = false;        // окно БД закрыто → следующий openFromContainer переоткроет и переждёт готовность
     if (modId === 'rmq') rmqPanelReady = false;      // аналогично для окна RabbitMQ
+    if (modId === 'kafka') kafkaPanelReady = false;  // аналогично для окна Kafka
     if (modId === 'ctx') { for (const w of ctxOutWatchers.values()) { try { w.close(); } catch (_) {} } ctxOutWatchers.clear(); } // окно «Контекст» закрылось без unwatch → не течём fs.watch (B2)
     for (const [sid, wc] of ownerBySession) { try { if (wc.isDestroyed()) ownerBySession.delete(sid); } catch (_) { ownerBySession.delete(sid); } }
     broadcastModuleOpenSet();
@@ -2592,6 +2600,22 @@ ipcMain.on('rmq:panelReady', () => {
   rmqPanelReady = true;
   const w = rmqModWindow();
   while (w && pendingRmqOpens.length) { w.focus(); w.webContents.send('rmq:openFromContainer', pendingRmqOpens.shift()); }
+});
+// «Контейнеры» → «Kafka»: тот же паттерн, что и с БД/RabbitMQ выше.
+let kafkaPanelReady = false;
+const pendingKafkaOpens = [];
+function kafkaModWindow() { const w = moduleWindows.get('kafka'); return (w && !w.isDestroyed()) ? w : null; }
+ipcMain.on('kafka:openFromContainer', (_e, payload) => {
+  if (!payload || typeof payload !== 'object') return;
+  if (!kafkaModWindow()) openModuleWindow('kafka');
+  const w = kafkaModWindow();
+  if (w && kafkaPanelReady) { if (w.isMinimized()) w.restore(); w.focus(); w.webContents.send('kafka:openFromContainer', payload); }
+  else pendingKafkaOpens.push(payload);
+});
+ipcMain.on('kafka:panelReady', () => {
+  kafkaPanelReady = true;
+  const w = kafkaModWindow();
+  while (w && pendingKafkaOpens.length) { w.focus(); w.webContents.send('kafka:openFromContainer', pendingKafkaOpens.shift()); }
 });
 ipcMain.on('editor:sendToTerminal', (_e, payload) => forwardToEditor('editor:sendToTerminal', payload));
 // «Пропустить отдых» с оверлея в окне редактора → пропустить текущую фазу помодоро (движок в main).
@@ -4872,6 +4896,18 @@ ipcMain.handle('containers:inspectMq', async (_e, { engine, id } = {}) => {
   if (!info) return { ok: false, error: 'inspect вернул пустой ответ' };
   const res = rmqPrefillFromInspect(info, engine);
   if (!res) return { ok: false, error: 'В контейнере не распознан RabbitMQ' };
+  return { ok: true, ...res };
+});
+// «Открыть в модуле Kafka»: inspect контейнера → заготовка профиля (брокер = 127.0.0.1:порт).
+ipcMain.handle('containers:inspectKafka', async (_e, { engine, id } = {}) => {
+  if (engine !== 'docker' && engine !== 'podman') return { ok: false, error: 'bad engine' };
+  if (!id || typeof id !== 'string') return { ok: false, error: 'no id' };
+  const r = await containerRun(engine, ['inspect', id], { timeout: 12000 });
+  if (!r.ok) return { ok: false, error: r.error };
+  const info = cParseJson(r.out)[0];
+  if (!info) return { ok: false, error: 'inspect вернул пустой ответ' };
+  const res = kafkaPrefillFromInspect(info, engine);
+  if (!res) return { ok: false, error: 'В контейнере не распознан Kafka' };
   return { ok: true, ...res };
 });
 
