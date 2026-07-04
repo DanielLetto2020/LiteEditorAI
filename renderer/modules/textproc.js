@@ -9,6 +9,7 @@ import { marked } from 'marked';
 import katex from 'katex/dist/katex.mjs';
 import 'katex/dist/katex.min.css';
 import DOMPurify from 'dompurify';
+import { baseName } from '../ui.js';
 
 const $ = (s) => document.querySelector(s);
 const $$ = (s) => Array.from(document.querySelectorAll(s));
@@ -990,7 +991,7 @@ export function initTextProc(host) {
     
     // Create new tab
     const id = nextTabId++;
-    const name = lite.path.basename(absPath);
+    const name = baseName(absPath);
     const isHtml = /\.html?$/i.test(name);
     
     tab = {

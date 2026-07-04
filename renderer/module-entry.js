@@ -141,9 +141,15 @@ const MODULES = {
     // чат сам вешает слушатели панели и стрима (bindControls биндит #chat-keys/модель/сессии).
     wire: (mod) => { try { mod.bindControls(); mod.bindStream(); } catch (_) {} },
   },
+  // «Обработка текста» (Obsidian-редизайн, PR #6): сайдбар — дерево документов АКТИВНОГО проекта
+  // редактора, поэтому project:true; дерево рендерится при старте, смене проекта и правках на диске.
   doc: {
-    title: 'Обработка текста', init: initTextProc, project: false,
-    wire: (mod) => { bind('#doc-settings', () => mod.showSettings()); },
+    title: 'Обработка текста', init: initTextProc, project: true,
+    wire: (mod) => {
+      if (activeProj) { try { mod.renderTree(activeProj); } catch (_) {} }
+      lite.app.onActiveProject((p) => { try { if (p) mod.renderTree(p); } catch (_) {} });
+      lite.fs.onChange(({ root, files }) => { try { if (activeProj && activeProj.path === root) mod.onFsChange(activeProj, files); } catch (_) {} });
+    },
   },
   docker: {
     title: 'Контейнеры', init: initContainers, project: false,

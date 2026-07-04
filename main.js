@@ -2598,6 +2598,7 @@ let filesViewerReady = false;
 const pendingViewerOpens = [];
 let pendingFocusGit = false;        // «Git» нажат до готовности окна → фокус секции после viewerReady
 function filesWindow() { const w = moduleWindows.get('files'); return (w && !w.isDestroyed()) ? w : null; }
+function docWindow() { const w = moduleWindows.get('doc'); return (w && !w.isDestroyed()) ? w : null; } // «Обработка текста»: сайдбар-дерево следит за диском
 function routeOpenInViewer(payload) {
   if (!filesWindow()) openModuleWindow('files'); // откроет окно (и переключит на активный проект)
   const w = filesWindow();
@@ -3418,6 +3419,7 @@ const isIgnoredPath = (rel) => rel.split(/[\\/]/).some((seg) => IGNORE_DIRS.has(
 function notifyWatchEnded(root) {
   if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('fs:watchEnded', { root });
   const fw = filesWindow(); if (fw) fw.webContents.send('fs:watchEnded', { root });
+  const dw = docWindow(); if (dw) dw.webContents.send('fs:watchEnded', { root });
 }
 ipcMain.on('fs:watch', (_e, root) => {
   if (!root || watchers.has(root) || !fs.existsSync(root)) return;
@@ -3436,6 +3438,7 @@ ipcMain.on('fs:watch', (_e, root) => {
       const files = [...rec.pending]; rec.pending.clear();
       if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('fs:changed', { root, files });
       const fw = filesWindow(); if (fw) fw.webContents.send('fs:changed', { root, files }); // окно вивера обновляет дерево/файл
+      const dw = docWindow(); if (dw) dw.webContents.send('fs:changed', { root, files }); // «Обработка текста»: сайдбар-дерево
       // локальная история: внешняя правка (агент/git). Большая пачка = массовая операция — шум, пропускаем.
       if (files.length <= HIST_BATCH_CAP) for (const f of files) histSnapshotFromDisk(f, 'ext');
     }, 180);
