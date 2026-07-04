@@ -146,8 +146,11 @@ contextBridge.exposeInMainWorld('lite', {
     dir: () => ipcRenderer.invoke('tp:dir'),
     run: (opts) => ipcRenderer.send('tp:run', opts),
     abort: (reqId) => ipcRenderer.send('tp:abort', { reqId }),
+    onData: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('tp:data', h); return () => ipcRenderer.removeListener('tp:data', h); },
     onDone: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('tp:done', h); return () => ipcRenderer.removeListener('tp:done', h); },
     onError: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('tp:error', h); return () => ipcRenderer.removeListener('tp:error', h); },
+    openFile: () => ipcRenderer.invoke('tp:openFile'),               // → {ok,file,name,content}|{canceled}|{ok:false,error}
+    saveFileAs: (opts) => ipcRenderer.invoke('tp:saveFileAs', opts), // {content,name,ext} → {ok,file,name}|{canceled}|{ok:false,error}
   },
 
   // AI-DB chat (streaming, read-only SQL author) for the «Базы данных» module.
@@ -159,18 +162,6 @@ contextBridge.exposeInMainWorld('lite', {
     onData: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('dbai:data', h); return () => ipcRenderer.removeListener('dbai:data', h); },
     onDone: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('dbai:done', h); return () => ipcRenderer.removeListener('dbai:done', h); },
     onError: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('dbai:error', h); return () => ipcRenderer.removeListener('dbai:error', h); },
-  },
-
-  // «Анализ диалогов» — майнинг правил из транскриптов Claude Code (вкладка модуля «Контекст»).
-  ctxmine: {
-    scan: (projPath) => ipcRenderer.invoke('ctxmine:scan', { projPath }),
-    analyze: (reqId, projPath, opts) => ipcRenderer.send('ctxmine:analyze', { reqId, projPath, ...(opts || {}) }),
-    abort: (reqId) => ipcRenderer.send('ctxmine:abort', { reqId }),
-    context: (projPath) => ipcRenderer.invoke('ctxmine:context', { projPath }), // → {global,project,agents} тексты (дедуп B)
-    apply: (projPath, items) => ipcRenderer.invoke('ctxmine:apply', { projPath, items }), // → {ok,applied,errors} (запись A)
-    onProgress: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('ctxmine:progress', h); return () => ipcRenderer.removeListener('ctxmine:progress', h); },
-    onResult: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('ctxmine:result', h); return () => ipcRenderer.removeListener('ctxmine:result', h); },
-    onError: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('ctxmine:error', h); return () => ipcRenderer.removeListener('ctxmine:error', h); },
   },
 
   // «Контекст» — граф контекста агента (renderer/modules/contextgraph.js).
@@ -242,32 +233,6 @@ contextBridge.exposeInMainWorld('lite', {
     scan: (root, opts) => ipcRenderer.invoke('audit:scan', { root, opts }), // → агрегаты | { error }
     export: (content, defaultName) => ipcRenderer.invoke('audit:export', { content, defaultName }), // → {ok,file}|{canceled}|{error}
   },
-  // Монитор ресурсов: снимок Electron-процессов + деревьев PTY (окно-модуль «Монитор»).
-  monitor: {
-    sample: () => ipcRenderer.invoke('monitor:sample'), // → { ok, ts, editor:{procs,totalMem,totalCpu}, pty:{procs,totalMem,totalCpu,note} }
-  },
-  // «Сейф паролей»: расшифровка/копирование в main; пароли записей в рендерер не уходят.
-  keepass: {
-    pick: () => ipcRenderer.invoke('keepass:pick'),                          // выбрать файл → {ok,path,name}|{canceled}
-    open: (p, password) => ipcRenderer.invoke('keepass:open', { path: p, password }), // → {ok,name,entries:[{id,title,username,url,group,fields}]}|{ok:false,error}
-    reveal: (id, field) => ipcRenderer.invoke('keepass:reveal', { id, field }),       // показать конкретное поле → {ok,value}
-    copy: (id, field) => ipcRenderer.invoke('keepass:copy', { id, field }),           // скопировать поле в буфер (авто-очистка) → {ok}
-    lock: () => ipcRenderer.send('keepass:lock'),                            // стереть базу из памяти main
-  },
-  // Мониторинг сайтов (downdetector-стиль): список/правка + фоновые проверки и события в main.
-  sitemon: {
-    list: () => ipcRenderer.invoke('sitemon:list'),
-    add: (name, url, intervalSec) => ipcRenderer.invoke('sitemon:add', { name, url, intervalSec }),
-    edit: (id, patch) => ipcRenderer.invoke('sitemon:edit', { id, ...(patch || {}) }),
-    remove: (id) => ipcRenderer.invoke('sitemon:remove', { id }),
-    checkNow: (id) => ipcRenderer.invoke('sitemon:checkNow', { id }),
-    onUpdate: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('sitemon:update', h); return () => ipcRenderer.removeListener('sitemon:update', h); },
-  },
-  // Заставка «матрица»: репорт активности (любое окно) + команда вкл/выкл от main по бездействию.
-  screensaver: {
-    activity: () => ipcRenderer.send('screensaver:activity'),
-    onSet: (cb) => { const h = (_e, p) => cb(p || {}); ipcRenderer.on('screensaver:set', h); return () => ipcRenderer.removeListener('screensaver:set', h); },
-  },
 
   // «ИИ компания» — директор-агент + сабагенты над проектом (renderer/modules/company.js).
   company: {
@@ -329,12 +294,7 @@ contextBridge.exposeInMainWorld('lite', {
     log: (root, limit) => ipcRenderer.invoke('git:log', { root, limit }),
     init: (root) => ipcRenderer.invoke('git:init', root),
     clone: (root, url) => ipcRenderer.invoke('git:clone', { root, url }),
-    commit: (root, message, push, files, amend) => ipcRenderer.invoke('git:commit', { root, message, push, files, amend }),
-    lastMessage: (root) => ipcRenderer.invoke('git:lastMessage', root),
-    fileLog: (root, file, limit) => ipcRenderer.invoke('git:fileLog', { root, file, limit }),
-    cherryPick: (root, hash) => ipcRenderer.invoke('git:cherryPick', { root, hash }),
-    revertCommit: (root, hash) => ipcRenderer.invoke('git:revertCommit', { root, hash }),
-    commitMsg: (root, hash) => ipcRenderer.invoke('git:commitMsg', { root, hash }),
+    commit: (root, message, push, files) => ipcRenderer.invoke('git:commit', { root, message, push, files }),
     add: (root, files) => ipcRenderer.invoke('git:add', { root, files }),
     conflicts: (root) => ipcRenderer.invoke('git:conflicts', root),
     merge: (root, branch) => ipcRenderer.invoke('git:merge', { root, branch }),
@@ -348,6 +308,7 @@ contextBridge.exposeInMainWorld('lite', {
     discardFile: (root, file) => ipcRenderer.invoke('git:discardFile', { root, file }),
     discardAll: (root) => ipcRenderer.invoke('git:discardAll', root),
     stash: (root) => ipcRenderer.invoke('git:stash', root),
+    stashPop: (root) => ipcRenderer.invoke('git:stashPop', root),
     blame: (root, file) => ipcRenderer.invoke('git:blame', { root, file }), // A7: пер-строчный git blame
     revertHunk: (root, patch) => ipcRenderer.invoke('git:revertHunk', { root, patch }), // C18: откат ханка
     // stash-управление (PhpStorm-style: список + просмотр файлов + apply/pop/drop по индексу)
@@ -359,9 +320,6 @@ contextBridge.exposeInMainWorld('lite', {
     // лог: файлы коммита (дерево) + дифф файла в коммите
     commitFiles: (root, hash) => ipcRenderer.invoke('git:commitFiles', { root, hash }),
     commitFileDiff: (root, hash, file) => ipcRenderer.invoke('git:commitFileDiff', { root, hash, file }),
-    // пары «до/после» для side-by-side диффа
-    filePair: (root, file) => ipcRenderer.invoke('git:filePair', { root, file }),
-    commitFilePair: (root, hash, file) => ipcRenderer.invoke('git:commitFilePair', { root, hash, file }),
     // ветки (local+remote) + операции PhpStorm-style
     branches: (root) => ipcRenderer.invoke('git:branches', root),
     branchRename: (root, from, to) => ipcRenderer.invoke('git:branchRename', { root, from, to }),
@@ -391,9 +349,6 @@ contextBridge.exposeInMainWorld('lite', {
     execKill: (execId) => ipcRenderer.send('containers:execKill', { execId }),
     onExecData: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('containers:execData', h); return () => ipcRenderer.removeListener('containers:execData', h); },
     onExecExit: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('containers:execExit', h); return () => ipcRenderer.removeListener('containers:execExit', h); },
-    inspectDb: (engine, id) => ipcRenderer.invoke('containers:inspectDb', { engine, id }), // заготовка подключения к БД контейнера
-    inspectMq: (engine, id) => ipcRenderer.invoke('containers:inspectMq', { engine, id }), // заготовка профиля RabbitMQ контейнера
-    inspectKafka: (engine, id) => ipcRenderer.invoke('containers:inspectKafka', { engine, id }), // заготовка профиля Kafka контейнера
   },
 
   db: {
@@ -418,67 +373,6 @@ contextBridge.exposeInMainWorld('lite', {
     saveText: (defaultName, text) => ipcRenderer.invoke('db:saveText', { defaultName, text }),
     openText: () => ipcRenderer.invoke('db:openText'),
     chooseDir: () => ipcRenderer.invoke('db:chooseDir'),
-    // «Контейнеры» → «Базы данных»: маршрут через main (окно БД откроется само, очередь до готовности)
-    openFromContainer: (payload) => ipcRenderer.send('db:openFromContainer', payload),
-    onOpenFromContainer: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('db:openFromContainer', h); return () => ipcRenderer.removeListener('db:openFromContainer', h); },
-    panelReady: () => ipcRenderer.send('db:panelReady'),
-  },
-  // RabbitMQ module — server profiles + management HTTP API (lib/rmq.js).
-  rmq: {
-    list: () => ipcRenderer.invoke('rmq:list'),
-    save: (conn) => ipcRenderer.invoke('rmq:save', { conn }),
-    delete: (id) => ipcRenderer.invoke('rmq:delete', { id }),
-    test: (conn) => ipcRenderer.invoke('rmq:test', { conn }),
-    overview: (id, age) => ipcRenderer.invoke('rmq:overview', { id, age }),
-    vhosts: (id) => ipcRenderer.invoke('rmq:vhosts', { id }),
-    queues: (id, vhost, spark) => ipcRenderer.invoke('rmq:queues', { id, vhost, spark }),
-    exchanges: (id, vhost) => ipcRenderer.invoke('rmq:exchanges', { id, vhost }),
-    connections: (id) => ipcRenderer.invoke('rmq:connections', { id }),
-    queueBindings: (id, vhost, queue) => ipcRenderer.invoke('rmq:queueBindings', { id, vhost, queue }),
-    peek: (id, vhost, queue, count) => ipcRenderer.invoke('rmq:peek', { id, vhost, queue, count }),
-    publish: (id, vhost, exchange, routingKey, payload, properties) => ipcRenderer.invoke('rmq:publish', { id, vhost, exchange, routingKey, payload, properties }),
-    purge: (id, vhost, queue) => ipcRenderer.invoke('rmq:purge', { id, vhost, queue }),
-    deleteQueue: (id, vhost, queue) => ipcRenderer.invoke('rmq:deleteQueue', { id, vhost, queue }),
-    killConnection: (id, name) => ipcRenderer.invoke('rmq:killConnection', { id, name }),
-    // live-tail exchange: временная очередь → стрим сообщений в окно
-    tailStart: (id, vhost, exchange, routingKey, streamId) => ipcRenderer.invoke('rmq:tailStart', { id, vhost, exchange, routingKey, streamId }),
-    tailStop: (streamId) => ipcRenderer.send('rmq:tailStop', { streamId }),
-    onTailData: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('rmq:tailData', h); return () => ipcRenderer.removeListener('rmq:tailData', h); },
-    onTailExit: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('rmq:tailExit', h); return () => ipcRenderer.removeListener('rmq:tailExit', h); },
-    // «Контейнеры» → RabbitMQ: маршрут через main (окно откроется само, очередь до готовности)
-    openFromContainer: (payload) => ipcRenderer.send('rmq:openFromContainer', payload),
-    onOpenFromContainer: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('rmq:openFromContainer', h); return () => ipcRenderer.removeListener('rmq:openFromContainer', h); },
-    panelReady: () => ipcRenderer.send('rmq:panelReady'),
-  },
-  // Kafka module — cluster profiles + kafkajs admin/consumer/producer (lib/kafka.js).
-  kafka: {
-    list: () => ipcRenderer.invoke('kafka:list'),
-    save: (conn) => ipcRenderer.invoke('kafka:save', { conn }),
-    delete: (id) => ipcRenderer.invoke('kafka:delete', { id }),
-    test: (conn) => ipcRenderer.invoke('kafka:test', { conn }),
-    overview: (id) => ipcRenderer.invoke('kafka:overview', { id }),
-    topics: (id, internal) => ipcRenderer.invoke('kafka:topics', { id, internal }),
-    topicDetail: (id, topic) => ipcRenderer.invoke('kafka:topicDetail', { id, topic }),
-    createTopic: (id, opts) => ipcRenderer.invoke('kafka:createTopic', { id, ...(opts || {}) }),
-    deleteTopic: (id, topic) => ipcRenderer.invoke('kafka:deleteTopic', { id, topic }),
-    addPartitions: (id, topic, count) => ipcRenderer.invoke('kafka:addPartitions', { id, topic, count }),
-    purgeTopic: (id, topic) => ipcRenderer.invoke('kafka:purgeTopic', { id, topic }),
-    setTopicConfig: (id, topic, name, value) => ipcRenderer.invoke('kafka:setTopicConfig', { id, topic, name, value }),
-    groups: (id) => ipcRenderer.invoke('kafka:groups', { id }),
-    groupDetail: (id, groupId) => ipcRenderer.invoke('kafka:groupDetail', { id, groupId }),
-    resetOffsets: (id, groupId, topic, to) => ipcRenderer.invoke('kafka:resetOffsets', { id, groupId, topic, to }),
-    deleteGroup: (id, groupId) => ipcRenderer.invoke('kafka:deleteGroup', { id, groupId }),
-    peek: (id, topic, count, from) => ipcRenderer.invoke('kafka:peek', { id, topic, count, from }),
-    produce: (id, opts) => ipcRenderer.invoke('kafka:produce', { id, ...(opts || {}) }),
-    // live-tail топика: эфемерная группа с конца → стрим сообщений в окно
-    tailStart: (id, topic, streamId) => ipcRenderer.invoke('kafka:tailStart', { id, topic, streamId }),
-    tailStop: (streamId) => ipcRenderer.send('kafka:tailStop', { streamId }),
-    onTailData: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('kafka:tailData', h); return () => ipcRenderer.removeListener('kafka:tailData', h); },
-    onTailExit: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('kafka:tailExit', h); return () => ipcRenderer.removeListener('kafka:tailExit', h); },
-    // «Контейнеры» → Kafka: маршрут через main (окно откроется само, очередь до готовности)
-    openFromContainer: (payload) => ipcRenderer.send('kafka:openFromContainer', payload),
-    onOpenFromContainer: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('kafka:openFromContainer', h); return () => ipcRenderer.removeListener('kafka:openFromContainer', h); },
-    panelReady: () => ipcRenderer.send('kafka:panelReady'),
   },
   // RemoteHost module — SSH connection profiles + live shell sessions.
   rh: {
@@ -544,10 +438,6 @@ contextBridge.exposeInMainWorld('lite', {
     // Вивер: рекурсивный листинг (Ctrl+P), поиск по проекту (grep), сравнение двух файлов.
     listAll: (root) => ipcRenderer.invoke('files:listAll', root),
     search: (root, query, opts) => ipcRenderer.invoke('files:search', { root, query, opts }),
-    replace: (root, query, opts, replacement, targets) => ipcRenderer.invoke('files:replace', { root, query, opts, replacement, targets }),
     diffPair: (a, b) => ipcRenderer.invoke('files:diffPair', { a, b }),
-    // Локальная история файла (снапшоты автосейва/внешних правок).
-    histList: (file) => ipcRenderer.invoke('hist:list', file),
-    histRead: (file, name) => ipcRenderer.invoke('hist:read', { file, name }),
   },
 });
