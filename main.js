@@ -2605,11 +2605,13 @@ ipcMain.on('editor:openInViewer', (_e, payload) => routeOpenInViewer(payload));
 // каждый экспорт в своей подпапке) и роутим обычный openInViewer. Используют: экспорт результата
 // SQL-запроса (CSV/JSON), просмотр файла из контейнера, правка удалённого файла (SFTP) и т.п.
 function stageTextForViewer(name, content) {
+  // Контент бывает чувствительным (SQL-выгрузки, конфиги с хоста) → каталог 0700 / файл 0600,
+  // имя каталога — из CSPRNG (общий /tmp, соседний юзер не должен ни читать, ни угадать путь).
   const base = String(name || 'export.txt').replace(/[\/\\:*?"<>|]/g, '_').slice(0, 120) || 'export.txt';
-  const dir = path.join(os.tmpdir(), 'lite-editor-view', Date.now().toString(36) + Math.floor(Math.random() * 1e4).toString(36));
-  fs.mkdirSync(dir, { recursive: true });
+  const dir = path.join(os.tmpdir(), 'lite-editor-view', Date.now().toString(36) + crypto.randomBytes(9).toString('hex'));
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   const file = path.join(dir, base);
-  fs.writeFileSync(file, String(content == null ? '' : content), 'utf8');
+  fs.writeFileSync(file, String(content == null ? '' : content), { encoding: 'utf8', mode: 0o600 });
   return file;
 }
 ipcMain.handle('editor:openTextInViewer', (_e, { name, content } = {}) => {
