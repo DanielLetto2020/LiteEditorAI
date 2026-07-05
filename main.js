@@ -3,7 +3,7 @@
 const { app, BrowserWindow, ipcMain, dialog, shell, Menu, clipboard, screen, Tray, nativeImage, crashReporter, safeStorage, Notification } = require('electron');
 const dbBackend = require('./lib/db');
 const rhBackend = require('./lib/remotehost');
-const { guessDbKind, dbPrefillFromInspect, guessMqKind, rmqPrefillFromInspect, kafkaPrefillFromInspect } = require('./lib/dbdetect'); // «Контейнеры» → «Базы данных»/«RabbitMQ»/«Kafka»
+const { guessDbKind, dbPrefillFromInspect, guessMqKind, rmqPrefillFromInspect, kafkaPrefillFromInspect, guessWebKind, webPrefillFromInspect } = require('./lib/dbdetect'); // «Контейнеры» → «Базы данных»/«RabbitMQ»/«Kafka»/«Мониторинг сайтов»
 const rmqBackend = require('./lib/rmq');
 const kafkaBackend = require('./lib/kafka');
 const path = require('path');
@@ -2601,6 +2601,38 @@ function routeOpenInViewer(payload) {
   else pendingViewerOpens.push(payload); // флашнем по editor:viewerReady
 }
 ipcMain.on('editor:openInViewer', (_e, payload) => routeOpenInViewer(payload));
+// Открыть ПРОИЗВОЛЬНЫЙ ТЕКСТ в вивере: пишем во временный файл (человеческое имя сохраняется —
+// каждый экспорт в своей подпапке) и роутим обычный openInViewer. Используют: экспорт результата
+// SQL-запроса (CSV/JSON), просмотр файла из контейнера, правка удалённого файла (SFTP) и т.п.
+function stageTextForViewer(name, content) {
+  const base = String(name || 'export.txt').replace(/[\/\\:*?"<>|]/g, '_').slice(0, 120) || 'export.txt';
+  const dir = path.join(os.tmpdir(), 'lite-editor-view', Date.now().toString(36) + Math.floor(Math.random() * 1e4).toString(36));
+  fs.mkdirSync(dir, { recursive: true });
+  const file = path.join(dir, base);
+  fs.writeFileSync(file, String(content == null ? '' : content), 'utf8');
+  return file;
+}
+ipcMain.handle('editor:openTextInViewer', (_e, { name, content } = {}) => {
+  try {
+    const file = stageTextForViewer(name, content);
+    routeOpenInViewer({ path: file });
+    return { ok: true, file };
+  } catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
+});
+// Правка удалённого файла в вивере (SFTP/FTP): tmp-копия → вивер; каждое сохранение tmp-файла
+// (fs:writeFile ловит по этой карте) заливается обратно на хост. Карта живёт до конца процесса.
+const remoteViewerFiles = new Map(); // tmpFile -> { rhId, remotePath }
+ipcMain.handle('rh:fsOpenInViewer', async (_e, { id, path: p } = {}) => {
+  try {
+    const r = await rhApi.readFile(id, p);
+    if (!r || r.error) return { ok: false, error: (r && r.error) || 'не удалось прочитать файл' };
+    if (r.binary) return { ok: false, error: 'Бинарный файл — в вивере не редактируется' };
+    const file = stageTextForViewer(path.posix.basename(String(p || '')) || 'remote.txt', r.content || '');
+    remoteViewerFiles.set(file, { rhId: id, remotePath: p });
+    routeOpenInViewer({ path: file });
+    return { ok: true, file };
+  } catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
+});
 ipcMain.on('editor:refreshTree', (_e, payload) => { const w = filesWindow(); if (w) w.webContents.send('editor:refreshTree', payload); });
 // «Git» из редактора: открыть окно вивера (если закрыто) и переключить его на секцию «Коммит».
 ipcMain.on('editor:focusGit', () => {
@@ -2630,6 +2662,16 @@ ipcMain.on('db:panelReady', () => {
   dbPanelReady = true;
   const w = dbModWindow();
   while (w && pendingDbOpens.length) { w.focus(); w.webContents.send('db:openFromContainer', pendingDbOpens.shift()); }
+  while (w && pendingDbSql.length) { w.focus(); w.webContents.send('db:openSql', pendingDbSql.shift()); }
+});
+// Вивер → «Базы данных»: выполнить SQL на выбранном подключении (та же очередь до готовности окна).
+const pendingDbSql = [];
+ipcMain.on('db:openSql', (_e, payload) => {
+  if (!payload || typeof payload !== 'object') return;
+  if (!dbModWindow()) openModuleWindow('db');
+  const w = dbModWindow();
+  if (w && dbPanelReady) { if (w.isMinimized()) w.restore(); w.focus(); w.webContents.send('db:openSql', payload); }
+  else pendingDbSql.push(payload);
 });
 // «Контейнеры» → «RabbitMQ»: тот же паттерн, что и с БД выше.
 let rmqPanelReady = false;
@@ -2967,8 +3009,31 @@ function ensureKdbx() {
   return _kdbxweb;
 }
 let kpDb = null; let kpClipTimer = null;
+let kpDbFile = null, kpDbName = null; // путь/имя открытой базы (status + запись новых записей)
 const kpEntryById = new Map(); // uuid.id -> entry (живёт в main, в рендерер не отдаём)
 function kpVal(en, field) { const v = en.fields.get(field); return v && typeof v.getText === 'function' ? v.getText() : (v == null ? '' : String(v)); }
+// Метаданные записей открытой базы (секретные значения полей НЕ отдаём) + перестройка kpEntryById.
+function kpListEntries() {
+  kpEntryById.clear();
+  const entries = [];
+  const walk = (g, prefix) => {
+    const gp = prefix ? prefix + ' / ' + (g.name || '') : (g.name || '');
+    for (const en of g.entries) {
+      const id = en.uuid && en.uuid.id; if (!id) continue;
+      kpEntryById.set(id, en);
+      const fields = [];
+      for (const [k, v] of en.fields) {
+        if (k === 'Title') continue;
+        const secret = !!(v && typeof v.getText === 'function');
+        if (secret || (v != null && String(v) !== '')) fields.push({ name: k, secret, value: secret ? null : String(v) }); // секретные значения НЕ отдаём
+      }
+      entries.push({ id, title: kpVal(en, 'Title') || '(без названия)', username: kpVal(en, 'UserName'), url: kpVal(en, 'URL'), group: gp, fields });
+    }
+    for (const sg of g.groups) walk(sg, gp);
+  };
+  walk(kpDb.getDefaultGroup(), '');
+  return entries;
+}
 
 ipcMain.handle('keepass:pick', async () => {
   const res = await dialog.showOpenDialog(mainWindow, {
@@ -2988,25 +3053,8 @@ ipcMain.handle('keepass:open', async (_e, { path: file, password } = {}) => {
     const ab = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
     const cred = new kw.Credentials(kw.ProtectedValue.fromString(String(password || '')));
     const db = await kw.Kdbx.load(ab, cred);   // мастер-пароль использован только здесь, не сохраняем
-    kpDb = db; kpEntryById.clear();
-    const entries = [];
-    const walk = (g, prefix) => {
-      const gp = prefix ? prefix + ' / ' + (g.name || '') : (g.name || '');
-      for (const en of g.entries) {
-        const id = en.uuid && en.uuid.id; if (!id) continue;
-        kpEntryById.set(id, en);
-        const fields = [];
-        for (const [k, v] of en.fields) {
-          if (k === 'Title') continue;
-          const secret = !!(v && typeof v.getText === 'function');
-          if (secret || (v != null && String(v) !== '')) fields.push({ name: k, secret, value: secret ? null : String(v) }); // секретные значения НЕ отдаём
-        }
-        entries.push({ id, title: kpVal(en, 'Title') || '(без названия)', username: kpVal(en, 'UserName'), group: gp, fields });
-      }
-      for (const sg of g.groups) walk(sg, gp);
-    };
-    walk(db.getDefaultGroup(), '');
-    return { ok: true, name: path.basename(file), entries };
+    kpDb = db; kpDbFile = file; kpDbName = path.basename(file);
+    return { ok: true, name: kpDbName, entries: kpListEntries() };
   } catch (err) {
     const code = err && err.code;
     return { ok: false, error: code === 'InvalidKey' ? 'Неверный мастер-пароль' : ('Не удалось открыть базу: ' + ((err && err.message) || err)) };
@@ -3024,7 +3072,39 @@ ipcMain.handle('keepass:copy', (_e, { id, field } = {}) => {
   kpClipTimer = setTimeout(() => { try { if (clipboard.readText() === val) clipboard.writeText(''); } catch (_) {} }, 20000); // авто-очистка
   return { ok: true };
 });
-ipcMain.on('keepass:lock', () => { kpDb = null; kpEntryById.clear(); if (kpClipTimer) { clearTimeout(kpClipTimer); kpClipTimer = null; } });
+ipcMain.on('keepass:lock', () => { kpDb = null; kpDbFile = null; kpDbName = null; kpEntryById.clear(); if (kpClipTimer) { clearTimeout(kpClipTimer); kpClipTimer = null; } });
+// --- Шов «из сейфа» для форм подключений (db/rmq/kafka/rh): пикер записей в чужом окне.
+ipcMain.handle('keepass:status', () => ({ open: !!kpDb, name: kpDbName }));
+ipcMain.handle('keepass:entries', () => {
+  if (!kpDb) return { ok: false, closed: true, error: 'База не открыта' };
+  try { return { ok: true, name: kpDbName, entries: kpListEntries() }; }
+  catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
+});
+// Креды записи для автозаполнения формы подключения. Пароль уходит в рендерер ФОРМЫ — ровно тот же
+// путь, что и ручной ввод пароля в это поле (дальше он шифруется в safeStorage при сохранении).
+ipcMain.handle('keepass:cred', (_e, { id } = {}) => {
+  const en = kpEntryById.get(id); if (!en) return { ok: false, error: 'нет записи' };
+  return { ok: true, username: kpVal(en, 'UserName'), password: kpVal(en, 'Password'), url: kpVal(en, 'URL') };
+});
+// Новая запись в открытую базу (кнопка «в сейф» в формах подключений). Перед записью — бэкап
+// рядом с базой (страховка от порчи ценного файла), затем kdbxweb save → перезапись .kdbx.
+ipcMain.handle('keepass:add', async (_e, { title, username, password, url, notes } = {}) => {
+  if (!kpDb || !kpDbFile) return { ok: false, closed: true, error: 'База не открыта' };
+  try {
+    const kw = ensureKdbx();
+    const en = kpDb.createEntry(kpDb.getDefaultGroup());
+    en.fields.set('Title', String(title || 'Без названия'));
+    if (username) en.fields.set('UserName', String(username));
+    if (password) en.fields.set('Password', kw.ProtectedValue.fromString(String(password)));
+    if (url) en.fields.set('URL', String(url));
+    if (notes) en.fields.set('Notes', String(notes));
+    try { fs.copyFileSync(kpDbFile, kpDbFile + '.lite-bak'); } catch (_) {} // best-effort бэкап
+    const ab = await kpDb.save();
+    fs.writeFileSync(kpDbFile, Buffer.from(ab));
+    kpListEntries(); // перестроить карту id → entry (включая новую запись)
+    return { ok: true };
+  } catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
+});
 
 // ---------------------------------------------------------------- заставка «матрица» (кросс-оконный простой)
 // Активность ЛЮБОГО окна (редактор + окна модулей) шлёт screensaver:activity → обновляем метку простоя
@@ -3134,6 +3214,14 @@ ipcMain.handle('fs:writeFile', async (_e, { file, content }) => {
   try {
     await histSnapshotFromDisk(file, 'save');   // локальная история: состояние ДО записи (best-effort)
     await fs.promises.writeFile(file, content, 'utf8');
+    // tmp-копия удалённого файла (открыт из «Удалённых хостов») → залить обратно на хост.
+    // Локальная запись удалась в любом случае; упавшая заливка = честная ошибка сохранения
+    // (вивер оставит dirty-точку и покажет тост), чтобы правка не «потерялась» молча.
+    const remote = remoteViewerFiles.get(file);
+    if (remote) {
+      const w = await rhApi.writeFile(remote.rhId, remote.remotePath, content);
+      if (!w || !w.ok) return { error: 'Записано локально, но НЕ залито на хост: ' + ((w && w.error) || 'ошибка соединения') };
+    }
     return { ok: true };
   } catch (err) { return { error: String(err.message || err) }; }
 });
@@ -4731,15 +4819,57 @@ ipcMain.handle('git:branchDiffWorktree', async (_e, { root, branch } = {}) => {
 // Lightweight container manager — a desktop-GUI replacement. Read-only listing + basic
 // lifecycle actions, shelled out to the docker/podman CLIs (no daemon socket, no extra deps).
 // execFile (no shell) + an {engine} whitelist make CLI-arg injection a non-issue.
+//
+// Удалённый контекст («Удалённые хосты» → Контейнеры): SSH-туннель до docker/podman-сокета хоста
+// (rh:sockTunnel), все CLI-вызовы идут с DOCKER_HOST/CONTAINER_HOST=tcp://127.0.0.1:<port>.
+// Контекст один на процесс (окно «Контейнеры» одно на тип); opts.local=true обходит подмену.
+let containersRemote = null; // { rhId, name, tunId, port, cli }
+function cRemoteCtx(cli, baseEnv) {
+  if (!containersRemote) return { cli, env: undefined };
+  const env = { ...(baseEnv || process.env) };
+  if (containersRemote.cli === 'docker') env.DOCKER_HOST = 'tcp://127.0.0.1:' + containersRemote.port;
+  else env.CONTAINER_HOST = 'tcp://127.0.0.1:' + containersRemote.port;
+  return { cli: containersRemote.cli, env };
+}
 function containerRun(cli, args, opts = {}) {
+  const ctx = opts.local ? { cli } : cRemoteCtx(cli);
   return new Promise((resolve) => {
-    execFile(cli, args, { timeout: opts.timeout || 15000, maxBuffer: 24 * 1024 * 1024, windowsHide: true },
+    execFile(ctx.cli, args, { timeout: opts.timeout || 15000, maxBuffer: 24 * 1024 * 1024, windowsHide: true, env: ctx.env },
       (err, stdout, stderr) => resolve({
         ok: !err, out: (stdout || '').trim(),
         error: err ? ((stderr || '').trim() || String(err.message || err)) : '',
       }));
   });
 }
+// Переключить окно «Контейнеры» на docker/podman удалённого хоста (или назад на локальный, rhId=null).
+ipcMain.handle('containers:remoteSet', async (_e, { rhId } = {}) => {
+  if (!rhId) {
+    if (containersRemote) { try { rhApi.closeTunnel(containersRemote.tunId); } catch (_) {} containersRemote = null; }
+    return { ok: true, rhId: null };
+  }
+  const conn = rhApi.findConn(rhId);
+  if (!conn) return { ok: false, error: 'SSH-профиль не найден' };
+  const scan = await rhApi.scan(rhId);
+  if (!scan.ok) return { ok: false, error: 'Скан хоста не удался: ' + (scan.error || '') };
+  const sockPath = (scan.sockets && (scan.sockets.docker || scan.sockets.podman)) || null;
+  if (!sockPath) return { ok: false, error: 'На хосте нет docker/podman-сокета (docker.sock / podman.sock не найдены)' };
+  const isPodman = sockPath.includes('podman');
+  // Локальный клиент: docker CLI говорит и с Docker, и с podman-сокетом (compat API);
+  // podman CLI (remote) — только с podman-сервисом.
+  const probe = (cli) => containerRun(cli, ['--version'], { timeout: 5000, local: true });
+  let cli = null;
+  if ((await probe('docker')).ok) cli = 'docker';
+  else if (isPodman && (await probe('podman')).ok) cli = 'podman';
+  if (!cli) return { ok: false, error: isPodman ? 'Нужен локальный docker или podman CLI' : 'Удалённый демон — Docker: нужен локальный docker CLI' };
+  const t = await rhApi.sockTunnel(rhId, sockPath, 'containers: ' + (conn.name || conn.host));
+  if (!t.ok) return { ok: false, error: 'Туннель до сокета не поднялся: ' + (t.error || '') };
+  if (containersRemote) { try { rhApi.closeTunnel(containersRemote.tunId); } catch (_) {} }
+  containersRemote = { rhId, name: conn.name || conn.host, tunId: t.tunId, port: t.port, cli };
+  return { ok: true, rhId, name: containersRemote.name, engine: cli };
+});
+ipcMain.handle('containers:remoteStatus', () => (containersRemote
+  ? { rhId: containersRemote.rhId, name: containersRemote.name, engine: containersRemote.cli }
+  : { rhId: null }));
 const cFirstLine = (s) => String(s || '').split('\n')[0].trim();
 function cHumanSize(bytes) { // podman reports image size in bytes; docker is already human
   const n = Number(bytes); if (!Number.isFinite(n) || n <= 0) return '';
@@ -4787,14 +4917,14 @@ async function cListContainers(engine) {
     const r = await containerRun('docker', ['ps', '-a', '--format', '{{json .}}'], { timeout: 12000 });
     if (!r.ok) return { error: r.error };
     return { items: cParseLines(r.out).map((c) => { const L = cLabelMap(c.Labels);
-      return { id: c.ID, name: c.Names, image: c.Image, state: String(c.State || '').toLowerCase(), status: c.Status, ports: c.Ports || '', project: L[C_PROJECT] || '', service: L[C_SERVICE] || '', dbKind: guessDbKind(c.Image, c.Ports), mqKind: guessMqKind(c.Image, c.Ports) }; }) };
+      return { id: c.ID, name: c.Names, image: c.Image, state: String(c.State || '').toLowerCase(), status: c.Status, ports: c.Ports || '', project: L[C_PROJECT] || '', service: L[C_SERVICE] || '', dbKind: guessDbKind(c.Image, c.Ports), mqKind: guessMqKind(c.Image, c.Ports), webKind: guessWebKind(c.Image, c.Ports) }; }) };
   }
   const r = await containerRun('podman', ['ps', '-a', '--format', 'json'], { timeout: 12000 });
   if (!r.ok) return { error: r.error };
   return { items: cParseJson(r.out).map((c) => { const L = c.Labels || {};
     const name = Array.isArray(c.Names) ? c.Names[0] : (c.Names || c.Name || '');
     const ports = Array.isArray(c.Ports) ? c.Ports.map((p) => `${p.host_port || p.hostPort || ''}${(p.host_port || p.hostPort) ? ':' : ''}${p.container_port || p.containerPort || ''}`).filter((s) => s && s !== ':').join(', ') : '';
-    return { id: c.Id || c.ID, name, image: c.Image, state: String(c.State || '').toLowerCase(), status: c.Status || c.State, ports, project: L[C_PROJECT] || L['io.podman.compose.project'] || '', service: L[C_SERVICE] || '', dbKind: guessDbKind(c.Image, ports), mqKind: guessMqKind(c.Image, ports) }; }) };
+    return { id: c.Id || c.ID, name, image: c.Image, state: String(c.State || '').toLowerCase(), status: c.Status || c.State, ports, project: L[C_PROJECT] || L['io.podman.compose.project'] || '', service: L[C_SERVICE] || '', dbKind: guessDbKind(c.Image, ports), mqKind: guessMqKind(c.Image, ports), webKind: guessWebKind(c.Image, ports) }; }) };
 }
 async function cListPods() {
   const r = await containerRun('podman', ['pod', 'ps', '--format', 'json'], { timeout: 10000 });
@@ -4879,7 +5009,8 @@ ipcMain.handle('containers:logsStart', (e, { engine, id, streamId, tail } = {}) 
   if (engine !== 'docker' && engine !== 'podman') return { error: 'bad engine' };
   if (!id || !streamId) return { error: 'bad args' };
   let cp;
-  try { cp = spawn(engine, ['logs', '-f', '--tail', String(Math.max(1, Math.min(5000, parseInt(tail, 10) || 500))), id], { windowsHide: true }); }
+  const lctx = cRemoteCtx(engine); // удалённый контекст: стрим логов тоже через туннель к сокету
+  try { cp = spawn(lctx.cli, ['logs', '-f', '--tail', String(Math.max(1, Math.min(5000, parseInt(tail, 10) || 500))), id], { windowsHide: true, env: lctx.env }); }
   catch (e2) { return { error: String(e2.message || e2) }; }
   const sender = e.sender; // окно-владелец (редактор ИЛИ окно модуля «Контейнеры») — стрим уходит туда
   const send = (d) => safeSend(sender, 'containers:logsData', { streamId, data: d.toString('utf8') });
@@ -4894,9 +5025,10 @@ ipcMain.handle('containers:execStart', (e, { engine, id, execId, cols, rows } = 
   if (engine !== 'docker' && engine !== 'podman') return { error: 'bad engine' };
   if (!id || !execId) return { error: 'bad args' };
   let proc;
+  const xctx = cRemoteCtx(engine, userShellEnv()); // удалённый контекст: exec-терминал через туннель к сокету
   try {
-    proc = pty.spawn(engine, ['exec', '-it', id, 'sh', '-c', 'command -v bash >/dev/null 2>&1 && exec bash || exec sh'],
-      { name: 'xterm-color', cols: cols || 80, rows: rows || 24, env: userShellEnv() });
+    proc = pty.spawn(xctx.cli, ['exec', '-it', id, 'sh', '-c', 'command -v bash >/dev/null 2>&1 && exec bash || exec sh'],
+      { name: 'xterm-color', cols: cols || 80, rows: rows || 24, env: xctx.env || userShellEnv() });
   } catch (e2) { return { error: String(e2.message || e2) }; }
   const sender = e.sender; // окно-владелец exec-терминала
   proc.onData((d) => safeSend(sender, 'containers:execData', { execId, data: d }));
@@ -4957,6 +5089,49 @@ ipcMain.handle('containers:inspectKafka', async (_e, { engine, id } = {}) => {
   const res = kafkaPrefillFromInspect(info, engine);
   if (!res) return { ok: false, error: 'В контейнере не распознан Kafka' };
   return { ok: true, ...res };
+});
+// «Наблюдать в Мониторинге сайтов»: inspect контейнера → URL веб-интерфейса по published-порту.
+ipcMain.handle('containers:inspectWeb', async (_e, { engine, id } = {}) => {
+  if (engine !== 'docker' && engine !== 'podman') return { ok: false, error: 'bad engine' };
+  if (!id || typeof id !== 'string') return { ok: false, error: 'no id' };
+  const r = await containerRun(engine, ['inspect', id], { timeout: 12000 });
+  if (!r.ok) return { ok: false, error: r.error };
+  const info = cParseJson(r.out)[0];
+  if (!info) return { ok: false, error: 'inspect вернул пустой ответ' };
+  const res = webPrefillFromInspect(info, engine);
+  if (!res) return { ok: false, error: 'В контейнере не распознан веб-сервис' };
+  return { ok: true, ...res };
+});
+// Файлы контейнера: листинг и просмотр через `exec ls/cat` (без шелла на нашей стороне —
+// execFile передаёт путь одним аргументом). Работает только на запущенном контейнере,
+// внутри должен быть ls/cat (busybox достаточно; distroless честно вернёт ошибку).
+ipcMain.handle('containers:fsList', async (_e, { engine, id, path: p } = {}) => {
+  if (engine !== 'docker' && engine !== 'podman') return { ok: false, error: 'bad engine' };
+  if (!id || typeof id !== 'string') return { ok: false, error: 'no id' };
+  const dir = String(p || '/');
+  const r = await containerRun(engine, ['exec', id, 'ls', '-1Ap', dir], { timeout: 12000 });
+  if (!r.ok) return { ok: false, error: r.error || 'ls не выполнился (контейнер запущен?)' };
+  const entries = [];
+  for (const ln of r.out.split('\n')) {
+    const name = ln.trim(); if (!name) continue;
+    const isDir = name.endsWith('/');
+    entries.push({ name: isDir ? name.slice(0, -1) : name, dir: isDir });
+  }
+  entries.sort((a, b) => (a.dir === b.dir ? a.name.localeCompare(b.name) : (a.dir ? -1 : 1)));
+  return { ok: true, path: dir, entries };
+});
+ipcMain.handle('containers:fsOpenInViewer', async (_e, { engine, id, path: p } = {}) => {
+  if (engine !== 'docker' && engine !== 'podman') return { ok: false, error: 'bad engine' };
+  if (!id || typeof id !== 'string' || !p) return { ok: false, error: 'no id/path' };
+  const r = await containerRun(engine, ['exec', id, 'cat', String(p)], { timeout: 15000 });
+  if (!r.ok) return { ok: false, error: r.error || 'cat не выполнился (контейнер запущен?)' };
+  if (r.out.length > MAX_VIEW_BYTES) return { ok: false, error: 'Файл слишком большой для просмотра (> 2 МБ)' };
+  if (r.out.slice(0, 8192).includes('\0')) return { ok: false, error: 'Бинарный файл — просмотр не поддерживается' };
+  try {
+    const file = stageTextForViewer(String(p).split('/').filter(Boolean).pop() || 'container.txt', r.out);
+    routeOpenInViewer({ path: file });
+    return { ok: true, file };
+  } catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
 });
 
 ipcMain.handle('shell:openPath', (_e, target) => {

@@ -64,6 +64,9 @@ contextBridge.exposeInMainWorld('lite', {
   // on-side слушает редактор.
   editorBus: {
     openInViewer: (filePath, line) => ipcRenderer.send('editor:openInViewer', { path: filePath, line }),
+    // Открыть ТЕКСТ в вивере: main пишет его во временный файл экспорта и роутит openInViewer
+    // (результат SQL-запроса как CSV/JSON, кат файла из контейнера и т.п.).
+    openTextInViewer: (name, content) => ipcRenderer.invoke('editor:openTextInViewer', { name, content }),
     sendToTerminal: (text) => ipcRenderer.send('editor:sendToTerminal', { text }),
     sendNoteToTerminal: (projId, text) => ipcRenderer.send('editor:sendNoteToTerminal', { projId, text }),
     refreshTree: () => ipcRenderer.send('editor:refreshTree', {}),
@@ -256,6 +259,12 @@ contextBridge.exposeInMainWorld('lite', {
     reveal: (id, field) => ipcRenderer.invoke('keepass:reveal', { id, field }),       // показать конкретное поле → {ok,value}
     copy: (id, field) => ipcRenderer.invoke('keepass:copy', { id, field }),           // скопировать поле в буфер (авто-очистка) → {ok}
     lock: () => ipcRenderer.send('keepass:lock'),                            // стереть базу из памяти main
+    // Шов «из сейфа» для форм подключений (db/rmq/kafka/rh): статус открытой базы, метаданные
+    // записей, креды записи (login+password — как ручной ввод в форму) и добавление записи.
+    status: () => ipcRenderer.invoke('keepass:status'),                      // → {open,name}
+    entries: () => ipcRenderer.invoke('keepass:entries'),                    // метаданные записей открытой базы → {ok,name,entries}
+    cred: (id) => ipcRenderer.invoke('keepass:cred', { id }),                // → {ok,username,password,url}
+    add: (entry) => ipcRenderer.invoke('keepass:add', entry),                // {title,username,password,url,notes} → {ok}
   },
   // Мониторинг сайтов (downdetector-стиль): список/правка + фоновые проверки и события в main.
   sitemon: {
@@ -397,6 +406,13 @@ contextBridge.exposeInMainWorld('lite', {
     inspectDb: (engine, id) => ipcRenderer.invoke('containers:inspectDb', { engine, id }), // заготовка подключения к БД контейнера
     inspectMq: (engine, id) => ipcRenderer.invoke('containers:inspectMq', { engine, id }), // заготовка профиля RabbitMQ контейнера
     inspectKafka: (engine, id) => ipcRenderer.invoke('containers:inspectKafka', { engine, id }), // заготовка профиля Kafka контейнера
+    inspectWeb: (engine, id) => ipcRenderer.invoke('containers:inspectWeb', { engine, id }), // URL веб-интерфейса контейнера (→ «Мониторинг сайтов»)
+    // Файлы контейнера (exec ls/cat): листинг каталога и открытие файла в вивере (tmp-копия, read-only).
+    fsList: (engine, id, path) => ipcRenderer.invoke('containers:fsList', { engine, id, path }),
+    fsOpenInViewer: (engine, id, path) => ipcRenderer.invoke('containers:fsOpenInViewer', { engine, id, path }),
+    // Удалённый контекст: контейнеры хоста по SSH (туннель до docker/podman-сокета в main).
+    remoteSet: (rhId) => ipcRenderer.invoke('containers:remoteSet', { rhId }),   // rhId=null → назад к локальному
+    remoteStatus: () => ipcRenderer.invoke('containers:remoteStatus'),           // → {rhId,name}|{rhId:null}
   },
 
   db: {
@@ -425,6 +441,9 @@ contextBridge.exposeInMainWorld('lite', {
     openFromContainer: (payload) => ipcRenderer.send('db:openFromContainer', payload),
     onOpenFromContainer: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('db:openFromContainer', h); return () => ipcRenderer.removeListener('db:openFromContainer', h); },
     panelReady: () => ipcRenderer.send('db:panelReady'),
+    // Вивер → «Базы данных»: выполнить SQL на выбранном подключении (та же очередь до готовности окна)
+    openSql: (connId, sql) => ipcRenderer.send('db:openSql', { connId, sql }),
+    onOpenSql: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('db:openSql', h); return () => ipcRenderer.removeListener('db:openSql', h); },
   },
   // RabbitMQ module — server profiles + management HTTP API (lib/rmq.js).
   rmq: {
@@ -498,6 +517,15 @@ contextBridge.exposeInMainWorld('lite', {
     fsList: (id, path) => ipcRenderer.invoke('rh:fsList', { id, path }),
     fsRead: (id, path) => ipcRenderer.invoke('rh:fsRead', { id, path }),
     fsClose: (id) => ipcRenderer.send('rh:fsClose', { id }),
+    // Запись файла на хост (SFTP/FTP) + открытие удалённого файла в вивере (tmp-копия, save-back в main).
+    fsWrite: (id, path, content) => ipcRenderer.invoke('rh:fsWrite', { id, path, content }),
+    fsOpenInViewer: (id, path) => ipcRenderer.invoke('rh:fsOpenInViewer', { id, path }),
+    // Сервисы хоста: exec-команда, скан слушающих портов/сокетов, SSH-туннели до сервисов.
+    exec: (id, cmd) => ipcRenderer.invoke('rh:exec', { id, cmd }),                    // → {ok,code,stdout,stderr}
+    services: (id) => ipcRenderer.invoke('rh:services', { id }),                      // → {ok,services:[{kind,port,...}]}
+    tunnelOpen: (id, rhost, rport, label) => ipcRenderer.invoke('rh:tunnelOpen', { id, rhost, rport, label }), // → {ok,tunId,port}
+    tunnelList: () => ipcRenderer.invoke('rh:tunnelList'),                            // → {ok,tunnels:[...]}
+    tunnelClose: (tunId) => ipcRenderer.invoke('rh:tunnelClose', { tunId }),
   },
 
   pty: {

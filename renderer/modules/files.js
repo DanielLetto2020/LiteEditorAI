@@ -487,10 +487,37 @@ export function initFiles(host) {
   // иначе при ошибке вивер показывал имя/подсветку файла без живого currentFile (рассинхрон).
   function commitOpenUI(filePath, kind) {
     $('#viewer-filename').textContent = baseName(filePath);
+    const runSql = $('#viewer-runsql'); if (runSql) runSql.style.display = extOf(filePath) === 'sql' ? '' : 'none'; // .sql → «Выполнить в БД»
     updatePreviewBar(kind);
     document.querySelectorAll('.tree-row.open').forEach((r) => r.classList.remove('open'));
     const row = document.querySelector(`.tree-row[data-path="${cssEscape(filePath)}"]`);
     if (row) row.classList.add('open');
+  }
+  // «Выполнить в БД» (.sql): пикер сохранённых подключений модуля «Базы данных» → маршрут
+  // db:openSql через main (окно БД откроется само и вставит SQL в новую консоль).
+  // SQL = выделение в редакторе, если есть, иначе весь файл.
+  async function runSqlInDb() {
+    if (!currentFile || !editor) return;
+    const selRange = editor.state.selection.main;
+    const sqlText = selRange.empty ? editor.state.doc.toString() : editor.state.sliceDoc(selRange.from, selRange.to);
+    if (!sqlText.trim()) { toast('Файл пуст — выполнять нечего'); return; }
+    let conns = [];
+    try { const r = await lite.db.list(); conns = (r && r.connections) || []; } catch (_) {}
+    if (!conns.length) { toast('Нет сохранённых подключений — создайте их в модуле «Базы данных»', { kind: 'warn', ttl: 7000 }); return; }
+    const { m, close } = makeModal('<h2>Выполнить в «Базах данных»</h2>');
+    m.appendChild(el('div', 'about-desc', `${baseName(currentFile)} · ${selRange.empty ? 'весь файл' : 'выделение'} · ${sqlText.length} симв. — SQL вставится в новую консоль, запуск по кнопке там`));
+    const list = el('div', 'runsql-list');
+    for (const c of conns) {
+      const row = el('button', 'runsql-row');
+      row.type = 'button';
+      const dot = el('span', 'runsql-dot'); if (c.color) dot.style.background = c.color;
+      row.append(dot, el('span', 'runsql-name', c.name || '(без имени)'));
+      row.appendChild(el('span', 'runsql-sub', c.type === 'sqlite' ? 'SQLite' : `${c.type || ''} · ${c.host || 'localhost'}:${c.port || ''}`));
+      if (c.isProd) row.appendChild(el('span', 'runsql-prod', 'PROD'));
+      row.onclick = () => { close(); lite.db.openSql(c.id, sqlText); toast('Отправлено в «Базы данных»…', { ttl: 3000 }); };
+      list.appendChild(row);
+    }
+    m.appendChild(list);
   }
   // Контекст-бар просмотра (низ колонки табов): Превью/Рядом/Оригинал (радио-группа режимов) для md·html,
   // Во весь экран·В браузере — только html. Оригинал — режим по умолчанию (файл открывается исходником).
@@ -2159,6 +2186,7 @@ export function initFiles(host) {
     $('#viewer-hist').title = 'Локальная история файла · ПКМ — история файла в git';
     $('#viewer-zen').addEventListener('click', toggleZen);
     $('#viewer-agent').addEventListener('click', toggleAgentMode);
+    $('#viewer-runsql').addEventListener('click', runSqlInDb);
     // C20: контекстное меню кода (агентские действия по выделению + копировать)
     editor.contentDOM.addEventListener('contextmenu', (e) => { e.preventDefault(); showEditorContextMenu(e.clientX, e.clientY); });
     $('#viewer-bookmark').addEventListener('click', toggleBookmarkHere);

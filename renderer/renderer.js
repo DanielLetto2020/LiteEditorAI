@@ -26,7 +26,7 @@ import { el, icon, iconBtn, hydrateIcons, toast, makeModal, showConfirm, showPro
 import { initExtensions } from './modules/extensions.js';
 // initFiles — вивер+дерево мигрированы в отдельное окно (renderer/module-entry.js).
 
-const APP_VERSION = 'alpha v1.1.84';
+const APP_VERSION = 'alpha v1.1.85';
 const GUTTER = 5;
 // Системный терминал («Система · ~») мигрирован в отдельное окно (renderer/modules/scratch.js):
 // его id `__scratch__::tN` маршрутизируются main'ом в окно-владельца, в ядре их больше не обрабатываем.
@@ -1848,32 +1848,95 @@ function buildModulesMenu(dd) {
     dd.appendChild(row);
   };
 
-  flyout('grid', 'Встроенные', 'панели редактора', (sub) => {
-    sub.appendChild(moduleRow('eye', 'Проект', 'вивер кода, дерево, Git', () => { closeMenus(); openModule('files'); }));
-    sub.appendChild(moduleRow('graph', 'Контекст', 'граф контекста агента', () => { closeMenus(); openModule('ctx'); }));
-    sub.appendChild(moduleRow('box', 'Контейнеры', 'Docker / Podman', () => { closeMenus(); openModule('docker'); }));
-    sub.appendChild(moduleRow('database', 'Базы данных', 'Postgres · MySQL · SQLite', () => { closeMenus(); openModule('db'); }));
-    sub.appendChild(moduleRow('rabbit', 'RabbitMQ', 'очереди · сообщения · подключения', () => { closeMenus(); openModule('rmq'); }));
-    sub.appendChild(moduleRow('kafka', 'Kafka', 'топики · группы · live-tail', () => { closeMenus(); openModule('kafka'); }));
-    sub.appendChild(moduleRow('globe', 'Удалённые хосты', 'SSH-сессии к серверам', () => { closeMenus(); openModule('rh'); }));
-    sub.appendChild(moduleRow('note', 'Задачи', 'заметки проекта и общие', () => { closeMenus(); openModule('notes'); }));
-    sub.appendChild(moduleRow('grid', 'Аудит', 'типы файлов, крупные файлы, медиа', () => { closeMenus(); openModule('audit'); }));
-    sub.appendChild(moduleRow('users', 'ИИ компания', 'директор + сабагенты над проектом', () => { closeMenus(); openModule('company'); }));
-    sub.appendChild(moduleRow('layers', 'IterFlow', 'задачи итераций из трекера', () => { closeMenus(); openModule('iterflow'); }));
-    sub.appendChild(moduleRow('globe', 'WEB/SEO аудит', 'сайт: безопасность, SEO, сеть', () => { closeMenus(); openModule('seo'); }));
-    sub.appendChild(moduleRow('wrench', 'Инструменты', 'base64, JSON/YAML, хэши, JWT, regex, diff', () => { closeMenus(); openModule('tools'); }));
-    sub.appendChild(moduleRow('chat', 'OpenRouter', 'чат по своим API-ключам', () => { closeMenus(); openModule('chat'); }));
-    sub.appendChild(moduleRow('note', 'Обработка текста', 'документы + AI-правки фрагментов', () => { closeMenus(); openModule('doc'); }));
-    sub.appendChild(moduleRow('clock', 'Помодоро', 'таймер работы/отдыха с блокировкой', () => { closeMenus(); openModule('pomodoro'); }));
-    sub.appendChild(el('div', 'menu-sep'));
-    sub.appendChild(moduleRow('terminal', 'Системный терминал', 'вне проектов', () => { closeMenus(); openModule('scratch'); }));
-    sub.appendChild(moduleRow('graph', 'Монитор ресурсов', 'память/CPU редактора и агентов', () => { closeMenus(); openModule('monitor'); }));
-    sub.appendChild(moduleRow('key', 'Сейф паролей', 'KeePass .kdbx: копировать пароль/токен', () => { closeMenus(); openModule('keepass'); }));
-    sub.appendChild(moduleRow('globe', 'Мониторинг сайтов', 'доступность сайтов + уведомления', () => { closeMenus(); openModule('sitemon'); }));
-  });
+  dd.appendChild(moduleRow('grid', 'Встроенные', 'все модули редактора плитками', () => { closeMenus(); showBuiltinModules(); }));
   flyout('layers', 'Мои модули', 'пользовательские плагины', (sub) => Ext.buildMenuSection(sub, { bare: true }));
   dd.appendChild(el('div', 'menu-sep'));
   dd.appendChild(moduleRow('sliders', 'Настройка панели', 'быстрый доступ под терминалом', () => { closeMenus(); showPanelSetup(); }));
+}
+
+// Каталог встроенных модулей для модалки «Встроенные»: project:true — окно следует за активным
+// проектом редактора (см. MODULES в module-entry.js), остальные — самостоятельные.
+const BUILTIN_MODS = [
+  { id: 'files',    icon: 'eye',      title: 'Проект',             desc: 'вивер кода, дерево, Git', project: true },
+  { id: 'ctx',      icon: 'graph',    title: 'Контекст',           desc: 'граф контекста агента', project: true },
+  { id: 'notes',    icon: 'note',     title: 'Задачи',             desc: 'заметки проекта и общие', project: true },
+  { id: 'audit',    icon: 'grid',     title: 'Аудит',              desc: 'типы файлов, крупные файлы, медиа', project: true },
+  { id: 'company',  icon: 'users',    title: 'ИИ компания',        desc: 'директор + сабагенты над проектом', project: true },
+  { id: 'doc',      icon: 'note',     title: 'Обработка текста',   desc: 'документы + AI-правки фрагментов', project: true },
+  { id: 'docker',   icon: 'box',      title: 'Контейнеры',         desc: 'Docker / Podman' },
+  { id: 'db',       icon: 'database', title: 'Базы данных',        desc: 'Postgres · MySQL · SQLite' },
+  { id: 'rmq',      icon: 'rabbit',   title: 'RabbitMQ',           desc: 'очереди · сообщения · подключения' },
+  { id: 'kafka',    icon: 'kafka',    title: 'Kafka',              desc: 'топики · группы · live-tail' },
+  { id: 'rh',       icon: 'globe',    title: 'Удалённые хосты',    desc: 'SSH-сессии к серверам' },
+  { id: 'iterflow', icon: 'layers',   title: 'IterFlow',           desc: 'задачи итераций из трекера' },
+  { id: 'seo',      icon: 'globe',    title: 'WEB/SEO аудит',      desc: 'сайт: безопасность, SEO, сеть' },
+  { id: 'tools',    icon: 'wrench',   title: 'Инструменты',        desc: 'base64, JSON/YAML, хэши, JWT, regex, diff' },
+  { id: 'chat',     icon: 'chat',     title: 'OpenRouter',         desc: 'чат по своим API-ключам' },
+  { id: 'pomodoro', icon: 'clock',    title: 'Помодоро',           desc: 'таймер работы/отдыха с блокировкой' },
+  { id: 'scratch',  icon: 'terminal', title: 'Системный терминал', desc: 'шелл вне проектов' },
+  { id: 'monitor',  icon: 'graph',    title: 'Монитор ресурсов',   desc: 'память/CPU редактора и агентов' },
+  { id: 'keepass',  icon: 'key',      title: 'Сейф паролей',       desc: 'KeePass .kdbx: пароли и токены' },
+  { id: 'sitemon',  icon: 'globe',    title: 'Мониторинг сайтов',  desc: 'доступность сайтов + уведомления' },
+];
+// Модалка «Встроенные модули»: плитки с живым фильтром, две секции — «следуют за проектом»
+// и «самостоятельные». Открытие модуля — клик по плитке (тот же openModule, что квикбар/меню).
+function showBuiltinModules() {
+  const { m, close } = makeModal('');
+  m.classList.add('bim-modal');
+  const head = el('div', 'bim-head');
+  head.appendChild(el('h2', null, 'Встроенные модули'));
+  head.appendChild(el('span', 'bim-count', String(BUILTIN_MODS.length)));
+  const searchWrap = el('div', 'bim-search');
+  searchWrap.appendChild(icon('search', 15));
+  const q = el('input');
+  q.type = 'text';
+  q.placeholder = 'Поиск модуля…';
+  searchWrap.appendChild(q);
+  const body = el('div', 'bim-body');
+  const tiles = []; // { el, sec, text }
+  const section = (label, hint, mods) => {
+    const sec = el('div', 'bim-sec');
+    const st = el('div', 'bim-sec-title');
+    st.appendChild(el('span', null, label));
+    st.appendChild(el('span', 'bim-sec-hint', hint));
+    const grid = el('div', 'bim-grid');
+    for (const mod of mods) {
+      const t = el('button', 'bim-tile');
+      t.type = 'button';
+      const chip = el('span', 'bim-chip');
+      chip.appendChild(icon(mod.icon, 18));
+      t.appendChild(chip);
+      t.appendChild(el('span', 'bim-title', mod.title));
+      t.appendChild(el('span', 'bim-desc', mod.desc));
+      t.title = mod.title + ' — ' + mod.desc;
+      t.addEventListener('click', () => { close(); openModule(mod.id); });
+      grid.appendChild(t);
+      tiles.push({ el: t, sec, text: (mod.title + ' ' + mod.desc).toLowerCase() });
+    }
+    sec.append(st, grid);
+    body.appendChild(sec);
+  };
+  section('Следуют за проектом', 'окно привязано к активному проекту редактора',
+    BUILTIN_MODS.filter((x) => x.project));
+  section('Самостоятельные', 'не зависят от открытых проектов',
+    BUILTIN_MODS.filter((x) => !x.project));
+  const empty = el('div', 'bim-empty', 'Ничего не найдено');
+  empty.hidden = true;
+  body.appendChild(empty);
+  q.addEventListener('input', () => {
+    const needle = q.value.trim().toLowerCase();
+    let shown = 0;
+    for (const t of tiles) {
+      const hit = !needle || t.text.includes(needle);
+      t.el.hidden = !hit;
+      if (hit) shown++;
+    }
+    for (const sec of new Set(tiles.map((t) => t.sec)))
+      sec.hidden = !tiles.some((t) => t.sec === sec && !t.el.hidden);
+    empty.hidden = shown > 0;
+  });
+  m.append(head, searchWrap, body);
+  q.focus();
 }
 
 // ---------------------------------------------------------------- заготовленные промпты

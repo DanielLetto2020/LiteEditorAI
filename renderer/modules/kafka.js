@@ -7,6 +7,7 @@
 // тревогой «лаг растёт». Вкладки профилей, PRODUCTION-гард, приём заготовки из «Контейнеров».
 // Изоляция по образцу rmq.js: ядро — через host; UI-хелперы — из ui.js; бэкенд — window.lite.kafka.*.
 import { el, icon, iconBtn, toast, makeModal, showConfirm, showPrompt } from '../ui.js';
+import { kpFormButtons } from '../kpicker.js';
 import Chart from 'chart.js/auto';   // уже в бандле (модули БД/RabbitMQ)
 
 const $ = (sel) => document.querySelector(sel);
@@ -320,7 +321,14 @@ export function initKafka(host) {
     saslSel.onchange = syncSasl;
     const tls = el('input'); tls.type = 'checkbox'; tls.checked = !!c.ssl;
     const tlsLabel = el('label', 'db-check'); tlsLabel.append(tls, document.createTextNode(' TLS (SSL) до брокеров'));
-    grp.append(mk('Брокеры', brokersI), mk('Аутентификация', saslSel), mk('Пользователь', userI), mk('Пароль', passI), tlsLabel);
+    // «Сейф паролей»: заполнить/сохранить креды SASL.
+    const kpRow = kpFormButtons({
+      user: userI, pass: passI,
+      title: () => name.value.trim() || 'LiteEditor: Kafka',
+      url: () => brokersI.value.trim(),
+      notes: 'LiteEditor · модуль «Kafka»',
+    });
+    grp.append(mk('Брокеры', brokersI), mk('Аутентификация', saslSel), mk('Пользователь', userI), mk('Пароль', passI), kpRow, tlsLabel);
     f.appendChild(grp);
     const colorSel = el('select');
     for (const [v, lbl] of [['', 'без цвета'], ['#e5484d', '🔴 красный (prod)'], ['#f5a623', '🟠 янтарный (stage)'], ['#30a46c', '🟢 зелёный (dev)'], ['#0091ff', '🔵 синий'], ['#8e4ec6', '🟣 фиолетовый']]) { const o = document.createElement('option'); o.value = v; o.textContent = lbl; if ((c.color || '') === v) o.selected = true; colorSel.appendChild(o); }
@@ -369,7 +377,12 @@ export function initKafka(host) {
     let list = [];
     try { const r = await lite.kafka.list(); list = r.connections || []; connsList = list; secure = r.secure !== false; } catch (_) {}
     const existing = list.find((x) => x.source && x.source === p.source);
-    if (existing) { toast(`Переключаюсь на «${existing.name}»`, { ttl: 2200 }); openProfile(existing); return; }
+    if (existing) { // повтор клика = переключение; брокеры могли смениться (контейнер/туннель) → тихо обновить
+      if (p.brokers && existing.brokers !== p.brokers) {
+        try { const u = await lite.kafka.save({ ...existing, brokers: p.brokers }); if (u && u.connection) Object.assign(existing, u.connection); } catch (_) {}
+      }
+      toast(`Переключаюсь на «${existing.name}»`, { ttl: 2200 }); openProfile(existing); return;
+    }
     const toList = () => { if (activeId) { stopPoll(); snapshotProf(); } profListMode = true; renderPanel(); };
     const draft = { ...p };
     toast(`Проверяю подключение к «${draft.name}»…`, { ttl: 2500 });

@@ -3,7 +3,7 @@
 // бэкенд — window.lite.containers.*. xterm для exec-терминала импортируется здесь же.
 // host: { STORE, persist, settings, layout, GUTTER, saveUiState, refitActiveTerminal,
 //         closeOtherPanels, termTheme, applyUnicode11, loadFastRenderer }
-import { el, icon, iconBtn, toast, showConfirm } from '../ui.js';
+import { el, icon, iconBtn, toast, showConfirm, makeModal } from '../ui.js';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 
@@ -76,16 +76,63 @@ export function initContainers(host) {
   }
   function toggleDocker() { setDockerOpen(!dockerOpen); }
 
+  // --- удалённый контекст: контейнеры хоста из «Удалённых хостов» (SSH-туннель до сокета в main)
+  let dockerRemote; // undefined = статус не спрошен; null = локально; { rhId, name, engine }
+  async function ensureRemoteStatus() {
+    if (dockerRemote !== undefined) return;
+    try { const st = await lite.containers.remoteStatus(); dockerRemote = (st && st.rhId) ? st : null; } catch (_) { dockerRemote = null; }
+  }
+  async function applyContainersHost(rhId, label) {
+    toast(rhId ? `Подключаюсь к «${label}» (туннель до сокета)…` : 'Возвращаюсь к локальным контейнерам…', { ttl: 4000 });
+    let r;
+    try { r = await lite.containers.remoteSet(rhId); } catch (e) { r = { ok: false, error: String(e) }; }
+    if (!r || !r.ok) { toast((r && r.error) || 'Не удалось переключить хост', { kind: 'err', ttl: 9000 }); return; }
+    dockerRemote = r.rhId ? { rhId: r.rhId, name: r.name, engine: r.engine } : null;
+    if (dockerRemote) dockerEngine = dockerRemote.engine; // CLI выбирает main по типу удалённого сокета
+    dockerDetect = null; // пересобрать окружение под новый контекст
+    renderDockerPanel();
+  }
+  async function pickContainersHost() {
+    let profiles = [];
+    try { const r = await lite.rh.list(); profiles = ((r && r.connections) || []).filter((c) => c.type !== 'ftp'); } catch (_) {}
+    const { m, close } = makeModal('<h2>Контейнеры какого хоста?</h2>');
+    m.appendChild(el('div', 'about-desc', 'Удалённые — через SSH-туннель до docker/podman-сокета хоста (профили модуля «Удалённые хосты»).'));
+    const list = el('div', 'runsql-list');
+    const row = (label, sub, onClick, on) => {
+      const b = el('button', 'runsql-row' + (on ? ' on' : '')); b.type = 'button';
+      b.append(icon(on ? 'check' : 'globe', 13), el('span', 'runsql-name', label));
+      if (sub) b.appendChild(el('span', 'runsql-sub', sub));
+      b.onclick = () => { close(); onClick(); };
+      list.appendChild(b);
+    };
+    row('Локальная машина', 'docker / podman этой машины', () => { if (dockerRemote) applyContainersHost(null); }, !dockerRemote);
+    for (const c of profiles)
+      row(c.name || c.host, `${c.user || ''}@${c.host || ''}`, () => applyContainersHost(c.id, c.name || c.host), !!(dockerRemote && dockerRemote.rhId === c.id));
+    if (!profiles.length) list.appendChild(el('div', 'kpick-empty', 'SSH-профилей нет — создайте в модуле «Удалённые хосты»'));
+    m.appendChild(list);
+  }
   function renderDockerTabs() {
     const t = $('#docker-tabs'); t.innerHTML = '';
-    for (const e of ['docker', 'podman']) {
-      const installed = dockerDetect ? !!(dockerDetect[e] && dockerDetect[e].cli) : true;
-      const tab = el('button', 'docker-tab' + (e === dockerEngine ? ' on' : '') + (installed ? '' : ' off'));
-      tab.appendChild(icon('box', 15));
-      tab.appendChild(el('span', null, e === 'docker' ? 'Docker' : 'Podman'));
-      tab.onclick = () => { if (e !== dockerEngine) { dockerEngine = e; renderDockerPanel(); } };
-      t.appendChild(tab);
+    if (dockerRemote) { // удалённый контекст: движок диктует сокет хоста — вкладки не нужны
+      const badge = el('span', 'docker-remote-badge');
+      badge.append(icon('globe', 14), el('span', null, dockerRemote.name));
+      badge.title = 'Контейнеры удалённого хоста (SSH-туннель). Клик по кнопке хоста — вернуться к локальным.';
+      t.appendChild(badge);
+    } else {
+      for (const e of ['docker', 'podman']) {
+        const installed = dockerDetect ? !!(dockerDetect[e] && dockerDetect[e].cli) : true;
+        const tab = el('button', 'docker-tab' + (e === dockerEngine ? ' on' : '') + (installed ? '' : ' off'));
+        tab.appendChild(icon('box', 15));
+        tab.appendChild(el('span', null, e === 'docker' ? 'Docker' : 'Podman'));
+        tab.onclick = () => { if (e !== dockerEngine) { dockerEngine = e; renderDockerPanel(); } };
+        t.appendChild(tab);
+      }
     }
+    const hostBtn = el('button', 'docker-host-btn' + (dockerRemote ? ' remote' : ''));
+    hostBtn.append(icon('globe', 13), el('span', null, dockerRemote ? dockerRemote.name : 'Локально'));
+    hostBtn.title = 'Хост контейнеров: локальная машина или сервер по SSH';
+    hostBtn.onclick = pickContainersHost;
+    t.appendChild(hostBtn);
   }
   // Versions strip for the active engine: cli + compose plugin (no dash) + legacy compose (dash).
   function renderDockerEnv(eng) {
@@ -141,6 +188,11 @@ export function initContainers(host) {
       b.onclick = (e) => { e.stopPropagation(); openContainerKafka(c); };
       acts.appendChild(b);
     }
+    if (c.webKind && !c.dbKind && !c.mqKind) { // задетектили веб-сервис → «наблюдать в Мониторинге сайтов»
+      const b = iconBtn('drow-act dweb', 'globe', 'Наблюдать в «Мониторинге сайтов»', 14);
+      b.onclick = (e) => { e.stopPropagation(); watchContainerSite(c); };
+      acts.appendChild(b);
+    }
     if (running) acts.append(dActBtn('container', 'pause', 'pause', 'Пауза', c.id), dActBtn('container', 'restart', 'refresh', 'Перезапуск', c.id), dActBtn('container', 'stop', 'stop', 'Стоп', c.id));
     else if (paused) acts.append(dActBtn('container', 'unpause', 'play', 'Возобновить', c.id), dActBtn('container', 'stop', 'stop', 'Стоп', c.id));
     else acts.appendChild(dActBtn('container', 'start', 'play', 'Старт', c.id));
@@ -164,6 +216,23 @@ export function initContainers(host) {
     if (!r.published) { toast('Порт management (15672) не проброшен на хост — включи management-плагин / добавь -p', { kind: 'err', ttl: 9000 }); return; }
     if (!r.running) toast('Контейнер остановлен — профиль создастся, но оживёт после старта', { ttl: 6000 });
     lite.rmq.openFromContainer(r);
+  }
+  // Клик по глобусу: inspect → URL по published веб-порту → запись в «Мониторинг сайтов» (дедуп по URL).
+  async function watchContainerSite(c) {
+    let r;
+    try { r = await lite.containers.inspectWeb(dockerEngine, c.id); } catch (e) { r = { ok: false, error: String(e) }; }
+    if (!r || !r.ok) { toast((r && r.error) || 'Не удалось прочитать параметры контейнера', { kind: 'err', ttl: 8000 }); return; }
+    if (!r.published || !r.prefill.url) { toast('Веб-порт не проброшен на хост (нет -p) — мониторить нечего', { kind: 'err', ttl: 9000 }); return; }
+    if (!r.running) toast('Контейнер остановлен — сайт будет числиться недоступным до старта', { ttl: 6000 });
+    const url = r.prefill.url;
+    let sites = [];
+    try { const l = await lite.sitemon.list(); if (Array.isArray(l)) sites = l; } catch (_) {}
+    const exists = sites.find((s) => s && s.url === url);
+    if (exists) { toast(`Уже наблюдается: ${url}`, { ttl: 5000 }); lite.module.open('sitemon'); return; }
+    const a = await lite.sitemon.add(r.prefill.name, url);
+    if (!a || !a.ok) { toast((a && a.error) || 'Не удалось добавить в мониторинг', { kind: 'err', ttl: 8000 }); return; }
+    toast(`${url} — добавлен в «Мониторинг сайтов»`, { ttl: 5000 });
+    lite.module.open('sitemon');
   }
   // Клик по иконке Kafka: inspect → заготовка профиля → окно модуля «Kafka» (маршрут через main).
   async function openContainerKafka(c) {
@@ -465,6 +534,49 @@ export function initContainers(host) {
     lite.containers.execStart(d.engine, d.id, xid, term.cols, term.rows).then((r) => { if (r && r.error) term.write('\r\n\x1b[31m' + r.error + '\x1b[0m\r\n'); });
     setTimeout(() => { try { fit.fit(); term.focus(); } catch (_) {} }, 40);
   }
+  // Вкладка «Файлы» detail-вида: браузер ФС контейнера (exec ls), клик по файлу → tmp-копия в вивер.
+  // Классы rh-f* — общий стиль файл-браузера «Удалённых хостов» (styles.css), не дублируем.
+  function startDockerFiles(view) {
+    view.innerHTML = '';
+    const d = dockerDetail; if (!d) return;
+    let cur = '/';
+    const bar = el('div', 'rh-fbar');
+    const pathEl = el('span', 'rh-fpath');
+    const list = el('div', 'rh-flist');
+    const join = (base, name) => {
+      if (name === '..') { const b = String(base).replace(/\/+$/, ''); const i = b.lastIndexOf('/'); return i <= 0 ? '/' : b.slice(0, i); }
+      return (base === '/' ? '' : String(base).replace(/\/+$/, '')) + '/' + name;
+    };
+    async function load(p) {
+      list.innerHTML = ''; list.appendChild(el('div', 'git-loading', 'Загрузка…'));
+      let r;
+      try { r = await lite.containers.fsList(d.engine, d.id, p); } catch (e) { r = { ok: false, error: String(e) }; }
+      if (!dockerDetail || dockerDetail.id !== d.id) return;
+      list.innerHTML = '';
+      if (!r || !r.ok) { list.appendChild(el('div', 'db-warn', '⚠ ' + ((r && r.error) || 'не удалось прочитать каталог'))); return; }
+      cur = r.path; pathEl.textContent = cur; pathEl.title = cur;
+      if (!r.entries.length) list.appendChild(el('div', 'docker-empty', 'Пусто'));
+      for (const e of r.entries) {
+        const row = el('div', 'rh-frow');
+        row.appendChild(icon(e.dir ? 'folder' : 'file', 15));
+        row.appendChild(el('span', 'rh-fname', e.name));
+        row.onclick = async () => {
+          if (e.dir) { load(join(cur, e.name)); return; }
+          toast('Открываю в вивере…', { ttl: 2500 });
+          let o;
+          try { o = await lite.containers.fsOpenInViewer(d.engine, d.id, join(cur, e.name)); } catch (err) { o = { ok: false, error: String(err) }; }
+          if (!o || !o.ok) toast((o && o.error) || 'Не удалось открыть файл', { kind: 'err', ttl: 8000 });
+          else toast('Файл из контейнера в вивере (копия — правки в контейнер не вернутся)', { ttl: 6000 });
+        };
+        list.appendChild(row);
+      }
+    }
+    const up = iconBtn('drow-act', 'chevron-up', 'Вверх', 14); up.onclick = () => load(join(cur, '..'));
+    const refresh = iconBtn('drow-act', 'refresh', 'Обновить', 14); refresh.onclick = () => load(cur);
+    bar.append(up, pathEl, refresh);
+    view.append(bar, list);
+    load(cur);
+  }
   function renderDockerDetail() {
     const d = dockerDetail; if (!d) { dockerView = 'list'; renderDockerPanel(); return; }
     $('#docker-tabs').style.display = 'none';
@@ -479,25 +591,30 @@ export function initContainers(host) {
     const tabsEl = el('div', 'docker-subtabs');
     const logsView = el('div', 'docker-detail-view');
     const termView = el('div', 'docker-detail-view');
-    let logsStarted = false, execStarted = false;
+    const filesView = el('div', 'docker-detail-view docker-files');
+    let logsStarted = false, execStarted = false, filesStarted = false;
     const show = (k) => {
       dockerDetailTab = k;
       tabsEl.querySelectorAll('.docker-subtab').forEach((b) => b.classList.toggle('on', b.dataset.k === k));
       logsView.style.display = k === 'logs' ? '' : 'none';
       termView.style.display = k === 'term' ? '' : 'none';
+      filesView.style.display = k === 'files' ? '' : 'none';
       if (k === 'logs' && !logsStarted) { logsStarted = true; startDockerLogs(logsView); }
       else if (k === 'term' && !execStarted) { execStarted = true; startDockerExec(termView); }
+      else if (k === 'files' && !filesStarted) { filesStarted = true; startDockerFiles(filesView); }
       else if (k === 'term' && dockerExecFit) setTimeout(() => { try { dockerExecFit.fit(); dockerExecTerm && dockerExecTerm.focus(); } catch (_) {} }, 30);
     };
-    for (const [k, label] of [['logs', 'Логи'], ['term', 'Терминал']]) {
+    for (const [k, label] of [['logs', 'Логи'], ['term', 'Терминал'], ['files', 'Файлы']]) {
       const t = el('button', 'docker-subtab'); t.dataset.k = k; t.textContent = label; t.onclick = () => show(k); tabsEl.appendChild(t);
     }
-    body.append(tabsEl, logsView, termView);
+    body.append(tabsEl, logsView, termView, filesView);
     show(dockerDetailTab || 'logs');
   }
   async function renderDockerPanel() {
     if (dockerView === 'detail') { closeDockerDetail(); dockerView = 'list'; }
     stopDockerPoll(); dockerListBox = null; // full rebuild — drop the old in-place target & poll
+    await ensureRemoteStatus(); // удалённый контекст мог остаться с прошлого открытия окна
+    if (dockerRemote) dockerEngine = dockerRemote.engine;
     $('#docker-tabs').style.display = '';
     const seq = ++dockerRenderSeq;
     const body = $('#docker-body');

@@ -5,6 +5,7 @@
 // purge/delete/kill с confirm и PRODUCTION-гардом. Приём заготовки профиля из модуля «Контейнеры».
 // Изоляция по образцу db.js: ядро — через host; UI-хелперы — из ui.js; бэкенд — window.lite.rmq.*.
 import { el, icon, iconBtn, toast, makeModal, showConfirm } from '../ui.js';
+import { kpFormButtons } from '../kpicker.js';
 import Chart from 'chart.js/auto';   // уже в бандле (модуль БД), auto-регистрация контроллеров
 
 const $ = (sel) => document.querySelector(sel);
@@ -321,7 +322,14 @@ export function initRmq(host) {
     const amqpI = inp(c.amqpPort || 5672, '5672', 'number');
     const tls = el('input'); tls.type = 'checkbox'; tls.checked = !!c.tls;
     const tlsLabel = el('label', 'db-check'); tlsLabel.append(tls, document.createTextNode(' Management по HTTPS (TLS)'));
-    grp.append(mk('Хост', hostI), mk('Порт management', portI), mk('Пользователь', userI), mk('Пароль', passI),
+    // «Сейф паролей»: заполнить/сохранить креды management-пользователя.
+    const kpRow = kpFormButtons({
+      user: userI, pass: passI,
+      title: () => name.value.trim() || 'LiteEditor: RabbitMQ',
+      url: () => (hostI.value.trim() ? hostI.value.trim() + ':' + (portI.value || '') : ''),
+      notes: 'LiteEditor · модуль «RabbitMQ»',
+    });
+    grp.append(mk('Хост', hostI), mk('Порт management', portI), mk('Пользователь', userI), mk('Пароль', passI), kpRow,
       mk('Vhost по умолчанию', vhostI), mk('Порт AMQP (справочно)', amqpI), tlsLabel);
     f.appendChild(grp);
     const colorSel = el('select');
@@ -371,9 +379,19 @@ export function initRmq(host) {
     let list = [];
     try { const r = await lite.rmq.list(); list = r.connections || []; connsList = list; secure = r.secure !== false; } catch (_) {}
     const existing = list.find((x) => x.source && x.source === p.source);
-    if (existing) { toast(`Переключаюсь на «${existing.name}»`, { ttl: 2200 }); openProfile(existing); return; } // повтор клика = переключение
+    if (existing) { // повтор клика = переключение; порт мог смениться (контейнер/туннель) → тихо обновить
+      if ((p.port && existing.port !== p.port) || (p.host && existing.host !== p.host)) {
+        try { const u = await lite.rmq.save({ ...existing, host: p.host || existing.host, port: p.port || existing.port }); if (u && u.connection) Object.assign(existing, u.connection); } catch (_) {}
+      }
+      toast(`Переключаюсь на «${existing.name}»`, { ttl: 2200 }); openProfile(existing); return;
+    }
     const toList = () => { if (activeId) { stopPoll(); snapshotProf(); } profListMode = true; renderPanel(); };
     const draft = { ...p };
+    if (payload.passwordUnknown || draft.password == null) { // креды неизвестны (SSH-туннель) → сразу префилл-форма
+      delete draft.password;
+      toList(); connModal(draft);
+      return;
+    }
     toast(`Проверяю подключение к «${draft.name}»…`, { ttl: 2500 });
     let t;
     try { t = await lite.rmq.test(draft); } catch (e) { t = { ok: false, error: String(e) }; }

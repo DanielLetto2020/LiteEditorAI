@@ -115,7 +115,9 @@ const MODULES = {
       bind('#db-refresh', () => mod.refresh());
       // «Контейнеры» → БД: заготовка подключения из контейнера (маршрут через main, очередь до готовности)
       lite.db.onOpenFromContainer((p) => { try { mod.openFromContainer(p); } catch (_) {} });
-      try { lite.db.panelReady(); } catch (_) {} // флаш отложенных openFromContainer из main
+      // Вивер → БД: открыть SQL-консоль подключения с текстом .sql-файла
+      lite.db.onOpenSql((p) => { try { mod.openSqlFromViewer(p); } catch (_) {} });
+      try { lite.db.panelReady(); } catch (_) {} // флаш отложенных openFromContainer/openSql из main
     },
   },
   rmq: {

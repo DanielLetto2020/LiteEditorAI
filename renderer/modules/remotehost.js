@@ -4,6 +4,7 @@
 // host: { STORE, persist, settings, layout, GUTTER, saveUiState, refitActiveTerminal,
 //         closeOtherPanels, termTheme, applyUnicode11, loadFastRenderer, copySelection }
 import { el, icon, iconBtn, toast, makeModal, showConfirm } from '../ui.js';
+import { kpFormButtons } from '../kpicker.js';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { SearchAddon } from '@xterm/addon-search';
@@ -113,6 +114,11 @@ export function initRh(host) {
     main.appendChild(el('span', 'drow-sub', sub));
     row.appendChild(main);
     const acts = el('div', 'drow-acts');
+    if (c.type !== 'ftp') { // сканер сервисов и туннели — только SSH
+      const svc = iconBtn('drow-act ddb', 'grid', 'Сервисы хоста — открыть БД/RabbitMQ/Kafka/контейнеры через SSH-туннель', 14);
+      svc.onclick = (e) => { e.stopPropagation(); showHostServices(c); };
+      acts.appendChild(svc);
+    }
     const browse = iconBtn('drow-act', 'folder', 'Файлы (просмотр)', 14); browse.onclick = (e) => { e.stopPropagation(); rhOpenFiles(c); };
     const edit = iconBtn('drow-act', 'pencil', 'Изменить', 13); edit.onclick = (e) => { e.stopPropagation(); rhConnModal(c); };
     const del = iconBtn('drow-act danger', 'trash', 'Удалить', 13);
@@ -150,10 +156,16 @@ export function initRh(host) {
     const authSel = el('select');
     for (const [k, v] of [['password', 'Пароль'], ['agent', 'Без пароля (SSH-ключ из системы)']]) { const o = document.createElement('option'); o.value = k; o.textContent = v; if (k === (c.auth || 'password')) o.selected = true; authSel.appendChild(o); }
     const authWrap = el('div', 'db-field'); authWrap.append(el('label', null, 'Аутентификация'), authSel); f.appendChild(authWrap);
-    // password (режим «Пароль»)
+    // password (режим «Пароль») + «Сейф паролей»: заполнить/сохранить креды хоста
     const passWrap = el('div', 'db-group');
     const pass = inp('', existing && c.hasPass ? '(сохранён — оставь пустым)' : 'пароль', 'password');
-    passWrap.append(mk('Пароль', pass));
+    const kpRow = kpFormButtons({
+      user, pass,
+      title: () => name.value.trim() || 'LiteEditor: удалённый хост',
+      url: () => (host.value.trim() ? host.value.trim() + ':' + (port.value || '') : ''),
+      notes: 'LiteEditor · модуль «Удалённые хосты»',
+    });
+    passWrap.append(mk('Пароль', pass), kpRow);
     f.appendChild(passWrap);
     // agent hint (режим «Без пароля») — ничего вводить не нужно
     const agentHint = el('div', 'rh-hint', 'Вход по SSH-ключу из системы (агент или ~/.ssh) — пароль и ключ вводить не нужно, как при `ssh user@host` в терминале.');
@@ -298,6 +310,97 @@ export function initRh(host) {
     renderRhPanel();
   }
 
+  // ---- сервисы хоста: скан слушающих портов/сокетов + связки в модули через SSH-туннель
+  const SVC_LABEL = {
+    postgres: 'PostgreSQL', mysql: 'MySQL / MariaDB', rabbitmq: 'RabbitMQ (management)',
+    amqp: 'AMQP (RabbitMQ, без management)', kafka: 'Kafka', redis: 'Redis', mongo: 'MongoDB', web: 'Веб-сервис',
+  };
+  // Поднять туннель до сервиса и отдать заготовку в целевой модуль (тот же маршрут, что у связки
+  // «Контейнеры → модуль»: existing по source → переключение, новый → тест/форма-префилл).
+  async function openSvcInModule(c, svc) {
+    toast(`Поднимаю SSH-туннель до ${c.host}:${svc.port}…`, { ttl: 4000 });
+    let t;
+    try { t = await lite.rh.tunnelOpen(c.id, '127.0.0.1', svc.port, `${SVC_LABEL[svc.kind] || svc.kind}: ${c.name || c.host}`); }
+    catch (e) { t = { ok: false, error: String(e) }; }
+    if (!t || !t.ok) { toast('Туннель не поднялся: ' + ((t && t.error) || 'ошибка'), { kind: 'err', ttl: 9000 }); return; }
+    const source = `rh:${c.id}:${svc.port}`;
+    const name = `${c.name || c.host}: ${SVC_LABEL[svc.kind] || svc.kind}`;
+    if (svc.kind === 'postgres' || svc.kind === 'mysql') {
+      lite.db.openFromContainer({ ok: true, kind: svc.kind, published: true, running: true, passwordUnknown: true, prefill: {
+        name, type: svc.kind, host: '127.0.0.1', port: t.port, user: '', database: '', category: 'SSH-туннели', source,
+      } });
+    } else if (svc.kind === 'rabbitmq') {
+      lite.rmq.openFromContainer({ ok: true, kind: 'rabbitmq', published: true, running: true, passwordUnknown: true, prefill: {
+        name, host: '127.0.0.1', port: t.port, amqpPort: 5672, vhost: '/', user: '', password: null, category: 'SSH-туннели', source,
+      } });
+    } else if (svc.kind === 'kafka') {
+      toast('Kafka через туннель работает, если advertised.listeners брокера указывает на localhost', { ttl: 7000 });
+      lite.kafka.openFromContainer({ ok: true, kind: 'kafka', published: true, running: true, prefill: {
+        name, brokers: '127.0.0.1:' + t.port, category: 'SSH-туннели', source,
+      } });
+    }
+  }
+  async function watchSvcSite(c, svc) {
+    const url = 'http://' + c.host + ':' + svc.port;
+    let sites = [];
+    try { const l = await lite.sitemon.list(); if (Array.isArray(l)) sites = l; } catch (_) {}
+    if (sites.some((s) => s && s.url === url)) { toast(`Уже наблюдается: ${url}`, { ttl: 5000 }); lite.module.open('sitemon'); return; }
+    const a = await lite.sitemon.add(`${c.name || c.host}:${svc.port}`, url);
+    if (!a || !a.ok) { toast((a && a.error) || 'Не удалось добавить в мониторинг', { kind: 'err', ttl: 8000 }); return; }
+    toast(`${url} — добавлен в «Мониторинг сайтов»`, { ttl: 5000 });
+    lite.module.open('sitemon');
+  }
+  function showHostServices(c) {
+    const { m, close } = makeModal('<h2></h2>');
+    m.querySelector('h2').textContent = 'Сервисы: ' + (c.name || c.host || ''); // имя профиля — только textContent
+    m.classList.add('rh-svc-modal');
+    const sub = el('div', 'about-desc', 'Слушающие TCP-порты хоста и docker/podman-сокеты. Открытие сервиса в модуле идёт через SSH-туннель — работает и для сервисов, доступных только на localhost хоста.');
+    const body = el('div', 'rh-svc-body');
+    body.appendChild(el('div', 'git-loading', 'Сканирую хост…'));
+    m.append(sub, body);
+    lite.rh.services(c.id).then((r) => {
+      if (!m.isConnected) return; // модалку успели закрыть
+      body.innerHTML = '';
+      if (!r || !r.ok) { body.appendChild(el('div', 'db-warn', '⚠ ' + ((r && r.error) || 'скан не удался'))); return; }
+      const services = r.services || [];
+      const sockets = r.sockets || {};
+      if (!services.length && !Object.keys(sockets).length) { body.appendChild(el('div', 'docker-empty', 'Слушающих сервисов не найдено')); return; }
+      const mkRow = (iconName, title, subText, actLabel, onAct) => {
+        const row = el('div', 'rh-svc-row');
+        row.append(icon(iconName, 15));
+        const txt = el('div', 'rh-svc-text');
+        txt.appendChild(el('span', 'rh-svc-title', title));
+        if (subText) txt.appendChild(el('span', 'rh-svc-sub', subText));
+        row.appendChild(txt);
+        if (actLabel) {
+          const b = el('button', 'btn kp-btn'); b.type = 'button'; b.textContent = actLabel;
+          b.onclick = () => { close(); onAct(); };
+          row.appendChild(b);
+        }
+        body.appendChild(row);
+      };
+      // сокеты контейнерных движков — открыть модуль «Контейнеры» в удалённом контексте
+      for (const [engine, sock] of Object.entries(sockets)) {
+        mkRow('box', engine === 'docker' ? 'Docker (сокет)' : 'Podman (сокет)', sock, 'В Контейнеры', async () => {
+          toast('Переключаю «Контейнеры» на этот хост…', { ttl: 4000 });
+          let rr;
+          try { rr = await lite.containers.remoteSet(c.id); } catch (e) { rr = { ok: false, error: String(e) }; }
+          if (!rr || !rr.ok) { toast((rr && rr.error) || 'Не удалось переключить', { kind: 'err', ttl: 9000 }); return; }
+          lite.module.open('docker');
+        });
+      }
+      const SVC_ICON = { postgres: 'database', mysql: 'database', rabbitmq: 'rabbit', amqp: 'rabbit', kafka: 'kafka', redis: 'database', mongo: 'database', web: 'globe' };
+      for (const svc of services) {
+        const subText = `порт ${svc.port} · ${svc.addr}${svc.loopbackOnly ? ' (только localhost хоста)' : ''}${svc.proc ? ' · ' + svc.proc : ''}`;
+        if (svc.kind === 'postgres' || svc.kind === 'mysql') mkRow(SVC_ICON[svc.kind], SVC_LABEL[svc.kind], subText, 'В Базы данных', () => openSvcInModule(c, svc));
+        else if (svc.kind === 'rabbitmq') mkRow('rabbit', SVC_LABEL.rabbitmq, subText, 'В RabbitMQ', () => openSvcInModule(c, svc));
+        else if (svc.kind === 'kafka') mkRow('kafka', SVC_LABEL.kafka, subText, 'В Kafka', () => openSvcInModule(c, svc));
+        else if (svc.kind === 'web' && !svc.loopbackOnly) mkRow('globe', SVC_LABEL.web, subText, 'Наблюдать', () => watchSvcSite(c, svc));
+        else mkRow(SVC_ICON[svc.kind] || 'file', SVC_LABEL[svc.kind] || ('Порт ' + svc.port), subText, null, null);
+      }
+    });
+  }
+
   // ---- file browser (read-only): SFTP (ssh/sftp) или FTP
   function rhHumanSize(n) { if (!n && n !== 0) return ''; if (n < 1024) return n + ' B'; if (n < 1048576) return (n / 1024).toFixed(1) + ' KB'; if (n < 1073741824) return (n / 1048576).toFixed(1) + ' MB'; return (n / 1073741824).toFixed(1) + ' GB'; }
   function rhJoin(base, name) {
@@ -353,11 +456,25 @@ export function initRh(host) {
       const r = el('div', 'rh-frow');
       r.appendChild(icon(e.dir ? 'folder' : 'file', 15));
       r.appendChild(el('span', 'rh-fname', e.name));
-      if (!e.dir) r.appendChild(el('span', 'rh-fsize', rhHumanSize(e.size)));
+      if (!e.dir) {
+        r.appendChild(el('span', 'rh-fsize', rhHumanSize(e.size)));
+        const ed = iconBtn('drow-act rh-fedit', 'code', 'Редактировать в вивере (сохранение уйдёт на хост)', 13);
+        ed.onclick = (ev) => { ev.stopPropagation(); rhEditInViewer(rhJoin(rhFiles.path, e.name)); };
+        r.appendChild(ed);
+      }
       r.onclick = () => e.dir ? rhLoadDir(rhJoin(rhFiles.path, e.name)) : rhOpenFile(e.name);
       list.appendChild(r);
     }
     body.appendChild(list);
+  }
+  // Открыть удалённый файл в вивере: main снимет tmp-копию и будет заливать каждое сохранение
+  // обратно на хост (SFTP/FTP) — полноценная правка, а не только просмотр.
+  async function rhEditInViewer(fullPath) {
+    if (!rhFiles) return;
+    toast('Открываю в вивере…', { ttl: 2500 });
+    const r = await lite.rh.fsOpenInViewer(rhFiles.connId, fullPath);
+    if (!r || !r.ok) { toast((r && r.error) || 'Не удалось открыть в вивере', { kind: 'err', ttl: 8000 }); return; }
+    toast('Файл в вивере. Ctrl+S / автосейв заливает правки на хост', { ttl: 6000 });
   }
   function renderRhFileContent(body) {
     const f = rhFiles.file;
@@ -365,6 +482,11 @@ export function initRh(host) {
     const back = iconBtn('drow-act', 'chevron-left', 'К списку файлов', 14); back.onclick = () => { rhFiles.file = null; renderRhFiles(); };
     head.append(back, icon('file', 14), el('span', 'rh-fcname', f.name));
     if (f.size != null) head.appendChild(el('span', 'rh-fsize', rhHumanSize(f.size)));
+    if (!f.error && !f.binary) {
+      const ed = iconBtn('drow-act rh-fedit', 'code', 'Редактировать в вивере (сохранение уйдёт на хост)', 13);
+      ed.onclick = () => rhEditInViewer(f.path);
+      head.appendChild(ed);
+    }
     body.appendChild(head);
     if (rhFiles.loading) { body.appendChild(el('div', 'git-loading', 'Загрузка…')); return; }
     if (f.error) { body.appendChild(el('div', 'db-warn', '⚠ ' + f.error)); return; }

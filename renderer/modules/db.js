@@ -4,6 +4,7 @@
 // автокомплит SQL по схеме, ER-диаграмма, конструктор запросов, сравнение схем, история.
 // Изоляция по образцу textproc.js: ядро — через host; UI-хелперы — из ui.js; бэкенд — window.lite.db.*.
 import { el, icon, iconBtn, toast, makeModal, showConfirm, showPrompt } from '../ui.js';
+import { kpFormButtons } from '../kpicker.js';
 import { marked } from 'marked';
 import Chart from 'chart.js/auto';   // static import: chart.js/auto auto-registers all controllers
 import { EditorView, keymap, lineNumbers, drawSelection } from '@codemirror/view';
@@ -316,7 +317,11 @@ export function initDb(host) {
     let list = [];
     try { const r = await lite.db.list(); list = r.connections || []; dbConnsList = list; dbSecure = r.secure !== false; } catch (_) {}
     const existing = list.find((x) => x.source && x.source === p.source);
-    if (existing) { // повторный клик из «Контейнеров» = переключение на вкладку, не пересоздание
+    if (existing) { // повторный клик из «Контейнеров»/«Удалённых хостов» = переключение, не пересоздание
+      // хост-порт мог смениться (контейнер пересоздан, новый SSH-туннель) → тихо обновить запись
+      if ((p.port && existing.port !== p.port) || (p.host && existing.host !== p.host)) {
+        try { const u = await lite.db.save({ ...existing, host: p.host || existing.host, port: p.port || existing.port }); if (u && u.connection) Object.assign(existing, u.connection); } catch (_) {}
+      }
       toast(`Переключаюсь на «${existing.name}»`, { ttl: 2200 });
       openConnection(existing);
       return;
@@ -340,6 +345,24 @@ export function initDb(host) {
       toast('Автопроверка не прошла: ' + ((t && t.error) || 'нет ответа') + ' — проверь поля', { kind: 'err', ttl: 9000 });
       toList(); dbConnModal(draft);
     }
+  }
+
+  // ============================================================ вивер → «Базы данных»
+  // Приём SQL из вивера (кнопка «Выполнить в БД» на .sql-файле; payload {connId, sql} приходит
+  // через main по db:openSql). Открываем подключение и НОВУЮ SQL-вкладку с текстом; выполнение —
+  // по кнопке (авто-запуск чужого файла опасен для DML/DDL).
+  async function openSqlFromViewer(payload) {
+    const connId = payload && payload.connId;
+    const sqlText = String((payload && payload.sql) || '');
+    if (!connId || !sqlText.trim()) return;
+    restoredOnce = true;
+    let list = [];
+    try { const r = await lite.db.list(); list = r.connections || []; dbConnsList = list; } catch (_) {}
+    const c = list.find((x) => x.id === connId);
+    if (!c) { toast('Подключение из вивера не найдено (удалено?)', { kind: 'err', ttl: 7000 }); return; }
+    openConnection(c);
+    openSqlTab(sqlText);
+    toast('SQL из вивера вставлен в консоль — проверьте и выполните', { ttl: 4500 });
   }
 
   // ============================================================ connection modal (host + SSH)
@@ -379,7 +402,14 @@ export function initDb(host) {
     const sslLabel = (() => { const w = el('label', 'db-check'); w.append(ssl, document.createTextNode(' Использовать SSL/TLS')); return w; })();
     const sslInsLabel = (() => { const w = el('label', 'db-check db-check-warn'); w.append(sslIns, document.createTextNode(' Доверять самоподписанному сертификату (небезопасно)')); return w; })();
     ssl.onchange = () => { sslInsLabel.style.display = ssl.checked ? '' : 'none'; };
-    hostWrap.append(mk('Хост', host2), mk('Порт', port), mk('Пользователь', user), mk('Пароль', pass), mk('База', database), sslLabel, sslInsLabel);
+    // «Сейф паролей»: заполнить логин/пароль из записи KeePass или сохранить введённое записью в сейф.
+    const kpRow = kpFormButtons({
+      user, pass,
+      title: () => name.value.trim() || 'LiteEditor: база данных',
+      url: () => (host2.value.trim() ? host2.value.trim() + ':' + (port.value || '') : ''),
+      notes: 'LiteEditor · модуль «Базы данных»',
+    });
+    hostWrap.append(mk('Хост', host2), mk('Порт', port), mk('Пользователь', user), mk('Пароль', pass), kpRow, mk('База', database), sslLabel, sslInsLabel);
     f.appendChild(hostWrap);
     const sqliteWrap = el('div', 'db-group');
     const file = inp(c.file || c.database || '', '/путь/к/базе.sqlite');
@@ -1731,8 +1761,15 @@ export function initDb(host) {
       if (r && r.ok) { toast('Сохранено: ' + r.path, { ttl: 7000 }); const d = r.path.replace(/[/\\][^/\\]*$/, ''); if (d) { dbUi.exportDir = d; saveDbUi(); } close(); }
       else if (r && r.error) toast(r.error, { kind: 'err' });
     };
+    const toViewer = el('button', 'btn', 'В вивер'); toViewer.title = 'Открыть результат файлом в окне «Проект» (вивер кода)';
+    toViewer.onclick = async () => {
+      const fmt = EXPORT_FORMATS.find((f) => f.id === fmtId); const text = formatResult(fmtId, columns, rows, name);
+      const r = await lite.editorBus.openTextInViewer(`${name || 'export'}.${fmt.ext}`, text);
+      if (r && r.ok) { toast('Открываю в вивере…', { ttl: 3000 }); close(); }
+      else toast((r && r.error) || 'Не удалось открыть в вивере', { kind: 'err' });
+    };
     const cancel = el('button', 'btn', 'Отмена'); cancel.onclick = close;
-    acts.append(copy, saveBtn, cancel); m.appendChild(acts);
+    acts.append(copy, toViewer, saveBtn, cancel); m.appendChild(acts);
   }
 
   // ============================================================ SQL formatter (lightweight, no deps)
@@ -2351,5 +2388,5 @@ export function initDb(host) {
 
   function refresh() { dbSchema = null; dbColsCache = null; dbObjectsCache = null; metaCache.clear(); dbRelationsCache = null; invalidateTableCaches(); if (dbOpen) renderDbPanel(); }
   document.addEventListener('keydown', (e) => { if (dbOpen && dbActiveId && (e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === 'p') { e.preventDefault(); openPalette(); } });
-  return { isOpen: () => dbOpen, setOpen: setDbOpen, toggle: toggleDb, renderPanel: renderDbPanel, refresh, openFromContainer };
+  return { isOpen: () => dbOpen, setOpen: setDbOpen, toggle: toggleDb, renderPanel: renderDbPanel, refresh, openFromContainer, openSqlFromViewer };
 }
