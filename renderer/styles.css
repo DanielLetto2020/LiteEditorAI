@@ -1370,6 +1370,9 @@ body.preview-split #preview-view { border-left: 1px solid var(--border); }
 .docker-tab.on { color: var(--green-contrast, #06241a); background: var(--green); border-color: var(--green); }
 .docker-tab.off { opacity: 0.5; }
 .docker-tab.off::after { content: "•"; color: var(--text-mute); }
+/* серая ссылка на не-дефолтной вкладке: закрепить её как дефолтную (станет первой) */
+.docker-def-link { border: none; background: none; align-self: center; padding: 4px 2px; font-size: 11px; color: var(--text-mute); cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 0 1 auto; }
+.docker-def-link:hover { color: var(--text-dim); text-decoration: underline; }
 .docker-body { flex: 1; overflow: auto; padding: 10px; display: flex; flex-direction: column; gap: 10px; }
 .docker-env { display: flex; flex-wrap: wrap; gap: 4px 14px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 9px; background: var(--bg-input); }
 .docker-env-row { display: flex; align-items: baseline; gap: 7px; font-size: 11.5px; }

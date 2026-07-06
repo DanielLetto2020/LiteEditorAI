@@ -17,13 +17,14 @@ export function initContainers(host) {
   const { STORE, persist, settings, layout, GUTTER, saveUiState, refitActiveTerminal, closeOtherPanels, termTheme, applyUnicode11, loadFastRenderer } = host;
 
   let dockerOpen = false;      // модуль контейнеров (docker/podman) справа открыт
-  let dockerEngine = 'docker';   // active tab
+  // Persisted per-engine group order + collapse + default tab: { order:{engine:[names]}, collapsed:{'engine:name':bool}, defEngine }
+  let dockerUi = (STORE.dockerUi && typeof STORE.dockerUi === 'object') ? STORE.dockerUi : {};
+  const defEngine = () => (dockerUi.defEngine === 'docker' ? 'docker' : 'podman'); // дефолтная вкладка; из коробки — podman
+  let dockerEngine = defEngine();   // active tab
   let dockerDetect = null;        // cached {docker:{cli,compose,composePlugin}, podman:{...}}
   let dockerRenderSeq = 0;        // stale-render guard (async render vs tab/refresh switches)
   let dockerUid = 0;              // unique-id counter for log/exec streams (decoupled from the render guard)
   const dockerAcc = { containers: true, pods: true, images: false, volumes: false }; // accordion open state
-  // Persisted per-engine group order + collapse: { order:{engine:[names]}, collapsed:{'engine:name':bool} }
-  let dockerUi = (STORE.dockerUi && typeof STORE.dockerUi === 'object') ? STORE.dockerUi : {};
   let dockerView = 'list';        // 'list' | 'detail'
   let dockerDetail = null;        // { id, name, engine, state } when viewing one container
   let dockerDetailTab = 'logs';   // 'logs' | 'term'
@@ -159,13 +160,21 @@ export function initContainers(host) {
       badge.onclick = (e) => { e.stopPropagation(); hostTunnelsDropdown(badge); };
       t.appendChild(badge);
     } else {
-      for (const e of ['docker', 'podman']) {
+      const def = defEngine(); // дефолтная вкладка всегда первая
+      for (const e of (def === 'docker' ? ['docker', 'podman'] : ['podman', 'docker'])) {
         const installed = dockerDetect ? !!(dockerDetect[e] && dockerDetect[e].cli) : true;
         const tab = el('button', 'docker-tab' + (e === dockerEngine ? ' on' : '') + (installed ? '' : ' off'));
         tab.appendChild(icon('box', 15));
         tab.appendChild(el('span', null, e === 'docker' ? 'Docker' : 'Podman'));
         tab.onclick = () => { if (e !== dockerEngine) { dockerEngine = e; renderDockerPanel(); } };
         t.appendChild(tab);
+      }
+      if (dockerEngine !== def) { // активна не-дефолтная — серая ссылка «закрепить как дефолт»
+        const mk = el('button', 'docker-def-link', 'сделать вкладкой по умолчанию');
+        mk.type = 'button';
+        mk.title = 'Запомнить: эта вкладка станет первой и будет открываться по умолчанию';
+        mk.onclick = () => { dockerUi.defEngine = dockerEngine; persist('dockerUi', dockerUi); renderDockerTabs(); };
+        t.appendChild(mk);
       }
     }
     const hostBtn = el('button', 'docker-host-btn' + (dockerRemote ? ' remote' : ''));
