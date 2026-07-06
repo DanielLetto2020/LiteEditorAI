@@ -118,6 +118,7 @@ export const ICONS = {
   'list-ordered': '<path d="M10 6h10M10 12h10M10 18h10"/><path d="M4 5h1.4v3.7M3.7 8.7h1.7"/><path d="M3.6 14.4c0-.6.5-1 1.1-1s1.1.4 1.1 1c0 1-2.1 1.4-2.1 2.6h2.2"/>',
   quote: '<path d="M5 5v14M9 8h10M9 12h10M9 16h6"/>',
   link: '<path d="M9.5 14.5l5-5M8 11.5l-1.8 1.8a3.5 3.5 0 0 0 5 5l1.8-1.8M16 12.5l1.8-1.8a3.5 3.5 0 0 0-5-5L11 7.5"/>',
+  'external-link': '<path d="M14 4h6v6M20 4l-9 9M20 13.5V18a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h4.5"/>',
   table: '<rect x="3.5" y="4.5" width="17" height="15" rx="2"/><path d="M3.5 9.5h17M3.5 14.5h17M9 4.5v15"/>',
   code: '<path d="M9 8l-4 4 4 4M15 8l4 4-4 4"/>',
   bookmark: '<path d="M7 4.5h10a1 1 0 0 1 1 1V20l-6-3.2L6 20V5.5a1 1 0 0 1 1-1z"/>',

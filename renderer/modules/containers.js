@@ -4,6 +4,7 @@
 // host: { STORE, persist, settings, layout, GUTTER, saveUiState, refitActiveTerminal,
 //         closeOtherPanels, termTheme, applyUnicode11, loadFastRenderer }
 import { el, icon, iconBtn, toast, showConfirm, makeModal } from '../ui.js';
+import { parsePublishedPorts, portUrl, portLabel } from '../../lib/portparse.js';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 
@@ -78,19 +79,57 @@ export function initContainers(host) {
 
   // --- удалённый контекст: контейнеры хоста из «Удалённых хостов» (SSH-туннель до сокета в main)
   let dockerRemote; // undefined = статус не спрошен; null = локально; { rhId, name, engine }
+  let dockerTunnels = []; // TCP-туннели текущего rh-хоста (rh:tunnelList) — для «открыть в браузере» и значков-цепочек
   async function ensureRemoteStatus() {
     if (dockerRemote !== undefined) return;
     try { const st = await lite.containers.remoteStatus(); dockerRemote = (st && st.rhId) ? st : null; } catch (_) { dockerRemote = null; }
   }
-  async function applyContainersHost(rhId, label) {
+  async function applyContainersHost(rhId, label, engine) {
+    const saved = rhId ? (dockerUi.engineByHost || {})[rhId] : undefined; // запомненный выбор движка для хоста
+    const eng = engine || saved;
     toast(rhId ? `Подключаюсь к «${label}» (туннель до сокета)…` : 'Возвращаюсь к локальным контейнерам…', { ttl: 4000 });
     let r;
-    try { r = await lite.containers.remoteSet(rhId); } catch (e) { r = { ok: false, error: String(e) }; }
-    if (!r || !r.ok) { toast((r && r.error) || 'Не удалось переключить хост', { kind: 'err', ttl: 9000 }); return; }
+    try { r = await lite.containers.remoteSet(rhId, eng); } catch (e) { r = { ok: false, error: String(e) }; }
+    if (r && r.ok && r.needChoice) { pickEngineModal(rhId, label); return; } // оба сокета — пусть выберет пользователь
+    if (!r || !r.ok) {
+      if (r && r.hint === 'podman-socket') { offerEnablePodman(rhId, label, r.error); return; }
+      if (saved && !engine) { // запомненный движок протух (сокета больше нет) — сброс и авторетрай с автовыбором
+        delete dockerUi.engineByHost[rhId]; persist('dockerUi', dockerUi);
+        return applyContainersHost(rhId, label);
+      }
+      toast((r && r.error) || 'Не удалось переключить хост', { kind: 'err', ttl: 9000 }); return;
+    }
     dockerRemote = r.rhId ? { rhId: r.rhId, name: r.name, engine: r.engine } : null;
     if (dockerRemote) dockerEngine = dockerRemote.engine; // CLI выбирает main по типу удалённого сокета
+    else dockerTunnels = []; // вернулись к локальным — значки туннелей неуместны
     dockerDetect = null; // пересобрать окружение под новый контекст
     renderDockerPanel();
+  }
+  // На хосте оба сокета (docker и podman) — двухплиточный выбор, запоминается per-host.
+  function pickEngineModal(rhId, label) {
+    const { m, close } = makeModal('<h2>Какой движок?</h2>');
+    m.appendChild(el('div', 'about-desc', `На «${label}» найдены оба сокета — Docker и Podman. Выбор запомнится для этого хоста.`));
+    const list = el('div', 'runsql-list');
+    for (const eng of ['docker', 'podman']) {
+      const b = el('button', 'runsql-row'); b.type = 'button';
+      b.append(icon('box', 13), el('span', 'runsql-name', eng === 'docker' ? 'Docker' : 'Podman'));
+      b.onclick = () => {
+        close();
+        dockerUi.engineByHost = dockerUi.engineByHost || {}; dockerUi.engineByHost[rhId] = eng; persist('dockerUi', dockerUi);
+        applyContainersHost(rhId, label, eng);
+      };
+      list.appendChild(b);
+    }
+    m.appendChild(list);
+  }
+  // Podman установлен, но его API-сокет (socket-activated) спит — предложить включить прямо по SSH.
+  function offerEnablePodman(rhId, label, msg) {
+    showConfirm('Podman-сокет спит', (msg || '') + ' Включить на хосте?', 'Включить', async () => {
+      let x;
+      try { x = await lite.rh.exec(rhId, 'systemctl --user enable --now podman.socket'); } catch (e) { x = { ok: false, error: String(e) }; }
+      if (!x || !x.ok || x.code !== 0) { toast((x && (x.error || (x.stderr || '').trim())) || 'Не удалось включить сокет', { kind: 'err', ttl: 9000 }); return; }
+      applyContainersHost(rhId, label, 'podman');
+    });
   }
   async function pickContainersHost() {
     let profiles = [];
@@ -116,7 +155,8 @@ export function initContainers(host) {
     if (dockerRemote) { // удалённый контекст: движок диктует сокет хоста — вкладки не нужны
       const badge = el('span', 'docker-remote-badge');
       badge.append(icon('globe', 14), el('span', null, dockerRemote.name));
-      badge.title = 'Контейнеры удалённого хоста (SSH-туннель). Клик по кнопке хоста — вернуться к локальным.';
+      badge.title = 'Контейнеры удалённого хоста (SSH-туннель). Клик — активные туннели портов. Вернуться к локальным — кнопка хоста.';
+      badge.onclick = (e) => { e.stopPropagation(); hostTunnelsDropdown(badge); };
       t.appendChild(badge);
     } else {
       for (const e of ['docker', 'podman']) {
@@ -193,6 +233,7 @@ export function initContainers(host) {
       b.onclick = (e) => { e.stopPropagation(); watchContainerSite(c); };
       acts.appendChild(b);
     }
+    appendOpenBtn(acts, c); // published-порты → «открыть в браузере» (в т.ч. management-панели БД/брокеров)
     if (running) acts.append(dActBtn('container', 'pause', 'pause', 'Пауза', c.id), dActBtn('container', 'restart', 'refresh', 'Перезапуск', c.id), dActBtn('container', 'stop', 'stop', 'Стоп', c.id));
     else if (paused) acts.append(dActBtn('container', 'unpause', 'play', 'Возобновить', c.id), dActBtn('container', 'stop', 'stop', 'Стоп', c.id));
     else acts.appendChild(dActBtn('container', 'start', 'play', 'Старт', c.id));
@@ -243,8 +284,121 @@ export function initContainers(host) {
     if (!r.running) toast('Контейнер остановлен — профиль создастся, но оживёт после старта', { ttl: 6000 });
     lite.kafka.openFromContainer(r);
   }
+  // --- «Открыть в браузере»: published-порты контейнера → системный браузер; для удалённого хоста —
+  // через SSH-туннель (rh:tunnelOpen, дедуп в main). Порты парсятся из строки c.ports — без inspect.
+  function cname(c) { return c.service || c.name || String(c.id || '').slice(0, 12); }
+  function tunnelsFor(ports) { // активные TCP-туннели хоста к портам контейнера (у сокет-туннеля rport=null — мимо)
+    if (!dockerRemote || !dockerTunnels.length) return [];
+    const hp = new Set(ports.map((p) => p.hostPort));
+    return dockerTunnels.filter((t) => t.rport && hp.has(t.rport));
+  }
+  async function refreshTunnels() { // не кидает: transient-ошибка списка не должна ронять полл
+    if (!dockerRemote) { dockerTunnels = []; return; }
+    try {
+      const r = await lite.rh.tunnelList();
+      dockerTunnels = ((r && r.tunnels) || []).filter((t) => t.connId === dockerRemote.rhId && t.rport);
+    } catch (_) {}
+  }
+  // Туннель к порту удалённого хоста; локальный порт стабилен между перезапусками (карта dockerUi.tunPorts:
+  // предпочитаемый порт передаётся в rh:tunnelOpen, занят → main выдаст случайный и карта перезапишется).
+  async function ensurePortTunnel(p, name) {
+    const key = dockerRemote.rhId + ':' + p.hostPort;
+    const prefer = (dockerUi.tunPorts || {})[key];
+    let t;
+    try { t = await lite.rh.tunnelOpen(dockerRemote.rhId, p.hostIp || '127.0.0.1', p.hostPort, `web: ${name} :${p.hostPort}`, prefer); }
+    catch (e) { t = { ok: false, error: String(e) }; }
+    if (!t || !t.ok) { toast((t && t.error) || 'Туннель не поднялся', { kind: 'err', ttl: 8000 }); return null; }
+    dockerUi.tunPorts = dockerUi.tunPorts || {};
+    if (dockerUi.tunPorts[key] !== t.port) { dockerUi.tunPorts[key] = t.port; persist('dockerUi', dockerUi); }
+    refreshTunnels().then(() => { if (dockerView === 'list') fetchAndReconcile(true); }); // цепочка на строке сразу, не ждём тика
+    return t;
+  }
+  async function openPortInBrowser(p, name) {
+    if (!dockerRemote) { lite.openExternal(portUrl(p)); return; }
+    const t = await ensurePortTunnel(p, name);
+    if (t) lite.openExternal(portUrl(p, '127.0.0.1', t.port));
+  }
+  async function copyPortUrl(p, name) {
+    let url = portUrl(p);
+    if (dockerRemote) { const t = await ensurePortTunnel(p, name); if (!t) return; url = portUrl(p, '127.0.0.1', t.port); }
+    lite.copyText(url); toast('URL скопирован: ' + url, { ttl: 4000 });
+  }
+  function closePortDd() { const d = document.getElementById('docker-portdd'); if (d) d.remove(); }
+  function portDd(anchor, maxW) { // общий каркас выпадашки (паттерн db-conndd из kafka.js)
+    closePortDd();
+    const dd = el('div', 'db-conndd'); dd.id = 'docker-portdd';
+    dd.addEventListener('click', (e) => e.stopPropagation()); // клик внутри не закрывает (document-once остаётся вооружён)
+    document.body.appendChild(dd);
+    const r0 = anchor.getBoundingClientRect();
+    dd.style.left = Math.max(8, Math.min(r0.left, window.innerWidth - maxW)) + 'px';
+    dd.style.top = (r0.bottom + 4) + 'px';
+    setTimeout(() => document.addEventListener('click', closePortDd, { once: true }), 0);
+    return dd;
+  }
+  function portsDropdown(anchor, ports, c) { // выбор порта у мультипортового контейнера
+    const dd = portDd(anchor, 300);
+    for (const p of ports) { // отсортированы парсером: веб-порты первыми
+      const row = el('div', 'db-conndd-row');
+      row.append(icon('external-link', 13), el('span', 'db-conndd-name', portLabel(p)));
+      const t = tunnelsFor([p])[0];
+      if (t) { const mk = el('span', 'db-conndd-mark', ':' + t.port); mk.title = 'Туннель уже открыт — локальный порт'; row.appendChild(mk); }
+      const cp = iconBtn('drow-act dportdd-copy', 'copy', 'Копировать URL', 12);
+      cp.onclick = (e) => { e.stopPropagation(); closePortDd(); copyPortUrl(p, cname(c)); };
+      row.appendChild(cp);
+      row.onclick = () => { closePortDd(); openPortInBrowser(p, cname(c)); };
+      dd.appendChild(row);
+    }
+  }
+  function hostTunnelsDropdown(anchor) { // клик по бейджу хоста — все активные туннели портов этого хоста
+    const dd = portDd(anchor, 340);
+    const paint = () => {
+      dd.innerHTML = '';
+      if (!dockerTunnels.length) { dd.appendChild(el('div', 'db-conndd-row', 'Активных туннелей нет')); return; }
+      for (const t of dockerTunnels) {
+        const row = el('div', 'db-conndd-row');
+        row.append(icon('link', 13), el('span', 'db-conndd-name', `${t.rhost}:${t.rport} → 127.0.0.1:${t.port}`));
+        if (t.label) row.appendChild(el('span', 'db-conndd-sub', t.label));
+        const x = iconBtn('drow-act dportdd-copy', 'x', 'Закрыть туннель', 12);
+        x.onclick = async (e) => {
+          e.stopPropagation();
+          try { await lite.rh.tunnelClose(t.tunId); } catch (_) {}
+          await refreshTunnels(); paint();
+          if (dockerView === 'list') fetchAndReconcile(true); // убрать значок-цепочку со строки
+        };
+        row.appendChild(x);
+        dd.appendChild(row);
+      }
+    };
+    paint();
+  }
+  // Кнопка «Открыть в браузере» (+ значок активного туннеля) — общая для строки списка и шапки detail-вида.
+  function appendOpenBtn(parent, c) {
+    const pub = parsePublishedPorts(c.ports);
+    if (c.state === 'running' && pub.length) {
+      const single = pub.length === 1;
+      const b = iconBtn('drow-act dopen', 'external-link',
+        single ? `Открыть в браузере: ${portUrl(pub[0])}${dockerRemote ? ' (через SSH-туннель)' : ''} · ПКМ — копировать URL` : 'Открыть в браузере — выбрать порт…', 14);
+      b.onclick = (e) => { e.stopPropagation(); if (single) openPortInBrowser(pub[0], cname(c)); else portsDropdown(b, pub, c); };
+      b.oncontextmenu = (e) => { e.preventDefault(); e.stopPropagation(); if (single) copyPortUrl(pub[0], cname(c)); else portsDropdown(b, pub, c); };
+      parent.appendChild(b);
+    }
+    const tuns = tunnelsFor(pub); // и у остановленного контейнера: туннель должен быть виден и закрываем
+    if (tuns.length) {
+      const tb = iconBtn('drow-act dtun', 'link', tuns.map((t) => `туннель 127.0.0.1:${t.port} → ${t.rport}`).join('\n') + '\nКлик — закрыть', 14);
+      tb.onclick = async (e) => {
+        e.stopPropagation();
+        for (const t of tuns) { try { await lite.rh.tunnelClose(t.tunId); } catch (_) {} }
+        toast('Туннель закрыт'); await refreshTunnels();
+        if (dockerView === 'list') fetchAndReconcile(true);
+      };
+      parent.appendChild(tb);
+    }
+  }
+  function actsSig(c) { // набор кнопок строки зависит не только от state: порты и туннели тоже его меняют
+    return c.state + '|' + (c.ports || '') + '|' + tunnelsFor(parsePublishedPorts(c.ports)).map((t) => t.tunId + ':' + t.port).sort().join(',');
+  }
   function dockerContainerRow(c) {
-    const row = el('div', 'docker-row clickable'); row.dataset.st = c.state; row._c = c; row.title = 'Открыть: логи и терминал';
+    const row = el('div', 'docker-row clickable'); row.dataset.sig = actsSig(c); row._c = c; row.title = 'Открыть: логи и терминал';
     const dot = el('span', 'dstate dstate-' + dStateClass(c.state)); dot.title = c.status || c.state || '';
     row.appendChild(dot);
     const main = el('div', 'drow-main');
@@ -255,12 +409,13 @@ export function initContainers(host) {
     row.addEventListener('click', () => openDockerDetail(row._c)); // row._c kept fresh by updateContainerRow
     return row;
   }
-  function updateContainerRow(row, c) { // in-place: dot/name/sub always; action buttons only when state changes
+  function updateContainerRow(row, c) { // in-place: dot/name/sub always; action buttons only when their signature changes
     row._c = c;
     const dot = row.querySelector('.dstate'); dot.className = 'dstate dstate-' + dStateClass(c.state); dot.title = c.status || c.state || '';
     row.querySelector('.drow-name').textContent = c.service || c.name || String(c.id).slice(0, 12);
     row.querySelector('.drow-sub').textContent = [c.image, c.ports].filter(Boolean).join('   ·   ');
-    if (row.dataset.st !== c.state) { row.dataset.st = c.state; const acts = row.querySelector('.drow-acts'); acts.innerHTML = ''; fillContainerActs(acts, c); }
+    const sig = actsSig(c);
+    if (row.dataset.sig !== sig) { row.dataset.sig = sig; const acts = row.querySelector('.drow-acts'); acts.innerHTML = ''; fillContainerActs(acts, c); }
   }
   function dockerPodRow(p) {
     const row = el('div', 'docker-row');
@@ -485,7 +640,7 @@ export function initContainers(host) {
   function openDockerDetail(c) {
     closeDockerDetail();
     stopDockerPoll(); dockerListBox = null; // leaving the list — pause live refresh
-    dockerDetail = { id: c.id, name: c.service || c.name || String(c.id).slice(0, 12), engine: dockerEngine, state: c.state };
+    dockerDetail = { id: c.id, name: c.service || c.name || String(c.id).slice(0, 12), engine: dockerEngine, state: c.state, ports: c.ports };
     dockerView = 'detail';
     dockerDetailTab = 'logs';
     renderDockerDetail();
@@ -587,6 +742,7 @@ export function initContainers(host) {
     head.appendChild(back);
     head.appendChild(el('span', 'dstate dstate-' + dStateClass(d.state)));
     head.appendChild(el('span', 'docker-detail-name', d.name));
+    appendOpenBtn(head, { state: d.state, ports: d.ports, name: d.name, id: d.id }); // «открыть в браузере» и из деталей
     body.appendChild(head);
     const tabsEl = el('div', 'docker-subtabs');
     const logsView = el('div', 'docker-detail-view');
@@ -639,7 +795,8 @@ export function initContainers(host) {
     listBox.appendChild(el('div', 'git-loading', 'Считываю объекты…'));
     body.appendChild(listBox);
     let data;
-    try { data = await lite.containers.list(dockerEngine); } catch (e) { data = { containers: { error: String(e) } }; }
+    try { const [d] = await Promise.all([lite.containers.list(dockerEngine), refreshTunnels()]); data = d; }
+    catch (e) { data = { containers: { error: String(e) } }; }
     if (seq !== dockerRenderSeq || !dockerOpen) return;
     listBox.innerHTML = '';
     if (data.error) { listBox.appendChild(el('div', 'docker-err', data.error)); return; }
@@ -657,7 +814,7 @@ export function initContainers(host) {
     const eng = dockerEngine;
     dockerListBusy = true;
     let data;
-    try { data = await lite.containers.list(eng, light ? { light: true } : undefined); }
+    try { const [d] = await Promise.all([lite.containers.list(eng, light ? { light: true } : undefined), refreshTunnels()]); data = d; }
     catch (_) { data = null; } finally { dockerListBusy = false; }
     if (!data || data.error) return;                                                       // transient error: keep last view
     if (!dockerOpen || dockerView !== 'list' || dockerEngine !== eng || !dockerListBox) return; // context changed mid-fetch

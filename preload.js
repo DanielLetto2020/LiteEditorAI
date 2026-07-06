@@ -411,7 +411,7 @@ contextBridge.exposeInMainWorld('lite', {
     fsList: (engine, id, path) => ipcRenderer.invoke('containers:fsList', { engine, id, path }),
     fsOpenInViewer: (engine, id, path) => ipcRenderer.invoke('containers:fsOpenInViewer', { engine, id, path }),
     // Удалённый контекст: контейнеры хоста по SSH (туннель до docker/podman-сокета в main).
-    remoteSet: (rhId) => ipcRenderer.invoke('containers:remoteSet', { rhId }),   // rhId=null → назад к локальному
+    remoteSet: (rhId, engine) => ipcRenderer.invoke('containers:remoteSet', { rhId, engine }), // rhId=null → назад; engine — явный выбор при двух сокетах
     remoteStatus: () => ipcRenderer.invoke('containers:remoteStatus'),           // → {rhId,name}|{rhId:null}
   },
 
@@ -523,7 +523,7 @@ contextBridge.exposeInMainWorld('lite', {
     // Сервисы хоста: exec-команда, скан слушающих портов/сокетов, SSH-туннели до сервисов.
     exec: (id, cmd) => ipcRenderer.invoke('rh:exec', { id, cmd }),                    // → {ok,code,stdout,stderr}
     services: (id) => ipcRenderer.invoke('rh:services', { id }),                      // → {ok,services:[{kind,port,...}]}
-    tunnelOpen: (id, rhost, rport, label) => ipcRenderer.invoke('rh:tunnelOpen', { id, rhost, rport, label }), // → {ok,tunId,port}
+    tunnelOpen: (id, rhost, rport, label, lport) => ipcRenderer.invoke('rh:tunnelOpen', { id, rhost, rport, label, lport }), // → {ok,tunId,port}; lport — предпочитаемый локальный
     tunnelList: () => ipcRenderer.invoke('rh:tunnelList'),                            // → {ok,tunnels:[...]}
     tunnelClose: (tunId) => ipcRenderer.invoke('rh:tunnelClose', { tunId }),
   },

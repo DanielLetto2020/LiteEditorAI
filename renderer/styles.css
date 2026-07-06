@@ -1409,6 +1409,11 @@ body.preview-split #preview-view { border-left: 1px solid var(--border); }
 .drow-act.dmq:hover { color: var(--warn); border-color: var(--warn); background: var(--bg-input); }
 .drow-act.dweb { color: var(--info); }                                        /* задетекчен веб-сервис → «наблюдать в Мониторинге сайтов» */
 .drow-act.dweb:hover { color: var(--info); border-color: var(--info); background: var(--bg-input); }
+.drow-act.dopen { color: var(--accent); }                                     /* есть published-порт → «открыть в браузере» */
+.drow-act.dopen:hover { color: var(--accent); border-color: var(--accent); background: var(--bg-input); }
+.drow-act.dtun { color: var(--green); }                                       /* активный SSH-туннель к порту контейнера */
+.drow-act.dtun:hover { color: var(--green-bright); border-color: var(--green); }
+.dportdd-copy { width: 22px; height: 22px; margin-left: auto; flex: 0 0 auto; } /* мини-копирование в выпадашке портов */
 /* селектор хоста контейнеров (локально / SSH-хост) + бейдж удалённого контекста */
 .docker-host-btn {
   display: inline-flex; align-items: center; gap: 6px; margin-left: auto; align-self: center;
@@ -1422,6 +1427,7 @@ body.preview-split #preview-view { border-left: 1px solid var(--border); }
   display: inline-flex; align-items: center; gap: 6px;
   padding: 4px 10px; font-size: 12px; font-weight: 600;
   border-radius: 8px; background: var(--accent-soft); color: var(--green-bright);
+  cursor: pointer; /* клик — список активных туннелей хоста */
 }
 .runsql-row.on { border-color: var(--border-accent); background: var(--accent-soft); }
 /* модалка «Сервисы хоста» (Удалённые хосты → скан + связки через туннель) */
