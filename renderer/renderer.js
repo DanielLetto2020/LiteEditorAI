@@ -13,6 +13,7 @@ import '@xterm/xterm/css/xterm.css';
 // CodeMirror/marked/showMinimap/codeedit — переехали в окно вивера (renderer/modules/files.js).
 // В ядре остались только терминал (xterm) + темы/термутилы.
 import { THEMES, TERM_THEME, DEFAULT_THEME } from './themes.js';
+import { FRAME_COLORS, frameConf, applyFrame } from './frame.js';
 import { loadFastRenderer, applyUnicode11, copySelection } from './termutil.js';
 // initTextProc — «Обработка текста» мигрирована в отдельное окно (renderer/module-entry.js).
 import { el, icon, iconBtn, hydrateIcons, toast, makeModal, showConfirm, showPrompt, baseName, ICONS, setErrorSink } from './ui.js';
@@ -26,7 +27,7 @@ import { el, icon, iconBtn, hydrateIcons, toast, makeModal, showConfirm, showPro
 import { initExtensions } from './modules/extensions.js';
 // initFiles — вивер+дерево мигрированы в отдельное окно (renderer/module-entry.js).
 
-const APP_VERSION = 'alpha v1.1.86';
+const APP_VERSION = 'alpha v1.1.87';
 const GUTTER = 5;
 // Системный терминал («Система · ~») мигрирован в отдельное окно (renderer/modules/scratch.js):
 // его id `__scratch__::tN` маршрутизируются main'ом в окно-владельца, в ядре их больше не обрабатываем.
@@ -53,7 +54,7 @@ function persist(key, value) { STORE[key] = value; lite.store.set(key, value); }
 function projId(p) { let h = 5381; for (let i = 0; i < p.length; i++) h = ((h << 5) + h + p.charCodeAt(i)) >>> 0; return 'p' + h.toString(36); }
 
 // ---------------------------------------------------------------- settings (tiny on purpose)
-const DEFAULT_SETTINGS = { notifications: true, sound: false, idleMs: 1200, fontSize: 13, workingDir: '', scanDirs: [], theme: 'neumorphism', onboarded: false, shell: '', minimap: true, notesTab: 'project' };
+const DEFAULT_SETTINGS = { notifications: true, sound: false, idleMs: 1200, fontSize: 13, workingDir: '', scanDirs: [], theme: 'neumorphism', onboarded: false, shell: '', minimap: true, notesTab: 'project', frameOn: true, frameColor: 'green', framePulse: true, framePeriodS: 6 };
 function loadSettings() { return { ...DEFAULT_SETTINGS, ...(STORE.settings || {}) }; }
 let settings = loadSettings();
 function saveSettings() { persist('settings', settings); }
@@ -2437,6 +2438,15 @@ function showSettings() {
         </div>
       </section>
       <section class="set-group">
+        <div class="set-group-h"><span class="set-ic">🟢</span> Рамка окна</div>
+        <div class="set-group-body">
+          <label class="set-row"><span>Тонкая рамка по краю окна (и окон модулей)</span><input type="checkbox" id="st-frame"></label>
+          <div class="set-row col"><span>Цвет рамки</span><div id="st-frame-colors" class="frame-swatches"></div></div>
+          <label class="set-row"><span>Пульсация — мягкое «дыхание» от тёмного оттенка к чуть ярче и обратно</span><input type="checkbox" id="st-frame-pulse"></label>
+          <label class="set-row"><span>Период пульсации, сек</span><input type="number" id="st-frame-period" min="2" max="30" step="1"></label>
+        </div>
+      </section>
+      <section class="set-group">
         <div class="set-group-h"><span class="set-ic">🟩</span> Заставка «матрица»</div>
         <div class="set-group-body">
           <label class="set-row"><span>Запускать по бездействию</span><input type="checkbox" id="st-ss"></label>
@@ -2488,6 +2498,30 @@ function showSettings() {
   for (const [key, t] of Object.entries(THEMES)) { const o = document.createElement('option'); o.value = key; o.textContent = t.label; themeSel.appendChild(o); }
   themeSel.value = THEMES[settings.theme] ? settings.theme : DEFAULT_THEME;
   themeSel.addEventListener('change', () => { settings.theme = themeSel.value; saveSettings(); applyTheme(); }); // live preview
+  // Рамка окна — живой предпросмотр: применяется сразу и уезжает в окна модулей (шина settingsChanged).
+  const frameLive = () => { saveSettings(); applyFrame(settings); try { lite.app.settingsChanged(settings); } catch (_) {} };
+  const frameOn = m.querySelector('#st-frame'); frameOn.checked = frameConf(settings).on;
+  const framePulse = m.querySelector('#st-frame-pulse'); framePulse.checked = frameConf(settings).pulse;
+  const framePeriod = m.querySelector('#st-frame-period'); framePeriod.value = frameConf(settings).periodS;
+  const frameSwBox = m.querySelector('#st-frame-colors');
+  const renderFrameSwatches = () => {
+    frameSwBox.innerHTML = '';
+    const cur = frameConf(settings).color;
+    for (const [key, c] of Object.entries(FRAME_COLORS)) {
+      const b = el('button', 'frame-sw' + (key === cur ? ' sel' : ''));
+      b.type = 'button'; b.title = c.label;
+      b.style.background = `linear-gradient(135deg, ${c.c1}, ${c.c2})`;
+      b.onclick = () => { settings.frameColor = key; frameLive(); renderFrameSwatches(); };
+      frameSwBox.appendChild(b);
+    }
+  };
+  renderFrameSwatches();
+  frameOn.addEventListener('change', () => { settings.frameOn = frameOn.checked; frameLive(); });
+  framePulse.addEventListener('change', () => { settings.framePulse = framePulse.checked; frameLive(); });
+  framePeriod.addEventListener('change', () => {
+    settings.framePeriodS = Math.max(2, Math.min(30, parseInt(framePeriod.value, 10) || 6));
+    framePeriod.value = settings.framePeriodS; frameLive();
+  });
   // Выбор оболочки терминала — платформо-зависимо (Windows: PowerShell/cmd/свой; Linux: bash/свой).
   const shellSel = m.querySelector('#st-shell');
   const shellPath = m.querySelector('#st-shell-path');
@@ -2797,6 +2831,7 @@ function init() {
   // вивер живёт в отдельном окне (module.html#files) — в редакторе его DOM/редактор больше нет.
   applyLayout();
   applyTheme();
+  applyFrame(settings);
   initGutters();
   initWindowControls();
   initMenubar();

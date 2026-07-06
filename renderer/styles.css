@@ -4307,3 +4307,26 @@ body.mw-doc .modal label { color: #1a1a1c !important; }
 }
 .tp-dd-item:hover { background: rgba(0,0,0,0.06); }
 .tp-dd-item.active { background: rgba(0,0,0,0.04); font-weight: 500; }
+
+/* ---------------------------------------------------------------- рамка окна
+   Тонкий бордер по периметру ВСЕГО окна (редактор и каждое окно модуля): тёмное окно
+   на тёмном рабочем столе остаётся различимым, не становясь акцентом. Управление —
+   renderer/frame.js (applyFrame): классы win-frame / win-frame-pulse + переменные
+   --frame-c1 / --frame-c2 / --frame-period. Цвет выбирает пользователь из палитры
+   FRAME_COLORS (настройки → «Рамка окна»), поэтому токены темы здесь не участвуют. */
+body.win-frame::after {
+  content: ''; position: fixed; inset: 0; pointer-events: none; z-index: 99999;
+  border: 1px solid var(--frame-c1);
+}
+body.win-frame.win-frame-pulse::after {
+  animation: win-frame-pulse var(--frame-period, 6s) ease-in-out infinite;
+}
+@keyframes win-frame-pulse {
+  0%, 100% { border-color: var(--frame-c1); }
+  50%      { border-color: var(--frame-c2); }
+}
+/* сватчи выбора цвета рамки в настройках */
+.frame-swatches { display: flex; gap: 7px; flex-wrap: wrap; padding: 2px 0; }
+.frame-sw { width: 24px; height: 24px; border-radius: 7px; border: 1px solid var(--border); cursor: pointer; padding: 0; transition: transform .1s; }
+.frame-sw:hover { transform: scale(1.12); }
+.frame-sw.sel { outline: 2px solid var(--border-accent); outline-offset: 1px; }

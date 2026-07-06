@@ -8,6 +8,7 @@ import {
 } from './ui.js';
 import { createCodeEditor } from './codeedit.js';
 import { THEMES, TERM_THEME, DEFAULT_THEME, termThemeFor } from './themes.js';
+import { applyFrame } from './frame.js';
 import { loadFastRenderer, applyUnicode11, copySelection } from './termutil.js';
 import '@xterm/xterm/css/xterm.css';
 import 'highlight.js/styles/atom-one-dark.css';
@@ -198,6 +199,7 @@ const STORE = lite.store.loadAll() || {};
 let settings = STORE.settings || {};
 function applyTheme(name) { document.body.dataset.theme = name || 'neumorphism'; }
 applyTheme(settings.theme);
+applyFrame(settings); // рамка окна — та же, что у редактора (настройки → «Рамка окна»)
 
 function persist(key, value) { STORE[key] = value; lite.store.set(key, value); }
 function saveSettings() { lite.store.set('settings', settings); lite.app.settingsChanged(settings); }
@@ -256,6 +258,7 @@ function boot() {
     if (!s) return;
     Object.assign(settings, s);
     applyTheme(settings.theme);
+    applyFrame(settings);
     try { mod && mod.applyTermTheme && mod.applyTermTheme(); } catch (_) {}
     try { mod && mod.applyFontSize && mod.applyFontSize(); } catch (_) {}
   });
