@@ -1722,6 +1722,9 @@ body.preview-split #preview-view { border-left: 1px solid var(--border); }
 .db-grid td.db-c-json { color: var(--green-bright); font-family: "JetBrains Mono", monospace; }
 .db-grid td.db-c-bytes { color: var(--text-mute); font-style: italic; }
 .db-grid td.sel { background: hsla(210, 80%, 55%, .25); box-shadow: inset 0 0 0 1px var(--border-accent); }
+/* грид фокусируемый (tabIndex=0 — стрелки/Ctrl+C), но системное фокус-кольцо не рисуем:
+   при Shift/Ctrl-кликах Chromium считал ввод «клавиатурным» и обводил всю таблицу жёлтой рамкой */
+.db-grid:focus, .db-grid:focus-visible { outline: none; }
 /* virtualized grid (large result sets) */
 .db-grid-virtual { overflow: auto; }   /* height comes from the flex parent (db-grid-host) now */
 .db-grid-virtual td { height: 23px; white-space: nowrap; }

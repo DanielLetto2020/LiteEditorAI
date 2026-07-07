@@ -807,7 +807,7 @@ export function initDb(host) {
       onBufferChange: () => renderChangesBar(t, meta, changesHost),
       onSelStats: (st) => { selFoot.textContent = fmtStats(st); selFoot.classList.toggle('on', !!st); },
       onHeaderMenu: (ev, colName) => headerMenu(ev, colName, t, meta),
-      onCellMenu: (e, val, colName, rowValues, ri) => cellMenu(e, val, colName, rowValues, t, r.columns, ri, meta),
+      onCellMenu: (e, val, colName, rowValues, ri, selInfo) => cellMenu(e, val, colName, rowValues, t, r.columns, ri, meta, null, selInfo),
     });
     gridWrap.appendChild(grid.element);
     const selFoot = el('div', 'db-selfoot'); body.appendChild(selFoot);
@@ -1011,6 +1011,15 @@ export function initDb(host) {
     const tb = document.createElement('tbody');
     const sel = new Set(); let anchor = null, dragging = false, cur = null;
     const cellKey = (r, c) => r + ':' + c;
+    // Текст ИМЕННО выделенных ячеек (row-major): ячейки строки — через таб, строки — с новой строки.
+    // В отличие от прямоугольника «уникальные строки × колонки» честно работает и для точечного
+    // Ctrl-выделения: чужие ячейки в текст не попадают.
+    function selText() {
+      const cells = [...sel].map((k) => k.split(':').map(Number)).sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+      const byRow = new Map();
+      for (const [r, c] of cells) { if (!byRow.has(r)) byRow.set(r, []); byRow.get(r).push(c); }
+      return [...byRow.entries()].map(([r, cols]) => cols.map((c) => { const v = rows[r] && rows[r][c]; return v == null ? '' : fmtVal(v); }).join('\t')).join('\n');
+    }
     function reportSel() {
       if (!opts.onSelStats) return;
       if (!sel.size) { opts.onSelStats(null); return; }
@@ -1061,10 +1070,29 @@ export function initDb(host) {
         if (opts.fkCols && opts.fkCols.has(columns[ci]) && v != null) td.classList.add('db-fk');
         if (widths[ci]) { td.style.width = td.style.minWidth = td.style.maxWidth = widths[ci] + 'px'; }
         paintCell(td, v);
-        td.onmousedown = (e) => { if (e.button !== 0) return; dragging = true; sel.clear(); anchor = [ri, ci]; cur = [ri, ci]; sel.add(cellKey(ri, ci)); paintSel(); reportSel(); if (document.getElementById('db-valpanel')) showCellValue(v, columns[ci]); wrap.focus({ preventScroll: true }); };
+        td.onmousedown = (e) => {
+          if (e.button !== 0) return;
+          if (e.ctrlKey || e.metaKey) { // точечное выделение: Ctrl+клик добавляет/снимает отдельную ячейку
+            e.preventDefault();
+            const k = cellKey(ri, ci);
+            if (sel.has(k)) sel.delete(k); else { sel.add(k); anchor = [ri, ci]; cur = [ri, ci]; }
+            paintSel(); reportSel(); wrap.focus({ preventScroll: true });
+            return;
+          }
+          if (e.shiftKey && anchor) { // Shift+клик: прямоугольник от якоря до кликнутой ячейки
+            e.preventDefault();
+            sel.clear();
+            const [ar, ac] = anchor;
+            for (let r = Math.min(ar, ri); r <= Math.max(ar, ri); r++) for (let c = Math.min(ac, ci); c <= Math.max(ac, ci); c++) sel.add(cellKey(r, c));
+            cur = [ri, ci];
+            paintSel(); reportSel(); wrap.focus({ preventScroll: true });
+            return;
+          }
+          dragging = true; sel.clear(); anchor = [ri, ci]; cur = [ri, ci]; sel.add(cellKey(ri, ci)); paintSel(); reportSel(); if (document.getElementById('db-valpanel')) showCellValue(v, columns[ci]); wrap.focus({ preventScroll: true });
+        };
         td.onmouseenter = () => { if (dragging && anchor) { sel.clear(); const [ar, ac] = anchor; for (let r = Math.min(ar, ri); r <= Math.max(ar, ri); r++) for (let c = Math.min(ac, ci); c <= Math.max(ac, ci); c++) sel.add(cellKey(r, c)); paintSel(); reportSel(); } };
         if (editable && buffer) td.ondblclick = () => startEdit(td, ri, ci, v, false);
-        if (onCellMenu) td.oncontextmenu = (e) => { e.preventDefault(); onCellMenu(e, v, columns[ci], rowv, ri); };
+        if (onCellMenu) td.oncontextmenu = (e) => { e.preventDefault(); onCellMenu(e, v, columns[ci], rowv, ri, { size: sel.size, text: selText }); };
         tr.appendChild(td);
       }
       return tr;
@@ -1121,11 +1149,7 @@ export function initDb(host) {
     wrap.addEventListener('keydown', (e) => {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'c' && sel.size) {
         e.preventDefault();
-        const cells = [...sel].map((k) => k.split(':').map(Number));
-        const rs = [...new Set(cells.map((x) => x[0]))].sort((a, b) => a - b);
-        const cs = [...new Set(cells.map((x) => x[1]))].sort((a, b) => a - b);
-        const tsv = rs.map((r) => cs.map((c) => { const v = rows[r][c]; return v == null ? '' : fmtVal(v); }).join('\t')).join('\n');
-        navigator.clipboard.writeText(tsv); toast(`Скопировано ячеек: ${sel.size}`); return;
+        navigator.clipboard.writeText(selText()); toast(`Скопировано ячеек: ${sel.size}`); return;
       }
       const NAV = ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Home', 'End', 'PageUp', 'PageDown'];
       if (NAV.includes(e.key)) {
@@ -1417,7 +1441,7 @@ export function initDb(host) {
       res.appendChild(info);
       let sortState = null; const rows = r.rows.slice();
       const selFoot = el('div', 'db-selfoot');
-      const rerender = () => { res.querySelector('.db-grid')?.remove(); const g = makeGrid({ columns: r.columns, colTypes: r.colTypes, rows, sortState, onSelStats: (st) => { selFoot.textContent = fmtStats(st); selFoot.classList.toggle('on', !!st); }, onSort: (col) => { const ci = r.columns.indexOf(col); if (sortState && sortState.col === col) sortState.dir = sortState.dir === 'asc' ? 'desc' : 'asc'; else sortState = { col, dir: 'asc' }; rows.sort((a, b) => { const x = a[ci], y = b[ci]; if (x == null) return 1; if (y == null) return -1; return (x > y ? 1 : x < y ? -1 : 0) * (sortState.dir === 'asc' ? 1 : -1); }); rerender(); }, onCellMenu: (e, val, colName) => cellMenu(e, val, colName, null, null, r.columns, null, null, r) }); res.insertBefore(g.element, selFoot); };
+      const rerender = () => { res.querySelector('.db-grid')?.remove(); const g = makeGrid({ columns: r.columns, colTypes: r.colTypes, rows, sortState, onSelStats: (st) => { selFoot.textContent = fmtStats(st); selFoot.classList.toggle('on', !!st); }, onSort: (col) => { const ci = r.columns.indexOf(col); if (sortState && sortState.col === col) sortState.dir = sortState.dir === 'asc' ? 'desc' : 'asc'; else sortState = { col, dir: 'asc' }; rows.sort((a, b) => { const x = a[ci], y = b[ci]; if (x == null) return 1; if (y == null) return -1; return (x > y ? 1 : x < y ? -1 : 0) * (sortState.dir === 'asc' ? 1 : -1); }); rerender(); }, onCellMenu: (e, val, colName, _rv, _ri, selInfo) => cellMenu(e, val, colName, null, null, r.columns, null, null, r, selInfo) }); res.insertBefore(g.element, selFoot); };
       res.appendChild(selFoot); rerender();
     } else {
       res.appendChild(el('div', 'db-result-info', `Готово${r.rowCount != null ? ` · затронуто строк: ${r.rowCount}` : ''}${r._ms != null ? ` · ${r._ms} мс` : ''}`));
@@ -1492,12 +1516,16 @@ export function initDb(host) {
       { label: 'DROP TABLE…', danger: true, action: () => showConfirm('Удалить таблицу?', `${qn} будет удалена безвозвратно.`, 'DROP', () => autorun(`DROP TABLE ${qn};`)) },
     ]);
   }
-  function cellMenu(e, val, colName, rowValues, t, columns, ri, meta, resultObj) {
+  function cellMenu(e, val, colName, rowValues, t, columns, ri, meta, resultObj, selInfo) {
     const items = [
       { label: 'Копировать значение', action: () => { navigator.clipboard.writeText(val == null ? '' : (typeof val === 'object' ? JSON.stringify(val) : String(val))); toast('Скопировано'); } },
       { label: 'Показать значение', action: () => showCellValue(val, colName) },
       { label: 'Копировать имя колонки', action: () => { navigator.clipboard.writeText(colName); toast('Скопировано'); } },
     ];
+    // выделено несколько ячеек (Ctrl/Shift-клики или драг) → копируем именно их, а не ячейку под курсором
+    if (selInfo && selInfo.size > 1) {
+      items.splice(1, 0, { label: `Копировать выбранные (${selInfo.size})`, action: () => { navigator.clipboard.writeText(selInfo.text()); toast(`Скопировано ячеек: ${selInfo.size}`); } });
+    }
     if (t && columns) {
       items.push({ sep: true });
       items.push({ label: `Фильтр: ${colName} = …`, action: () => { t.where = `${qIdent(colName)} = ${lit(val)}`; t.page = 0; renderTabBody($('#db-tabbody')); } });
@@ -2362,7 +2390,7 @@ export function initDb(host) {
       const area = el('div', 'db-ai-chart'); card.appendChild(area); renderChartCanvas(area, spec.type, msg.columns, msg.rows, spec, { download: true }); drewChart = true;
     }
     const gridWrap = el('div', 'db-ai-grid'); card.appendChild(gridWrap);
-    const grid = makeGrid({ columns: msg.columns, colTypes: msg.colTypes, rows: msg.rows, onCellMenu: (e, val, colName) => cellMenu(e, val, colName, null, null, msg.columns, null, null, { columns: msg.columns, rows: msg.rows }) });
+    const grid = makeGrid({ columns: msg.columns, colTypes: msg.colTypes, rows: msg.rows, onCellMenu: (e, val, colName, _rv, _ri, selInfo) => cellMenu(e, val, colName, null, null, msg.columns, null, null, { columns: msg.columns, rows: msg.rows }, selInfo) });
     gridWrap.appendChild(grid.element);
     if (drewChart) gridWrap.classList.add('collapsed');
     return card;
