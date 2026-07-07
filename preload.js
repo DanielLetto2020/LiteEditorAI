@@ -413,6 +413,7 @@ contextBridge.exposeInMainWorld('lite', {
     // Удалённый контекст: контейнеры хоста по SSH (туннель до docker/podman-сокета в main).
     remoteSet: (rhId, engine) => ipcRenderer.invoke('containers:remoteSet', { rhId, engine }), // rhId=null → назад; engine — явный выбор при двух сокетах
     remoteStatus: () => ipcRenderer.invoke('containers:remoteStatus'),           // → {rhId,name}|{rhId:null}
+    remoteFix: (rhId, fix) => ipcRenderer.invoke('containers:remoteFix', { rhId, fix }), // «починить по SSH»: fix из белого списка main (доступ к сокету через sudo)
   },
 
   db: {

@@ -99,8 +99,8 @@ export function initContainers(host) {
         return applyContainersHost(rhId, label);
       }
       // sock-access / sock-probe: развёрнутая диагностика (права на сокет, запрет форвардинга) —
-      // в модалке с выделяемым текстом и копируемой командой лечения, тост столько не проживёт
-      if (r && r.hint) { showHostDiag(label, r.error, r.cmd); return; }
+      // в модалке с выделяемым текстом, копируемой командой и кнопкой «Починить по SSH» (если sudo доступен)
+      if (r && r.hint) { showHostDiag(rhId, label, r); return; }
       toast((r && r.error) || 'Не удалось переключить хост', { kind: 'err', ttl: 9000 }); return;
     }
     dockerRemote = r.rhId ? { rhId: r.rhId, name: r.name, engine: r.engine } : null;
@@ -128,17 +128,40 @@ export function initContainers(host) {
   }
   // Диагностика неудачного переключения хоста (нет прав на сокет / sshd запрещает форвардинг):
   // модалка с выделяемым текстом и копируемой командой лечения — в тосте такое не прочитать и не скопировать.
-  function showHostDiag(label, msg, cmd) {
-    const { m } = makeModal('<h2>Контейнеры хоста недоступны</h2>');
+  // r.canFix (на хосте доступен sudo) → кнопка «Починить по SSH и подключиться»: main выполняет фикс из
+  // белого списка (containers:remoteFix) и мы сразу переподключаемся — ни одной ручной команды.
+  function showHostDiag(rhId, label, r) {
+    const { m, close } = makeModal('<h2>Контейнеры хоста недоступны</h2>');
     m.classList.add('sel-text');
-    m.appendChild(el('div', 'about-desc', `«${label}»: ${msg || 'не удалось подключиться'}`));
-    if (cmd) {
+    m.appendChild(el('div', 'about-desc', `«${label}»: ${(r && r.error) || 'не удалось подключиться'}`));
+    if (r && r.cmd) {
       const row = el('div', 'docker-diag-cmd');
-      row.appendChild(el('code', null, cmd));
+      row.appendChild(el('code', null, r.cmd));
       const cp = iconBtn('drow-act', 'copy', 'Копировать команду', 14);
-      cp.onclick = () => { lite.copyText(cmd); toast('Команда скопирована'); };
+      cp.onclick = () => { lite.copyText(r.cmd); toast('Команда скопирована'); };
       row.appendChild(cp);
       m.appendChild(row);
+    }
+    if (r && r.fix && r.canFix) {
+      const row = el('div', 'gm-actions'); row.style.marginTop = '12px';
+      const b = el('button', 'btn primary', 'Починить по SSH и подключиться');
+      b.onclick = async () => {
+        b.disabled = true; b.textContent = 'Чиню через sudo…';
+        let x;
+        try { x = await lite.containers.remoteFix(rhId, r.fix); } catch (e) { x = { ok: false, error: String(e) }; }
+        if (!x || !x.ok) {
+          b.disabled = false; b.textContent = 'Починить по SSH и подключиться';
+          toast((x && x.error) || 'Починка не прошла', { kind: 'err', ttl: 12000 });
+          return;
+        }
+        close();
+        toast('Доступ выдан — переподключаюсь…', { ttl: 4000 });
+        applyContainersHost(rhId, label);
+      };
+      row.appendChild(b);
+      m.appendChild(row);
+    } else if (r && r.fix) {
+      m.appendChild(el('div', 'about-desc', 'Авто-починка недоступна: на хосте нет sudo без пароля (а пароль профиля не подходит или не задан). Выполните команду выше вручную и повторите подключение.'));
     }
   }
   // Podman установлен, но его API-сокет (socket-activated) спит — предложить включить прямо по SSH.

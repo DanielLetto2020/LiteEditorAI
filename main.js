@@ -4858,23 +4858,39 @@ ipcMain.handle('containers:remoteSet', async (_e, { rhId, engine } = {}) => {
   const podmanHint = { ok: false, hint: 'podman-socket', error: 'Podman на хосте установлен, но API-сокет спит (systemctl --user enable --now podman.socket)' };
   // Сокет есть, но у SSH-пользователя нет прав (sshd открывает его от имени пользователя) —
   // без этой проверки CLI через туннель видел бы только голый «EOF». hint 'sock-access' → UI покажет
-  // диагностику с копируемой командой лечения.
+  // диагностику; если на хосте доступен sudo (NOPASSWD или пароль = паролю профиля) — предложит
+  // кнопку «Починить по SSH» (canFix + fix из белого списка C_FIX_SCRIPTS, исполняет containers:remoteFix).
   const user = conn.user || '<user>';
   const denied = scan.denied || {};
-  const deniedErr = (eng) => (eng === 'docker'
-    ? { ok: false, hint: 'sock-access', error: `Сокет Docker на хосте есть (${denied.docker}), но у пользователя «${user}» нет к нему доступа. Добавьте его в группу docker и перезайдите по SSH.`, cmd: `sudo usermod -aG docker ${user}` }
-    : { ok: false, hint: 'sock-access', error: `Сокет Podman на хосте есть (${denied.podman}), но у пользователя «${user}» нет к нему доступа. Рутовый podman.sock доступен только root — зайдите root'ом или включите rootless-сокет.`, cmd: 'systemctl --user enable --now podman.socket' });
+  const deniedErr = async (eng) => {
+    // sudo-детект: free (NOPASSWD) / need-pass / no. Пароль профиля пробуем только для password-профилей.
+    const s = await rhApi.exec(rhId, 'command -v sudo >/dev/null 2>&1 && { sudo -n true 2>/dev/null && echo sudo=free || echo sudo=need-pass; } || echo sudo=no', 12000);
+    const mode = /sudo=free/.test(s.stdout || '') ? 'free' : (/sudo=need-pass/.test(s.stdout || '') ? 'need-pass' : 'no');
+    const canFix = mode === 'free' || (mode === 'need-pass' && conn.auth !== 'key' && conn.auth !== 'agent' && !!conn.passEnc);
+    if (eng === 'docker') return {
+      ok: false, hint: 'sock-access', canFix, fix: 'docker-group',
+      error: `Сокет Docker на хосте есть (${denied.docker}), но у пользователя «${user}» нет к нему доступа.` +
+        (canFix ? ' Могу починить сам: добавлю пользователя в группу docker через sudo и сразу переподключусь.' : ' Добавьте его в группу docker (команда ниже) и повторите.'),
+      cmd: `sudo sh -c '${C_FIX_SCRIPTS['docker-group']}'`,
+    };
+    return {
+      ok: false, hint: 'sock-access', canFix, fix: 'podman-socket-group',
+      error: `Сокет Podman на хосте есть (${denied.podman}), но у пользователя «${user}» нет к нему доступа — это рутовый podman.sock, по умолчанию он только для root.` +
+        (canFix ? ' Могу починить сам: выдам группе пользователя право на этот сокет (drop-in systemd + перезапуск podman.socket; контейнеры не затрагиваются) и сразу переподключусь.' : ' Выдайте доступ командой ниже и повторите.'),
+      cmd: `sudo sh -c '${C_FIX_SCRIPTS['podman-socket-group']}'`,
+    };
+  };
   const socks = scan.sockets || {};
   let sockPath = null;
   if (engine === 'docker' || engine === 'podman') { // явный выбор (из модалки или запомненный) — строго его сокет
     sockPath = socks[engine] || null;
-    if (!sockPath && denied[engine]) return deniedErr(engine);
+    if (!sockPath && denied[engine]) return await deniedErr(engine);
     if (!sockPath) return (engine === 'podman' && scan.podmanCli) ? podmanHint : { ok: false, error: `На хосте нет сокета ${engine}` };
   } else if (socks.docker && socks.podman) {
     return { ok: true, needChoice: true }; // оба движка — пусть выберет пользователь (ok:true — не ошибка, без WARN в логе)
   } else {
     sockPath = socks.docker || socks.podman || null;
-    if (!sockPath && (denied.docker || denied.podman)) return deniedErr(denied.docker ? 'docker' : 'podman');
+    if (!sockPath && (denied.docker || denied.podman)) return await deniedErr(denied.docker ? 'docker' : 'podman');
     if (!sockPath) return scan.podmanCli ? podmanHint : { ok: false, error: 'На хосте нет docker/podman-сокета (docker.sock / podman.sock не найдены)' };
   }
   const isPodman = sockPath.includes('podman');
@@ -4909,6 +4925,28 @@ ipcMain.handle('containers:remoteSet', async (_e, { rhId, engine } = {}) => {
 ipcMain.handle('containers:remoteStatus', () => (containersRemote
   ? { rhId: containersRemote.rhId, name: containersRemote.name, engine: containersRemote.cli }
   : { rhId: null }));
+// «Починить по SSH»: выдать SSH-пользователю доступ к сокету движка под sudo. Белый список скриптов —
+// рендерер выбирает только идентификатор, произвольная root-команда отсюда не выполняется.
+// Скрипты идут в sh -c '<...>' под sudo (rhApi.sudoExec: сперва -n, затем -S с паролем профиля),
+// $SUDO_USER внутри — тот самый SSH-пользователь. Одинарных кавычек в теле быть не должно.
+// docker-group: классика — членство в группе docker; наши SSH-соединения одноразовые, поэтому
+//   новая группа подхватывается сразу же (relogin не нужен).
+// podman-socket-group: рутовый podman.sock 0600 root:root → drop-in systemd даёт группе пользователя
+//   rw (SocketMode=0660 + SocketGroup); рестарт только socket-юнита (+ стоп idle API-сервиса,
+//   иначе systemd не даст пересоздать сокет) — контейнеры живут под conmon и не затрагиваются.
+const C_FIX_SCRIPTS = {
+  'docker-group': 'usermod -aG docker "$SUDO_USER"',
+  'podman-socket-group': 'g=$(id -gn "$SUDO_USER"); mkdir -p /etc/systemd/system/podman.socket.d && printf "[Socket]\\nSocketMode=0660\\nSocketGroup=%s\\n" "$g" > /etc/systemd/system/podman.socket.d/50-liteeditor.conf && systemctl daemon-reload && { systemctl stop podman.service 2>/dev/null || true; } && systemctl restart podman.socket',
+};
+ipcMain.handle('containers:remoteFix', async (_e, { rhId, fix } = {}) => {
+  const conn = rhApi.findConn(rhId);
+  if (!conn) return { ok: false, error: 'SSH-профиль не найден' };
+  const script = C_FIX_SCRIPTS[fix];
+  if (!script) return { ok: false, error: 'Неизвестный тип починки' };
+  const r = await rhApi.sudoExec(rhId, script, 45000);
+  if (!r.ok) return { ok: false, error: 'Починка не прошла: ' + (r.error || '') + `. Выполните на хосте вручную: sudo sh -c '${script}'` };
+  return { ok: true };
+});
 const cFirstLine = (s) => String(s || '').split('\n')[0].trim();
 function cHumanSize(bytes) { // podman reports image size in bytes; docker is already human
   const n = Number(bytes); if (!Number.isFinite(n) || n <= 0) return '';
