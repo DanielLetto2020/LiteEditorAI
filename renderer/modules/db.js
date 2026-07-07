@@ -450,6 +450,10 @@ export function initDb(host) {
       else { o.host = host2.value.trim(); o.port = +port.value || DB_DEF_PORT[typeSel.value]; o.user = user.value.trim(); o.database = database.value.trim(); o.ssl = ssl.checked; o.sslInsecure = sslIns.checked; o.sshEnabled = sshOn.checked; o.sshHost = sshHost.value.trim(); o.sshPort = +sshPort.value || 22; o.sshUser = sshUser.value.trim(); if (sshPass.value) o.sshPassword = sshPass.value; }
       if (pass.value) o.password = pass.value;
       if (c.source) o.source = c.source; // метка «создано из контейнера X» — для дедупа повторных кликов
+      // черновик из удалённых «Контейнеров» несёт уже-шифрованные SSH-секреты rh-профиля —
+      // проносим их через тест/сохранение, если пользователь не ввёл свои
+      if (c.sshPassEnc && !sshPass.value) o.sshPassEnc = c.sshPassEnc;
+      if (c.sshKeyEnc) o.sshKeyEnc = c.sshKeyEnc;
       return o;
     };
     const row = el('div', 'gm-actions'); row.style.marginTop = '12px';

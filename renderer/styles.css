@@ -1478,6 +1478,17 @@ body.preview-split #preview-view { border-left: 1px solid var(--border); }
 .docker-logs { flex: 1; min-height: 0; margin: 0; overflow: auto; padding: 8px 10px; border: 1px solid var(--border); border-radius: 9px; background: #0b0f14; color: #c6d0da; font-family: monospace; font-size: 11.5px; line-height: 1.45; white-space: pre-wrap; word-break: break-word; }
 .docker-term { flex: 1; min-height: 0; position: relative; border: 1px solid var(--border); border-radius: 9px; overflow: hidden; padding: 6px 4px 6px 8px; background: #0d1116; }
 .docker-term .xterm { height: 100%; }
+/* Текст модуля «Контейнеры» можно выделять и копировать: имена/описания, ошибки, версии, логи
+   (глобально на body стоит user-select: none; клики-по-строке защищены проверкой getSelection) */
+.docker-err, .docker-empty, .docker-logs, .drow-name, .drow-sub, .dgrp-name, .docker-detail-name,
+.denv-k, .denv-v, .ddisk-k, .ddisk-v {
+  -webkit-user-select: text; user-select: text; cursor: text;
+}
+/* строка с командой лечения в модалке диагностики хоста */
+.docker-diag-cmd { display: flex; align-items: center; gap: 8px; margin-top: 10px; padding: 7px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-input); }
+.docker-diag-cmd code { flex: 1; min-width: 0; font-family: monospace; font-size: 12px; color: var(--text); word-break: break-all; }
+/* общий хелпер: контейнер, весь текст которого можно выделять (диагностики, отчёты об ошибках) */
+.sel-text, .sel-text * { -webkit-user-select: text; user-select: text; }
 
 /* ---------------- Databases module (Postgres/MySQL/SQLite) ---------------- */
 #db-pane { flex: 0 0 560px; min-width: 340px; border-left: 1px solid var(--border); display: flex; flex-direction: column; background: var(--panel); }

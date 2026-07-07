@@ -4825,7 +4825,7 @@ ipcMain.handle('git:branchDiffWorktree', async (_e, { root, branch } = {}) => {
 // Удалённый контекст («Удалённые хосты» → Контейнеры): SSH-туннель до docker/podman-сокета хоста
 // (rh:sockTunnel), все CLI-вызовы идут с DOCKER_HOST/CONTAINER_HOST=tcp://127.0.0.1:<port>.
 // Контекст один на процесс (окно «Контейнеры» одно на тип); opts.local=true обходит подмену.
-let containersRemote = null; // { rhId, name, tunId, port, cli }
+let containersRemote = null; // { rhId, name, tunId, port, cli, sockPath }
 function cRemoteCtx(cli, baseEnv) {
   if (!containersRemote) return { cli, env: undefined };
   const env = { ...(baseEnv || process.env) };
@@ -4834,7 +4834,8 @@ function cRemoteCtx(cli, baseEnv) {
   return { cli: containersRemote.cli, env };
 }
 function containerRun(cli, args, opts = {}) {
-  const ctx = opts.local ? { cli } : cRemoteCtx(cli);
+  // opts.env — явное окружение (проба свежего туннеля ДО фиксации containersRemote); opts.local — форс-локальный
+  const ctx = opts.env ? { cli, env: opts.env } : (opts.local ? { cli } : cRemoteCtx(cli));
   return new Promise((resolve) => {
     execFile(ctx.cli, args, { timeout: opts.timeout || 15000, maxBuffer: 24 * 1024 * 1024, windowsHide: true, env: ctx.env },
       (err, stdout, stderr) => resolve({
@@ -4855,15 +4856,25 @@ ipcMain.handle('containers:remoteSet', async (_e, { rhId, engine } = {}) => {
   if (!scan.ok) return { ok: false, error: 'Скан хоста не удался: ' + (scan.error || '') };
   // hint 'podman-socket' → UI предложит включить socket-activated сервис по SSH
   const podmanHint = { ok: false, hint: 'podman-socket', error: 'Podman на хосте установлен, но API-сокет спит (systemctl --user enable --now podman.socket)' };
+  // Сокет есть, но у SSH-пользователя нет прав (sshd открывает его от имени пользователя) —
+  // без этой проверки CLI через туннель видел бы только голый «EOF». hint 'sock-access' → UI покажет
+  // диагностику с копируемой командой лечения.
+  const user = conn.user || '<user>';
+  const denied = scan.denied || {};
+  const deniedErr = (eng) => (eng === 'docker'
+    ? { ok: false, hint: 'sock-access', error: `Сокет Docker на хосте есть (${denied.docker}), но у пользователя «${user}» нет к нему доступа. Добавьте его в группу docker и перезайдите по SSH.`, cmd: `sudo usermod -aG docker ${user}` }
+    : { ok: false, hint: 'sock-access', error: `Сокет Podman на хосте есть (${denied.podman}), но у пользователя «${user}» нет к нему доступа. Рутовый podman.sock доступен только root — зайдите root'ом или включите rootless-сокет.`, cmd: 'systemctl --user enable --now podman.socket' });
   const socks = scan.sockets || {};
   let sockPath = null;
   if (engine === 'docker' || engine === 'podman') { // явный выбор (из модалки или запомненный) — строго его сокет
     sockPath = socks[engine] || null;
+    if (!sockPath && denied[engine]) return deniedErr(engine);
     if (!sockPath) return (engine === 'podman' && scan.podmanCli) ? podmanHint : { ok: false, error: `На хосте нет сокета ${engine}` };
   } else if (socks.docker && socks.podman) {
     return { ok: true, needChoice: true }; // оба движка — пусть выберет пользователь (ok:true — не ошибка, без WARN в логе)
   } else {
     sockPath = socks.docker || socks.podman || null;
+    if (!sockPath && (denied.docker || denied.podman)) return deniedErr(denied.docker ? 'docker' : 'podman');
     if (!sockPath) return scan.podmanCli ? podmanHint : { ok: false, error: 'На хосте нет docker/podman-сокета (docker.sock / podman.sock не найдены)' };
   }
   const isPodman = sockPath.includes('podman');
@@ -4876,8 +4887,23 @@ ipcMain.handle('containers:remoteSet', async (_e, { rhId, engine } = {}) => {
   if (!cli) return { ok: false, error: isPodman ? 'Нужен локальный docker или podman CLI' : 'Удалённый демон — Docker: нужен локальный docker CLI' };
   const t = await rhApi.sockTunnel(rhId, sockPath, 'containers: ' + (conn.name || conn.host));
   if (!t.ok) return { ok: false, error: 'Туннель до сокета не поднялся: ' + (t.error || '') };
+  // Проба демона СКВОЗЬ туннель до фиксации контекста: локальный listener поднимается всегда,
+  // а канал к сокету sshd открывает только в момент коннекта — все прочие проблемы (форвардинг
+  // запрещён, SELinux, мёртвый демон) всплывают именно здесь, и лучше внятной ошибкой, чем EOF-ами в списке.
+  const env = { ...process.env };
+  if (cli === 'docker') env.DOCKER_HOST = 'tcp://127.0.0.1:' + t.port; else env.CONTAINER_HOST = 'tcp://127.0.0.1:' + t.port;
+  const check = await containerRun(cli, ['version'], { timeout: 12000, env });
+  if (!check.ok) {
+    const chanErr = rhApi.tunnelError(t.tunId); // причину смотрим ДО закрытия (closeTunnel убирает запись)
+    try { rhApi.closeTunnel(t.tunId); } catch (_) {}
+    let msg = `Демон на хосте не ответил через туннель (${sockPath}): ` + cFirstLine(check.error);
+    if (chanErr) msg += ` · SSH-канал: ${chanErr}`;
+    if (chanErr && /administratively|prohibited/i.test(chanErr)) msg += '. Похоже, sshd на хосте запрещает проброс unix-сокетов (AllowStreamLocalForwarding/DisableForwarding в sshd_config).';
+    else if (sockPath.includes('docker')) msg += `. Чаще всего это права на сокет: пользователь «${user}» не в группе docker.`;
+    return { ok: false, hint: 'sock-probe', error: msg, cmd: sockPath.includes('docker') ? `sudo usermod -aG docker ${user}` : undefined };
+  }
   if (containersRemote) { try { rhApi.closeTunnel(containersRemote.tunId); } catch (_) {} }
-  containersRemote = { rhId, name: conn.name || conn.host, tunId: t.tunId, port: t.port, cli };
+  containersRemote = { rhId, name: conn.name || conn.host, tunId: t.tunId, port: t.port, cli, sockPath };
   return { ok: true, rhId, name: containersRemote.name, engine: cli };
 });
 ipcMain.handle('containers:remoteStatus', () => (containersRemote
@@ -4987,6 +5013,13 @@ async function cListDf(engine) { // disk usage per object type (`system df`)
 }
 ipcMain.handle('containers:list', async (_e, { engine, light } = {}) => {
   if (engine !== 'docker' && engine !== 'podman') return { error: 'bad engine' };
+  // Удалённый контекст: SSH мог мигнуть и унести туннель (ssh.on('close') прибирает запись) —
+  // самовосстановление на ближайшем полле, чтобы не заставлять пользователя перевыбирать хост.
+  if (containersRemote && !rhApi.tunnelAlive(containersRemote.tunId)) {
+    const t = await rhApi.sockTunnel(containersRemote.rhId, containersRemote.sockPath, 'containers: ' + containersRemote.name);
+    if (t.ok) { containersRemote.tunId = t.tunId; containersRemote.port = t.port; }
+    else return { containers: { error: `SSH-туннель к «${containersRemote.name}» оборвался и не восстановился: ` + (t.error || '') } };
+  }
   // Light path = the live poll: only the fast, frequently-changing data (containers + pods). Skips the heavy
   // `system df` (storage scan, ~1s) and images/volumes so a 3s poll doesn't churn the disk. The renderer
   // reconciles only the sections present in the reply, leaving the rest as last rendered by a full fetch.
@@ -5077,6 +5110,21 @@ ipcMain.handle('containers:inspectDb', async (_e, { engine, id } = {}) => {
   if (!info) return { ok: false, error: 'inspect вернул пустой ответ' };
   const res = dbPrefillFromInspect(info, engine);
   if (!res) return { ok: false, error: 'В контейнере не распознана поддерживаемая БД (PostgreSQL / MySQL / MariaDB)' };
+  // Удалённый контекст: 127.0.0.1:<port> префилла — это loopback УДАЛЁННОГО хоста, отсюда так не достучаться.
+  // Обогащаем заготовку SSH-туннелем модуля БД из rh-профиля; шифроблобы секретов совместимы (одна схема
+  // safeStorage v1:), поэтому пароль/ключ переезжают зашифрованными, без плейнтекста через рендерер.
+  if (containersRemote) {
+    const conn = rhApi.findConn(containersRemote.rhId);
+    if (conn) {
+      const p = res.prefill;
+      p.name += ' @ ' + (conn.name || conn.host);
+      p.source = 'rh:' + containersRemote.rhId + ':' + p.source; // дедуп не пересекается с тем же контейнером локально
+      p.sshEnabled = true; p.sshHost = conn.host; p.sshPort = +conn.port || 22; p.sshUser = conn.user || '';
+      if (conn.auth === 'key') { p.sshKeyEnc = conn.keyEnc || ''; p.sshPassEnc = conn.passphraseEnc || ''; }
+      else if (conn.auth !== 'agent') p.sshPassEnc = conn.passEnc || '';
+      // auth 'agent': секретов нет — lib/db.js openTunnel сам падает назад на ssh-agent/дефолтные ключи
+    }
+  }
   return { ok: true, ...res };
 });
 // «Открыть в модуле RabbitMQ»: inspect контейнера → заготовка профиля (management-порт/лог/пас/vhost).
