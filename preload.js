@@ -58,6 +58,11 @@ contextBridge.exposeInMainWorld('lite', {
     // Пульт изменил задачи (notes/<id>.json) → редактор ретранслирует окну модуля «Задачи».
     notesChanged: (id) => ipcRenderer.send('app:notesChanged', { id }),
     onNotesChanged: (cb) => { const h = (_e, p) => cb(p && p.id); ipcRenderer.on('app:notesChanged', h); return () => ipcRenderer.removeListener('app:notesChanged', h); },
+    // Календарь напоминаний (agenda/<id>.json) изменён (модуль/MCP/пульт) → редактор/окна модулей.
+    agendaChanged: (id) => ipcRenderer.send('app:agendaChanged', { id }),
+    onAgendaChanged: (cb) => { const h = (_e, p) => cb(p && p.id); ipcRenderer.on('app:agendaChanged', h); return () => ipcRenderer.removeListener('app:agendaChanged', h); },
+    // Клик по нативному уведомлению напоминания → окно «Задачи» переключается на вкладку «Календарь».
+    onAgendaFocus: (cb) => { const h = () => cb(); ipcRenderer.on('agenda:focus', h); return () => ipcRenderer.removeListener('agenda:focus', h); },
   },
 
   // Действия окна модуля над редактором (форвард через main). Send-side зовёт окно модуля,
@@ -108,8 +113,16 @@ contextBridge.exposeInMainWorld('lite', {
     setSync: (key, value) => ipcRenderer.sendSync('store:setSync', { key, value }), // гарантированная запись (beforeunload)
     notesGet: (id) => ipcRenderer.invoke('store:notesGet', id),
     notesSet: (id, notes) => ipcRenderer.invoke('store:notesSet', { id, notes }),
+    agendaGet: (id) => ipcRenderer.invoke('store:agendaGet', id),               // Календарь: напоминания источника
+    agendaSet: (id, agenda) => ipcRenderer.invoke('store:agendaSet', { id, agenda }),
     notesExport: (json, name) => ipcRenderer.invoke('notes:exportFile', { json, name }), // → {ok,file}|{canceled}|{error}
     notesImport: () => ipcRenderer.invoke('notes:importFile'),                            // → {ok,content}|{canceled}|{error}
+  },
+
+  // Календарь → агент: регистрация встроенного MCP-сервера напоминаний в Claude Code (scope local).
+  agenda: {
+    mcpConnect: (info) => ipcRenderer.invoke('agenda:mcpConnect', info),   // → {ok}|{ok:false,error,cmd}
+    mcpCommand: (info) => ipcRenderer.invoke('agenda:mcpCommand', info),   // → {cmd, server}
   },
 
   logs: {

@@ -407,6 +407,14 @@ ipcMain.on('store:loadAll', (e) => {
       try { const a = JSON.parse(fs.readFileSync(path.join(nd, f), 'utf8')); if (Array.isArray(a)) { const n = a.filter((x) => x && x.status !== 'done').length; if (n) o.noteCounts[f.slice(0, -5)] = n; } } catch (_) {}
     }
   } catch (_) {}
+  o.agendaCounts = {}; // project id -> число напоминаний «требует внимания» (просрочено + сегодня, не done)
+  try {
+    const ad = path.join(storeDir, 'agenda');
+    for (const f of fs.readdirSync(ad)) {
+      if (!f.endsWith('.json')) continue;
+      try { const a = JSON.parse(fs.readFileSync(path.join(ad, f), 'utf8')); const n = agendaAttentionCount(a); if (n) o.agendaCounts[f.slice(0, -5)] = n; } catch (_) {}
+    }
+  } catch (_) {}
   e.returnValue = o; // synchronous: renderer loads the snapshot once at startup
 });
 ipcMain.on('store:set', (_e, { key, value }) => { if (STORE_KEYS.includes(key)) writeStoreKey(key, value); });
@@ -421,6 +429,133 @@ ipcMain.handle('store:notesSet', (_e, { id, notes }) => {
   try {
     fs.mkdirSync(path.join(storeDir, 'notes'), { recursive: true });
     atomicWriteSync(path.join(storeDir, 'notes', String(id).replace(/[^\w.-]/g, '_') + '.json'), JSON.stringify(notes));
+    return { ok: true };
+  } catch (e) { return { error: String(e) }; }
+});
+
+// «Календарь» (дата-задачи / напоминания) — отдельный источник, зеркалит notesGet/Set (agenda/<id>.json).
+const agendaPath = (id) => path.join(storeDir, 'agenda', String(id).replace(/[^\w.-]/g, '_') + '.json');
+// Число напоминаний «требует внимания» = не выполнено И (просрочено или срок сегодня). Для бейджа квикбара.
+function agendaAttentionCount(arr) {
+  if (!Array.isArray(arr)) return 0;
+  const sod = new Date(); sod.setHours(0, 0, 0, 0);
+  const eod = sod.getTime() + 86400000; // конец сегодняшнего дня (граница «просрочено+сегодня»)
+  let n = 0;
+  for (const r of arr) {
+    if (!r || r.done || !r.at) continue;
+    const t = new Date(r.at).getTime();
+    if (!isNaN(t) && t < eod) n++; // просрочено или срок наступает сегодня
+  }
+  return n;
+}
+
+// ── Напоминалки Календаря: тикер сканирует agenda/*.json, шлёт нативные уведомления ──
+// Работает, пока редактор запущен (не демон). Гейт notifiedAt не даёт дублей/спама при рестарте.
+const AGENDA_REMIND_MS = { at: 0, '10m': 600000, '1h': 3600000, '1d': 86400000 };
+function agendaBroadcastChanged(id) {
+  for (const w of moduleWindows.values()) { if (w && !w.isDestroyed()) w.webContents.send('app:agendaChanged', { id }); }
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('app:agendaChanged', { id });
+}
+function agendaReminderTick() {
+  let files;
+  try { files = fs.readdirSync(path.join(storeDir, 'agenda')); } catch { return; }
+  const now = Date.now();
+  for (const f of files) {
+    if (!f.endsWith('.json')) continue;
+    const full = path.join(storeDir, 'agenda', f);
+    let arr; try { arr = JSON.parse(fs.readFileSync(full, 'utf8')); } catch { continue; }
+    if (!Array.isArray(arr)) continue;
+    let changed = false;
+    for (const r of arr) {
+      if (!r || r.done || r.notifiedAt || !r.at || !r.remind) continue;
+      const off = AGENDA_REMIND_MS[r.remind]; if (off === undefined) continue;
+      const at = new Date(r.at).getTime(); if (isNaN(at)) continue;
+      if (at - off > now) continue;                       // ещё рано напоминать
+      r.notifiedAt = new Date(now).toISOString();          // пометить (не показывать повторно)
+      changed = true;
+      if (now - at < 7 * 86400000) agendaShowNotification(r); // очень старое (>7 дней) — гасим молча
+    }
+    if (changed) {
+      try { atomicWriteSync(full, JSON.stringify(arr)); } catch (_) {}
+      agendaBroadcastChanged(f.slice(0, -5));
+    }
+  }
+}
+function agendaShowNotification(r) {
+  try {
+    if (Notification.isSupported && !Notification.isSupported()) return;
+    const title = String(r.text || '').split('\n')[0].trim() || 'Напоминание';
+    let body = 'Напоминание';
+    const d = r.at ? new Date(r.at) : null;
+    if (d && !isNaN(d)) body = r.allDay
+      ? d.toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' })
+      : d.toLocaleString('ru-RU', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+    const n = new Notification({ title: '🔔 ' + title, body, silent: false });
+    n.on('click', () => { try { focusNotesCalendar(); } catch (_) {} });
+    n.show();
+  } catch (_) {}
+}
+// Клик по уведомлению → открыть/сфокусировать окно «Задачи» на вкладке «Календарь».
+function focusNotesCalendar() {
+  openModuleWindow('notes');
+  const w = moduleWindows.get('notes');
+  if (!w || w.isDestroyed()) return;
+  const send = () => { try { if (!w.isDestroyed()) w.webContents.send('agenda:focus'); } catch (_) {} };
+  if (w.webContents.isLoading()) w.webContents.once('did-finish-load', () => setTimeout(send, 250));
+  else send();
+}
+function startAgendaReminders() {
+  setTimeout(agendaReminderTick, 4000);   // стартовый прогон — покажет пропущенные (один раз, гейт notifiedAt)
+  setInterval(agendaReminderTick, 60000); // раз в минуту
+}
+// fs.watch на каталоге agenda: внешние записи (MCP-сервер / пульт) → освежить бейдж/ленту в окнах.
+function startAgendaWatch() {
+  try { fs.mkdirSync(path.join(storeDir, 'agenda'), { recursive: true }); } catch (_) {}
+  const timers = new Map();
+  try {
+    fs.watch(path.join(storeDir, 'agenda'), (_event, filename) => {
+      if (!filename || !String(filename).endsWith('.json')) return;
+      const id = String(filename).slice(0, -5);
+      clearTimeout(timers.get(id));
+      timers.set(id, setTimeout(() => agendaBroadcastChanged(id), 150)); // дебаунс rename+change
+    });
+  } catch (e) { logger.log('warn', 'agenda', 'fs.watch недоступен: ' + e.message); }
+}
+
+// ── MCP-мост: регистрация встроенного сервера напоминаний в Claude Code (scope local, не в репозиторий) ──
+function agendaMcpServerPath() {
+  // В упакованном приложении файл распакован рядом с asar (asarUnpack: 'mcp/**').
+  return path.join(__dirname, 'mcp', 'lite-agenda-server.js').replace(/app\.asar([\\/])/, 'app.asar.unpacked$1');
+}
+function agendaMcpCommand(projId) {
+  const sp = agendaMcpServerPath();
+  const q = (s) => (/\s/.test(s) ? `"${s}"` : s);
+  return `claude mcp add lite-tasks --scope local -- node ${q(sp)} --project ${projId || '__global__'}`;
+}
+ipcMain.handle('agenda:mcpCommand', (_e, { projId } = {}) => ({ cmd: agendaMcpCommand(projId), server: agendaMcpServerPath() }));
+ipcMain.handle('agenda:mcpConnect', async (_e, { projId, projPath } = {}) => {
+  const sp = agendaMcpServerPath();
+  const args = ['mcp', 'add', 'lite-tasks', '--scope', 'local', '--', 'node', sp, '--project', String(projId || '__global__')];
+  return await new Promise((resolve) => {
+    let done = false, stderr = '', stdout = '';
+    const finish = (r) => { if (!done) { done = true; resolve({ ...r, cmd: agendaMcpCommand(projId) }); } };
+    let cp;
+    try { cp = spawn('claude', args, { cwd: projPath || os.homedir() }); }
+    catch (e) { return finish({ ok: false, error: String(e.message || e) }); }
+    cp.stdout && cp.stdout.on('data', (d) => { stdout += d; });
+    cp.stderr && cp.stderr.on('data', (d) => { stderr += d; });
+    cp.on('error', (err) => finish({ ok: false, error: err.code === 'ENOENT' ? 'CLI «claude» не найден в PATH' : String(err.message || err) }));
+    cp.on('exit', (code) => finish(code === 0 ? { ok: true, out: stdout.trim() } : { ok: false, error: (stderr || stdout).trim() || ('claude завершился с кодом ' + code) }));
+  });
+});
+ipcMain.handle('store:agendaGet', (_e, id) => {
+  try { return JSON.parse(fs.readFileSync(agendaPath(id), 'utf8')); }
+  catch { return []; }
+});
+ipcMain.handle('store:agendaSet', (_e, { id, agenda }) => {
+  try {
+    fs.mkdirSync(path.join(storeDir, 'agenda'), { recursive: true });
+    atomicWriteSync(agendaPath(id), JSON.stringify(agenda));
     return { ok: true };
   } catch (e) { return { error: String(e) }; }
 });
@@ -2133,6 +2268,8 @@ app.whenReady().then(() => {
   // Переоткрыть окна модулей, открытые в прошлой сессии (проектозависимые подхватят активный
   // проект, когда редактор его запушит). Небольшая задержка — дать окну редактора подняться.
   setTimeout(reopenSavedModuleWindows, 600);
+  startAgendaReminders();  // напоминалки Календаря (дата-задачи)
+  startAgendaWatch();      // подхват внешних записей напоминаний (MCP/пульт)
   startRemotePult();
   signalHeirReady();   // если нас запустили как «наследника» при перезагрузке с пульта — отрапортовать старой копии
   app.on('activate', () => {
@@ -2583,6 +2720,11 @@ ipcMain.on('app:settingsChanged', (_e, s) => broadcastToModules('app:settingsCha
 ipcMain.on('app:notesChanged', (e, { id } = {}) => {
   for (const w of moduleWindows.values()) { if (w && !w.isDestroyed() && w.webContents !== e.sender) w.webContents.send('app:notesChanged', { id }); }
   if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents !== e.sender) mainWindow.webContents.send('app:notesChanged', { id });
+});
+// Напоминания изменились (Календарь / MCP / пульт) → тем же образом: окнам модулей + главному окну (бейдж).
+ipcMain.on('app:agendaChanged', (e, { id } = {}) => {
+  for (const w of moduleWindows.values()) { if (w && !w.isDestroyed() && w.webContents !== e.sender) w.webContents.send('app:agendaChanged', { id }); }
+  if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents !== e.sender) mainWindow.webContents.send('app:agendaChanged', { id });
 });
 
 // ── Действия из окна модуля → переслать редактору (терминал) или окну вивера (файл/дерево) ──
