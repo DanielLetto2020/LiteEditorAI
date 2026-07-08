@@ -27,7 +27,7 @@ import { el, icon, iconBtn, hydrateIcons, toast, makeModal, showConfirm, showPro
 import { initExtensions } from './modules/extensions.js';
 // initFiles — вивер+дерево мигрированы в отдельное окно (renderer/module-entry.js).
 
-const APP_VERSION = 'alpha v1.1.96';
+const APP_VERSION = 'alpha v1.1.97';
 const GUTTER = 5;
 // Системный терминал («Система · ~») мигрирован в отдельное окно (renderer/modules/scratch.js):
 // его id `__scratch__::tN` маршрутизируются main'ом в окно-владельца, в ядре их больше не обрабатываем.
@@ -1632,7 +1632,11 @@ function markOpenModules() {
 function updateNotesBadge() {
   const b = document.querySelector('#quickbar .qb-btn[data-mod="notes"] .qb-badge');
   if (!b) return;
-  const n = (activeId && STORE.noteCounts) ? (STORE.noteCounts[activeId] || 0) : 0;
+  const tasks = (activeId && STORE.noteCounts) ? (STORE.noteCounts[activeId] || 0) : 0;
+  // напоминания «требует внимания» (просрочено+сегодня) считаем и для проекта, и для «Личных» (__global__)
+  const agP = (activeId && STORE.agendaCounts) ? (STORE.agendaCounts[activeId] || 0) : 0;
+  const agG = STORE.agendaCounts ? (STORE.agendaCounts['__global__'] || 0) : 0;
+  const n = tasks + agP + agG;
   b.textContent = n > 99 ? '99+' : String(n);
   b.classList.toggle('show', n > 0);
 }
@@ -1645,6 +1649,18 @@ async function refreshNotesCount(id) {
     if (!STORE.noteCounts) STORE.noteCounts = {};
     STORE.noteCounts[id] = n;
     if (id === activeId) updateNotesBadge();
+  } catch (_) {}
+}
+// Напоминания изменились (Календарь/MCP/пульт) → пересчитать «требует внимания» этого источника, освежить бейдж.
+async function refreshAgendaCount(id) {
+  if (!id) return;
+  try {
+    const arr = await lite.store.agendaGet(id);
+    const eod = (() => { const d = new Date(); d.setHours(0, 0, 0, 0); return d.getTime() + 86400000; })();
+    const n = Array.isArray(arr) ? arr.filter((r) => r && !r.done && r.at && !isNaN(new Date(r.at)) && new Date(r.at).getTime() < eod).length : 0;
+    if (!STORE.agendaCounts) STORE.agendaCounts = {};
+    STORE.agendaCounts[id] = n;
+    if (id === activeId || id === '__global__') updateNotesBadge();
   } catch (_) {}
 }
 function showPanelSetup() {
@@ -2959,6 +2975,8 @@ function init() {
   try { if (lite.remote && lite.remote.onNotesChanged) lite.remote.onNotesChanged((id) => { try { lite.app.notesChanged(id); refreshNotesCount(id); } catch (_) {} }); } catch (_) {}
   // Окно «Задачи» изменило список → пересчитать счётчик и освежить бейдж активных задач на квикбаре.
   try { if (lite.app && lite.app.onNotesChanged) lite.app.onNotesChanged((id) => { try { refreshNotesCount(id); } catch (_) {} }); } catch (_) {}
+  // Окно «Календарь» изменило напоминания → пересчитать «требует внимания» и освежить бейдж.
+  try { if (lite.app && lite.app.onAgendaChanged) lite.app.onAgendaChanged((id) => { try { refreshAgendaCount(id); } catch (_) {} }); } catch (_) {}
   // Пульт просит одобрить устройство (pairing) → модалка одобрения.
   try { if (lite.remote && lite.remote.onPairRequest) lite.remote.onPairRequest((info) => { try { handleRemotePairRequest(info); } catch (_) {} }); } catch (_) {}
   // Бейдж «подключённые пульты» у версии: живёт на push-событиях из main + стартовый снимок.

@@ -14,6 +14,7 @@
 //         layout, GUTTER, saveUiState, refitActiveTerminal, activeProject, closeOtherPanels, getProjects }
 import { el, icon, iconBtn, makeModal, showConfirm, toast } from '../ui.js';
 import { marked } from 'marked';
+import { createAgendaView } from './notes-agenda.js';
 
 const $ = (sel) => document.querySelector(sel);
 const lite = window.lite;
@@ -52,7 +53,7 @@ export function initNotes(host) {
     layout, GUTTER, saveUiState, refitActiveTerminal, activeProject, closeOtherPanels, getProjects } = host;
 
   let notesOpen = false;
-  let tab = (settings.notesTab === 'global') ? 'global' : 'project'; // последняя вкладка
+  let tab = ['global', 'calendar'].includes(settings.notesTab) ? settings.notesTab : 'project'; // последняя вкладка
   let filter = 'active';     // 'active' | 'all' | 'done'
   let view = (settings.notesView === 'kanban') ? 'kanban' : 'list';  // вид списка
   let sortMode = (settings.notesSort === 'prio') ? 'prio' : 'manual';// порядок: ручной / по важности
@@ -74,6 +75,22 @@ export function initNotes(host) {
   }
   // Терминал, куда уходит «В терминал»: для общих задач — терминал активного проекта.
   function termProject(target) { return target && target.kind === 'project' ? target.proj : activeProject(); }
+
+  // ---------------- вкладка «Календарь» (дата-задачи / напоминания) — отдельная сущность ----------------
+  // Своя модель (время, а не статус), свой файл agenda/<id>.json, свой рендер. Делит с задачами только
+  // оболочку окна и полосу вкладок.
+  const agenda = createAgendaView({ activeProject, sendNoteToTerminal, applyLayoutSwap, settings, saveSettings });
+  const TABS = [['project', 'Проект', 'folder'], ['global', 'Общие', 'globe'], ['calendar', 'Календарь', 'clock']];
+  function tabsHtml() {
+    return `<div class="nt-tabs">${TABS.map(([k, l]) => `<button class="nt-tab${tab === k ? ' active' : ''}" data-tab="${k}"><span>${l}</span></button>`).join('')}</div>`;
+  }
+  function wireTabs(body) {
+    body.querySelectorAll('.nt-tab').forEach((t) => {
+      const d = TABS.find((x) => x[0] === t.dataset.tab);
+      t.prepend(icon(d ? d[2] : 'folder', 15));
+      t.addEventListener('click', () => switchTab(t.dataset.tab));
+    });
+  }
 
   // ---------------- данные ----------------
   async function load(id) {
@@ -197,16 +214,23 @@ export function initNotes(host) {
   function renderList() {
     const body = $('#notes-body');
     if (!body) return;
-    const target = currentTarget();
     const title = $('#notes-proj');
+
+    // Вкладка «Календарь» — отдельная сущность: рисуем полосу вкладок + делегируем в agenda-рендер.
+    if (tab === 'calendar') {
+      if (title) title.textContent = 'Календарь напоминаний';
+      body.innerHTML = tabsHtml() + '<div class="ag-root" data-agenda></div>';
+      wireTabs(body);
+      agenda.render(body.querySelector('[data-agenda]'));
+      return;
+    }
+
+    const target = currentTarget();
     if (title) title.textContent = tab === 'global' ? 'Общие заметки' : (target ? ('Задачи — ' + target.name) : 'Задачи проекта');
 
     const c = target ? counts() : { all: 0, done: 0, active: 0 };
     body.innerHTML = `
-      <div class="nt-tabs">
-        <button class="nt-tab${tab === 'project' ? ' active' : ''}" data-tab="project"><span>Проект</span></button>
-        <button class="nt-tab${tab === 'global' ? ' active' : ''}" data-tab="global"><span>Общие</span></button>
-      </div>
+      ${tabsHtml()}
       <button class="nt-addbig" data-add ${target ? '' : 'disabled'}>＋ Новая задача</button>
       <div class="nt-toolbar">
         <input class="nt-search" data-search placeholder="Поиск задач…" value="${escAttr(query)}">
@@ -225,11 +249,7 @@ export function initNotes(host) {
     // иконки в кнопки тулбара/вкладок (data-icon тут не используем — порядок «иконка перед текстом»)
     body.querySelector('[data-view]').prepend(icon('columns', 15));
     body.querySelector('[data-sort]').prepend(icon('flag', 14));
-    const tabIcon = { project: 'folder', global: 'globe' };
-    body.querySelectorAll('.nt-tab').forEach((t) => {
-      t.prepend(icon(tabIcon[t.dataset.tab], 15));
-      t.addEventListener('click', () => switchTab(t.dataset.tab));
-    });
+    wireTabs(body);
     body.querySelectorAll('.nt-chip').forEach((ch) => ch.addEventListener('click', () => { filter = ch.dataset.f; renderList(); }));
     const addBtn = body.querySelector('[data-add]');
     if (addBtn) addBtn.addEventListener('click', () => openTaskModal(null));
@@ -626,6 +646,8 @@ export function initNotes(host) {
   // ---------------- панель / окно ----------------
   async function renderPanel() {
     if (!notesOpen) return;
+    // Календарь ведёт своё состояние/загрузку сам — не трогаем список задач.
+    if (tab === 'calendar') { renderList(); return; }
     const target = currentTarget();
     if (target && target.id !== loadedId) {
       const ok = await load(target.id);
@@ -663,5 +685,12 @@ export function initNotes(host) {
     renderPanel: () => renderPanel(),
     // список изменён извне (пульт записал notes/<id>.json) — перечитать, если открыт именно он
     onExternalChange: (id) => { if (notesOpen && id === loadedId) { loadedId = null; renderPanel(); } },
+    // напоминания изменены извне (MCP/пульт записал agenda/<id>.json) — перечитать календарь, если он открыт
+    onAgendaExternalChange: () => { if (notesOpen && tab === 'calendar') agenda.reload(); },
+    // клик по уведомлению → открыть окно на вкладке «Календарь»
+    focusCalendar: () => {
+      if (tab !== 'calendar') { tab = 'calendar'; settings.notesTab = 'calendar'; saveSettings(); }
+      if (!notesOpen) setNotesOpen(true, { allowEmpty: true }); else renderPanel();
+    },
   };
 }

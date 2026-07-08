@@ -108,6 +108,10 @@ const MODULES = {
       bind('#notes-import', () => mod.importNotes());
       // пульт изменил задачи → редактор ретранслировал app:notesChanged → перечитать, если открыт тот список
       lite.app.onNotesChanged((id) => { try { mod.onExternalChange(id); } catch (_) {} });
+      // напоминания изменены извне (MCP/пульт) → перечитать вкладку «Календарь», если она открыта
+      lite.app.onAgendaChanged((id) => { try { mod.onAgendaExternalChange(id); } catch (_) {} });
+      // клик по уведомлению напоминания → переключить окно на вкладку «Календарь»
+      if (lite.app.onAgendaFocus) lite.app.onAgendaFocus(() => { try { mod.focusCalendar(); } catch (_) {} });
     },
   },
   db: {
