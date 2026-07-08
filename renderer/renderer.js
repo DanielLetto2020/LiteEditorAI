@@ -27,7 +27,7 @@ import { el, icon, iconBtn, hydrateIcons, toast, makeModal, showConfirm, showPro
 import { initExtensions } from './modules/extensions.js';
 // initFiles — вивер+дерево мигрированы в отдельное окно (renderer/module-entry.js).
 
-const APP_VERSION = 'alpha v1.1.93';
+const APP_VERSION = 'alpha v1.1.94';
 const GUTTER = 5;
 // Системный терминал («Система · ~») мигрирован в отдельное окно (renderer/modules/scratch.js):
 // его id `__scratch__::tN` маршрутизируются main'ом в окно-владельца, в ядре их больше не обрабатываем.
@@ -1091,22 +1091,66 @@ function renderTabBar() {
   if (header) header.style.display = 'flex';
   t.sessions.forEach((sid) => {
     const rec = terms.get(sid); if (!rec) return;
-    const tab = el('div', 'tab' + (sid === t.active ? ' active' : ''));
+    const tab = el('div', 'tab' + (sid === t.active ? ' active' : '') + (rec.autoTitled ? ' wide' : ''));
     tab.dataset.sid = sid;
     tab.appendChild(el('span', 'tab-dot pind ' + (projState.get(sid) || 'quiet')));
-    tab.appendChild(el('span', 'tab-name', rec.name));
+    const nameSpan = el('span', 'tab-name', rec.name);
+    tab.appendChild(nameSpan);
+    // Кастомный тултип с полным именем — только когда имя визуально обрезано многоточием.
+    tab.addEventListener('mouseenter', () => { if (nameSpan.scrollWidth > nameSpan.clientWidth + 1) showTabTip(tab, rec.name); });
+    tab.addEventListener('mouseleave', hideTabTip);
     if (t.sessions.length > 1) {
       const x = iconBtn('tab-close', 'x', 'Закрыть вкладку (Ctrl+Shift+W)', 12);
       x.addEventListener('click', (e) => { e.stopPropagation(); closeTab(sid); });
       tab.appendChild(x);
     }
-    tab.addEventListener('click', () => switchTab(sid));
+    tab.addEventListener('click', () => { hideTabTip(); switchTab(sid); });
     tab.addEventListener('dblclick', () => renameTab(sid));
     bar.appendChild(tab);
   });
-  const add = iconBtn('tab-add', 'plus', 'Новая вкладка (Ctrl+Shift+T)', 15);
-  add.addEventListener('click', () => addTab());
-  bar.appendChild(add);
+  ensureActiveTabVisible();
+  updateTabScroll();
+}
+// ── Кастомный тултип вкладок + прокрутка панели вкладок стрелками ──────────────
+let tabTipEl = null;
+function showTabTip(anchor, text) {
+  if (!tabTipEl) { tabTipEl = el('div'); tabTipEl.id = 'tab-tip'; document.body.appendChild(tabTipEl); }
+  tabTipEl.textContent = text;
+  tabTipEl.classList.add('show');                       // показать, чтобы измерить размеры
+  const r = anchor.getBoundingClientRect();
+  const tw = tabTipEl.offsetWidth, iw = window.innerWidth;
+  let left = r.left + r.width / 2 - tw / 2;
+  left = Math.max(6, Math.min(left, iw - tw - 6));      // не вылезать за края экрана
+  tabTipEl.style.left = left + 'px';
+  tabTipEl.style.top = (r.bottom + 6) + 'px';           // под вкладкой (вкладки вверху панели)
+}
+function hideTabTip() { if (tabTipEl) tabTipEl.classList.remove('show'); }
+function scrollTabs(dir) {
+  const bar = $('#term-tabs'); if (!bar) return;
+  hideTabTip();
+  bar.scrollBy({ left: dir * Math.max(140, bar.clientWidth * 0.7), behavior: 'smooth' });
+}
+// Показ/дизейбл стрелок по факту переполнения панели вкладок.
+function updateTabScroll() {
+  const bar = $('#term-tabs'), prev = $('#term-tabs-prev'), next = $('#term-tabs-next');
+  if (!bar || !prev || !next) return;
+  const overflow = bar.scrollWidth > bar.clientWidth + 1;
+  prev.classList.toggle('show', overflow);
+  next.classList.toggle('show', overflow);
+  if (overflow) {
+    const max = bar.scrollWidth - bar.clientWidth;
+    prev.disabled = bar.scrollLeft <= 1;
+    next.disabled = bar.scrollLeft >= max - 1;
+  }
+}
+// Подкрутить панель так, чтобы активная вкладка была видна целиком (без прокрутки страницы).
+// По rect'ам (а не offsetLeft) — устойчиво к отсутствию positioned-родителя у #term-tabs.
+function ensureActiveTabVisible() {
+  const bar = $('#term-tabs'); if (!bar) return;
+  const a = bar.querySelector('.tab.active'); if (!a) return;
+  const br = bar.getBoundingClientRect(), ar = a.getBoundingClientRect();
+  if (ar.left < br.left) bar.scrollLeft -= (br.left - ar.left) + 8;
+  else if (ar.right > br.right) bar.scrollLeft += (ar.right - br.right) + 8;
 }
 function switchTab(sid) {
   const t = tabsByProj.get(activeId);
@@ -1140,18 +1184,33 @@ function cycleTab(dir) {
 }
 function renameTab(sid) {
   const rec = terms.get(sid); if (!rec) return;
-  // Ручное имя «прибивает» вкладку: заголовок терминала больше её не перебивает (customName).
-  showPrompt('Переименовать вкладку', 'Название', rec.name, (v) => { rec.name = v; rec.customName = true; saveProjTabs(); renderTabBar(); });
+  // Ручное имя «прибивает» вкладку: заголовок терминала больше её не перебивает (customName)
+  // и вкладка возвращается к обычной ширине (autoTitled=false — не «переименована агентом»).
+  showPrompt('Переименовать вкладку', 'Название', rec.name, (v) => { rec.name = v; rec.customName = true; rec.autoTitled = false; saveProjTabs(); renderTabBar(); });
+}
+// Дефолтный заголовок, который шлёт САМ шелл (bash/zsh): "user@host: ~/path", голый путь,
+// "C:\path". Это НЕ имя задачи агента — вкладка должна остаться "Терминал N", пока Claude/
+// Codex не напишет осмысленный заголовок. Такие заголовки в имя вкладки НЕ подхватываем.
+function looksLikeShellTitle(s) {
+  if (/^\S+@\S+/.test(s)) return true;             // user@host[: …] — дефолт bash/zsh
+  if (/^[~/]\S*$/.test(s)) return true;            // ~/path или /abs/path целиком (без пробелов)
+  if (/^[A-Za-z]:[\\/]\S*$/.test(s)) return true;  // C:\path (Windows)
+  return false;
 }
 // Подхват заголовка терминала (OSC ]0;…) в имя вкладки. Чистим управляющие символы,
-// схлопываем пробелы, режем по длине (вкладка узкая). Не трогаем вручную названные вкладки
-// и не перерисовываем бар, если имя не изменилось (заголовок сыплется на каждый промпт).
+// схлопываем пробелы, держим щадящий предел (визуально имя режет CSS-многоточие, полное —
+// в тултипе). Не трогаем вручную названные вкладки; ИГНОРИРУЕМ шелловый заголовок (путь/хост),
+// чтобы вкладка изначально была "Терминал N" и сменилась только на имя задачи от агента;
+// не перерисовываем бар, если имя то же (заголовок сыплется на каждый промпт).
+// autoTitled=true → вкладка «переименована агентом» (шире вдвое, класс .wide в renderTabBar).
 function adoptTermTitle(id, raw) {
   const rec = terms.get(id); if (!rec || rec.customName) return;
   let name = String(raw || '').replace(/[\x00-\x1f\x7f]/g, '').trim().replace(/\s+/g, ' ');
-  if (!name || name === rec.name) return;
-  if (name.length > 32) name = name.slice(0, 31) + '…';
+  if (!name || looksLikeShellTitle(name)) return;
+  if (name.length > 200) name = name.slice(0, 200);
+  if (name === rec.name && rec.autoTitled) return;
   rec.name = name;
+  rec.autoTitled = true;
   renderTabBar();
 }
 async function pasteInto(id) {
@@ -2993,6 +3052,12 @@ function init() {
   lite.pomodoro.getState().then((s) => updatePomoUI(s)).catch(() => {});          // стартовый снимок (таймер мог идти до открытия редактора)
   $('#term-clear').addEventListener('click', () => clearTerminal());
   $('#term-restart').addEventListener('click', () => restartTerminal());
+  // Панель вкладок терминалов: статичная «+» (всегда видна) + стрелки-прокрутка при переполнении.
+  $('#term-tab-add').addEventListener('click', () => addTab());
+  $('#term-tabs-prev').addEventListener('click', () => scrollTabs(-1));
+  $('#term-tabs-next').addEventListener('click', () => scrollTabs(1));
+  $('#term-tabs').addEventListener('scroll', () => { updateTabScroll(); hideTabTip(); });
+  window.addEventListener('resize', updateTabScroll);
   $('#attention-badge').addEventListener('click', () => {
     const e = [...projState.entries()].find(([, s]) => s === 'waiting');
     const rec = e && terms.get(e[0]);
