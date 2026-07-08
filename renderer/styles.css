@@ -1483,6 +1483,12 @@ body.preview-split #preview-view { border-left: 1px solid var(--border); }
 .dgrp-chev { color: var(--text-mute); flex: 0 0 13px; }
 .dgrp-name { font-size: 12px; font-weight: 700; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dgrp-count { color: var(--text-mute); font-size: 10.5px; background: rgba(0,0,0,0.25); border-radius: 9px; padding: 1px 7px; }
+/* Индикаторы состояний в свёрнутом заголовке группы: кружок + 4 буквы имени. Ужимается первым (flex-shrink),
+   лишнее клипается, чтобы имя/счётчик/кнопки не «съезжали». */
+.dgrp-dots { display: flex; align-items: center; gap: 6px; min-width: 0; flex: 0 999 auto; overflow: hidden; margin-left: 3px; }
+.dgrp-dot { display: inline-flex; align-items: center; gap: 3px; flex: 0 0 auto; }
+.dgrp-dot .dstate { flex: 0 0 8px; width: 8px; height: 8px; }
+.dgrp-dot-lbl { font-size: 9.5px; line-height: 1; color: var(--text-mute); font-weight: 600; letter-spacing: .2px; white-space: nowrap; }
 .dgrp-acts { display: flex; gap: 1px; margin-left: auto; flex: 0 0 auto; opacity: 0.55; transition: opacity .12s; }
 .docker-group-head:hover .dgrp-acts { opacity: 1; }
 .docker-group-body { display: flex; flex-direction: column; padding: 3px; gap: 2px; background: var(--bg, var(--panel)); }
