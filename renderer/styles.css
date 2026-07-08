@@ -917,7 +917,7 @@ body.preview-split #preview-view { border-left: 1px solid var(--border); }
 /* ── «Мониторинг сайтов» (downdetector-стиль) ──────────────────────────────────────── */
 #sitemon-pane { flex: 0 0 460px; min-width: 340px; border-left: 1px solid var(--border); display: flex; flex-direction: column; background: var(--panel); }
 .sitemon-body { flex: 1; min-height: 0; overflow: auto; display: flex; flex-direction: column; }
-.sm-head { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--border); position: sticky; top: 0; background: var(--panel); z-index: 1; }
+.sm-head { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--border); position: sticky; top: 0; background: var(--panel); z-index: 1; }
 .sm-h-title { font-weight: 600; font-size: 12.5px; color: var(--text); flex: 1; }
 .sm-empty { color: var(--text-mute); font-size: 12.5px; padding: 22px 16px; text-align: center; line-height: 1.5; }
 .sm-banner { display: flex; align-items: center; gap: 7px; margin: 10px 12px 0; padding: 7px 10px; border-radius: var(--radius); background: var(--danger-soft, var(--accent-soft)); color: var(--danger); font-size: 12px; font-weight: 600; }
@@ -951,6 +951,223 @@ body.preview-split #preview-view { border-left: 1px solid var(--border); }
 .sm-l { font-size: 11px; color: var(--text-dim); margin-top: 6px; }
 .sm-in { background: var(--bg-input); border: 1px solid var(--border); border-radius: var(--radius); color: var(--text); padding: 7px 9px; font-size: 12.5px; }
 .sm-in:focus { outline: none; border-color: var(--border-accent); }
+textarea.sm-in { resize: vertical; font-family: inherit; line-height: 1.4; }
+textarea.sm-code { font-family: var(--mono, ui-monospace, monospace); font-size: 12px; }
+
+/* ── состояния (ok / triggered / error / unknown) — цель и чек ──────────────────────────────────── */
+.sm-card.ok { border-left-color: var(--green); }
+.sm-card.triggered { border-left-color: var(--danger); }
+.sm-card.error { border-left-color: var(--warn); }
+.sm-card.unknown { border-left-color: var(--text-mute); }
+.sm-dot.ok { background: var(--green); box-shadow: 0 0 6px var(--green); }
+.sm-dot.triggered { background: var(--danger); box-shadow: 0 0 6px var(--danger); }
+.sm-dot.error { background: var(--warn); box-shadow: 0 0 6px var(--warn); }
+.sm-dot.unknown { background: var(--text-mute); }
+.sm-state.ok { color: var(--green-bright, var(--green)); }
+.sm-state.triggered { color: var(--danger); }
+.sm-state.error { color: var(--warn); }
+.sm-state.unknown { color: var(--text-mute); }
+.sm-tick.ok { background: var(--green); }
+.sm-tick.triggered { background: var(--danger); }
+.sm-tick.error { background: var(--warn); }
+.sm-tick.unknown { background: var(--border); }
+
+/* ── карточка цели: мета + список чеков ─────────────────────────────────────────────────────────── */
+.sm-card-meta { font-size: 10.5px; color: var(--text-mute); display: flex; }
+.sm-addcheck { font-size: 15px; line-height: 1; font-weight: 700; }
+.sm-checks { display: flex; flex-direction: column; gap: 6px; margin-top: 2px; }
+.sm-nochecks { font-size: 11.5px; color: var(--text-mute); padding: 4px 2px; }
+.sm-link { background: none; border: none; color: var(--green-bright, var(--green)); cursor: pointer; font-size: 11.5px; padding: 0; text-decoration: underline; }
+
+/* ── статус-рамка одного чека ───────────────────────────────────────────────────────────────────── */
+.sm-check-fr { border: 1px solid var(--border); border-left: 3px solid var(--text-mute); border-radius: var(--radius); padding: 7px 9px; display: flex; flex-direction: column; gap: 5px; background: var(--panel); }
+.sm-check-fr.ok { border-left-color: var(--green); }
+.sm-check-fr.triggered { border-left-color: var(--danger); background: var(--danger-soft, var(--panel)); }
+.sm-check-fr.error { border-left-color: var(--warn); }
+.sm-check-fr.unknown { border-left-color: var(--text-mute); }
+.sm-cf-top { display: flex; align-items: center; gap: 7px; }
+.sm-cf-title { display: flex; align-items: center; gap: 6px; min-width: 0; flex: 1; }
+.sm-cf-name { font-size: 12px; font-weight: 600; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sm-cf-kind { flex: 0 0 auto; font-size: 9px; padding: 1px 5px; border-radius: 20px; text-transform: uppercase; letter-spacing: .3px; border: 1px solid var(--border); color: var(--text-mute); }
+.sm-cf-kind.custom { color: var(--info); border-color: var(--info); }
+.sm-cf-stat { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; font-size: 11px; color: var(--text-dim); }
+.sm-cf-val { color: var(--text-dim); font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+
+/* ── пресеты (чипы) и формы ─────────────────────────────────────────────────────────────────────── */
+.modal.sm-modal { width: 560px; }
+.sm-chips { display: flex; flex-wrap: wrap; gap: 5px; }
+.sm-chip { padding: 4px 9px; border-radius: 20px; border: 1px solid var(--border-strong); background: rgba(255,255,255,0.04); color: var(--text-dim); cursor: pointer; font-size: 11.5px; }
+.sm-chip:hover { background: var(--hover-2); color: var(--text); }
+select.sm-in { appearance: auto; }
+.sm-check { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-dim); margin-top: 8px; cursor: pointer; }
+.sm-check input { flex: 0 0 auto; }
+.sm-adv { margin-top: 10px; }
+.sm-adv > summary { cursor: pointer; font-size: 11.5px; color: var(--text-mute); padding: 4px 0; }
+textarea.sm-hdr { font-family: var(--mono, ui-monospace, monospace); font-size: 11.5px; }
+
+/* ── предпросмотр (dry-run) ─────────────────────────────────────────────────────────────────────── */
+.sm-dry { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; min-height: 18px; margin: 10px 0 2px; font-size: 12px; color: var(--text-dim); }
+.sm-dry:empty { display: none; }
+.sm-dry.busy { color: var(--text-mute); font-style: italic; }
+.sm-dry.err { color: var(--warn); }
+.sm-dry-dot { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto; background: var(--text-mute); }
+.sm-dry-dot.ok { background: var(--green); }
+.sm-dry-dot.triggered { background: var(--danger); }
+.sm-dry-dot.error { background: var(--warn); }
+.sm-dry.ok b { color: var(--green-bright, var(--green)); }
+.sm-dry.triggered b { color: var(--danger); }
+.sm-dry.error b { color: var(--warn); }
+.sm-dry-v { color: var(--text); }
+.sm-dry-meta { margin-left: auto; color: var(--text-mute); font-size: 10.5px; }
+
+/* ── выбор типа чека ────────────────────────────────────────────────────────────────────────────── */
+.sm-choose { display: flex; flex-direction: column; gap: 10px; margin: 6px 0 2px; }
+.sm-choice { text-align: left; border: 1px solid var(--border-strong); border-radius: 12px; background: rgba(255,255,255,0.03); padding: 12px 14px; cursor: pointer; transition: background .12s, border-color .12s; }
+.sm-choice:hover { background: var(--hover-2); border-color: var(--border-accent); }
+.sm-choice-t { font-size: 13.5px; font-weight: 600; color: var(--text); margin-bottom: 3px; }
+.sm-choice-d { font-size: 11.5px; color: var(--text-mute); line-height: 1.4; }
+
+/* ── чат кастомного чека: 2 колонки (слева артефакт, справа диалог), широкая адаптивная модалка ──── */
+.modal.sm-ai-modal { width: 90vw; max-width: 1400px; height: 86vh; max-height: 92vh; display: flex; flex-direction: column; overflow: hidden; }
+.sm-ai { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.05fr); gap: 16px; }
+.sm-ai-left { display: flex; flex-direction: column; gap: 8px; min-height: 0; overflow: auto; padding-right: 2px; }
+.sm-ai-right { display: flex; flex-direction: column; min-height: 0; border-left: 1px solid var(--border); padding-left: 16px; }
+.sm-ai-urlbar { display: flex; align-items: center; gap: 8px; }
+.sm-ai-url { flex: 1; min-width: 0; font-size: 11.5px; color: var(--text-mute); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-family: var(--mono, ui-monospace, monospace); }
+.sm-ai-sample > summary { cursor: pointer; font-size: 11.5px; color: var(--text-mute); padding: 3px 0; }
+.sm-ai-sample-body { max-height: 150px; overflow: auto; margin: 6px 0 0; padding: 8px 10px; border-radius: 8px; background: var(--bg-input); border: 1px solid var(--border); font-family: var(--mono, ui-monospace, monospace); font-size: 11px; white-space: pre-wrap; word-break: break-word; color: var(--text-dim); }
+.sm-ai-code { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 5px; }
+.sm-ai-code textarea.sm-code { flex: 1; min-height: 150px; resize: none; }
+.sm-ai-titlerow { display: flex; align-items: center; gap: 8px; }
+.sm-ai-titlerow .sm-l { margin: 0; flex: 0 0 auto; }
+.sm-ai-titlerow .sm-in { flex: 1; }
+.sm-ai-codeacts { display: flex; justify-content: flex-end; gap: 8px; }
+.sm-ai-chathead { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.sm-ai-chattitle { flex: 1; font-size: 12px; font-weight: 600; color: var(--text); }
+.sm-ai-agent { flex: 0 0 auto; width: auto; min-width: 150px; max-width: 55%; }
+.sm-ai-log { flex: 1; min-height: 0; overflow: auto; display: flex; flex-direction: column; gap: 8px; padding: 2px 2px 8px; }
+.sm-ai-empty { color: var(--text-mute); font-size: 12px; line-height: 1.5; padding: 8px 4px; }
+.sm-ai-msg { padding: 8px 11px; border-radius: 10px; font-size: 12.5px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
+.sm-ai-msg.user { align-self: flex-end; max-width: 88%; background: var(--accent-soft); color: var(--text); }
+.sm-ai-msg.assistant { align-self: flex-start; max-width: 95%; background: var(--bg-input); border: 1px solid var(--border); color: var(--text-dim); }
+.sm-ai-input { display: flex; gap: 8px; align-items: flex-end; padding-top: 8px; border-top: 1px solid var(--border); }
+.sm-ai-ta { flex: 1; }
+@media (max-width: 860px) {
+  .modal.sm-ai-modal { width: 96vw; }
+  .sm-ai { grid-template-columns: 1fr; grid-template-rows: minmax(0, 1fr) minmax(0, 1fr); }
+  .sm-ai-right { border-left: none; padding-left: 0; border-top: 1px solid var(--border); padding-top: 10px; }
+}
+.btn.sm { padding: 6px 12px; font-size: 12px; }
+.btn.busy { background: var(--warn); border-color: var(--warn); color: var(--bg); }
+
+/* ── доп. статусы: warn🟡 / info🔵 (+ error → серый, т.к. жёлтый занят под warn) ──────────────────── */
+.sm-card.warn { border-left-color: var(--warn); }
+.sm-card.info { border-left-color: var(--info); }
+.sm-card.error { border-left-color: var(--text-mute); }
+.sm-dot.warn { background: var(--warn); box-shadow: 0 0 6px var(--warn); }
+.sm-dot.info { background: var(--info); box-shadow: 0 0 6px var(--info); }
+.sm-dot.error { background: var(--text-mute); box-shadow: none; }
+.sm-state.warn { color: var(--warn); }
+.sm-state.info { color: var(--info); }
+.sm-state.error { color: var(--text-mute); }
+.sm-tick.warn { background: var(--warn); }
+.sm-tick.info { background: var(--info); }
+.sm-tick.error { background: var(--text-mute); }
+.sm-check-fr.warn { border-left-color: var(--warn); }
+.sm-check-fr.info { border-left-color: var(--info); }
+.sm-check-fr.error { border-left-color: var(--text-mute); }
+.sm-dry-dot.warn { background: var(--warn); }
+.sm-dry-dot.info { background: var(--info); }
+.sm-dry-dot.error { background: var(--text-mute); }
+.sm-dry.warn b { color: var(--warn); }
+.sm-dry.info b { color: var(--info); }
+.sm-dry.error b { color: var(--text-mute); }
+
+/* ── крестик модалки ──────────────────────────────────────────────────────────────────────────── */
+.modal.sm-modal, .modal.sm-ai-modal { position: relative; }
+.sm-modal h2 { padding-right: 34px; }
+.sm-modal-x { position: absolute; top: 12px; right: 14px; width: 28px; height: 28px; border-radius: 8px; border: 1px solid transparent; background: transparent; color: var(--text-mute); font-size: 14px; line-height: 1; cursor: pointer; display: flex; align-items: center; justify-content: center; z-index: 2; }
+.sm-modal-x:hover { background: var(--hover-2); color: var(--text); }
+
+/* ── прелоадер «агент думает» ───────────────────────────────────────────────────────────────────── */
+.sm-ai-msg.pending { display: flex; align-items: center; gap: 8px; color: var(--text-mute); font-style: italic; }
+.sm-ai-thinking { font-size: 12px; }
+.sm-ai-typing { display: inline-flex; gap: 3px; }
+.sm-ai-typing i { width: 5px; height: 5px; border-radius: 50%; background: var(--text-mute); animation: sm-typing 1s infinite ease-in-out; }
+.sm-ai-typing i:nth-child(2) { animation-delay: .15s; }
+.sm-ai-typing i:nth-child(3) { animation-delay: .3s; }
+@keyframes sm-typing { 0%, 60%, 100% { opacity: .25; transform: translateY(0); } 30% { opacity: 1; transform: translateY(-3px); } }
+
+/* ── редактор предиката (CodeMirror) ────────────────────────────────────────────────────────────── */
+.sm-code-host { flex: 1; min-height: 150px; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; display: flex; }
+.sm-code-host .cm-editor { flex: 1; min-height: 150px; height: 100%; width: 100%; }
+.sm-code-host .cm-scroller { overflow: auto; }
+
+/* ── типизированный вьюер сэмпла (json-дерево / код / превью) ────────────────────────────────────── */
+.sm-ai-sampleview { display: flex; flex-direction: column; gap: 4px; }
+.sm-smp-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.sm-smp-meta { font-size: 10.5px; color: var(--text-mute); font-family: var(--mono, ui-monospace, monospace); }
+.sm-smp-tabs { display: flex; gap: 4px; margin-left: auto; }
+.sm-smp-tab { padding: 2px 9px; border-radius: 14px; border: 1px solid var(--border); background: transparent; color: var(--text-mute); cursor: pointer; font-size: 11px; }
+.sm-smp-tab.on { background: var(--accent-soft); color: var(--text); border-color: var(--border-accent); }
+.sm-smp-view { border: 1px solid var(--border); border-radius: 8px; overflow: hidden; max-height: 260px; display: flex; }
+.sm-smp-view > * { flex: 1; min-width: 0; }
+.sm-smp-code { max-height: 260px; overflow: auto; width: 100%; }
+.sm-smp-code .cm-editor { max-height: 260px; }
+.sm-smp-frame { width: 100%; height: 260px; border: 0; background: #fff; }
+.sm-jt-root { max-height: 260px; overflow: auto; width: 100%; font-family: var(--mono, ui-monospace, monospace); font-size: 11.5px; padding: 8px 10px; line-height: 1.55; background: var(--bg-input); color: var(--text-dim); }
+.sm-jt-kids { padding-left: 14px; border-left: 1px dotted var(--border); margin-left: 3px; }
+.sm-jt-line { white-space: pre-wrap; word-break: break-word; }
+.sm-jt-tog { display: inline-block; width: 12px; color: var(--text-mute); }
+.sm-jt-key { color: var(--info); }
+.sm-jt-brace, .sm-jt-count { color: var(--text-mute); }
+.sm-jt-val.string { color: var(--green); }
+.sm-jt-val.number { color: var(--warn); }
+.sm-jt-val.boolean { color: var(--info); }
+.sm-jt-val.null { color: var(--text-mute); }
+
+/* ── переключатель вида (Блоки/Графики) + кнопка «?» ─────────────────────────────────────────────── */
+.sm-seg { display: inline-flex; border: 1px solid var(--border-strong); border-radius: 8px; overflow: hidden; }
+.sm-seg-b { padding: 4px 11px; background: transparent; border: none; color: var(--text-mute); cursor: pointer; font-size: 12px; }
+.sm-seg-b.on { background: var(--accent-soft); color: var(--green-bright, var(--text)); font-weight: 600; }
+.sm-seg-b + .sm-seg-b { border-left: 1px solid var(--border-strong); }
+.sm-help-btn { font-size: 14px; font-weight: 700; color: var(--text-mute); border-radius: 50%; }
+.sm-help-btn:hover { color: var(--text); }
+
+/* ── справка «О модуле» ─────────────────────────────────────────────────────────────────────────── */
+.sm-help { display: flex; flex-direction: column; gap: 9px; margin: 6px 0 2px; }
+.sm-help-p { font-size: 12.5px; line-height: 1.5; color: var(--text-dim); }
+.sm-help-p b { color: var(--text); }
+.sm-help-note { font-size: 12.5px; line-height: 1.55; color: var(--text-dim); background: var(--accent-soft); border: 1px solid var(--border-accent); border-radius: 10px; padding: 10px 12px; }
+.sm-help-note b { color: var(--green-bright, var(--text)); }
+
+/* ── режим «Графики»: карточки со статистикой за месяц ──────────────────────────────────────────── */
+.sm-charts { display: flex; flex-direction: column; gap: 12px; padding: 10px 12px; }
+.sm-chart-card { border: 1px solid var(--border); border-left: 3px solid var(--text-mute); border-radius: var(--radius); padding: 11px 12px; display: flex; flex-direction: column; gap: 9px; background: var(--bg-input); }
+.sm-chart-card.ok { border-left-color: var(--green); }
+.sm-chart-card.triggered { border-left-color: var(--danger); }
+.sm-chart-card.warn { border-left-color: var(--warn); }
+.sm-chart-card.info { border-left-color: var(--info); }
+.sm-chart-card.error { border-left-color: var(--text-mute); }
+.sm-chart-head { display: flex; align-items: center; gap: 8px; }
+.sm-tiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+.sm-tile { border: 1px solid var(--border); border-radius: 9px; padding: 9px 10px; background: var(--panel); display: flex; flex-direction: column; gap: 3px; }
+.sm-tile-v { font-size: 18px; font-weight: 700; color: var(--text); font-variant-numeric: tabular-nums; line-height: 1.1; }
+.sm-tile-l { font-size: 10px; color: var(--text-mute); text-transform: uppercase; letter-spacing: .3px; }
+.sm-tile.ok .sm-tile-v { color: var(--green-bright, var(--green)); }
+.sm-tile.warn .sm-tile-v { color: var(--warn); }
+.sm-tile.triggered .sm-tile-v { color: var(--danger); }
+.sm-chart-lbl { font-size: 10.5px; color: var(--text-mute); margin-top: 1px; }
+.sm-strip { display: flex; gap: 2px; height: 26px; align-items: stretch; }
+.sm-strip-cell { flex: 1 1 auto; min-width: 3px; border-radius: 2px; }
+.sm-line-wrap { position: relative; height: 40px; }
+.sm-line { width: 100%; height: 40px; display: block; }
+.sm-line-max { position: absolute; top: 0; right: 2px; font-size: 9.5px; color: var(--text-mute); }
+.sm-chart-checks { display: flex; flex-direction: column; gap: 4px; margin-top: 2px; border-top: 1px solid var(--border); padding-top: 8px; }
+.sm-chk-row { display: flex; align-items: center; gap: 7px; font-size: 11.5px; }
+.sm-chk-name { flex: 1; min-width: 0; color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sm-chk-up { color: var(--text-mute); font-variant-numeric: tabular-nums; }
+.sm-chart-nodata { font-size: 11.5px; color: var(--text-mute); font-style: italic; }
 
 /* ── «Сейф паролей» (KeePass) ──────────────────────────────────────────────────────── */
 #keepass-pane { flex: 0 0 460px; min-width: 340px; border-left: 1px solid var(--border); display: flex; flex-direction: column; background: var(--panel); }
