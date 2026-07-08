@@ -534,6 +534,23 @@ export function initContainers(host) {
     return b;
   }
   const D_UNGROUPED = '(ungrouped)'; // data-group sentinel for the «без группы» block
+  // Мини-индикаторы для СВЁРНУТОГО заголовка группы: тот же цветной кружок состояния + 4 буквы имени,
+  // чтобы на глаз читать статус контейнеров, не разворачивая аккордеон.
+  function dockerAbbr(c) { return (c.service || c.name || String(c.id || '')).slice(0, 4) || '—'; }
+  function groupDotChip(c) {
+    const chip = el('span', 'dgrp-dot');
+    chip.appendChild(el('span', 'dstate dstate-' + dStateClass(c.state)));
+    chip.appendChild(el('span', 'dgrp-dot-lbl', dockerAbbr(c)));
+    chip.title = (c.service || c.name || String(c.id || '').slice(0, 12)) + ' — ' + (c.status || c.state || '');
+    return chip;
+  }
+  function groupDotsSig(list) { return list.map((c) => dockerAbbr(c) + ':' + dStateClass(c.state)).join(','); }
+  function fillGroupDots(dotsEl, list) { // rebuild only when the name/state set actually changed (polls run every 3s)
+    const sig = groupDotsSig(list);
+    if (dotsEl.dataset.sig === sig) return;
+    dotsEl.dataset.sig = sig; dotsEl.innerHTML = '';
+    for (const c of list) dotsEl.appendChild(groupDotChip(c));
+  }
   // One compose group: gradient header (collapsible) + bulk actions + sort arrows + container rows.
   function dockerGroupBlock(engine, name, list) {
     const block = el('div', 'docker-group-block'); block.dataset.group = name || D_UNGROUPED; block._containers = list;
@@ -545,6 +562,11 @@ export function initContainers(host) {
     head.appendChild(chev);
     head.appendChild(el('span', 'dgrp-name', name || 'Без группы'));
     head.appendChild(el('span', 'dgrp-count', String(list.length)));
+    // Полоска состояний контейнеров прямо в цветном заголовке — видна, когда группа свёрнута
+    // (в развёрнутом виде дублировала бы строки ниже, поэтому прячется).
+    const dots = el('div', 'dgrp-dots'); fillGroupDots(dots, list);
+    if (!dockerGroupCollapsed(engine, name)) dots.style.display = 'none';
+    head.appendChild(dots);
     const acts = el('div', 'dgrp-acts');
     acts.append(dGroupAct('start', 'play', 'Старт всех', engine, block), dGroupAct('pause', 'pause', 'Пауза всех', engine, block), dGroupAct('stop', 'stop', 'Стоп всех', engine, block));
     const rm = iconBtn('drow-act danger', 'trash', 'Удалить всю группу', 13);
@@ -564,6 +586,7 @@ export function initContainers(host) {
       toggleDockerGroup(engine, name);
       const col = dockerGroupCollapsed(engine, name);
       body.style.display = col ? 'none' : '';
+      dots.style.display = col ? '' : 'none'; // индикаторы состояний — только у свёрнутой группы
       const nc = icon(col ? 'chevron-right' : 'chevron-down', 13); nc.classList.add('dgrp-chev');
       head.replaceChild(nc, head.firstChild);
     };
@@ -574,6 +597,7 @@ export function initContainers(host) {
   function updateGroupBlock(block, list) {
     block._containers = list;
     setText(block.querySelector('.dgrp-count'), String(list.length));
+    const dots = block.querySelector('.dgrp-dots'); if (dots) fillGroupDots(dots, list); // держим индикаторы свежими на поллах
     reconcileRows(block.querySelector('.docker-group-body'), list, dockerContainerRow, updateContainerRow, (c) => c.id);
   }
   function renderDockerDisk(df) {
