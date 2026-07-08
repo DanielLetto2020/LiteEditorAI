@@ -266,13 +266,18 @@ contextBridge.exposeInMainWorld('lite', {
     cred: (id) => ipcRenderer.invoke('keepass:cred', { id }),                // → {ok,username,password,url}
     add: (entry) => ipcRenderer.invoke('keepass:add', entry),                // {title,username,password,url,notes} → {ok}
   },
-  // Мониторинг сайтов (downdetector-стиль): список/правка + фоновые проверки и события в main.
+  // Мониторинг сайтов (target → checks): цели + чеки над URL, фоновые проверки, сэмпл/предпросмотр.
   sitemon: {
     list: () => ipcRenderer.invoke('sitemon:list'),
-    add: (name, url, intervalSec) => ipcRenderer.invoke('sitemon:add', { name, url, intervalSec }),
-    edit: (id, patch) => ipcRenderer.invoke('sitemon:edit', { id, ...(patch || {}) }),
-    remove: (id) => ipcRenderer.invoke('sitemon:remove', { id }),
+    addTarget: (opts) => ipcRenderer.invoke('sitemon:addTarget', opts || {}),
+    editTarget: (id, patch) => ipcRenderer.invoke('sitemon:editTarget', { id, ...(patch || {}) }),
+    removeTarget: (id) => ipcRenderer.invoke('sitemon:removeTarget', { id }),
+    addCheck: (targetId, check) => ipcRenderer.invoke('sitemon:addCheck', { targetId, check }),
+    editCheck: (targetId, checkId, patch) => ipcRenderer.invoke('sitemon:editCheck', { targetId, checkId, patch }),
+    removeCheck: (targetId, checkId) => ipcRenderer.invoke('sitemon:removeCheck', { targetId, checkId }),
     checkNow: (id) => ipcRenderer.invoke('sitemon:checkNow', { id }),
+    sample: (opts) => ipcRenderer.invoke('sitemon:sample', opts || {}),
+    dryRun: (opts) => ipcRenderer.invoke('sitemon:dryRun', opts || {}),
     onUpdate: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('sitemon:update', h); return () => ipcRenderer.removeListener('sitemon:update', h); },
   },
   // Заставка «матрица»: репорт активности (любое окно) + команда вкл/выкл от main по бездействию.

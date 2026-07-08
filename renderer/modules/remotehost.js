@@ -345,7 +345,7 @@ export function initRh(host) {
     let sites = [];
     try { const l = await lite.sitemon.list(); if (Array.isArray(l)) sites = l; } catch (_) {}
     if (sites.some((s) => s && s.url === url)) { toast(`Уже наблюдается: ${url}`, { ttl: 5000 }); lite.module.open('sitemon'); return; }
-    const a = await lite.sitemon.add(`${c.name || c.host}:${svc.port}`, url);
+    const a = await lite.sitemon.addTarget({ name: `${c.name || c.host}:${svc.port}`, url });
     if (!a || !a.ok) { toast((a && a.error) || 'Не удалось добавить в мониторинг', { kind: 'err', ttl: 8000 }); return; }
     toast(`${url} — добавлен в «Мониторинг сайтов»`, { ttl: 5000 });
     lite.module.open('sitemon');
