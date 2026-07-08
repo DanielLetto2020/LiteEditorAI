@@ -400,11 +400,34 @@ body.viewer-zen #vcs-topbar { display: none !important; }
   display: flex; align-items: center; gap: 7px; flex: 0 0 auto;
   padding: 6px 9px; max-width: 190px; cursor: pointer; font-size: 12px; color: var(--text-dim);
   border: 1px solid transparent; border-bottom: 0; border-radius: 8px 8px 0 0; background: transparent;
+  transition: max-width .16s ease, min-width .16s ease;
 }
+/* Вкладка с авто-именем из заголовка терминала (агент её «переименовал») — шире вдвое,
+   чтобы длинный заголовок задачи был читаем; таких может быть много → панель прокручивается. */
+.tab.wide { min-width: 190px; max-width: 380px; }
 .tab:hover { background: var(--hover); color: var(--text); }
 .tab.active { background: var(--surface); color: var(--text); border-color: var(--border); }
 .tab-dot { width: 8px; height: 8px; flex: 0 0 8px; }
 .tab-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Стрелки-прокрутка панели вкладок (появляются только при переполнении). */
+.tab-scroll {
+  flex: 0 0 auto; align-self: center; width: 22px; height: 26px; padding: 0;
+  border: 0; background: none; color: var(--text-dim); border-radius: 7px; cursor: pointer;
+  display: none; align-items: center; justify-content: center;
+}
+.tab-scroll.show { display: inline-flex; }
+.tab-scroll:hover { background: var(--hover); color: var(--text); }
+.tab-scroll:disabled { opacity: .3; cursor: default; background: none; color: var(--text-dim); }
+/* Кастомный лёгкий тултип с полным именем вкладки (когда имя обрезано). */
+#tab-tip {
+  position: fixed; z-index: 200; pointer-events: none; max-width: 460px;
+  padding: 5px 9px; border-radius: 7px; font-size: 12px; line-height: 1.35;
+  white-space: normal; word-break: break-word;
+  background: var(--bg-pop); color: var(--text); border: 1px solid var(--border-strong);
+  box-shadow: var(--card-shadow);
+  opacity: 0; transform: translateY(3px); transition: opacity .12s ease, transform .12s ease;
+}
+#tab-tip.show { opacity: 1; transform: translateY(0); }
 .tab-close { width: 18px; height: 18px; border: 0; background: none; color: var(--text-mute); border-radius: 4px; display: inline-flex; align-items: center; justify-content: center; cursor: pointer; }
 .tab-close:hover { background: var(--hover-2); color: var(--text); }
 .tab-add { width: 26px; height: 26px; flex: 0 0 auto; align-self: center; margin-bottom: 3px; border: 0; background: none; color: var(--text-dim); border-radius: 7px; display: inline-flex; align-items: center; justify-content: center; cursor: pointer; }
