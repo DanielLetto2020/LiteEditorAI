@@ -27,7 +27,7 @@ import { el, icon, iconBtn, hydrateIcons, toast, makeModal, showConfirm, showPro
 import { initExtensions } from './modules/extensions.js';
 // initFiles — вивер+дерево мигрированы в отдельное окно (renderer/module-entry.js).
 
-const APP_VERSION = 'alpha v1.1.92';
+const APP_VERSION = 'alpha v1.1.93';
 const GUTTER = 5;
 // Системный терминал («Система · ~») мигрирован в отдельное окно (renderer/modules/scratch.js):
 // его id `__scratch__::tN` маршрутизируются main'ом в окно-владельца, в ядре их больше не обрабатываем.
@@ -951,7 +951,7 @@ function refreshProjIndicator(projId) {
 function saveProjTabs() {
   const out = {};
   for (const [pid, t] of tabsByProj) {
-    out[pid] = { names: t.sessions.map((s) => (terms.get(s) || {}).name || 'Терминал'), active: t.sessions.indexOf(t.active) };
+    out[pid] = { names: t.sessions.map((s) => (terms.get(s) || {}).name || 'Терминал'), custom: t.sessions.map((s) => !!(terms.get(s) || {}).customName), active: t.sessions.indexOf(t.active) };
   }
   persist('projTabs', out);
 }
@@ -1020,7 +1020,7 @@ function buildXterm(container, id, { cwd, onInput, onKey } = {}) {
   return { term, fit, search };
 }
 
-function createSession(proj, name) {
+function createSession(proj, name, custom) {
   const id = proj.id + '::t' + (++sessionSeq);
   const container = el('div', 'term-instance');
   $('#terminals').appendChild(container);
@@ -1035,8 +1035,13 @@ function createSession(proj, name) {
     },
   });
   term.registerLinkProvider(fileLinkProvider(term, proj.path));
-  const rec = { term, fit, search, container, projId: proj.id, name, idleTimer: null, sawBell: false, tail: '', busyStart: 0, lastInputAt: 0, activitySeq: 0 };
+  const rec = { term, fit, search, container, projId: proj.id, name, customName: !!custom, idleTimer: null, sawBell: false, tail: '', busyStart: 0, lastInputAt: 0, activitySeq: 0 };
   terms.set(id, rec);
+  // Имя вкладки из заголовка терминала (OSC ]0;…): Claude/агент в промпте пишет туда
+  // текущую задачу, шелл — user@host:cwd. Подхватываем как имя вкладки, пока пользователь
+  // не переименовал вкладку руками (rec.customName). Один и тот же заголовок (bash каждый
+  // промпт шлёт одно и то же) отсекаем сравнением — без дёрганья tab-бара.
+  term.onTitleChange((t) => adoptTermTitle(id, t));
   tabsByProj.get(proj.id).sessions.push(id);
   // «Контекст»: тихая автосборка — новая сессия агента должна найти готовый CLAUDE.md/AGENTS.md,
   // если файла-выхода ещё нет. Логика бэкенд-only (lite.ctx.*), поэтому живёт в ядре, а не в окне ctx
@@ -1069,7 +1074,8 @@ function ensureProjectTabs(proj) {
   tabsByProj.set(proj.id, { sessions: [], active: null });
   const saved = (STORE.projTabs || {})[proj.id];
   const names = saved && Array.isArray(saved.names) && saved.names.length ? saved.names : ['Терминал 1'];
-  names.forEach((n) => createSession(proj, n)); // только имена вкладок; история до перезапуска НЕ восстанавливается
+  const custom = saved && Array.isArray(saved.custom) ? saved.custom : []; // какие имена задал пользователь руками — их заголовок терминала не перебивает
+  names.forEach((n, i) => createSession(proj, n, custom[i])); // только имена вкладок; история до перезапуска НЕ восстанавливается
   const t = tabsByProj.get(proj.id);
   const ai = saved && Number.isInteger(saved.active) ? saved.active : 0;
   t.active = t.sessions[Math.max(0, Math.min(ai, t.sessions.length - 1))] || t.sessions[0];
@@ -1134,7 +1140,19 @@ function cycleTab(dir) {
 }
 function renameTab(sid) {
   const rec = terms.get(sid); if (!rec) return;
-  showPrompt('Переименовать вкладку', 'Название', rec.name, (v) => { rec.name = v; saveProjTabs(); renderTabBar(); });
+  // Ручное имя «прибивает» вкладку: заголовок терминала больше её не перебивает (customName).
+  showPrompt('Переименовать вкладку', 'Название', rec.name, (v) => { rec.name = v; rec.customName = true; saveProjTabs(); renderTabBar(); });
+}
+// Подхват заголовка терминала (OSC ]0;…) в имя вкладки. Чистим управляющие символы,
+// схлопываем пробелы, режем по длине (вкладка узкая). Не трогаем вручную названные вкладки
+// и не перерисовываем бар, если имя не изменилось (заголовок сыплется на каждый промпт).
+function adoptTermTitle(id, raw) {
+  const rec = terms.get(id); if (!rec || rec.customName) return;
+  let name = String(raw || '').replace(/[\x00-\x1f\x7f]/g, '').trim().replace(/\s+/g, ' ');
+  if (!name || name === rec.name) return;
+  if (name.length > 32) name = name.slice(0, 31) + '…';
+  rec.name = name;
+  renderTabBar();
 }
 async function pasteInto(id) {
   const text = await lite.readClipboard();
