@@ -2483,6 +2483,20 @@ function pultTasksSet(id, notes) {
 function pultNoteToTerminal(projId, text) {
   if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('remote:noteToTerminal', { projId, text });
 }
+// Пульт: вставка из буфера обмена планшета в PTY (кнопка Ctrl+V). Семантика — как у
+// xterm.paste(): переводы строк → CR, и если приложение включило bracketed paste
+// (\x1b[?2004h), текст едет в скобках — иначе TUI-агент примет каждую строку за Enter.
+// Режим читаем у теневого терминала сессии: он проигрывает тот же поток, что и PTY.
+const PULT_PASTE_LIMIT = 100000;
+function pultPasteToPty(sid, text) {
+  const p = ptys.get(sid);
+  if (!p || !text) return;
+  let s = String(text).slice(0, PULT_PASTE_LIMIT).replace(/\r?\n/g, '\r');
+  const m = mirrors.get(sid);
+  const bracketed = !!(m && m.term && m.term.modes && m.term.modes.bracketedPasteMode);
+  if (bracketed) s = '\x1b[200~' + s.replace(/\x1b\[201~/g, '') + '\x1b[201~';   // вырезаем конец-вставки из текста
+  p.write(s);
+}
 function startRemotePult() {
   try {
     remote.init({
@@ -2490,6 +2504,7 @@ function startRemotePult() {
       getSessions: buildRemoteState,
       screenFrame: (sid, styled) => mirrorScreen(sid, styled),  // видимый экран сессии (проекция для пульта; styled — пульт умеет цвета)
       writeInput: (sid, data) => { const p = ptys.get(sid); if (p) p.write(data); },
+      onPaste: (sid, text) => pultPasteToPty(sid, text),   // вставка из буфера планшета (bracketed paste, если TUI просил)
       openProject: remoteOpenProject,
       onSelect: (sid) => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('remote:select', { sid }); },
       onClose: (sid) => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('remote:closeTab', { sid }); },

@@ -21,6 +21,7 @@ let selected = null;
 let activeProj = null;   // активный проект на пульте: меню «Проекты» выбирает его, селектор над терминалом листает его вкладки
 let lastSessions = [];
 let lastProjects = [];
+let pcCaps = {};    // что умеет ПК-сторона (приходит в state): APK обновляется отдельно от редактора
 let booted = false;
 let reconnectTimer = null;
 let authPending = null;   // {login,password} — отправить после открытия сокета
@@ -136,6 +137,23 @@ window.addEventListener('unhandledrejection', (e) => {
 });
 
 function setStatus(text, cls) { pushLog('status: ' + text); const el = $('top-status'); if (el) { el.textContent = text; el.className = cls || ''; } }
+
+// Короткое сообщение поверх экрана: у пульта нет места под постоянную строку статуса действий.
+let toastTimer = null;
+function flashToast(text) {
+  let el = $('toast');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'toast';
+    el.style.cssText = 'position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);z-index:95;max-width:80%;' +
+      'padding:9px 15px;border-radius:8px;background:#1c2530;border:1px solid #2a323d;color:#cfe3ee;font-size:13px;text-align:center';
+    document.body.appendChild(el);
+  }
+  el.textContent = text;
+  el.style.display = 'block';
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { el.style.display = 'none'; }, 1800);
+}
 
 // --- Меню в шапке: оверлей + экраны «Аккаунт» и «Логи» ---
 function showOverlay(title, bodyEl) {
@@ -1159,6 +1177,7 @@ function wireTermbar() {
       if (b.dataset.key === 'kbd') { toggleKbd(); return; }
       if (b.dataset.key === 'pgup') { pageScroll(true); return; }
       if (b.dataset.key === 'pgdn') { pageScroll(false); return; }
+      if (b.dataset.key === 'paste') { pasteFromClipboard(); return; }   // не \x16 (literal-next), а вставка текста
       const seq = TKEYS[b.dataset.key]; if (seq != null) sendInput(seq);
     };
   }
@@ -1511,6 +1530,35 @@ function openProjTerminal(projId) {
 function sendInput(data) { if (selected) send({ t: 'input', sid: selected, data }); }
 function send(obj) { if (ws && ws.readyState === 1) { try { ws.send(JSON.stringify(obj)); } catch (_) {} } }
 
+// ------------------------------------------------------ вставка из буфера обмена
+const PASTE_LIMIT = 100000;
+// Системный буфер планшета. navigator.clipboard.readText() в WebView отваливается (разрешение
+// clipboard-read выдать некому), поэтому основной путь — нативный мост; веб-путь оставлен для
+// отладки пульта в обычном браузере.
+function readClipboardText() {
+  try {
+    if (window.LiteClip && typeof window.LiteClip.read === 'function') return Promise.resolve(String(window.LiteClip.read() || ''));
+  } catch (_) {}
+  try {
+    if (navigator.clipboard && navigator.clipboard.readText) return navigator.clipboard.readText().then((s) => String(s || ''));
+  } catch (_) {}
+  return Promise.reject(new Error('no clipboard'));
+}
+// Кнопка Ctrl+V: отдаём текст ПК как ВСТАВКУ, а не как поток нажатий. Новый ПК (caps.paste)
+// сам обернёт его в bracketed paste, если TUI-агент просил этот режим — тогда многострочный
+// текст приедет одним куском, а не построчными Enter'ами. Старый ПК про {t:'paste'} не знает
+// (правки main.js/remote.js применяются только после полного рестарта редактора), поэтому
+// фолбэк — обычный input с нормализацией переводов строк, как делает xterm.
+function pasteFromClipboard() {
+  if (!selected) { flashToast('Терминал не выбран'); return; }
+  readClipboardText().then((text) => {
+    const txt = String(text || '').slice(0, PASTE_LIMIT);
+    if (!txt) { flashToast('Буфер обмена пуст'); return; }
+    if (pcCaps.paste) send({ t: 'paste', sid: selected, text: txt });
+    else sendInput(txt.replace(/\r?\n/g, '\r'));
+  }, () => flashToast('Нет доступа к буферу обмена'));
+}
+
 // После перезапуска/возврата ПК sessionId может совпасть со старым (он детерминирован),
 // поэтому обычная проверка «сессия существует» не перезапрашивает экран нового PTY.
 // Здесь принудительно сбрасываем кадр и тянем свежий полный (стоит ~5КБ — дёшево).
@@ -1601,7 +1649,7 @@ function connect() {
     } else if (m.t === 'auth_err') {
       authError(m.error || 'Ошибка входа');
     } else if (m.t === 'state') {
-      lastSessions = m.sessions || []; lastProjects = m.projects || []; renderTree();
+      lastSessions = m.sessions || []; lastProjects = m.projects || []; pcCaps = m.caps || {}; renderTree();
       // Ждали открытия терминала проекта (тап по плейсхолдеру/＋) → выбрать новую сессию.
       if (pendingOpenProj) {
         const list = lastSessions.filter((s) => s.projId === pendingOpenProj);
