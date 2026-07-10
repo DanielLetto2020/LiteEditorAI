@@ -423,6 +423,7 @@ contextBridge.exposeInMainWorld('lite', {
     onExecExit: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('containers:execExit', h); return () => ipcRenderer.removeListener('containers:execExit', h); },
     inspectDb: (engine, id) => ipcRenderer.invoke('containers:inspectDb', { engine, id }), // заготовка подключения к БД контейнера
     inspectMq: (engine, id) => ipcRenderer.invoke('containers:inspectMq', { engine, id }), // заготовка профиля RabbitMQ контейнера
+    inspectStorage: (engine, id) => ipcRenderer.invoke('containers:inspectStorage', { engine, id }), // заготовка S3-подключения MinIO-контейнера
     inspectKafka: (engine, id) => ipcRenderer.invoke('containers:inspectKafka', { engine, id }), // заготовка профиля Kafka контейнера
     inspectWeb: (engine, id) => ipcRenderer.invoke('containers:inspectWeb', { engine, id }), // URL веб-интерфейса контейнера (→ «Мониторинг сайтов»)
     // Файлы контейнера (exec ls/cat): листинг каталога и открытие файла в вивере (tmp-копия, read-only).
@@ -514,12 +515,18 @@ contextBridge.exposeInMainWorld('lite', {
     // передачи: старт → прогресс событиями в это окно, отмена по opId
     upload: (id, bucket, key, filePath, opId) => ipcRenderer.invoke('st:upload', { id, bucket, key, filePath, opId }),
     download: (id, bucket, key, destPath, opId) => ipcRenderer.invoke('st:download', { id, bucket, key, destPath, opId }),
+    downloadPrefix: (id, bucket, prefix, destDir, opId) => ipcRenderer.invoke('st:downloadPrefix', { id, bucket, prefix, destDir, opId }),
+    stage: (id, bucket, key) => ipcRenderer.invoke('st:stage', { id, bucket, key }), // объект → tmp-файл (для вивера редактора)
     cancel: (opId) => ipcRenderer.send('st:cancel', { opId }),
     onProgress: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('st:progress', h); return () => ipcRenderer.removeListener('st:progress', h); },
     onDone: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('st:done', h); return () => ipcRenderer.removeListener('st:done', h); },
     onOpErr: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('st:opErr', h); return () => ipcRenderer.removeListener('st:opErr', h); },
     pickUploads: () => ipcRenderer.invoke('st:pickUploads'),
     pickDownloadDir: () => ipcRenderer.invoke('st:pickDownloadDir'),
+    // «Контейнеры» → «Внешние хранилища»: маршрут через main (окно откроется само, очередь до готовности)
+    openFromContainer: (payload) => ipcRenderer.send('st:openFromContainer', payload),
+    onOpenFromContainer: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('st:openFromContainer', h); return () => ipcRenderer.removeListener('st:openFromContainer', h); },
+    panelReady: () => ipcRenderer.send('st:panelReady'),
   },
   // Kafka module — cluster profiles + kafkajs admin/consumer/producer (lib/kafka.js).
   kafka: {

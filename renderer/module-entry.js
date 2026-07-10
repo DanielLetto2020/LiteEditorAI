@@ -60,6 +60,10 @@ function menuRow(glyph, text, onClick, cls) {
 }
 document.addEventListener('click', closeMenus);
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeMenus(); });
+// Глобальный гард drag&drop (как в главном окне): без него сброс файла мимо целевой зоны
+// навигирует окно модуля на file:// и уничтожает UI. Целевые зоны сами зовут preventDefault раньше.
+window.addEventListener('dragover', (e) => e.preventDefault());
+window.addEventListener('drop', (e) => e.preventDefault());
 
 // Активность в окне модуля сбрасывает кросс-оконный таймер заставки «матрица» (троттл).
 let __ssAct = 0;
@@ -133,6 +137,9 @@ const MODULES = {
     wire: (mod) => {
       bind('#storage-add', () => mod.addConnection());
       bind('#storage-refresh', () => mod.refresh());
+      // «Контейнеры» → MinIO: заготовка подключения из контейнера (маршрут через main, очередь до готовности)
+      lite.storage.onOpenFromContainer((p) => { try { mod.openFromContainer(p); } catch (_) {} });
+      try { lite.storage.panelReady(); } catch (_) {} // флаш отложенных openFromContainer из main
     },
   },
   rmq: {

@@ -2005,6 +2005,21 @@ textarea.sm-hdr { font-family: var(--mono, ui-monospace, monospace); font-size: 
 .st-tr-x:hover { color: var(--danger); }
 .st-tr-ok { color: var(--green-bright); font-size: 11.5px; }
 .st-tr-err { color: var(--danger); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* фильтр, сортировка, мультивыбор, лоадер */
+.st-filter { flex: 0 1 180px; min-width: 90px; margin-left: 8px; background: var(--bg-input); color: var(--text); border: 1px solid var(--border); border-radius: 7px; padding: 4px 9px; font-size: 12px; }
+.st-sortable { cursor: pointer; user-select: none; }
+.st-sortable:hover { color: var(--text); }
+.st-cell-check { flex: 0 0 22px; display: inline-flex; align-items: center; }
+.st-cell-check input { cursor: pointer; }
+.st-row.sel { background: var(--accent-soft); }
+.st-selbar { display: flex; align-items: center; gap: 8px; padding: 5px 12px; border-bottom: 1px solid var(--border); background: var(--accent-soft); position: sticky; top: 0; z-index: 2; }
+.st-sel-count { font-size: 12px; font-weight: 600; color: var(--green-bright); }
+.st-danger { color: var(--danger); }
+.st-loadnote { padding: 16px 14px; }
+.st-tokrow { display: flex; gap: 6px; align-items: center; }
+.st-tokrow input { flex: 1; min-width: 0; }
+.st-tok-clear { flex: 0 0 auto; font-size: 11px; padding: 4px 8px; }
+.st-tok-clear.danger { color: var(--danger); border-color: var(--danger); }
 
 /* ---- Kafka module (переиспользует rmq-* и db-*; свои — гриды таблиц и мелочи) */
 #kafka-pane { flex: 0 0 560px; min-width: 340px; border-left: 1px solid var(--border); display: flex; flex-direction: column; background: var(--panel); }
