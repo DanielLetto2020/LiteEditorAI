@@ -25,6 +25,7 @@ import { initCompany } from './modules/company.js';
 import { initNotes } from './modules/notes.js';
 import { initDb } from './modules/db.js';
 import { initRmq } from './modules/rmq.js';
+import { initStorage } from './modules/storage.js';
 import { initKafka } from './modules/kafka.js';
 import { initOpenRouter } from './modules/openrouter.js';
 import { initTextProc } from './modules/textproc.js';
@@ -123,6 +124,15 @@ const MODULES = {
       // Вивер → БД: открыть SQL-консоль подключения с текстом .sql-файла
       lite.db.onOpenSql((p) => { try { mod.openSqlFromViewer(p); } catch (_) {} });
       try { lite.db.panelReady(); } catch (_) {} // флаш отложенных openFromContainer/openSql из main
+    },
+  },
+  // «Внешние хранилища» (S3): главные вкладки «Проект/Общие» → project:true (перечитка при
+  // смене активного проекта редактора); без проекта живёт вкладка «Общие» (allowEmpty).
+  storage: {
+    title: 'Внешние хранилища', init: initStorage, project: true,
+    wire: (mod) => {
+      bind('#storage-add', () => mod.addConnection());
+      bind('#storage-refresh', () => mod.refresh());
     },
   },
   rmq: {

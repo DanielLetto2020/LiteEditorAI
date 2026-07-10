@@ -27,7 +27,7 @@ import { el, icon, iconBtn, hydrateIcons, toast, makeModal, showConfirm, showPro
 import { initExtensions } from './modules/extensions.js';
 // initFiles — вивер+дерево мигрированы в отдельное окно (renderer/module-entry.js).
 
-const APP_VERSION = 'alpha v1.1.98';
+const APP_VERSION = 'alpha v1.1.99';
 const GUTTER = 5;
 // Системный терминал («Система · ~») мигрирован в отдельное окно (renderer/modules/scratch.js):
 // его id `__scratch__::tN` маршрутизируются main'ом в окно-владельца, в ядре их больше не обрабатываем.
@@ -1510,7 +1510,7 @@ const panels = new Map(); // id -> { isOpen(), setOpen(open, opts) }
 // Правый слот редактора теперь держит только «Мои модули» (ext); всё остальное — отдельные окна.
 const PANEL_ORDER = [];
 // Модули, мигрированные в отдельные окна (открываются через lite.module.open, не как панель правого слота).
-const WINDOW_MODULES = new Set(['tools', 'iterflow', 'seo', 'audit', 'company', 'notes', 'db', 'rmq', 'kafka', 'chat', 'doc', 'docker', 'rh', 'ctx', 'scratch', 'files', 'pomodoro', 'monitor', 'keepass', 'sitemon']);
+const WINDOW_MODULES = new Set(['tools', 'iterflow', 'seo', 'audit', 'company', 'notes', 'db', 'rmq', 'kafka', 'chat', 'doc', 'docker', 'rh', 'ctx', 'scratch', 'files', 'pomodoro', 'monitor', 'keepass', 'sitemon', 'storage']);
 function registerPanel(id, api) { panels.set(id, api); }
 function closeOtherPanels(selfId) {
   for (const id of PANEL_ORDER) {
@@ -1573,6 +1573,7 @@ const QUICK_BUILTIN = [
   { id: 'db',      icon: 'database', label: 'Базы данных — Postgres / MySQL / SQLite' },
   { id: 'rmq',     icon: 'rabbit',   label: 'RabbitMQ — очереди, сообщения, подключения' },
   { id: 'kafka',   icon: 'kafka',    label: 'Kafka — топики, группы, live-tail' },
+  { id: 'storage', icon: 'cloud',    label: 'Внешние хранилища — S3, бакеты, объекты' },
   { id: 'rh',      icon: 'globe',    label: 'Удалённые хосты — SSH-сессии' },
   { id: 'notes',   icon: 'note',     label: 'Задачи — заметки проекта' },
   { id: 'audit',   icon: 'grid',     label: 'Аудит — анализ проекта' },
@@ -1961,6 +1962,7 @@ const BUILTIN_MODS = [
   { id: 'db',       icon: 'database', title: 'Базы данных',        desc: 'Postgres · MySQL · SQLite' },
   { id: 'rmq',      icon: 'rabbit',   title: 'RabbitMQ',           desc: 'очереди · сообщения · подключения' },
   { id: 'kafka',    icon: 'kafka',    title: 'Kafka',              desc: 'топики · группы · live-tail' },
+  { id: 'storage',  icon: 'cloud',    title: 'Внешние хранилища',  desc: 'S3 · бакеты · публичные ссылки', project: true },
   { id: 'rh',       icon: 'globe',    title: 'Удалённые хосты',    desc: 'SSH-сессии к серверам' },
   { id: 'iterflow', icon: 'layers',   title: 'IterFlow',           desc: 'задачи итераций из трекера' },
   { id: 'seo',      icon: 'globe',    title: 'WEB/SEO аудит',      desc: 'сайт: безопасность, SEO, сеть' },
@@ -2693,6 +2695,7 @@ function paletteActions() {
   acts.push({ label: 'Контекст — граф контекста агента', run: () => openModule('ctx') });
   acts.push({ label: 'Контейнеры (Docker / Podman)', run: () => openModule('docker') });
   acts.push({ label: 'Базы данных (Postgres / MySQL / SQLite)', run: () => openModule('db') });
+  acts.push({ label: 'Внешние хранилища (S3 — бакеты, объекты)', run: () => openModule('storage') });
   acts.push({ label: 'Задачи — заметки проекта', run: () => openModule('notes') });
   acts.push({ label: 'ИИ компания — команда агентов над проектом', run: () => openModule('company') });
   acts.push({ label: 'Помодоро — таймер работы/отдыха', run: () => openModule('pomodoro') });
