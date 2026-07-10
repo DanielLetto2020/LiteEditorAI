@@ -4,18 +4,15 @@
 // ahead/behind + fetch/pull/push), секция «Коммит» (изменения + сообщение + commit/stash), секция
 // «Ветки/Лог» (под-вкладки История/Ветки). Дифф выбранного файла показывается в ЦЕНТРЕ вивера
 // (host.gitDiff). Разрешение конфликтов merge — отдельная модалка (3 окна).
-// host: { activeProject, getActiveId, renderProjects, refreshTree, createCodeEditor,
+// host: { activeProject, getActiveId, renderProjects, refreshTree, createCodeEditor, languageFor,
 //         gitDiff(projPath, file, label) — показать дифф файла в центре вивера }
 import { el, icon, toast, showConfirm, showPrompt, baseName, makeModal } from '../ui.js';
-import { ensureLanguage } from '../codeedit.js';
 
 const $ = (sel) => document.querySelector(sel);
 const lite = window.lite;
 
 export function initGit(host) {
-  const { renderProjects, activeProject, getActiveId, refreshTree, createCodeEditor } = host;
-  // openFile(abs,line) — открыть файл в вивере; menuRow/placeMenu/closeMenus — меню-слой окна (контекст-меню строки изменённого файла).
-  const { openFile: hostOpenFile, menuRow, placeMenu, closeMenus } = host;
+  const { renderProjects, activeProject, getActiveId, refreshTree, createCodeEditor, languageFor } = host;
 
   let containers = null;     // { topbar, commit, branchlog } — задаются вивером через setContainers
   // Какие секции рендерить: коммит (левая колонка) и/или лог (нижняя панель) — могут быть открыты вместе.
@@ -26,19 +23,7 @@ export function initGit(host) {
   let lastPath = null;       // путь проекта прошлого рендера — на смену сбрасываем выбор файлов
   let selectedChangeFile = null; // выделенный файл во вкладке «Изменения»
   const excluded = new Set();// abs-пути файлов, исключённых из коммита (по умолчанию включены все)
-  // projPath -> черновик сообщения коммита: переживает re-render панели, перезагрузку окна вивера
-  // и рестарт редактора (STORE.commitDrafts). Пишем с дебаунсом (не на каждый символ); если окно
-  // закрывают с несброшенным таймером — дописываем синхронно (store.setSync, как задумано для beforeunload).
-  const commitDraft = { ...((host.STORE && host.STORE.commitDrafts) || {}) };
-  let draftTimer = null;
-  function setDraft(path, val) {
-    if (val) commitDraft[path] = val; else delete commitDraft[path];
-    clearTimeout(draftTimer);
-    draftTimer = setTimeout(() => { draftTimer = null; if (host.persist) host.persist('commitDrafts', commitDraft); }, 400);
-  }
-  window.addEventListener('beforeunload', () => {
-    if (draftTimer) { clearTimeout(draftTimer); draftTimer = null; try { lite.store.setSync('commitDrafts', commitDraft); } catch (_) {} }
-  });
+  const commitDraft = {};    // projPath -> черновик сообщения коммита (переживает re-render панели)
 
   const STATUS_LABEL = {
     conflict: 'Конфликты',
@@ -233,7 +218,7 @@ export function initGit(host) {
     if (!cur) {
       sep();
       add('Влить в текущую (merge)', () => mergeBranch(p, full));
-      add('Перебазировать текущую на «' + full + '»', () => rebaseOntoBranch(p, full));
+      add('Перебазировать текущую на «' + full + '»', () => run(lite.git.rebaseOnto(p.path, full), 'Rebase выполнен'));
       if (kind === 'remote') {
         add('Подтянуть «' + full + '» в текущую (merge)', () => run(lite.git.pullMerge(p.path, full), 'Pull (merge) готов'));
         add('Подтянуть «' + full + '» в текущую (rebase)', () => run(lite.git.pullRebase(p.path, full), 'Pull (rebase) готов'));
@@ -286,25 +271,6 @@ export function initGit(host) {
     const c = await lite.git.conflicts(p.path);
     if (c.files && c.files.length) { toast('Конфликты — разрешите в секции «Коммит»', { kind: 'err', ttl: 9000 }); goCommitView(); renderGitPanel(p); }
     else toast(r.error || 'merge не прошёл', { kind: 'err', ttl: 9000 });
-  }
-  // Rebase на ветку. Провал (обычно конфликт) оставляет репозиторий в состоянии rebase —
-  // молча бросать его так нельзя: предлагаем сразу прервать (git rebase --abort) или оставить
-  // для ручного разрешения в терминале.
-  async function rebaseOntoBranch(p, branch) {
-    const r = await lite.git.rebaseOnto(p.path, branch);
-    if (r && r.ok) { toast('Rebase выполнен'); renderGitPanel(p); renderProjects(); return; }
-    showConfirm(
-      'Rebase не прошёл',
-      (r && r.error ? r.error + '\n\n' : '') + 'Репозиторий мог остаться в состоянии rebase. Прервать (git rebase --abort) или оставить для ручного разрешения?',
-      'Прервать rebase',
-      async () => {
-        const a = await lite.git.rebaseAbort(p.path);
-        if (a && a.ok) toast('Rebase прерван'); else toast((a && a.error) || 'не удалось прервать', { kind: 'err', ttl: 8000 });
-        renderGitPanel(p); renderProjects();
-      },
-      'Оставить как есть',
-      () => { renderGitPanel(p); renderProjects(); },
-    );
   }
   async function showBranchDiff(p, branch) {
     const r = await lite.git.branchDiffWorktree(p.path, branch);
@@ -494,7 +460,7 @@ export function initGit(host) {
     if (selectedChangeFile && !keys.includes(selectedChangeFile)) selectedChangeFile = null;
     if (!selectedChangeFile && keys.length) selectedChangeFile = keys[0];
 
-    let commit = null, commitPush = null, commitCount = null, amendCb = null;
+    let commit = null, commitPush = null, commitCount = null;
 
     // ---- тулбар НАД списком (PhpStorm-style, иконки): stash · список stash · вкл/снять все · откат · обновить
     const toolbar = el('div', 'git-commit-toolbar');
@@ -528,11 +494,10 @@ export function initGit(host) {
     const updateCommitState = () => {
       const n = selectedFiles().length;
       const blockedByConflicts = conflictSet.size > 0;
-      const amending = amendCb && amendCb.checked;                 // amend без файлов = правка сообщения
       if (commit && commitPush) {
-        commit.disabled = (!n && !amending) || blockedByConflicts;
-        commitPush.disabled = (!n && !amending) || blockedByConflicts;
-        const title = blockedByConflicts ? 'Сначала разрешите конфликты' : ((!n && !amending) ? 'Не выбрано ни одного файла' : 'Закоммитить выбранные изменения');
+        commit.disabled = !n || blockedByConflicts;
+        commitPush.disabled = !n || blockedByConflicts;
+        const title = blockedByConflicts ? 'Сначала разрешите конфликты' : (!n ? 'Не выбрано ни одного файла' : 'Закоммитить выбранные изменения');
         commit.title = title;
         commitPush.title = blockedByConflicts ? title : 'Закоммитить выбранное и сразу запушить';
       }
@@ -606,19 +571,6 @@ export function initGit(host) {
           }
           r.appendChild(acts);
           r.addEventListener('click', () => showDiff(f));
-          // контекст-меню: открыть сам файл (не дифф) в вивере. f — уже АБСОЛЮТНЫЙ путь
-          // (ключи git:status абсолютные) — не приклеивать к нему p.path повторно.
-          if (menuRow && placeMenu && hostOpenFile) {
-            r.addEventListener('contextmenu', (e) => {
-              e.preventDefault(); e.stopPropagation();
-              const dd = el('div', 'menu-dropdown'); dd.style.minWidth = '180px';
-              if (kind !== 'deleted') dd.appendChild(menuRow('eye', 'Открыть файл', () => { closeMenus(); hostOpenFile(f); }));
-              dd.appendChild(menuRow('diff', 'Показать дифф', () => { closeMenus(); showDiff(f); }));
-              dd.appendChild(menuRow('copy', 'Копировать путь', () => { closeMenus(); try { lite.copyText(f); toast('Путь скопирован'); } catch (_) {} }));
-              if (kind !== 'deleted') dd.appendChild(menuRow('folder', 'Показать в проводнике', () => { closeMenus(); lite.showItemInFolder(f).then((r2) => { if (!r2 || r2.ok === false) toast((r2 && r2.error) || 'Не удалось открыть папку', { kind: 'err' }); }); }));
-              placeMenu(dd, e.clientX, e.clientY);
-            });
-          }
           box.appendChild(r);
         }
         syncGroupCb();
@@ -630,8 +582,8 @@ export function initGit(host) {
 
     // ---- панель коммита СНИЗУ: счётчик + сообщение + Commit / Commit & Push (PhpStorm: сообщение под списком)
     const msg = el('textarea', 'gm-msg'); msg.placeholder = 'Сообщение коммита…';
-    msg.value = commitDraft[p.path] || '';           // восстановить черновик (re-render/перезапуск не теряет ввод)
-    msg.addEventListener('input', () => setDraft(p.path, msg.value));
+    msg.value = commitDraft[p.path] || '';           // восстановить черновик (re-render не теряет ввод)
+    msg.addEventListener('input', () => { commitDraft[p.path] = msg.value; });
     const commitPanel = el('div', 'git-commit-panel');
     const commitTop = el('div', 'git-commit-top');
     commitTop.append(el('div', 'git-sec', 'Сообщение коммита'), (commitCount = el('div', 'git-commit-count')));
@@ -639,41 +591,25 @@ export function initGit(host) {
     const commitRow = el('div', 'git-tools git-tools-commit');
     commit = gitTool('check', 'Commit', 'Закоммитить выбранные изменения', 'primary');
     commitPush = gitTool('upload', 'Commit & Push', 'Закоммитить выбранное и сразу запушить');
-    // Amend (PhpStorm-style): дописать выбранное в ПОСЛЕДНИЙ коммит; без выбранных файлов — только
-    // поправить сообщение. Включение при пустом поле подставляет последнее сообщение коммита.
-    amendCb = el('input', 'gm-check'); amendCb.type = 'checkbox';
-    const amendLb = el('label', 'gm-amend');
-    amendLb.title = 'Дописать в последний коммит (git commit --amend). Осторожно с уже запушенными коммитами: история перепишется.';
-    amendLb.append(amendCb, el('span', null, 'Amend'));
-    amendCb.addEventListener('change', async () => {
-      updateCommitState();
-      if (amendCb.checked && !msg.value.trim()) {
-        const r = await lite.git.lastMessage(p.path);
-        if (r && r.ok && amendCb.checked && !msg.value.trim()) { msg.value = r.message; setDraft(p.path, r.message); }
-      }
-    });
     const doCommit = async (withPush) => {
       const message = msg.value.trim();
       if (!message) { toast('Введи сообщение коммита', { kind: 'err' }); return; }
       const sel = selectedFiles();
-      const amend = amendCb.checked;
       if (conflictSet.size) { toast('Сначала разрешите конфликты', { kind: 'err' }); return; }
-      if (!sel.length && !amend) { toast('Не выбрано ни одного файла', { kind: 'err' }); return; }
+      if (!sel.length) { toast('Не выбрано ни одного файла', { kind: 'err' }); return; }
       const allIncluded = sel.length === committableKeys.length;
       const btn = withPush ? commitPush : commit;
       btn.disabled = true; btn.classList.add('loading');
-      // amend без файлов → files:[] (маркер «только сообщение», main ничего не добавляет)
-      const filesArg = (amend && !sel.length) ? [] : (allIncluded ? null : sel);
-      const r = await lite.git.commit(p.path, message, withPush, filesArg, amend);
+      const r = await lite.git.commit(p.path, message, withPush, allIncluded ? null : sel);
       btn.classList.remove('loading');
-      if (r.ok) { toast(amend ? 'Коммит переписан (amend)' : (withPush ? 'Закоммичено и запушено' : 'Закоммичено')); msg.value = ''; setDraft(p.path, ''); selectedChangeFile = null; renderGitPanel(p); renderProjects(); }
+      if (r.ok) { toast(withPush ? 'Закоммичено и запушено' : 'Закоммичено'); msg.value = ''; commitDraft[p.path] = ''; selectedChangeFile = null; renderGitPanel(p); renderProjects(); }
       // Коммит лёг, но push не прошёл: список ОБЯЗАН обновиться (файлы уже в коммите), плюс показываем ошибку.
-      else if (r.committed) { toast(r.error || 'push не прошёл', { kind: 'err', ttl: 9000 }); msg.value = ''; setDraft(p.path, ''); selectedChangeFile = null; renderGitPanel(p); renderProjects(); }
+      else if (r.committed) { toast(r.error || 'push не прошёл', { kind: 'err', ttl: 9000 }); msg.value = ''; commitDraft[p.path] = ''; selectedChangeFile = null; renderGitPanel(p); renderProjects(); }
       else { btn.disabled = false; toast(r.error || 'ошибка коммита', { kind: 'err', ttl: 8000 }); updateCommitState(); }
     };
     commit.onclick = () => doCommit(false);
     commitPush.onclick = () => doCommit(true);
-    commitRow.append(commit, commitPush, amendLb);
+    commitRow.append(commit, commitPush);
     commitPanel.appendChild(commitRow);
     content.appendChild(commitPanel);
 
@@ -799,25 +735,6 @@ export function initGit(host) {
       copyBtn.onclick = (e) => { e.stopPropagation(); lite.copyText(c.hash); toast('Хеш скопирован: ' + c.hash); };
       const acts = el('div', 'git-commit-acts'); acts.appendChild(copyBtn); cr.appendChild(acts);
       cr.addEventListener('click', () => selectCommit(c, cr));
-      // контекст-меню коммита: cherry-pick / revert / копирование (PhpStorm-style)
-      if (menuRow && placeMenu) {
-        cr.addEventListener('contextmenu', (e) => {
-          e.preventDefault(); e.stopPropagation();
-          closeMenus();
-          const dd = el('div', 'menu-dropdown'); dd.style.minWidth = '240px';
-          dd.appendChild(menuRow('git', 'Cherry-pick в текущую ветку', () => { closeMenus(); cherryPickCommit(p, c); }));
-          dd.appendChild(menuRow('eraser', 'Revert — обратный коммит', () => { closeMenus(); revertCommitUi(p, c); }));
-          dd.appendChild(el('div', 'menu-sep'));
-          dd.appendChild(menuRow('copy', 'Копировать хеш', () => { closeMenus(); lite.copyText(c.hash); toast('Хеш скопирован'); }));
-          dd.appendChild(menuRow('copy', 'Копировать сообщение', async () => {
-            closeMenus();
-            const r = await lite.git.commitMsg(p.path, c.hash);
-            if (r && r.ok) { lite.copyText(r.message); toast('Сообщение скопировано'); }
-            else toast((r && r.error) || 'не удалось получить сообщение', { kind: 'err' });
-          }));
-          placeMenu(dd, e.clientX, e.clientY);
-        });
-      }
       const hay = (c.hash + ' ' + c.subject + ' ' + c.when + ' ' + c.author + ' ' + (c.refs || '')).toLowerCase();
       rows.push({ el: cr, hay });
       logBox.appendChild(cr);
@@ -829,22 +746,6 @@ export function initGit(host) {
     // авто-выбор: ранее выбранный коммит или первый → сразу показать его файлы справа
     const initIdx = selectedCommit ? commits.findIndex((c) => c.hash === selectedCommit) : 0;
     if (initIdx >= 0 && rows[initIdx]) selectCommit(commits[initIdx], rows[initIdx].el);
-  }
-
-  // Cherry-pick/revert коммита из лога. Конфликт → секция «Коммит» (unmerged-файлы с кнопкой Resolve).
-  async function cherryPickCommit(p, c) {
-    const r = await lite.git.cherryPick(p.path, c.hash);
-    if (r && r.ok) { toast('Cherry-pick: ' + c.hash); renderGitPanel(p); renderProjects(); return; }
-    const conf = await lite.git.conflicts(p.path);
-    if (conf.files && conf.files.length) { toast('Конфликты cherry-pick — разрешите в секции «Коммит»', { kind: 'err', ttl: 9000 }); goCommitView(); renderGitPanel(p); }
-    else toast((r && r.error) || 'cherry-pick не прошёл', { kind: 'err', ttl: 9000 });
-  }
-  async function revertCommitUi(p, c) {
-    const r = await lite.git.revertCommit(p.path, c.hash);
-    if (r && r.ok) { toast('Revert создан: ' + c.hash); renderGitPanel(p); renderProjects(); return; }
-    const conf = await lite.git.conflicts(p.path);
-    if (conf.files && conf.files.length) { toast('Конфликты revert — разрешите в секции «Коммит»', { kind: 'err', ttl: 9000 }); goCommitView(); renderGitPanel(p); }
-    else toast((r && r.error) || 'revert не прошёл', { kind: 'err', ttl: 9000 });
   }
 
   // Дерево изменённых файлов выбранного коммита (иконки типов; клик по файлу → дифф файла в центре вивера).
@@ -1009,8 +910,6 @@ export function initGit(host) {
     const raw = read.content || '';
     const parsed0 = parseConflicts(raw);
     if (!parsed0.blocks.length) { toast('В файле нет маркеров конфликта', { kind: 'err' }); return; }
-    // язык грузим ДО makeModal: await после неё — окно для onClose в TDZ констант ed* (закрыли во время await)
-    const lang = await ensureLanguage(fileAbs);
 
     const { m, close } = makeModal(`
       <div class="mrg-head">
@@ -1040,6 +939,7 @@ export function initGit(host) {
       () => { [edOurs, edTheirs, edResult].forEach((e) => { try { e && e.destroy(); } catch (_) {} }); }); // снять CodeMirror при закрытии — иначе утечка трёх инстансов на каждое открытие модалки
     m.classList.add('modal-merge');
     m.querySelector('.mrg-title').textContent = fname;
+    const lang = languageFor ? languageFor(fileAbs) : [];
 
     // три редактора (наше/их — read-only справочно; результат — редактируемый, сырой текст с маркерами)
     const oursSide = buildSide(parsed0, 'ours');

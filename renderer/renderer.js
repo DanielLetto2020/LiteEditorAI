@@ -8,6 +8,7 @@ import { WebLinksAddon } from '@xterm/addon-web-links';
 import { WebglAddon } from '@xterm/addon-webgl';
 import { CanvasAddon } from '@xterm/addon-canvas';
 import { Unicode11Addon } from '@xterm/addon-unicode11';
+import { SerializeAddon } from '@xterm/addon-serialize';
 import '@xterm/xterm/css/xterm.css';
 
 // CodeMirror/marked/showMinimap/codeedit — переехали в окно вивера (renderer/modules/files.js).
@@ -26,7 +27,7 @@ import { el, icon, iconBtn, hydrateIcons, toast, makeModal, showConfirm, showPro
 import { initExtensions } from './modules/extensions.js';
 // initFiles — вивер+дерево мигрированы в отдельное окно (renderer/module-entry.js).
 
-const APP_VERSION = 'alpha v1.1.78';
+const APP_VERSION = 'alpha v1.1.50';
 const GUTTER = 5;
 // Системный терминал («Система · ~») мигрирован в отдельное окно (renderer/modules/scratch.js):
 // его id `__scratch__::tN` маршрутизируются main'ом в окно-владельца, в ядре их больше не обрабатываем.
@@ -38,7 +39,14 @@ const $ = (sel) => document.querySelector(sel);
 // ---------------------------------------------------------------- global store (~/.LiteEditor)
 // Synchronous snapshot loaded once; reads are in-memory, writes go through to disk.
 const STORE = lite.store.loadAll();
-function persist(key, value) { STORE[key] = value; lite.store.set(key, value); }
+function persist(key, value, sync = false) { 
+  STORE[key] = value; 
+  if (sync) {
+    try { lite.store.setSync(key, value); } catch (_) { lite.store.set(key, value); }
+  } else {
+    lite.store.set(key, value); 
+  }
+}
 // One-time import from the old localStorage layout (builds before ~/.LiteEditor).
 (function migrateLocalStorage() {
   if (STORE.projects !== undefined) return;
@@ -126,15 +134,6 @@ function isCollapsed(key) { return !!(STORE.accordions || {})[key]; }
 function setCollapsed(key, v) { persist('accordions', { ...(STORE.accordions || {}), [key]: v }); }
 function loadSectionOrder() { return Array.isArray(STORE.sectionOrder) ? STORE.sectionOrder.slice() : null; }
 function saveSectionOrder(o) { persist('sectionOrder', o); }
-// Ручной порядок карточек в «Избранном» (DnD): массив id. Кто не в списке — в конец
-// в исходном порядке projects (стабильная сортировка). Снятие ★ удаляет id из списка,
-// поэтому повторное добавление ставит карточку в самый низ группы.
-function loadFavOrder() { return Array.isArray(STORE.favOrder) ? STORE.favOrder : []; }
-function saveFavOrder(ids) { persist('favOrder', ids); }
-function sortFavs(list) {
-  const idx = new Map(loadFavOrder().map((id, i) => [id, i]));
-  return list.slice().sort((a, b) => (idx.has(a.id) ? idx.get(a.id) : Infinity) - (idx.has(b.id) ? idx.get(b.id) : Infinity));
-}
 
 // Section display order. Default = "избранное / <категории> / все"; persisted once
 // reordered. effectiveOrder() reconciles the stored order with the keys that exist
@@ -161,7 +160,7 @@ function effectiveOrder() {
 // Sections that actually render now, in display order (★ Избранное only when non-empty).
 function buildSections() {
   const cats = loadCategories();
-  const favs = sortFavs(projects.filter((p) => p.favorite));
+  const favs = projects.filter((p) => p.favorite);
   return effectiveOrder().map((key) => {
     if (key === FAV_KEY) return favs.length ? { key, label: 'Избранное', list: favs, pinned: true } : null;
     if (key === UNCATEGORIZED) return { key, label: UNCATEGORIZED, pinned: false, list: projects.filter((p) => !p.favorite && !cats.includes(p.category)) };
@@ -225,46 +224,9 @@ function renderSection(s, index, sections) {
   });
   if (key !== FAV_KEY && key !== UNCATEGORIZED && key !== ARCHIVE) // custom categories can be renamed/deleted (Архив — нет)
     head.addEventListener('contextmenu', (e) => { e.preventDefault(); showCategoryMenu(e.clientX, e.clientY, key); });
-  for (const p of list) {
-    const c = makeCard(p);
-    if (key === FAV_KEY) enableFavDnD(c, body);
-    body.appendChild(c);
-  }
+  for (const p of list) body.appendChild(makeCard(p));
   sec.appendChild(head); sec.appendChild(body);
   return sec;
-}
-// DnD-сортировка карточек ТОЛЬКО внутри «Избранного»: перетаскивание живьём двигает карточку
-// в теле группы, на dragend порядок из DOM пишется в favOrder. Esc/бросок мимо — откат без записи.
-let favDragCard = null; // тянут максимум одну карточку на окно
-function enableFavDnD(card, body) {
-  card.draggable = true;
-  card.addEventListener('dragstart', (e) => {
-    favDragCard = card;
-    card.classList.add('dragging');
-    e.dataTransfer.effectAllowed = 'move';
-    try { e.dataTransfer.setData('text/plain', card.dataset.id); } catch (_) {}
-  });
-  card.addEventListener('dragend', (e) => {
-    card.classList.remove('dragging');
-    if (!favDragCard) return;
-    favDragCard = null;
-    if (e.dataTransfer.dropEffect !== 'none') // 'none' = отмена (Esc/мимо) — порядок не трогаем
-      saveFavOrder([...body.querySelectorAll('.card')].map((c) => c.dataset.id));
-    renderProjects();
-  });
-  card.addEventListener('dragover', (e) => {
-    if (!favDragCard || favDragCard === card || card.parentElement !== body) return;
-    e.preventDefault();
-    e.dataTransfer.dropEffect = 'move';
-    const r = card.getBoundingClientRect();
-    body.insertBefore(favDragCard, e.clientY < r.top + r.height / 2 ? card : card.nextSibling);
-  });
-  // preventDefault на теле группы: разрешить drop между карточками/на паддинге (иначе курсор «нельзя»)
-  if (!body.dataset.favDnd) {
-    body.dataset.favDnd = '1';
-    body.addEventListener('dragover', (e) => { if (favDragCard) { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; } });
-    body.addEventListener('drop', (e) => { if (favDragCard) e.preventDefault(); });
-  }
 }
 function makeCard(p) {
   const card = el('div', 'card');
@@ -548,13 +510,6 @@ function toggleFavorite(id) {
   const p = projects.find((x) => x.id === id);
   if (!p) return;
   p.favorite = !p.favorite;
-  if (p.favorite) {
-    // материализуем текущий видимый порядок группы и ставим новую карточку в самый низ
-    const cur = sortFavs(projects.filter((x) => x.favorite && x.id !== id)).map((x) => x.id);
-    saveFavOrder([...cur, id]);
-  } else {
-    saveFavOrder(loadFavOrder().filter((x) => x !== id)); // снятие ★ сбрасывает ручную позицию
-  }
   saveProjects(); renderProjects();
 }
 function moveToCategory(id, cat) {
@@ -787,7 +742,6 @@ function doCloseProject(id) {
     tabsByProj.delete(id);
   }
   const pt = { ...(STORE.projTabs || {}) }; delete pt[id]; persist('projTabs', pt);
-  if (loadFavOrder().includes(id)) saveFavOrder(loadFavOrder().filter((x) => x !== id));
   missing.delete(id);
   projects = projects.filter((p) => p.id !== id);
   saveProjects();
@@ -952,14 +906,59 @@ function saveProjTabs() {
   for (const [pid, t] of tabsByProj) {
     out[pid] = { names: t.sessions.map((s) => (terms.get(s) || {}).name || 'Терминал'), active: t.sessions.indexOf(t.active) };
   }
-  persist('projTabs', out);
+  persist('projTabs', out, true);
 }
 
-// ── Снимки сессий между перезапусками — УБРАНО ────────────────────────────────
-// Раньше (идея 7) scrollback каждой сессии сериализовался и при старте подгружался НАД свежим
-// терминалом как «история до перезапуска». От этого отказались: подгрузка прошлой истории мешает.
-// Чистим разово стор от ранее накопленных снимков (могли весить до ~1.5 МБ).
-try { if (STORE.sessionSnaps) { STORE.sessionSnaps = null; lite.store.set('sessionSnaps', null); } } catch (_) {}
+// ── Снимки сессий между перезапусками (идея 7) ────────────────────────────────
+// Живой PTY перезапуск приложения не переживает (дочерний процесс умирает с родителем), но
+// ВЫВОД пережить может: сериализуем scrollback каждой сессии (capped) и при следующем старте
+// показываем его как «историю до перезапуска» НАД свежим терминалом — агент/пользователь видит,
+// на чём остановились. Это снимок-история, не живой процесс.
+const SNAP_TTL_MS = 24 * 60 * 60 * 1000;  // снимки старше суток игнорируем
+const SNAP_SCROLLBACK = 800;              // сколько строк хвоста сериализовать
+const SNAP_PER_CAP = 80 * 1024;           // потолок на сессию, символов
+const SNAP_TOTAL_CAP = 1536 * 1024;       // общий потолок (бережём стор)
+// Снимки прошлого запуска, загруженные один раз; восстанавливаются по мере открытия проектов.
+const restoreSnaps = (() => {
+  const s = STORE.sessionSnaps;
+  if (s && s.ts && (Date.now() - s.ts) < SNAP_TTL_MS && s.data) return { ...s.data };
+  return {};
+})();
+function snapshotSessions() {
+  try {
+    const data = {};
+    let total = 0;
+    for (const [pid, t] of tabsByProj) {
+      t.sessions.forEach((sid, i) => {
+        if (total >= SNAP_TOTAL_CAP) return;
+        const rec = terms.get(sid);
+        if (!rec || !rec.serialize) return;
+        let str = '';
+        try { str = rec.serialize.serialize({ scrollback: SNAP_SCROLLBACK, excludeAltBuffer: true, excludeModes: true }); } catch (_) { return; }
+        if (!str) return;
+        if (str.length > SNAP_PER_CAP) str = str.slice(str.length - SNAP_PER_CAP); // храним хвост
+        (data[pid] = data[pid] || [])[i] = str;
+        total += str.length;
+      });
+    }
+    const payload = { ts: Date.now(), data };
+    STORE.sessionSnaps = payload;
+    // setSync — чтобы запись прошла даже на beforeunload (async send мог бы не успеть).
+    try { lite.store.setSync('sessionSnaps', payload); } catch (_) { try { lite.store.set('sessionSnaps', payload); } catch (_) {} }
+  } catch (_) {}
+}
+// Восстановить историю в только что созданную сессию (индекс i вкладки проекта).
+function restoreSessionSnapshot(projId, idx, sid) {
+  const arr = restoreSnaps[projId];
+  const snap = arr && arr[idx];
+  if (!snap) return;
+  const rec = terms.get(sid);
+  if (!rec) return;
+  try {
+    rec.term.write(snap);
+    rec.term.write('\r\n\x1b[2m' + '─'.repeat(16) + ' снимок до перезапуска редактора ' + '─'.repeat(16) + '\x1b[0m\r\n');
+  } catch (_) {}
+}
 // ── Реестр глобальных горячих клавиш ядра (идея 5) ────────────────────────────
 // Единый источник правды. Матч по физическим клавишам (e.code) → работает в любой
 // раскладке. Эти комбо перехватываются И на уровне document, И внутри терминала: фабрика
@@ -993,8 +992,10 @@ function buildXterm(container, id, { cwd, onInput, onKey } = {}) {
   });
   const fit = new FitAddon();
   const search = new SearchAddon();
+  const serialize = new SerializeAddon();
   term.loadAddon(fit);
   term.loadAddon(search);
+  term.loadAddon(serialize);
   term.loadAddon(new WebLinksAddon((_e, uri) => lite.openExternal(uri)));
   applyUnicode11(term);
   term.open(container);
@@ -1016,14 +1017,14 @@ function buildXterm(container, id, { cwd, onInput, onKey } = {}) {
     return true;
   });
   container.addEventListener('contextmenu', (e) => { e.preventDefault(); showTermMenu(e.clientX, e.clientY, term, id); });
-  return { term, fit, search };
+  return { term, fit, search, serialize };
 }
 
 function createSession(proj, name) {
   const id = proj.id + '::t' + (++sessionSeq);
   const container = el('div', 'term-instance');
   $('#terminals').appendChild(container);
-  const { term, fit, search } = buildXterm(container, id, {
+  const { term, fit, search, serialize } = buildXterm(container, id, {
     cwd: proj.path,
     onInput: () => { const r = terms.get(id); if (r) r.lastInputAt = Date.now(); },
     onKey: (e) => {
@@ -1034,7 +1035,7 @@ function createSession(proj, name) {
     },
   });
   term.registerLinkProvider(fileLinkProvider(term, proj.path));
-  const rec = { term, fit, search, container, projId: proj.id, name, idleTimer: null, sawBell: false, tail: '', busyStart: 0, lastInputAt: 0, activitySeq: 0 };
+  const rec = { term, fit, search, serialize, container, projId: proj.id, name, idleTimer: null, sawBell: false, tail: '', busyStart: 0, lastInputAt: 0, activitySeq: 0 };
   terms.set(id, rec);
   tabsByProj.get(proj.id).sessions.push(id);
   // «Контекст»: тихая автосборка — новая сессия агента должна найти готовый CLAUDE.md/AGENTS.md,
@@ -1068,7 +1069,8 @@ function ensureProjectTabs(proj) {
   tabsByProj.set(proj.id, { sessions: [], active: null });
   const saved = (STORE.projTabs || {})[proj.id];
   const names = saved && Array.isArray(saved.names) && saved.names.length ? saved.names : ['Терминал 1'];
-  names.forEach((n) => createSession(proj, n)); // только имена вкладок; история до перезапуска НЕ восстанавливается
+  names.forEach((n, i) => { const sid = createSession(proj, n); restoreSessionSnapshot(proj.id, i, sid); }); // история до перезапуска (идея 7)
+  delete restoreSnaps[proj.id]; // снимок потреблён — не восстанавливать повторно при переоткрытии проекта
   const t = tabsByProj.get(proj.id);
   const ai = saved && Number.isInteger(saved.active) ? saved.active : 0;
   t.active = t.sessions[Math.max(0, Math.min(ai, t.sessions.length - 1))] || t.sessions[0];
@@ -1432,7 +1434,7 @@ const panels = new Map(); // id -> { isOpen(), setOpen(open, opts) }
 // Правый слот редактора теперь держит только «Мои модули» (ext); всё остальное — отдельные окна.
 const PANEL_ORDER = [];
 // Модули, мигрированные в отдельные окна (открываются через lite.module.open, не как панель правого слота).
-const WINDOW_MODULES = new Set(['tools', 'iterflow', 'seo', 'audit', 'company', 'notes', 'db', 'rmq', 'kafka', 'chat', 'doc', 'docker', 'rh', 'ctx', 'scratch', 'files', 'pomodoro', 'monitor', 'keepass', 'sitemon']);
+const WINDOW_MODULES = new Set(['tools', 'iterflow', 'seo', 'audit', 'company', 'notes', 'db', 'chat', 'doc', 'docker', 'rh', 'ctx', 'scratch', 'files', 'pomodoro']);
 function registerPanel(id, api) { panels.set(id, api); }
 function closeOtherPanels(selfId) {
   for (const id of PANEL_ORDER) {
@@ -1493,8 +1495,6 @@ const QUICK_BUILTIN = [
   { id: 'ctx',     icon: 'graph',    label: 'Контекст — граф контекста агента' },
   { id: 'docker',  icon: 'box',      label: 'Контейнеры — Docker / Podman' },
   { id: 'db',      icon: 'database', label: 'Базы данных — Postgres / MySQL / SQLite' },
-  { id: 'rmq',     icon: 'rabbit',   label: 'RabbitMQ — очереди, сообщения, подключения' },
-  { id: 'kafka',   icon: 'kafka',    label: 'Kafka — топики, группы, live-tail' },
   { id: 'rh',      icon: 'globe',    label: 'Удалённые хосты — SSH-сессии' },
   { id: 'notes',   icon: 'note',     label: 'Задачи — заметки проекта' },
   { id: 'audit',   icon: 'grid',     label: 'Аудит — анализ проекта' },
@@ -1732,7 +1732,8 @@ function menuRow(glyph, text, onClick, cls) {
   return row;
 }
 // Двухстрочный пункт: название (1-я строка) + описание (2-я строка, мельче и приглушённо).
-function moduleRow(glyph, title, desc, onClick) {
+// moduleId — опциональный id модуля; если передан, добавляется чекбокс «автозапуск».
+function moduleRow(glyph, title, desc, onClick, moduleId) {
   const row = el('div', 'menu-row menu-row2');
   const ic = el('span', 'menu-ic');
   if (glyph && ICONS[glyph]) ic.appendChild(icon(glyph, 16));
@@ -1741,6 +1742,24 @@ function moduleRow(glyph, title, desc, onClick) {
   txt.appendChild(el('span', 'mr2-title', title));
   if (desc) txt.appendChild(el('span', 'mr2-desc', desc));
   row.append(ic, txt);
+  if (moduleId) {
+    const autoMods = Array.isArray(STORE.autoModules) ? STORE.autoModules : [];
+    const isOn = autoMods.includes(moduleId);
+    const chk = el('span', 'mr2-chk' + (isOn ? ' on' : ''));
+    chk.title = 'Запускать при старте';
+    chk.appendChild(icon(isOn ? 'check-square' : 'square', 15));
+    chk.addEventListener('click', (e) => {
+      e.stopPropagation();
+      let cur = Array.isArray(STORE.autoModules) ? [...STORE.autoModules] : [];
+      const idx = cur.indexOf(moduleId);
+      if (idx >= 0) { cur.splice(idx, 1); chk.classList.remove('on'); }
+      else { cur.push(moduleId); chk.classList.add('on'); }
+      persist('autoModules', cur);
+      chk.innerHTML = '';
+      chk.appendChild(icon(cur.includes(moduleId) ? 'check-square' : 'square', 15));
+    });
+    row.appendChild(chk);
+  }
   if (onClick) row.addEventListener('click', onClick);
   return row;
 }
@@ -1849,27 +1868,22 @@ function buildModulesMenu(dd) {
   };
 
   flyout('grid', 'Встроенные', 'панели редактора', (sub) => {
-    sub.appendChild(moduleRow('eye', 'Проект', 'вивер кода, дерево, Git', () => { closeMenus(); openModule('files'); }));
-    sub.appendChild(moduleRow('graph', 'Контекст', 'граф контекста агента', () => { closeMenus(); openModule('ctx'); }));
-    sub.appendChild(moduleRow('box', 'Контейнеры', 'Docker / Podman', () => { closeMenus(); openModule('docker'); }));
-    sub.appendChild(moduleRow('database', 'Базы данных', 'Postgres · MySQL · SQLite', () => { closeMenus(); openModule('db'); }));
-    sub.appendChild(moduleRow('rabbit', 'RabbitMQ', 'очереди · сообщения · подключения', () => { closeMenus(); openModule('rmq'); }));
-    sub.appendChild(moduleRow('kafka', 'Kafka', 'топики · группы · live-tail', () => { closeMenus(); openModule('kafka'); }));
-    sub.appendChild(moduleRow('globe', 'Удалённые хосты', 'SSH-сессии к серверам', () => { closeMenus(); openModule('rh'); }));
-    sub.appendChild(moduleRow('note', 'Задачи', 'заметки проекта и общие', () => { closeMenus(); openModule('notes'); }));
-    sub.appendChild(moduleRow('grid', 'Аудит', 'типы файлов, крупные файлы, медиа', () => { closeMenus(); openModule('audit'); }));
-    sub.appendChild(moduleRow('users', 'ИИ компания', 'директор + сабагенты над проектом', () => { closeMenus(); openModule('company'); }));
-    sub.appendChild(moduleRow('layers', 'IterFlow', 'задачи итераций из трекера', () => { closeMenus(); openModule('iterflow'); }));
-    sub.appendChild(moduleRow('globe', 'WEB/SEO аудит', 'сайт: безопасность, SEO, сеть', () => { closeMenus(); openModule('seo'); }));
-    sub.appendChild(moduleRow('wrench', 'Инструменты', 'base64, JSON/YAML, хэши, JWT, regex, diff', () => { closeMenus(); openModule('tools'); }));
-    sub.appendChild(moduleRow('chat', 'OpenRouter', 'чат по своим API-ключам', () => { closeMenus(); openModule('chat'); }));
-    sub.appendChild(moduleRow('note', 'Обработка текста', 'документы + AI-правки фрагментов', () => { closeMenus(); openModule('doc'); }));
-    sub.appendChild(moduleRow('clock', 'Помодоро', 'таймер работы/отдыха с блокировкой', () => { closeMenus(); openModule('pomodoro'); }));
+    sub.appendChild(moduleRow('eye', 'Проект', 'вивер кода, дерево, Git', () => { closeMenus(); openModule('files'); }, 'files'));
+    sub.appendChild(moduleRow('graph', 'Контекст', 'граф контекста агента', () => { closeMenus(); openModule('ctx'); }, 'ctx'));
+    sub.appendChild(moduleRow('box', 'Контейнеры', 'Docker / Podman', () => { closeMenus(); openModule('docker'); }, 'docker'));
+    sub.appendChild(moduleRow('database', 'Базы данных', 'Postgres · MySQL · SQLite', () => { closeMenus(); openModule('db'); }, 'db'));
+    sub.appendChild(moduleRow('globe', 'Удалённые хосты', 'SSH-сессии к серверам', () => { closeMenus(); openModule('rh'); }, 'rh'));
+    sub.appendChild(moduleRow('note', 'Задачи', 'заметки проекта и общие', () => { closeMenus(); openModule('notes'); }, 'notes'));
+    sub.appendChild(moduleRow('grid', 'Аудит', 'типы файлов, крупные файлы, медиа', () => { closeMenus(); openModule('audit'); }, 'audit'));
+    sub.appendChild(moduleRow('users', 'ИИ компания', 'директор + сабагенты над проектом', () => { closeMenus(); openModule('company'); }, 'company'));
+    sub.appendChild(moduleRow('layers', 'IterFlow', 'задачи итераций из трекера', () => { closeMenus(); openModule('iterflow'); }, 'iterflow'));
+    sub.appendChild(moduleRow('globe', 'WEB/SEO аудит', 'сайт: безопасность, SEO, сеть', () => { closeMenus(); openModule('seo'); }, 'seo'));
+    sub.appendChild(moduleRow('wrench', 'Инструменты', 'base64, JSON/YAML, хэши, JWT, regex, diff', () => { closeMenus(); openModule('tools'); }, 'tools'));
+    sub.appendChild(moduleRow('chat', 'OpenRouter', 'чат по своим API-ключам', () => { closeMenus(); openModule('chat'); }, 'chat'));
+    sub.appendChild(moduleRow('note', 'Обработка текста', 'документы + AI-правки фрагментов', () => { closeMenus(); openModule('doc'); }, 'doc'));
+    sub.appendChild(moduleRow('clock', 'Помодоро', 'таймер работы/отдыха с блокировкой', () => { closeMenus(); openModule('pomodoro'); }, 'pomodoro'));
     sub.appendChild(el('div', 'menu-sep'));
     sub.appendChild(moduleRow('terminal', 'Системный терминал', 'вне проектов', () => { closeMenus(); openModule('scratch'); }));
-    sub.appendChild(moduleRow('graph', 'Монитор ресурсов', 'память/CPU редактора и агентов', () => { closeMenus(); openModule('monitor'); }));
-    sub.appendChild(moduleRow('key', 'Сейф паролей', 'KeePass .kdbx: копировать пароль/токен', () => { closeMenus(); openModule('keepass'); }));
-    sub.appendChild(moduleRow('globe', 'Мониторинг сайтов', 'доступность сайтов + уведомления', () => { closeMenus(); openModule('sitemon'); }));
   });
   flyout('layers', 'Мои модули', 'пользовательские плагины', (sub) => Ext.buildMenuSection(sub, { bare: true }));
   dd.appendChild(el('div', 'menu-sep'));
@@ -2357,70 +2371,33 @@ function showLogs() {
 function showSettings() {
   const { m, close } = makeModal(`
     <h2>🎚 Настройки</h2>
-    <div class="set-groups">
-      <section class="set-group">
-        <div class="set-group-h"><span class="set-ic">🔔</span> Уведомления</div>
-        <div class="set-group-body">
-          <label class="set-row"><span>Уведомления о завершении агента</span><input type="checkbox" id="st-notif"></label>
-          <label class="set-row"><span>Звук уведомлений</span><input type="checkbox" id="st-sound"></label>
-          <label class="set-row"><span>Тишина до «готов», мс</span><input type="number" id="st-idle" min="300" max="6000" step="100"></label>
-        </div>
-      </section>
-      <section class="set-group">
-        <div class="set-group-h"><span class="set-ic">🎨</span> Внешний вид</div>
-        <div class="set-group-body">
-          <label class="set-row"><span>Тема</span><select id="st-theme"></select></label>
-          <label class="set-row"><span>Размер шрифта</span><input type="number" id="st-font" min="9" max="24"></label>
-        </div>
-      </section>
-      <section class="set-group">
-        <div class="set-group-h"><span class="set-ic">🟩</span> Заставка «матрица»</div>
-        <div class="set-group-body">
-          <label class="set-row"><span>Запускать по бездействию</span><input type="checkbox" id="st-ss"></label>
-          <label class="set-row"><span>Порог простоя, мин</span><input type="number" id="st-ss-min" min="1" max="180" step="1"></label>
-          <div class="set-hint">Кнопка «матрица» в шапке запускает заставку вручную в любой момент. Выход — клик, движение мыши или Esc.</div>
-        </div>
-      </section>
-      <section class="set-group">
-        <div class="set-group-h"><span class="set-ic">🖥️</span> Терминал</div>
-        <div class="set-group-body">
-          <div class="set-row col"><span>Оболочка терминала — применяется к новым терминалам (старые — ⟳)</span>
-            <div class="path-pick">
-              <select id="st-shell"></select>
-              <input type="text" id="st-shell-path" placeholder="путь к исполняемому файлу" spellcheck="false" style="display:none">
-            </div></div>
-        </div>
-      </section>
-      <section class="set-group">
-        <div class="set-group-h"><span class="set-ic">📁</span> Проекты и папки</div>
-        <div class="set-group-body">
-          <div class="set-row col"><span>Рабочая папка — куда создаются новые проекты</span>
-            <div class="path-pick">
-              <input type="text" id="st-wd" readonly placeholder="не задана">
-              <button class="btn" id="st-wd-pick">Выбрать</button>
-              <button class="btn" id="st-wd-clear" title="Очистить">✕</button>
-            </div></div>
-          <div class="set-row col"><span>Папки для скана — их подпапки добавляются как проекты при запуске</span>
-            <div id="st-scan" class="scan-list"></div>
-            <button class="btn" id="st-scan-add">＋ Добавить папку</button></div>
-        </div>
-      </section>
-      <section class="set-group">
-        <div class="set-group-h"><span class="set-ic">📱</span> Пульт</div>
-        <div class="set-group-body">
-          <div class="set-row col"><span>Доступ с пульта — папки, которые можно смотреть/скачивать с планшета (только чтение). «Стор» доступен всегда.</span>
-            <div id="st-shares" class="scan-list"></div>
-            <button class="btn" id="st-share-add">＋ Открыть папку пульту</button></div>
-        </div>
-      </section>
-    </div>
+    <label class="set-row"><span>Уведомления о завершении агента</span><input type="checkbox" id="st-notif"></label>
+    <label class="set-row"><span>Звук уведомлений</span><input type="checkbox" id="st-sound"></label>
+    <label class="set-row"><span>Тишина до «готов», мс</span><input type="number" id="st-idle" min="300" max="6000" step="100"></label>
+    <label class="set-row"><span>Размер шрифта</span><input type="number" id="st-font" min="9" max="24"></label>
+    <label class="set-row"><span>Тема</span><select id="st-theme"></select></label>
+    <div class="set-row col"><span>Оболочка терминала — применяется к новым терминалам (старые — ⟳)</span>
+      <div class="path-pick">
+        <select id="st-shell"></select>
+        <input type="text" id="st-shell-path" placeholder="путь к исполняемому файлу" spellcheck="false" style="display:none">
+      </div></div>
+    <div class="set-row col"><span>Рабочая папка — куда создаются новые проекты</span>
+      <div class="path-pick">
+        <input type="text" id="st-wd" readonly placeholder="не задана">
+        <button class="btn" id="st-wd-pick">Выбрать</button>
+        <button class="btn" id="st-wd-clear" title="Очистить">✕</button>
+      </div></div>
+    <div class="set-row col"><span>Папки для скана — их подпапки добавляются как проекты при запуске</span>
+      <div id="st-scan" class="scan-list"></div>
+      <button class="btn" id="st-scan-add">＋ Добавить папку</button></div>
+    <div class="set-row col"><span>Доступ с пульта — папки, которые можно смотреть/скачивать с планшета (только чтение). «Стор» доступен всегда.</span>
+      <div id="st-shares" class="scan-list"></div>
+      <button class="btn" id="st-share-add">＋ Открыть папку пульту</button></div>
     <div class="modal-actions"><button class="btn primary" id="st-ok">Готово</button></div>`);
   const notif = m.querySelector('#st-notif'); notif.checked = settings.notifications;
   const sound = m.querySelector('#st-sound'); sound.checked = settings.sound;
   const idle = m.querySelector('#st-idle'); idle.value = settings.idleMs;
   const font = m.querySelector('#st-font'); font.value = settings.fontSize;
-  const ssOn = m.querySelector('#st-ss'); ssOn.checked = settings.screensaver !== false;
-  const ssMin = m.querySelector('#st-ss-min'); ssMin.value = settings.screensaverMins || 5;
   const themeSel = m.querySelector('#st-theme');
   for (const [key, t] of Object.entries(THEMES)) { const o = document.createElement('option'); o.value = key; o.textContent = t.label; themeSel.appendChild(o); }
   themeSel.value = THEMES[settings.theme] ? settings.theme : DEFAULT_THEME;
@@ -2482,8 +2459,6 @@ function showSettings() {
     settings.sound = sound.checked;
     settings.idleMs = Math.max(300, Math.min(6000, parseInt(idle.value, 10) || 1200));
     settings.fontSize = Math.max(9, Math.min(24, parseInt(font.value, 10) || 13));
-    settings.screensaver = ssOn.checked;
-    settings.screensaverMins = Math.max(1, Math.min(180, parseInt(ssMin.value, 10) || 5));
     settings.workingDir = wd.value || '';
     settings.scanDirs = scan;
     settings.shell = shellSel.value === '__custom__' ? shellPath.value.trim() : shellSel.value;
@@ -2799,64 +2774,6 @@ function init() {
   // событие и редактору, и окну вивера. В самом редакторе вивера/дерева больше нет — подписку убрали.
 
   $('#btn-single').addEventListener('click', toggleSingle);
-
-  // ── Заставка «матрица» (скринсейвер) ───────────────────────────────────────────────
-  // Полноэкранный canvas-«дождь» зелёных глифов. Кнопка в шапке (вкл/выкл вручную) +
-  // авто-запуск по бездействию во ВСЕХ окнах (координирует main: активность в любом окне
-  // сбрасывает таймер, main шлёт screensaver:set). Ручной запуск гасится только кнопкой/Esc,
-  // авто — любым действием. Цвет — токен темы (--green).
-  const matrix = (() => {
-    const cv = $('#matrix-overlay'); const btn = $('#btn-matrix');
-    if (!cv) return { toggle() {}, dismissIfAuto() {} };
-    const ctx = cv.getContext('2d');
-    const GLYPHS = 'アイウエオカキクケコサシスセソタチツテトナニヌネノﾊﾋﾌﾍﾎ0123456789:."=*+-<>¦｜LITEAI';
-    const FS = 16;
-    const STEP_MS = 75; // шаг анимации по времени (а не каждый кадр RAF ~16мс) → спокойнее в ~4–5 раз
-    let raf = null, cols = 0, drops = [], active = false, auto = false, lastStep = 0;
-    const green = () => (getComputedStyle(document.body).getPropertyValue('--green') || '').trim() || '#3ad353';
-    function resize() { cv.width = window.innerWidth; cv.height = window.innerHeight; cols = Math.ceil(cv.width / FS); drops = new Array(cols).fill(0).map(() => Math.floor(Math.random() * cv.height / FS)); }
-    function frame(ts) {
-      raf = requestAnimationFrame(frame);
-      if (ts - lastStep < STEP_MS) return; // продвигаем дождь только раз в STEP_MS — медленно и плавно
-      lastStep = ts;
-      ctx.fillStyle = 'rgba(0,0,0,0.07)'; ctx.fillRect(0, 0, cv.width, cv.height);
-      ctx.font = FS + 'px monospace'; const g = green();
-      for (let i = 0; i < cols; i++) {
-        const x = i * FS, y = drops[i] * FS;
-        ctx.fillStyle = '#d7ffe0'; ctx.fillText(GLYPHS[(Math.random() * GLYPHS.length) | 0], x, y);   // яркая голова струи
-        ctx.fillStyle = g; ctx.fillText(GLYPHS[(Math.random() * GLYPHS.length) | 0], x, y - FS);       // хвост — зелёный
-        if (y > cv.height && Math.random() > 0.975) drops[i] = 0; else drops[i]++;
-      }
-    }
-    function start(isAuto) {
-      if (active) { if (!isAuto) auto = false; return; }
-      active = true; auto = !!isAuto;
-      cv.classList.remove('hidden'); resize();
-      ctx.fillStyle = '#000'; ctx.fillRect(0, 0, cv.width, cv.height);
-      window.addEventListener('resize', resize);
-      raf = requestAnimationFrame(frame);
-      if (btn) btn.classList.add('on');
-    }
-    function stop() {
-      if (!active) return; active = false; auto = false;
-      if (raf) cancelAnimationFrame(raf); raf = null;
-      cv.classList.add('hidden'); window.removeEventListener('resize', resize);
-      if (btn) btn.classList.remove('on');
-    }
-    cv.addEventListener('mousedown', stop); // клик по заставке — выйти
-    try { lite.screensaver.onSet(({ on }) => { if (on) start(true); else if (auto) stop(); }); } catch (_) {}
-    return { toggle: () => (active ? stop() : start(false)), stop, dismissIfAuto: () => { if (active && auto) stop(); } };
-  })();
-  if ($('#btn-matrix')) $('#btn-matrix').addEventListener('click', () => matrix.toggle());
-  // Репорт активности в main (троттл) + мгновенный сброс авто-заставки на любое действие.
-  let __ssActReport = 0;
-  function reportUserActivity() {
-    matrix.dismissIfAuto();
-    const now = Date.now();
-    if (now - __ssActReport > 1500) { __ssActReport = now; try { lite.screensaver.activity(); } catch (_) {} }
-  }
-  for (const ev of ['mousemove', 'mousedown', 'keydown', 'wheel', 'touchstart']) window.addEventListener(ev, reportUserActivity, { passive: true });
-  window.addEventListener('keydown', (e) => { if (e.key === 'Escape') matrix.stop(); });
   // scratch (системный терминал) живёт в окне модуля — кнопки привязывает module-entry.js.
   // вивер+дерево (files) живут в окне модуля — их DOM/кнопки строит Files.mount() в module-entry.js.
   // git живёт в окне модуля (module.html) — кнопки привязывает module-entry.js.
@@ -2912,6 +2829,10 @@ function init() {
   new ResizeObserver(() => { clearTimeout(rezTimer); rezTimer = setTimeout(() => refitActiveTerminal(), 80); }).observe($('#terminal-pane'));
   // scratch/rh ресайз теперь в окнах модулей — обрабатывается module-entry.js.
 
+  // Снимок вывода сессий — на закрытие/перезагрузку и периодически (краш-страховка), чтобы при
+  // следующем старте показать историю до перезапуска над свежими терминалами (идея 7).
+  window.addEventListener('beforeunload', snapshotSessions);
+  setInterval(snapshotSessions, 30000);
 
   applyFontSize();
   projects = loadProjectsFromDisk();
@@ -2921,6 +2842,12 @@ function init() {
 
   // Набор открытых окон модулей (включая вивер) восстанавливает main (moduleWins.__open) при старте —
   // правому слоту редактора восстанавливать больше нечего (там остались только «Мои модули» по запросу).
+
+  // Автозапуск отмеченных модулей (галочки в меню «Модули → Встроенные»)
+  const autoMods = Array.isArray(STORE.autoModules) ? STORE.autoModules : [];
+  if (autoMods.length) {
+    setTimeout(() => { autoMods.forEach(id => openModule(id)); }, 600);
+  }
 
   scanProjects();          // add subfolders of settings.scanDirs (non-blocking)
   checkProjectsExistence();

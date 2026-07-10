@@ -70,10 +70,10 @@ class CFG:
     reg_window = _envi("RELAY_REG_WINDOW", 86400)        # окно, сек (сутки)
     # Сессии/токены.
     token_ttl = _envi("RELAY_TOKEN_TTL", 30 * 24 * 3600)  # было 10 лет → 30 суток [RLY-2]
-    allow_stateless = _envb("RELAY_ALLOW_STATELESS", True)  # принимать старые stateless-токены (миграция)
+    allow_stateless = _envb("RELAY_ALLOW_STATELESS", False)  # принимать старые stateless-токены (миграция)
     allow_legacy = _envb("RELAY_ALLOW_LEGACY", False)       # общий RELAY_TOKEN [RLY-6]
     # Device pairing.
-    require_pairing = _envb("RELAY_REQUIRE_PAIRING", False)  # обязательное одобрение устройства [RLY-3]
+    require_pairing = _envb("RELAY_REQUIRE_PAIRING", True)  # обязательное одобрение устройства [RLY-3]
     pair_ttl = _envi("RELAY_PAIR_TTL", 300)                  # TTL заявки на пайринг, сек
     # Лимиты форвард-пути.
     max_msg_bytes = _envi("RELAY_MAX_MSG_BYTES", 512 * 1024)  # потолок одного WS-кадра [RLY-7]
@@ -207,7 +207,7 @@ def client_ip_req(request: Request) -> str:
     if CFG.trust_proxy:
         xff = request.headers.get("x-forwarded-for")
         if xff:
-            return xff.split(",")[0].strip()
+            return xff.split(",")[-1].strip()
     return request.client.host if request.client else "?"
 
 
@@ -215,7 +215,7 @@ def client_ip_ws(ws: WebSocket) -> str:
     if CFG.trust_proxy:
         xff = ws.headers.get("x-forwarded-for")
         if xff:
-            return xff.split(",")[0].strip()
+            return xff.split(",")[-1].strip()
     return ws.client.host if ws.client else "?"
 
 
@@ -574,7 +574,9 @@ async def password(req: PwChange, authorization: str = Header(default="")):
 
 
 @app.get("/reports")
-async def reports(key: str = Query(default=""), limit: int = Query(default=100)):
+async def reports(limit: int = Query(default=100), authorization: str = Header(default="")):
+    # Extract the key from Bearer token or use the raw Authorization header if unformatted
+    key = authorization[7:].strip() if authorization.lower().startswith("bearer ") else authorization
     if not RELAY_SECRET or not hmac.compare_digest(key, RELAY_SECRET):
         raise HTTPException(403, "forbidden")
     conn = db()

@@ -70,7 +70,9 @@ class MainActivity : Activity() {
         web.settings.setGeolocationEnabled(true)   // местоположение по запросу с ПК (модалка «Пульты»)
         web.isVerticalScrollBarEnabled = false
         web.overScrollMode = WebView.OVER_SCROLL_NEVER
-        WebView.setWebContentsDebuggingEnabled(true)
+        if (BuildConfig.DEBUG) {
+            WebView.setWebContentsDebuggingEnabled(true)
+        }
 
         // Мост сохранения скачанных из стора файлов (стримом на диск, не через память JS).
         web.addJavascriptInterface(Downloader(), "LiteNative")
@@ -98,6 +100,15 @@ class MainActivity : Activity() {
             override fun onPageFinished(view: WebView?, url: String?) {
                 // Передаём конфиг в страницу после загрузки.
                 view?.evaluateJavascript("window.__bootLite(" + cfg.toString() + ")", null)
+            }
+
+            @Suppress("DEPRECATION")
+            override fun shouldOverrideUrlLoading(view: WebView?, url: String?): Boolean {
+                return url?.startsWith("file:///android_asset/") != true
+            }
+
+            override fun shouldOverrideUrlLoading(view: WebView?, request: android.webkit.WebResourceRequest?): Boolean {
+                return request?.url?.toString()?.startsWith("file:///android_asset/") != true
             }
         }
 

@@ -3,9 +3,6 @@
 const { app, BrowserWindow, ipcMain, dialog, shell, Menu, clipboard, screen, Tray, nativeImage, crashReporter, safeStorage, Notification } = require('electron');
 const dbBackend = require('./lib/db');
 const rhBackend = require('./lib/remotehost');
-const { guessDbKind, dbPrefillFromInspect, guessMqKind, rmqPrefillFromInspect, kafkaPrefillFromInspect } = require('./lib/dbdetect'); // «Контейнеры» → «Базы данных»/«RabbitMQ»/«Kafka»
-const rmqBackend = require('./lib/rmq');
-const kafkaBackend = require('./lib/kafka');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
@@ -228,7 +225,7 @@ try {
   const legacy = path.join(os.homedir(), '.LiteEditor');
   if (!fs.existsSync(storeDir) && fs.existsSync(legacy)) fs.cpSync(legacy, storeDir, { recursive: true });
 } catch (_) {}
-const STORE_KEYS = ['projects', 'settings', 'layout', 'recents', 'lastParent', 'categories', 'sectionOrder', 'favOrder', 'accordions', 'dismissed', 'uiState', 'projTabs', 'openrouter', 'remote', 'shares', 'pultBlocked', 'dockerUi', 'dbConnections', 'dbUi', 'rhConnections', 'rhUi', 'textproc', 'tpPrompts', 'extData', 'extEnabled', 'quickbar', 'seoTargets', 'seoSites', 'moduleWins', 'mwLeft', 'mwLogH', 'gitFav', 'commitDrafts', 'bookmarks', 'promptSnippets', 'pomodoro', 'pomodoroLog', 'dbaiProviders', 'sessionSnaps', 'siteMon', 'rmqConnections', 'rmqUi', 'kafkaConnections', 'kafkaUi'];
+const STORE_KEYS = ['projects', 'settings', 'layout', 'recents', 'lastParent', 'categories', 'sectionOrder', 'accordions', 'dismissed', 'uiState', 'projTabs', 'openrouter', 'remote', 'shares', 'pultBlocked', 'dockerUi', 'dbConnections', 'dbUi', 'rhConnections', 'rhUi', 'textproc', 'tpPrompts', 'extData', 'extEnabled', 'quickbar', 'seoTargets', 'seoSites', 'moduleWins', 'mwLeft', 'bookmarks', 'promptSnippets', 'pomodoro', 'pomodoroLog', 'dbaiProviders', 'sessionSnaps', 'autoModules'];
 // Папка-«стор» для шаринга с пультом (агент кладёт сюда файлы; в PTY доступна как $LITE_STORE).
 const pultStoreDir = path.join(storeDir, 'store');
 try { fs.mkdirSync(pultStoreDir, { recursive: true }); } catch (_) {}
@@ -243,11 +240,31 @@ function getPultShares() {
   for (const s of user) if (!seen.has(s.path)) { seen.add(s.path); out.push(s); }
   return out;
 }
-// Путь разрешён, только если он внутри одной из shares. Сверяем РЕАЛЬНЫЕ пути (realpath),
+// Путь разрешён, только если он внутри одной из shares или проектов. Сверяем РЕАЛЬНЫЕ пути (realpath),
 // иначе симлинк внутри шары (напр. store/evil → ~/.ssh) обошёл бы строковую проверку границы.
 function resolveInShares(p) {
-  let abs; try { abs = fs.realpathSync(path.resolve(p)); } catch (_) { return null; }
-  for (const s of getPultShares()) {
+  let current = path.resolve(String(p));
+  let abs = null;
+  while (true) {
+    try { abs = fs.realpathSync(current); break; }
+    catch (_) {
+      const parent = path.dirname(current);
+      if (parent === current) return null;
+      current = parent;
+    }
+  }
+  if (!abs) abs = path.resolve(String(p));
+
+  const shares = getPultShares();
+  const projects = readStoreKey('projects') || [];
+  for (const proj of projects) {
+    if (proj && proj.path) {
+      shares.push({ path: path.resolve(proj.path), name: proj.name });
+    }
+  }
+  shares.push({ path: storeDir, name: 'Стор' }); // Разрешить доступ к системной папке стора
+
+  for (const s of shares) {
     let base; try { base = fs.realpathSync(s.path); } catch (_) { continue; }
     if (abs === base || abs.startsWith(base + path.sep)) return abs;
   }
@@ -255,8 +272,31 @@ function resolveInShares(p) {
 }
 function ensureStoreDir() { try { fs.mkdirSync(storeDir, { recursive: true }); } catch (_) {} }
 function storeFile(key) { return path.join(storeDir, String(key).replace(/[^\w.-]/g, '_') + '.json'); }
+function encSecret(text) {
+  if (!text) return '';
+  try { if (safeStorage.isEncryptionAvailable()) return 'v1:' + safeStorage.encryptString(text).toString('base64'); } catch (_) {}
+  return 'b64:' + Buffer.from(String(text), 'utf8').toString('base64');
+}
+function decSecret(blob) {
+  if (!blob) return '';
+  try {
+    if (blob.startsWith('v1:')) return safeStorage.decryptString(Buffer.from(blob.slice(3), 'base64'));
+    if (blob.startsWith('b64:')) return Buffer.from(blob.slice(4), 'base64').toString('utf8');
+  } catch (_) {}
+  return '';
+}
+
 function readStoreKey(key) {
-  try { return JSON.parse(fs.readFileSync(storeFile(key), 'utf8')); }
+  try {
+    let data = JSON.parse(fs.readFileSync(storeFile(key), 'utf8'));
+    if (key === 'openrouter' && Array.isArray(data)) {
+      data = data.map(c => {
+        if (c.keyEnc) c.key = decSecret(c.keyEnc);
+        return c;
+      });
+    }
+    return data;
+  }
   // ENOENT just means "never written yet" (normal); anything else (bad JSON, perms) is worth logging.
   catch (e) { if (e && e.code !== 'ENOENT') logger.log('error', 'store', `read '${key}' failed`, e); return undefined; }
 }
@@ -275,7 +315,19 @@ function atomicWriteSync(file, data) {
 // log it; the boolean lets callers that DO care (import) detect a partial failure.
 function writeStoreKey(key, value) {
   ensureStoreDir();
-  try { atomicWriteSync(storeFile(key), JSON.stringify(value)); return true; }
+  try {
+    let out = value;
+    if (key === 'openrouter' && Array.isArray(value)) {
+      out = value.map(c => {
+        const copy = { ...c };
+        if (copy.key && !copy.keyEnc) { copy.keyEnc = encSecret(copy.key); }
+        if (copy.keyEnc) { copy.key = ''; } // don't store plaintext
+        return copy;
+      });
+    }
+    atomicWriteSync(storeFile(key), JSON.stringify(out));
+    return true;
+  }
   catch (e) { logger.log('error', 'store', `write '${key}' failed`, e); return false; }
 }
 ensureStoreDir();
@@ -317,19 +369,6 @@ const dbApi = dbBackend.registerDbIpc({
   ipcMain, safeStorage, dialog,
   getConnections: () => readStoreKey('dbConnections'),
   setConnections: (v) => writeStoreKey('dbConnections', v),
-});
-
-// «Kafka» backend (профили кластеров + kafkajs) — lib/kafka.js.
-kafkaBackend.registerKafkaIpc({
-  ipcMain, safeStorage,
-  getConnections: () => readStoreKey('kafkaConnections'),
-  setConnections: (v) => writeStoreKey('kafkaConnections', v),
-});
-// «RabbitMQ» backend (профили + management HTTP API, без зависимостей) — lib/rmq.js.
-rmqBackend.registerRmqIpc({
-  ipcMain, safeStorage,
-  getConnections: () => readStoreKey('rmqConnections'),
-  setConnections: (v) => writeStoreKey('rmqConnections', v),
 });
 
 // «RemoteHost» backend (интерактивные SSH-сессии + safeStorage-секреты) — lib/remotehost.js.
@@ -454,7 +493,8 @@ ipcMain.handle('openrouter:histSet', (_e, { id, messages }) => {
 });
 ipcMain.handle('openrouter:models', async (_e, { key } = {}) => {
   return await new Promise((resolve) => {
-    const req = https.request(OR_BASE + '/models', { method: 'GET', headers: orHeaders(key) }, (res) => {
+    const req = require('electron').net.request({ url: OR_BASE + '/models', method: 'GET', headers: orHeaders(key) });
+    req.on('response', (res) => {
       let data = '';
       res.on('data', (c) => { data += c; });
       res.on('end', () => {
@@ -473,7 +513,9 @@ ipcMain.handle('openrouter:models', async (_e, { key } = {}) => {
       });
     });
     req.on('error', (e) => resolve({ error: String(e.message || e) }));
-    req.setTimeout(20000, () => { req.destroy(); resolve({ error: 'таймаут запроса моделей' }); });
+    const t = setTimeout(() => { req.destroy(); resolve({ error: 'таймаут запроса моделей' }); }, 20000);
+    req.on('response', (res) => res.on('end', () => clearTimeout(t)));
+    req.on('error', () => clearTimeout(t));
     req.end();
   });
 });
@@ -484,10 +526,11 @@ ipcMain.handle('openrouter:models', async (_e, { key } = {}) => {
 const GH_REPO = 'DanielLetto2020/LiteEditorAI';
 ipcMain.handle('update:check', async () => {
   return await new Promise((resolve) => {
-    const req = https.request(
-      `https://api.github.com/repos/${GH_REPO}/releases/latest`,
-      { method: 'GET', headers: { 'User-Agent': 'LiteEditorAI', 'Accept': 'application/vnd.github+json' } },
-      (res) => {
+    const req = require('electron').net.request({
+      url: `https://api.github.com/repos/${GH_REPO}/releases/latest`,
+      method: 'GET', headers: { 'User-Agent': 'LiteEditorAI', 'Accept': 'application/vnd.github+json' }
+    });
+    req.on('response', (res) => {
         let data = '';
         res.on('data', (c) => { data += c; });
         res.on('end', () => {
@@ -500,14 +543,17 @@ ipcMain.handle('update:check', async () => {
       },
     );
     req.on('error', (e) => resolve({ error: String(e.message || e) }));
-    req.setTimeout(15000, () => { req.destroy(); resolve({ error: 'таймаут проверки обновления' }); });
+    const t = setTimeout(() => { req.destroy(); resolve({ error: 'таймаут проверки обновления' }); }, 15000);
+    req.on('response', (res) => res.on('end', () => clearTimeout(t)));
+    req.on('error', () => clearTimeout(t));
     req.end();
   });
 });
 // Key balance: GET /key → credit limit + usage (so the card can show «израсходовано / лимит»).
 ipcMain.handle('openrouter:keyInfo', async (_e, { key } = {}) => {
   return await new Promise((resolve) => {
-    const req = https.request(OR_BASE + '/key', { method: 'GET', headers: orHeaders(key) }, (res) => {
+    const req = require('electron').net.request({ url: OR_BASE + '/key', method: 'GET', headers: orHeaders(key) });
+    req.on('response', (res) => {
       let data = '';
       res.on('data', (c) => { data += c; });
       res.on('end', () => {
@@ -520,7 +566,9 @@ ipcMain.handle('openrouter:keyInfo', async (_e, { key } = {}) => {
       });
     });
     req.on('error', (e) => resolve({ error: String(e.message || e) }));
-    req.setTimeout(15000, () => { req.destroy(); resolve({ error: 'таймаут' }); });
+    const t = setTimeout(() => { req.destroy(); resolve({ error: 'таймаут' }); }, 15000);
+    req.on('response', (res) => res.on('end', () => clearTimeout(t)));
+    req.on('error', () => clearTimeout(t));
     req.end();
   });
 });
@@ -528,9 +576,11 @@ const orReqs = new Map(); // reqId -> ClientRequest (for abort)
 ipcMain.on('openrouter:chatStart', (e, { reqId, key, model, messages, temperature } = {}) => {
   const sender = e.sender;
   const body = JSON.stringify({ model, messages, stream: true, ...(typeof temperature === 'number' ? { temperature } : {}) });
-  const req = https.request(OR_BASE + '/chat/completions',
-    { method: 'POST', headers: { ...orHeaders(key), 'Content-Length': Buffer.byteLength(body) } },
-    (res) => {
+  const req = require('electron').net.request({
+    url: OR_BASE + '/chat/completions',
+    method: 'POST', headers: { ...orHeaders(key), 'Content-Length': Buffer.byteLength(body) }
+  });
+  req.on('response', (res) => {
       if (res.statusCode >= 400) { // surface the API error body (bad key, no credit, bad model…)
         let errData = '';
         res.on('data', (c) => { errData += c; });
@@ -575,7 +625,9 @@ ipcMain.on('openrouter:chatStart', (e, { reqId, key, model, messages, temperatur
       res.on('end', () => { if (!orReqs.has(reqId)) return; orReqs.delete(reqId); safeSend(sender, 'openrouter:done', { reqId }); });
     });
   req.on('error', (err) => { if (!orReqs.has(reqId)) return; orReqs.delete(reqId); safeSend(sender, 'openrouter:error', { reqId, error: String(err.message || err) }); });
-  req.setTimeout(120000, () => { req.destroy(); if (!orReqs.has(reqId)) return; orReqs.delete(reqId); safeSend(sender, 'openrouter:error', { reqId, error: 'таймаут запроса' }); });
+  const t = setTimeout(() => { req.destroy(); if (!orReqs.has(reqId)) return; orReqs.delete(reqId); safeSend(sender, 'openrouter:error', { reqId, error: 'таймаут запроса' }); }, 120000);
+  req.on('response', (res) => res.on('end', () => clearTimeout(t)));
+  req.on('error', () => clearTimeout(t));
   orReqs.set(reqId, req);
   req.write(body); req.end();
 });
@@ -591,11 +643,53 @@ ipcMain.on('openrouter:chatAbort', (e, { reqId } = {}) => {
 // пользователя, БЕЗ API-ключей (ключевая идея фичи).
 const tpDir = path.join(storeDir, 'textproc');
 ipcMain.handle('tp:dir', () => { try { fs.mkdirSync(tpDir, { recursive: true }); } catch (_) {} return tpDir; });
+// Обработка текста: нативные Открыть/Сохранить как (вместо браузерного File API/download — см. handoff design).
+ipcMain.handle('tp:openFile', async (e) => {
+  const win = BrowserWindow.fromWebContents(e.sender) || mainWindow;
+  const res = await dialog.showOpenDialog(win, {
+    title: 'Открыть документ', properties: ['openFile'],
+    filters: [
+      { name: 'Документы', extensions: ['md', 'markdown', 'txt', 'html', 'htm'] },
+      { name: 'Все файлы', extensions: ['*'] },
+    ],
+    ...lastDirOpts(),
+  });
+  if (res.canceled || !res.filePaths.length) return { canceled: true };
+  const file = res.filePaths[0];
+  try {
+    const stat = fs.statSync(file);
+    if (stat.size > IMPORT_MAX_BYTES) return { ok: false, error: `Файл слишком большой (${Math.round(stat.size / 1024)} КБ)` };
+    const content = fs.readFileSync(file, 'utf8');
+    saveState({ lastOpenDir: path.dirname(file) });
+    return { ok: true, file, name: path.basename(file), content };
+  } catch (e) { return { ok: false, error: 'Не удалось прочитать файл: ' + String(e.message || e) }; }
+});
+ipcMain.handle('tp:saveFileAs', async (e, { content, name, ext } = {}) => {
+  const win = BrowserWindow.fromWebContents(e.sender) || mainWindow;
+  const last = loadState().lastOpenDir;
+  const base = String(name || 'Безымянный').replace(/[\/\\:*?"<>|]+/g, '_').replace(/\.[^.]+$/, '');
+  const res = await dialog.showSaveDialog(win, {
+    title: 'Сохранить документ как',
+    defaultPath: path.join(last && fs.existsSync(last) ? last : os.homedir(), `${base}.${ext || 'md'}`),
+    filters: [
+      { name: 'Markdown', extensions: ['md'] },
+      { name: 'HTML', extensions: ['html'] },
+      { name: 'Текст', extensions: ['txt'] },
+    ],
+  });
+  if (res.canceled || !res.filePath) return { canceled: true };
+  try {
+    atomicWriteSync(res.filePath, String(content || ''));
+    saveState({ lastOpenDir: path.dirname(res.filePath) });
+    return { ok: true, file: res.filePath, name: path.basename(res.filePath) };
+  } catch (e) { return { ok: false, error: String(e.message || e) }; }
+});
 
 // Как звать CLI в неинтерактивном режиме и куда подавать промпт (stdin/arg).
 const TP_AGENTS = {
   claude: { cmd: 'claude', args: ['-p', '--output-format', 'text'], via: 'stdin' },
   codex: { cmd: 'codex', args: ['exec'], via: 'arg' },
+  antigravity: { cmd: '/Applications/Antigravity.app/Contents/Resources/app/bin/antigravity', args: ['chat', '-m', 'agent'], via: 'arg' }
 };
 // GUI-сессия часто не видит ~/.local/bin и nvm-bin → дополняем PATH, чтобы claude/codex нашлись.
 function tpEnv() {
@@ -612,19 +706,26 @@ ipcMain.on('tp:run', (e, { reqId, agent, prompt } = {}) => {
   try { child = spawn(conf.cmd, args, { cwd: os.homedir(), env: tpEnv() }); }
   catch (err) { safeSend(sender, 'tp:error', { reqId, error: 'не запустить «' + conf.cmd + '»: ' + (err.message || err) }); return; }
   tpReqs.set(reqId, child);
-  let out = '', errOut = '';
+  let out = '';
+  let errOut = '';
   const to = setTimeout(() => { if (tpReqs.has(reqId)) { tpReqs.delete(reqId); try { child.kill(); } catch (_) {} safeSend(sender, 'tp:error', { reqId, error: 'таймаут (агент не ответил вовремя)' }); } }, 240000);
-  child.stdout.on('data', (c) => { out += c.toString('utf8'); });
-  child.stderr.on('data', (c) => { errOut += c.toString('utf8'); });
-  child.on('error', (err) => {
-    if (!tpReqs.has(reqId)) return; tpReqs.delete(reqId); clearTimeout(to);
-    safeSend(sender, 'tp:error', { reqId, error: 'агент «' + conf.cmd + '» не найден/не запустился: ' + (err.message || err) });
+  
+  child.stdout.on('data', (c) => { 
+    const chunk = c.toString('utf8');
+    out += chunk; 
+    safeSend(sender, 'tp:data', { reqId, chunk }); 
   });
-  child.on('close', (code) => {
+  child.stderr.on('data', (c) => { errOut += c.toString('utf8'); });
+  child.on('error', (err) => { 
+    if (!tpReqs.has(reqId)) return; tpReqs.delete(reqId); clearTimeout(to); 
+    safeSend(sender, 'tp:error', { reqId, error: 'ошибка запуска: ' + (err.message || err) }); 
+  });
+  child.on('close', (exitCode) => {
     if (!tpReqs.has(reqId)) return; tpReqs.delete(reqId); clearTimeout(to);
-    const text = out.trim();
-    if (text) safeSend(sender, 'tp:done', { reqId, text }); // непустой вывод = результат (даже при ненулевом коде)
-    else safeSend(sender, 'tp:error', { reqId, error: errOut.trim() || ('агент завершился с кодом ' + code) });
+    
+    let text = out.trim();
+    if (text) safeSend(sender, 'tp:done', { reqId, text }); 
+    else safeSend(sender, 'tp:error', { reqId, error: errOut.trim() || ('агент завершился с кодом ' + exitCode) });
   });
   if (conf.via === 'stdin') { try { child.stdin.write(prompt || ''); child.stdin.end(); } catch (_) {} }
 });
@@ -736,239 +837,6 @@ ipcMain.on('dbai:apiRun', (e, { reqId, baseUrl, key, model, prompt } = {}) => {
   req.setTimeout(300000, () => { req.destroy(); if (!dbaiReqs.has(reqId)) return; dbaiReqs.delete(reqId); safeSend(sender, 'dbai:error', { reqId, error: 'таймаут запроса' }); });
   dbaiReqs.set(reqId, req);
   req.write(body); req.end();
-});
-
-// ---------------------------------------------------------------- «Анализ диалогов» (ctxmine)
-// Майнинг ДОЛГОИГРАЮЩИХ ПРАВИЛ из транскриптов Claude Code (~/.claude/projects/<enc>/*.jsonl).
-// Кодирование пути проекта в имя каталога: каждый НЕ-alnum символ → '-' (формула Claude Code,
-// проверена на реальных каталогах). scan — быстрый стат по транскриптам активного проекта;
-// analyze — спавн `claude -p` над ДИСТИЛЛЯТОМ диалога (только реальные реплики разработчика +
-// текст агента, без thinking/tool-шума) с промптом «вытащи правила и порекомендуй, куда положить».
-// Модель отдаёт JSON-реестр. Стоп-кран и поток как у dbai. Цель — ОБКАТКА: в реальные CLAUDE.md/
-// память НИЧЕГО не пишем, только собираем и показываем.
-const CLAUDE_PROJECTS_DIR = path.join(os.homedir(), '.claude', 'projects');
-const ctxmineEnc = (p) => String(p || '').replace(/[^a-zA-Z0-9]/g, '-');
-function ctxmineDirFor(projPath) {
-  if (!projPath) return null;
-  const d = path.join(CLAUDE_PROJECTS_DIR, ctxmineEnc(projPath));
-  try { return fs.existsSync(d) && fs.statSync(d).isDirectory() ? d : null; } catch (_) { return null; }
-}
-function ctxmineFiles(dir) {
-  return fs.readdirSync(dir).filter((f) => f.endsWith('.jsonl'))
-    .map((f) => { const fp = path.join(dir, f); let mt = 0; try { mt = fs.statSync(fp).mtimeMs; } catch (_) {} return { fp, mt }; })
-    .sort((a, b) => b.mt - a.mt); // новые сессии первыми
-}
-// служебный мусор CLI (не слова разработчика) — system-reminder'ы и command-обёртки
-function ctxmineCleanUser(t) {
-  return String(t)
-    .replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, ' ')
-    .replace(/<command-[a-z-]+>[\s\S]*?<\/command-[a-z-]+>/g, ' ')
-    .replace(/<local-command[\s\S]*?<\/local-command[a-z-]*>/g, ' ')
-    .trim();
-}
-// одна строка JSONL → {role,text} либо null (берём только содержательный текст user/assistant)
-function ctxmineMsg(o) {
-  const m = o && o.message; if (!m || typeof m !== 'object') return null;
-  const role = m.role; if (role !== 'user' && role !== 'assistant') return null;
-  const c = m.content; let text = '';
-  if (typeof c === 'string') text = c;
-  else if (Array.isArray(c)) text = c.filter((b) => b && b.type === 'text' && b.text).map((b) => b.text).join('\n');
-  text = text.trim(); if (!text) return null;
-  if (role === 'user') { text = ctxmineCleanUser(text); if (text.length < 2) return null; }
-  return { role, text };
-}
-function ctxmineStat(dir) {
-  const files = ctxmineFiles(dir); let messages = 0, bytes = 0, first = 0, last = 0;
-  for (const { fp, mt } of files) {
-    let st; try { st = fs.statSync(fp); } catch (_) { continue; }
-    bytes += st.size; if (!first || mt < first) first = mt; if (mt > last) last = mt;
-    let txt = ''; try { txt = fs.readFileSync(fp, 'utf8'); } catch (_) { continue; }
-    for (const line of txt.split('\n')) { const s = line.trim(); if (!s) continue; let o; try { o = JSON.parse(s); } catch (_) { continue; } if (ctxmineMsg(o)) messages++; }
-  }
-  return { sessions: files.length, messages, bytes, first, last };
-}
-// собрать дистиллят диалога под промпт (новые сессии первыми, в пределах лимита символов).
-// БАТЧИНГ ПО ИМЕНАМ СЕССИЙ: doneNames — Set уже разобранных файлов (.jsonl). Берём НЕразобранные
-// сессии (новые первыми) цельными кусками до capChars; batchFiles — какие имена вошли в ЭТОТ батч
-// (фронт добавит их в «разобрано» и запишет в localStorage), remaining — сколько ещё неразобранных
-// осталось после батча. Так и «Продолжить», и «разобрать ТОЛЬКО новые сессии» (появившиеся позже)
-// работают одним механизмом: новый файл просто оказывается «неразобранным».
-function ctxmineDistill(dir, capChars, doneNames) {
-  const done = doneNames instanceof Set ? doneNames : new Set(Array.isArray(doneNames) ? doneNames : []);
-  const files = ctxmineFiles(dir);
-  const totalFiles = files.length;
-  const chunks = []; const batchFiles = []; let total = 0, used = 0, messages = 0, truncated = false, remaining = 0, capped = false;
-  for (const { fp } of files) {
-    const name = path.basename(fp);
-    if (done.has(name)) continue;                 // уже разобрана в прошлый раз
-    if (capped) { remaining++; continue; }        // лимит исчерпан — просто считаем остаток
-    let txt = ''; try { txt = fs.readFileSync(fp, 'utf8'); } catch (_) { continue; }
-    const parts = ['\n----- новая сессия -----'];
-    let any = false, cnt = 0;
-    for (const line of txt.split('\n')) {
-      const s = line.trim(); if (!s) continue; let o; try { o = JSON.parse(s); } catch (_) { continue; }
-      const mm = ctxmineMsg(o); if (!mm) continue;
-      let body = mm.text;
-      if (mm.role === 'assistant' && body.length > 800) body = body.slice(0, 800) + ' …[обрезано]';
-      parts.push((mm.role === 'user' ? 'РАЗРАБОТЧИК: ' : 'АГЕНТ: ') + body);
-      cnt++; any = true;
-    }
-    if (!any) { batchFiles.push(name); continue; } // пустая сессия — помечаем разобранной, чтобы не висела
-    const chunk = parts.join('\n\n');
-    if (used > 0 && total + chunk.length > capChars) { capped = true; remaining++; continue; } // не влезла → в следующий батч
-    chunks.push(chunk); total += chunk.length; messages += cnt; used++; batchFiles.push(name);
-    if (total >= capChars) capped = true;
-  }
-  const hasMore = remaining > 0;
-  let text = chunks.join('\n');
-  if (text.length > capChars) { text = text.slice(0, capChars) + '\n…[сессия длинная, обрезана по лимиту]'; truncated = true; }
-  return { text, sessions: used, messages, truncated, batchFiles, remaining, hasMore, totalFiles, doneCount: done.size };
-}
-function ctxminePrompt(distill, projName) {
-  return `Ты — аналитик. Изучи ИСТОРИЮ ДИАЛОГОВ между разработчиком и ИИ-агентом (Claude Code) в проекте «${projName}» и извлеки из неё ДОЛГОИГРАЮЩИЕ ПРАВИЛА — то, что стоит занести в контекст агента, чтобы он сразу работал правильно и не повторял ошибок.
-
-Что искать (приоритет по убыванию ценности):
-1. ИСПРАВЛЕНИЯ разработчика («нет, не так», откаты, «всегда/никогда», поправки стиля) — самый ценный сигнал, каждое = правило.
-2. Ошибки и то, КАК их починили (грабли, которые не надо повторять).
-3. Соглашения по коду/стилю/именованию, принятые в проекте.
-4. Предпочтения по инструментам, командам, рабочему процессу.
-5. Архитектурные договорённости.
-
-Для КАЖДОГО правила реши, КУДА его положить (placement):
-- "global"  — личное правило, применимо ко ВСЕМ проектам (привычки разработчика) → главный ~/.claude/CLAUDE.md
-- "project" — специфично для этого проекта → CLAUDE.md проекта
-- "agents"  — то же, но для Codex/других агентов → AGENTS.md
-- "memory"  — разовый факт/контекст, полезный для памяти, но не правило поведения → авто-память
-- "skip"    — сомнительное/противоречивое/слишком частное — на ревью человеку, пока никуда
-
-ВЕРНИ СТРОГО ОДИН JSON-объект, без текста до/после и без markdown-обёртки. Схема:
-{
-  "summary": "1-2 предложения: что за проект и какие правила преобладают",
-  "rules": [
-    {
-      "title": "короткое правило в повелительном наклонении",
-      "detail": "развёрнуто: суть + как применять",
-      "category": "code-style|error-fix|workflow|preference|tooling|architecture|other",
-      "placement": "global|project|agents|memory|skip",
-      "placement_reason": "почему именно туда",
-      "confidence": "high|medium|low",
-      "occurrences": 1,
-      "evidence": "краткий пересказ момента, где это проявилось"
-    }
-  ]
-}
-Не выдумывай правил, которых нет в диалоге. Мало правил в истории — верни мало. Дубли объединяй и повышай occurrences.
-
-=== ИСТОРИЯ ДИАЛОГОВ ===
-${distill}`;
-}
-function ctxmineParse(raw) {
-  let s = String(raw || '').trim();
-  const fence = s.match(/```(?:json)?\s*([\s\S]*?)```/i);
-  if (fence) s = fence[1].trim();
-  const i = s.indexOf('{'), j = s.lastIndexOf('}');
-  if (i >= 0 && j > i) s = s.slice(i, j + 1);
-  return JSON.parse(s);
-}
-
-ipcMain.handle('ctxmine:scan', (_e, { projPath } = {}) => {
-  try {
-    const dir = ctxmineDirFor(projPath);
-    if (!dir) return { ok: true, found: false, sessions: 0, messages: 0, bytes: 0, first: 0, last: 0 };
-    return { ok: true, found: true, ...ctxmineStat(dir) };
-  } catch (err) { return { ok: false, error: String((err && err.message) || err) }; }
-});
-
-const ctxmineReqs = new Map();
-ipcMain.on('ctxmine:analyze', (e, { reqId, projPath, capChars, done } = {}) => {
-  const sender = e.sender; if (!reqId) return;
-  const dir = ctxmineDirFor(projPath);
-  if (!dir) { safeSend(sender, 'ctxmine:error', { reqId, error: 'Для этого проекта не найдено транскриптов Claude Code (~/.claude/projects/).' }); return; }
-  let distill;
-  try { distill = ctxmineDistill(dir, Math.max(5000, Math.min(120000, capChars || 60000)), done); }
-  catch (err) { safeSend(sender, 'ctxmine:error', { reqId, error: 'Не прочитать транскрипты: ' + ((err && err.message) || err) }); return; }
-  if (!distill.text.trim()) { safeSend(sender, 'ctxmine:error', { reqId, error: 'В оставшихся сессиях нет содержательных реплик для анализа.' }); return; }
-  const projName = path.basename(projPath || '') || 'проект';
-  let child;
-  try { child = spawn('claude', ['-p', '--output-format', 'stream-json', '--verbose', '--include-partial-messages'], { cwd: os.homedir(), env: tpEnv() }); }
-  catch (err) { safeSend(sender, 'ctxmine:error', { reqId, error: 'не запустить «claude»: ' + ((err && err.message) || err) }); return; }
-  ctxmineReqs.set(reqId, child);
-  safeSend(sender, 'ctxmine:progress', { reqId, stage: 'start', sessions: distill.sessions, messages: distill.messages, truncated: distill.truncated, chars: distill.text.length, batchFiles: distill.batchFiles, remaining: distill.remaining, hasMore: distill.hasMore, totalFiles: distill.totalFiles });
-  let full = '', errOut = '', buf = '', sawDelta = false;
-  const to = setTimeout(() => { if (ctxmineReqs.has(reqId)) { ctxmineReqs.delete(reqId); try { child.kill(); } catch (_) {} safeSend(sender, 'ctxmine:error', { reqId, error: 'таймаут (модель не ответила за 5 минут)' }); } }, 300000);
-  const emit = (t) => { if (!t) return; full += t; safeSend(sender, 'ctxmine:progress', { reqId, stage: 'delta', delta: t }); };
-  const handleLine = (line) => {
-    const s = line.trim(); if (!s) return; let ev; try { ev = JSON.parse(s); } catch (_) { return; }
-    if (ev.type === 'stream_event' && ev.event) {
-      const evt = ev.event;
-      if (evt.type === 'content_block_delta' && evt.delta && evt.delta.type === 'text_delta') { sawDelta = true; emit(evt.delta.text || ''); }
-      return;
-    }
-    if (ev.type === 'assistant' && ev.message && Array.isArray(ev.message.content) && !sawDelta) {
-      for (const b of ev.message.content) if (b && b.type === 'text' && b.text) emit(b.text);
-    }
-  };
-  child.stdout.on('data', (c) => { buf += c.toString('utf8'); let nl; while ((nl = buf.indexOf('\n')) >= 0) { handleLine(buf.slice(0, nl)); buf = buf.slice(nl + 1); } });
-  child.stderr.on('data', (c) => { errOut += c.toString('utf8'); });
-  child.on('error', (err) => { if (!ctxmineReqs.has(reqId)) return; ctxmineReqs.delete(reqId); clearTimeout(to); safeSend(sender, 'ctxmine:error', { reqId, error: 'claude не найден/не запустился: ' + ((err && err.message) || err) }); });
-  child.on('close', (code) => {
-    if (!ctxmineReqs.has(reqId)) return; ctxmineReqs.delete(reqId); clearTimeout(to);
-    if (buf.trim()) handleLine(buf);
-    if (!full.trim()) { safeSend(sender, 'ctxmine:error', { reqId, error: errOut.trim() || ('claude завершился с кодом ' + code) }); return; }
-    let parsed; try { parsed = ctxmineParse(full); } catch (err) { safeSend(sender, 'ctxmine:error', { reqId, error: 'Модель вернула не-JSON: ' + ((err && err.message) || err), raw: full.slice(0, 4000) }); return; }
-    const rules = Array.isArray(parsed && parsed.rules) ? parsed.rules : [];
-    safeSend(sender, 'ctxmine:result', { reqId, summary: (parsed && parsed.summary) || '', rules, meta: { sessions: distill.sessions, messages: distill.messages, truncated: distill.truncated, batchFiles: distill.batchFiles, remaining: distill.remaining, hasMore: distill.hasMore, totalFiles: distill.totalFiles } });
-  });
-  child.stdin.write(ctxminePrompt(distill.text, projName)); child.stdin.end();
-});
-ipcMain.on('ctxmine:abort', (e, { reqId } = {}) => {
-  const c = ctxmineReqs.get(reqId);
-  if (c) { ctxmineReqs.delete(reqId); try { c.kill(); } catch (_) {} safeSend(e.sender, 'ctxmine:error', { reqId, error: 'Отменено.', aborted: true }); }
-});
-// Содержимое уже существующих файлов контекста — для дедупа (B): фронт пометит правила, которые в них
-// уже записаны, чтобы не предлагать повторно. Читаем только эти три файла (не пишем).
-ipcMain.handle('ctxmine:context', (_e, { projPath } = {}) => {
-  const read = (p) => { try { return p && fs.existsSync(p) ? fs.readFileSync(p, 'utf8') : ''; } catch (_) { return ''; } };
-  return {
-    ok: true,
-    global: read(path.join(os.homedir(), '.claude', 'CLAUDE.md')),
-    project: projPath ? read(path.join(projPath, 'CLAUDE.md')) : '',
-    agents: projPath ? read(path.join(projPath, 'AGENTS.md')) : '',
-  };
-});
-// Применить выбранные правила в файлы контекста (A): дописать маркдаун-буллеты в нужный файл под общим
-// заголовком. placement → файл: global=~/.claude/CLAUDE.md, project=<proj>/CLAUDE.md, agents=<proj>/AGENTS.md.
-// memory/skip файлами НЕ пишем (их в items быть не должно). Подтверждение — на стороне фронта (модалка).
-const CTXMINE_APPLY_HEADER = '## Правила из диалогов (LiteEditor)';
-ipcMain.handle('ctxmine:apply', (_e, { projPath, items } = {}) => {
-  if (!Array.isArray(items) || !items.length) return { ok: false, error: 'Нечего применять' };
-  const targets = {
-    global: path.join(os.homedir(), '.claude', 'CLAUDE.md'),
-    project: projPath ? path.join(projPath, 'CLAUDE.md') : null,
-    agents: projPath ? path.join(projPath, 'AGENTS.md') : null,
-  };
-  const byPlace = {};
-  for (const it of items) { const pl = it && it.placement; if (targets[pl]) (byPlace[pl] = byPlace[pl] || []).push(it); }
-  const applied = []; const errors = [];
-  for (const [pl, arr] of Object.entries(byPlace)) {
-    const file = targets[pl];
-    try {
-      fs.mkdirSync(path.dirname(file), { recursive: true });
-      let cur = ''; try { cur = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : ''; } catch (_) {}
-      const bullets = arr.map((it) => {
-        const t = String((it && it.title) || '').trim();
-        const d = String((it && it.detail) || '').trim();
-        return '- ' + t + (d ? '\n  ' + d.replace(/\n/g, '\n  ') : '');
-      }).join('\n');
-      const base = cur.replace(/\s*$/, '');
-      const next = cur.includes(CTXMINE_APPLY_HEADER)
-        ? base + '\n' + bullets + '\n'
-        : (base ? base + '\n\n' : '') + CTXMINE_APPLY_HEADER + '\n' + bullets + '\n';
-      atomicWriteSync(file, next);
-      applied.push({ placement: pl, file, count: arr.length });
-    } catch (err) { errors.push({ placement: pl, error: String((err && err.message) || err) }); }
-  }
-  return { ok: errors.length === 0, applied, errors };
 });
 
 // ---------------------------------------------------------------- «ИИ компания» (company)
@@ -1896,9 +1764,6 @@ function openModuleWindow(modId) {
   win.on('closed', () => {
     moduleWindows.delete(modId);
     if (modId === 'files') filesViewerReady = false; // окно вивера закрыто → следующее openInViewer переоткроет и переждёт готовность
-    if (modId === 'db') dbPanelReady = false;        // окно БД закрыто → следующий openFromContainer переоткроет и переждёт готовность
-    if (modId === 'rmq') rmqPanelReady = false;      // аналогично для окна RabbitMQ
-    if (modId === 'kafka') kafkaPanelReady = false;  // аналогично для окна Kafka
     if (modId === 'ctx') { for (const w of ctxOutWatchers.values()) { try { w.close(); } catch (_) {} } ctxOutWatchers.clear(); } // окно «Контекст» закрылось без unwatch → не течём fs.watch (B2)
     for (const [sid, wc] of ownerBySession) { try { if (wc.isDestroyed()) ownerBySession.delete(sid); } catch (_) { ownerBySession.delete(sid); } }
     broadcastModuleOpenSet();
@@ -2348,10 +2213,10 @@ function relayPost(host, pathname, body, extraHeaders) {
     let data;
     try { data = Buffer.from(JSON.stringify(body)); } catch (_) { resolve({ status: 0, error: 'bad body' }); return; }
     const headers = Object.assign({ 'Content-Type': 'application/json', 'Content-Length': data.length }, extraHeaders || {});
-    const req = https.request(
-      { host, path: pathname, method: 'POST', headers, timeout: 12000 },
-      (res) => { let buf = ''; res.on('data', (d) => (buf += d)); res.on('end', () => { let j = null; try { j = JSON.parse(buf); } catch (_) {} resolve({ status: res.statusCode, body: j }); }); }
+    const req = require('electron').net.request(
+      { url: 'https://' + host + pathname, method: 'POST', headers, timeout: 12000 }
     );
+    req.on('response', (res) => { let buf = ''; res.on('data', (d) => (buf += d)); res.on('end', () => { let j = null; try { j = JSON.parse(buf); } catch (_) {} resolve({ status: res.statusCode, body: j }); }); });
     req.on('timeout', () => { req.destroy(); resolve({ status: 0, error: 'timeout' }); });
     req.on('error', (e) => resolve({ status: 0, error: String(e && e.message || e) }));
     req.write(data); req.end();
@@ -2568,55 +2433,6 @@ ipcMain.on('editor:viewerReady', () => {
   while (pendingViewerOpens.length) { const p = pendingViewerOpens.shift(); const w = filesWindow(); if (w) w.webContents.send('editor:openInViewer', p); }
   if (pendingFocusGit) { pendingFocusGit = false; const w = filesWindow(); if (w) { w.focus(); w.webContents.send('editor:focusGit'); } }
 });
-// «Контейнеры» → «Базы данных»: открыть окно модуля БД с заготовкой подключения из контейнера.
-// Паттерн тот же, что у вивера выше: окно может быть не готово сразу → очередь до db:panelReady.
-let dbPanelReady = false;
-const pendingDbOpens = [];
-function dbModWindow() { const w = moduleWindows.get('db'); return (w && !w.isDestroyed()) ? w : null; }
-ipcMain.on('db:openFromContainer', (_e, payload) => {
-  if (!payload || typeof payload !== 'object') return;
-  if (!dbModWindow()) openModuleWindow('db');
-  const w = dbModWindow();
-  if (w && dbPanelReady) { if (w.isMinimized()) w.restore(); w.focus(); w.webContents.send('db:openFromContainer', payload); }
-  else pendingDbOpens.push(payload);
-});
-ipcMain.on('db:panelReady', () => {
-  dbPanelReady = true;
-  const w = dbModWindow();
-  while (w && pendingDbOpens.length) { w.focus(); w.webContents.send('db:openFromContainer', pendingDbOpens.shift()); }
-});
-// «Контейнеры» → «RabbitMQ»: тот же паттерн, что и с БД выше.
-let rmqPanelReady = false;
-const pendingRmqOpens = [];
-function rmqModWindow() { const w = moduleWindows.get('rmq'); return (w && !w.isDestroyed()) ? w : null; }
-ipcMain.on('rmq:openFromContainer', (_e, payload) => {
-  if (!payload || typeof payload !== 'object') return;
-  if (!rmqModWindow()) openModuleWindow('rmq');
-  const w = rmqModWindow();
-  if (w && rmqPanelReady) { if (w.isMinimized()) w.restore(); w.focus(); w.webContents.send('rmq:openFromContainer', payload); }
-  else pendingRmqOpens.push(payload);
-});
-ipcMain.on('rmq:panelReady', () => {
-  rmqPanelReady = true;
-  const w = rmqModWindow();
-  while (w && pendingRmqOpens.length) { w.focus(); w.webContents.send('rmq:openFromContainer', pendingRmqOpens.shift()); }
-});
-// «Контейнеры» → «Kafka»: тот же паттерн, что и с БД/RabbitMQ выше.
-let kafkaPanelReady = false;
-const pendingKafkaOpens = [];
-function kafkaModWindow() { const w = moduleWindows.get('kafka'); return (w && !w.isDestroyed()) ? w : null; }
-ipcMain.on('kafka:openFromContainer', (_e, payload) => {
-  if (!payload || typeof payload !== 'object') return;
-  if (!kafkaModWindow()) openModuleWindow('kafka');
-  const w = kafkaModWindow();
-  if (w && kafkaPanelReady) { if (w.isMinimized()) w.restore(); w.focus(); w.webContents.send('kafka:openFromContainer', payload); }
-  else pendingKafkaOpens.push(payload);
-});
-ipcMain.on('kafka:panelReady', () => {
-  kafkaPanelReady = true;
-  const w = kafkaModWindow();
-  while (w && pendingKafkaOpens.length) { w.focus(); w.webContents.send('kafka:openFromContainer', pendingKafkaOpens.shift()); }
-});
 ipcMain.on('editor:sendToTerminal', (_e, payload) => forwardToEditor('editor:sendToTerminal', payload));
 // «Пропустить отдых» с оверлея в окне редактора → пропустить текущую фазу помодоро (движок в main).
 ipcMain.on('editor:pomodoroSkip', () => { if (POMO.running) pomoAdvance(); });
@@ -2788,279 +2604,9 @@ ipcMain.handle('pty:foregroundState', (_e, { id }) => {
   return p ? foregroundKind(p.pid) : null;
 });
 
-// ---------------------------------------------------------------- Монитор ресурсов
-// Самонаблюдение за потреблением. Снимок раздельно по двум мирам:
-//   • Electron-процессы (app.getAppMetrics, маппинг pid→окно) — это «сам редактор», что и можно
-//     оптимизировать (число окон-модулей, утечки в рендерерах);
-//   • деревья процессов терминалов (PTY-агенты, /proc — ТОЛЬКО Linux) — «полезная нагрузка», к
-//     редактору отношения почти не имеет (claude/codex молотят по делу). Не смешиваем, чтобы цифры
-//     агентов не выдавались за расход редактора.
-// CPU% PTY считаем дельтой между последовательными вызовами (UI опрашивает раз в ~3с) — без
-// искусственных sleep. getAppMetrics уже отдаёт cpu.percentCPUUsage за интервал с прошлого вызова.
-const MONITOR_PAGE = 4096;                    // размер страницы (rss в /proc/<pid>/stat — в страницах)
-const MODULE_TITLES = {
-  tools: 'Инструменты', iterflow: 'IterFlow', seo: 'WEB/SEO аудит', audit: 'Аудит',
-  pomodoro: 'Помодоро', company: 'ИИ компания', notes: 'Задачи', db: 'Базы данных',
-  chat: 'OpenRouter', doc: 'Обработка текста', docker: 'Контейнеры', rh: 'Удалённые хосты',
-  ctx: 'Контекст', scratch: 'Система · ~', files: 'Проект', monitor: 'Монитор',
-};
-let monPrev = null;   // { total, perSid: Map<sid,jiffies> } — для расчёта CPU% деревьев PTY
-
-// /proc/<pid>/stat → { comm, ppid, jiffies (utime+stime), rssBytes }; null если процесс исчез.
-function readPidStatFull(pid) {
-  try {
-    const data = fs.readFileSync(`/proc/${pid}/stat`, 'utf8');
-    const r = data.lastIndexOf(')');
-    const comm = data.slice(data.indexOf('(') + 1, r);
-    const f = data.slice(r + 2).split(' '); // [0]=state [1]=ppid … [11]=utime [12]=stime [21]=rss(стр.)
-    return { comm, ppid: +f[1] || 0, jiffies: (+f[11] || 0) + (+f[12] || 0), rssBytes: (+f[21] || 0) * MONITOR_PAGE };
-  } catch (_) { return null; }
-}
-// суммарные «джиффи» процессора из /proc/stat (для нормировки CPU% деревьев PTY)
-function readTotalJiffies() {
-  try {
-    const line = fs.readFileSync('/proc/stat', 'utf8').split('\n', 1)[0]; // "cpu  u n s i ..."
-    return line.trim().split(/\s+/).slice(1).reduce((a, b) => a + (+b || 0), 0);
-  } catch (_) { return 0; }
-}
-function monitorSessionLabel(sid) {
-  const s = String(sid);
-  const pid = s.split('::')[0];
-  try { const p = (readStoreKey('projects') || []).find((x) => x.id === pid); if (p) return 'Терминал: ' + p.name; } catch (_) {}
-  return 'Терминал: ' + s;
-}
-
-ipcMain.handle('monitor:sample', () => {
-  // ── Electron-процессы: pid → понятная метка (окно/модуль/GPU/служебный) ──
-  const pidLabel = new Map();
-  try { pidLabel.set(process.pid, { label: 'Ядро (main)', kind: 'main' }); } catch (_) {}
-  try { if (mainWindow && !mainWindow.isDestroyed()) pidLabel.set(mainWindow.webContents.getOSProcessId(), { label: 'Главное окно', kind: 'window' }); } catch (_) {}
-  for (const [modId, w] of moduleWindows) {
-    if (!w || w.isDestroyed()) continue;
-    try { pidLabel.set(w.webContents.getOSProcessId(), { label: 'Окно: ' + (MODULE_TITLES[modId] || modId), kind: 'window' }); } catch (_) {}
-  }
-  const TYPE_RU = { GPU: 'GPU', Utility: 'Служебный', Browser: 'Ядро (main)', Tab: 'Renderer', Pepper: 'Плагин' };
-  const electron = (app.getAppMetrics() || []).map((m) => {
-    const info = pidLabel.get(m.pid);
-    return {
-      pid: m.pid, type: m.type || '?',
-      kind: info ? info.kind : (m.type === 'GPU' ? 'gpu' : 'util'),
-      name: m.name || m.serviceName || '',
-      label: info ? info.label : (TYPE_RU[m.type] || m.type || 'Процесс'),
-      cpu: Math.round((m.cpu && m.cpu.percentCPUUsage || 0) * 10) / 10,
-      memBytes: (m.memory && m.memory.workingSetSize || 0) * 1024, // workingSetSize в КБ
-    };
-  }).sort((a, b) => b.memBytes - a.memBytes);
-
-  // ── PTY-агенты: деревья процессов терминалов (Linux) ──
-  const pty = [];
-  let ptyNote = null;
-  if (process.platform === 'linux') {
-    const all = new Map();
-    try {
-      for (const ent of fs.readdirSync('/proc')) {
-        if (ent.charCodeAt(0) < 48 || ent.charCodeAt(0) > 57) continue; // только числовые pid
-        const st = readPidStatFull(ent); if (st) all.set(+ent, st);
-      }
-    } catch (_) {}
-    const kids = new Map();
-    for (const [p, st] of all) { if (!kids.has(st.ppid)) kids.set(st.ppid, []); kids.get(st.ppid).push(p); }
-    const total = readTotalJiffies();
-    const dTotal = monPrev ? Math.max(0, total - monPrev.total) : 0;
-    const ncpu = (os.cpus() || []).length || 1;
-    const nowPer = new Map();
-    for (const [sid, proc] of ptys) {
-      const root = proc && proc.pid; if (!root) continue;
-      const seen = new Set(); const stack = [root]; let rss = 0, jif = 0, n = 0, topComm = '';
-      while (stack.length) {
-        const p = stack.pop(); if (seen.has(p)) continue; seen.add(p);
-        const st = all.get(p); if (!st) continue;
-        rss += st.rssBytes; jif += st.jiffies; n++;
-        if (p === root) topComm = st.comm;
-        for (const c of (kids.get(p) || [])) stack.push(c);
-      }
-      nowPer.set(sid, jif);
-      let cpu = 0;
-      if (monPrev && monPrev.perSid.has(sid) && dTotal > 0) {
-        cpu = Math.max(0, Math.round(((jif - monPrev.perSid.get(sid)) / dTotal) * ncpu * 100 * 10) / 10);
-      }
-      pty.push({ sid, pid: root, label: monitorSessionLabel(sid), comm: topComm, procs: n, state: foregroundKind(root), cpu, memBytes: rss });
-    }
-    pty.sort((a, b) => b.memBytes - a.memBytes);
-    monPrev = { total, perSid: nowPer };
-  } else {
-    ptyNote = 'Детализация процессов терминалов доступна только на Linux.';
-  }
-
-  const editorMem = electron.reduce((s, p) => s + p.memBytes, 0);
-  const editorCpu = Math.round(electron.reduce((s, p) => s + p.cpu, 0) * 10) / 10;
-  const ptyMem = pty.reduce((s, p) => s + p.memBytes, 0);
-  const ptyCpu = Math.round(pty.reduce((s, p) => s + p.cpu, 0) * 10) / 10;
-  return {
-    ok: true, ts: Date.now(),
-    editor: { procs: electron, totalMem: editorMem, totalCpu: editorCpu },
-    pty: { procs: pty, totalMem: ptyMem, totalCpu: ptyCpu, note: ptyNote },
-  };
-});
-
-// ---------------------------------------------------------------- «Сейф паролей» (KeePass/.kdbx)
-// Расшифровка целиком в main (Node: kdbxweb + node crypto, без бандлинга). Мастер-пароль приходит по
-// IPC и НИГДЕ не логируется. Пароли записей в рендерер НЕ уходят: список содержит только метаданные
-// (заголовок/логин/URL/имена полей), а копирование в буфер и показ конкретного поля делает main по
-// запросу. Argon2 (KDBX4) — чистый JS из @noble/hashes (без нативщины/wasm).
-let _kdbxweb = null, _nobleArgon = null;
-function ensureKdbx() {
-  if (_kdbxweb) return _kdbxweb;
-  _kdbxweb = require('kdbxweb');
-  _nobleArgon = require('@noble/hashes/argon2.js');
-  _kdbxweb.CryptoEngine.setArgon2Impl((password, salt, memory, iterations, length, parallelism, type, version) => {
-    const fn = type === 0 ? _nobleArgon.argon2d : _nobleArgon.argon2id; // 0=Argon2d, 2=Argon2id; memory уже в KiB
-    const out = fn(new Uint8Array(password), new Uint8Array(salt), { t: iterations, m: memory, p: parallelism, dkLen: length, version });
-    return Promise.resolve(out.buffer.slice(out.byteOffset, out.byteOffset + out.byteLength));
-  });
-  return _kdbxweb;
-}
-let kpDb = null; let kpClipTimer = null;
-const kpEntryById = new Map(); // uuid.id -> entry (живёт в main, в рендерер не отдаём)
-function kpVal(en, field) { const v = en.fields.get(field); return v && typeof v.getText === 'function' ? v.getText() : (v == null ? '' : String(v)); }
-
-ipcMain.handle('keepass:pick', async () => {
-  const res = await dialog.showOpenDialog(mainWindow, {
-    title: 'Открыть базу KeePass', properties: ['openFile'],
-    filters: [{ name: 'KeePass', extensions: ['kdbx'] }, { name: 'Все файлы', extensions: ['*'] }], ...lastDirOpts(),
-  });
-  if (res.canceled || !res.filePaths.length) return { canceled: true };
-  const file = res.filePaths[0];
-  saveState({ lastOpenDir: path.dirname(file) });
-  return { ok: true, path: file, name: path.basename(file) };
-});
-ipcMain.handle('keepass:open', async (_e, { path: file, password } = {}) => {
-  try {
-    if (!file || !fs.existsSync(file)) return { ok: false, error: 'Файл не найден' };
-    const kw = ensureKdbx();
-    const buf = fs.readFileSync(file);
-    const ab = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
-    const cred = new kw.Credentials(kw.ProtectedValue.fromString(String(password || '')));
-    const db = await kw.Kdbx.load(ab, cred);   // мастер-пароль использован только здесь, не сохраняем
-    kpDb = db; kpEntryById.clear();
-    const entries = [];
-    const walk = (g, prefix) => {
-      const gp = prefix ? prefix + ' / ' + (g.name || '') : (g.name || '');
-      for (const en of g.entries) {
-        const id = en.uuid && en.uuid.id; if (!id) continue;
-        kpEntryById.set(id, en);
-        const fields = [];
-        for (const [k, v] of en.fields) {
-          if (k === 'Title') continue;
-          const secret = !!(v && typeof v.getText === 'function');
-          if (secret || (v != null && String(v) !== '')) fields.push({ name: k, secret, value: secret ? null : String(v) }); // секретные значения НЕ отдаём
-        }
-        entries.push({ id, title: kpVal(en, 'Title') || '(без названия)', username: kpVal(en, 'UserName'), group: gp, fields });
-      }
-      for (const sg of g.groups) walk(sg, gp);
-    };
-    walk(db.getDefaultGroup(), '');
-    return { ok: true, name: path.basename(file), entries };
-  } catch (err) {
-    const code = err && err.code;
-    return { ok: false, error: code === 'InvalidKey' ? 'Неверный мастер-пароль' : ('Не удалось открыть базу: ' + ((err && err.message) || err)) };
-  }
-});
-ipcMain.handle('keepass:reveal', (_e, { id, field } = {}) => {
-  const en = kpEntryById.get(id); if (!en) return { ok: false, error: 'нет записи' };
-  return { ok: true, value: kpVal(en, field) };
-});
-ipcMain.handle('keepass:copy', (_e, { id, field } = {}) => {
-  const en = kpEntryById.get(id); if (!en) return { ok: false, error: 'нет записи' };
-  const val = kpVal(en, field);
-  try { clipboard.writeText(val); } catch (_) { return { ok: false, error: 'буфер недоступен' }; }
-  if (kpClipTimer) clearTimeout(kpClipTimer);
-  kpClipTimer = setTimeout(() => { try { if (clipboard.readText() === val) clipboard.writeText(''); } catch (_) {} }, 20000); // авто-очистка
-  return { ok: true };
-});
-ipcMain.on('keepass:lock', () => { kpDb = null; kpEntryById.clear(); if (kpClipTimer) { clearTimeout(kpClipTimer); kpClipTimer = null; } });
-
-// ---------------------------------------------------------------- заставка «матрица» (кросс-оконный простой)
-// Активность ЛЮБОГО окна (редактор + окна модулей) шлёт screensaver:activity → обновляем метку простоя
-// и, если заставка показана авто, гасим её. Тик раз в 5с: если включено в настройках и простой дольше
-// порога — показываем заставку на ГЛАВНОМ окне (screensaver:set on). Настройки: settings.screensaver
-// (вкл, по умолчанию ДА) + settings.screensaverMins (минуты, по умолчанию 5).
-let ssLast = Date.now();
-let ssActive = false;
-function ssConfig() { const s = readStoreKey('settings') || {}; return { on: s.screensaver !== false, mins: Math.max(1, Math.min(180, Number(s.screensaverMins) || 5)) }; }
-function ssSet(on) { ssActive = on; if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('screensaver:set', { on }); }
-ipcMain.on('screensaver:activity', () => { ssLast = Date.now(); if (ssActive) ssSet(false); });
-const ssTimer = setInterval(() => {
-  const { on, mins } = ssConfig();
-  if (!on || ssActive) return;
-  if (Date.now() - ssLast > mins * 60000) ssSet(true);
-}, 5000);
-if (ssTimer.unref) ssTimer.unref();
-
-// ---------------------------------------------------------------- мониторинг сайтов (downdetector-стиль)
-// Список сайтов в STORE 'siteMon'. main в ФОНЕ (даже если окно закрыто) по интервалу каждого сайта
-// делает HTTP-запрос, меряет задержку, держит up/down + короткую историю. На СМЕНУ состояния —
-// нативное уведомление + событие 'sitemon:update' в окна. Редактирование — из окна модуля по IPC.
-const SM_HISTORY = 60;
-let smSites = [];
-function smPublic() { return smSites.map((s) => ({ id: s.id, name: s.name, url: s.url, intervalSec: s.intervalSec, up: s.up, code: s.code, ms: s.ms, checkedAt: s.checkedAt, error: s.error, history: (s.history || []).slice(-SM_HISTORY) })); }
-function smPersist() { try { writeStoreKey('siteMon', smSites.map(({ checking, nextAt, ...s }) => s)); } catch (_) {} }
-function smLoad() { const raw = readStoreKey('siteMon'); smSites = Array.isArray(raw) ? raw.map((s) => ({ history: [], ...s, checking: false, nextAt: 0 })) : []; }
-function smBroadcast() {
-  const p = smPublic();
-  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('sitemon:update', p);
-  for (const w of moduleWindows.values()) { if (w && !w.isDestroyed()) w.webContents.send('sitemon:update', p); }
-}
-function smNotify(s, up) {
-  try {
-    if (Notification.isSupported && !Notification.isSupported()) return;
-    new Notification({ title: (up ? '✅ ' : '🔴 ') + (s.name || s.url) + (up ? ' снова доступен' : ' недоступен'), body: up ? 'Сайт снова отвечает' : 'Сайт не отвечает — проверьте', silent: false }).show();
-  } catch (_) {}
-}
-async function smCheckOne(s) {
-  if (!s || s.checking) return; s.checking = true;
-  const ctrl = new AbortController(); const to = setTimeout(() => ctrl.abort(), 12000);
-  const t0 = Date.now(); let up = false, code = 0, error = '';
-  try {
-    let res;
-    try { res = await fetch(s.url, { method: 'HEAD', redirect: 'follow', signal: ctrl.signal }); }
-    catch (_) { res = await fetch(s.url, { method: 'GET', redirect: 'follow', signal: ctrl.signal }); } // часть серверов не отвечает на HEAD
-    code = res.status; up = res.status < 400; if (!up) error = 'HTTP ' + code;
-  } catch (e) { up = false; code = 0; error = (e && e.name === 'AbortError') ? 'таймаут' : ((e && e.message) || 'нет связи'); }
-  clearTimeout(to);
-  const ms = Date.now() - t0; const was = s.up;
-  s.up = up; s.code = code; s.ms = ms; s.error = up ? '' : error; s.checkedAt = Date.now(); s.checking = false;
-  s.history = (s.history || []).concat({ t: s.checkedAt, up, code, ms }).slice(-SM_HISTORY);
-  s.nextAt = Date.now() + Math.max(15, s.intervalSec || 60) * 1000;
-  if (was !== undefined && was !== up) smNotify(s, up); // уведомляем только на СМЕНУ (не на первом замере)
-  smPersist(); smBroadcast();
-}
-const smTimer = setInterval(() => { const now = Date.now(); for (const s of smSites) if (!s.checking && (!s.nextAt || now >= s.nextAt)) smCheckOne(s); }, 5000);
-if (smTimer.unref) smTimer.unref();
-smLoad();
-setTimeout(() => { for (const s of smSites) smCheckOne(s); }, 3000); // первый прогон вскоре после старта
-
-function smNormUrl(url) { let u = String(url || '').trim(); if (!u) return null; if (!/^https?:\/\//i.test(u)) u = 'https://' + u; try { new URL(u); return u; } catch (_) { return null; } }
-ipcMain.handle('sitemon:list', () => smPublic());
-ipcMain.handle('sitemon:add', (_e, { name, url, intervalSec } = {}) => {
-  const u = smNormUrl(url); if (!u) return { ok: false, error: 'Некорректный URL' };
-  const id = 'sm' + Date.now().toString(36) + Math.floor(Math.random() * 1e4).toString(36);
-  const s = { id, name: String(name || '').trim() || new URL(u).hostname, url: u, intervalSec: Math.max(15, Math.min(3600, Number(intervalSec) || 60)), history: [], checking: false, nextAt: 0 };
-  smSites.push(s); smPersist(); smBroadcast(); smCheckOne(s);
-  return { ok: true, id };
-});
-ipcMain.handle('sitemon:edit', (_e, { id, name, url, intervalSec } = {}) => {
-  const s = smSites.find((x) => x.id === id); if (!s) return { ok: false, error: 'нет сайта' };
-  if (name != null) s.name = String(name).trim() || s.name;
-  if (url != null) { const u = smNormUrl(url); if (!u) return { ok: false, error: 'Некорректный URL' }; s.url = u; }
-  if (intervalSec != null) s.intervalSec = Math.max(15, Math.min(3600, Number(intervalSec) || 60));
-  s.nextAt = 0; smPersist(); smBroadcast(); smCheckOne(s); return { ok: true };
-});
-ipcMain.handle('sitemon:remove', (_e, { id } = {}) => { smSites = smSites.filter((x) => x.id !== id); smPersist(); smBroadcast(); return { ok: true }; });
-ipcMain.handle('sitemon:checkNow', (_e, { id } = {}) => { if (id) { const s = smSites.find((x) => x.id === id); if (s) { s.nextAt = 0; smCheckOne(s); } } else { for (const s of smSites) { s.nextAt = 0; smCheckOne(s); } } return { ok: true }; });
-
 // ---------------------------------------------------------------- filesystem
 ipcMain.handle('fs:readDir', async (_e, dir) => {
+  if (!resolveInShares(dir)) return { error: 'доступ запрещен (вне workspace)' };
   try {
     const entries = await fs.promises.readdir(dir, { withFileTypes: true });
     const out = await Promise.all(entries.map(async (d) => {
@@ -3076,38 +2622,37 @@ ipcMain.handle('fs:readDir', async (_e, dir) => {
   } catch (err) { return { error: String(err.message || err) }; }
 });
 ipcMain.handle('fs:readFile', async (_e, file) => {
+  if (!resolveInShares(file)) return { error: 'доступ запрещен (вне workspace)' };
   try {
     const stat = await fs.promises.stat(file);
-    // Сокеты/FIFO/девайсы — не открываем: socket даёт ENXIO, а readFile FIFO повис бы навсегда.
-    if (!stat.isFile()) return { error: 'Это не обычный файл (сокет/FIFO/каталог)' };
     if (stat.size > MAX_VIEW_BYTES) return { error: `Файл слишком большой (${Math.round(stat.size / 1024)} КБ)` };
     return { content: await fs.promises.readFile(file, 'utf8') };
   } catch (err) { return { error: String(err.message || err) }; }
 });
 ipcMain.handle('fs:writeFile', async (_e, { file, content }) => {
-  try {
-    await histSnapshotFromDisk(file, 'save');   // локальная история: состояние ДО записи (best-effort)
-    await fs.promises.writeFile(file, content, 'utf8');
-    return { ok: true };
-  } catch (err) { return { error: String(err.message || err) }; }
+  if (!resolveInShares(file)) return { error: 'доступ запрещен (вне workspace)' };
+  try { await fs.promises.writeFile(file, content, 'utf8'); return { ok: true }; }
+  catch (err) { return { error: String(err.message || err) }; }
 });
 ipcMain.handle('fs:mkdir', async (_e, { parent, name }) => {
   const safe = safeChildName(name);                       // блокируем ../ и сепараторы (PC-3)
   if (!safe) return { error: 'недопустимое имя' };
+  const full = path.join(parent, safe);
+  if (!resolveInShares(full)) return { error: 'доступ запрещен (вне workspace)' };
   try {
-    const full = path.join(parent, safe);
     await fs.promises.mkdir(full, { recursive: false });
     return { path: full, name: safe };
   } catch (err) { return { error: String(err.message || err) }; }
 });
-ipcMain.handle('fs:exists', (_e, p) => { try { return fs.existsSync(p); } catch { return false; } });
+ipcMain.handle('fs:exists', (_e, p) => { if (!resolveInShares(p)) return false; try { return fs.existsSync(p); } catch { return false; } });
 
 // create a file or directory inside parent
 ipcMain.handle('fs:create', async (_e, { parent, name, dir }) => {
   const safe = safeChildName(name);                       // блокируем ../ и сепараторы (PC-3)
   if (!safe) return { error: 'недопустимое имя' };
+  const full = path.join(parent, safe);
+  if (!resolveInShares(full)) return { error: 'доступ запрещен (вне workspace)' };
   try {
-    const full = path.join(parent, safe);
     if (fs.existsSync(full)) return { error: 'уже существует' };
     if (dir) await fs.promises.mkdir(full, { recursive: false });
     else { await fs.promises.mkdir(path.dirname(full), { recursive: true }); await fs.promises.writeFile(full, '', { flag: 'wx' }); }
@@ -3115,6 +2660,7 @@ ipcMain.handle('fs:create', async (_e, { parent, name, dir }) => {
   } catch (err) { return { error: String(err.message || err) }; }
 });
 ipcMain.handle('fs:rename', async (_e, { from, to }) => {
+  if (!resolveInShares(from) || !resolveInShares(to)) return { error: 'доступ запрещен (вне workspace)' };
   try {
     if (fs.existsSync(to)) return { error: 'цель уже существует' };
     await fs.promises.rename(from, to);
@@ -3123,12 +2669,14 @@ ipcMain.handle('fs:rename', async (_e, { from, to }) => {
 });
 // delete → OS trash (recoverable), not rm
 ipcMain.handle('fs:trash', async (_e, target) => {
+  if (!resolveInShares(target)) return { error: 'доступ запрещен (вне workspace)' };
   try { await shell.trashItem(target); return { ok: true }; }
   catch (err) { return { error: String(err.message || err) }; }
 });
 // Перемещение узла внутри дерева (drag-and-drop): src → destDir/<имя>. Те же грабли, что у rename
 // (цель существует, EXDEV cross-device), плюс запрет затащить папку внутрь себя/своего потомка.
 ipcMain.handle('fs:move', async (_e, { src, destDir }) => {
+  if (!resolveInShares(src) || !resolveInShares(destDir)) return { error: 'доступ запрещен (вне workspace)' };
   try {
     if (!src || !destDir) return { error: 'нет пути' };
     if (!fs.existsSync(src)) return { error: 'источник не найден' };
@@ -3154,6 +2702,7 @@ ipcMain.handle('fs:move', async (_e, { src, destDir }) => {
 // Втянуть файл/папку извне (drag из файлового менеджера ОС) → копией в destDir. Имя-коллизия →
 // добавляем « (2)», « (3)»… (как в проводниках), чтобы не перезаписать существующее.
 ipcMain.handle('fs:import', async (_e, { src, destDir }) => {
+  if (!resolveInShares(destDir)) return { error: 'доступ запрещен (вне workspace)' };
   try {
     if (!src || !destDir) return { error: 'нет пути' };
     if (!fs.existsSync(src)) return { error: 'источник не найден' };
@@ -3175,6 +2724,7 @@ ipcMain.handle('fs:import', async (_e, { src, destDir }) => {
 // binary file → data: URL (for image preview under our CSP, which blocks file://)
 const IMG_MIME = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', svg: 'image/svg+xml', bmp: 'image/bmp', ico: 'image/x-icon', avif: 'image/avif' };
 ipcMain.handle('fs:readDataUrl', async (_e, file) => {
+  if (!resolveInShares(file)) return { error: 'доступ запрещен (вне workspace)' };
   try {
     const stat = await fs.promises.stat(file);
     if (stat.size > 12 * 1024 * 1024) return { error: 'файл слишком большой для превью' };
@@ -3248,48 +2798,6 @@ ipcMain.handle('files:search', async (_e, { root, query, opts } = {}) => {
   } catch (err) { return { error: String(err.message || err) }; }
   return { matches, capped };
 });
-// Замена по проекту: рендерер присылает итог files:search с галочками — список целей
-// { file(rel), lines[1-based] }. Заменяем ТОЛЬКО в этих строках (та же регэксп-логика, что у
-// поиска, + флаг g — несколько совпадений на строке заменяются разом). Перед записью каждого
-// файла — снапшот в локальную историю. Пути целей зажаты внутрь root (без ../-побегов).
-ipcMain.handle('files:replace', async (_e, { root, query, opts, replacement, targets } = {}) => {
-  if (!root || !query || !Array.isArray(targets) || !targets.length) return { error: 'нет целей замены' };
-  const o = opts || {};
-  let re;
-  try {
-    const src = o.regex ? query : query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    re = new RegExp(src, o.caseSensitive ? 'g' : 'gi');
-  } catch { return { error: 'некорректное регулярное выражение' }; }
-  // не-regex режим: replacement литеральный — экранируем $, иначе "$&" в тексте замены сработал бы как группа
-  const repl = o.regex ? String(replacement ?? '') : String(replacement ?? '').replace(/\$/g, '$$$$');
-  const rootNorm = path.resolve(root);
-  let files = 0, lines = 0;
-  for (const t of targets) {
-    if (!t || !t.file || !Array.isArray(t.lines) || !t.lines.length) continue;
-    const full = path.resolve(rootNorm, t.file);
-    if (full !== rootNorm && !full.startsWith(rootNorm + path.sep)) continue;
-    let st; try { st = await fs.promises.stat(full); } catch { continue; }
-    if (!st.isFile() || st.size > FILES_SEARCH_FILE_MAX) continue;
-    let text; try { text = await fs.promises.readFile(full, 'utf8'); } catch { continue; }
-    if (text.includes('\0')) continue;
-    const rows = text.split('\n');
-    let touched = 0;
-    for (const ln of t.lines) {
-      const i = (ln | 0) - 1;
-      if (i < 0 || i >= rows.length) continue;
-      re.lastIndex = 0;
-      const next = rows[i].replace(re, repl);
-      if (next !== rows[i]) { rows[i] = next; touched++; }
-    }
-    if (!touched) continue;
-    try {
-      await histSnapshot(full, text, 'save');       // локальная история: состояние до замены
-      await fs.promises.writeFile(full, rows.join('\n'), 'utf8');
-      files++; lines += touched;
-    } catch (err) { return { error: String(err.message || err) + ' (' + t.file + ')', files, lines }; }
-  }
-  return { ok: true, files, lines };
-});
 ipcMain.handle('files:diffPair', async (_e, { a, b } = {}) => {
   if (!a || !b) return { error: 'нужны два файла' };
   // git diff --no-index сравнивает произвольные файлы вне репозитория; exit 1 = «есть отличия» (норма).
@@ -3299,65 +2807,6 @@ ipcMain.handle('files:diffPair', async (_e, { a, b } = {}) => {
       (_err, stdout) => resolve(stdout || ''));
   });
   return { diff: out };
-});
-
-// ---------------------------------------------------------------- локальная история файлов (PhpStorm Local History)
-// Снапшоты текстовых файлов в ~/.LiteEditorAI/history/<sha1(absPath)>/<ts>-<tag>.snap.
-// Точки съёма: fs:writeFile — состояние ДО записи (tag 'save', правка из вивера/замены по проекту);
-// вотчер проекта — состояние ПОСЛЕ внешнего изменения (tag 'ext' — агент/git/другой редактор).
-// Best-effort: любая ошибка истории молча глотается, работе редактора не мешает.
-const HIST_DIR = path.join(storeDir, 'history');
-const HIST_MAX_PER_FILE = 25;                   // ротация: столько версий держим на файл
-const HIST_MAX_BYTES = MAX_VIEW_BYTES;          // крупнее лимита вивера — не снапшотим
-const HIST_MIN_GAP_MS = { save: 45000, ext: 15000 }; // троттл на файл: серия автосейвов ≠ серия версий
-const HIST_BATCH_CAP = 20;                      // пачка вотчера крупнее — массовая операция (checkout/npm), шум
-const histKey = (absFile) => crypto.createHash('sha1').update(String(absFile)).digest('hex').slice(0, 20);
-const HIST_NAME_RE = /^(\d{10,16})-(save|ext)\.snap$/;
-async function histSnapshot(absFile, content, tag) {
-  try {
-    if (typeof content !== 'string' || Buffer.byteLength(content) > HIST_MAX_BYTES || content.includes('\0')) return;
-    const dir = path.join(HIST_DIR, histKey(absFile));
-    await fs.promises.mkdir(dir, { recursive: true });
-    const names = (await fs.promises.readdir(dir)).filter((n) => HIST_NAME_RE.test(n)).sort();
-    if (names.length) {
-      const last = names[names.length - 1];
-      const m = HIST_NAME_RE.exec(last);
-      // дедуп по содержимому + троттл по времени (свежий снапшот уже есть — серию не плодим)
-      if (Date.now() - Number(m[1]) < (HIST_MIN_GAP_MS[tag] || 15000)) return;
-      const prev = await fs.promises.readFile(path.join(dir, last), 'utf8');
-      if (prev === content) return;
-    }
-    await fs.promises.writeFile(path.join(dir, `${Date.now()}-${tag}.snap`), content, 'utf8');
-    fs.promises.writeFile(path.join(dir, 'meta.json'), JSON.stringify({ file: absFile }), 'utf8').catch(() => {});
-    const all = (await fs.promises.readdir(dir)).filter((n) => HIST_NAME_RE.test(n)).sort();
-    for (const n of all.slice(0, Math.max(0, all.length - HIST_MAX_PER_FILE)))
-      fs.promises.unlink(path.join(dir, n)).catch(() => {});
-  } catch (_) { /* история — best-effort */ }
-}
-// Снапшот текущего состояния файла на диске (для внешних изменений из вотчера).
-async function histSnapshotFromDisk(absFile, tag) {
-  try {
-    const st = await fs.promises.stat(absFile);
-    if (!st.isFile() || st.size > HIST_MAX_BYTES) return;
-    await histSnapshot(absFile, await fs.promises.readFile(absFile, 'utf8'), tag);
-  } catch (_) { /* удалён/не читается — пропускаем */ }
-}
-ipcMain.handle('hist:list', async (_e, file) => {
-  try {
-    const dir = path.join(HIST_DIR, histKey(file));
-    const names = (await fs.promises.readdir(dir)).filter((n) => HIST_NAME_RE.test(n)).sort().reverse();
-    const items = await Promise.all(names.map(async (n) => {
-      const m = HIST_NAME_RE.exec(n);
-      let size = 0; try { size = (await fs.promises.stat(path.join(dir, n))).size; } catch (_) {}
-      return { name: n, ts: Number(m[1]), tag: m[2], size };
-    }));
-    return { ok: true, items };
-  } catch (_) { return { ok: true, items: [] }; } // истории ещё нет — пустой список, не ошибка
-});
-ipcMain.handle('hist:read', async (_e, { file, name } = {}) => {
-  if (!HIST_NAME_RE.test(String(name || ''))) return { error: 'bad name' }; // защита от traversal
-  try { return { ok: true, content: await fs.promises.readFile(path.join(HIST_DIR, histKey(file), name), 'utf8') }; }
-  catch (err) { return { error: String(err.message || err) }; }
 });
 
 // ---------------------------------------------------------------- file watching
@@ -3386,8 +2835,6 @@ ipcMain.on('fs:watch', (_e, root) => {
       const files = [...rec.pending]; rec.pending.clear();
       if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('fs:changed', { root, files });
       const fw = filesWindow(); if (fw) fw.webContents.send('fs:changed', { root, files }); // окно вивера обновляет дерево/файл
-      // локальная история: внешняя правка (агент/git). Большая пачка = массовая операция — шум, пропускаем.
-      if (files.length <= HIST_BATCH_CAP) for (const f of files) histSnapshotFromDisk(f, 'ext');
     }, 180);
   });
   watchers.set(root, rec);
@@ -4302,39 +3749,6 @@ ipcMain.handle('git:fileDiff', async (_e, { root, file }) => {
   }
   return { diff: out || '' };
 });
-// Пара «до/после» одного файла для side-by-side диффа: old = версия из HEAD, new = рабочий файл.
-// Новый (untracked) файл → old:'' ; удалённый с диска → new:''. Бинарь/огромный файл → error (UI
-// откатится на unified-вид).
-ipcMain.handle('git:filePair', async (_e, { root, file } = {}) => {
-  if (!root || !file) return { error: 'no root/file' };
-  const top = await git(root, ['rev-parse', '--show-toplevel']);
-  if (top == null) return { error: 'не git-репозиторий' };
-  const rel = path.relative(top.trim(), file).replace(/\\/g, '/');
-  const oldText = await git(root, ['show', 'HEAD:' + rel]);      // null → файла не было в HEAD
-  let newText = null;
-  try {
-    const st = await fs.promises.stat(file);
-    if (st.isFile() && st.size <= MAX_VIEW_BYTES) newText = await fs.promises.readFile(file, 'utf8');
-    else if (st.isFile()) return { error: 'файл слишком большой' };
-  } catch (_) { /* удалён с диска → null */ }
-  if (oldText == null && newText == null) return { error: 'нет содержимого' };
-  if ((oldText || '').includes('\0') || (newText || '').includes('\0')) return { error: 'бинарный файл' };
-  if ((oldText || '').length > MAX_VIEW_BYTES) return { error: 'файл слишком большой' };
-  return { ok: true, oldText: oldText || '', newText: newText || '' };
-});
-// Пара «родитель/коммит» файла (rel-путь из git:commitFiles) для side-by-side диффа истории.
-ipcMain.handle('git:commitFilePair', async (_e, { root, hash, file } = {}) => {
-  const h = String(hash || '').trim();
-  if (!/^[0-9a-fA-F]{4,40}$/.test(h)) return { error: 'bad hash' };
-  const rel = String(file || '').replace(/\\/g, '/');
-  if (!rel) return { error: 'no file' };
-  const oldText = await git(root, ['show', h + '^:' + rel]);     // null → нет в родителе (новый / первый коммит)
-  const newText = await git(root, ['show', h + ':' + rel]);      // null → удалён этим коммитом
-  if (oldText == null && newText == null) return { error: 'нет содержимого' };
-  if ((oldText || '').includes('\0') || (newText || '').includes('\0')) return { error: 'бинарный файл' };
-  if ((oldText || '').length > MAX_VIEW_BYTES || (newText || '').length > MAX_VIEW_BYTES) return { error: 'файл слишком большой' };
-  return { ok: true, oldText: oldText || '', newText: newText || '' };
-});
 
 // Mutating git for the light panel. GIT_TERMINAL_PROMPT=0 + timeout so a command
 // that would block on auth fails fast with a message instead of hanging the app.
@@ -4357,6 +3771,9 @@ ipcMain.handle('git:info', async (_e, root) => {
   let ahead = 0, behind = 0, upstream = false;
   const counts = await git(root, ['rev-list', '--left-right', '--count', '@{upstream}...HEAD']);
   if (counts != null) { const m = counts.trim().split(/\s+/); behind = +m[0] || 0; ahead = +m[1] || 0; upstream = true; }
+  const last = await git(root, ['log', '-1', '--format=%h\t%s\t%cr\t%an']);
+  let lastCommit = null;
+  if (last && last.trim()) { const [hash, subject, when, author] = last.trim().split('\t'); lastCommit = { hash, subject, when, author }; }
   // Per-branch upstream tracking: имя + upstream + [ahead N, behind M] (по уже зафетченным
   // remote-tracking ref'ам, без сети — как PhpStorm после fetch). Таб-разделитель безопасен:
   // имя ветки таб не содержит, а %(upstream:track) — только пробелы/скобки/запятые.
@@ -4377,7 +3794,7 @@ ipcMain.handle('git:info', async (_e, root) => {
     branchTrack[name] = { upstream: (up || '').trim(), ahead: a, behind: bh, gone };
   }
   const remote = ((await git(root, ['remote'])) || '').trim().split('\n').filter(Boolean);
-  return { repo: true, branch, ahead, behind, upstream, branches, branchTrack, hasRemote: remote.length > 0 };
+  return { repo: true, branch, ahead, behind, upstream, lastCommit, branches, branchTrack, hasRemote: remote.length > 0 };
 });
 // Recent commit history for the Git module's log view (PhpStorm-style). Read-only.
 ipcMain.handle('git:log', async (_e, { root, limit } = {}) => {
@@ -4439,49 +3856,16 @@ async function gitPush(root) {
   }
   return first;
 }
-ipcMain.handle('git:commit', async (_e, { root, message, push, files, amend }) => {
+ipcMain.handle('git:commit', async (_e, { root, message, push, files }) => {
   // files передан → коммитим только выбранное (git add -- <files>), иначе всё (git add -A, как раньше).
-  // amend + files:[] (пустой массив) — особый случай «только поправить сообщение»: ничего не добавляем.
   const sel = Array.isArray(files) && files.length;
-  const msgOnly = amend && Array.isArray(files) && !files.length;
-  if (!msgOnly) { const add = await gitRun(root, sel ? ['add', '--', ...files] : ['add', '-A']); if (!add.ok) return add; }
+  const add = await gitRun(root, sel ? ['add', '--', ...files] : ['add', '-A']); if (!add.ok) return add;
   // sel → коммитим РОВНО выбранные пути (pathspec), иначе `git commit` забрал бы и всё прочее,
   // что уже лежит в индексе (напр. файл, застейдженный при разрешении конфликта и затем снятый галкой).
-  const base = amend ? ['commit', '--amend', '-m', message || 'update'] : ['commit', '-m', message || 'update'];
-  const c = await gitRun(root, sel ? [...base, '--', ...files] : base); if (!c.ok) return c;
+  const c = await gitRun(root, sel ? ['commit', '-m', message || 'update', '--', ...files] : ['commit', '-m', message || 'update']); if (!c.ok) return c;
   // committed:true даже при провале пуша — фронт обязан обновить список (коммит-то уже лёг).
   if (push) { const p = await gitPush(root); if (!p.ok) return { ok: false, committed: true, error: 'Коммит создан, push не прошёл: ' + p.error }; }
   return { ok: true, out: c.out };
-});
-// Последнее сообщение коммита (для подстановки при включении Amend).
-ipcMain.handle('git:lastMessage', async (_e, root) => {
-  const out = await git(root, ['log', '-1', '--format=%B']);
-  return out == null ? { ok: false, message: '' } : { ok: true, message: out.trim() };
-});
-// История одного файла (--follow: переживает переименования) для оверлея «История файла».
-ipcMain.handle('git:fileLog', async (_e, { root, file, limit } = {}) => {
-  if (!root || !file) return { error: 'no root/file' };
-  const n = Math.max(1, Math.min(200, parseInt(limit, 10) || 100));
-  const out = await git(root, ['log', '--follow', `-${n}`, '--pretty=format:%h%x1f%s%x1f%cr%x1f%an', '--', file]);
-  if (out == null) return { error: 'не git-репозиторий или файл не отслеживается' };
-  const commits = [];
-  for (const rec of out.split('\n')) {
-    if (!rec) continue;
-    const [hash, subject, when, author] = rec.split('\x1f');
-    commits.push({ hash, subject, when, author });
-  }
-  return { ok: true, commits };
-});
-// Cherry-pick / revert коммита из лога + полное сообщение коммита (для «Копировать сообщение»).
-const OK_HASH = (h) => /^[0-9a-fA-F]{4,40}$/.test(String(h || '').trim());
-ipcMain.handle('git:cherryPick', async (_e, { root, hash } = {}) =>
-  OK_HASH(hash) ? gitRun(root, ['cherry-pick', String(hash).trim()]) : { ok: false, error: 'bad hash' });
-ipcMain.handle('git:revertCommit', async (_e, { root, hash } = {}) =>
-  OK_HASH(hash) ? gitRun(root, ['revert', '--no-edit', String(hash).trim()]) : { ok: false, error: 'bad hash' });
-ipcMain.handle('git:commitMsg', async (_e, { root, hash } = {}) => {
-  if (!OK_HASH(hash)) return { error: 'bad hash' };
-  const out = await git(root, ['log', '-1', '--format=%B', String(hash).trim()]);
-  return out == null ? { error: 'коммит не найден' } : { ok: true, message: out.trim() };
 });
 // Стейджинг выбранных путей (для пометки конфликта разрешённым и выборочного коммита).
 ipcMain.handle('git:add', async (_e, { root, files }) =>
@@ -4513,6 +3897,7 @@ ipcMain.handle('git:push', async (_e, root) => gitPush(root));
 ipcMain.handle('git:pull', async (_e, root) => gitRun(root, ['pull', '--ff-only']));
 // Stash including untracked (-u) so a quick "спрятать всё" doesn't leave new files behind.
 ipcMain.handle('git:stash', async (_e, root) => gitRun(root, ['stash', 'push', '-u']));
+ipcMain.handle('git:stashPop', async (_e, root) => gitRun(root, ['stash', 'pop']));
 // Revert tracked edits only ('checkout -- .'); untracked files are deliberately kept (no -fd clean).
 ipcMain.handle('git:discardAll', async (_e, root) => gitRun(root, ['checkout', '--', '.']));
 
@@ -4592,9 +3977,7 @@ ipcMain.handle('git:commitFiles', async (_e, { root, hash } = {}) => {
 ipcMain.handle('git:commitFileDiff', async (_e, { root, hash, file } = {}) => {
   const h = String(hash || '').trim();
   if (!/^[0-9a-fA-F]{4,40}$/.test(h)) return { error: 'bad hash' };
-  // --format= убирает заголовок коммита из вывода — в центре вивера нужен чистый дифф
-  // (сообщение и так видно в списке истории и в имени вкладки).
-  const out = await git(root, ['show', '--no-color', '--format=', h, '--', file]);
+  const out = await git(root, ['show', '--no-color', h, '--', file]);
   return { diff: out || '' };
 });
 
@@ -4739,14 +4122,14 @@ async function cListContainers(engine) {
     const r = await containerRun('docker', ['ps', '-a', '--format', '{{json .}}'], { timeout: 12000 });
     if (!r.ok) return { error: r.error };
     return { items: cParseLines(r.out).map((c) => { const L = cLabelMap(c.Labels);
-      return { id: c.ID, name: c.Names, image: c.Image, state: String(c.State || '').toLowerCase(), status: c.Status, ports: c.Ports || '', project: L[C_PROJECT] || '', service: L[C_SERVICE] || '', dbKind: guessDbKind(c.Image, c.Ports), mqKind: guessMqKind(c.Image, c.Ports) }; }) };
+      return { id: c.ID, name: c.Names, image: c.Image, state: String(c.State || '').toLowerCase(), status: c.Status, ports: c.Ports || '', project: L[C_PROJECT] || '', service: L[C_SERVICE] || '' }; }) };
   }
   const r = await containerRun('podman', ['ps', '-a', '--format', 'json'], { timeout: 12000 });
   if (!r.ok) return { error: r.error };
   return { items: cParseJson(r.out).map((c) => { const L = c.Labels || {};
     const name = Array.isArray(c.Names) ? c.Names[0] : (c.Names || c.Name || '');
     const ports = Array.isArray(c.Ports) ? c.Ports.map((p) => `${p.host_port || p.hostPort || ''}${(p.host_port || p.hostPort) ? ':' : ''}${p.container_port || p.containerPort || ''}`).filter((s) => s && s !== ':').join(', ') : '';
-    return { id: c.Id || c.ID, name, image: c.Image, state: String(c.State || '').toLowerCase(), status: c.Status || c.State, ports, project: L[C_PROJECT] || L['io.podman.compose.project'] || '', service: L[C_SERVICE] || '', dbKind: guessDbKind(c.Image, ports), mqKind: guessMqKind(c.Image, ports) }; }) };
+    return { id: c.Id || c.ID, name, image: c.Image, state: String(c.State || '').toLowerCase(), status: c.Status || c.State, ports, project: L[C_PROJECT] || L['io.podman.compose.project'] || '', service: L[C_SERVICE] || '' }; }) };
 }
 async function cListPods() {
   const r = await containerRun('podman', ['pod', 'ps', '--format', 'json'], { timeout: 10000 });
@@ -4871,44 +4254,6 @@ ipcMain.handle('containers:action', async (_e, { engine, kind, action, id } = {}
   if (!args) return { ok: false, error: 'bad action' };
   const r = await containerRun(engine, args, { timeout: 60000 });
   return { ok: r.ok, error: r.error };
-});
-
-// «Открыть в модуле БД»: inspect контейнера → заготовка подключения (тип/хост-порт/лог/пас/база).
-// Разбор — в lib/dbdetect.js; пароль берётся из env контейнера (он и так виден любому с доступом к CLI).
-ipcMain.handle('containers:inspectDb', async (_e, { engine, id } = {}) => {
-  if (engine !== 'docker' && engine !== 'podman') return { ok: false, error: 'bad engine' };
-  if (!id || typeof id !== 'string') return { ok: false, error: 'no id' };
-  const r = await containerRun(engine, ['inspect', id], { timeout: 12000 });
-  if (!r.ok) return { ok: false, error: r.error };
-  const info = cParseJson(r.out)[0];
-  if (!info) return { ok: false, error: 'inspect вернул пустой ответ' };
-  const res = dbPrefillFromInspect(info, engine);
-  if (!res) return { ok: false, error: 'В контейнере не распознана поддерживаемая БД (PostgreSQL / MySQL / MariaDB)' };
-  return { ok: true, ...res };
-});
-// «Открыть в модуле RabbitMQ»: inspect контейнера → заготовка профиля (management-порт/лог/пас/vhost).
-ipcMain.handle('containers:inspectMq', async (_e, { engine, id } = {}) => {
-  if (engine !== 'docker' && engine !== 'podman') return { ok: false, error: 'bad engine' };
-  if (!id || typeof id !== 'string') return { ok: false, error: 'no id' };
-  const r = await containerRun(engine, ['inspect', id], { timeout: 12000 });
-  if (!r.ok) return { ok: false, error: r.error };
-  const info = cParseJson(r.out)[0];
-  if (!info) return { ok: false, error: 'inspect вернул пустой ответ' };
-  const res = rmqPrefillFromInspect(info, engine);
-  if (!res) return { ok: false, error: 'В контейнере не распознан RabbitMQ' };
-  return { ok: true, ...res };
-});
-// «Открыть в модуле Kafka»: inspect контейнера → заготовка профиля (брокер = 127.0.0.1:порт).
-ipcMain.handle('containers:inspectKafka', async (_e, { engine, id } = {}) => {
-  if (engine !== 'docker' && engine !== 'podman') return { ok: false, error: 'bad engine' };
-  if (!id || typeof id !== 'string') return { ok: false, error: 'no id' };
-  const r = await containerRun(engine, ['inspect', id], { timeout: 12000 });
-  if (!r.ok) return { ok: false, error: r.error };
-  const info = cParseJson(r.out)[0];
-  if (!info) return { ok: false, error: 'inspect вернул пустой ответ' };
-  const res = kafkaPrefillFromInspect(info, engine);
-  if (!res) return { ok: false, error: 'В контейнере не распознан Kafka' };
-  return { ok: true, ...res };
 });
 
 ipcMain.handle('shell:openPath', (_e, target) => {

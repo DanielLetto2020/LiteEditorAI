@@ -6,7 +6,7 @@
 import {
   el, icon, iconBtn, toast, makeModal, showConfirm, showPrompt, hydrateIcons, setErrorSink, applyLayoutSwap, ICONS,
 } from './ui.js';
-import { createCodeEditor } from './codeedit.js';
+import { createCodeEditor, languageFor } from './codeedit.js';
 import { THEMES, TERM_THEME, DEFAULT_THEME, termThemeFor } from './themes.js';
 import { loadFastRenderer, applyUnicode11, copySelection } from './termutil.js';
 import '@xterm/xterm/css/xterm.css';
@@ -16,15 +16,10 @@ import { initTools } from './modules/tools.js';
 import { initIterflow } from './modules/iterflow.js';
 import { initSeo } from './modules/seo.js';
 import { initAudit } from './modules/audit.js';
-import { initMonitor } from './modules/monitor.js';
-import { initKeepass } from './modules/keepass.js';
-import { initSitemon } from './modules/sitemon.js';
 import { initPomodoro } from './modules/pomodoro.js';
 import { initCompany } from './modules/company.js';
 import { initNotes } from './modules/notes.js';
 import { initDb } from './modules/db.js';
-import { initRmq } from './modules/rmq.js';
-import { initKafka } from './modules/kafka.js';
 import { initOpenRouter } from './modules/openrouter.js';
 import { initTextProc } from './modules/textproc.js';
 import { initContainers } from './modules/containers.js';
@@ -59,11 +54,6 @@ function menuRow(glyph, text, onClick, cls) {
 document.addEventListener('click', closeMenus);
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeMenus(); });
 
-// Активность в окне модуля сбрасывает кросс-оконный таймер заставки «матрица» (троттл).
-let __ssAct = 0;
-function reportActivity() { const now = Date.now(); if (now - __ssAct > 1500) { __ssAct = now; try { lite.screensaver.activity(); } catch (_) {} } }
-for (const ev of ['mousemove', 'mousedown', 'keydown', 'wheel', 'touchstart']) window.addEventListener(ev, reportActivity, { passive: true });
-
 // Registry of window-hosted modules. `project:true` → re-render on active-project change.
 // `wire(mod)` binds the pane-head buttons (the #<id>-close button is wired generically).
 const MODULES = {
@@ -79,18 +69,6 @@ const MODULES = {
   audit: {
     title: 'Аудит проекта', init: initAudit, project: true,
     wire: (mod) => { bind('#audit-rescan', () => mod.rescan()); },
-  },
-  monitor: {
-    title: 'Монитор ресурсов', init: initMonitor, project: false,
-    wire: (mod) => { bind('#monitor-copy', () => mod.copySnapshot()); },
-  },
-  keepass: {
-    title: 'Сейф паролей', init: initKeepass, project: false,
-    wire: (mod) => { bind('#keepass-open', () => mod.openFile()); bind('#keepass-lock', () => mod.lock()); },
-  },
-  sitemon: {
-    title: 'Мониторинг сайтов', init: initSitemon, project: false,
-    wire: (mod) => { bind('#sitemon-add', () => mod.addSite()); bind('#sitemon-check', () => mod.checkAll()); },
   },
   pomodoro: {
     title: 'Помодоро', init: initPomodoro, project: false,
@@ -111,30 +89,7 @@ const MODULES = {
   },
   db: {
     title: 'Базы данных', init: initDb, project: false,
-    wire: (mod) => {
-      bind('#db-refresh', () => mod.refresh());
-      // «Контейнеры» → БД: заготовка подключения из контейнера (маршрут через main, очередь до готовности)
-      lite.db.onOpenFromContainer((p) => { try { mod.openFromContainer(p); } catch (_) {} });
-      try { lite.db.panelReady(); } catch (_) {} // флаш отложенных openFromContainer из main
-    },
-  },
-  rmq: {
-    title: 'RabbitMQ', init: initRmq, project: false,
-    wire: (mod) => {
-      bind('#rmq-refresh', () => mod.refresh());
-      // «Контейнеры» → RabbitMQ: заготовка профиля из контейнера (маршрут через main, очередь до готовности)
-      lite.rmq.onOpenFromContainer((p) => { try { mod.openFromContainer(p); } catch (_) {} });
-      try { lite.rmq.panelReady(); } catch (_) {} // флаш отложенных openFromContainer из main
-    },
-  },
-  kafka: {
-    title: 'Kafka', init: initKafka, project: false,
-    wire: (mod) => {
-      bind('#kafka-refresh', () => mod.refresh());
-      // «Контейнеры» → Kafka: заготовка профиля из контейнера (маршрут через main, очередь до готовности)
-      lite.kafka.onOpenFromContainer((p) => { try { mod.openFromContainer(p); } catch (_) {} });
-      try { lite.kafka.panelReady(); } catch (_) {} // флаш отложенных openFromContainer из main
-    },
+    wire: (mod) => { bind('#db-refresh', () => mod.refresh()); },
   },
   chat: {
     title: 'OpenRouter', init: initOpenRouter, project: false,
@@ -142,8 +97,12 @@ const MODULES = {
     wire: (mod) => { try { mod.bindControls(); mod.bindStream(); } catch (_) {} },
   },
   doc: {
-    title: 'Обработка текста', init: initTextProc, project: false,
-    wire: (mod) => { bind('#doc-settings', () => mod.showSettings()); },
+    title: 'Обработка текста (v2.1)', init: initTextProc, project: true,
+    wire: (mod) => { 
+      bind('#doc-settings', () => mod.showSettings()); 
+      lite.editorBus.onRefreshTree(() => { try { if (activeProj && mod.renderTree) mod.renderTree(activeProj); } catch (_) {} });
+      lite.fs.onChange(({ root, files }) => { try { if (activeProj && activeProj.path === root && mod.onFsChange) mod.onFsChange(activeProj, files); } catch (_) {} });
+    },
   },
   docker: {
     title: 'Контейнеры', init: initContainers, project: false,
@@ -205,7 +164,7 @@ const layoutProxy = new Proxy({}, { get: () => 480 });
 function buildHost() {
   return {
     el, icon, iconBtn, makeModal, showConfirm, showPrompt, toast, applyLayoutSwap,
-    createCodeEditor, // языковая поддержка — модули импортируют languageFor/ensureLanguage из codeedit.js напрямую
+    createCodeEditor, languageFor,
     termTheme: () => termThemeFor(settings.theme), applyUnicode11, loadFastRenderer, copySelection,
     STORE, persist, settings, saveSettings,
     layout: layoutProxy, GUTTER: 0,
