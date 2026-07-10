@@ -3,7 +3,9 @@ package com.liteeditor.pult
 import android.Manifest
 import android.annotation.SuppressLint
 import android.app.Activity
+import android.content.ClipboardManager
 import android.content.ContentValues
+import android.content.Context
 import android.content.pm.PackageManager
 import android.graphics.Rect
 import android.net.Uri
@@ -24,6 +26,8 @@ import org.json.JSONObject
 import java.io.File
 import java.io.FileOutputStream
 import java.io.OutputStream
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 
 /**
  * Тонкая WebView-обёртка. Весь UI пульта — в assets/index.html + app.js (бандл
@@ -76,6 +80,9 @@ class MainActivity : Activity() {
         web.addJavascriptInterface(Downloader(), "LiteNative")
         // Read-only диагностика устройства/WebView для отладки терминала на конкретном планшете.
         web.addJavascriptInterface(DeviceInfo(), "LiteDevice")
+        // Чтение системного буфера обмена (кнопка Ctrl+V в тулбаре): navigator.clipboard.readText()
+        // в WebView недоступен — нет разрешения clipboard-read и хука для его выдачи.
+        web.addJavascriptInterface(Clip(), "LiteClip")
         // На Android <10 запись в общую папку «Загрузки» требует разрешения.
         if (Build.VERSION.SDK_INT < 29 &&
             checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
@@ -258,6 +265,37 @@ class MainActivity : Activity() {
                     .toString()
             } catch (_: Exception) {
                 "{}"
+            }
+        }
+    }
+
+    /**
+     * Системный буфер обмена планшета — только чтение (кнопка Ctrl+V вставляет текст в PTY на ПК).
+     * Android 10+ отдаёт буфер лишь приложению в фокусе — пульт в фокусе, когда пользователь жмёт кнопку.
+     * ClipboardManager читаем с UI-потока: @JavascriptInterface вызывается на отдельном JavaBridge-потоке,
+     * а часть прошивок дёргает при чтении Handler главного лупера. Дедлока нет — UI-поток нас не ждёт.
+     */
+    inner class Clip {
+        @JavascriptInterface
+        fun read(): String {
+            val out = arrayOf("")
+            val done = CountDownLatch(1)
+            runOnUiThread {
+                try {
+                    val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                    val clip = cm.primaryClip
+                    if (clip != null && clip.itemCount > 0) {
+                        out[0] = clip.getItemAt(0).coerceToText(this@MainActivity).toString()
+                    }
+                } catch (_: Exception) {
+                } finally {
+                    done.countDown()
+                }
+            }
+            return try {
+                if (done.await(2, TimeUnit.SECONDS)) out[0] else ""
+            } catch (_: InterruptedException) {
+                ""
             }
         }
     }

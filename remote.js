@@ -22,6 +22,7 @@ let logger = { log() {} };
 let getSessions = () => ({ sessions: [], projects: [] });
 let screenFrame = () => null;  // (sid, styled) → {cols,rows,lines[],cursor:[x,y],alt,styled?,curIdx?} — задаётся из main
 let writeInput = () => {};
+let onPaste = () => {};        // (sid, text) — пульт вставляет текст из своего буфера обмена
 let openProject = () => {};
 let onSelect = () => {};
 let onClose = () => {};
@@ -161,10 +162,14 @@ function send(obj) {
   if (ws && ws.readyState === 1) { try { ws.send(JSON.stringify(obj)); } catch (_) {} }
 }
 
+// Что умеет ЭТА ПК-сторона. Пульт обновляется отдельно от редактора (APK ставится руками,
+// а правки main.js/remote.js применяются только после полного рестарта редактора), поэтому
+// новый пульт со старым ПК — норма: пусть он видит по caps, на что можно рассчитывать.
+const PC_CAPS = { paste: 1 };   // paste: умеем {t:'paste'} с bracketed-paste-обёрткой
 function sendState() {
   let s = {};
   try { s = getSessions() || {}; } catch (_) {}
-  send({ t: 'state', sessions: s.sessions || [], projects: s.projects || [], active: s.active || '' });
+  send({ t: 'state', sessions: s.sessions || [], projects: s.projects || [], active: s.active || '', caps: PC_CAPS });
 }
 
 function connect() {
@@ -197,6 +202,8 @@ function connect() {
       try { onSelect(m.sid); } catch (_) {}   // пульт выбрал → переключить десктоп
     } else if (m.t === 'input' && typeof m.sid === 'string') {
       try { writeInput(m.sid, m.data || ''); } catch (_) {}
+    } else if (m.t === 'paste' && typeof m.sid === 'string') {
+      try { onPaste(m.sid, String(m.text || '')); } catch (_) {}
     } else if (m.t === 'history:get' && typeof m.sid === 'string') {
       try { onHistoryGet(m.reqId, m.sid, m.before, m.size); } catch (_) {}
     } else if (m.t === 'open' && typeof m.projId === 'string') {
@@ -252,6 +259,7 @@ function init(opts = {}) {
   if (opts.getSessions) getSessions = opts.getSessions;
   if (opts.screenFrame) screenFrame = opts.screenFrame;
   if (opts.writeInput) writeInput = opts.writeInput;
+  if (opts.onPaste) onPaste = opts.onPaste;
   if (opts.openProject) openProject = opts.openProject;
   if (opts.onSelect) onSelect = opts.onSelect;
   if (opts.onClose) onClose = opts.onClose;
