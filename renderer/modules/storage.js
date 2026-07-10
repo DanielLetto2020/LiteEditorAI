@@ -4,6 +4,7 @@
 // подключение принадлежит scope (id проекта или '__global__'), перенос между областями —
 // смена одного поля (st:setScope), а не переписывание двух файлов.
 // Бэкенд — lib/storage.js (+ lib/storage-s3.js), мост — lite.storage, все ответы {ok,...}.
+// Возможности адаптера приходят в conn.caps — UI прячет недоступное (задел под WebDAV).
 import { el, icon, iconBtn, hydrateIcons, toast, makeModal, showConfirm, showPrompt, baseName } from '../ui.js';
 import { languageFor } from '../codeedit.js';
 import { kpFormButtons } from '../kpicker.js';
@@ -11,16 +12,34 @@ import { kpFormButtons } from '../kpicker.js';
 const lite = window.lite;
 const $ = (s) => document.querySelector(s);
 const GLOBAL_SCOPE = '__global__';
-// Полоса адаптеров: [id, подпись, реализован]. Неготовые видны (замысел модуля), но выключены.
-const ADAPTER_TABS = [['s3', 'S3', true], ['webdav', 'WebDAV', false], ['ftp', 'FTP', false]];
+// Полоса адаптеров. FTP/SFTP сюда сознательно НЕ добавляем — их целиком закрывает модуль
+// «Удалённые хосты» (профили, браузер файлов, правка в вивере); дубликат не нужен.
+const ADAPTER_TABS = [['s3', 'S3', true], ['webdav', 'WebDAV', false]];
+const DEFAULT_CAPS = { buckets: true, presign: true, acl: true, publicUrl: true };
+// Пресеты популярных S3-провайдеров: подставляют endpoint/регион/path-style (значения — типовые,
+// endpoint часто зависит от региона аккаунта — поле остаётся редактируемым).
+const PRESETS = [
+  ['aws', 'Amazon S3', { endpoint: '', region: 'us-east-1', ps: false }],
+  ['minio', 'MinIO (локальный)', { endpoint: 'http://127.0.0.1:9000', region: 'us-east-1', ps: true }],
+  ['yandex', 'Yandex Object Storage', { endpoint: 'https://storage.yandexcloud.net', region: 'ru-central1', ps: false }],
+  ['b2', 'Backblaze B2', { endpoint: 'https://s3.us-west-004.backblazeb2.com', region: 'us-west-004', ps: false }],
+  ['do', 'DigitalOcean Spaces', { endpoint: 'https://fra1.digitaloceanspaces.com', region: 'fra1', ps: false }],
+  ['wasabi', 'Wasabi', { endpoint: 'https://s3.eu-central-1.wasabisys.com', region: 'eu-central-1', ps: false }],
+  ['gcs', 'Google Cloud Storage (interop)', { endpoint: 'https://storage.googleapis.com', region: 'auto', ps: false }],
+  ['r2', 'Cloudflare R2', { endpoint: 'https://ACCOUNT_ID.r2.cloudflarestorage.com', region: 'auto', ps: false }],
+  ['selectel', 'Selectel', { endpoint: 'https://s3.ru-1.storage.selcloud.ru', region: 'ru-1', ps: false }],
+  ['vk', 'VK Cloud', { endpoint: 'https://hb.ru-msk.vkcloud-storage.ru', region: 'ru-msk', ps: false }],
+  ['timeweb', 'Timeweb Cloud', { endpoint: 'https://s3.twcstorage.ru', region: 'ru-1', ps: true }],
+];
 const fmtSize = (n) => { n = +n || 0; if (n < 1024) return n + ' Б'; if (n < 1048576) return (n / 1024).toFixed(1) + ' КБ'; if (n < 1073741824) return (n / 1048576).toFixed(1) + ' МБ'; return (n / 1073741824).toFixed(2) + ' ГБ'; };
 const fmtDate = (t) => { if (!t) return '—'; const d = new Date(t); return d.toLocaleDateString('ru-RU', { day: 'numeric', month: 'short', year: 'numeric' }) + ' ' + d.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }); };
 const IMG_EXT = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'ico', 'avif']);
 const extOf = (name) => String(name).split('.').pop().toLowerCase();
 
 export function initStorage(host) {
-  const { settings, saveSettings, activeProject, createCodeEditor, STORE, persist,
-    menuRow, placeMenu, closeMenus, showConfirm: hostConfirm } = host;
+  const { settings, activeProject, createCodeEditor, STORE, persist,
+    menuRow, placeMenu, closeMenus, sendToTerminal, openInViewer,
+    showConfirm: hostConfirm } = host;
   const confirm2 = hostConfirm || showConfirm;
 
   let stOpen = false;
@@ -28,9 +47,10 @@ export function initStorage(host) {
   const saveUi = () => { try { persist('stUi', stUi); } catch (_) {} };
   let tab = stUi.tab === 'global' ? 'global' : 'project';   // главная вкладка; «Проект» — первая и дефолт
   let adapter = ADAPTER_TABS.some(([k, , on]) => on && k === stUi.adapter) ? stUi.adapter : 's3';
-  let conns = [];          // публичный список (secretEnc не приходит)
+  let conns = [];          // публичный список (секретов нет — только hasSecret/hasSessionToken/caps)
   let secure = true;
   let renderSeq = 0;
+  let restoredOnce = false; // восстановление открытых вкладок прошлого запуска (stUi.openTabs)
 
   // --- воркспейс ---
   let connListMode = true; // true = список подключений, false = открытое подключение
@@ -38,21 +58,29 @@ export function initStorage(host) {
   let activeId = null, activeConn = null;
   let curBucket = null, curPrefix = '';   // null bucket = вид «бакеты»
   let buckets = [];
-  let listing = { dirs: [], files: [], nextToken: null };
-  let listSeq = 0;
-  let viewer = null;       // { key, kind, ... } — открытый в вивере объект
-  let curEditor = null;    // живой CodeMirror вивера (destroy при переключении)
-  const expanded = new Set();      // раскрытые узлы дерева: `${bucket}` / `${bucket} ${prefix}`
-  const bucketBoxes = new Map();   // bucket → контейнер детей в дереве (для точечного обновления)
+  let bucketsLoading = false;
+  let listing = { dirs: [], files: [], nextToken: null, loading: false };
+  let listSeq = 0;         // инвалидация листинга (смена пути/подключения/открытие файла)
+  let treeSeq = 0;         // инвалидация асинхронной загрузки дерева
+  let viewer = null;       // { bucket, key, kind, ... } — открытый в вивере объект
+  let curEditor = null;    // живой CodeMirror вивера (destroy на ЛЮБОМ пути выхода)
+  let curListBox = null;   // живой контейнер списка (перерисовка без пересоздания = скролл жив)
+  const expanded = new Set();    // раскрытые узлы дерева: nodeKey(bucket, prefix)
+  const treeNodes = new Map();   // nodeKey → { row, chev, childBox, ... } — подсветка + точечный рефреш
+  const selection = new Set();   // выбранные ключи файлов (мультивыбор)
+  let filterText = '';           // фильтр по текущему листингу (живёт в сессии)
+  const sort = stUi.sort && ['name', 'size', 'mtime'].includes(stUi.sort.key) ? { ...stUi.sort } : { key: 'name', dir: 1 };
 
   // --- передачи ---
   let opSeq = 0;
-  const transfers = new Map();     // opId → {phase, key, loaded, total, speed, lastLoaded, lastT, status, error}
+  const transfers = new Map();     // opId → {phase, key, name, bucket, prefix, loaded, total, speed, ...}
+  const transferRows = new Map();  // opId → {fill, pct} — точечное обновление прогресса без rebuild
   const newOpId = () => 'op' + Date.now().toString(36) + (++opSeq);
 
+  const caps = () => (activeConn && activeConn.caps) || DEFAULT_CAPS;
   const canWrite = () => !!activeConn && !activeConn.readOnly && !activeConn.anonymous;
 
-  // Куда смотрит активная главная вкладка (карта — currentTarget из «Задач»).
+  // Куда смотрит активная главная вкладка (калька currentTarget из «Задач»).
   function currentScope() {
     if (tab === 'global') return { kind: 'global', id: GLOBAL_SCOPE, name: 'Общие' };
     const p = activeProject();
@@ -64,11 +92,23 @@ export function initStorage(host) {
     const seq = ++renderSeq;
     const body = $('#storage-body');
     if (!body) return;
+    destroyEditor(); // любой полный перерендер сносит DOM вивера — инстанс CodeMirror не бросаем
     if (connListMode || !activeId) {
       const r = await lite.storage.list();
       if (seq !== renderSeq || !stOpen) return;
       conns = (r && r.connections) || [];
       secure = !r || r.secure !== false;
+      // восстановление открытых вкладок прошлого запуска (как в «Базах данных»)
+      if (!restoredOnce) {
+        restoredOnce = true;
+        const ids = (Array.isArray(stUi.openTabs) ? stUi.openTabs : []).filter((id) => conns.some((c) => c.id === id));
+        if (ids.length) {
+          openConns = ids;
+          const actId = (stUi.activeTab && ids.includes(stUi.activeTab)) ? stUi.activeTab : ids[ids.length - 1];
+          const act = conns.find((c) => c.id === actId);
+          if (act) { openConnection(act); return; }
+        }
+      }
       body.innerHTML = '';
       renderConnStrip(body);
       renderConnList(body);
@@ -194,6 +234,7 @@ export function initStorage(host) {
       }
       const r = await lite.storage.setScope(c.id, dest);
       if (!r.ok) { toast(r.error || 'Не удалось перенести', { kind: 'err' }); return; }
+      adoptConn(r.connection);
       toast(`Перенесено в «${destName}»`);
       renderPanel();
     };
@@ -215,8 +256,16 @@ export function initStorage(host) {
     return row;
   }
 
+  // Освежить запись в кэшах после save/setScope — иначе полоса вкладок и шапка дерева живут со старым именем/scope.
+  function adoptConn(pub) {
+    if (!pub) return;
+    const i = conns.findIndex((x) => x.id === pub.id);
+    if (i >= 0) conns[i] = pub; else conns.push(pub);
+    if (activeId === pub.id) activeConn = pub;
+  }
+
   // ============================================================ форма подключения
-  function connModal(existing) {
+  function connModal(existing, presetSecret) {
     const scope = currentScope();
     if (!existing && !scope) { toast('Откройте проект или переключитесь на «Общие»', { kind: 'err' }); return; }
     const c = existing ? { ...existing } : { adapter, scope: scope.id, region: 'us-east-1', category: 'Все' };
@@ -242,27 +291,50 @@ export function initStorage(host) {
     field('Категория', catWrap);
     const getCategory = () => (catSel.value === CAT_NEW ? catNew.value.trim() : catSel.value) || 'Все';
 
+    // пресеты провайдеров: подставляют endpoint/регион/path-style; поле остаётся редактируемым
+    const presetSel = el('select');
+    presetSel.appendChild(new Option('— свои значения —', ''));
+    for (const [k, l] of PRESETS) presetSel.appendChild(new Option(l, k));
+    field('Провайдер', presetSel);
+
     const grp = el('div', 'db-group');
     const endpoint = inp(c.endpoint || '', 'https://storage.example.com (пусто = AWS)');
     const region = inp(c.region || 'us-east-1', 'us-east-1');
     const [psL, ps] = check('Path-style адресация (MinIO / локальные S3)', c.forcePathStyle);
     grp.append(mk('Endpoint', endpoint), mk('Регион', region), psL);
     f.appendChild(grp);
+    presetSel.onchange = () => {
+      const p = PRESETS.find(([k]) => k === presetSel.value);
+      if (!p) return;
+      endpoint.value = p[2].endpoint; region.value = p[2].region; ps.checked = p[2].ps;
+    };
 
     const [anonL, anon] = check('Анонимный доступ (публичный бакет, без ключей — только чтение)', c.anonymous, 'db-check-warn');
     f.appendChild(anonL);
     const keysGrp = el('div', 'db-group');
     const akey = inp(c.accessKeyId || '', 'Access Key ID');
-    const skey = inp('', c.id && c.hasSecret ? '(без изменений)' : 'Secret Access Key', 'password');
+    const skey = inp(presetSecret || '', c.id && c.hasSecret ? '(без изменений)' : 'Secret Access Key', 'password');
     const kpRow = kpFormButtons({
       user: akey, pass: skey,
       title: () => name.value.trim() || 'LiteEditor: внешнее хранилище',
       url: () => endpoint.value.trim(),
       notes: 'LiteEditor · модуль «Внешние хранилища»',
     });
-    const stoken = inp('', c.id && c.sessionTokenEnc ? '(без изменений)' : 'Session Token (для временных STS-ключей, опц.)', 'password');
-    keysGrp.append(mk('Access Key ID', akey), mk('Secret Key', skey), kpRow, mk('Session Token', stoken));
+    const stoken = inp('', c.id && c.hasSessionToken ? '(без изменений)' : 'Session Token (для временных STS-ключей, опц.)', 'password');
+    let clearToken = false;
+    const tokRow = el('div', 'st-tokrow');
+    tokRow.appendChild(stoken);
+    if (c.id && c.hasSessionToken) {
+      // сохранённый токен нельзя показать (шифрован в main) — но можно явно удалить
+      const tclr = el('button', 'btn st-tok-clear', 'Очистить');
+      tclr.type = 'button';
+      tclr.title = 'Удалить сохранённый Session Token при сохранении';
+      tclr.onclick = () => { clearToken = !clearToken; stoken.disabled = clearToken; stoken.placeholder = clearToken ? '(будет удалён)' : '(без изменений)'; tclr.classList.toggle('danger', clearToken); };
+      tokRow.appendChild(tclr);
+    }
+    keysGrp.append(mk('Access Key ID', akey), mk('Secret Key', skey), kpRow, mk('Session Token', tokRow));
     f.appendChild(keysGrp);
+    // «анонимно» только ПРЯЧЕТ ключи — сохранённые значения не стираются (выключил обратно — всё на месте)
     const syncAnon = () => { keysGrp.style.display = anon.checked ? 'none' : ''; };
     anon.onchange = syncAnon; syncAnon();
 
@@ -286,13 +358,14 @@ export function initStorage(host) {
         name: name.value.trim(), category: getCategory(),
         endpoint: endpoint.value.trim().replace(/\/+$/, ''), region: region.value.trim() || 'us-east-1',
         forcePathStyle: ps.checked, anonymous: anon.checked,
-        accessKeyId: anon.checked ? '' : akey.value.trim(),
+        accessKeyId: akey.value.trim(),
         defaultBucket: defBucket.value.trim(), publicBaseUrl: pubBase.value.trim().replace(/\/+$/, ''),
         readOnly: ro.checked, color: colorSel.value, isProd: prod.checked,
       };
-      if (anon.checked) o.secretKey = '';
-      else if (skey.value) o.secretKey = skey.value;
-      if (stoken.value) o.sessionToken = stoken.value;
+      if (skey.value) o.secretKey = skey.value;
+      if (clearToken) o.sessionToken = '';
+      else if (stoken.value) o.sessionToken = stoken.value;
+      if (c.source) o.source = c.source; // метка «создано из контейнера X» — для дедупа повторных кликов
       return o;
     };
     const row = el('div', 'gm-actions'); row.style.marginTop = '12px';
@@ -310,7 +383,7 @@ export function initStorage(host) {
       if (!o.name) { toast('Введите имя', { kind: 'err' }); return; }
       const r = await lite.storage.save(o);
       if (!r.ok) { toast(r.error || 'Не удалось сохранить', { kind: 'err' }); return; }
-      if (activeId === r.id) activeConn = r.connection; // правка открытого — обновить кэш
+      adoptConn(r.connection);
       close(); renderPanel();
     };
     const cancel = el('button', 'btn', 'Отмена'); cancel.onclick = close;
@@ -319,13 +392,26 @@ export function initStorage(host) {
     hydrateIcons(m);
   }
 
+  // «Контейнеры» → MinIO: существующее подключение того же источника — открыть; нет — префилл-форма.
+  function openFromContainer(payload) {
+    const p = payload && payload.prefill;
+    if (!p) return;
+    const existing = conns.find((x) => x.source && x.source === p.source);
+    if (existing) { openConnection(existing); return; }
+    const { secretKey, ...rest } = p;
+    connModal({ ...rest, scope: GLOBAL_SCOPE }, secretKey || '');
+    if (!payload.published) toast('API-порт MinIO (9000) не проброшен на хост — проверьте -p', { kind: 'err', ttl: 8000 });
+  }
+
   // ============================================================ открытие/закрытие подключения
   async function openConnection(c) {
-    if (activeId === c.id && !connListMode) { renderPanel(); return; }
+    if (activeId === c.id) { connListMode = false; renderPanel(); return; } // возврат на вкладку БЕЗ сброса позиции
     connListMode = false;
     if (!openConns.includes(c.id)) openConns.push(c.id);
     activeId = c.id; activeConn = c;
-    curBucket = null; curPrefix = ''; viewer = null; buckets = []; listing = { dirs: [], files: [], nextToken: null };
+    curBucket = null; curPrefix = ''; viewer = null; buckets = []; selection.clear(); filterText = '';
+    listing = { dirs: [], files: [], nextToken: null, loading: false };
+    ++listSeq; ++treeSeq; // запоздалые ответы прежнего подключения — в мусор
     stUi.openTabs = openConns.slice(); stUi.activeTab = c.id; saveUi();
     await renderPanel();
     // бакет по умолчанию — сразу в него (список бакетов может быть недоступен по правам)
@@ -333,10 +419,13 @@ export function initStorage(host) {
   }
   function closeConnection(id, silent) {
     openConns = openConns.filter((x) => x !== id);
-    stUi.openTabs = openConns.slice(); saveUi();
-    for (const k of [...expanded]) if (k === id || k.startsWith(id + ' ')) expanded.delete(k);
+    stUi.openTabs = openConns.slice();
+    if (stUi.activeTab === id) stUi.activeTab = openConns[openConns.length - 1] || '';
+    saveUi();
+    for (const k of [...expanded]) if (k.startsWith(id + ' ')) expanded.delete(k);
     if (activeId === id) {
       activeId = null; activeConn = null; viewer = null;
+      ++listSeq; ++treeSeq;
       connListMode = true;
     }
     if (!silent) renderPanel();
@@ -354,109 +443,121 @@ export function initStorage(host) {
     renderMain(main);
   }
 
-  // ---------------- дерево: бакеты → префиксы (лениво, как buildDir в files.js) ----------------
+  // ---------------- дерево: бакеты → префиксы (лениво; treeSeq-гард против смены подключения) ----------------
   async function renderTree(side) {
+    const seq = ++treeSeq;
+    const id = activeId;
     side.innerHTML = '';
+    treeNodes.clear();
     const head = el('div', 'st-side-head');
-    head.append(icon('cloud', 14), el('span', 'st-side-title', activeConn.name || ''));
+    head.append(icon('cloud', 14), el('span', 'st-side-title', (activeConn && activeConn.name) || ''));
     const rf = iconBtn('drow-act', 'refresh', 'Перечитать бакеты', 13);
-    rf.onclick = () => renderTree(side);
+    rf.onclick = () => { const s = $('#storage-body .st-side'); if (s) renderTree(s); };
     head.appendChild(rf);
     side.appendChild(head);
     const treeBox = el('div', 'st-tree');
     side.appendChild(treeBox);
     treeBox.appendChild(el('div', 'st-dim', 'Загрузка…'));
-    const r = await lite.storage.buckets(activeId);
+    bucketsLoading = true;
+    const r = await lite.storage.buckets(id);
+    if (seq !== treeSeq || activeId !== id) return; // подключение сменили — ответ чужой
+    const conn = activeConn;
+    if (!conn) return; // вкладку успели закрыть
+    bucketsLoading = false;
     treeBox.innerHTML = '';
-    bucketBoxes.clear();
     if (!r.ok) {
       // ListBuckets часто запрещён (анонимно / узкие права) — работаем от бакета по умолчанию
-      if (activeConn.defaultBucket) {
-        buckets = [{ name: activeConn.defaultBucket }];
+      if (conn.defaultBucket) {
+        buckets = [{ name: conn.defaultBucket }];
         treeBox.appendChild(el('div', 'st-dim st-dim-note', 'Список бакетов недоступен — показан бакет из подключения'));
       } else {
+        buckets = [];
         treeBox.appendChild(el('div', 'st-dim', '✕ ' + (r.error || 'бакеты недоступны') + '. Укажите «Бакет по умолчанию» в подключении.'));
+        if (curBucket == null && !viewer) repaintMain();
         return;
       }
     } else buckets = r.buckets || [];
     // правая зона могла отрисовать вид «Бакеты» раньше, чем список приехал — освежить
     if (curBucket == null && !viewer) repaintMain();
     if (!buckets.length) { treeBox.appendChild(el('div', 'st-dim', 'Бакетов нет.')); return; }
-    for (const b of buckets) treeBox.appendChild(bucketNode(b.name));
+    for (const b of buckets) treeBox.appendChild(treeNode(b.name, '', b.name, 0, 'box'));
+    markTreeActive();
     hydrateIcons(treeBox);
   }
 
-  function bucketNode(bucket) {
+  const nodeKey = (bucket, prefix) => activeId + ' ' + bucket + ' ' + (prefix || '');
+  function treeNode(bucket, prefix, label, depth, iconName) {
     const wrap = el('div');
-    const row = el('div', 'tree-row dir st-tree-row' + (curBucket === bucket && !curPrefix ? ' open' : ''));
-    row.style.paddingLeft = '8px';
-    const chev = el('span', 'tree-chev', expanded.has(nodeKey(bucket, '')) ? '▾' : '▸');
-    row.append(chev, icon('box', 14), el('span', 'tree-name', bucket));
+    const k = nodeKey(bucket, prefix);
+    const row = el('div', 'tree-row dir st-tree-row');
+    row.style.paddingLeft = (depth * 12 + 8) + 'px';
+    const chev = el('span', 'tree-chev', expanded.has(k) ? '▾' : '▸');
+    row.append(chev, icon(iconName, 14), el('span', 'tree-name', label));
     const childBox = el('div', 'tree-children');
     childBox.style.display = 'none';
-    bucketBoxes.set(bucket, childBox);
-    wireTreeNode(row, chev, childBox, bucket, '');
-    wrap.append(row, childBox);
-    if (expanded.has(nodeKey(bucket, ''))) expandNode(chev, childBox, bucket, '');
-    return wrap;
-  }
-  const nodeKey = (bucket, prefix) => activeId + ' ' + bucket + ' ' + (prefix || '');
-  function wireTreeNode(row, chev, childBox, bucket, prefix) {
+    treeNodes.set(k, { row, chev, childBox, bucket, prefix, depth });
     // клик по строке = переход в неё справа + раскрытие; клик по шеврону = только свернуть/развернуть
     chev.addEventListener('click', async (e) => {
       e.stopPropagation();
-      const k = nodeKey(bucket, prefix);
       if (expanded.has(k)) { expanded.delete(k); childBox.style.display = 'none'; chev.textContent = '▸'; }
-      else { expanded.add(k); await expandNode(chev, childBox, bucket, prefix); }
+      else { expanded.add(k); await expandNode(chev, childBox, bucket, prefix, depth); }
     });
     row.addEventListener('click', async () => {
-      const k = nodeKey(bucket, prefix);
-      if (!expanded.has(k)) { expanded.add(k); await expandNode(chev, childBox, bucket, prefix); }
+      if (!expanded.has(k)) { expanded.add(k); await expandNode(chev, childBox, bucket, prefix, depth); }
       navigateTo(bucket, prefix);
     });
-  }
-  async function expandNode(chev, childBox, bucket, prefix) {
-    chev.textContent = '▾';
-    if (childBox.childElementCount === 0) {
-      childBox.appendChild(el('div', 'st-dim', '…'));
-      const r = await lite.storage.ls(activeId, bucket, prefix, null);
-      childBox.innerHTML = '';
-      if (!r.ok) { childBox.appendChild(el('div', 'st-dim', '✕ ' + (r.error || ''))); return; }
-      const depth = (prefix ? prefix.split('/').filter(Boolean).length : 0) + 1;
-      for (const d of r.dirs) childBox.appendChild(prefixNode(bucket, d, depth));
-      if (!r.dirs.length) childBox.appendChild(el('div', 'st-dim st-dim-leaf', '(нет подпапок)'));
-      hydrateIcons(childBox);
-    }
-    childBox.style.display = 'block';
-  }
-  function prefixNode(bucket, d, depth) {
-    const wrap = el('div');
-    const row = el('div', 'tree-row dir st-tree-row' + (curBucket === bucket && curPrefix === d.prefix ? ' open' : ''));
-    row.style.paddingLeft = (depth * 12 + 8) + 'px';
-    const chev = el('span', 'tree-chev', expanded.has(nodeKey(bucket, d.prefix)) ? '▾' : '▸');
-    row.append(chev, icon('folder', 14), el('span', 'tree-name', d.name));
-    const childBox = el('div', 'tree-children');
-    childBox.style.display = 'none';
-    wireTreeNode(row, chev, childBox, bucket, d.prefix);
     wrap.append(row, childBox);
-    if (expanded.has(nodeKey(bucket, d.prefix))) expandNode(chev, childBox, bucket, d.prefix);
+    if (expanded.has(k)) expandNode(chev, childBox, bucket, prefix, depth);
     return wrap;
   }
+  async function expandNode(chev, childBox, bucket, prefix, depth) {
+    chev.textContent = '▾';
+    childBox.style.display = 'block';
+    // dataset.loaded ставится ТОЛЬКО при успехе: разовая сетевая ошибка не кэшируется навечно —
+    // повторное свернуть/развернуть перечитает узел
+    if (childBox.dataset.loaded === '1') return;
+    const seq = treeSeq;
+    childBox.innerHTML = '';
+    childBox.appendChild(el('div', 'st-dim', '…'));
+    const r = await lite.storage.ls(activeId, bucket, prefix, null);
+    if (seq !== treeSeq) return;
+    childBox.innerHTML = '';
+    if (!r.ok) { childBox.appendChild(el('div', 'st-dim', '✕ ' + (r.error || ''))); return; }
+    childBox.dataset.loaded = '1';
+    for (const d of r.dirs) childBox.appendChild(treeNode(bucket, d.prefix, d.name, depth + 1, 'folder'));
+    if (!r.dirs.length) childBox.appendChild(el('div', 'st-dim st-dim-leaf', '(нет подпапок)'));
+    markTreeActive();
+    hydrateIcons(childBox);
+  }
+  // Точечный рефреш узла после мутаций (mkdir / удаление папки) — дерево видит изменения сразу.
+  async function refreshTreeNode(bucket, prefix) {
+    const n = treeNodes.get(nodeKey(bucket, prefix));
+    if (!n) return;
+    // дочерние узлы будут пересозданы — убираем их записи из индекса
+    const base = activeId + ' ' + bucket + ' ' + (prefix || '');
+    for (const k of [...treeNodes.keys()]) if (k !== base && k.startsWith(base)) treeNodes.delete(k);
+    delete n.childBox.dataset.loaded;
+    if (expanded.has(nodeKey(bucket, prefix))) await expandNode(n.chev, n.childBox, bucket, prefix, n.depth);
+  }
+  const parentPrefix = (prefix) => String(prefix || '').replace(/[^/]*\/$/, '');
+  // Подсветка активного узла дерева — после каждого перехода.
   function markTreeActive() {
-    const body = $('#storage-body'); if (!body) return;
-    body.querySelectorAll('.st-tree-row.open').forEach((n) => n.classList.remove('open'));
-    // подсветка активного узла — по тексту пути не восстановить дёшево; хватает крошек справа
+    const activeKey = curBucket != null ? nodeKey(curBucket, curPrefix) : null;
+    for (const [k, n] of treeNodes) n.row.classList.toggle('open', k === activeKey);
   }
 
   // ---------------- правая зона: список объектов / вивер ----------------
   function renderMain(main) {
     main.innerHTML = '';
     if (viewer) { renderViewer(main); return; }
+    destroyEditor(); // вышли из вивера любым путём — CodeMirror не бросаем живым
+    curListBox = null;
     main.appendChild(crumbsRow());
     if (curBucket == null) { renderBucketsView(main); return; }
     main.appendChild(toolbarRow());
     const box = el('div', 'st-list');
     main.appendChild(box);
+    curListBox = box;
     wireDropZone(box);
     renderObjects(box);
   }
@@ -465,11 +566,19 @@ export function initStorage(host) {
     const main = body.querySelector('.st-main');
     if (main) { renderMain(main); hydrateIcons(main); }
   }
+  // Перерисовать только список В ТОМ ЖЕ контейнере (скролл сохраняется) — фильтр/сортировка/догрузка.
+  function repaintList(keepScroll) {
+    if (!curListBox) { repaintMain(); return; }
+    const st = keepScroll ? curListBox.scrollTop : 0;
+    renderObjects(curListBox);
+    curListBox.scrollTop = st;
+    hydrateIcons(curListBox);
+  }
 
   function crumbsRow() {
     const row = el('div', 'st-crumbs');
     const root = el('button', 'st-crumb', 'Бакеты');
-    root.onclick = () => { curBucket = null; curPrefix = ''; viewer = null; repaintMain(); };
+    root.onclick = () => { curBucket = null; curPrefix = ''; viewer = null; selection.clear(); markTreeActive(); repaintMain(); };
     row.appendChild(root);
     if (curBucket != null) {
       row.appendChild(el('span', 'st-crumb-sep', '/'));
@@ -477,13 +586,14 @@ export function initStorage(host) {
       b.append(icon('box', 12), el('span', null, curBucket));
       b.onclick = () => navigateTo(curBucket, '');
       row.appendChild(b);
-      const parts = curPrefix.split('/').filter(Boolean);
+      // сегменты БЕЗ выбрасывания пустых: у ключей вида «a//b/» крошки должны вести в точный префикс
+      const parts = curPrefix ? curPrefix.slice(0, -1).split('/') : [];
       let acc = '';
       for (const p of parts) {
         acc += p + '/';
         const target = acc;
         row.appendChild(el('span', 'st-crumb-sep', '/'));
-        const seg = el('button', 'st-crumb', p);
+        const seg = el('button', 'st-crumb', p || '∅');
         seg.onclick = () => navigateTo(curBucket, target);
         row.appendChild(seg);
       }
@@ -497,13 +607,18 @@ export function initStorage(host) {
       const up = el('button', 'btn st-tbtn');
       up.append(icon('upload', 13), el('span', null, 'Загрузить'));
       up.onclick = pickAndUpload;
-      const mk = el('button', 'btn st-tbtn');
-      mk.append(icon('obs-new-folder', 13), el('span', null, 'Папка'));
-      mk.onclick = makeFolder;
-      bar.append(up, mk);
+      const mkBtn = el('button', 'btn st-tbtn');
+      mkBtn.append(icon('obs-new-folder', 13), el('span', null, 'Папка'));
+      mkBtn.onclick = makeFolder;
+      bar.append(up, mkBtn);
     } else {
       bar.appendChild(el('span', 'st-dim', activeConn.anonymous ? 'Анонимный доступ — только чтение' : (activeConn.readOnly ? 'Подключение только для чтения' : '')));
     }
+    // фильтр по текущему листингу (клиентский, живёт в сессии)
+    const flt = el('input', 'st-filter');
+    flt.type = 'search'; flt.placeholder = 'Фильтр…'; flt.value = filterText;
+    flt.oninput = () => { filterText = flt.value; repaintList(false); };
+    bar.appendChild(flt);
     const rf = el('button', 'btn st-tbtn st-tbtn-r');
     rf.append(icon('refresh', 13), el('span', null, 'Обновить'));
     rf.onclick = () => navigateTo(curBucket, curPrefix);
@@ -511,12 +626,15 @@ export function initStorage(host) {
     return bar;
   }
 
-  async function renderBucketsView(main) {
+  function renderBucketsView(main) {
     const box = el('div', 'st-list');
     main.appendChild(box);
+    if (bucketsLoading) { box.appendChild(el('div', 'st-dim st-loadnote', 'Загрузка…')); return; }
     if (!buckets.length) { box.appendChild(el('div', 'st-empty', 'Бакетов нет (или список недоступен по правам — укажите «Бакет по умолчанию» в подключении).')); return; }
     const t = el('div', 'st-table');
-    t.appendChild(headRow(['Бакет', 'Создан']));
+    const h = el('div', 'st-row st-row-head');
+    h.append(el('span', 'st-cell st-cell-name', 'Бакет'), el('span', 'st-cell st-cell-date', 'Создан'));
+    t.appendChild(h);
     for (const b of buckets) {
       const r = el('div', 'st-row');
       const nm = el('span', 'st-cell st-cell-name');
@@ -528,38 +646,51 @@ export function initStorage(host) {
     box.appendChild(t);
     hydrateIcons(box);
   }
-  function headRow(cols) {
-    const h = el('div', 'st-row st-row-head');
-    h.appendChild(el('span', 'st-cell st-cell-name', cols[0]));
-    if (cols[1]) h.appendChild(el('span', 'st-cell st-cell-size', cols[1]));
-    if (cols[2]) h.appendChild(el('span', 'st-cell st-cell-date', cols[2]));
-    return h;
-  }
 
   async function navigateTo(bucket, prefix) {
     curBucket = bucket; curPrefix = prefix || ''; viewer = null;
+    selection.clear();
     const seq = ++listSeq;
-    listing = { dirs: [], files: [], nextToken: null };
-    repaintMain(); // моментально показать крошки + «загрузка»
+    listing = { dirs: [], files: [], nextToken: null, loading: true };
+    markTreeActive();
+    repaintMain(); // моментально показать крошки + лоадер (не ложное «папка пуста»)
     const r = await lite.storage.ls(activeId, bucket, curPrefix, null);
     if (seq !== listSeq) return;
-    if (!r.ok) { listing.error = r.error; repaintMain(); return; }
-    listing = { dirs: r.dirs, files: r.files, nextToken: r.nextToken };
-    markTreeActive();
-    repaintMain();
+    listing = r.ok
+      ? { dirs: r.dirs, files: r.files, nextToken: r.nextToken, loading: false }
+      : { dirs: [], files: [], nextToken: null, loading: false, error: r.error };
+    repaintList(false);
+  }
+
+  // видимый срез листинга: фильтр + сортировка (папки всегда отдельно и сверху)
+  function visibleListing() {
+    const q = filterText.trim().toLowerCase();
+    const dirs = listing.dirs.filter((d) => !q || d.name.toLowerCase().includes(q))
+      .slice().sort((a, b) => a.name.localeCompare(b.name) * (sort.key === 'name' ? sort.dir : 1));
+    const files = listing.files.filter((f) => !q || f.name.toLowerCase().includes(q))
+      .slice().sort((a, b) => {
+        if (sort.key === 'size') return (a.size - b.size) * sort.dir;
+        if (sort.key === 'mtime') return ((a.mtime || 0) - (b.mtime || 0)) * sort.dir;
+        return a.name.localeCompare(b.name) * sort.dir;
+      });
+    return { dirs, files };
   }
 
   function renderObjects(box) {
     box.innerHTML = '';
+    if (listing.loading) { box.appendChild(el('div', 'st-dim st-loadnote', 'Загрузка…')); return; }
     if (listing.error) { box.appendChild(el('div', 'st-empty', '✕ ' + listing.error)); return; }
     if (!listing.dirs.length && !listing.files.length && !listing.nextToken) {
-      box.appendChild(el('div', 'st-empty', listSeq === 0 ? '' : (curPrefix ? 'Папка пуста.' : 'Бакет пуст.') + (canWrite() ? ' Перетащите файлы сюда или нажмите «Загрузить».' : '')));
+      box.appendChild(el('div', 'st-empty', (curPrefix ? 'Папка пуста.' : 'Бакет пуст.') + (canWrite() ? ' Перетащите файлы сюда или нажмите «Загрузить».' : '')));
       return;
     }
+    const { dirs, files } = visibleListing();
+    selectionBar(box);
     const t = el('div', 'st-table');
-    t.appendChild(headRow(['Имя', 'Размер', 'Изменён']));
-    for (const d of listing.dirs) {
+    t.appendChild(sortableHead());
+    for (const d of dirs) {
       const r = el('div', 'st-row');
+      r.appendChild(el('span', 'st-cell st-cell-check'));
       const nm = el('span', 'st-cell st-cell-name');
       nm.append(icon('folder', 14), el('span', null, d.name));
       r.append(nm, el('span', 'st-cell st-cell-size', '—'), el('span', 'st-cell st-cell-date', '—'));
@@ -567,8 +698,13 @@ export function initStorage(host) {
       r.oncontextmenu = (e) => { e.preventDefault(); dirMenu(e, d); };
       t.appendChild(r);
     }
-    for (const fo of listing.files) {
-      const r = el('div', 'st-row');
+    for (const fo of files) {
+      const r = el('div', 'st-row' + (selection.has(fo.key) ? ' sel' : ''));
+      const cb = el('span', 'st-cell st-cell-check');
+      const chk = el('input'); chk.type = 'checkbox'; chk.checked = selection.has(fo.key);
+      chk.onclick = (e) => { e.stopPropagation(); if (chk.checked) selection.add(fo.key); else selection.delete(fo.key); r.classList.toggle('sel', chk.checked); refreshSelectionBar(); };
+      cb.appendChild(chk);
+      r.appendChild(cb);
       const nm = el('span', 'st-cell st-cell-name');
       nm.append(icon(IMG_EXT.has(extOf(fo.name)) ? 'image' : 'file', 14), el('span', null, fo.name));
       r.append(nm, el('span', 'st-cell st-cell-size', fmtSize(fo.size)), el('span', 'st-cell st-cell-date', fmtDate(fo.mtime)));
@@ -576,35 +712,89 @@ export function initStorage(host) {
       r.oncontextmenu = (e) => { e.preventDefault(); fileMenu(e, fo); };
       t.appendChild(r);
     }
+    if (!dirs.length && !files.length && filterText) t.appendChild(el('div', 'st-empty', 'Ничего не найдено по фильтру.'));
     box.appendChild(t);
     if (listing.nextToken) {
       const more = el('button', 'btn st-more', 'Показать ещё (в бакете больше 1000 объектов)');
       more.onclick = async () => {
+        const seq = listSeq; // пока грузилась страница, могли уйти в другую папку → ответ чужой
         more.disabled = true; more.textContent = 'Загрузка…';
         const r = await lite.storage.ls(activeId, curBucket, curPrefix, listing.nextToken);
-        if (!r.ok) { toast(r.error || 'Не удалось догрузить', { kind: 'err' }); more.disabled = false; return; }
-        // дедуп папок: следующая страница может повторить CommonPrefixes
-        const seen = new Set(listing.dirs.map((d) => d.prefix));
+        if (seq !== listSeq) return;
+        if (!r.ok) { toast(r.error || 'Не удалось догрузить', { kind: 'err' }); more.disabled = false; more.textContent = 'Показать ещё'; return; }
+        const seen = new Set(listing.dirs.map((d) => d.prefix)); // страница может повторить CommonPrefixes
         listing.dirs.push(...r.dirs.filter((d) => !seen.has(d.prefix)));
         listing.files.push(...r.files);
         listing.nextToken = r.nextToken;
-        repaintMain();
+        repaintList(true); // тот же контейнер, скролл сохраняется
       };
       box.appendChild(more);
     }
     hydrateIcons(box);
   }
 
+  function sortableHead() {
+    const h = el('div', 'st-row st-row-head');
+    h.appendChild(el('span', 'st-cell st-cell-check'));
+    const cols = [['name', 'Имя', 'st-cell-name'], ['size', 'Размер', 'st-cell-size'], ['mtime', 'Изменён', 'st-cell-date']];
+    for (const [key, label, cls] of cols) {
+      const c = el('span', 'st-cell ' + cls + ' st-sortable', label + (sort.key === key ? (sort.dir > 0 ? ' ↑' : ' ↓') : ''));
+      c.title = 'Сортировать';
+      c.onclick = () => {
+        if (sort.key === key) sort.dir = -sort.dir; else { sort.key = key; sort.dir = 1; }
+        stUi.sort = { ...sort }; saveUi();
+        repaintList(true);
+      };
+      h.appendChild(c);
+    }
+    return h;
+  }
+
+  // ---------------- мультивыбор: полоса пакетных действий ----------------
+  function selectionBar(box) {
+    const bar = el('div', 'st-selbar');
+    bar.id = 'st-selbar';
+    box.appendChild(bar);
+    refreshSelectionBar();
+  }
+  function refreshSelectionBar() {
+    const bar = $('#st-selbar');
+    if (!bar) return;
+    bar.innerHTML = '';
+    if (!selection.size) { bar.style.display = 'none'; return; }
+    bar.style.display = '';
+    bar.appendChild(el('span', 'st-sel-count', `Выбрано: ${selection.size}`));
+    const dl = el('button', 'btn st-tbtn');
+    dl.append(icon('download', 13), el('span', null, 'Скачать'));
+    dl.onclick = () => downloadObjects([...selection].map((k) => ({ key: k, name: baseName(k) })));
+    bar.appendChild(dl);
+    if (canWrite()) {
+      const del = el('button', 'btn st-tbtn st-danger');
+      del.append(icon('trash', 13), el('span', null, 'Удалить'));
+      del.onclick = () => deleteObjects([...selection], `${selection.size} объектов`);
+      bar.appendChild(del);
+    }
+    const clr = el('button', 'btn st-tbtn', 'Снять выбор');
+    clr.onclick = () => { selection.clear(); repaintList(true); };
+    bar.appendChild(clr);
+    hydrateIcons(bar);
+  }
+
   // ---------------- контекстные меню ----------------
   function fileMenu(e, fo) {
     closeMenus();
+    const cp = caps();
     const dd = el('div', 'menu-dropdown');
     dd.appendChild(menuRow('eye', 'Открыть', () => { closeMenus(); openObject(fo.key); }));
+    dd.appendChild(menuRow('external-link', 'Открыть в вивере редактора', () => { closeMenus(); stageToViewer(fo); }));
     dd.appendChild(menuRow('download', 'Скачать…', () => { closeMenus(); downloadObjects([fo]); }));
-    dd.appendChild(menuRow('link', 'Доступ и ссылки…', () => { closeMenus(); linkModal(fo.key); }));
+    if (cp.presign || cp.acl || cp.publicUrl) dd.appendChild(menuRow('link', 'Доступ и ссылки…', () => { closeMenus(); linkModal(fo.key); }));
     dd.appendChild(menuRow('copy', 'Копировать ключ', () => { closeMenus(); navigator.clipboard.writeText(fo.key); toast('Ключ скопирован'); }));
     dd.appendChild(menuRow('copy', 'Копировать s3:// URI', () => { closeMenus(); navigator.clipboard.writeText(`s3://${curBucket}/${fo.key}`); toast('URI скопирован'); }));
+    dd.appendChild(menuRow('terminal', 'Путь в терминал', () => { closeMenus(); try { sendToTerminal(`s3://${curBucket}/${fo.key}`); toast('Отправлено в терминал'); } catch (_) { toast('Терминал недоступен', { kind: 'err' }); } }));
     if (canWrite()) {
+      dd.appendChild(menuRow('copy', 'Копировать в…', () => { closeMenus(); copyMoveModal(fo, false); }));
+      dd.appendChild(menuRow('arrow-right', 'Переместить в…', () => { closeMenus(); copyMoveModal(fo, true); }));
       dd.appendChild(menuRow('pencil', 'Переименовать…', () => { closeMenus(); renameObject(fo); }));
       dd.appendChild(menuRow('trash', 'Удалить', () => { closeMenus(); deleteObjects([fo.key], fo.name); }, 'danger'));
     }
@@ -615,6 +805,7 @@ export function initStorage(host) {
     closeMenus();
     const dd = el('div', 'menu-dropdown');
     dd.appendChild(menuRow('folder', 'Открыть', () => { closeMenus(); navigateTo(curBucket, d.prefix); }));
+    dd.appendChild(menuRow('download', 'Скачать папку…', () => { closeMenus(); downloadPrefix(d); }));
     dd.appendChild(menuRow('copy', 'Копировать префикс', () => { closeMenus(); navigator.clipboard.writeText(d.prefix); toast('Префикс скопирован'); }));
     if (canWrite()) {
       dd.appendChild(menuRow('trash', 'Удалить со всем содержимым', () => { closeMenus(); deletePrefix(d); }, 'danger'));
@@ -635,6 +826,7 @@ export function initStorage(host) {
       if (!name) return;
       const r = await lite.storage.mkdir(activeId, curBucket, curPrefix + name + '/');
       if (!r.ok) { toast(r.error || 'Не удалось создать', { kind: 'err' }); return; }
+      refreshTreeNode(curBucket, curPrefix); // дерево видит новую папку сразу
       navigateTo(curBucket, curPrefix);
     });
   }
@@ -650,35 +842,68 @@ export function initStorage(host) {
       });
     });
   }
+  // «Копировать в…» / «Переместить в…»: назначение — префикс в этом же бакете.
+  function copyMoveModal(fo, move) {
+    const { m, close } = makeModal(`<h2>${move ? 'Переместить' : 'Копировать'} объект</h2><div class="st-links" id="stcm"></div>`);
+    m.classList.add('db-modal');
+    const box = m.querySelector('#stcm');
+    box.appendChild(el('div', 'st-linkkey', fo.key));
+    const row = el('div', 'st-linkrow');
+    row.appendChild(el('span', 'st-linklabel', 'Префикс назначения:'));
+    const dst = el('input', 'st-linkinp');
+    dst.value = curPrefix; dst.placeholder = 'например logs/2026/ (пусто = корень бакета)';
+    row.appendChild(dst);
+    box.appendChild(row);
+    const act = el('div', 'gm-actions');
+    const ok = el('button', 'btn primary', move ? 'Переместить' : 'Копировать');
+    ok.onclick = async () => {
+      let prefix = dst.value.trim().replace(/^\/+/, '');
+      if (prefix && !prefix.endsWith('/')) prefix += '/';
+      const to = prefix + fo.name;
+      if (to === fo.key) { toast('Назначение совпадает с исходным', { kind: 'err' }); return; }
+      const r = move ? await lite.storage.rename(activeId, curBucket, fo.key, to) : await lite.storage.copy(activeId, curBucket, fo.key, to);
+      if (!r.ok) { toast(r.error || 'Не удалось', { kind: 'err' }); return; }
+      close();
+      toast(move ? 'Перемещено' : 'Скопировано');
+      navigateTo(curBucket, curPrefix);
+    };
+    const cancel = el('button', 'btn', 'Отмена'); cancel.onclick = close;
+    act.append(ok, cancel);
+    box.appendChild(act);
+  }
   function deleteObjects(keys, label) {
     guardedConfirm('Удалить из хранилища?', `«${label || keys[0]}» будет удалён безвозвратно (корзины у S3 нет).`, 'Удалить', async () => {
       const r = await lite.storage.remove(activeId, curBucket, keys);
       if (!r.ok) { toast(r.error || 'Не удалось удалить', { kind: 'err' }); return; }
-      if (viewer && keys.includes(viewer.key)) viewer = null;
+      for (const k of keys) selection.delete(k);
+      if (viewer && viewer.bucket === curBucket && keys.includes(viewer.key)) viewer = null;
       navigateTo(curBucket, curPrefix);
     });
   }
   function deletePrefix(d) {
     guardedConfirm('Удалить папку?', `Все объекты под «${d.prefix}» будут удалены безвозвратно.`, 'Удалить всё', async () => {
       const r = await lite.storage.removePrefix(activeId, curBucket, d.prefix);
-      if (!r.ok) { toast(r.error || 'Не удалось удалить', { kind: 'err' }); return; }
+      if (!r.ok) { toast(r.error || 'Не удалось удалить', { kind: 'err' }); navigateTo(curBucket, curPrefix); return; }
       toast(`Удалено объектов: ${r.deleted}`);
+      refreshTreeNode(curBucket, curPrefix); // удалённая папка исчезает и из дерева
       navigateTo(curBucket, curPrefix);
     });
   }
 
   // ---------------- вивер объекта ----------------
   async function openObject(key) {
+    const bucket = curBucket;
     const seq = ++listSeq;
-    viewer = { key, loading: true };
+    viewer = { bucket, key, loading: true };
     repaintMain();
-    const r = await lite.storage.read(activeId, curBucket, key);
-    if (seq !== listSeq || !viewer || viewer.key !== key) return;
-    viewer = r.ok ? { key, ...r } : { key, kind: 'error', error: r.error };
+    const r = await lite.storage.read(activeId, bucket, key);
+    if (seq !== listSeq || !viewer || viewer.key !== key || viewer.bucket !== bucket) return;
+    viewer = r.ok ? { bucket, key, ...r } : { bucket, key, kind: 'error', error: r.error };
     repaintMain();
-    // публичность — лениво, одним запросом после открытия
-    lite.storage.aclGet(activeId, curBucket, key).then((a) => {
-      if (!viewer || viewer.key !== key) return;
+    if (!caps().acl) return;
+    // публичность — лениво, одним запросом; гард по bucket+key (одинаковые ключи в разных бакетах)
+    lite.storage.aclGet(activeId, bucket, key).then((a) => {
+      if (!viewer || viewer.key !== key || viewer.bucket !== bucket) return;
       viewer.acl = a.ok ? a : { supported: false };
       const badge = $('#storage-body .st-acl-badge');
       if (badge) fillAclBadge(badge);
@@ -686,6 +911,7 @@ export function initStorage(host) {
   }
   function fillAclBadge(badge) {
     badge.innerHTML = '';
+    if (!caps().acl) { badge.textContent = ''; badge.className = 'st-acl-badge st-dim'; return; }
     const a = viewer && viewer.acl;
     if (!a) { badge.textContent = '…'; return; }
     if (!a.supported) { badge.textContent = 'ACL недоступны (публичность — политикой бакета)'; badge.className = 'st-acl-badge st-dim'; return; }
@@ -709,10 +935,13 @@ export function initStorage(host) {
     const dl = el('button', 'btn st-tbtn');
     dl.append(icon('download', 13), el('span', null, 'Скачать'));
     dl.onclick = () => downloadObjects([{ key: v.key, name: baseName(v.key) }]);
-    const ln = el('button', 'btn st-tbtn');
-    ln.append(icon('link', 13), el('span', null, 'Ссылки'));
-    ln.onclick = () => linkModal(v.key);
-    bar.append(dl, ln);
+    bar.appendChild(dl);
+    if (caps().presign || caps().acl || caps().publicUrl) {
+      const ln = el('button', 'btn st-tbtn');
+      ln.append(icon('link', 13), el('span', null, 'Ссылки'));
+      ln.onclick = () => linkModal(v.key);
+      bar.appendChild(ln);
+    }
     main.appendChild(bar);
 
     if (v.meta) {
@@ -723,7 +952,7 @@ export function initStorage(host) {
     }
     const box = el('div', 'st-view');
     main.appendChild(box);
-    if (v.loading) { box.appendChild(el('div', 'st-dim', 'Загрузка…')); return; }
+    if (v.loading) { box.appendChild(el('div', 'st-dim st-loadnote', 'Загрузка…')); return; }
     if (v.kind === 'error') { box.appendChild(el('div', 'st-empty', '✕ ' + (v.error || 'не удалось открыть'))); return; }
     if (v.kind === 'image') {
       const img = el('img', 'st-img');
@@ -744,47 +973,57 @@ export function initStorage(host) {
     box.appendChild(edBox);
     curEditor = createCodeEditor(edBox, {
       doc: v.content || '',
-      language: languageFor(v.key, (support) => { /* язык догрузился — редактор read-only, пересоздавать не обязательно */ }),
+      language: languageFor(v.key, () => {}),
       readOnly: true,
     });
   }
 
+  // Открыть объект во внешнем вивере редактора (tmp-копия, read-only по смыслу).
+  async function stageToViewer(fo) {
+    const r = await lite.storage.stage(activeId, curBucket, fo.key);
+    if (!r.ok) { toast(r.error || 'Не удалось подготовить файл', { kind: 'err' }); return; }
+    try { openInViewer(r.path); toast('Открыто в вивере (временная копия — правки в хранилище не вернутся)', { ttl: 6000 }); }
+    catch (_) { toast('Вивер недоступен', { kind: 'err' }); }
+  }
+
   // ---------------- доступ и ссылки ----------------
   async function linkModal(key) {
+    const cp = caps();
     const { m, close } = makeModal(`<h2>Доступ и ссылки</h2><div id="stl" class="st-links"></div>`);
     m.classList.add('db-modal');
     const box = m.querySelector('#stl');
     box.appendChild(el('div', 'st-linkkey', key));
     const aclRow = el('div', 'st-linkrow');
-    aclRow.appendChild(el('span', 'st-dim', 'Проверяю доступ…'));
-    box.appendChild(aclRow);
-
+    if (cp.acl) { aclRow.appendChild(el('span', 'st-dim', 'Проверяю доступ…')); box.appendChild(aclRow); }
     const pubRow = el('div', 'st-linkrow');
     box.appendChild(pubRow);
 
-    // presigned: TTL-селектор + генерация (≤ 7 суток — предел SigV4)
-    const signRow = el('div', 'st-linkrow');
-    signRow.appendChild(el('span', 'st-linklabel', 'Временная ссылка:'));
-    const ttl = el('select');
-    for (const [v, l] of [[900, '15 минут'], [3600, '1 час'], [86400, '24 часа'], [604800, '7 дней (максимум)']]) ttl.appendChild(new Option(l, v));
-    ttl.value = '3600';
-    const gen = el('button', 'btn', 'Создать');
-    const out = el('div', 'st-linkout');
-    gen.onclick = async () => {
-      out.textContent = '…';
-      const r = await lite.storage.presign(activeId, curBucket, key, +ttl.value, 'GET');
-      if (!r.ok) { out.textContent = '✕ ' + (r.error || ''); return; }
-      out.innerHTML = '';
-      const inp = el('input', 'st-linkinp'); inp.value = r.url; inp.readOnly = true;
-      const cp = el('button', 'btn', 'Копировать');
-      cp.onclick = () => { navigator.clipboard.writeText(r.url); toast('Ссылка скопирована'); };
-      out.append(inp, cp);
-      out.appendChild(el('div', 'st-dim', `Действует до ${fmtDate(r.expiresAt)}. Ссылка даёт доступ любому, кто её получит.`));
-    };
-    signRow.append(ttl, gen);
-    if (activeConn.anonymous) { ttl.disabled = true; gen.disabled = true; signRow.appendChild(el('span', 'st-dim', ' анонимное подключение — подпись недоступна')); }
-    box.append(signRow, out);
+    if (cp.presign) {
+      // presigned: TTL-селектор + генерация (≤ 7 суток — предел SigV4)
+      const signRow = el('div', 'st-linkrow');
+      signRow.appendChild(el('span', 'st-linklabel', 'Временная ссылка:'));
+      const ttl = el('select');
+      for (const [v, l] of [[900, '15 минут'], [3600, '1 час'], [86400, '24 часа'], [604800, '7 дней (максимум)']]) ttl.appendChild(new Option(l, v));
+      ttl.value = '3600';
+      const gen = el('button', 'btn', 'Создать');
+      const out = el('div', 'st-linkout');
+      gen.onclick = async () => {
+        out.textContent = '…';
+        const r = await lite.storage.presign(activeId, curBucket, key, +ttl.value, 'GET');
+        if (!r.ok) { out.textContent = '✕ ' + (r.error || ''); return; }
+        out.innerHTML = '';
+        const inp = el('input', 'st-linkinp'); inp.value = r.url; inp.readOnly = true;
+        const cpBtn = el('button', 'btn', 'Копировать');
+        cpBtn.onclick = () => { navigator.clipboard.writeText(r.url); toast('Ссылка скопирована'); };
+        out.append(inp, cpBtn);
+        out.appendChild(el('div', 'st-dim', `Действует до ${fmtDate(r.expiresAt)}. Ссылка даёт доступ любому, кто её получит.`));
+      };
+      signRow.append(ttl, gen);
+      if (activeConn.anonymous) { ttl.disabled = true; gen.disabled = true; signRow.appendChild(el('span', 'st-dim', ' анонимное подключение — подпись недоступна')); }
+      box.append(signRow, out);
+    }
 
+    if (!cp.acl) { hydrateIcons(m); return; }
     // публичность объекта (ACL) + публичная ссылка
     const a = await lite.storage.aclGet(activeId, curBucket, key);
     aclRow.innerHTML = '';
@@ -793,6 +1032,14 @@ export function initStorage(host) {
     } else if (!a.supported) {
       aclRow.appendChild(el('span', 'st-dim', 'На этом хранилище ACL объектов отключены — публичность задаётся политикой бакета.'));
     } else {
+      const syncViewerBadge = (isPub) => {
+        // бейдж в вивере ЗА модалкой не должен отставать от переключения
+        if (viewer && viewer.key === key && viewer.bucket === curBucket) {
+          viewer.acl = { supported: true, public: isPub };
+          const badge = $('#storage-body .st-acl-badge');
+          if (badge) fillAclBadge(badge);
+        }
+      };
       const setRow = async (isPub) => {
         aclRow.innerHTML = '';
         aclRow.appendChild(el('span', 'st-linklabel', 'Доступ:'));
@@ -804,7 +1051,7 @@ export function initStorage(host) {
             isPub ? 'Закрыть' : 'Открыть', async () => {
               const r = await lite.storage.aclSet(activeId, curBucket, key, !isPub);
               if (!r.ok) { toast(r.error || 'Не удалось изменить доступ', { kind: 'err' }); return; }
-              if (viewer && viewer.key === key) { viewer.acl = { supported: true, public: !isPub }; }
+              syncViewerBadge(!isPub);
               setRow(!isPub); fillPub(!isPub);
             });
           aclRow.appendChild(tgl);
@@ -812,14 +1059,14 @@ export function initStorage(host) {
       };
       const fillPub = async (isPub) => {
         pubRow.innerHTML = '';
-        if (!isPub) return;
+        if (!isPub || !cp.publicUrl) return;
         const u = await lite.storage.publicUrl(activeId, curBucket, key);
         if (!u.ok) return;
         pubRow.appendChild(el('span', 'st-linklabel', 'Публичная ссылка:'));
         const inp = el('input', 'st-linkinp'); inp.value = u.url; inp.readOnly = true;
-        const cp = el('button', 'btn', 'Копировать');
-        cp.onclick = () => { navigator.clipboard.writeText(u.url); toast('Ссылка скопирована'); };
-        pubRow.append(inp, cp);
+        const cpBtn = el('button', 'btn', 'Копировать');
+        cpBtn.onclick = () => { navigator.clipboard.writeText(u.url); toast('Ссылка скопирована'); };
+        pubRow.append(inp, cpBtn);
       };
       setRow(!!a.public); fillPub(!!a.public);
     }
@@ -834,19 +1081,20 @@ export function initStorage(host) {
   }
   function startUploads(paths) {
     if (!curBucket) { toast('Сначала откройте бакет', { kind: 'err' }); return; }
+    const bucket = curBucket, prefix = curPrefix; // куда РЕАЛЬНО грузим — для точечного рефреша по завершении
     const run = () => {
       for (const p of paths) {
         const name = baseName(p);
-        const key = curPrefix + name;
+        const key = prefix + name;
         const opId = newOpId();
-        transfers.set(opId, { phase: 'upload', key, name, loaded: 0, total: 0, speed: 0, lastLoaded: 0, lastT: Date.now(), status: 'run' });
-        lite.storage.upload(activeId, curBucket, key, p, opId).then((res) => {
-          if (!res.ok) { const t = transfers.get(opId); if (t) { t.status = 'err'; t.error = res.error; } repaintTransfers(); }
+        transfers.set(opId, { phase: 'upload', key, name, bucket, prefix, loaded: 0, total: 0, speed: 0, lastLoaded: 0, lastT: Date.now(), status: 'run' });
+        lite.storage.upload(activeId, bucket, key, p, opId).then((res) => {
+          if (!res.ok) { const t = transfers.get(opId); if (t) { t.status = 'err'; t.error = res.error; } paintTransfersBar(); }
         });
       }
-      repaintTransfers();
+      paintTransfersBar();
     };
-    if (activeConn.isProd) guardedConfirm('Загрузить в PRODUCTION?', `Файлов: ${paths.length} → «${curBucket}/${curPrefix}».`, 'Загрузить', run);
+    if (activeConn.isProd) guardedConfirm('Загрузить в PRODUCTION?', `Файлов: ${paths.length} → «${bucket}/${prefix}».`, 'Загрузить', run);
     else run();
   }
   async function downloadObjects(objs) {
@@ -857,38 +1105,54 @@ export function initStorage(host) {
       const name = o.name || baseName(o.key);
       transfers.set(opId, { phase: 'download', key: o.key, name, loaded: 0, total: 0, speed: 0, lastLoaded: 0, lastT: Date.now(), status: 'run' });
       lite.storage.download(activeId, curBucket, o.key, r.dir + '/' + name, opId).then((res) => {
-        if (!res.ok) { const t = transfers.get(opId); if (t) { t.status = 'err'; t.error = res.error; } repaintTransfers(); }
+        if (!res.ok) { const t = transfers.get(opId); if (t) { t.status = 'err'; t.error = res.error; } paintTransfersBar(); }
       });
     }
-    repaintTransfers();
+    paintTransfersBar();
+  }
+  async function downloadPrefix(d) {
+    const r = await lite.storage.pickDownloadDir();
+    if (!r.ok || !r.dir) return;
+    const opId = newOpId();
+    transfers.set(opId, { phase: 'download', key: d.prefix, name: d.name + '/', loaded: 0, total: 0, speed: 0, lastLoaded: 0, lastT: Date.now(), status: 'run' });
+    lite.storage.downloadPrefix(activeId, curBucket, d.prefix, r.dir + '/' + d.name, opId).then((res) => {
+      if (!res.ok) { const t = transfers.get(opId); if (t) { t.status = 'err'; t.error = res.error; } paintTransfersBar(); }
+    });
+    paintTransfersBar();
   }
   function wireDropZone(box) {
-    if (!canWrite()) return;
-    box.addEventListener('dragover', (e) => { e.preventDefault(); box.classList.add('drag-over'); });
+    // Гард нужен ВСЕГДА: без preventDefault Chromium навигирует окно модуля на file:// сброшенного
+    // файла (на read-only подключении drop раньше уничтожал весь UI).
+    box.addEventListener('dragover', (e) => { e.preventDefault(); if (canWrite()) box.classList.add('drag-over'); });
     box.addEventListener('dragleave', () => box.classList.remove('drag-over'));
     box.addEventListener('drop', (e) => {
       e.preventDefault();
       box.classList.remove('drag-over');
+      if (!canWrite()) { toast(activeConn && activeConn.anonymous ? 'Анонимное подключение — загрузка недоступна' : 'Подключение только для чтения', { kind: 'err' }); return; }
       const paths = [...(e.dataTransfer.files || [])].map((f) => lite.pathForFile(f)).filter(Boolean);
       if (paths.length) startUploads(paths);
     });
   }
 
+  // Полоса передач: полная пересборка — только при добавлении/смене статуса; прогресс — точечно
+  // (fill/pct), иначе кнопка «×» пересоздавалась под курсором на каждом событии.
   function transfersBar() {
     const bar = el('div', 'st-transfers');
     bar.id = 'st-transfers';
-    paintTransfers(bar);
+    paintTransfersBar(bar);
     return bar;
   }
-  function repaintTransfers() { const bar = $('#st-transfers'); if (bar) paintTransfers(bar); }
-  function paintTransfers(bar) {
+  function paintTransfersBar(barArg) {
+    const bar = barArg || $('#st-transfers');
+    if (!bar) return;
     bar.innerHTML = '';
+    transferRows.clear();
     if (!transfers.size) { bar.style.display = 'none'; return; }
     bar.style.display = '';
     const head = el('div', 'st-tr-head');
     head.append(el('span', null, `Передачи (${transfers.size})`));
     const clear = el('button', 'st-tr-clear', 'убрать завершённые');
-    clear.onclick = () => { for (const [id, t] of transfers) if (t.status !== 'run') transfers.delete(id); repaintTransfers(); };
+    clear.onclick = () => { for (const [id, t] of transfers) if (t.status !== 'run') transfers.delete(id); paintTransfersBar(); };
     head.appendChild(clear);
     bar.appendChild(head);
     for (const [opId, t] of transfers) {
@@ -898,15 +1162,17 @@ export function initStorage(host) {
       if (t.status === 'run') {
         const prog = el('div', 'st-tr-bar');
         const fill = el('div', 'st-tr-fill');
-        const pct = t.total ? Math.min(100, Math.round(t.loaded / t.total * 100)) : 0;
-        fill.style.width = pct + '%';
+        const pctNow = t.total ? Math.min(100, Math.round(t.loaded / t.total * 100)) : 0;
+        fill.style.width = pctNow + '%';
         prog.appendChild(fill);
         row.appendChild(prog);
-        row.appendChild(el('span', 'st-tr-pct', (t.total ? pct + '%' : fmtSize(t.loaded)) + (t.speed ? ' · ' + fmtSize(t.speed) + '/с' : '')));
+        const pct = el('span', 'st-tr-pct', (t.total ? pctNow + '%' : fmtSize(t.loaded)) + (t.speed ? ' · ' + fmtSize(t.speed) + '/с' : ''));
+        row.appendChild(pct);
         const x = el('button', 'st-tr-x', '×');
         x.title = 'Отменить';
-        x.onclick = () => { lite.storage.cancel(opId); t.status = 'cancelled'; repaintTransfers(); };
+        x.onclick = () => { lite.storage.cancel(opId); t.status = 'cancelled'; paintTransfersBar(); };
         row.appendChild(x);
+        transferRows.set(opId, { fill, pct });
       } else if (t.status === 'done') {
         row.appendChild(el('span', 'st-tr-ok', '✓ готово'));
       } else if (t.status === 'cancelled') {
@@ -918,6 +1184,14 @@ export function initStorage(host) {
     }
     hydrateIcons(bar);
   }
+  function updateTransferRow(opId) {
+    const t = transfers.get(opId);
+    const r = transferRows.get(opId);
+    if (!t || !r) return;
+    const pctNow = t.total ? Math.min(100, Math.round(t.loaded / t.total * 100)) : 0;
+    r.fill.style.width = pctNow + '%';
+    r.pct.textContent = (t.total ? pctNow + '%' : fmtSize(t.loaded)) + (t.speed ? ' · ' + fmtSize(t.speed) + '/с' : '');
+  }
 
   // события прогресса — от бэкенда в это окно
   lite.storage.onProgress(({ opId, loaded, total }) => {
@@ -927,23 +1201,25 @@ export function initStorage(host) {
     const dt = (now - t.lastT) / 1000;
     if (dt > 0.4) { t.speed = (loaded - t.lastLoaded) / dt; t.lastLoaded = loaded; t.lastT = now; }
     t.loaded = loaded; t.total = total;
-    repaintTransfers();
+    updateTransferRow(opId);
   });
   lite.storage.onDone(({ opId }) => {
     const t = transfers.get(opId);
     if (!t) return;
     t.status = 'done';
-    repaintTransfers();
-    if (t.phase === 'upload' && curBucket) navigateTo(curBucket, curPrefix); // свежезалитое сразу видно
-    setTimeout(() => { if (transfers.get(opId) === t && t.status === 'done') { transfers.delete(opId); repaintTransfers(); } }, 5000);
+    paintTransfersBar();
+    // рефреш ТОЛЬКО если пользователь всё ещё смотрит папку, куда грузилось, и не в вивере —
+    // иначе завершение фоновой загрузки выбивало из открытого файла / дёргало чужой префикс
+    if (t.phase === 'upload' && !viewer && curBucket === t.bucket && curPrefix === t.prefix) navigateTo(curBucket, curPrefix);
+    setTimeout(() => { if (transfers.get(opId) === t && t.status === 'done') { transfers.delete(opId); paintTransfersBar(); } }, 5000);
   });
   lite.storage.onOpErr(({ opId, error }) => {
     const t = transfers.get(opId);
     if (!t) return;
-    if (t.status === 'cancelled') { transfers.delete(opId); repaintTransfers(); return; } // отмена — не ошибка
+    if (t.status === 'cancelled') { transfers.delete(opId); paintTransfersBar(); return; } // отмена — не ошибка
     t.status = 'err'; t.error = error;
     toast('Передача не удалась: ' + error, { kind: 'err' });
-    repaintTransfers();
+    paintTransfersBar();
   });
 
   // ============================================================ контракт панели
@@ -960,5 +1236,6 @@ export function initStorage(host) {
     renderPanel,
     refresh: () => renderPanel(),
     addConnection: () => connModal(null),
+    openFromContainer,
   };
 }

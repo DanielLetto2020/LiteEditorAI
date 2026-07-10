@@ -3,7 +3,7 @@
 const { app, BrowserWindow, ipcMain, dialog, shell, Menu, clipboard, screen, Tray, nativeImage, crashReporter, safeStorage, Notification } = require('electron');
 const dbBackend = require('./lib/db');
 const rhBackend = require('./lib/remotehost');
-const { guessDbKind, dbPrefillFromInspect, guessMqKind, rmqPrefillFromInspect, kafkaPrefillFromInspect, guessWebKind, webPrefillFromInspect } = require('./lib/dbdetect'); // «Контейнеры» → «Базы данных»/«RabbitMQ»/«Kafka»/«Мониторинг сайтов»
+const { guessDbKind, dbPrefillFromInspect, guessMqKind, rmqPrefillFromInspect, kafkaPrefillFromInspect, guessWebKind, webPrefillFromInspect, guessStorageKind, storagePrefillFromInspect } = require('./lib/dbdetect'); // «Контейнеры» → «Базы данных»/«RabbitMQ»/«Kafka»/«Мониторинг сайтов»/«Внешние хранилища»
 const rmqBackend = require('./lib/rmq');
 const kafkaBackend = require('./lib/kafka');
 const storageBackend = require('./lib/storage');
@@ -2087,6 +2087,7 @@ function openModuleWindow(modId) {
     if (modId === 'db') dbPanelReady = false;        // окно БД закрыто → следующий openFromContainer переоткроет и переждёт готовность
     if (modId === 'rmq') rmqPanelReady = false;      // аналогично для окна RabbitMQ
     if (modId === 'kafka') kafkaPanelReady = false;  // аналогично для окна Kafka
+    if (modId === 'storage') stPanelReady = false;   // аналогично для окна «Внешние хранилища»
     if (modId === 'ctx') { for (const w of ctxOutWatchers.values()) { try { w.close(); } catch (_) {} } ctxOutWatchers.clear(); } // окно «Контекст» закрылось без unwatch → не течём fs.watch (B2)
     for (const [sid, wc] of ownerBySession) { try { if (wc.isDestroyed()) ownerBySession.delete(sid); } catch (_) { ownerBySession.delete(sid); } }
     broadcastModuleOpenSet();
@@ -2850,6 +2851,22 @@ ipcMain.on('rmq:openFromContainer', (_e, payload) => {
   const w = rmqModWindow();
   if (w && rmqPanelReady) { if (w.isMinimized()) w.restore(); w.focus(); w.webContents.send('rmq:openFromContainer', payload); }
   else pendingRmqOpens.push(payload);
+});
+// «Контейнеры» → «Внешние хранилища» (MinIO): тот же паттерн, что и с БД/RabbitMQ.
+let stPanelReady = false;
+const pendingStOpens = [];
+function stModWindow() { const w = moduleWindows.get('storage'); return (w && !w.isDestroyed()) ? w : null; }
+ipcMain.on('st:openFromContainer', (_e, payload) => {
+  if (!payload || typeof payload !== 'object') return;
+  if (!stModWindow()) openModuleWindow('storage');
+  const w = stModWindow();
+  if (w && stPanelReady) { if (w.isMinimized()) w.restore(); w.focus(); w.webContents.send('st:openFromContainer', payload); }
+  else pendingStOpens.push(payload);
+});
+ipcMain.on('st:panelReady', () => {
+  stPanelReady = true;
+  const w = stModWindow();
+  while (w && pendingStOpens.length) { w.focus(); w.webContents.send('st:openFromContainer', pendingStOpens.shift()); }
 });
 ipcMain.on('rmq:panelReady', () => {
   rmqPanelReady = true;
@@ -5471,14 +5488,14 @@ async function cListContainers(engine) {
     const r = await containerRun('docker', ['ps', '-a', '--format', '{{json .}}'], { timeout: 12000 });
     if (!r.ok) return { error: r.error };
     return { items: cParseLines(r.out).map((c) => { const L = cLabelMap(c.Labels);
-      return { id: c.ID, name: c.Names, image: c.Image, state: String(c.State || '').toLowerCase(), status: c.Status, ports: c.Ports || '', project: L[C_PROJECT] || '', service: L[C_SERVICE] || '', dbKind: guessDbKind(c.Image, c.Ports), mqKind: guessMqKind(c.Image, c.Ports), webKind: guessWebKind(c.Image, c.Ports) }; }) };
+      return { id: c.ID, name: c.Names, image: c.Image, state: String(c.State || '').toLowerCase(), status: c.Status, ports: c.Ports || '', project: L[C_PROJECT] || '', service: L[C_SERVICE] || '', dbKind: guessDbKind(c.Image, c.Ports), mqKind: guessMqKind(c.Image, c.Ports), webKind: guessWebKind(c.Image, c.Ports), storageKind: guessStorageKind(c.Image) }; }) };
   }
   const r = await containerRun('podman', ['ps', '-a', '--format', 'json'], { timeout: 12000 });
   if (!r.ok) return { error: r.error };
   return { items: cParseJson(r.out).map((c) => { const L = c.Labels || {};
     const name = Array.isArray(c.Names) ? c.Names[0] : (c.Names || c.Name || '');
     const ports = Array.isArray(c.Ports) ? c.Ports.map((p) => `${p.host_port || p.hostPort || ''}${(p.host_port || p.hostPort) ? ':' : ''}${p.container_port || p.containerPort || ''}`).filter((s) => s && s !== ':').join(', ') : '';
-    return { id: c.Id || c.ID, name, image: c.Image, state: String(c.State || '').toLowerCase(), status: c.Status || c.State, ports, project: L[C_PROJECT] || L['io.podman.compose.project'] || '', service: L[C_SERVICE] || '', dbKind: guessDbKind(c.Image, ports), mqKind: guessMqKind(c.Image, ports), webKind: guessWebKind(c.Image, ports) }; }) };
+    return { id: c.Id || c.ID, name, image: c.Image, state: String(c.State || '').toLowerCase(), status: c.Status || c.State, ports, project: L[C_PROJECT] || L['io.podman.compose.project'] || '', service: L[C_SERVICE] || '', dbKind: guessDbKind(c.Image, ports), mqKind: guessMqKind(c.Image, ports), webKind: guessWebKind(c.Image, ports), storageKind: guessStorageKind(c.Image) }; }) };
 }
 async function cListPods() {
   const r = await containerRun('podman', ['pod', 'ps', '--format', 'json'], { timeout: 10000 });
@@ -5643,6 +5660,18 @@ ipcMain.handle('containers:inspectDb', async (_e, { engine, id } = {}) => {
   return { ok: true, ...res };
 });
 // «Открыть в модуле RabbitMQ»: inspect контейнера → заготовка профиля (management-порт/лог/пас/vhost).
+// «Открыть в модуле Внешние хранилища»: inspect MinIO-контейнера → заготовка S3-подключения.
+ipcMain.handle('containers:inspectStorage', async (_e, { engine, id } = {}) => {
+  if (engine !== 'docker' && engine !== 'podman') return { ok: false, error: 'bad engine' };
+  if (!id || typeof id !== 'string') return { ok: false, error: 'no id' };
+  const r = await containerRun(engine, ['inspect', id], { timeout: 12000 });
+  if (!r.ok) return { ok: false, error: r.error };
+  const info = cParseJson(r.out)[0];
+  if (!info) return { ok: false, error: 'inspect вернул пустой ответ' };
+  const res = storagePrefillFromInspect(info, engine);
+  if (!res) return { ok: false, error: 'В контейнере не распознано S3-хранилище (MinIO)' };
+  return { ok: true, ...res };
+});
 ipcMain.handle('containers:inspectMq', async (_e, { engine, id } = {}) => {
   if (engine !== 'docker' && engine !== 'podman') return { ok: false, error: 'bad engine' };
   if (!id || typeof id !== 'string') return { ok: false, error: 'no id' };

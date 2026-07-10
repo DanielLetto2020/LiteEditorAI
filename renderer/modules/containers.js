@@ -278,6 +278,11 @@ export function initContainers(host) {
       b.onclick = (e) => { e.stopPropagation(); openContainerKafka(c); };
       acts.appendChild(b);
     }
+    if (c.storageKind === 'minio') { // задетектили MinIO → «подключить как внешнее хранилище»
+      const b = iconBtn('drow-act dmq', 'cloud', 'Открыть в модуле «Внешние хранилища»', 14);
+      b.onclick = (e) => { e.stopPropagation(); openContainerStorage(c); };
+      acts.appendChild(b);
+    }
     if (c.webKind && !c.dbKind && !c.mqKind) { // задетектили веб-сервис → «наблюдать в Мониторинге сайтов»
       const b = iconBtn('drow-act dweb', 'globe', 'Наблюдать в «Мониторинге сайтов»', 14);
       b.onclick = (e) => { e.stopPropagation(); watchContainerSite(c); };
@@ -307,6 +312,15 @@ export function initContainers(host) {
     if (!r.published) { toast('Порт management (15672) не проброшен на хост — включи management-плагин / добавь -p', { kind: 'err', ttl: 9000 }); return; }
     if (!r.running) toast('Контейнер остановлен — профиль создастся, но оживёт после старта', { ttl: 6000 });
     lite.rmq.openFromContainer(r);
+  }
+  // Клик по облаку: inspect MinIO → заготовка S3-подключения → окно модуля «Внешние хранилища».
+  async function openContainerStorage(c) {
+    let r;
+    try { r = await lite.containers.inspectStorage(dockerEngine, c.id); } catch (e) { r = { ok: false, error: String(e) }; }
+    if (!r || !r.ok) { toast((r && r.error) || 'Не удалось прочитать параметры контейнера', { kind: 'err', ttl: 8000 }); return; }
+    if (!r.published) { toast('API-порт MinIO (9000) не проброшен на хост (нет -p) — с хоста не подключиться', { kind: 'err', ttl: 9000 }); return; }
+    if (!r.running) toast('Контейнер остановлен — подключение создастся, но оживёт после старта', { ttl: 6000 });
+    lite.storage.openFromContainer(r);
   }
   // Клик по глобусу: inspect → URL по published веб-порту → запись в «Мониторинг сайтов» (дедуп по URL).
   async function watchContainerSite(c) {
