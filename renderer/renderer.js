@@ -1780,11 +1780,15 @@ function initWindowControls() {
 let openMenuName = null;
 function initMenubar() {
   document.querySelectorAll('.menu-item').forEach((btn) => {
+    btn.addEventListener('mouseover', () => {
+      const name = btn.dataset.menu;
+      if (openMenuName !== name) openTopMenu(name, btn);
+    });
     btn.addEventListener('click', (e) => {
       e.stopPropagation();
       const name = btn.dataset.menu;
-      if (openMenuName === name) { closeMenus(); return; }
-      openTopMenu(name, btn);
+      if (openMenuName === name) closeMenus();
+      else openTopMenu(name, btn);
     });
   });
   document.addEventListener('click', closeMenus);
@@ -1943,7 +1947,14 @@ function buildModulesMenu(dd) {
     dd.appendChild(row);
   };
 
-  dd.appendChild(moduleRow('grid', 'Встроенные', 'все модули редактора плитками', () => { closeMenus(); showBuiltinModules(); }));
+  flyout('grid', 'Встроенные', 'все модули редактора', (sub) => {
+    sub.appendChild(moduleRow('grid', 'Все модули плитками…', 'открыть полный список', () => { closeMenus(); showBuiltinModules(); }));
+    sub.appendChild(el('div', 'menu-sep'));
+    for (const m of BUILTIN_MODS) {
+      if (m.id === 'scratch' || m.id === 'chat') continue; // эти уже есть отдельно или не нужны тут
+      sub.appendChild(menuRow(m.icon, m.title, () => { closeMenus(); openModule(m.id); }));
+    }
+  });
   flyout('layers', 'Мои модули', 'пользовательские плагины', (sub) => Ext.buildMenuSection(sub, { bare: true }));
   dd.appendChild(el('div', 'menu-sep'));
   dd.appendChild(moduleRow('sliders', 'Настройка панели', 'быстрый доступ под терминалом', () => { closeMenus(); showPanelSetup(); }));
@@ -2005,6 +2016,26 @@ function showBuiltinModules() {
       t.appendChild(el('span', 'bim-title', mod.title));
       t.appendChild(el('span', 'bim-desc', mod.desc));
       t.title = mod.title + ' — ' + mod.desc;
+      
+      const chk = el('button', 'bim-chk');
+      chk.type = 'button';
+      chk.title = 'Автозапуск при старте редактора';
+      chk.appendChild(icon('check', 14));
+      if (settings.autoLaunchMods && settings.autoLaunchMods.includes(mod.id)) chk.classList.add('on');
+      chk.addEventListener('click', (e) => {
+        e.stopPropagation();
+        settings.autoLaunchMods = settings.autoLaunchMods || [];
+        if (chk.classList.contains('on')) {
+          chk.classList.remove('on');
+          settings.autoLaunchMods = settings.autoLaunchMods.filter(x => x !== mod.id);
+        } else {
+          chk.classList.add('on');
+          settings.autoLaunchMods.push(mod.id);
+        }
+        saveSettings();
+      });
+      t.appendChild(chk);
+      
       t.addEventListener('click', () => { close(); openModule(mod.id); });
       grid.appendChild(t);
       tiles.push({ el: t, sec, text: (mod.title + ' ' + mod.desc).toLowerCase() });
@@ -2669,6 +2700,7 @@ function showSettings() {
   m.querySelector('#st-wd-pick').onclick = async () => { const d = await lite.pickDir(); if (d) wd.value = d; };
   m.querySelector('#st-wd-clear').onclick = () => { wd.value = ''; };
   m.querySelector('#st-scan-add').onclick = async () => { const d = await lite.pickDir(); if (d && !scan.includes(d)) { scan.push(d); renderScan(); } };
+
   m.querySelector('#st-ok').onclick = () => {
     settings.notifications = notif.checked;
     settings.sound = sound.checked;
@@ -3127,6 +3159,17 @@ function init() {
   scanProjects();          // add subfolders of settings.scanDirs (non-blocking)
   checkProjectsExistence();
   window.addEventListener('focus', checkProjectsExistence); // re-check when returning to the app
+
+  // Autolaunch modules (only on cold app boot)
+  if (settings.autoLaunchMods && Array.isArray(settings.autoLaunchMods)) {
+    lite.app.canAutoLaunch().then((canLaunch) => {
+      if (canLaunch) {
+        settings.autoLaunchMods.forEach(id => {
+          if (!openModuleIds.has(id)) openModule(id);
+        });
+      }
+    }).catch(() => {});
+  }
 
   if (!settings.onboarded) setTimeout(showOnboarding, 200); // first-run welcome
 }

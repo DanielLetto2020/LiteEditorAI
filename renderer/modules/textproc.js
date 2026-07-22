@@ -137,7 +137,7 @@ export function initTextProc(host) {
   let activeTabId = null;
   let nextTabId = 1;
   let activeProj = null;
-  let chatAgent = ['claude', 'codex', 'gemini'].includes(settings.tpAgent) ? settings.tpAgent : 'claude';
+  let chatAgent = ['claude', 'codex', 'gemini', 'antigravity'].includes(settings.tpAgent) ? settings.tpAgent : 'claude';
   let chatRole = 'Без роли';
   let chatLog = [];
   let aiSeq = 0;
@@ -169,6 +169,80 @@ export function initTextProc(host) {
     { label: 'ā', tex: '\\vec{}' }, { label: '∂', tex: '\\partial' }, { label: '∈', tex: '\\in' }, { label: '·', tex: '\\cdot' },
   ];
 
+  // ---- Рейка-навигатор: метки заголовков + бегунок текущей позиции (рядом с обычным скроллом) ----
+  let scrubberDragging = false;
+  let scrubberDebounceTimer = null;
+  function computeHeadingMarks() {
+    const doc = $('#doc-editor-wysiwyg');
+    const canvas = document.querySelector('.tp-canvas');
+    if (!doc || !canvas) return [];
+    const maxScroll = Math.max(1, canvas.scrollHeight - canvas.clientHeight);
+    return $$('#doc-editor-wysiwyg h1, #doc-editor-wysiwyg h2, #doc-editor-wysiwyg h3').map((h) => {
+      let offset = h.offsetTop;
+      let curr = h.offsetParent;
+      while (curr && curr !== canvas && curr !== document.body) {
+        offset += curr.offsetTop;
+        curr = curr.offsetParent;
+      }
+      return {
+        el: h,
+        level: h.tagName.toLowerCase(),
+        text: h.textContent.trim().slice(0, 60),
+        ratio: Math.max(0, Math.min(1, offset / maxScroll)),
+      };
+    });
+  }
+  function renderScrubber() {
+    const track = $('#doc-scrubber-track');
+    if (!track || mode !== 'wysiwyg') { if (track) track.innerHTML = ''; return; }
+    const marks = computeHeadingMarks();
+    track.innerHTML = '';
+    marks.forEach((m) => {
+      const tick = el('div', 'tp-scrubber-tick tp-scrubber-tick-' + m.level);
+      tick.style.top = (m.ratio * 100) + '%';
+      tick.title = m.text;
+      tick.onclick = (e) => { e.stopPropagation(); m.el.scrollIntoView({ behavior: 'smooth', block: 'start' }); };
+      track.appendChild(tick);
+    });
+    track.appendChild(el('div', 'tp-scrubber-thumb'));
+    updateScrubberThumb();
+  }
+  function updateScrubberThumb() {
+    const canvas = document.querySelector('.tp-canvas');
+    const thumb = document.querySelector('#doc-scrubber-track .tp-scrubber-thumb');
+    if (!canvas || !thumb) return;
+    const maxScroll = canvas.scrollHeight - canvas.clientHeight;
+    const ratio = maxScroll > 0 ? canvas.scrollTop / maxScroll : 0;
+    thumb.style.top = (ratio * 100) + '%';
+  }
+  function handleScrubberDrag(e) {
+    const track = $('#doc-scrubber-track');
+    const canvas = document.querySelector('.tp-canvas');
+    if (!track || !canvas) return;
+    const r = track.getBoundingClientRect();
+    let ratio = Math.max(0, Math.min(1, (e.clientY - r.top) / r.height));
+    
+    const ticks = track.querySelectorAll('.tp-scrubber-tick');
+    let snapRatio = ratio;
+    let minDiff = Infinity;
+    ticks.forEach(tick => {
+      const tr = parseFloat(tick.style.top) / 100;
+      const diff = Math.abs(tr * r.height - ratio * r.height);
+      if (diff < 10 && diff < minDiff) { minDiff = diff; snapRatio = tr; }
+    });
+    
+    // Отключаем магнит на самых краях, чтобы можно было долистать до верха/низа
+    if (ratio * r.height < 10) ratio = 0;
+    else if (ratio * r.height > r.height - 10) ratio = 1;
+    else ratio = snapRatio;
+
+    canvas.scrollTop = ratio * (canvas.scrollHeight - canvas.clientHeight);
+  }
+  function scheduleScrubberUpdate() {
+    clearTimeout(scrubberDebounceTimer);
+    scrubberDebounceTimer = setTimeout(renderScrubber, 800);
+  }
+
   // ---- helpers ----
   function getActiveEditor() { return mode === 'wysiwyg' ? $('#doc-editor-wysiwyg') : $('#doc-editor-md'); }
   function currentMarkdown() { return mode === 'wysiwyg' ? htmlToMd($('#doc-editor-wysiwyg')) : $('#doc-editor-md').textContent; }
@@ -180,8 +254,11 @@ export function initTextProc(host) {
     scheduleAutosave();
   }
   function updateStatus(text) {
-    if (text != null) $('#doc-status-label').textContent = text;
-    $('#doc-name-label').textContent = currentName;
+    const statusLabel = $('#doc-status-label');
+    if (text != null && statusLabel) statusLabel.textContent = text;
+    
+    const nameLabel = $('#doc-name-label');
+    if (nameLabel) nameLabel.textContent = currentName;
   }
   function updateThumb(container, activeBtn) {
     if (!container || !activeBtn) return;
@@ -219,9 +296,83 @@ export function initTextProc(host) {
     $$('.tp-seg-btn[data-mode]').forEach((b) => { b.onclick = () => setMode(b.dataset.mode); });
     $$('.tp-tab[data-tab]').forEach((b) => { b.onclick = () => setTab(b.dataset.tab); });
 
-    $('#doc-toggle-inspector').onclick = () => $('#doc-inspector').classList.toggle('collapsed');
+    $('#doc-toggle-inspector').onclick = () => document.querySelector('.tp-layout').classList.toggle('inspector-collapsed');
     const toggleSidebarBtn = $('#doc-toggle-sidebar');
     if (toggleSidebarBtn) toggleSidebarBtn.onclick = toggleSidebar;
+
+    
+    // Responsive toolbar logic
+    
+    // Paragraph numbering toggle
+    const toggleNumBtn = $('#doc-toggle-numbering');
+    if (toggleNumBtn) {
+      toggleNumBtn.addEventListener('click', () => {
+        const editor = $('#doc-editor-wysiwyg');
+        if (editor) {
+          editor.classList.toggle('show-paragraph-numbers');
+          toggleNumBtn.classList.toggle('active');
+        }
+      });
+    }
+
+    const tbMerged = $('.tp-toolbar-merged');
+    if (tbMerged) {
+      const overflowBtnWrap = $('.tp-toolbar-overflow-btn');
+      const overflowBtn = $('#doc-toolbar-overflow-btn');
+      const overflowMenu = $('#doc-toolbar-overflow-menu');
+      const layoutEl = document.querySelector('.tp-layout');
+      const rowEl = tbMerged.closest('.tp-shell-row--toolbar') || tbMerged.parentElement;
+
+      const collapsibles = Array.from(tbMerged.querySelectorAll('.tp-pill-btn, .tp-dropdown, .tp-pill-sep')).filter(el =>
+        el.id !== 'doc-zoom-dd' && el.id !== 'doc-lineheight-dd' && el.id !== 'doc-format-dd'
+      );
+
+      if (overflowBtn) {
+        overflowBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const hidden = overflowMenu.hasAttribute('hidden');
+          document.querySelectorAll('.tp-dd-menu').forEach(m => m.setAttribute('hidden', ''));
+          if (hidden) overflowMenu.removeAttribute('hidden');
+          else overflowMenu.setAttribute('hidden', '');
+        });
+      }
+
+      // Лёгкое переполнение: сжатие «Открыть/Сохранить» в иконки делает CSS (плавно) при открытой панели;
+      // здесь только прячем в меню кнопки, если после сжатия всё равно не влезло. Пересчёт — редкий (не покадрово).
+      let reflowing = false;
+      let visibleCount = collapsibles.length;
+      function reflow() {
+        if (reflowing || !overflowBtnWrap) return;
+        reflowing = true;
+        while (visibleCount < collapsibles.length) { tbMerged.insertBefore(collapsibles[visibleCount], overflowBtnWrap); visibleCount++; }
+        overflowBtnWrap.setAttribute('hidden', '');
+        if (tbMerged.scrollWidth > tbMerged.clientWidth + 1) {
+          overflowBtnWrap.removeAttribute('hidden');
+          while (visibleCount > 0 && tbMerged.scrollWidth > tbMerged.clientWidth + 1) {
+            overflowMenu.insertBefore(collapsibles[visibleCount - 1], overflowMenu.firstChild);
+            visibleCount--;
+          }
+        }
+        reflowing = false;
+      }
+
+      let rafId = 0;
+      const sched = () => { if (rafId) cancelAnimationFrame(rafId); rafId = requestAnimationFrame(reflow); };
+      if (rowEl && window.ResizeObserver) new ResizeObserver(sched).observe(rowEl);
+      window.addEventListener('resize', sched);
+      // при открытии/закрытии дерева пересчитываем ПОСЛЕ анимации сжатия (~0.3с), один раз
+      if (layoutEl && window.MutationObserver) {
+        new MutationObserver(() => {
+          // пересчёт (кнопки в/из меню) — ТОЛЬКО после конца анимации, чтобы не дёргать её посреди хода
+          setTimeout(reflow, 480);
+        }).observe(layoutEl, { attributes: true, attributeFilter: ['class'] });
+      }
+      reflow();
+      setTimeout(reflow, 200);
+    }
+
+    document.addEventListener('mouseup', () => setTimeout(maybeShowSelectionUI, 10));
+    document.addEventListener('dblclick', () => setTimeout(maybeShowSelectionUI, 10));
 
     $$('[data-cmd]').forEach((node) => {
       if (node.classList.contains('tp-dropdown')) return;
@@ -249,11 +400,7 @@ export function initTextProc(host) {
           btn.querySelector('span:first-child').textContent = item.textContent;
           if (dd.id === 'doc-zoom-dd') {
             const val = parseFloat(item.dataset.val) || 1;
-            const page = document.querySelector('.tp-page');
-            if (page) {
-              page.style.transform = `scale(${val})`;
-              page.style.transformOrigin = 'top center';
-            }
+            tpApplyZoom(val);
             window.tpCurrentZoom = val;
           } else if (dd.id === 'doc-lineheight-dd') {
             const val = parseFloat(item.dataset.val) || 1.6;
@@ -275,6 +422,31 @@ export function initTextProc(host) {
       }
     });
 
+    // Масштаб через CSS-свойство zoom, а не transform:scale. transform не меняет поток,
+    // поэтому у прокручиваемой области не появляется скролл → увеличенная страница вылезает
+    // за canvas, и правый край длинных заголовков обрезается без возможности доскроллить.
+    // zoom меняет поток: появляется прокрутка, заголовки не «уходят за страницу».
+    // Масштабируем .tp-page-wrap (вкладки + страница вместе), чтобы закладка не отрывалась.
+    function tpApplyZoom(val) {
+      const wrap = document.querySelector('.tp-page-wrap');
+      const page = document.querySelector('.tp-page');
+      if (!wrap) return;
+      if (page) { page.style.transform = ''; page.style.transformOrigin = ''; page.style.zoom = ''; } // сброс старого transform-подхода
+      if (Math.abs(val - 1) < 0.001) {
+        wrap.style.zoom = ''; wrap.style.width = ''; wrap.style.maxWidth = '';
+        return;
+      }
+      // Зафиксировать «родную» ширину в px один раз: width:100% иначе нейтрализует zoom.
+      if (window.tpBaseWrapW == null) {
+        const prev = wrap.style.zoom; wrap.style.zoom = '';
+        window.tpBaseWrapW = Math.round(wrap.getBoundingClientRect().width);
+        wrap.style.zoom = prev;
+      }
+      wrap.style.width = window.tpBaseWrapW + 'px';
+      wrap.style.maxWidth = window.tpBaseWrapW + 'px';
+      wrap.style.zoom = val;
+    }
+
     // Touchpad Pinch-to-Zoom
     window.tpCurrentZoom = window.tpCurrentZoom || 1;
     const workspace = document.querySelector('.tp-workspace');
@@ -285,13 +457,9 @@ export function initTextProc(host) {
           const zoomSpeed = 0.01;
           window.tpCurrentZoom -= e.deltaY * zoomSpeed;
           window.tpCurrentZoom = Math.max(0.25, Math.min(window.tpCurrentZoom, 3.0));
-          
-          const page = document.querySelector('.tp-page');
-          if (page) {
-            page.style.transform = `scale(${window.tpCurrentZoom})`;
-            page.style.transformOrigin = 'top center';
-          }
-          
+
+          tpApplyZoom(window.tpCurrentZoom);
+
           const zoomBtn = document.querySelector('#doc-zoom-dd .tp-dd-btn span:first-child');
           if (zoomBtn) {
             zoomBtn.textContent = Math.round(window.tpCurrentZoom * 100) + '%';
@@ -330,7 +498,22 @@ export function initTextProc(host) {
     $('#doc-ai-chat-input').onkeydown = (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendChat(); } };
 
     $('#doc-editor-wysiwyg').addEventListener('input', markDirty);
+    $('#doc-editor-wysiwyg').addEventListener('input', scheduleScrubberUpdate);
+    $('#doc-editor-wysiwyg').addEventListener('input', updateDocPlaceholder);
     $('#doc-editor-md').addEventListener('input', markDirty);
+    $('#doc-editor-md').addEventListener('input', updateDocPlaceholder);
+    const scrubTrack = $('#doc-scrubber-track');
+    if (scrubTrack) {
+      scrubTrack.addEventListener('mousedown', (e) => {
+        if (e.target.classList.contains('tp-scrubber-tick')) return; // клик по метке — свой обработчик (переход), не drag
+        scrubberDragging = true;
+        handleScrubberDrag(e);
+      });
+      window.addEventListener('mousemove', (e) => { if (scrubberDragging) handleScrubberDrag(e); });
+      window.addEventListener('mouseup', () => { scrubberDragging = false; });
+    }
+    const canvasEl = document.querySelector('.tp-canvas');
+    if (canvasEl) canvasEl.addEventListener('scroll', updateScrubberThumb);
     $('#doc-editor-wysiwyg').addEventListener('click', (e) => {
       const btn = e.target.closest('.tp-formula-toggle');
       if (btn) { e.preventDefault(); btn.parentElement.classList.toggle('show-src'); }
@@ -419,6 +602,19 @@ export function initTextProc(host) {
     updateThumb($('#doc-mode-toggle'), activeBtn);
     $('#doc-editor-wysiwyg').hidden = mode !== 'wysiwyg';
     $('#doc-editor-md').hidden = mode !== 'markdown';
+    renderScrubber();
+    updateDocPlaceholder();
+  }
+  // Показывать приглашение (tp-doc-empty), когда документ фактически пуст — учитываем не только
+  // текст, но и картинки/формулы/таблицы, чтобы плейсхолдер не «просвечивал» сквозь медиа.
+  function updateDocPlaceholder() {
+    const w = $('#doc-editor-wysiwyg');
+    if (w) {
+      const empty = !w.textContent.trim() && !w.querySelector('img, table, hr, [data-tex], .tp-formula-block');
+      w.classList.toggle('tp-doc-empty', empty);
+    }
+    const m = $('#doc-editor-md');
+    if (m) m.classList.toggle('tp-doc-empty', !m.textContent.trim());
   }
   function setTab(t) {
     let activeBtn = null;
@@ -603,7 +799,7 @@ export function initTextProc(host) {
       if (m.reqId) w.dataset.req = m.reqId; // якорь для in-place стриминга (tp:data)
       const b = el('div', 'tp-bubble');
       b.textContent = m.busy ? (m.text + ' ⏳') : m.text;
-      if (m.role === 'agent' && !m.busy) {
+      if (m.role === 'agent' && !m.busy && !m.noReplace) {
         const acts = el('div', 'tp-bubble-actions');
         const replaceBtn = el('button', 'tp-bubble-replace', 'Заменить');
         replaceBtn.type = 'button';
@@ -644,6 +840,16 @@ export function initTextProc(host) {
     } else if (chatRole !== 'Без роли') {
       parts.push(`Действуй в роли: ${chatRole}`);
     }
+    
+    if (chatAgent === 'antigravity') {
+      parts.push(`Отредактируй файл: ${currentFile || 'текущий файл'}`);
+      parts.push(`Инструкция: ${instruction}`);
+      if (!sel.whole) {
+        parts.push('Ограничься редактированием только этого фрагмента:\n===ФРАГМЕНТ===\n' + sel.text + '\n===КОНЕЦ===');
+      }
+      return parts.join('\n\n');
+    }
+
     parts.push(instruction);
     parts.push('Ниже — ' + (sel.whole ? 'весь документ (Markdown)' : 'фрагмент текста') + '. Верни ТОЛЬКО итоговый текст для замены: без пояснений, без приветствий.');
     parts.push('===ФРАГМЕНТ===\n' + sel.text + '\n===КОНЕЦ===');
@@ -661,21 +867,47 @@ export function initTextProc(host) {
     while (chatLog.length > 200) chatLog.shift(); // кап истории: чат не растёт бесконечно
     renderChatLog();
     const offData = lite.tp.onData(({ reqId: r, chunk }) => { if (r !== am.reqId) return; am.text += chunk; updateStreamBubble(am); });
-    const offDone = lite.tp.onDone(({ reqId: r, text }) => { if (r !== am.reqId) return; am.busy = false; am.text = text || ''; cleanup(); renderChatLog(); });
+    const offDone = lite.tp.onDone(({ reqId: r, text }) => { 
+      if (r !== am.reqId) return; 
+      am.busy = false; 
+      
+      if (chatAgent === 'antigravity') {
+        am.text = "Antigravity выполнил инструкцию. Обновляю документ с диска…";
+        am.noReplace = true; // agy правит файл сам — вставлять статус в документ незачем
+        cleanup(); renderChatLog();
+        reloadCurrentFile(); // agy правит файл на диске → подтягиваем изменения в редактор
+        return;
+      }
+      
+      am.text = text || ''; 
+      cleanup(); renderChatLog(); 
+    });
     const offErr = lite.tp.onError(({ reqId: r, error }) => { if (r !== am.reqId) return; am.busy = false; am.text = 'Ошибка: ' + String(error); cleanup(); renderChatLog(); });
     const cleanup = () => { try { offData(); offDone(); offErr(); } catch (_) {} };
     
     const prompt = await composePrompt(sel, instruction);
-    lite.tp.run({ reqId: am.reqId, agent: chatAgent, prompt });
+    
+    if (chatAgent === 'antigravity' && currentFile && dirty) {
+      await saveFile();
+    }
+    
+    lite.tp.run({ 
+      reqId: am.reqId, 
+      agent: chatAgent, 
+      prompt,
+      cwd: activeProj ? activeProj.path : null,
+      file: currentFile || null
+    });
   }
   function renderModels() {
     const box = $('#doc-ai-models');
     // в разметке уже лежит .tp-seg-thumb → children.length===0 не срабатывало никогда, кнопки моделей не строились
     if (!box.querySelector('.tp-seg-btn')) {
       box.innerHTML = '<span class="tp-seg-thumb"></span>';
-      [['claude', 'Claude'], ['codex', 'Codex'], ['gemini', 'Gemini']].forEach(([id, lbl]) => {
+      [['claude', 'Claude'], ['codex', 'Codex'], ['gemini', 'Gemini'], ['antigravity', 'Antigravity']].forEach(([id, lbl]) => {
         const btn = el('button', 'tp-seg-btn', lbl);
         btn.type = 'button';
+        btn.title = 'Модель ' + lbl;
         btn.dataset.id = id;
         btn.onclick = () => { chatAgent = id; settings.tpAgent = id; saveSettings(); renderModels(); };
         box.appendChild(btn);
@@ -728,6 +960,7 @@ export function initTextProc(host) {
       btn.className = 'tp-chip' + (chatRole === r ? ' on' : '');
       btn.textContent = r;
       btn.type = 'button';
+      btn.title = r === 'Без роли' ? 'Без роли' : 'Роль «' + r + '» (ПКМ — изменить или удалить)';
       btn.onclick = () => { chatRole = r; renderRoles(); };
       if (r !== 'Без роли') {
         btn.oncontextmenu = (e) => {
@@ -803,15 +1036,193 @@ export function initTextProc(host) {
   document.addEventListener('selectionchange', () => {
     if (!docOpen) return;
     const ctxText = $('#doc-ai-ctx-text');
-    if (!ctxText) return;
     const sel = window.getSelection();
-    if (sel && !sel.isCollapsed && getActiveEditor().contains(sel.anchorNode)) {
-      const text = sel.toString();
-      if (text.trim()) { ctxText.textContent = text.slice(0, 100) + (text.length > 100 ? '…' : ''); ctxText.classList.add('filled'); return; }
+    const hasSel = sel && !sel.isCollapsed && sel.toString().trim();
+    if (ctxText) {
+      if (hasSel) { 
+        const text = sel.toString(); 
+        ctxText.textContent = text.slice(0, 100) + (text.length > 100 ? '…' : ''); 
+        ctxText.classList.add('filled'); 
+      } else if (document.activeElement && document.activeElement.id !== 'doc-ai-chat-input') {
+        ctxText.textContent = 'Выделите фрагмент в документе — он попадёт сюда. Ответ можно вставить кнопкой «Заменить».'; 
+        ctxText.classList.remove('filled'); 
+      }
     }
-    ctxText.textContent = 'Выделите фрагмент в документе — он попадёт сюда. Ответ можно вставить кнопкой «Заменить».';
-    ctxText.classList.remove('filled');
+    if (!hasSel) {
+      if (selPopupEl && selPopupEl.style.display !== 'none' && selPopupEl.contains(document.activeElement)) return;
+      hideSelPopup();
+    }
   });
+
+  document.addEventListener('mousedown', (e) => {
+    if (selPopupEl && selPopupEl.style.display !== 'none') {
+      if (!selPopupEl.contains(e.target)) {
+        hideSelPopup();
+      }
+    }
+  });
+
+  // ---- Плавающий попап при выделении: панель форматирования + мини-вопрос к AI ----
+  let selPopupEl = null;
+  let selPopupRange = null; // сохранённый Range — фокус на инпуте попапа может сбить window.getSelection()
+
+  // Позиционируем элемент относительно selection (range) с учетом границ экрана
+  function positionNearRange(node, range, side = 'above') {
+    const r = range.getBoundingClientRect();
+    node.style.display = 'flex';
+    const nr = node.getBoundingClientRect();
+    let x = r.left + (r.width / 2) - (nr.width / 2);
+    let y = side === 'below' ? r.bottom + 8 : r.top - nr.height - 8;
+    x = Math.max(8, Math.min(x, window.innerWidth - nr.width - 8));
+    y = Math.max(8, Math.min(y, window.innerHeight - nr.height - 8));
+    node.style.left = x + 'px';
+    node.style.top = y + 'px';
+  }
+
+  function ensureSelPopup() {
+    if (!selPopupEl) {
+      selPopupEl = el('div', 'tp-sel-popup');
+      
+      const fmtRow = el('div', 'tp-sel-popup-fmt');
+      [['bold', 'Жирный'], ['italic', 'Курсив'], ['underline', 'Подчёркнутый']].forEach(([cmd, title]) => {
+        const btn = host.iconBtn('tp-pill-btn', cmd, '');
+        btn.dataset.cmd = cmd;
+        fmtRow.appendChild(btn);
+      });
+      fmtRow.appendChild(el('span', 'tp-pill-sep'));
+      const listBtn = host.iconBtn('tp-pill-btn', 'list', '');
+      listBtn.dataset.cmd = 'insertUnorderedList';
+      fmtRow.appendChild(listBtn);
+      
+      selPopupEl.appendChild(fmtRow);
+
+      fmtRow.querySelectorAll('[data-cmd]').forEach((btn) => {
+        btn.onmousedown = (e) => e.preventDefault();
+        btn.onclick = (e) => {
+          e.preventDefault();
+          if (selPopupRange) restoreSelPopupRange();
+          execCmd(btn.dataset.cmd);
+          refreshSelPopupActiveStates();
+        };
+      });
+
+      const aiRow = el('div', 'tp-sel-popup-row');
+      aiRow.appendChild(el('span', 'tp-sel-popup-arrow', '↳'));
+      const input = document.createElement('input');
+      input.type = 'text'; input.className = 'tp-sel-popup-input'; input.placeholder = 'Задать вопрос по теме…';
+      
+      const clearBtn = host.iconBtn('tp-sel-popup-clear', 'close', 'Очистить');
+      clearBtn.style.display = 'none';
+      clearBtn.onclick = (e) => {
+        e.preventDefault(); e.stopPropagation();
+        input.value = '';
+        clearBtn.style.display = 'none';
+        input.focus();
+      };
+      input.addEventListener('input', () => {
+        clearBtn.style.display = input.value.trim() ? 'flex' : 'none';
+      });
+
+      aiRow.appendChild(input);
+      aiRow.appendChild(clearBtn);
+      
+      const send = host.iconBtn('tp-sel-popup-send', 'send', 'В панель AI');
+      aiRow.appendChild(send);
+      
+      selPopupEl.appendChild(aiRow);
+
+      selPopupEl.style.display = 'none';
+      selPopupEl.onmousedown = (e) => e.stopPropagation();
+
+      const submit = () => {
+        const q = input.value.trim();
+        restoreSelPopupRange();
+        
+        const aiInput = $('#doc-ai-chat-input');
+        const selText = window.getSelection().toString().trim();
+        
+        if (aiInput) {
+          if (q) {
+            aiInput.value = q;
+            input.value = '';
+            clearBtn.style.display = 'none';
+            hideSelPopup();
+            document.querySelector('.tp-layout').classList.remove('inspector-collapsed');
+            setTab('ai');
+            sendChat();
+          } else if (selText) {
+            const current = aiInput.value.trim();
+            aiInput.value = current ? current + '\n\n' + `"${selText}"` : `"${selText}"`;
+            input.value = '';
+            clearBtn.style.display = 'none';
+            hideSelPopup();
+            document.querySelector('.tp-layout').classList.remove('inspector-collapsed');
+            setTab('ai');
+            setTimeout(() => {
+              if (aiInput) {
+                aiInput.focus();
+                aiInput.selectionStart = aiInput.selectionEnd = aiInput.value.length;
+              }
+            }, 50);
+          }
+        }
+      };
+      send.onclick = submit;
+      input.onkeydown = (e) => {
+        if (e.key === 'Enter') { e.preventDefault(); submit(); }
+        if (e.key === 'Escape') hideSelPopup();
+      };
+    }
+
+    const layer = document.body;
+    if (selPopupEl.parentNode !== layer) {
+      layer.appendChild(selPopupEl);
+      selPopupEl.style.zIndex = '99999';
+    }
+  }
+
+  function restoreSelPopupRange() {
+    if (!selPopupRange) return;
+    const sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(selPopupRange);
+  }
+  function refreshSelPopupActiveStates() {
+    if (!selPopupEl) return;
+    selPopupEl.querySelectorAll('[data-cmd]').forEach((btn) => {
+      let active = false;
+      try { active = document.queryCommandState(btn.dataset.cmd); } catch (_) {}
+      btn.classList.toggle('on', active);
+    });
+  }
+  function hideSelPopup() {
+    if (selPopupEl) selPopupEl.style.display = 'none';
+    selPopupRange = null;
+  }
+  function showSelectionUI(range) {
+    try {
+      selPopupRange = range.cloneRange();
+      ensureSelPopup();
+      
+      const fmtRow = selPopupEl.querySelector('.tp-sel-popup-fmt');
+      if (mode === 'wysiwyg') {
+        refreshSelPopupActiveStates();
+        fmtRow.style.display = 'flex';
+      } else {
+        fmtRow.style.display = 'none';
+      }
+      
+      positionNearRange(selPopupEl, range, 'above');
+    } catch (e) { console.error("Popup Error: ", e); }
+  }
+  function maybeShowSelectionUI() {
+    try {
+      const sel = window.getSelection();
+      if (sel && !sel.isCollapsed && sel.toString().trim()) {
+        showSelectionUI(sel.getRangeAt(0));
+      }
+    } catch (e) { console.error("Selection UI Error: ", e); }
+  }
 
   // ---- Interface for Main ----
   function setDocOpen(open, opts = {}) {
@@ -825,7 +1236,7 @@ export function initTextProc(host) {
     saveUiState();
     if (open) {
       setupUI();
-      if (openTabs.length === 0) createNewTab();
+      if (openTabs.length === 0) restoreLastOrNew();
     }
     setTimeout(refitActiveTerminal, 150);
   }
@@ -852,6 +1263,9 @@ export function initTextProc(host) {
 
   function toggleSidebar() {
     sidebar.classList.toggle('hidden');
+    const layout = sidebar.closest('.tp-layout');
+    if (layout) layout.classList.toggle('sidebar-collapsed', sidebar.classList.contains('hidden'));
+    
     if (!sidebar.classList.contains('hidden') && activeProj) {
       renderTree(activeProj);
     }
@@ -1091,11 +1505,13 @@ export function initTextProc(host) {
     openTabs.forEach(t => {
       const el = document.createElement('div');
       el.className = 'tp-doc-tab' + (t.id === activeTabId ? ' active' : '');
+      el.title = (t.absPath || t.name) + (t.dirty ? ' — не сохранён' : '');
       el.innerHTML = `<span>${escapeHtml(t.name)}${t.dirty ? '*' : ''}</span>`;
-      
+
       const closeBtn = document.createElement('button');
       closeBtn.className = 'tp-doc-tab-close';
       closeBtn.textContent = '×';
+      closeBtn.title = 'Закрыть вкладку';
       closeBtn.onclick = (e) => {
         e.stopPropagation();
         closeTab(t.id);
@@ -1109,10 +1525,22 @@ export function initTextProc(host) {
     const addBtn = document.createElement('button');
     addBtn.className = 'tp-doc-tab-add';
     addBtn.textContent = '+';
+    addBtn.title = 'Новая вкладка';
     addBtn.onclick = () => createNewTab();
     tabsContainer.appendChild(addBtn);
   }
   
+  async function restoreLastOrNew() {
+    const last = settings.tpLastFile;
+    if (last) {
+      try {
+        const r = await lite.fs.readFile(last); // тихая проверка: файл ещё существует?
+        if (r && !r.error) { await openProjectFile(last); return; }
+      } catch (e) { /* файл удалён/недоступен — падаем на новый */ }
+    }
+    createNewTab();
+  }
+
   function createNewTab() {
     const id = nextTabId++;
     const tab = {
@@ -1127,6 +1555,18 @@ export function initTextProc(host) {
     openTabs.push(tab);
     renderTabsUI();
     switchToTab(id);
+    // Новый пустой файл: ставим фокус в редактор, чтобы сразу был мигающий курсор + приглашение.
+    setTimeout(() => {
+      const ed = $('#doc-editor-wysiwyg');
+      if (ed && !ed.hidden) {
+        ed.focus();
+        try {
+          const sel = window.getSelection(), range = document.createRange();
+          range.selectNodeContents(ed); range.collapse(true);
+          sel.removeAllRanges(); sel.addRange(range);
+        } catch (_) {}
+      }
+    }, 40);
   }
 
   function saveCurrentTabState() {
@@ -1150,6 +1590,7 @@ export function initTextProc(host) {
     activeTabId = id;
     currentFile = tab.absPath;
     currentName = tab.name;
+    if (tab.absPath) { try { settings.tpLastFile = tab.absPath; saveSettings(); } catch (e) {} }
     mode = tab.mode;
     dirty = tab.dirty;
     
@@ -1193,9 +1634,48 @@ export function initTextProc(host) {
     }
   }
 
+  async function reloadCurrentFile() {
+    if (!currentFile) return;
+    const r = await lite.fs.readFile(currentFile);
+    if (r && !r.error) {
+      const isHtml = /\.html?$/i.test(currentFile);
+      let safeHtml = null, mdSrc = r.content;
+      if (isHtml) {
+        safeHtml = DOMPurify.sanitize(r.content, { ADD_ATTR: ['contenteditable', 'data-tex'] });
+        const root = document.createElement('div');
+        root.innerHTML = safeHtml;
+        mdSrc = htmlToMd(root);
+      } else {
+        safeHtml = mdToHtml(r.content);
+      }
+      
+      const tab = openTabs.find(t => t.id === activeTabId);
+      if (tab) {
+        tab.html = safeHtml;
+        tab.md = mdSrc;
+        tab.dirty = false;
+        dirty = false;
+        
+        $('#doc-editor-wysiwyg').innerHTML = DOMPurify.sanitize(safeHtml, { ADD_ATTR: ['contenteditable', 'data-tex'] });
+        $('#doc-editor-md').textContent = mdSrc;
+        
+        updateStatus('Обновлен с диска');
+        renderTabsUI();
+        updateDocPlaceholder();
+
+        toast('Документ обновлён ИИ', { kind: 'success' });
+      }
+    }
+  }
+
   function onFsChange(proj, files) {
     if (activeProj && activeProj.path === proj.path) {
       renderTree(proj);
+    }
+    if (currentFile && files.includes(currentFile)) {
+      if (!dirty) {
+        reloadCurrentFile();
+      }
     }
   }
 

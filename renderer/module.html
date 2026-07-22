@@ -79,112 +79,108 @@
           <span class="tp-blob tp-blob-d"></span>
         </div>
 
-        <div class="tp-layout">
-          <div id="doc-sidebar" class="tp-sidebar hidden">
-            <div class="tp-sidebar-head">
-              <div class="tp-sidebar-actions">
+        <div class="tp-layout sidebar-collapsed">
+<div class="tp-shell">
+  <div class="tp-shell-row tp-shell-row--toolbar">
+    <div class="tp-sidebar-actions">
                 <button class="tp-icon-btn sm" id="btn-tree-new-file" title="Новый файл" data-icon="obs-new-file"></button>
                 <button class="tp-icon-btn sm" id="btn-tree-new-folder" title="Новая папка" data-icon="obs-new-folder"></button>
                 <button class="tp-icon-btn sm" id="btn-tree-sort" title="Сортировка" data-icon="obs-sort"></button>
                 <button class="tp-icon-btn sm" id="btn-tree-collapse" title="Свернуть все" data-icon="obs-collapse"></button>
               </div>
-            </div>
-            <div class="tp-sidebar-search">
+    <div class="tp-toolbar tp-toolbar-merged">
+<button id="doc-toggle-sidebar" class="tp-icon-btn" title="Развернуть" data-icon="columns" style="margin-right: 8px;"></button>
+              <div class="tp-tb-group">
+                <button id="doc-undo-btn" class="tp-icon-btn" title="Отменить" data-icon="undo"></button>
+                <button id="doc-redo-btn" class="tp-icon-btn" title="Повторить" data-icon="redo"></button>
+              </div>
+              <span class="tp-sep"></span>
+              <button id="doc-open-btn" class="tp-btn" title="Открыть файл"><span data-icon="folder"></span><span class="tp-btn-label">Открыть</span></button>
+              <button id="doc-save-btn" class="tp-btn" title="Сохранить файл"><span data-icon="save"></span><span class="tp-btn-label">Сохранить</span></button>
+              <span class="tp-sep"></span>
+              <div class="tp-dropdown" id="doc-zoom-dd">
+                <button class="tp-dd-btn" title="Масштаб"><span>100%</span> <span data-icon="chevron-down"></span></button>
+                <div class="tp-dd-menu" hidden>
+                  <button class="tp-dd-item" data-val="0.75">75%</button>
+                  <button class="tp-dd-item active" data-val="1">100%</button>
+                  <button class="tp-dd-item" data-val="1.25">125%</button>
+                  <button class="tp-dd-item" data-val="1.5">150%</button>
+                </div>
+              </div>
+              <div class="tp-dropdown" id="doc-lineheight-dd">
+                <button class="tp-dd-btn" title="Интервал"><span data-icon="list"></span> <span data-icon="chevron-down"></span></button>
+                <div class="tp-dd-menu" hidden>
+                  <button class="tp-dd-item" data-val="0.8">0.8</button>
+                  <button class="tp-dd-item" data-val="1.0">1.0</button>
+                  <button class="tp-dd-item" data-val="1.2">1.2</button>
+                  <button class="tp-dd-item active" data-val="1.6">1.6</button>
+                  <button class="tp-dd-item" data-val="2.0">2.0</button>
+                </div>
+              </div>
+              <div class="tp-dropdown" id="doc-format-dd" data-cmd="formatBlock">
+                <button class="tp-dd-btn" title="Стиль абзаца"><span>Обычный</span> <span data-icon="chevron-down"></span></button>
+                <div class="tp-dd-menu" hidden>
+                  <button class="tp-dd-item active" data-val="<p>">Обычный</button>
+                  <button class="tp-dd-item" data-val="<h1>">Заголовок</button>
+                  <button class="tp-dd-item" data-val="<h2>">Подзаголовок</button>
+                </div>
+              </div>
+              <span class="tp-pill-sep"></span>
+              <button data-cmd="bold" class="tp-pill-btn" title="Жирный" data-icon="bold"></button>
+              <button data-cmd="italic" class="tp-pill-btn" title="Курсив" data-icon="italic"></button>
+              <button data-cmd="underline" class="tp-pill-btn" title="Подчёркнутый" data-icon="underline"></button>
+              <span class="tp-pill-sep"></span>
+              <button data-cmd="justifyLeft" class="tp-pill-btn" title="По левому краю" data-icon="align-left"></button>
+              <button data-cmd="justifyCenter" class="tp-pill-btn" title="По центру" data-icon="align-center"></button>
+              <button data-cmd="justifyRight" class="tp-pill-btn" title="По правому краю" data-icon="align-right"></button>
+              <button data-cmd="justifyFull" class="tp-pill-btn" title="По ширине" data-icon="align-justify"></button>
+              <span class="tp-pill-sep"></span>
+              <button data-cmd="insertUnorderedList" class="tp-pill-btn" title="Маркированный список" data-icon="list"></button>
+              <button data-cmd="toggleNumbers" class="tp-pill-btn" title="Нумерация строк/абзацев" data-icon="list-ol"></button>
+              <span class="tp-pill-sep"></span>
+              <button data-cmd="toggleColumns" class="tp-pill-btn" title="Две колонки" data-icon="columns-2"></button>
+              <button data-cmd="insertTable" class="tp-pill-btn" title="Вставить таблицу" data-icon="table-insert"></button>
+              <button id="doc-toggle-numbering" class="tp-pill-btn" title="Номера абзацев (для ссылок в AI-чате)" data-icon="hash"></button>
+              <span class="tp-sep"></span>
+<div class="tp-toolbar-overflow-btn" hidden><button id="doc-toolbar-overflow-btn" class="tp-icon-btn" title="Ещё инструменты"><span data-icon="chevrons-right"></span></button><div class="tp-dd-menu" id="doc-toolbar-overflow-menu" hidden></div></div>
+<span class="tp-sep"></span>
+<div id="doc-mode-toggle" class="tp-segment">
+                <span class="tp-seg-thumb"></span>
+                <button data-mode="wysiwyg" class="tp-seg-btn active" title="Режим разметки (WYSIWYG)">Разметка</button>
+                <button data-mode="markdown" class="tp-seg-btn" title="Режим Markdown (исходник)">Markdown</button>
+              </div>
+<span class="tp-sep"></span>
+<button id="doc-toggle-inspector" class="tp-btn tp-btn-accent" title="Показать / скрыть правую панель"><span data-icon="panels"></span>Панели</button>
+</div>
+  </div>
+  <div class="tp-shell-row tp-shell-row--tabs">
+    <div class="tp-search">
               <span data-icon="search" class="tp-search-icon"></span>
               <input type="text" id="doc-tree-search" placeholder="Поиск по документам" autocomplete="off">
             </div>
-            <div id="doc-tree" class="tp-tree"></div>
-          </div>
-          
-          <div class="tp-shell">
-            <div id="doc-tabs-container" class="tp-tabs-container"></div>
-            
-            <!-- toolbar: undo/redo, открыть/сохранить, имя+статус, режим, панели -->
-            <div class="tp-toolbar">
-              <button id="doc-toggle-sidebar" class="tp-icon-btn" title="Развернуть" data-icon="columns" style="margin-right: 8px;"></button>
-              <div class="tp-tb-group">
-              <button id="doc-undo-btn" class="tp-icon-btn" title="Отменить" data-icon="undo"></button>
-              <button id="doc-redo-btn" class="tp-icon-btn" title="Повторить" data-icon="redo"></button>
-            </div>
-            <span class="tp-sep"></span>
-            <button id="doc-open-btn" class="tp-btn"><span data-icon="folder"></span>Открыть</button>
-            <button id="doc-save-btn" class="tp-btn"><span data-icon="save"></span>Сохранить</button>
-            <div class="tp-doc-name-wrap">
-              <span id="doc-name-label" class="tp-doc-name">Безымянный</span>
-              <span id="doc-status-label" class="tp-doc-status">Новый файл</span>
-            </div>
-            <div id="doc-mode-toggle" class="tp-segment">
-              <span class="tp-seg-thumb"></span>
-              <button data-mode="wysiwyg" class="tp-seg-btn active">Разметка</button>
-              <button data-mode="markdown" class="tp-seg-btn">Markdown</button>
-            </div>
-            <button id="doc-toggle-inspector" class="tp-btn tp-btn-accent"><span data-icon="panels"></span>Панели</button>
-          </div>
+    <div></div>
+    <div></div>
+  </div>
+</div>
+<div class="tp-workspace">
+  <div id="doc-sidebar" class="tp-sidebar hidden">
+    <div id="doc-tree" class="tp-tree"></div>
+  </div>
+  <div class="tp-canvas">
+    <div class="tp-page-wrap">
+      <div id="doc-tabs-container" class="tp-tabs-container"></div>
+      <div class="tp-page">
+        <div id="doc-editor-wysiwyg" class="tp-doc" contenteditable="true" spellcheck="false" data-placeholder="Напишите что-нибудь…"></div>
+        <div id="doc-editor-md" class="tp-doc tp-doc-md" contenteditable="true" spellcheck="false" hidden data-placeholder="Начните писать в Markdown…"></div>
+      </div>
+    </div>
+  </div>
 
-          <!-- floating format pill -->
-          <div id="doc-format-pill" class="tp-pill">
-            <!-- Custom Glassmorphic Dropdowns -->
-            <div class="tp-dropdown" id="doc-zoom-dd">
-              <button class="tp-dd-btn" title="Масштаб"><span>100%</span> <span data-icon="chevron-down"></span></button>
-              <div class="tp-dd-menu" hidden>
-                <button class="tp-dd-item" data-val="0.75">75%</button>
-                <button class="tp-dd-item active" data-val="1">100%</button>
-                <button class="tp-dd-item" data-val="1.25">125%</button>
-                <button class="tp-dd-item" data-val="1.5">150%</button>
-              </div>
-            </div>
-            <span class="tp-pill-sep"></span>
-            <div class="tp-dropdown" id="doc-lineheight-dd">
-              <button class="tp-dd-btn" title="Интервал"><span data-icon="list"></span> <span data-icon="chevron-down"></span></button>
-              <div class="tp-dd-menu" hidden>
-                <button class="tp-dd-item" data-val="0.8">0.8</button>
-                <button class="tp-dd-item" data-val="1.0">1.0</button>
-                <button class="tp-dd-item" data-val="1.2">1.2</button>
-                <button class="tp-dd-item active" data-val="1.6">1.6</button>
-                <button class="tp-dd-item" data-val="2.0">2.0</button>
-              </div>
-            </div>
-            <span class="tp-pill-sep"></span>
-            <div class="tp-dropdown" id="doc-format-dd" data-cmd="formatBlock">
-              <button class="tp-dd-btn"><span>Обычный</span> <span data-icon="chevron-down"></span></button>
-              <div class="tp-dd-menu" hidden>
-                <button class="tp-dd-item active" data-val="<p>">Обычный</button>
-                <button class="tp-dd-item" data-val="<h1>">Заголовок</button>
-                <button class="tp-dd-item" data-val="<h2>">Подзаголовок</button>
-              </div>
-            </div>
-            <span class="tp-pill-sep"></span>
-            <button data-cmd="bold" class="tp-pill-btn" title="Жирный" data-icon="bold"></button>
-            <button data-cmd="italic" class="tp-pill-btn" title="Курсив" data-icon="italic"></button>
-            <button data-cmd="underline" class="tp-pill-btn" title="Подчёркнутый" data-icon="underline"></button>
-            <span class="tp-pill-sep"></span>
-            <button data-cmd="justifyLeft" class="tp-pill-btn" title="По левому краю" data-icon="align-left"></button>
-            <button data-cmd="justifyCenter" class="tp-pill-btn" title="По центру" data-icon="align-center"></button>
-            <button data-cmd="justifyRight" class="tp-pill-btn" title="По правому краю" data-icon="align-right"></button>
-            <button data-cmd="justifyFull" class="tp-pill-btn" title="По ширине" data-icon="align-justify"></button>
-            <span class="tp-pill-sep"></span>
-            <button data-cmd="insertUnorderedList" class="tp-pill-btn" title="Маркированный список" data-icon="list"></button>
-            <button data-cmd="toggleNumbers" class="tp-pill-btn" title="Нумерация строк/абзацев" data-icon="list-ol"></button>
-            <span class="tp-pill-sep"></span>
-            <button data-cmd="toggleColumns" class="tp-pill-btn" title="Две колонки" data-icon="columns-2"></button>
-            <button data-cmd="insertTable" class="tp-pill-btn" title="Вставить таблицу" data-icon="table-insert"></button>
-          </div>
-
-          <!-- workspace -->
-          <div class="tp-workspace">
-            <div class="tp-canvas">
-              <div class="tp-page">
-                <div id="doc-editor-wysiwyg" class="tp-doc" contenteditable="true" spellcheck="false"></div>
-                <div id="doc-editor-md" class="tp-doc tp-doc-md" contenteditable="true" spellcheck="false" hidden></div>
-              </div>
-            </div>
-
-            <!-- inspector: two tabs -->
             <div id="doc-inspector" class="tp-inspector">
               <div id="doc-inspector-tabs" class="tp-tabs">
                 <span class="tp-seg-thumb"></span>
-                <button data-tab="ai" class="tp-tab active"><span data-icon="sparkles"></span>AI-обработка</button>
-                <button data-tab="edit" class="tp-tab"><span data-icon="pencil"></span>Редактирование</button>
+                <button data-tab="ai" class="tp-tab active" title="AI-обработка текста"><span data-icon="sparkles"></span>AI-обработка</button>
+                <button data-tab="edit" class="tp-tab" title="Форматирование и формулы"><span data-icon="pencil"></span>Редактирование</button>
               </div>
 
               <!-- EDIT TAB: draggable cards -->
@@ -220,32 +216,32 @@
                           </div>
                         </div>
                         <div class="tp-btn-group">
-                          <button data-cmd="bold" class="tp-pill-btn" data-icon="bold"></button>
-                          <button data-cmd="italic" class="tp-pill-btn" data-icon="italic"></button>
-                          <button data-cmd="underline" class="tp-pill-btn" data-icon="underline"></button>
+                          <button data-cmd="bold" class="tp-pill-btn" title="Полужирный (Ctrl+B)" data-icon="bold"></button>
+                          <button data-cmd="italic" class="tp-pill-btn" title="Курсив (Ctrl+I)" data-icon="italic"></button>
+                          <button data-cmd="underline" class="tp-pill-btn" title="Подчёркнутый (Ctrl+U)" data-icon="underline"></button>
                         </div>
                       </div>
                     </div>
                     <div class="tp-field">
                       <div class="tp-label">Цвет текста</div>
                       <div id="doc-color-swatches" class="tp-swatches">
-                        <button data-color="#1c1c1e" class="tp-swatch" style="background:#1c1c1e"></button>
-                        <button data-color="#0a84ff" class="tp-swatch" style="background:#0a84ff"></button>
-                        <button data-color="#ff9500" class="tp-swatch" style="background:#ff9500"></button>
-                        <button data-color="#34c759" class="tp-swatch" style="background:#34c759"></button>
-                        <button data-color="#ff375f" class="tp-swatch" style="background:#ff375f"></button>
-                        <label class="tp-swatch tp-swatch-custom">+<input id="doc-color-picker" type="color" value="#0a84ff"></label>
+                        <button data-color="#1c1c1e" class="tp-swatch" style="background:#1c1c1e" title="Чёрный"></button>
+                        <button data-color="#0a84ff" class="tp-swatch" style="background:#0a84ff" title="Синий"></button>
+                        <button data-color="#ff9500" class="tp-swatch" style="background:#ff9500" title="Оранжевый"></button>
+                        <button data-color="#34c759" class="tp-swatch" style="background:#34c759" title="Зелёный"></button>
+                        <button data-color="#ff375f" class="tp-swatch" style="background:#ff375f" title="Розовый"></button>
+                        <label class="tp-swatch tp-swatch-custom" title="Произвольный цвет">+<input id="doc-color-picker" type="color" value="#0a84ff"></label>
                       </div>
                     </div>
                     <div class="tp-field">
                       <div class="tp-label">Выравнивание и списки</div>
                       <div class="tp-btn-group tp-btn-group-wide">
-                        <button data-cmd="justifyLeft" class="tp-pill-btn" data-icon="align-left"></button>
-                        <button data-cmd="justifyCenter" class="tp-pill-btn" data-icon="align-center"></button>
-                        <button data-cmd="justifyRight" class="tp-pill-btn" data-icon="align-right"></button>
+                        <button data-cmd="justifyLeft" class="tp-pill-btn" title="По левому краю" data-icon="align-left"></button>
+                        <button data-cmd="justifyCenter" class="tp-pill-btn" title="По центру" data-icon="align-center"></button>
+                        <button data-cmd="justifyRight" class="tp-pill-btn" title="По правому краю" data-icon="align-right"></button>
                         <span class="tp-btn-group-sep"></span>
-                        <button data-cmd="insertUnorderedList" class="tp-pill-btn" data-icon="list"></button>
-                        <button data-cmd="insertOrderedList" class="tp-pill-btn" data-icon="list-ordered"></button>
+                        <button data-cmd="insertUnorderedList" class="tp-pill-btn" title="Маркированный список" data-icon="list"></button>
+                        <button data-cmd="insertOrderedList" class="tp-pill-btn" title="Нумерованный список" data-icon="list-ordered"></button>
                       </div>
                     </div>
                   </div>
@@ -268,7 +264,7 @@
                     <textarea id="doc-formula-input" class="tp-mono-input" rows="2">\frac{-b \pm \sqrt{b^2-4ac}}{2a}</textarea>
                     <div class="tp-label">Предпросмотр</div>
                     <div id="doc-formula-preview" class="tp-formula-preview"></div>
-                    <button id="doc-formula-insert" class="tp-btn tp-btn-accent tp-btn-block"><span data-icon="plus"></span>Вставить в документ</button>
+                    <button id="doc-formula-insert" class="tp-btn tp-btn-accent tp-btn-block" title="Вставить формулу в документ"><span data-icon="plus"></span>Вставить в документ</button>
                   </div>
                 </div>
 
@@ -296,7 +292,7 @@
                 <div class="tp-chat-input-row">
                   <div class="tp-chat-input-box">
                     <textarea id="doc-ai-chat-input" rows="1" placeholder="Что сделать с текстом?"></textarea>
-                    <button id="doc-ai-chat-send" class="tp-chat-send" data-icon="send"></button>
+                    <button id="doc-ai-chat-send" class="tp-chat-send" title="Отправить (Enter)" data-icon="send"></button>
                   </div>
                 </div>
               </div>

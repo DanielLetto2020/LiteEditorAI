@@ -15,6 +15,9 @@
    theme = one self-contained block. See CLAUDE.md → "Темы интерфейса".
    ============================================================================ */
 :root {
+  --tp-side-w: 250px;
+  --tp-insp-w: 380px;
+
   /* accent (restrained by default; some themes raise it) */
   --green: #34d399; --green-bright: #6ee7b7; --green-dim: #1f3a30;
   --accent-soft: rgba(52, 211, 153, 0.11); --border-accent: rgba(52, 211, 153, 0.30);
@@ -2972,6 +2975,7 @@ body.resizing { cursor: col-resize; user-select: none; }
   gap: 9px; margin-bottom: 14px;
 }
 .bim-tile {
+  position: relative;
   display: flex; flex-direction: column; align-items: flex-start; gap: 7px;
   min-width: 0; padding: 11px 12px; text-align: left; cursor: pointer;
   background: var(--surface-2); color: var(--text);
@@ -2981,6 +2985,18 @@ body.resizing { cursor: col-resize; user-select: none; }
 .bim-tile:hover { background: var(--hover-2); border-color: var(--border-accent); transform: translateY(-1px); }
 .bim-tile:focus-visible { outline: none; border-color: var(--border-accent); }
 .bim-tile[hidden] { display: none; }
+
+.bim-chk {
+  position: absolute; top: 11px; right: 12px;
+  display: flex; align-items: center; justify-content: center;
+  width: 22px; height: 22px; border-radius: 6px;
+  color: var(--text-mute); cursor: pointer; transition: all 0.15s;
+  background: transparent; border: none; padding: 0;
+  opacity: 0;
+}
+.bim-tile:hover .bim-chk { opacity: 1; }
+.bim-chk:hover { color: var(--text); background: var(--hover); }
+.bim-chk.on { opacity: 1; color: var(--green-bright); background: var(--accent-soft); }
 .bim-chip {
   display: flex; align-items: center; justify-content: center; flex: none;
   width: 32px; height: 32px; border-radius: 9px;
@@ -3792,7 +3808,7 @@ body.preview-full .prev-frame { width: 100%; height: 100%; }
    палитра «стол + бумага» (как в Word/Office — страница остаётся белой независимо от темы
    приложения), поэтому токены свои (--tp-*), а не общие --bg/--panel/--text темы. Все цвета проходят
    через эти токены один раз — дальше только var(--tp-*), без хардкода по месту. */
-.tp-root {
+.tp-root, .tp-sel-popup {
   --tp-desk: linear-gradient(140deg,#eef1f7,#e7ecf5 60%,#eaf3f0);
   --tp-blob-a: #ffd8a8; --tp-blob-b: #d0bfff; --tp-blob-c: #99e9f2; --tp-blob-d: #ffc9d6;
   --tp-page-bg: rgba(255,255,255,0.94);
@@ -3848,39 +3864,38 @@ body.preview-full .prev-frame { width: 100%; height: 100%; }
 .tp-blob-b { width: 560px; height: 560px; top: -120px; right: -120px; opacity: .7; background: radial-gradient(circle, var(--tp-blob-b), transparent 68%); }
 .tp-blob-c { width: 600px; height: 600px; bottom: -220px; left: 22%; opacity: .6; background: radial-gradient(circle, var(--tp-blob-c), transparent 68%); }
 .tp-blob-d { width: 420px; height: 420px; bottom: -160px; right: 8%; opacity: .55; background: radial-gradient(circle, var(--tp-blob-d), transparent 68%); }
-.tp-layout { display: flex; height: 100%; width: 100%; position: relative; z-index: 1; min-height: 0; }
-.tp-sidebar { width: 250px; flex-shrink: 0; display: flex; flex-direction: column; border-right: 1px solid var(--tp-border-soft); background: rgba(255, 255, 255, 0.25); backdrop-filter: blur(20px); transition: width 0.35s cubic-bezier(0.25, 0.8, 0.25, 1), padding 0.35s cubic-bezier(0.25, 0.8, 0.25, 1), opacity 0.3s ease; overflow: hidden; }
-.tp-sidebar.hidden { width: 0; padding: 0; opacity: 0; border-right-color: transparent; pointer-events: none; display: flex !important; }
-.tp-sidebar-head { height: 44px; padding: 0 14px; border-bottom: none; flex: none; display: flex; align-items: center; justify-content: center; }
+.tp-layout { display: flex; flex-direction: column; flex: 1; height: 100%; width: 100%; position: relative; z-index: 1; min-height: 0; overflow: hidden; }
+
+/* Grid rows */
+.tp-shell-row { display: grid; grid-template-columns: var(--tp-side-w) 1fr var(--tp-insp-w); align-items: center; transition: grid-template-columns 0.35s cubic-bezier(0.25, 0.8, 0.25, 1); }
+.tp-shell-row--toolbar { height: 68px; padding: 0 14px; margin-top: 8px; }
+.tp-shell-row--tabs { height: 44px; padding: 0 14px; margin-top: 4px; margin-bottom: 8px; }
+
+.tp-sidebar-actions { display: flex; align-items: center; gap: 8px; padding: 0 14px; }
+.tp-search { display: flex; align-items: center; gap: 9px; padding: 0 16px; border-radius: 19px; background: var(--tp-glass-bg); border: 1px solid var(--tp-glass-border); box-shadow: var(--tp-glass-shadow), var(--tp-glass-inset); height: 42px; margin: 0 14px; }
+.tp-search input { border: none; background: transparent; outline: none; font: inherit; font-size: 13px; color: var(--tp-text); width: 100%; }
+.tp-search .tp-search-icon { opacity: 0.6; }
+
+.tp-toolbar-right { display: flex; align-items: center; gap: 10px; justify-content: flex-end; }
+
+.tp-sidebar { display: flex; flex-direction: column; overflow: hidden; opacity: 1; transition: opacity 0.3s ease; }
+.tp-layout.sidebar-collapsed .tp-shell-row { grid-template-columns: 0px 1fr var(--tp-insp-w); }
+.tp-layout.sidebar-collapsed .tp-workspace { grid-template-columns: 0px 1fr var(--tp-insp-w); }
+.tp-layout.sidebar-collapsed .tp-sidebar-actions,
+.tp-layout.sidebar-collapsed .tp-search,
+.tp-layout.sidebar-collapsed #doc-sidebar { 
+  opacity: 0; pointer-events: none; display: flex !important;
+  min-width: 0 !important; width: 0 !important; padding: 0 !important; margin: 0 !important; border: 0 !important; overflow: hidden !important;
+}
+
+
 .tp-sidebar-head > span { opacity: 0.6; white-space: nowrap; }
 .tp-sidebar-actions { display: flex; gap: 8px; align-items: center; opacity: 1; }
 .tp-sidebar-actions .tp-icon-btn.sm { width: 28px; height: 28px; padding: 0; opacity: 0.7; color: var(--tp-text-2); background: transparent; }
 .tp-sidebar-actions .tp-icon-btn.sm:hover { opacity: 1; background: var(--tp-border-soft); color: var(--tp-text); }
 .tp-sidebar-actions .tp-icon-btn.sm svg { width: 18px; height: 18px; stroke-width: 1.8; }
 
-.tp-sidebar-search {
-  margin: 14px 14px 10px 14px;
-  position: relative;
-  display: flex;
-  align-items: center;
-}
-.tp-sidebar-search input {
-  width: 100%;
-  height: 54px; /* точно как таблетка инструментов */
-  border-radius: 19px;
-  border: none;
-  background: var(--tp-glass-bg);
-  padding: 0 14px 0 36px;
-  color: var(--tp-text);
-  font-family: inherit;
-  font-size: 13px;
-  outline: none;
-  box-shadow: inset 0 0 0 1px var(--tp-border-soft);
-  transition: box-shadow 0.2s;
-}
-.tp-sidebar-search input:focus {
-  box-shadow: inset 0 0 0 1.5px var(--tp-accent-soft);
-}
+
 .tp-search-icon {
   position: absolute;
   left: 12px;
@@ -3909,25 +3924,22 @@ body.preview-full .prev-frame { width: 100%; height: 100%; }
 .tp-folder-glyph svg { width: 16px; height: 16px; }
 
 .tp-tree { flex: 1; overflow-y: auto; padding: 4px 8px; }
-.tp-tabs-container { display: flex; align-items: center; border-bottom: 1px solid var(--tp-border-soft); overflow-x: auto; flex: none; background: rgba(255,255,255,0.05); min-height: 44px; padding: 0 10px; gap: 6px; }
+.tp-tabs-container { display: flex; align-items: flex-end; overflow-x: auto; flex: none; padding: 0 10px 0 0; gap: 4px; }
 .tp-tabs-container::-webkit-scrollbar { display: none; }
-.tp-doc-tab { display: inline-flex; align-items: center; gap: 8px; padding: 0 12px; height: 32px; font-size: 13px; color: var(--tp-text-2); cursor: pointer; border: 1px solid transparent; border-radius: 8px; background: transparent; transition: all 0.2s ease; user-select: none; }
-.tp-doc-tab:hover { background: rgba(0,0,0,0.04); color: var(--tp-text-1); }
-.tp-doc-tab.active { background: rgba(255, 255, 255, 0.7); color: var(--tp-accent); font-weight: 500; border: 1px solid rgba(255,255,255,0.5); box-shadow: 0 2px 10px rgba(0,0,0,0.04); }
+.tp-doc-tab { display: inline-flex; align-items: center; gap: 8px; padding: 0 12px; height: 32px; font-size: 13px; color: var(--tp-text-2); cursor: pointer; border: 1px solid rgba(0,0,0,0.03); border-radius: 10px 10px 0 0; background: rgba(255,255,255,0.35); transition: background 0.2s ease, color 0.2s ease; user-select: none; flex: 0 0 auto; max-width: 190px; white-space: nowrap; overflow: hidden; }
+.tp-doc-tab > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 0 1 auto; }
+.tp-doc-tab-close { flex: 0 0 auto; }
+.tp-doc-tab:hover { background: rgba(255,255,255,0.55); color: var(--tp-text-1); }
+.tp-doc-tab.active { background: var(--tp-page-bg); color: var(--tp-accent); font-weight: 500; border: 1px solid rgba(255,255,255,0.6); border-bottom-color: transparent; box-shadow: 0 -2px 10px rgba(0,0,0,0.03); }
 .tp-doc-tab-close { opacity: 0; background: none; border: none; font-size: 16px; line-height: 1; padding: 2px 4px; border-radius: 4px; color: var(--tp-text-3); cursor: pointer; margin-right: -4px; transition: all 0.15s ease; }
 .tp-doc-tab:hover .tp-doc-tab-close, .tp-doc-tab.active .tp-doc-tab-close { opacity: 1; }
 .tp-doc-tab-close:hover { background: rgba(0,0,0,0.08); color: var(--danger); }
 .tp-doc-tab-add { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; border-radius: 8px; color: var(--tp-text-2); cursor: pointer; background: transparent; transition: all 0.2s ease; border: none; font-size: 16px; }
 .tp-doc-tab-add:hover { background: rgba(0,0,0,0.04); color: var(--tp-text-1); }
-.tp-shell { position: relative; z-index: 1; flex: 1; display: flex; flex-direction: column; min-width: 0; }
+.tp-shell { position: relative; z-index: 1; flex: 0 0 auto; display: flex; flex-direction: column; min-width: 0; }
 
 /* ---- toolbar ---- */
-.tp-toolbar {
-  flex: none; margin: 14px 14px 0; height: 54px; display: flex; align-items: center; gap: 10px;
-  padding: 0 14px; border-radius: 19px; background: var(--tp-glass-bg);
-  backdrop-filter: blur(28px) saturate(180%); -webkit-backdrop-filter: blur(28px) saturate(180%);
-  border: 1px solid var(--tp-glass-border); box-shadow: var(--tp-glass-shadow), var(--tp-glass-inset);
-}
+.tp-toolbar { min-width: 0; flex: none; height: 54px; display: flex; align-items: center; gap: 10px; padding: 0 14px; border-radius: 19px; background: var(--tp-glass-bg); backdrop-filter: blur(28px) saturate(180%); -webkit-backdrop-filter: blur(28px) saturate(180%); border: 1px solid var(--tp-glass-border); box-shadow: var(--tp-glass-shadow), var(--tp-glass-inset); }
 .tp-tb-group { display: flex; gap: 2px; }
 .tp-icon-btn {
   width: 30px; height: 30px; border: none; background: transparent; border-radius: 9px; cursor: pointer;
@@ -3945,6 +3957,7 @@ body.preview-full .prev-frame { width: 100%; height: 100%; }
 .tp-btn-accent:hover { background: rgba(10,132,255,.22); }
 .tp-btn-block { width: 100%; justify-content: center; }
 .tp-doc-name-wrap { flex: 1; text-align: center; display: flex; flex-direction: column; align-items: center; justify-content: center; line-height: 1.15; min-width: 0; }
+.tp-doc-name-wrap[hidden] { display: none !important; }
 .tp-doc-name { font-size: 13px; color: var(--tp-text); font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
 .tp-doc-status { font-size: 10.5px; color: var(--tp-text-mute); }
 .tp-segment { position: relative; display: flex; padding: 3px; background: var(--tp-segment-bg); border-radius: 11px; gap: 2px; isolation: isolate; }
@@ -3989,13 +4002,27 @@ body.preview-full .prev-frame { width: 100%; height: 100%; }
 .tp-select-block { width: 100%; margin-bottom: 8px; }
 
 /* ---- workspace: canvas (page) + inspector ---- */
-.tp-workspace { flex: 1; display: flex; min-height: 0; gap: 14px; padding: 16px 14px; }
-.tp-canvas { flex: 1; min-width: 0; overflow: auto; display: flex; flex-direction: column; align-items: center; padding: 6px 10px 40px; gap: 22px; }
+.tp-workspace { display: grid; grid-template-columns: var(--tp-side-w) 1fr var(--tp-insp-w); flex: 1; height: 100%; min-height: 0; padding: 0 14px 16px 14px; transition: grid-template-columns 0.35s cubic-bezier(0.25, 0.8, 0.25, 1); }
+.tp-canvas { min-width: 0; height: 100%; overflow: auto; display: flex; flex-direction: column; align-items: center; padding: 0 10px 40px; gap: 22px; }
+.tp-page-wrap { display: flex; flex-direction: column; width: 100%; max-width: 1000px; flex-shrink: 0; }
 .tp-page {
   width: 100%; max-width: 1000px; min-height: 1010px; background: var(--tp-page-bg); border-radius: 14px;
   box-shadow: var(--tp-page-shadow); padding: 92px 96px; box-sizing: border-box;
+  flex-shrink: 0;
 }
-.tp-doc { min-height: 800px; display: block; outline: none; color: var(--tp-text); }
+.tp-page-wrap .tp-page { border-top-left-radius: 0; }
+.tp-doc { min-height: 800px; display: block; outline: none; color: var(--tp-text); position: relative; }
+/* Приглашение к работе в пустом документе: полупрозрачный текст на первой строке (курсор виден
+   отдельно — редактор получает фокус при открытии нового файла). Класс tp-doc-empty ставит JS. */
+.tp-doc.tp-doc-empty::before {
+  content: attr(data-placeholder);
+  position: absolute; left: 0; top: 0;
+  color: var(--tp-text);
+  opacity: 0.32;
+  pointer-events: none;
+  font: inherit;
+  white-space: pre-wrap;
+}
 .tp-doc[hidden], .tp-panel-edit[hidden], .tp-panel-ai[hidden] { display: none !important; }
 .tp-doc:not(.tp-doc-md) { font-family: -apple-system, "SF Pro Text", "Inter", sans-serif; font-size: 16.5px; line-height: 1.6; }
 .tp-doc-md { font-family: var(--tp-mono); font-size: 13.5px; line-height: 1.6; white-space: pre-wrap; word-break: break-word; }
@@ -4039,7 +4066,7 @@ body.preview-full .prev-frame { width: 100%; height: 100%; }
 
 /* ---- inspector ---- */
 .tp-inspector { 
-  width: 344px; flex: none; display: flex; flex-direction: column; gap: 12px; min-height: 0;
+  width: 380px; flex: none; display: flex; flex-direction: column; gap: 12px; min-height: 0;
   transition: width 0.28s cubic-bezier(.4,0,.2,1), opacity 0.28s cubic-bezier(.4,0,.2,1), margin 0.28s cubic-bezier(.4,0,.2,1);
   overflow: hidden;
 }
@@ -4805,3 +4832,247 @@ body.win-frame.win-frame-pulse::after {
 .frame-sw { width: 24px; height: 24px; border-radius: 7px; border: 1px solid var(--border); cursor: pointer; padding: 0; transition: transform .1s; }
 .frame-sw:hover { transform: scale(1.12); }
 .frame-sw.sel { outline: 2px solid var(--border-accent); outline-offset: 1px; }
+.tp-sel-popup {
+  position: absolute; pointer-events: auto; z-index: 20;
+  display: flex; flex-direction: column;
+  padding: 2px;
+  border-radius: 12px;
+  gap: 0;
+
+  background: linear-gradient(135deg,
+      rgba(214,222,246,.40) 0%,
+      rgba(176,204,246,.44) 45%,
+      rgba(138,180,242,.50) 100%);
+  backdrop-filter: blur(30px) saturate(180%);
+  -webkit-backdrop-filter: blur(30px) saturate(180%);
+
+  border: 1px solid rgba(70,130,225,.50);
+  box-shadow:
+      0 16px 40px rgba(42,111,219,.30),
+      0 1px 0 rgba(255,255,255,.60) inset;
+
+  animation: tp-pop-in .12s ease-out;
+  color: var(--tp-text);
+  width: max-content;
+  max-width: max-content;
+  max-height: max-content;
+}
+.tp-sel-popup[hidden] { display: none !important; }
+
+/* --- Ряд формата: убрать линию во всю ширину, лёгкий разделитель --- */
+.tp-sel-popup-fmt {
+  display: flex; align-items: center; gap: 4px;
+  border-bottom: none;
+  padding: 2px; margin-bottom: 0;
+  justify-content: center;
+}
+.tp-sel-popup .tp-pill-sep {
+  background: rgba(60,90,150,.20);
+  width: 1px; height: 20px; margin: 0 5px;
+}
+.tp-sel-popup .tp-pill-btn.on,
+.tp-sel-popup .tp-pill-btn.active,
+.tp-sel-popup .tp-pill-btn[aria-pressed="true"] {
+  background: rgba(42,111,219,.16); color: var(--tp-accent, #2a6fdb);
+  box-shadow: none; /* Убираем дефолтные тени LiteEditor для активных кнопок */
+}
+.tp-sel-popup-row {
+  display: flex; align-items: center; gap: 4px;
+  padding: 2px;
+  background: transparent;
+  border: none;
+  box-shadow: none;
+}
+.tp-sel-popup-arrow { color: #8298bd; flex: none; font-size: 13px; margin-left: 2px; }
+.tp-sel-popup-input {
+  width: 170px; border: none; outline: none; font: inherit; font-size: 13px;
+  color: var(--tp-text); -webkit-appearance: none; appearance: none; padding: 0 2px;
+  background: transparent !important; box-shadow: none !important;
+}
+.tp-sel-popup-input::placeholder { color: #7e8697; }
+
+.tp-sel-popup-clear {
+  width: 18px; height: 18px; flex: none; border: none;
+  border-radius: 50%;
+  background: rgba(255,255,255,0.15); color: #fff; cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center;
+  margin-right: 4px; padding: 3px;
+}
+.tp-sel-popup-clear:hover { background: rgba(255,255,255,0.3); }
+
+/* --- Кнопка отправки: Telegram — синий кружок, белый планер --- */
+.tp-sel-popup-send {
+  width: 30px; height: 30px; flex: none; border: none;
+  border-radius: 50%;
+  background: #2a8fe0; color: #fff; cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center;
+  box-shadow: 0 4px 10px rgba(42,143,224,.35);
+}
+.tp-sel-popup-send svg {
+  width: 15px; height: 15px; margin-left: -1px;
+}
+.tp-pill {
+  position: relative; z-index: 10;
+  flex: none; margin: 12px auto 0; display: flex; align-items: center; gap: 4px; padding: 6px 10px;
+  border-radius: 15px; background: var(--tp-glass-bg-strong);
+  backdrop-filter: blur(24px) saturate(180%); -webkit-backdrop-filter: blur(24px) saturate(180%);
+  border: 1px solid var(--tp-glass-border-strong); box-shadow: var(--tp-glass-shadow-sm), var(--tp-glass-inset);
+}
+.tp-pill-sep { width: 1px; height: 20px; background: var(--tp-border); margin: 0 3px; }
+.tp-pill-btn {
+  width: 30px; height: 30px; border: none; background: transparent; border-radius: 9px; cursor: pointer;
+  color: var(--tp-text); display: inline-flex; align-items: center; justify-content: center;
+}
+.tp-pill-btn:hover { background: var(--tp-hover); }
+.tp-pill-btn.on { background: rgba(10,132,255, 0.1); color: #0a84ff; outline: none; box-shadow: inset 0 0 0 1px rgba(10,132,255,0.4), 0 0 8px rgba(10,132,255,0.2); }
+.tp-pill-btn:focus-visible { outline: none; box-shadow: inset 0 0 0 1px rgba(10,132,255,0.4), 0 0 8px rgba(10,132,255,0.2); }
+.tp-sel-popup .tp-pill-sep {
+  background: rgba(60,90,150,.20);
+  width: 1px; height: 20px; margin: 0 5px;
+}
+.tp-sel-popup .tp-pill-btn.on,
+.tp-sel-popup .tp-pill-btn.active,
+.tp-sel-popup .tp-pill-btn[aria-pressed="true"] {
+  background: rgba(42,111,219,.16); color: var(--tp-accent, #2a6fdb);
+  box-shadow: none; /* Убираем дефолтные тени LiteEditor для активных кнопок */
+}
+.tp-pill .tp-select, .tp-select.tp-select-inline { height: 30px; border-radius: 9px; padding: 0 8px; font-size: 12.5px; }
+.tp-btn-group .tp-pill-btn { width: 34px; height: 30px; border-radius: 8px; }
+.tp-btn-group-wide .tp-pill-btn { flex: 1; width: auto; height: 32px; border-radius: 8px; }
+.tp-scrubber { width: 14px; flex: none; position: relative; margin: 6px 2px 40px 0; display: none !important; }
+.tp-scrubber-track { position: relative; width: 14px; height: 100%; margin: 0 auto; cursor: pointer; }
+.tp-scrubber-track::before { content: ''; position: absolute; top: 0; bottom: 0; left: 5px; width: 4px; border-radius: 3px; background: var(--tp-border-soft); }
+.tp-scrubber-tick {
+  position: absolute; left: 50%; transform: translate(-50%, -50%); width: 8px; height: 8px; border-radius: 50%;
+  background: var(--tp-glass-border-strong); border: 1px solid rgba(255,255,255,0.8); cursor: pointer;
+  transition: transform .12s, background .12s;
+}
+.tp-scrubber-tick-h1 { width: 9px; height: 9px; background: rgba(10,132,255,0.55); }
+.tp-scrubber-tick-h2 { width: 7px; height: 7px; background: rgba(10,132,255,0.4); }
+.tp-scrubber-tick-h3 { width: 6px; height: 6px; background: rgba(10,132,255,0.28); }
+.tp-scrubber-tick:hover { transform: translate(-50%, -50%) scale(1.5); }
+.tp-scrubber-thumb {
+  position: absolute; left: 50%; transform: translate(-50%, -50%); width: 12px; height: 12px; border-radius: 50%;
+  background: var(--tp-glass-bg-strong); border: 1px solid var(--tp-glass-border-strong);
+  box-shadow: var(--tp-glass-shadow-sm); pointer-events: none;
+}
+
+
+/* Responsive Toolbar */
+.tp-btn.icon-only { padding: 0; width: 34px; justify-content: center; }
+.tp-btn.icon-only span:not([data-icon]) { display: none; }
+.tp-btn.icon-only span[data-icon] { margin: 0; }
+.tp-toolbar-overflow-btn { position: relative; display: inline-flex; }
+#doc-toolbar-overflow-menu { right: 0; left: auto; display: flex; flex-direction: column; padding: 4px; gap: 4px; width: auto; max-height: 300px; overflow-y: auto; background: var(--tp-glass-bg); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); border: 1px solid var(--tp-glass-border); box-shadow: var(--tp-glass-shadow); border-radius: 12px; }
+#doc-toolbar-overflow-menu:not([hidden]) { display: flex; }
+#doc-toolbar-overflow-menu .tp-pill-sep { width: 100%; height: 1px; margin: 2px 0; }
+#doc-toolbar-overflow-menu .tp-pill-btn { justify-content: flex-start; padding: 4px 8px; width: 100%; height: 32px; border-radius: 8px; }
+#doc-toolbar-overflow-menu .tp-pill-btn::after { content: attr(title); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; font-size: 12px; margin-left: 8px; font-weight: 500; }
+
+
+/* Paragraph Numbering */
+.show-paragraph-numbers {
+  counter-reset: paragraph;
+}
+.show-paragraph-numbers p {
+  position: relative;
+  counter-increment: paragraph;
+  padding-left: 32px !important;
+}
+.show-paragraph-numbers p::before {
+  content: counter(paragraph);
+  position: absolute;
+  left: 0;
+  top: 6px;
+  bottom: 6px;
+  width: 20px;
+  border-right: 2px solid #0a84ff;
+  color: #0a84ff;
+  font-size: 11px;
+  font-family: var(--mono, "JetBrains Mono", monospace);
+  display: flex;
+  align-items: flex-start;
+  justify-content: flex-end;
+  padding-right: 6px;
+  box-sizing: border-box;
+  opacity: 0.8;
+}
+
+
+/* === Тулбар по колонкам: дерево слева над поиском, компактная пилюля над документом (2026-07) === */
+/* 2 колонки как у контента: левая панель (side) + документ (1fr). Плавный переход = base transition. */
+.tp-shell-row--toolbar { grid-template-columns: var(--tp-side-w) 1fr; }
+.tp-layout.sidebar-collapsed .tp-shell-row--toolbar { grid-template-columns: 0px 1fr; }
+/* иконки дерева — в левой колонке, выровнены над поиском (без наезда на панель) */
+.tp-shell-row--toolbar .tp-sidebar-actions { justify-self: start; }
+/* пилюля — компактная по содержимому, прижата к левому краю зоны документа */
+.tp-shell-row--toolbar .tp-toolbar-merged { justify-self: end; max-width: 100%; }
+/* дерево-иконки и поиск — мягкое проявление (только прозрачность, без растягивания) */
+.tp-sidebar-actions, .tp-search { transition: opacity .40s cubic-bezier(0.4,0,0.2,1); }
+
+
+/* Плавная кривая перехода панели (мягкий старт/финиш), единая для тулбара, поиска и рабочей зоны */
+.tp-shell-row, .tp-workspace { transition: grid-template-columns 0.40s cubic-bezier(0.4,0,0.2,1) !important; }
+
+
+/* крайний случай переполнения тулбара: Открыть/Сохранить как иконки (чётко, без анимации) */
+.tp-btn-iconized { padding: 0; width: 34px; justify-content: center; gap: 0; }
+.tp-btn-iconized .tp-btn-label { display: none; }
+
+
+/* меню-переполнение тулбара — сплошной непрозрачный фон (не просвечивает) */
+#doc-toolbar-overflow-menu {
+  background: #ffffff; backdrop-filter: none; -webkit-backdrop-filter: none;
+  border: 1px solid rgba(0,0,0,.10); box-shadow: 0 10px 30px rgba(30,40,80,.18);
+}
+
+
+/* === Плавное сжатие «Открыть/Сохранить» в иконку при открытой панели (2026-07) === */
+/* Подпись плавно тает и схлопывается, иконка остаётся на месте, кнопка мягко сужается. */
+/* Кнопка сужается ПО ШИРИНЕ (overflow:hidden) со своей ширины до иконки — подпись обрезается по буквам
+   справа, иконка слева стоит. Синхронно с панелью (0.40s, та же кривая), в обе стороны. */
+#doc-open-btn, #doc-save-btn {
+  overflow: hidden; white-space: nowrap; flex: 0 0 auto; box-sizing: border-box;
+  transition: width 0.40s cubic-bezier(0.4,0,0.2,1), padding 0.40s cubic-bezier(0.4,0,0.2,1);
+}
+#doc-open-btn .tp-btn-label, #doc-save-btn .tp-btn-label { white-space: nowrap; }
+#doc-open-btn { width: 118px; }
+#doc-save-btn { width: 132px; }
+.tp-layout:not(.sidebar-collapsed) #doc-open-btn,
+.tp-layout:not(.sidebar-collapsed) #doc-save-btn { width: 34px; padding-left: 9px; padding-right: 9px; }
+
+
+/* ================= Мелкие фиксы (2026-07) ================= */
+/* 1) Дерево: длинные имена обрезаются многоточием, без наложения на страницу */
+.tp-tree { overflow-x: hidden; }
+.tp-tree-item, .tp-tree-folder-header { overflow: hidden; min-width: 0; }
+.tp-tree-item-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.tp-tree-folder-header > span:last-child { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* 2) Иконки действий дерева — крупнее и по центру левой колонки */
+.tp-shell-row--toolbar .tp-sidebar-actions { justify-self: stretch; justify-content: center; gap: 18px; padding: 0; }
+.tp-sidebar-actions .tp-icon-btn.sm { width: 38px; height: 38px; }
+.tp-sidebar-actions .tp-icon-btn.sm svg { width: 22px; height: 22px; stroke-width: 1.7; }
+
+/* 3) Поднять страницу и вкладки на уровень поиска (вкладка документа = уровню «Поиск по документам») */
+.tp-canvas, .tp-inspector { position: relative; top: -51px; }
+.tp-canvas { height: calc(100% + 51px); }
+.tp-inspector { height: calc(100% + 51px); }
+/* Инспектор приподнят на -51px и его вкладки (AI-обработка / Редактирование) заезжают под
+   .tp-shell (z-index:1), из-за чего клик по «Редактирование» перехватывался панелью и вкладка
+   не открывалась. Поднимаем инспектор над .tp-shell. */
+.tp-inspector { z-index: 2; }
+
+/* 4) Инспектор сворачивается ВПРАВО, освобождая место рабочему пространству */
+.tp-layout.inspector-collapsed .tp-workspace { grid-template-columns: var(--tp-side-w) 1fr 0px; }
+.tp-layout.sidebar-collapsed.inspector-collapsed .tp-workspace { grid-template-columns: 0px 1fr 0px; }
+.tp-layout.inspector-collapsed .tp-inspector { opacity: 0; pointer-events: none; }
+
+/* Клик по вкладкам/«+»: приподнятый .tp-canvas (top:-51px) перекрывается строкой поиска
+   (.tp-shell-row--tabs в .tp-shell, z-index:1). Пропускаем клики сквозь пустую область
+   этой строки к вкладкам под ней, оставляя саму строку поиска кликабельной. */
+.tp-shell-row--tabs { pointer-events: none; }
+.tp-shell-row--tabs .tp-search { pointer-events: auto; }
+/* Приподнятая полоса вкладок должна лежать НАД .tp-shell (z-index:1), иначе сама панель
+   .tp-shell перехватывает клики по вкладкам и «+». */
+.tp-tabs-container { position: relative; z-index: 2; }

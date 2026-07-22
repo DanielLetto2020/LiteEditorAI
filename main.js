@@ -10,7 +10,7 @@ const storageBackend = require('./lib/storage');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
-const { execFile, spawn } = require('child_process');
+const { execFile, execFileSync, spawn } = require('child_process');
 const https = require('https');
 const http = require('http');
 const net = require('net');
@@ -781,29 +781,100 @@ const TP_AGENTS = {
   claude: { cmd: 'claude', args: ['-p', '--output-format', 'text'], via: 'stdin' },
   codex: { cmd: 'codex', args: ['exec'], via: 'arg' },
   gemini: { cmd: 'gemini', args: ['-p'], via: 'arg' },
+  // agy: одноразовый прогон — «-p» (--print). Промпт идёт ПОСЛЕДНИМ аргументом (сразу за -p).
+  // --dangerously-skip-permissions = авто-одобрение правок (родной флаг agy, не только Claude).
+  // Запускаем через PTY (см. tpRunAntigravity): без TTY «agy -p» молча теряет вывод.
+  antigravity: { cmd: 'agy', args: ['--dangerously-skip-permissions', '-p'], via: 'arg', pty: true },
 };
-// GUI-сессия часто не видит ~/.local/bin и nvm-bin → дополняем PATH, чтобы claude/codex нашлись.
+// GUI-приложение, запущенное из Dock/Finder, наследует минимальный PATH и не видит Homebrew,
+// npm-global, agy и т.п. Один раз спрашиваем PATH у логин-шелла пользователя (там подхватываются
+// ~/.zprofile/.zshrc с реальными путями) и кэшируем. Промпт при этом НЕ уходит в шелл — мы только
+// читаем $PATH, а сами агенты запускаем аргументами (без shell), так что инъекции невозможны.
+let _loginPath = null;
+function loginShellPath() {
+  if (_loginPath !== null) return _loginPath;
+  _loginPath = '';
+  try {
+    if (process.platform !== 'win32') {
+      const shell = process.env.SHELL || '/bin/zsh';
+      const out = execFileSync(shell, ['-lic', 'printf "%s" "$PATH"'], { encoding: 'utf8', timeout: 5000 });
+      // -i может подмешать вывод rc-файлов: берём последнюю непустую строку (это и есть PATH).
+      _loginPath = String(out).trim().split('\n').filter(Boolean).pop() || '';
+    }
+  } catch (_) { _loginPath = ''; }
+  return _loginPath;
+}
+// GUI-сессия часто не видит ~/.local/bin и nvm-bin → дополняем PATH, чтобы claude/codex/agy нашлись.
 function tpEnv() {
   const sep = process.platform === 'win32' ? ';' : ':';
-  const extra = [path.join(os.homedir(), '.local', 'bin'), path.dirname(process.execPath)];
+  const extra = [
+    loginShellPath(),
+    '/opt/homebrew/bin', '/usr/local/bin',
+    path.join(os.homedir(), '.local', 'bin'),
+    path.join(os.homedir(), '.antigravity', 'bin'),
+    path.dirname(process.execPath),
+  ].filter(Boolean);
   return { ...process.env, PATH: extra.join(sep) + sep + (process.env.PATH || '') };
 }
 const tpReqs = new Map(); // reqId -> ChildProcess
 // Живой стриминг ответа в чат (tp:data, идея из PR #6), но через spawn как раньше — БЕЗ PTY:
 // под PTY stderr сливается в stdout, CLI видит TTY (спиннеры/контрол-коды), терминал эхоит промпт,
 // а \x04 не является EOF под ConPTY (Windows зависал бы до таймаута). stdout чист — стримим как есть.
-ipcMain.on('tp:run', (e, { reqId, agent, prompt } = {}) => {
+// Убирает ANSI-escape/OSC-последовательности и \r из потока PTY — в чат идёт чистый текст.
+function tpStripAnsi(s) {
+  return String(s)
+    .replace(/\x1B\][^\x07\x1B]*(?:\x07|\x1B\\)/g, '') // OSC (заголовки окна и т.п.)
+    .replace(/\x1B\[[0-9;?]*[ -/]*[@-~]/g, '')          // CSI (цвета, курсор)
+    .replace(/\r/g, '');
+}
+// agy запускаем в псевдотерминале (node-pty): он проверяет TTY на старте и без него теряет вывод.
+// PTY также даёт полноценное окружение агента. Промпт передаём аргументом (без shell) — инъекций нет.
+function tpRunAntigravity(sender, { reqId, prompt, cwd }) {
+  const conf = TP_AGENTS.antigravity;
+  const args = [...conf.args, prompt || '']; // agy --dangerously-skip-permissions -p "<промпт>"
+  let child;
+  try {
+    child = pty.spawn(conf.cmd, args, {
+      name: 'xterm-color', cols: 100, rows: 30,
+      cwd: cwd && fs.existsSync(cwd) ? cwd : os.homedir(),
+      env: tpEnv(),
+    });
+  } catch (err) {
+    safeSend(sender, 'tp:error', { reqId, error: 'не запустить «agy» (установлен и в PATH?): ' + (err.message || err) });
+    return;
+  }
+  tpReqs.set(reqId, child);
+  let out = '';
+  // agy может думать долго (--print-timeout по умолчанию 5 мин) — даём запас 8 минут.
+  const to = setTimeout(() => {
+    if (tpReqs.has(reqId)) { tpReqs.delete(reqId); try { child.kill(); } catch (_) {} safeSend(sender, 'tp:error', { reqId, error: 'таймаут: agy не ответил за 8 минут' }); }
+  }, 480000);
+  child.onData((d) => { const chunk = tpStripAnsi(d); out += chunk; safeSend(sender, 'tp:data', { reqId, chunk }); });
+  child.onExit(({ exitCode }) => {
+    if (!tpReqs.has(reqId)) return; tpReqs.delete(reqId); clearTimeout(to);
+    const text = out.trim();
+    if (exitCode === 0 || text) safeSend(sender, 'tp:done', { reqId, text: text || 'agy завершил работу.' });
+    else safeSend(sender, 'tp:error', { reqId, error: text || ('agy завершился с кодом ' + exitCode) });
+  });
+}
+
+ipcMain.on('tp:run', (e, { reqId, agent, prompt, cwd, file } = {}) => {
   const sender = e.sender;
+  if (agent === 'antigravity') { tpRunAntigravity(sender, { reqId, prompt, cwd }); return; }
   const conf = TP_AGENTS[agent] || TP_AGENTS.claude;
   const args = conf.via === 'arg' ? [...conf.args, prompt || ''] : [...conf.args];
   let child;
-  try { child = spawn(conf.cmd, args, { cwd: os.homedir(), env: tpEnv() }); }
+  try { child = spawn(conf.cmd, args, { cwd: cwd || os.homedir(), env: tpEnv() }); }
   catch (err) { safeSend(sender, 'tp:error', { reqId, error: 'не запустить «' + conf.cmd + '»: ' + (err.message || err) }); return; }
   tpReqs.set(reqId, child);
   let out = '', errOut = '';
   const to = setTimeout(() => { if (tpReqs.has(reqId)) { tpReqs.delete(reqId); try { child.kill(); } catch (_) {} safeSend(sender, 'tp:error', { reqId, error: 'таймаут (агент не ответил вовремя)' }); } }, 240000);
   child.stdout.on('data', (c) => { const chunk = c.toString('utf8'); out += chunk; safeSend(sender, 'tp:data', { reqId, chunk }); });
-  child.stderr.on('data', (c) => { errOut += c.toString('utf8'); });
+  child.stderr.on('data', (c) => { 
+    const chunk = c.toString('utf8'); 
+    errOut += chunk; 
+    safeSend(sender, 'tp:data', { reqId, chunk }); 
+  });
   child.on('error', (err) => {
     if (!tpReqs.has(reqId)) return; tpReqs.delete(reqId); clearTimeout(to);
     safeSend(sender, 'tp:error', { reqId, error: 'агент «' + conf.cmd + '» не найден/не запустился: ' + (err.message || err) });
@@ -811,7 +882,7 @@ ipcMain.on('tp:run', (e, { reqId, agent, prompt } = {}) => {
   child.on('close', (code) => {
     if (!tpReqs.has(reqId)) return; tpReqs.delete(reqId); clearTimeout(to);
     const text = out.trim();
-    if (text) safeSend(sender, 'tp:done', { reqId, text }); // непустой вывод = результат (даже при ненулевом коде)
+    if (code === 0 || text) safeSend(sender, 'tp:done', { reqId, text: text || errOut.trim() || 'Агент успешно завершил работу.' });
     else safeSend(sender, 'tp:error', { reqId, error: errOut.trim() || ('агент завершился с кодом ' + code) });
   });
   if (conf.via === 'stdin') { try { child.stdin.write(prompt || ''); child.stdin.end(); } catch (_) {} }
@@ -2736,6 +2807,16 @@ ipcMain.handle('pomodoro:importFile', async () => {
 // ── Кросс-оконная шина: активный проект редактора → окна модулей ──────────────────────
 ipcMain.on('app:setActiveProject', (_e, info) => { activeProjectInfo = info || null; broadcastToModules('app:activeProject', activeProjectInfo); });
 ipcMain.handle('app:getActiveProject', () => activeProjectInfo);
+
+let hasAutoLaunched = false;
+ipcMain.handle('app:canAutoLaunch', () => {
+  if (!hasAutoLaunched) {
+    hasAutoLaunched = true;
+    return true;
+  }
+  return false;
+});
+
 ipcMain.on('app:settingsChanged', (_e, s) => broadcastToModules('app:settingsChanged', s || {}));
 // Задачи изменились (модуль/пульт) → разослать ВСЕМ окнам модулей КРОМЕ отправителя (иначе автор правки
 // получил бы эхо своего же изменения и перезагрузил список после каждого клика) + в главное окно (для бейджа

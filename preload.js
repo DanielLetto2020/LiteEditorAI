@@ -55,6 +55,7 @@ contextBridge.exposeInMainWorld('lite', {
     onActiveProject: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('app:activeProject', h); return () => ipcRenderer.removeListener('app:activeProject', h); },
     settingsChanged: (s) => ipcRenderer.send('app:settingsChanged', s),
     onSettingsChanged: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('app:settingsChanged', h); return () => ipcRenderer.removeListener('app:settingsChanged', h); },
+    canAutoLaunch: () => ipcRenderer.invoke('app:canAutoLaunch'),
     // Пульт изменил задачи (notes/<id>.json) → редактор ретранслирует окну модуля «Задачи».
     notesChanged: (id) => ipcRenderer.send('app:notesChanged', { id }),
     onNotesChanged: (cb) => { const h = (_e, p) => cb(p && p.id); ipcRenderer.on('app:notesChanged', h); return () => ipcRenderer.removeListener('app:notesChanged', h); },
