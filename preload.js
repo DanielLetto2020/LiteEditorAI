@@ -17,6 +17,20 @@ contextBridge.exposeInMainWorld('lite', {
   // Forward renderer-side errors/events to the main-process file log.
   log: (level, ...args) => ipcRenderer.send('log:renderer', { level, args }),
 
+  // Локализация: словарь берём СИНХРОННО (до первого прохода по DOM — иначе
+  // интерфейс мигнёт русским), смена языка приходит событием во все окна.
+  i18n: {
+    current: () => { try { return ipcRenderer.sendSync('i18n:current') || { code: 'ru', dict: {} }; } catch (_) { return { code: 'ru', dict: {} }; } },
+    list: () => ipcRenderer.invoke('i18n:list'),
+    set: (code) => ipcRenderer.invoke('i18n:set', { code }),
+    openUserDir: () => ipcRenderer.invoke('i18n:openUserDir'),
+    onChange: (cb) => {
+      const h = (_e, p) => cb(p);
+      ipcRenderer.on('i18n:changed', h);
+      return () => ipcRenderer.removeListener('i18n:changed', h);
+    },
+  },
+
   win: {
     minimize: () => ipcRenderer.send('win:minimize'),
     maximizeToggle: () => ipcRenderer.send('win:maximizeToggle'),

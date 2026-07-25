@@ -3,6 +3,9 @@
 // Everything here is pure DOM: no core state, no window.lite calls.
 
 import hljs from 'highlight.js/lib/common';
+// Единые точки вывода текста (тосты, confirm/prompt) переводят свои аргументы сами —
+// поэтому сообщения всех модулей локализуются без правок в самих модулях.
+import { t } from './i18n.js';
 
 const $ = (sel) => document.querySelector(sel);
 
@@ -177,17 +180,17 @@ let _errSink = null;
 export function setErrorSink(fn) { _errSink = typeof fn === 'function' ? fn : null; }
 
 export function toast(msg, opts = {}) {
-  if (opts.kind === 'err' && _errSink && !opts.silent) { try { _errSink(String(msg)); } catch (_) {} }
-  const t = el('div', 'toast' + (opts.kind ? ' ' + opts.kind : ''));
-  t.appendChild(el('span', 'toast-msg', msg));
+  if (opts.kind === 'err' && _errSink && !opts.silent) { try { _errSink(String(msg)); } catch (_) {} }  // в лог — исходный текст
+  const box = el('div', 'toast' + (opts.kind ? ' ' + opts.kind : ''));
+  box.appendChild(el('span', 'toast-msg', t(msg)));
   if (opts.actionLabel) {
-    const b = el('button', 'toast-act', opts.actionLabel);
-    b.onclick = () => { t.remove(); opts.action && opts.action(); };
-    t.appendChild(b);
+    const b = el('button', 'toast-act', t(opts.actionLabel));
+    b.onclick = () => { box.remove(); opts.action && opts.action(); };
+    box.appendChild(b);
   }
-  $('#toasts').appendChild(t);
-  requestAnimationFrame(() => t.classList.add('show'));
-  setTimeout(() => { t.classList.remove('show'); setTimeout(() => t.remove(), 250); }, opts.ttl || 4000);
+  $('#toasts').appendChild(box);
+  requestAnimationFrame(() => box.classList.add('show'));
+  setTimeout(() => { box.classList.remove('show'); setTimeout(() => box.remove(), 250); }, opts.ttl || 4000);
 }
 
 // Render a unified diff string into a container, line-classed like the viewer's diff.
@@ -249,14 +252,14 @@ export function showConfirm(title, text, yesLabel, onYes, altLabel, onAlt) {
       <button class="btn" id="cm-alt" style="display:none"></button>
       <button class="btn primary" id="cm-yes"></button>
     </div>`);
-  m.querySelector('.cm-title').textContent = title;
-  m.querySelector('.cm-text').textContent = text;
-  m.querySelector('#cm-yes').textContent = yesLabel;
+  m.querySelector('.cm-title').textContent = t(title);
+  m.querySelector('.cm-text').textContent = t(text);
+  m.querySelector('#cm-yes').textContent = t(yesLabel);
   m.querySelector('#cm-no').onclick = close;
   m.querySelector('#cm-yes').onclick = () => { close(); onYes(); };
   if (altLabel) {
     const alt = m.querySelector('#cm-alt');
-    alt.style.display = ''; alt.textContent = altLabel;
+    alt.style.display = ''; alt.textContent = t(altLabel);
     alt.onclick = () => { close(); onAlt && onAlt(); };
   }
   setTimeout(() => m.querySelector('#cm-yes').focus(), 30);
@@ -269,17 +272,17 @@ export function showPrompt(title, label, initial, onOk) {
     <div class="field"><label></label><input type="text" id="pr-in" autocomplete="off" spellcheck="false"></div>
     <div class="err" id="pr-err"></div>
     <div class="modal-actions"><button class="btn" id="pr-cancel">Отмена</button><button class="btn primary" id="pr-ok">Ок</button></div>`);
-  m.querySelector('h2').textContent = title;
-  m.querySelector('label').textContent = label;
+  m.querySelector('h2').textContent = t(title);
+  m.querySelector('label').textContent = t(label);
   const inp = m.querySelector('#pr-in'); inp.value = initial || '';
   const err = m.querySelector('#pr-err');
   setTimeout(() => { inp.focus(); inp.select(); }, 30);
   m.querySelector('#pr-cancel').onclick = close;
   const ok = async () => {
     const v = inp.value.trim();
-    if (!v) { err.textContent = 'Введи имя'; return; }
+    if (!v) { err.textContent = t('Введи имя'); return; }
     const res = await onOk(v);
-    if (res && res.error) { err.textContent = res.error; return; }
+    if (res && res.error) { err.textContent = t(res.error); return; }
     close();
   };
   m.querySelector('#pr-ok').onclick = ok;

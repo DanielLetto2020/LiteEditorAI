@@ -1,6 +1,7 @@
 // LiteEditor — Electron main process.
 // Thin backend: project picker, PTY lifecycle, file ops, window controls.
 const { app, BrowserWindow, ipcMain, dialog, shell, Menu, clipboard, screen, Tray, nativeImage, crashReporter, safeStorage, Notification } = require('electron');
+const i18n = require('./lib/i18n');   // локализация: словари — подключаемые файлы locales/*.json
 const dbBackend = require('./lib/db');
 const rhBackend = require('./lib/remotehost');
 const { guessDbKind, dbPrefillFromInspect, guessMqKind, rmqPrefillFromInspect, kafkaPrefillFromInspect, guessWebKind, webPrefillFromInspect, guessStorageKind, storagePrefillFromInspect } = require('./lib/dbdetect'); // «Контейнеры» → «Базы данных»/«RabbitMQ»/«Kafka»/«Мониторинг сайтов»/«Внешние хранилища»
@@ -2254,9 +2255,9 @@ function createTray() {
     tray = new Tray(nativeImage.createFromPath(iconPng).resize({ width: 18, height: 18 }));
     tray.setToolTip('LiteEditorAI');
     tray.setContextMenu(Menu.buildFromTemplate([
-      { label: 'Показать LiteEditor', click: showWindow },
+      { label: i18n.t('Показать LiteEditor'), click: showWindow },
       { type: 'separator' },
-      { label: 'Выход', click: () => app.quit() },
+      { label: i18n.t('Выход'), click: () => app.quit() },
     ]));
     tray.on('click', showWindow);
   } catch (_) { tray = null; }
@@ -2268,6 +2269,12 @@ app.on('child-process-gone', (_e, d) =>
 app.on('before-quit', () => { try { errledger.flush(); } catch (_) {} logger.log('info', 'app', 'before-quit'); });
 
 app.whenReady().then(() => {
+  // Язык интерфейса — до создания окон: рендерер забирает словарь синхронно при старте.
+  try {
+    const lang = ((readStoreKey('settings') || {}).lang || 'ru');
+    i18n.setLocale(lang);
+    logger.log('info', 'i18n', `locale=${i18n.locale()}, строк в словаре: ${Object.keys(i18n.dictionary()).length}`);
+  } catch (_) {}
   const gpu = !(process.env.LITE_NO_GPU === '1' || process.env.LITE_SOFTWARE_RENDER === '1');
   logger.log('info', 'app', `ready — electron ${process.versions.electron}, chrome ${process.versions.chrome}, node ${process.versions.node}, gpu=${gpu}`);
   Menu.setApplicationMenu(null); // we draw our own menu in the custom titlebar
@@ -2676,6 +2683,32 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
 });
 
+// ---------------------------------------------------------------- локализация
+// Язык живёт в settings.lang; словари — подключаемые файлы (locales/ + ~/.LiteEditorAI/locales/).
+// Рендерер берёт словарь СИНХРОННО при старте, чтобы интерфейс не мигал русским.
+function i18nPayload() {
+  const meta = i18n.available().find((l) => l.code === i18n.locale()) || { rtl: false };
+  return { code: i18n.locale(), dict: i18n.dictionary(), rtl: !!meta.rtl };
+}
+ipcMain.on('i18n:current', (e) => { e.returnValue = i18nPayload(); });
+ipcMain.handle('i18n:list', () => ({ current: i18n.locale(), list: i18n.available() }));
+ipcMain.handle('i18n:set', (_e, { code } = {}) => {
+  const known = i18n.available().some((l) => l.code === String(code || '').toLowerCase());
+  if (!known) return { ok: false, error: 'Неизвестный язык' };
+  i18n.setLocale(code);
+  const st = readStoreKey('settings') || {};
+  st.lang = i18n.locale();
+  writeStoreKey('settings', st);
+  const payload = i18nPayload();
+  for (const w of BrowserWindow.getAllWindows()) { try { w.webContents.send('i18n:changed', payload); } catch (_) {} }
+  try { updateTrayTooltip(); } catch (_) {}
+  return { ok: true, code: i18n.locale() };
+});
+ipcMain.handle('i18n:openUserDir', async () => {
+  try { fs.mkdirSync(i18n.USER_DIR, { recursive: true }); await shell.openPath(i18n.USER_DIR); return { ok: true, dir: i18n.USER_DIR }; }
+  catch (e) { return { ok: false, error: String(e && e.message || e) }; }
+});
+
 // ---------------------------------------------------------------- window controls
 // Действуют на окно ОТПРАВИТЕЛЯ (редактор ИЛИ окно модуля), не на mainWindow жёстко.
 function senderWin(e) { try { return BrowserWindow.fromWebContents(e.sender); } catch (_) { return null; } }
@@ -2897,10 +2930,22 @@ ipcMain.on('editor:sendNoteToTerminal', (_e, payload) => forwardToEditor('editor
 ipcMain.on('editor:refreshProjects', () => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('editor:refreshProjects'); });
 
 // Reflect how many agents need attention on the tray tooltip (and macOS title).
+let trayAttention = 0;
+function updateTrayTooltip() {
+  if (!tray) return;
+  tray.setToolTip(trayAttention > 0 ? `LiteEditorAI — ${i18n.t('{0} ждут ответа', trayAttention)}` : 'LiteEditorAI');
+  try {
+    tray.setContextMenu(Menu.buildFromTemplate([
+      { label: i18n.t('Показать LiteEditor'), click: showWindow },
+      { type: 'separator' },
+      { label: i18n.t('Выход'), click: () => app.quit() },
+    ]));
+  } catch (_) {}
+}
 ipcMain.on('tray:update', (_e, { attention } = {}) => {
-  const n = attention || 0;
-  if (tray) tray.setToolTip(n > 0 ? `LiteEditorAI — ${n} ждут ответа` : 'LiteEditorAI');
-  if (process.platform === 'darwin' && app.dock) app.setBadgeCount(n);
+  trayAttention = attention || 0;
+  updateTrayTooltip();
+  if (process.platform === 'darwin' && app.dock) app.setBadgeCount(trayAttention);
 });
 
 // Grow/shrink the window to the right by dx px (used when the viewer opens, so
