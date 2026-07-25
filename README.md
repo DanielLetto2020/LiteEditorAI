@@ -2,217 +2,231 @@
 
 # ▍ LiteEditorAI
 
-**Редактор для эпохи, когда код пишет агент, а ты направляешь.**
+### Your agents write the code. This is where you watch them.
+
+A terminal-first desktop workspace for developers who **supervise AI coding agents**
+(Claude Code, Codex, Gemini CLI, Qwen…) instead of typing every line themselves.
 
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache--2.0-green.svg)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/DanielLetto2020/LiteEditorAI?include_prereleases&sort=semver)](https://github.com/DanielLetto2020/LiteEditorAI/releases)
-[![Website](https://img.shields.io/badge/сайт-lite--editor--ai.ru-3d7bff.svg)](https://lite-editor-ai.ru)
-[![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20Windows%20%7C%20macOS-blue.svg)](#установка)
+[![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20Windows%20%7C%20macOS-blue.svg)](#install)
 [![Built with Electron](https://img.shields.io/badge/Electron-42-47848F.svg?logo=electron&logoColor=white)](https://www.electronjs.org/)
-[![Status: alpha](https://img.shields.io/badge/status-alpha-orange.svg)](#статус)
+[![Status: alpha](https://img.shields.io/badge/status-alpha-orange.svg)](#status)
 
-**🌐 Сайт проекта: [lite-editor-ai.ru](https://lite-editor-ai.ru)**
+**English** · [Русский](README.ru.md) · [lite-editor-ai.ru](https://lite-editor-ai.ru)
 
 </div>
 
-![LiteEditorAI](assets/screenshots/main.png)
+![LiteEditorAI](assets/screenshots/hero.png)
 
-## Благодарности
+*Three agents running in three projects. The tab renamed itself after the task the agent is on; the amber dots
+mark the two agents waiting for an answer, and the badge in the title bar counts them.*
 
-Проект развивается в том числе благодаря сообществу — спасибо каждому, кто помогает.
+> [!NOTE]
+> **The interface is currently Russian-only.** English localization is the top item on the roadmap — if you
+> want it sooner, [open an issue](https://github.com/DanielLetto2020/LiteEditorAI/issues) and say so, or help
+> with it: it is the single most valuable first contribution right now.
 
-**За pull request'ы**
-- [@Ainour108](https://github.com/Ainour108) — редизайн модуля «Обработка текста»: сайдбар с деревом документов, вкладки, живой стриминг ответа агента, нативные диалоги файлов ([#6](https://github.com/DanielLetto2020/LiteEditorAI/pull/6))
-- [@anupamme](https://github.com/anupamme) — эндпоинт `/reports` релея переведён с секрета в строке запроса на заголовок `Authorization` ([#9](https://github.com/DanielLetto2020/LiteEditorAI/pull/9))
+## Why
 
-**За баг-репорты**
-- [@Eurgen](https://github.com/Eurgen) — emoji в статус-строке ([#1](https://github.com/DanielLetto2020/LiteEditorAI/issues/1)), падение из-за отсутствующего файла в дистрибутиве ([#5](https://github.com/DanielLetto2020/LiteEditorAI/issues/5))
+Your editor was built around a person typing code. That person now spends most of the day
+**reading, steering and reviewing an agent** instead. The shape no longer fits:
 
-**За идеи и предложения**
-- [@Eurgen](https://github.com/Eurgen) — выбор оболочки терминала ([#2](https://github.com/DanielLetto2020/LiteEditorAI/issues/2)), перенос строки по `Ctrl+Enter` ([#4](https://github.com/DanielLetto2020/LiteEditorAI/issues/4)) и другие предложения ([#3](https://github.com/DanielLetto2020/LiteEditorAI/issues/3))
+- The center of the work is not a file — it's a **conversation in a terminal**.
+- A full IDE is overkill for that. A bare terminal is blind: which agent finished? which one is stuck
+  waiting for your answer? what did it just change in your files?
+- Run agents in three projects at once and you lose track by lunchtime.
 
-## Зачем
+LiteEditorAI puts the terminal first and keeps everything else exactly one keystroke away.
+Open a folder and you're working — no project wizard, no language servers to configure.
 
-Когда код всё чаще пишет агент (Claude Code, Codex, Qwen, Kimi…), а не ты сам, привычный редактор
-встаёт с ног на голову: в центре уже не файл, а **разговор с агентом в терминале**. Тяжёлый IDE с
-сотней панелей под это избыточен, а голый терминал неудобен — не видно, какой агент уже закончил, какой
-ждёт твоего ответа, что он наменял в файлах и где вообще какой проект.
+## What makes it different
 
-**LiteEditorAI** построен вокруг этого: главный здесь твой терминал, а просмотр кода, дерево и git живут
-рядом ровно настолько, насколько нужно следить за агентом, — и прячутся одной кнопкой, когда не нужны.
-Это нарочно лёгкий и тихий инструмент: открыл папку — и сразу за дело, без долгой настройки.
+### 1. Every agent, at a glance
 
-## Что умеет
+![Switching projects with live agents](assets/screenshots/demo.gif)
 
-| Возможность | Коротко |
+Each project keeps its own **live shell tabs** — an agent in one, a dev server in another, a throwaway
+command in a third. A tab **names itself after the terminal title**, which for an agent means "the task it is
+working on right now".
+
+A traffic light shows the state without switching anywhere: **working** (spinner) · **waiting for your
+answer** (amber) · **done** (green). The project card aggregates all its tabs, and the title bar carries a
+counter — *how many agents are blocked on you*. Notifications included.
+
+The clip above also shows the command palette (`Ctrl+K`) and the module catalog.
+[Full-size video](assets/screenshots/demo.mp4).
+
+### 2. Supervise from your phone
+
+The **Android remote** mirrors the live terminal of your PC session to a tablet or phone through a relay —
+in **full colour**, so the agent's diffs stay green and red. It brings its own on-screen keyboard,
+**pastes from the phone's clipboard straight into the PC terminal**, switches projects, shows project tasks
+and browses or downloads files from the PC.
+
+It streams the current screen and only what changed (mosh-style) instead of the whole scrollback, so
+reconnecting is near-instant and it stays comfortable on mobile data. Walk away from the desk, keep answering
+the agent from the couch, come back to the same session.
+
+### 3. See what the agent touched
+
+![Code and git in one window](assets/screenshots/workspace.png)
+
+The **Project** window keeps the code viewer and git side by side, PhpStorm-style: a file tree that refreshes
+itself while the agent edits, syntax highlighting for every language, minimap, autocomplete, **blame**
+annotations, **side-by-side diff vs HEAD**, project-wide replace, an **agent-review mode** (authorship layer
+over the code, "ask the agent" from the context menu) and — the safety net — **local file history with
+rollback** for everything the agent changed before you committed.
+
+Git lives in the same window: selective staging by checkbox, amend, commit / push / pull / fetch, stash,
+per-file history, cherry-pick / revert, three-pane conflict resolution, branch management.
+
+### 4. Compose the agent's context as a graph
+
+The **Context** module builds `CLAUDE.md` / `AGENTS.md` **as a node graph** (n8n-style): text blocks, profile
+groups you toggle on and off, token counters, restore points. Claude and Codex are configured independently.
+It can chop an existing `CLAUDE.md` into blocks for you, and mine rules out of your past Claude Code
+conversations.
+
+## Install
+
+Prebuilt binaries live on the [**Releases**](https://github.com/DanielLetto2020/LiteEditorAI/releases) page.
+
+| OS | How |
 |---|---|
-| 🛰 **Удалённый пульт (Android)** | Управление редактором с планшета или телефона через self-hosted релей: живой **цветной** экран терминала с ПК, своя экранная клавиатура, **вставка из буфера обмена планшета в терминал**, переключение проектов, **задачи проекта** (создание, статусы, отправка в терминал), просмотр и скачивание файлов ПК, безопасный перезапуск. Заточен под мобильный интернет. [Подробнее →](#удалённый-пульт-android) |
-| 🖥 **Терминалы-вкладки на проект** | У каждого проекта свои живые shell-вкладки: агент в одной, dev-сервер в другой, разовая команда в третьей. Вкладка **сама называется по заголовку терминала** (текущая задача агента), можно переименовать вручную; имена вкладок переживают перезапуск. |
-| 💬 **Заготовленные промпты** | Частые реплики агенту — по правому клику в терминале: всплывающий список карточек, клик вставляет текст **без запуска**. Делятся на **проектные и общие**; менеджер добавляет, правит, переносит между списками. |
-| 🚦 **Состояние агента с одного взгляда** | Работает (спиннер) · ждёт ответа (янтарный) · готов (зелёный), плюс уведомления и счётчик «сколько агентов ждут». Индикатор на карточке — агрегат по всем вкладкам проекта. |
-| 💬 **Чат с моделями (OpenRouter)** | Свой ключ → рядом с проектами плашка-чат: любая модель с ценой и размером контекста, ответы **стримом** с подсветкой кода и Markdown, несколько сессий на ключ, картинки, баланс ключа. Ключи — локально. |
-| ✍️ **Обработка текста локальным агентом** | AI-редактор документов **в стиле Obsidian**: сайдбар с **деревом документов проекта**, вкладки, режимы **«Разметка» (WYSIWYG-страница как в Word) ⇄ Markdown**, **формулы KaTeX**, панель форматирования. Выделите фрагмент и попросите переписать — обработает **локальный агент без API-ключей** (Claude Code / Codex / Gemini), ответ **стримится живьём**; роли агента из `Roles/*.md` проекта, автосохранение. |
-| ⚡ **Квикбар** | Полоса кнопок-иконок под терминалом: вынесите нужные модули в один клик, ставьте **разделители**, настраивайте состав и порядок — всё сохраняется. |
-| 🗂 **Порядок в проектах** | Категории (создать / переименовать / свернуть, плюс «Архив»), избранное с **ручным порядком карточек** (перетаскивание), акцент-цвета, авто-скан папки с проектами. |
-| 🎨 **6 тем оформления** | Неоморфизм (по умолчанию), Стекло, Material, Catppuccin, Gruvbox, Aurora. Терминал перекрашивается под тему. |
-| 🖼 **Рамка окна** | Тонкая настраиваемая обводка по периметру редактора и каждого окна модуля — чтобы тёмные окна не сливались с тёмным фоном рабочего стола. Палитра из 8 оттенков, необязательная плавная пульсация с настраиваемым периодом; включается и настраивается одним блоком настроек, окна подхватывают на лету. |
-| 🟩 **Заставка-«матрица»** | Спокойный полноэкранный «дождь» символов: кнопка ✨ в шапке или автозапуск после простоя (таймаут — в настройках). Агенты продолжают работать; выход — клик, Esc или любая активность. |
-| 🔔 **Уведомление об обновлениях** | Редактор сам сверяется с последним релизом и подсвечивает плашку у номера версии (само ничего не ставит). |
-| 🪶 **Без перегруза, кросс-платформенно** | Ничего не настраивать на старте, маленькая панель настроек; Ctrl+C / Ctrl+V в терминале работают в любой раскладке на Linux и Windows. |
+| **Ubuntu / Debian** (x64) | `sudo apt install ./LiteEditorAI_*.deb` |
+| **Windows** (x64) | Download `LiteEditorAI_*-win.zip`, unpack anywhere, run `LiteEditorAI.exe`. No installer. Unsigned, so SmartScreen may warn: *More info → Run anyway*. |
+| **macOS** (arm64 / x64) | Download the matching `.dmg` (`-arm64` for M1–M4, `-x64` for Intel) and drag the app to Applications. Ad-hoc build without an Apple signature, so on first launch: *System Settings → Privacy & Security → Open anyway* (or `xattr -dr com.apple.quarantine /Applications/LiteEditorAI.app`). |
+| **From source** | `npm install && npm start` (Node.js 22+) |
 
-## Модули
+## And 20+ tool modules, so you don't leave the workspace
 
-**Модуль** — **отдельное окно** рядом с редактором. Открывается из меню **«Модули»**, палитры `Ctrl+K` или
-квикбара. Можно держать открытыми **сразу несколько** окон (например, Git и базы данных рядом); каждое
-запоминает свой размер и положение, а набор открытых окон **восстанавливается при следующем запуске**.
-Окна, привязанные к проекту (код, Git, контекст, задачи, аудит), **следуют за активным проектом** редактора.
-Меню «Модули» сгруппировано в раскрывающиеся подменю **«Встроенные»** и **«Мои модули»**.
+![Module catalog](assets/screenshots/modules.png)
 
-| Модуль | Что делает |
+A **module** is a separate window next to the editor. Open several at once — each remembers its size and
+position, and the set reopens on next launch. Project-bound modules follow the active project.
+
+<details>
+<summary><b>Full list of built-in modules</b> (click to expand)</summary>
+
+| Module | What it does |
 |---|---|
-| 👁 **Проект** (вивер + Git) | Код и Git **одним окном**, в духе PhpStorm. **Код**: дерево файлов (само обновляется, пока агент правит), подсветка **всех языков**, миникарта, **автодополнение**, **blame-аннотации** (автор · возраст у строк), дифф vs HEAD **в две колонки** (side-by-side), **локальная история файлов** с откатом — страховка от правок агента без коммита, **замена по проекту** (`Ctrl+Shift+R`, regex и `$1`-группы), превью Markdown / картинок / HTML. **Git**: вкладки **Изменения / История / Ветки** — выборочный коммит чекбоксами (черновик сообщения переживает перезапуск), **amend**, commit / push / pull / fetch, **stash и возврат**, **история файла**, **cherry-pick / revert**, merge и **разрешение конфликтов** на три панели, **поиск по истории**, избранные ветки; статус — прямо в дереве файлов. |
-| 🧠 **Контекст** | Сборка **CLAUDE.md / AGENTS.md как графа** (в духе n8n): текстовые блоки и группы-профили по тумблеру → выход агента, счётчики ≈токенов. **Claude и Codex — независимо**: у каждого свои профили и **история версий файла** («точки восстановления»). Существующий CLAUDE.md / AGENTS.md можно **распилить на блоки локальным агентом**; перед перезаписью — бекап. Вкладка **«Анализ диалогов»**: майнит правила из вашей истории диалогов с Claude Code (частями, с накоплением между запусками), триаж карточек и **запись выбранных правил** прямо в CLAUDE.md / AGENTS.md. |
-| ✅ **Задачи** | TODO со **статусами** (к выполнению · в работе · готово) и **важностью**, список и **Канбан** (смена статуса перетаскиванием), **поиск**, **подзадачи-чеклист** с прогрессом, Markdown-превью тела, вкладки **«Проект» / «Общие»**, отправка задачи в терминал, **экспорт/импорт в JSON**. Плюс вкладка **«Календарь»** — дата-задачи с датами и сроками, **нативные напоминалки**, лента по срокам и вид **«Месяц»**; встроенный MCP-сервер `lite-tasks` даёт агенту в терминале ставить и читать напоминания. Бейдж на квикбаре учитывает активные задачи и напоминания «просрочено + сегодня». |
-| 🔍 **Аудит** | Быстрый рентген проекта: типы файлов, **крупнейшие** по строкам/весу с флагом **аномалий**, медиа по весу, **гигиена** (мусор в гите, дубликаты, минифицированные, осиротевшие), **техдолг** (TODO/FIXME и потенциальные секреты — клик ведёт в файл на строке), **история** (горячие файлы по git-churn, свежие/забытые). Источник — git-tracked или весь каталог; сводка-паспорт в буфер и **экспорт отчёта**. |
-| 🤖 **ИИ компания** | Команда ИИ-агентов над проектом: агент-**директор** декомпозирует цель, «нанимает» специалистов-сабагентов (кодер, ревьюер, тестировщик…) и ведёт общую **доску задач** с прогрессом; живой лог работы, штат с библиотекой готовых ролей, режим **«План»** (сухой прогон), лимит бюджета, очередь целей и **история прогонов со стоимостью**. |
-| 🌐 **WEB/SEO аудит** | Самостоятельный анализатор сайтов (локальный dev-сервер **или** внешний домен): свой список сайтов и **история аудитов** с дельтой. Заголовки безопасности с оценкой, **TLS-сертификат**, экспонированные `.git/.env`, SEO-мета из **отрендеренной** страницы (скрытый Chromium), **Core Web Vitals** и вес страницы, скриншоты, техстек, **битые ссылки**, robots/sitemap, DNS · SPF/DMARC · WHOIS · гео. Сводка в буфер и **экспорт отчёта**; результаты приходят поэтапно. |
-| 📋 **IterFlow** | Таск-трекер [IterFlow](https://iter-flow.ru) прямо в редакторе — теперь не только просмотр, но и **работа с задачами**: создание и правка итераций и задач, дедлайны, смена статуса на **Канбане**, переходы стадий итерации (сдать / согласовать / принять), заметки проекта. Вход → профиль → заказчик → проект, дальше вкладки **Итерация** (таймлайн), **Канбан**, **Туду** и **Чат**. Берите задачи в работу с ИИ-агентом, не уходя в браузер — удобно фрилансерам и студиям, которые согласуют работу с заказчиком. |
-| 🐳 **Контейнеры** | Docker и Podman в одной панели (замена десктопным GUI): контейнеры по compose-проектам (у **свёрнутой** группы состояния контейнеров видны индикаторами — кружок + имя — прямо в цветном заголовке), поды, образы, тома, занятый диск; старт / стоп / перезапуск / удаление поштучно и **группой**; **живое автообновление статусов**, **живые логи**, **exec-терминал** и **браузер файлов контейнера** (файл открывается в вивере). Распознаёт **СУБД, RabbitMQ, Kafka, MinIO и веб-сервисы** — **один клик** открывает их в модулях «Базы данных» / «RabbitMQ» / «Kafka» / «Внешние хранилища» / «Мониторинг сайтов» с автозаполненным подключением. У контейнера с веб-интерфейсом — кнопка **«Открыть в браузере»** по опубликованным портам (несколько портов — выбором из списка). Умеет и **удалённый хост**: docker/podman сервера через SSH-туннель до сокета — там же работает и «Открыть в браузере» (туннель до порта контейнера); нет прав на сокет сервера — диагностика с кнопкой **«Починить по SSH»** (редактор сам выдаст доступ через sudo и переподключится), а контейнер с БД открывается в модуле «Базы данных» сразу через SSH-туннель. |
-| 🗄 **Базы данных** | Лёгкий клиент Postgres / MySQL · MariaDB / SQLite: подключения по хосту или **через SSH-туннель**, **вкладки подключений** (несколько баз открыты одновременно), дерево схемы, данные таблиц с пагинацией и **точечным выделением ячеек** (Ctrl/Shift-клики, копирование именно выбранного), **SQL-консоль** (`Ctrl+Enter`), экспорт CSV / JSON / SQL, режим **«только чтение»**. Пароли — в системном хранилище ключей; драйверы встроены. |
-| 🐰 **RabbitMQ** | Клиент брокера поверх management API: профили серверов с меткой **PRODUCTION**, **вкладки** — несколько брокеров сразу, обзор с **живыми графиками** (сообщения в очередях, скорости publish / deliver), очереди со **спарклайнами глубины** и бейджем «нет консюмеров», **peek сообщений без съедания**, публикация с проверкой маршрутизации и **live-tail exchange в реальном времени** (работает даже в фоновой вкладке); purge / delete — с подтверждением и гардом на проде. |
-| 📨 **Kafka** | Клиент кластера поверх kafkajs: профили с **PRODUCTION**-гардом (SASL / TLS), **вкладки** — несколько кластеров сразу, обзор с **живыми графиками** скоростей записи-чтения и **суммарного лага групп**, топики с **ISR-здоровьем** и спарклайнами In/с (создание / удаление / **очистка DeleteRecords** / партиции / retention / конфиги), **peek сообщений без следов** (эфемерная группа), продюс с ключом и headers, **консюмер-группы с лагом и трендом** (↑ = не успевают), сброс оффсетов, **live-tail топика в реальном времени** (работает даже в фоновой вкладке). |
-| 🔌 **Удалённые хосты** | Профили **SSH / SFTP / FTP** по категориям, вход в один клик и несколько живых сессий как **вкладки** (по паролю или **ключу из системы**, keepalive), **просмотр файлов** SFTP/FTP и **правка файла в вивере** — каждое сохранение заливается обратно на сервер. Кнопка **«Сервисы»**: скан портов хоста → PostgreSQL / MySQL / RabbitMQ / Kafka открываются в своих модулях **через SSH-туннель** (даже если сервис слушает только localhost сервера), веб-порты — в «Мониторинг сайтов», docker/podman-сокет — в «Контейнеры». Пароли не покидают бэкенд. |
-| ☁️ **Внешние хранилища** | Браузер объектных хранилищ, первый адаптер — **S3** с **пресетами 11 провайдеров** (AWS / MinIO / Cloudflare R2 / Yandex / Backblaze B2 / DO Spaces / Wasabi / GCS / Selectel / VK / Timeweb): подключения **проектные и общие** (вкладки, перенос между областями), дерево бакетов и папок + таблица объектов с пагинацией, **сортировкой, фильтром и мультивыбором** (пакетные скачивание/удаление), **просмотр файла прямо из бакета** (код с подсветкой, картинки) и «Открыть в вивере редактора», загрузка **перетаскиванием**, скачивание файлов и **целых папок** с прогрессом и отменой (большие файлы — multipart), папки / переименование / копирование / перемещение / удаление. **Приватность под контролем**: анонимный режим для чужих публичных бакетов, статус «приватный/публичный» у объекта с переключением в один клик и **временные подписанные ссылки** с выбором срока. Ключи — в системном хранилище, режим «только чтение» блокируется на бэкенде. |
-| 🍅 **Помодоро** | Таймер работы и отдыха для воркспейса, где агенты работают сами: на перерыве над терминалами — полупрозрачный оверлей (ввод заблокирован, **агенты продолжают работать**, вывод виден). Классическая 25/5, 52/17, ультрадианная 90/20 и **свои техники**, статистика привычки с серией дней и дневной целью, мини-таймер в титлбаре. Отсчёт живёт в фоне — окно-пульт можно закрыть. |
-| 📈 **Монитор ресурсов** | Сколько памяти и CPU ест редактор — **по процессам** (окна, GPU, ядро) и **по агентам в терминалах** (деревья процессов PTY), спарклайн памяти, снимок сводки в буфер. |
-| 🔑 **Сейф паролей** | База KeePass `.kdbx` по мастер-паролю: поиск по записям, копирование пароля / токена / любого поля, **авто-очистка буфера через 20 с**. Кнопки **«Из сейфа» / «В сейф»** в формах подключений БД / RabbitMQ / Kafka / Удалённых хостов / Внешних хранилищ: креды подставляются из записи или сохраняются новой записью. Расшифровка целиком локальная — мастер-пароль и секреты наружу не уходят. |
-| 📡 **Мониторинг сайтов** | На каждый URL — **сколько угодно проверок**: доступность, **поле JSON** по пути, текст на странице, число/порог, **«изменилось»** — или **кастомная**, которую под этот URL пишет **агент по описанию словами** (видит живой ответ, правится в диалоге, исполняется в песочнице). **Четыре статуса** по цветам (в норме / внимание / тревога / инфо) с уведомлениями. Два вида: блоки со статус-рамками и историей — или **графики за месяц** (аптайм %, средняя задержка, дни с тревогой). Фоновые проверки идут **даже при закрытом окне**. |
-| 🖳 **Системный терминал** | Отдельные шеллы вне проектов (домашняя папка), несколько вкладок — для разовых системных команд рядом с рабочим терминалом. |
-| 🔧 **Инструменты** | Девтулз-комбайн, всё считается локально (без сети): **Base64 ↔ картинка** (drag&drop файла → data-URI/base64 с превью и размерами, и обратно), **JSON-вьюер** (дерево со сворачиванием и подсветкой по типам), Base64 / URL / Hex / HTML-сущности, **JSON ↔ YAML**, Query ↔ JSON, CSV ↔ JSON, JSONPath, **хэши** (MD5 / SHA-1/256/512), **JWT-декодер**, Unix-**timestamp** и **cron** (с расшифровкой и ближайшими запусками), **склейка строк** (текст, порванный переносами терминала, собирается обратно в абзацы — с сохранением списков, таблиц и кода), регистр / транслит, операции над строками, **regex-тестер**, **diff** двух текстов, генератор Lorem и фейк-данных, конвертер **цвета** (HEX/RGB/HSL). Фильтр по инструментам, ввод сохраняется. |
+| 👁 **Project** (viewer + Git) | Code and git in one window — see [above](#3-see-what-the-agent-touched). Plus Markdown / image / HTML preview, project-wide replace (`Ctrl+Shift+R`, regex and `$1` groups), history search, favourite branches, git status inside the file tree. |
+| 🧠 **Context** | `CLAUDE.md` / `AGENTS.md` as a graph — see [above](#4-compose-the-agents-context-as-a-graph). |
+| ✅ **Tasks** | TODO with statuses and priority, list **and kanban** (drag to change status), search, subtask checklists with progress, Markdown preview, project/global tabs, send a task straight into the terminal, JSON export/import. Plus a **Calendar** tab with due dates, **native reminders** and a month view — and a built-in **MCP server** (`lite-tasks`) so the agent in your terminal can read and set reminders itself. |
+| 🔍 **Audit** | Quick X-ray of a project: file types, largest files by lines/size with anomaly flags, media by weight, hygiene (junk in git, duplicates, minified, orphans), tech debt (TODO/FIXME and possible secrets — click jumps to the line), history (hot files by git churn, stale ones). Source: git-tracked or the whole directory; summary to clipboard, report export. |
+| 🤖 **AI company** | A team of agents on one project: a **director** agent decomposes the goal, "hires" specialists (coder, reviewer, tester…) and keeps a shared task board with progress; live log, role library, dry-run **plan mode**, budget cap, goal queue, run history with cost. |
+| 🌐 **Web/SEO audit** | Standalone site analyzer (local dev server **or** a public domain): security headers with a score, TLS certificate, exposed `.git`/`.env`, SEO meta from the **rendered** page (headless Chromium), Core Web Vitals and page weight, screenshots, tech stack, broken links, robots/sitemap, DNS · SPF/DMARC · WHOIS · geo. Own site list and audit history with deltas. |
+| 🐳 **Containers** | Docker **and** Podman in one panel: containers grouped by compose project (a collapsed group shows each container's state as a dot in its coloured header), pods, images, volumes, disk usage; start / stop / restart / remove one at a time or a whole group; live status refresh, **live logs**, **exec terminal**, container file browser (files open in the viewer). Recognizes **databases, RabbitMQ, Kafka, MinIO and web services** — **one click** opens them in the matching module with the connection pre-filled; containers with a web UI get an "open in browser" button. Works against a **remote host** too: docker/podman over an SSH tunnel to the socket, with a "fix over SSH" button when permissions are missing. |
+| 🗄 **Databases** | Postgres / MySQL · MariaDB / SQLite client: direct or **over an SSH tunnel**, connection tabs (several databases at once), schema tree, paginated table data with cell-level selection, **SQL console** (`Ctrl+Enter`), CSV / JSON / SQL export, read-only mode. Passwords in the system keychain, drivers bundled. |
+| 🐰 **RabbitMQ** | Broker client over the management API: server profiles with a **PRODUCTION** guard, tabs for several brokers, overview with **live charts** (queued messages, publish / deliver rates), queues with depth sparklines and a "no consumers" badge, **peek messages without consuming**, publish with a routing check, **live tail of an exchange** (keeps working in a background tab); purge / delete behind a confirmation. |
+| 📨 **Kafka** | Cluster client on kafkajs: profiles with a PRODUCTION guard (SASL / TLS), tabs for several clusters, live throughput and **total consumer-group lag** charts, topics with **ISR health** (create / delete / DeleteRecords / partitions / retention / configs), **peek without traces** (ephemeral group), produce with key and headers, **consumer groups with lag and trend**, offset reset, **live tail**. |
+| 🔌 **Remote hosts** | **SSH / SFTP / FTP** profiles by category, one-click login and several live sessions as tabs (password or a key from the system, keepalive), SFTP/FTP file browsing and **editing a remote file in the viewer** — every save uploads it back. **"Services"** scans the host's ports and opens Postgres / MySQL / RabbitMQ / Kafka in their modules **through an SSH tunnel**, even when the service only listens on the server's localhost; web ports go to the site monitor, a docker/podman socket to Containers. Passwords never leave the backend. |
+| ☁️ **Object storage** | S3 browser with **presets for 11 providers** (AWS, MinIO, Cloudflare R2, Yandex, Backblaze B2, DO Spaces, Wasabi, GCS, Selectel, VK, Timeweb): project and global connections, bucket and folder tree, object table with sorting, filtering and multi-select (batch download / delete), **preview a file straight from the bucket**, "open in the editor's viewer", drag-and-drop upload, downloads of files **and whole folders** with progress and cancel (multipart for big ones), folders / rename / copy / move / delete. **Privacy under control**: anonymous mode for other people's public buckets, per-object public/private toggle and **pre-signed links** with a chosen lifetime. Keys in the system keychain; read-only mode enforced in the backend. |
+| 🔑 **Password vault** | A KeePass `.kdbx` database unlocked by master password: search, copy a password / token / any field, **clipboard auto-clear after 20 s**. Connection forms in Databases / RabbitMQ / Kafka / Remote hosts / Object storage get **"from vault" / "to vault"** buttons. Decryption is entirely local — the master password never leaves the machine. |
+| 📡 **Site monitor** | Any number of checks per URL: availability, a **JSON field** by path, text on the page, a number against a threshold, "it changed" — or a **custom check an agent writes for that URL from your plain-language description** (it sees the live response, is refined in dialogue, runs sandboxed). Four colour statuses with notifications, history blocks or **month charts** (uptime %, average latency, days with alerts). Checks keep running **with the window closed**. |
+| 📋 **IterFlow** | The [IterFlow](https://iter-flow.ru) tracker inside the editor: create and edit iterations and tasks, deadlines, kanban status changes, iteration stage transitions (submit / approve / accept), project notes. Handy for freelancers and studios who agree scope with a client. |
+| ✍️ **Text processing** | An Obsidian-style AI document editor: sidebar with the project's document tree, tabs, **rich-text ⇄ Markdown** modes, **KaTeX formulas**, formatting bar. Select a fragment and ask for a rewrite — handled by a **local agent with no API keys** (Claude Code / Codex / Gemini), streamed live; agent roles come from the project's `Roles/*.md`, autosave included. |
+| 💬 **OpenRouter chat** | Bring your own key: any model with its price and context size, **streamed** answers with Markdown and code highlighting, several sessions per key, images, key balance. Keys stay local. |
+| 🍅 **Pomodoro** | A work/rest timer for a workspace where agents keep working on their own: during a break a translucent overlay covers the terminals — input is blocked, **agents keep running**, output stays visible. Classic 25/5, 52/17, ultradian 90/20 or your own technique, habit stats with a day streak, mini-timer in the title bar. The countdown lives in the background. |
+| 📈 **Resource monitor** | How much RAM and CPU the editor eats — per process (windows, GPU, core) **and per agent in the terminals** (PTY process trees), memory sparkline, summary snapshot to clipboard. |
+| 🖳 **System terminal** | Standalone shells outside projects (home directory), several tabs, for one-off system commands next to your working terminal. |
+| 🔧 **Dev tools** | An offline swiss knife: **Base64 ↔ image** (drop a file in, get a data-URI with preview and dimensions, and back), **JSON viewer**, Base64 / URL / Hex / HTML entities, **JSON ↔ YAML**, query ↔ JSON, CSV ↔ JSON, JSONPath, hashes (MD5 / SHA-1/256/512), **JWT decoder**, Unix **timestamp** and **cron** (explained, with next runs), **line rejoin** (text mangled by terminal wrapping stitched back into paragraphs, keeping lists, tables and code), case / translit, string ops, regex tester, text diff, Lorem and fake-data generator, colour converter. |
 
-Чат **OpenRouter** и **«Обработка текста»** — тоже модули-окна (описаны в таблице «Что умеет» выше).
+</details>
 
-**🧩➕ Свои модули (плагины).** «Модули → Создать модуль…» открывает менеджер: вы задаёте имя — редактор
-создаёт заготовку и **открывает терминал прямо в её папке**, где код модуля пишет **любой ваш ИИ-агент**
-(Claude Code, Codex, …) по встроенной спецификации (`GUIDE.md` и подсказки кладутся рядом). Готовый модуль
-появляется в редакторе на панели **«Мои модули»** — его можно перезагрузить на лету, открыть папку или удалить. Простой
-пример (калькулятор) уже в комплекте, а спецификация для авторов — в каталоге [`module-kit/`](module-kit/).
+**🧩 Write your own.** *Modules → Create module…* scaffolds a plugin and **opens a terminal inside its folder**,
+where **your own AI agent** writes the code against the bundled spec (`GUIDE.md` and prompts are dropped next
+to it). The result appears under "My modules" and can be hot-reloaded. A simple example (a calculator) ships
+with the app; the spec for authors is in [`module-kit/`](module-kit/).
 
-## Скриншоты
+## Themes
 
-**Рабочее пространство: код, дерево и git рядом с терминалом**
+Six themes — Neumorphism (default), Glass, Material, Catppuccin, Gruvbox, Aurora. The terminal is recoloured
+along with the interface.
 
-![Рабочее пространство](assets/screenshots/workspace.png)
+![Themes](assets/screenshots/themes.png)
 
-**6 тем оформления**
+## Android remote
 
-![Темы](assets/screenshots/themes.png)
+1. Grab `liteeditor-pult-*.apk` from [Releases](https://github.com/DanielLetto2020/LiteEditorAI/releases) and
+   install it on Android (allow unknown sources).
+2. On the PC: menu **"Пульт"** → register an account (login / password).
+3. Sign in with the same account on the device.
+4. Menu → **"Connect this device"** → approve it on the PC (match the code). Done.
 
-## Удалённый пульт (Android)
+Next to the version number in the editor there's a badge with the number of connected devices; a click opens
+the list, where each device can be queried for its info and location, or **cut off** (without deleting — access
+comes back with one button).
 
-Управляй редактором с планшета или телефона через защищённый релей — экран терминала, проекты и файлы ПК
-в руке. На устройстве виден **живой экран той же сессии**, что и на ПК: можно отойти от компьютера, следить
-за агентом с дивана и отвечать ему, а вернувшись — продолжить с того же места.
+Knowing the password alone grants nothing: the device must be **approved on the PC**. Brute-force protection,
+revocable sessions and a "sign out on all devices" button are built in.
 
-1. Скачай **`liteeditor-pult-*.apk`** со страницы [Releases](https://github.com/DanielLetto2020/LiteEditorAI/releases)
-   и установи на Android (разреши установку из неизвестных источников).
-2. В редакторе на ПК: меню **«Пульт»** → зарегистрируй аккаунт (логин/пароль).
-3. В приложении на устройстве войди тем же аккаунтом.
-4. Меню → **«Подключить это устройство»** → одобри на ПК (сверь код). Готово.
+> The relay **can see the traffic** (it is not end-to-end encrypted) — keep that in mind for private code.
+> The remote is **alpha**.
 
-**Быстро на мобильном интернете.** Пульт не перекачивает всю историю терминала — он показывает текущий
-экран и обновляет только то, что изменилось. Поэтому подключение и восстановление связи после провала
-сети почти мгновенные, а трафик минимальный — комфортно работать даже вдали от Wi-Fi. Экран при этом
-**в полном цвете** (палитра 16 / 256 / RGB, жирный/курсив/инверсия) — диффы агента зелёные и красные,
-как на ПК.
+## Keyboard
 
-**Копировать и вставлять.** Текст с экрана выделяется и копируется как в обычном приложении, а кнопка
-**«Ctrl+V»** вставляет буфер обмена планшета прямо в терминал ПК. Многострочный текст приезжает агенту одним
-куском, а не построчно.
-
-**Под рукой в редакторе.** Рядом с номером версии — значок с числом подключённых пультов. Клик открывает
-список устройств: по каждому можно запросить информацию о нём и местоположение, или **отключить доступ**
-(не удаляя — доступ возвращается одной кнопкой).
-
-**Безопасность.** Знание пароля само по себе не даёт доступ к терминалу — устройство нужно **одобрить на
-ПК**. Есть защита от перебора пароля, отзывные сессии и кнопка **«Выйти на всех устройствах»** на случай
-потери планшета.
-
-> Связь идёт через релей, который **видит трафик** (не end-to-end) — для приватного кода учитывай это.
-> Пульт в стадии **alpha**.
-
-## Установка
-
-Готовые сборки — на странице [**Releases**](https://github.com/DanielLetto2020/LiteEditorAI/releases).
-
-### Ubuntu / Debian (x64)
-```bash
-sudo apt install ./LiteEditorAI_*.deb
-```
-Одна команда — поставит приложение и подтянет зависимости. Запуск — иконка **LiteEditorAI** в меню приложений.
-
-### Windows (x64)
-Скачай **portable**-архив `LiteEditorAI_*-win.zip`, распакуй в любую папку и запусти **`LiteEditorAI.exe`**.
-Установка не нужна. Приложение пока без цифровой подписи — SmartScreen может предупредить:
-«Подробнее» → «Выполнить в любом случае».
-
-### macOS (Apple Silicon / Intel)
-Скачай `.dmg` под свой процессор: **`-arm64`** для Apple Silicon (M1–M4), **`-x64`** для Intel.
-Открой образ и перетащи **LiteEditorAI** в «Программы». Сборка пока без подписи Apple, поэтому при **первом**
-запуске Gatekeeper скажет, что приложение «не удаётся проверить» — это нормально. Разреши запуск **без терминала**:
-
-1. Запусти приложение двойным кликом — появится предупреждение, закрой его.
-2. Открой **Системные настройки → Конфиденциальность и безопасность**, пролистай вниз до строки
-   «LiteEditorAI заблокировано…» и нажми **«Открыть всё равно»**, затем подтверди.
-3. Готово — приложение и терминал внутри работают. Шаг нужен только при первом запуске.
-
-Кому удобнее терминал — то же самое одной командой:
-```bash
-xattr -dr com.apple.quarantine /Applications/LiteEditorAI.app
-```
-
-## Сборка из исходников
-
-```bash
-npm install        # зависимости + сборка node-pty под Electron
-npm start          # сборка фронта + запуск
-```
-
-Требуется Node.js 22+ (Linux/Windows x64). Для разработчиков — [CONTRIBUTING.md](CONTRIBUTING.md).
-
-### Pull request'ы
-
-Прямой доступ к репозиторию не нужен — участие идёт через форк. Сделайте форк, ответвитесь от ветки
-**`contrib`** и откройте PR **в `contrib`** (не в `main`). Принятые правки мейнтейнер переносит в разработку
-и выпускает в одном из ближайших релизов; ревью — вручную, по усмотрению мейнтейнера. Подробнее —
-в [CONTRIBUTING.md](CONTRIBUTING.md).
-
-## Горячие клавиши
-
-| Клавиши | Действие |
+| Keys | Action |
 |---|---|
-| `Ctrl+Shift+T` / `Ctrl+Shift+W` | новая / закрыть вкладку терминала |
-| `Ctrl+PageUp` / `Ctrl+PageDown` | переключение вкладок терминала |
-| `Ctrl+Enter` | перенос строки в терминале (продолжить ввод, не выполнять) |
-| `Ctrl+C` / `Ctrl+V` | копировать выделение / вставить (в любой раскладке) |
-| `Ctrl+\` | режим «один терминал» |
-| `Ctrl+K` | палитра команд |
-| `Ctrl+F` | поиск (в терминале или в открытом файле) |
-| `Ctrl+Shift+F` | поиск по выводу всех открытых терминалов сразу |
-| `Ctrl+S` | сохранить файл |
-| `Ctrl+Shift+R` | замена по проекту (в окне «Проект») |
-| `Ctrl+1..9` / `Ctrl+Tab` | переключение проектов |
-| `Ctrl + +/−` | размер шрифта · `F11` — полный экран |
+| `Ctrl+Shift+T` / `Ctrl+Shift+W` | new / close terminal tab |
+| `Ctrl+PageUp` / `Ctrl+PageDown` | switch terminal tabs |
+| `Ctrl+Enter` | newline in the terminal (continue input, don't run) |
+| `Ctrl+C` / `Ctrl+V` | copy selection / paste (any keyboard layout) |
+| `Ctrl+\` | single-terminal mode |
+| `Ctrl+K` | command palette |
+| `Ctrl+F` / `Ctrl+Shift+F` | search in the terminal or file / across all open terminals |
+| `Ctrl+S` | save file |
+| `Ctrl+Shift+R` | project-wide replace (Project window) |
+| `Ctrl+1..9` / `Ctrl+Tab` | switch projects |
+| `Ctrl + +/−` · `F11` | font size · fullscreen |
 
-## Статус
+## Status
 
-**Alpha** — активно дорабатывается. Несколько терминалов-вкладок на проект (имена переживают перезапуск,
-сами процессы — нет). Баги и идеи — в [Issues](https://github.com/DanielLetto2020/LiteEditorAI/issues).
+**Alpha**, actively developed. A project can keep as many terminal tabs as you need and their **names** survive
+a restart (the processes do not). The viewer opens one file at a time and skips files over 2 MB. It is a viewer
+with editing, not a replacement for your IDE's refactoring engine — that's on purpose.
 
-## Лицензия
+Bugs and ideas → [Issues](https://github.com/DanielLetto2020/LiteEditorAI/issues).
 
-[Apache License 2.0](LICENSE) © 2026 Максим Кузьминский. При использовании и в производных работах
-сохраняйте указание автора (см. [NOTICE](NOTICE)).
+## Build from source
 
-Сделано на [Electron](https://www.electronjs.org/), [xterm.js](https://xtermjs.org/),
-[node-pty](https://github.com/microsoft/node-pty) и [CodeMirror 6](https://codemirror.net/).
+```bash
+npm install        # dependencies + node-pty rebuilt for Electron
+npm start          # bundle the frontend and launch
+```
+
+Node.js 22+ (Linux / Windows x64; macOS builds are made on macOS only).
+More for developers: [CONTRIBUTING.md](CONTRIBUTING.md).
+
+### Pull requests
+
+You don't need write access — contribution goes through a fork. Fork the repo, branch off **`contrib`** and
+open the PR **into `contrib`** (not `main`). Accepted changes are ported into development and ship in one of
+the next releases; review is manual, at the maintainer's discretion. Details in
+[CONTRIBUTING.md](CONTRIBUTING.md).
+
+Looking for a first contribution? **English localization of the UI** is the most valuable thing anyone could
+pick up right now.
+
+## Acknowledgements
+
+The project grows in no small part thanks to the community — thank you to everyone who helps.
+
+**For pull requests**
+- [@Ainour108](https://github.com/Ainour108) — redesign of the "Text processing" module: document-tree sidebar, tabs, live streaming of the agent's answer, native file dialogs ([#6](https://github.com/DanielLetto2020/LiteEditorAI/pull/6))
+- [@anupamme](https://github.com/anupamme) — the relay's `/reports` endpoint moved from a query-string secret to an `Authorization` header ([#9](https://github.com/DanielLetto2020/LiteEditorAI/pull/9))
+
+**For bug reports**
+- [@Eurgen](https://github.com/Eurgen) — emoji in the status line ([#1](https://github.com/DanielLetto2020/LiteEditorAI/issues/1)), a crash caused by a file missing from the distribution ([#5](https://github.com/DanielLetto2020/LiteEditorAI/issues/5))
+
+**For ideas and suggestions**
+- [@Eurgen](https://github.com/Eurgen) — terminal shell selection ([#2](https://github.com/DanielLetto2020/LiteEditorAI/issues/2)), `Ctrl+Enter` newline ([#4](https://github.com/DanielLetto2020/LiteEditorAI/issues/4)) and other proposals ([#3](https://github.com/DanielLetto2020/LiteEditorAI/issues/3))
+
+## License
+
+[Apache License 2.0](LICENSE) © 2026 Maksim Kuzminskiy. Keep the attribution in use and in derivative works
+(see [NOTICE](NOTICE)).
+
+Built on [Electron](https://www.electronjs.org/), [xterm.js](https://xtermjs.org/),
+[node-pty](https://github.com/microsoft/node-pty) and [CodeMirror 6](https://codemirror.net/).
