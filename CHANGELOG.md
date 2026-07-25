@@ -3,6 +3,27 @@
 Все заметные изменения LiteEditorAI. Формат — [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/),
 нумерация — [SemVer](https://semver.org/lang/ru/). Проект в стадии **alpha**.
 
+## [1.1.103] — 2026-07-25
+
+**Обновление зависимостей: закрыты все известные уязвимости (было 12 пакетов, стало 0).**
+
+### 🔒 Безопасность
+- **js-yaml** → 4.3.0: разбор YAML можно было заставить надолго занять процессор цепочкой
+  merge-ключей (используется в инструменте «JSON ↔ YAML»).
+- **DOMPurify** → 3.4.12: обход `afterSanitizeElements` для разрешённых пользовательских
+  элементов (используется в «Обработке текста» при вставке HTML).
+- **sharp** → 0.35.3 (сборочный инструмент): унаследованные уязвимости libvips
+  (CVE-2026-33327, CVE-2026-33328, CVE-2026-35590, CVE-2026-35591).
+- **electron-builder** → 26.15.3 (сборочный инструмент): утечка заголовков `PRIVATE-TOKEN`
+  и `Authorization` при кросс-доменном редиректе в `builder-util-runtime`, а также
+  неконтролируемые элементы пути в AppImage, собираемом `app-builder-lib`.
+- **tar** → 7.5.22 и **brace-expansion** → 5.0.8 (транзитивные, через `overrides`): падение
+  процесса на PAX-заголовке и экспоненциальное раскрытие `{}`-групп. Подъём `brace-expansion`
+  заодно вылечил всю цепочку сборщика, которая тянула его старую версию через `minimatch`/`glob`.
+
+Все обновления проверены: сборка дистрибутива и запуск упакованного приложения, генерация иконок
+на новом sharp, round-trip YAML, сборка фронта.
+
 ## [1.1.102] — 2026-07-25
 
 **Уборочный релиз: закрыт «хвост» ревизии кода — мелкие шероховатости интерфейса,
@@ -1898,6 +1919,7 @@ AGENTS.md как граф на канве), и **цветной пульт** —
 - Первые публичные alpha-сборки: терминал на проект (xterm + node-pty), вивер кода (CodeMirror), дерево
   файлов, дистрибуция под Linux (`.deb`) и Windows (portable `.zip`) через GitHub Actions.
 
+[1.1.103]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.1.103
 [1.1.102]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.1.102
 [1.1.101]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.1.101
 [1.1.100]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.1.100
