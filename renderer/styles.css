@@ -3319,7 +3319,11 @@ body.preview-full .prev-frame { width: 100%; height: 100%; }
   transform: translateY(12px); opacity: 0; transition: transform .2s, opacity .2s;
 }
 .toast.show { transform: translateY(0); opacity: 1; }
-.toast.err { border-color: rgba(247,118,142,0.5); }
+/* Тосты по типу: цвет рамки — только из токенов темы (контракт тем), прозрачность через color-mix.
+   Раньше был лишь .toast.err (да и тот хардкодом), поэтому kind:'ok'/'warn' выглядели как обычные. */
+.toast.err  { border-color: color-mix(in srgb, var(--danger) 55%, transparent); }
+.toast.warn { border-color: color-mix(in srgb, var(--warn) 55%, transparent); }
+.toast.ok   { border-color: color-mix(in srgb, var(--add) 55%, transparent); }
 .toast-act {
   flex: 0 0 auto; padding: 5px 11px; border-radius: 8px; cursor: pointer; font-size: 12.5px;
   background: var(--green); border: 0; color: var(--accent-contrast); font-weight: 600;

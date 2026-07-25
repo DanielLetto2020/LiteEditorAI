@@ -1218,7 +1218,6 @@ export function initTextProc(host) {
     isOpen: () => docOpen,
     setOpen: setDocOpen,
     toggle: () => setDocOpen(!docOpen),
-    showSettings: () => { /* TODO */ },
     confirmClose,
   };
 }

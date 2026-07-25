@@ -539,7 +539,6 @@ export function initStorage(host) {
     delete n.childBox.dataset.loaded;
     if (expanded.has(nodeKey(bucket, prefix))) await expandNode(n.chev, n.childBox, bucket, prefix, n.depth);
   }
-  const parentPrefix = (prefix) => String(prefix || '').replace(/[^/]*\/$/, '');
   // Подсветка активного узла дерева — после каждого перехода.
   function markTreeActive() {
     const activeKey = curBucket != null ? nodeKey(curBucket, curPrefix) : null;
@@ -1082,6 +1081,8 @@ export function initStorage(host) {
   function startUploads(paths) {
     if (!curBucket) { toast('Сначала откройте бакет', { kind: 'err' }); return; }
     const bucket = curBucket, prefix = curPrefix; // куда РЕАЛЬНО грузим — для точечного рефреша по завершении
+    // Объект с таким же ключом будет перезаписан безвозвратно — у S3 нет корзины, поэтому спрашиваем.
+    const existing = paths.map((p) => baseName(p)).filter((nm) => listing.files.some((f) => f.name === nm));
     const run = () => {
       for (const p of paths) {
         const name = baseName(p);
@@ -1094,8 +1095,15 @@ export function initStorage(host) {
       }
       paintTransfersBar();
     };
-    if (activeConn.isProd) guardedConfirm('Загрузить в PRODUCTION?', `Файлов: ${paths.length} → «${bucket}/${prefix}».`, 'Загрузить', run);
-    else run();
+    const start = () => {
+      if (!existing.length) { run(); return; }
+      const list = existing.slice(0, 5).join(', ') + (existing.length > 5 ? ` и ещё ${existing.length - 5}` : '');
+      guardedConfirm('Перезаписать существующие объекты?',
+        `В «${bucket}/${prefix}» уже есть: ${list}. Старая версия будет заменена безвозвратно — корзины у S3 нет.`,
+        'Перезаписать', run);
+    };
+    if (activeConn.isProd) guardedConfirm('Загрузить в PRODUCTION?', `Файлов: ${paths.length} → «${bucket}/${prefix}».`, 'Загрузить', start);
+    else start();
   }
   async function downloadObjects(objs) {
     const r = await lite.storage.pickDownloadDir();

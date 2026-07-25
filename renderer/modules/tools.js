@@ -258,14 +258,39 @@ const hex2 = (n) => clamp(Math.round(n), 0, 255).toString(16).padStart(2, '0');
 
 // ---- diff (LCS по строкам → unified-подобный текст для renderDiffInto) ----
 function lineDiff(a, b) {
-  const A = a.split('\n'), B = b.split('\n'), n = A.length, m = B.length;
+  const A = a.split('\n'), B = b.split('\n');
+  // Совпадающие «шапка» и «хвост» в LCS не участвуют — срезаем их до построения таблицы.
+  // На типичных правках это уменьшает n×m на порядки (раньше даже одна изменённая строка
+  // в большом файле честно считала всю матрицу).
+  let head = 0;
+  while (head < A.length && head < B.length && A[head] === B[head]) head++;
+  let tail = 0;
+  while (tail < A.length - head && tail < B.length - head && A[A.length - 1 - tail] === B[B.length - 1 - tail]) tail++;
+  const midA = A.slice(head, A.length - tail), midB = B.slice(head, B.length - tail);
+  const n = midA.length, m = midB.length;
   if (n * m > 4000000) throw new Error('Слишком большие тексты для построчного диффа');
-  const dp = Array.from({ length: n + 1 }, () => new Array(m + 1).fill(0));
-  for (let i = n - 1; i >= 0; i--) for (let j = m - 1; j >= 0; j--) dp[i][j] = A[i] === B[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
-  const out = []; let i = 0, j = 0, changes = 0;
-  while (i < n && j < m) { if (A[i] === B[j]) { out.push(' ' + A[i]); i++; j++; } else if (dp[i + 1][j] >= dp[i][j + 1]) { out.push('-' + A[i]); i++; changes++; } else { out.push('+' + B[j]); j++; changes++; } }
-  while (i < n) { out.push('-' + A[i++]); changes++; }
-  while (j < m) { out.push('+' + B[j++]); changes++; }
+  // Int32Array вместо массива массивов: та же таблица занимает ~4 байта на ячейку вместо ~8+
+  // на элемент JS-массива и не плодит миллионы объектов.
+  const w = m + 1;
+  const dp = new Int32Array((n + 1) * w);
+  for (let i = n - 1; i >= 0; i--) {
+    for (let j = m - 1; j >= 0; j--) {
+      dp[i * w + j] = midA[i] === midB[j]
+        ? dp[(i + 1) * w + (j + 1)] + 1
+        : Math.max(dp[(i + 1) * w + j], dp[i * w + (j + 1)]);
+    }
+  }
+  const out = []; let changes = 0;
+  for (let k = 0; k < head; k++) out.push(' ' + A[k]);
+  let i = 0, j = 0;
+  while (i < n && j < m) {
+    if (midA[i] === midB[j]) { out.push(' ' + midA[i]); i++; j++; }
+    else if (dp[(i + 1) * w + j] >= dp[i * w + (j + 1)]) { out.push('-' + midA[i]); i++; changes++; }
+    else { out.push('+' + midB[j]); j++; changes++; }
+  }
+  while (i < n) { out.push('-' + midA[i++]); changes++; }
+  while (j < m) { out.push('+' + midB[j++]); changes++; }
+  for (let k = A.length - tail; k < A.length; k++) out.push(' ' + A[k]);
   return { text: out.join('\n'), changes };
 }
 
@@ -330,12 +355,16 @@ const RE_TABLE = /^\|.*\|[ \t]*$/;
 const RE_FENCE = /^(?:```|~~~)/;
 const RE_BOXLINE = /^[\s─━═╌╍┄┅┈┉╭╮╯╰┌┐└┘├┤┬┴┼╔╗╚╝╠╣╦╩╬+=_*-]*$/;
 
+const RE_TAIL_BORDER = /[ \t]*[│┃║▏▕|]+[ \t]*$/;   // закрывающая стенка рамки в конце строки
 function stripGutter(s) {
   if (/[─━═╌╍┄┅┈┉╭╮╯╰┌┐└┘├┤┬┴┼╔╗╚╝╠╣╦╩╬]/.test(s) && RE_BOXLINE.test(s)) return ''; // строка-рамка целиком
   if (RE_TABLE.test(s.trim())) return s;                                             // '|' в таблице — не префикс
   // префикс заменяем пробелами той же ширины: иначе строка-«шапка» (⏺ …) окажется
   // левее остальных, общий отступ посчитается как 0 и не снимется у всего блока
-  return s.replace(/^[ \t]*(?:[│┃║▏▕|>⏺●⎿]+[ \t]?)+/, (m) => ' '.repeat(m.length));
+  const out = s.replace(/^[ \t]*(?:[│┃║▏▕|>⏺●⎿]+[ \t]?)+/, (m) => ' '.repeat(m.length));
+  // Если слева была стенка рамки — справа у неё есть парная: снимаем и её, иначе в тексте
+  // оставался мусорный хвост вида «текст │».
+  return out !== s ? out.replace(RE_TAIL_BORDER, '') : out;
 }
 
 function unwrapText(src, o) {
@@ -918,7 +947,8 @@ export function initTools(host) {
           count++;
           if (m.index > last) hl.appendChild(document.createTextNode(src.slice(last, m.index)));
           const mk = el('mark', 'tl-mark', m[0]); hl.appendChild(mk); last = m.index + m[0].length;
-          if (m[0] === '' ) { last++; } // защита от пустых совпадений
+          // пустое совпадение не двигаем принудительно: matchAll сам продвигает lastIndex,
+          // а прежний last++ съедал следующий символ из подсветки
           const row = el('div', 'tl-match'); row.appendChild(el('span', 'tl-match-n', '#' + count));
           row.appendChild(el('span', 'tl-match-v', JSON.stringify(m[0])));
           if (m.length > 1) row.appendChild(el('span', 'tl-match-g', 'группы: ' + m.slice(1).map((g) => JSON.stringify(g)).join(', ')));

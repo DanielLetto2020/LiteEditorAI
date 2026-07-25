@@ -25,7 +25,7 @@ import { el, icon, iconBtn, hydrateIcons, toast, makeModal, showConfirm, showPro
 import { initExtensions } from './modules/extensions.js';
 // initFiles — вивер+дерево мигрированы в отдельное окно (renderer/module-entry.js).
 
-const APP_VERSION = 'alpha v1.1.101';
+const APP_VERSION = 'alpha v1.1.102';
 const GUTTER = 5;
 // Системный терминал («Система · ~») мигрирован в отдельное окно (renderer/modules/scratch.js):
 // его id `__scratch__::tN` маршрутизируются main'ом в окно-владельца, в ядре их больше не обрабатываем.
@@ -310,6 +310,7 @@ function focusProject(id) {
 // ---------------------------------------------------------------- remote pult modal
 function showRemote() {
   closeMenus();
+  let timer = null;   // объявлен ДО makeModal: onClose-колбэк ниже гасит опрос статуса
   const { m, close } = makeModal(`
     <h2><span style="color:var(--green-bright)">📱</span> Удалённый пульт</h2>
     <div class="about-desc">
@@ -320,7 +321,10 @@ function showRemote() {
       <code>relay/</code> репозитория.
     </div>
     <div class="or-add" id="rmt-body"></div>
-    <div class="modal-actions"><button class="btn" id="rmt-close">Закрыть</button></div>`);
+    <div class="modal-actions"><button class="btn" id="rmt-close">Закрыть</button></div>`,
+    // onClose срабатывает на ЛЮБОМ пути закрытия (кнопка/Esc/фон) — иначе опрос статуса
+    // продолжал тикать после закрытия по Esc до следующего срабатывания
+    () => clearInterval(timer));
   const realClose = () => { clearInterval(timer); close(); };
   m.querySelector('#rmt-close').onclick = realClose;
   const body = m.querySelector('#rmt-body');
@@ -425,7 +429,7 @@ function showRemote() {
       statusEl.style.color = st.connected ? 'var(--green-bright)' : 'var(--warn)';
     }
   }
-  const timer = setInterval(tick, 2500);
+  timer = setInterval(tick, 2500);
   tick();
 }
 
@@ -974,8 +978,17 @@ const HOTKEYS = [
   { test: (e) => e.code === 'KeyF' && e.shiftKey,                   run: () => showGlobalSearch() }, // Ctrl+Shift+F — поиск по всем сессиям (идея 9)
   { test: (e) => /^Digit[1-9]$/.test(e.code) && !e.shiftKey,        run: (e) => { const p = projects[+e.code.slice(5) - 1]; if (p) setActive(p.id); } },
 ];
+// Поле ввода, где Ctrl-комбо должны доставаться самому полю (модалки, палитра, формы), — но НЕ
+// скрытая textarea xterm'а: она и есть ввод терминала, там перехват обязателен (это фикс B1,
+// иначе Ctrl+\ уходит SIGQUIT'ом агенту, а Ctrl+K режет строку в readline).
+function isTextEntry(t) {
+  if (!t || (t.closest && t.closest('.xterm'))) return false;
+  const tag = (t.tagName || '').toLowerCase();
+  return tag === 'input' || tag === 'textarea' || tag === 'select' || t.isContentEditable === true;
+}
 function runGlobalHotkey(e) {
   if (!e.ctrlKey || e.metaKey) return false;
+  if (isTextEntry(e.target)) return false;
   for (const h of HOTKEYS) { if (h.test(e)) { e.preventDefault(); h.run(e); return true; } }
   return false;
 }
@@ -1431,13 +1444,14 @@ function jumpToSession(projId, sid) {
   showActiveTerminal();
 }
 function showGlobalSearch() {
+  let timer = null;   // объявлен ДО makeModal: onClose гасит отложенный поиск (иначе он бил по снятому DOM)
   const { m, close } = makeModal(`
     <h2>🔎 Поиск по всем терминалам</h2>
     <input type="text" id="gs-q" placeholder="искать в выводе всех открытых сессий…" spellcheck="false" autocomplete="off">
-    <div id="gs-results" class="gs-results"></div>`);
+    <div id="gs-results" class="gs-results"></div>`,
+  () => clearTimeout(timer));
   const input = m.querySelector('#gs-q');
   const box = m.querySelector('#gs-results');
-  let timer = null;
   const run = () => {
     const q = input.value.trim();
     box.innerHTML = '';

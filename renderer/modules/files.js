@@ -1225,20 +1225,20 @@ export function initFiles(host) {
         row.style.paddingLeft = indent + 'px';
         row.dataset.path = ent.path;
         const chev = el('span', 'tree-chev', '▸');
-        let icon = folderSvg(false);
+        let folderIc = folderSvg(false);
         const name = el('span', 'tree-name', ent.name);
         const gc = dirGitClass(ent.path); if (gc) name.classList.add(gc);
-        row.appendChild(chev); row.appendChild(icon); row.appendChild(name);
+        row.appendChild(chev); row.appendChild(folderIc); row.appendChild(name);
         const childBox = el('div', 'tree-children');
         childBox.style.display = 'none';
         const expand = async () => {
           if (childBox.childElementCount === 0) await buildDir(ent.path, childBox, depth + 1);
           childBox.style.display = 'block'; chev.textContent = '▾';
-          const nx = folderSvg(true); icon.replaceWith(nx); icon = nx;
+          const nx = folderSvg(true); folderIc.replaceWith(nx); folderIc = nx;
         };
         const collapse = () => {
           childBox.style.display = 'none'; chev.textContent = '▸';
-          const nx = folderSvg(false); icon.replaceWith(nx); icon = nx;
+          const nx = folderSvg(false); folderIc.replaceWith(nx); folderIc = nx;
         };
         row.addEventListener('click', async () => {
           if (expandedDirs.has(ent.path)) { expandedDirs.delete(ent.path); collapse(); }

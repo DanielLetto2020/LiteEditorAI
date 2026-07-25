@@ -18,14 +18,14 @@ const DIFF_LANGS = {
   toml: 'ini', make: 'makefile', dockerfile: 'dockerfile', r: 'r',
 };
 // Язык по имени файла или строке заголовка диффа ('+++ b/path.ext\t...').
-export function langForName(s) {
+function langForName(s) {
   if (!s) return null;
   const name = String(s).replace(/^[+\-]{3}\s+/, '').split('\t')[0].trim();
   const m = name.match(/\.([a-zA-Z0-9]+)$/);
   return (m && DIFF_LANGS[m[1].toLowerCase()]) || null;
 }
 // Подсветить кусок кода (sanitized HTML от hljs); при неизвестном языке/ошибке вернуть null.
-export function highlightCode(text, lang) {
+function highlightCode(text, lang) {
   if (!lang || !text || !hljs.getLanguage(lang)) return null;
   try { return hljs.highlight(text, { language: lang, ignoreIllegals: true }).value; }
   catch (_) { return null; }
