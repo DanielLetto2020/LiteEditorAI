@@ -23,6 +23,7 @@
 
 **За pull request'ы**
 - [@Ainour108](https://github.com/Ainour108) — редизайн модуля «Обработка текста»: сайдбар с деревом документов, вкладки, живой стриминг ответа агента, нативные диалоги файлов ([#6](https://github.com/DanielLetto2020/LiteEditorAI/pull/6))
+- [@anupamme](https://github.com/anupamme) — эндпоинт `/reports` релея переведён с секрета в строке запроса на заголовок `Authorization` ([#9](https://github.com/DanielLetto2020/LiteEditorAI/pull/9))
 
 **За баг-репорты**
 - [@Eurgen](https://github.com/Eurgen) — emoji в статус-строке ([#1](https://github.com/DanielLetto2020/LiteEditorAI/issues/1)), падение из-за отсутствующего файла в дистрибутиве ([#5](https://github.com/DanielLetto2020/LiteEditorAI/issues/5))
