@@ -574,7 +574,10 @@ async def password(req: PwChange, authorization: str = Header(default="")):
 
 
 @app.get("/reports")
-async def reports(key: str = Query(default=""), limit: int = Query(default=100)):
+# Секрет — в заголовке (как у остальных защищённых ручек), а НЕ в query: строка запроса оседает
+# в логах Caddy/прокси, в истории и в Referer. Приведено к общему стилю по PR #9 (@anupamme).
+async def reports(authorization: str = Header(default=""), limit: int = Query(default=100)):
+    key = authorization.removeprefix("Bearer ").strip()
     if not RELAY_SECRET or not hmac.compare_digest(key, RELAY_SECRET):
         raise HTTPException(403, "forbidden")
     conn = db()

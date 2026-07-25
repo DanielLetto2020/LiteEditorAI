@@ -45,9 +45,12 @@ def test_health(relay):
 
 def test_reports_requires_secret(relay):
     c = make_client(relay)
-    assert c.get("/reports").status_code == 403
-    assert c.get("/reports", params={"key": "wrong"}).status_code == 403
-    assert c.get("/reports", params={"key": relay.RELAY_SECRET}).status_code == 200
+    hdr = lambda v: {"Authorization": f"Bearer {v}"}
+    assert c.get("/reports").status_code == 403                                   # без заголовка
+    assert c.get("/reports", headers=hdr("wrong")).status_code == 403             # неверный секрет
+    # секрет в query больше не принимается: строка запроса светится в логах прокси/истории
+    assert c.get("/reports", params={"key": relay.RELAY_SECRET}).status_code == 403
+    assert c.get("/reports", headers=hdr(relay.RELAY_SECRET)).status_code == 200  # верный — в заголовке
 
 
 # ============================================================ [RLY-1] пароли

@@ -3,6 +3,23 @@
 Все заметные изменения LiteEditorAI. Формат — [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/),
 нумерация — [SemVer](https://semver.org/lang/ru/). Проект в стадии **alpha**.
 
+## [1.1.104] — 2026-07-25
+
+**Релей: секрет администратора больше не передаётся в строке запроса.**
+
+### 🔒 Безопасность
+- **`GET /reports`** (просмотр присланных отчётов) требовал секрет параметром URL —
+  `/reports?key=…`. Строка запроса попадает в логи веб-сервера и обратного прокси, в историю
+  браузера и в заголовок `Referer`, то есть секрет релея разъезжался по местам, где его быть
+  не должно. Теперь эндпоинт принимает его заголовком `Authorization: Bearer <RELAY_SECRET>` —
+  так же, как остальные защищённые ручки релея (`/sessions`, `/logout`, `/password`,
+  `/devices/revoke_all`). Сравнение по-прежнему через `hmac.compare_digest`.
+  Идея и патч — [@anupamme](https://github.com/anupamme) ([#9](https://github.com/DanielLetto2020/LiteEditorAI/pull/9)).
+
+⚠️ **Для тех, кто держит свой релей:** после обновления вызовы `/reports?key=…` начнут отвечать
+`403`. Замените на заголовок: `curl -H "Authorization: Bearer $RELAY_SECRET" https://<хост>/reports`.
+Редактора и пульта изменение не касается — они этот эндпоинт не используют.
+
 ## [1.1.103] — 2026-07-25
 
 **Обновление зависимостей: закрыты все известные уязвимости (было 12 пакетов, стало 0).**
@@ -1919,6 +1936,7 @@ AGENTS.md как граф на канве), и **цветной пульт** —
 - Первые публичные alpha-сборки: терминал на проект (xterm + node-pty), вивер кода (CodeMirror), дерево
   файлов, дистрибуция под Linux (`.deb`) и Windows (portable `.zip`) через GitHub Actions.
 
+[1.1.104]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.1.104
 [1.1.103]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.1.103
 [1.1.102]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.1.102
 [1.1.101]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.1.101
