@@ -161,7 +161,9 @@ export function initExtensions(host) {
     const rec = mods.get(id);
     if (!rec) return;
     setEnabled(id, on);
-    if (on && rec.status === 'off' && !rec.error) await loadModule(rec);
+    // 'broken' тоже поднимаем: прежнее условие (только 'off') делало переключатель бесполезным
+    // ровно в том случае, когда модуль чинят и хотят включить обратно.
+    if (on && rec.status !== 'on' && !rec.error) await loadModule(rec);
     else if (!on && rec.status !== 'off') unloadModule(rec);
   }
 
