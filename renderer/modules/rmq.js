@@ -788,7 +788,7 @@ export function initRmq(host) {
       if (ct) mh.appendChild(badge(ct, 'content-type'));
       mh.appendChild(el('span', 'rmq-msg-bytes', fmtB(mMsg.bytes)));
       const cp = iconBtn('drow-act', 'copy', 'Скопировать payload', 12);
-      cp.onclick = () => { navigator.clipboard.writeText(mMsg.payload || '').then(() => toast('Скопировано')); };
+      cp.onclick = () => { lite.copyText(mMsg.payload || ''); toast('Скопировано'); };
       mh.appendChild(cp);
       blk.appendChild(mh);
       let text = mMsg.payload || '';
@@ -986,7 +986,7 @@ export function initRmq(host) {
     if (p.properties && p.properties.contentType) head.appendChild(badge(p.properties.contentType, 'content-type'));
     head.appendChild(el('span', 'rmq-msg-bytes', fmtB(p.size)));
     const cp = iconBtn('drow-act', 'copy', 'Скопировать payload', 12);
-    cp.onclick = (e) => { e.stopPropagation(); navigator.clipboard.writeText(p.payload || '').then(() => toast('Скопировано')); };
+    cp.onclick = (e) => { e.stopPropagation(); lite.copyText(p.payload || ''); toast('Скопировано'); };
     head.appendChild(cp);
     row.appendChild(head);
     row.appendChild(el('div', 'rmq-tl-prev', (p.payload || '').replace(/\s+/g, ' ').slice(0, 180) || '(пустой payload)'));

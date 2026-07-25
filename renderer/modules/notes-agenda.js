@@ -446,7 +446,7 @@ export function createAgendaView(host) {
     let cmd = '';
     lite.agenda.mcpCommand({ projId: p && p.id }).then((r) => { cmd = (r && r.cmd) || ''; cmdBox.textContent = cmd; }).catch(() => { cmdBox.textContent = '(не удалось получить команду)'; });
 
-    const copy = async (text, okMsg) => { try { await navigator.clipboard.writeText(text); toast(okMsg); } catch (_) { toast('Не удалось скопировать', { kind: 'err' }); } };
+    const copy = (text, okMsg) => { try { lite.copyText(text); toast(okMsg); } catch (_) { toast('Не удалось скопировать', { kind: 'err' }); } };
     m.querySelector('[data-copycmd]').onclick = () => cmd ? copy(cmd, 'Команда скопирована') : toast('Команда ещё не готова');
     m.querySelector('[data-copyhint]').onclick = () => copy(AGENT_HINT, 'Подсказка скопирована — вставьте агенту');
     m.querySelector('[data-cancel]').onclick = () => close();

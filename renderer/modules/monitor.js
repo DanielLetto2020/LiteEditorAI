@@ -142,7 +142,7 @@ export function initMonitor() {
     L.push('');
     L.push('ТЕРМИНАЛЫ/АГЕНТЫ: ' + fmtMB(last.pty.totalMem) + ', CPU ' + fmtCpu(last.pty.totalCpu));
     for (const p of last.pty.procs) L.push('  ' + p.label + ' [' + (p.comm || 'шелл') + ' pid ' + p.pid + '] — ' + fmtMB(p.memBytes) + ', CPU ' + fmtCpu(p.cpu) + ', ' + (STATE_RU[p.state] || '—'));
-    try { navigator.clipboard.writeText(L.join('\n')); toast('Снимок скопирован', { kind: 'ok' }); }
+    try { lite.copyText(L.join('\n')); toast('Снимок скопирован', { kind: 'ok' }); }
     catch (_) { toast('Не удалось скопировать', { kind: 'err' }); }
   }
 
