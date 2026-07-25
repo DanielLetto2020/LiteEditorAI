@@ -1172,7 +1172,6 @@
  "Сессии": "Sessions",
  "Сессии этого ключа": "Sessions for this key",
  "Сессия": "Session",
- "Сессия ": "Session ",
  "Сессия 1": "Session 1",
  "Сколько последних сообщений отправлять модели (1–100)": "How many recent messages to send to the model (1–100)",
  "Скопировать снимок": "Copy the snapshot",
@@ -3822,5 +3821,7 @@
  "TODO / FIXME по проекту ({0})…": "TODO / FIXME across the project ({0})…",
  "vhost: {0} · временная очередь биндится на exchange — реальные консюмеры ничего не теряют": "vhost: {0} · a temporary queue binds to the exchange — the real consumers lose nothing",
  "Максим Кузьминский ·": "Maksim Kuzminskiy ·",
- "О программе": "About"
+ "О программе": "About",
+ "Терминал {0}": "Terminal {0}",
+ "Сессия {0}": "Session {0}"
 }

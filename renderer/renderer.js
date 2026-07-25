@@ -10,7 +10,7 @@ import '@xterm/xterm/css/xterm.css';
 
 // CodeMirror/marked/showMinimap/codeedit — переехали в окно вивера (renderer/modules/files.js).
 // В ядре остались только терминал (xterm) + темы/термутилы.
-import { initI18n, t, translate as i18nTranslate, getLocale } from './i18n.js';
+import { initI18n, t as tt, translate as i18nTranslate, getLocale } from './i18n.js';
 import { THEMES, TERM_THEME, DEFAULT_THEME } from './themes.js';
 import { FRAME_COLORS, frameConf, applyFrame } from './frame.js';
 import { loadFastRenderer, applyUnicode11, copySelection } from './termutil.js';
@@ -26,7 +26,7 @@ import { el, icon, iconBtn, hydrateIcons, toast, makeModal, showConfirm, showPro
 import { initExtensions } from './modules/extensions.js';
 // initFiles — вивер+дерево мигрированы в отдельное окно (renderer/module-entry.js).
 
-const APP_VERSION = 'alpha v1.1.112';
+const APP_VERSION = 'alpha v1.1.113';
 const GUTTER = 5;
 // Системный терминал («Система · ~») мигрирован в отдельное окно (renderer/modules/scratch.js):
 // его id `__scratch__::tN` маршрутизируются main'ом в окно-владельца, в ядре их больше не обрабатываем.
@@ -1173,7 +1173,7 @@ function addTab() {
   const proj = activeProject(); if (!proj) return;
   ensureProjectTabs(proj);
   const t = tabsByProj.get(proj.id);
-  const sid = createSession(proj, 'Терминал ' + (t.sessions.length + 1));
+  const sid = createSession(proj, tt('Терминал {0}', t.sessions.length + 1));
   t.active = sid; saveProjTabs(); showActiveTerminal();
 }
 function closeTab(sid) {
