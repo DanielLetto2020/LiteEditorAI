@@ -27,6 +27,9 @@ let patterns = [];                     // { re, order, out }
 let patternIndex = new Map();
 let observer = null;
 let applying = false;                  // защита от реакции наблюдателя на наши же правки
+// Диагностика стоимости перевода (видна в консоли окна как window.__i18nStats).
+const stats = { passes: 0, nodes: 0, hits: 0, records: 0, ms: 0 };
+try { if (typeof window !== 'undefined') window.__i18nStats = stats; } catch (_) {}
 
 function compilePatterns(d) {
   patterns = [];
@@ -94,15 +97,28 @@ export function getLocale() { return locale; }
 export function isTranslating() { return locale !== 'ru'; }
 
 // --------------------------------------------------------------- DOM-перевод
+const CYR = /[А-Яа-яЁё]/;
+
 function translateText(node) {
   const raw = node.nodeValue;
   if (!raw) return;
   const text = raw.trim();
   if (text.length < 1 || text.length > 400) return;
-  const key = sourceOf(text);
-  const hit = dict[key] || (locale === 'ru' && reverse[text] ? reverse[text] : null);
-  const out = hit || byPattern(key);
+  let out = dict[text];
+  if (out === undefined) {
+    // Ключи словаря русские, якорь шаблона — тоже. Значит текст без кириллицы может
+    // совпасть только как УЖЕ переведённый (обратный индекс). Это самая частая ветка
+    // на переведённом интерфейсе, и она должна стоить один regex, а не три поиска.
+    if (!CYR.test(text)) {
+      if (locale !== 'ru' || !reverse[text]) return;
+      out = reverse[text];                          // возврат к русскому при смене языка
+    } else {
+      const key = sourceOf(text);
+      out = dict[key] || byPattern(key);
+    }
+  }
   if (out == null || out === text) return;
+  stats.hits++;
   node.nodeValue = raw.replace(text, out);          // сохраняем окружающие пробелы
 }
 
@@ -120,6 +136,8 @@ function translateAttrs(elem) {
 
 export function translate(root = document.body) {
   if (!root) return;
+  const t0 = (performance && performance.now) ? performance.now() : 0;
+  stats.passes++;
   applying = true;
   try {
     if (root.nodeType === Node.TEXT_NODE) { translateText(root); return; }
@@ -137,32 +155,63 @@ export function translate(root = document.body) {
     });
     let n;
     while ((n = walker.nextNode())) {
+      stats.nodes++;
       if (n.nodeType === Node.TEXT_NODE) translateText(n);
       else translateAttrs(n);
     }
-  } finally { applying = false; }
+  } finally {
+    applying = false;
+    if (t0) stats.ms += performance.now() - t0;
+  }
 }
 
 // Всё, что модули дорисовывают после старта (innerHTML, appendChild, смена title).
+//
+// Два правила, без которых это становится тормозом на больших модулях:
+//  1) Наши собственные правки тоже порождают записи — MutationObserver отдаёт их
+//     АСИНХРОННО, уже после того как флаг applying снят. Поэтому по окончании прохода
+//     очередь выбрасывается через takeRecords(), иначе окно переводит само себя по кругу.
+//  2) Модуль вставляет узел, потом его потомков — если звать translate() на каждом,
+//     одно и то же поддерево обходится десятки раз. Записи копятся в один батч и
+//     вложенные корни отбрасываются.
 export function observe(root = document.documentElement) {
   if (observer || !root) return;
-  observer = new MutationObserver((records) => {
-    if (applying || locale === 'ru') return;
+  let queued = [];
+  let scheduled = false;
+
+  const flush = () => {
+    scheduled = false;
+    const roots = queued;
+    queued = [];
+    if (!roots.length || locale === 'ru') return;
     applying = true;
     try {
-      for (const r of records) {
-        if (r.type === 'childList') {
-          for (const n of r.addedNodes) {
-            if (n.nodeType === Node.TEXT_NODE) translateText(n);
-            else if (n.nodeType === Node.ELEMENT_NODE) { applying = false; translate(n); applying = true; }
-          }
-        } else if (r.type === 'attributes' && r.target && r.target.nodeType === Node.ELEMENT_NODE) {
-          if (!(r.target.closest && r.target.closest(SKIP_SEL))) translateAttrs(r.target);
-        } else if (r.type === 'characterData' && r.target) {
-          if (!(r.target.parentElement && r.target.parentElement.closest(SKIP_SEL))) translateText(r.target);
-        }
+      // только верхние узлы батча: вложенные обойдёт их предок
+      const tops = roots.filter((n) => n.isConnected !== false &&
+        !roots.some((o) => o !== n && o.nodeType === Node.ELEMENT_NODE && o.contains && o.contains(n)));
+      for (const n of tops) {
+        if (n.nodeType === Node.TEXT_NODE) translateText(n);
+        else if (n.nodeType === Node.ELEMENT_NODE) { applying = false; translate(n); applying = true; }
       }
-    } finally { applying = false; }
+    } finally {
+      applying = false;
+      try { observer.takeRecords(); } catch (_) {}   // выбросить эхо собственных правок
+    }
+  };
+
+  observer = new MutationObserver((records) => {
+    if (applying || locale === 'ru') return;
+    stats.records += records.length;
+    for (const r of records) {
+      if (r.type === 'childList') {
+        for (const n of r.addedNodes) queued.push(n);
+      } else if (r.type === 'attributes' && r.target && r.target.nodeType === Node.ELEMENT_NODE) {
+        if (!(r.target.closest && r.target.closest(SKIP_SEL))) { applying = true; try { translateAttrs(r.target); } finally { applying = false; } }
+      } else if (r.type === 'characterData' && r.target) {
+        if (!(r.target.parentElement && r.target.parentElement.closest(SKIP_SEL))) queued.push(r.target);
+      }
+    }
+    if (queued.length && !scheduled) { scheduled = true; queueMicrotask(flush); }
   });
   observer.observe(root, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ATTRS });
 }
@@ -178,10 +227,13 @@ export function initI18n() {
     setDict(cur.code, cur.dict);
     document.documentElement.setAttribute('lang', locale);
     if (cur.rtl) document.documentElement.setAttribute('dir', 'rtl');
+    // На русском переводить нечего — и наблюдатель за DOM не подключается вовсе:
+    // подписка childList+characterData на всё дерево не бесплатна (модули с живыми
+    // логами и таблицами дёргают её тысячами записей), а пользы при locale='ru' ноль.
     if (locale !== 'ru') {
       const run = () => { translate(document.body); observe(); };
       if (document.body) run(); else document.addEventListener('DOMContentLoaded', run, { once: true });
-    } else observe();
+    }
     if (api.onChange) api.onChange((next) => applyLocale(next));
   } catch (e) { try { window.lite && window.lite.log('warn', 'i18n init', String(e)); } catch (_) {} }
   return locale;
@@ -197,5 +249,7 @@ export function applyLocale(next) {
   document.documentElement.setAttribute('lang', locale);
   if (next.rtl) document.documentElement.setAttribute('dir', 'rtl'); else document.documentElement.removeAttribute('dir');
   translate(document.body);
-  observe();
+  if (locale === 'ru') {                 // вернулись к исходному языку — снять наблюдение
+    if (observer) { try { observer.disconnect(); } catch (_) {} observer = null; }
+  } else observe();
 }

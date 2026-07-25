@@ -5,6 +5,7 @@
 //   closeMenus, layout, GUTTER, saveUiState, refitActiveTerminal, closeOtherPanels }.
 // Экспортирует: { isOpen(), setOpen(open,opts), toggle(), bindStream(), bindControls() }.
 import { el, icon, iconBtn, makeModal, showConfirm, showPrompt, toast } from '../ui.js';
+import { t } from '../i18n.js';
 import { marked } from 'marked';
 import hljs from 'highlight.js/lib/common';
 import 'highlight.js/styles/atom-one-dark.css';
@@ -399,7 +400,7 @@ export function initOpenRouter(host) {
   function newSession(cardId) {
     const st = getOrChat(cardId);
     const cur = st.sessions.find((s) => s.id === st.active); // inherit the current session's context size
-    const s = blankSession('Сессия ' + (st.sessions.length + 1), cur ? cur.contextN : 10);
+    const s = blankSession(t('Сессия {0}', st.sessions.length + 1), cur ? cur.contextN : 10);
     st.sessions.push(s); st.active = s.id; saveOrHist(cardId);
     $('#chat-session-pop').classList.add('hidden');
     updateSessionBtn(); syncCtxInput(); renderChatLog();

@@ -2687,8 +2687,8 @@ app.on('window-all-closed', () => {
 // Язык живёт в settings.lang; словари — подключаемые файлы (locales/ + ~/.LiteEditorAI/locales/).
 // Рендерер берёт словарь СИНХРОННО при старте, чтобы интерфейс не мигал русским.
 function i18nPayload() {
-  const meta = i18n.available().find((l) => l.code === i18n.locale()) || { rtl: false };
-  return { code: i18n.locale(), dict: i18n.dictionary(), rtl: !!meta.rtl };
+  // Никаких обращений к диску: это синхронный ответ на старте КАЖДОГО окна.
+  return { code: i18n.locale(), dict: i18n.dictionary(), rtl: i18n.isRtl() };
 }
 ipcMain.on('i18n:current', (e) => { e.returnValue = i18nPayload(); });
 ipcMain.handle('i18n:list', () => ({ current: i18n.locale(), list: i18n.available() }));
