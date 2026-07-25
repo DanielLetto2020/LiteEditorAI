@@ -7,7 +7,7 @@ import {
   el, icon, iconBtn, toast, makeModal, showConfirm, showPrompt, hydrateIcons, setErrorSink, applyLayoutSwap, ICONS,
 } from './ui.js';
 import { createCodeEditor } from './codeedit.js';
-import { THEMES, TERM_THEME, DEFAULT_THEME, termThemeFor } from './themes.js';
+import { termThemeFor } from './themes.js';
 import { applyFrame } from './frame.js';
 import { loadFastRenderer, applyUnicode11, copySelection } from './termutil.js';
 import '@xterm/xterm/css/xterm.css';

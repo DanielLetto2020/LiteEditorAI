@@ -589,15 +589,24 @@ export function initFiles(host) {
   // ---------------------------------------------------------------- viewer preview (md/image/html)
   // Чистим распарсенный markdown ПЕРЕД вставкой в DOM. CSP уже блокирует исполнение инлайн-скриптов,
   // это второй рубеж (и страховка, если CSP когда-нибудь ослабят): убираем активные узлы и обработчики.
+  // Работаем по инертному DocumentFragment (<template>): его разметка не «оживает» — ресурсы не
+  // запрашиваются и обработчики не навешиваются, поэтому чистка гарантированно опережает живой DOM.
   function sanitizePreviewHtml(root) {
-    root.querySelectorAll('script, iframe, frame, object, embed, base, link, meta').forEach((n) => n.remove());
+    root.querySelectorAll('script, style, iframe, frame, object, embed, base, link, meta, form').forEach((n) => n.remove());
     root.querySelectorAll('*').forEach((n) => {
       for (const attr of [...n.attributes]) {
         const name = attr.name.toLowerCase();
         if (name.startsWith('on')) n.removeAttribute(attr.name); // инлайн-обработчики (onerror/onclick/…)
-        else if (/^(href|src|xlink:href)$/.test(name) && /^\s*javascript:/i.test(attr.value)) n.removeAttribute(attr.name);
+        else if (/^(href|src|xlink:href)$/.test(name) && /^(javascript|vbscript):/i.test(attr.value.replace(/[\s-]/g, ''))) n.removeAttribute(attr.name);
       }
     });
+  }
+  // Разобрать markdown в ИНЕРТНЫЙ фрагмент, вычистить его и только потом отдать наружу.
+  function safeMarkdownFragment(md) {
+    const tpl = document.createElement('template');
+    try { tpl.innerHTML = marked.parse(md || '', { breaks: true }); } catch (_) { return null; }
+    sanitizePreviewHtml(tpl.content);
+    return tpl.content;
   }
   // Наполнить #preview-view рендером (без переключения display/previewMode) — переиспользуется полным превью и сплитом.
   async function fillPreview(kind, file, content) {
@@ -613,8 +622,8 @@ export function initFiles(host) {
       else { const img = el('img', 'prev-img'); img.src = res.url; view.appendChild(img); }
     } else if (kind === 'markdown') {
       const div = el('div', 'prev-md');
-      try { div.innerHTML = marked.parse(content || '', { breaks: true }); } catch (_) { div.textContent = content || ''; }
-      sanitizePreviewHtml(div); // defense-in-depth поверх CSP: вырезать <script>/iframe/инлайн-обработчики/javascript:
+      const frag = safeMarkdownFragment(content); // разбор+чистка в инертном template, потом в живой DOM
+      if (frag) div.replaceChildren(...frag.childNodes); else div.textContent = content || '';
       const base = dirName(file);
       div.querySelectorAll('img').forEach((im) => { // resolve relative image paths from the file's folder
         const s = im.getAttribute('src') || '';
@@ -625,8 +634,11 @@ export function initFiles(host) {
     } else if (kind === 'html') {
       const frame = document.createElement('iframe');
       frame.className = 'prev-frame';
-      // load from disk (not srcdoc) so relative css/js/img resolve against the project folder
-      frame.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-forms allow-popups allow-modals');
+      // load from disk (not srcdoc) so relative css/js/img resolve against the project folder.
+      // allow-same-origin НЕ выдаём: вместе с allow-scripts эта пара снимает песочницу целиком
+      // (страница получает свой origin и доступ к parent/storage). Относительные пути и скрипты
+      // внутри превью работают и без него — резолв идёт от URL документа, а не от origin.
+      frame.setAttribute('sandbox', 'allow-scripts allow-forms allow-popups allow-modals');
       frame.src = fileUrl(file);
       view.appendChild(frame);
     }
@@ -1269,7 +1281,9 @@ export function initFiles(host) {
   function treeNewFile(parent) {
     showPrompt('Новый файл', 'Имя файла (можно путь: src/app.js)', '', async (name) => {
       const r = await lite.fs.create(parent, name, false);
-      if (r && !r.error) { await refreshTree(); if (r.path) { if (!viewerOpen) setViewerOpen(true); openFile(r.path); } }
+      // через openFileGuarded, а не openFile: при открытой плашке-конфликте автосейв выключен,
+      // и прямое открытие нового файла молча теряло несохранённые правки текущего
+      if (r && !r.error) { await refreshTree(); if (r.path) openFileGuarded(r.path); }
       return r;
     });
   }

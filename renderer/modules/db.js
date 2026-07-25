@@ -34,7 +34,8 @@ export function initDb(host) {
   let tabs = [];            // { key, kind:'table'|'sql'|'ddl'|'er'|'diff'|'qbuilder', title, ... }
   let activeKey = null;
   let metaCache = new Map();     // "schema.table" -> meta (per-подключение, свапается вкладками)
-  let sqlSeq = 0;
+  let sqlSeq = 0;                // нумерация SQL-вкладок («Запрос N») и их ключей
+  let execSeq = 0;               // отдельный токен запусков запроса: общий счётчик заставлял номера вкладок скакать
   // AI-DB: outer workspace view ('desk' | 'ai') + per-connection chat state
   let wsView = 'desk';
   const aiChats = new Map();      // connId -> { messages:[], busy, reqId, agent }
@@ -900,30 +901,59 @@ export function initDb(host) {
   function clearBuffer(t) { t.buffer = { edits: {}, deletes: new Set(), inserts: [] }; }
   // force every open table tab to re-query on its next render (after a commit / schema refresh)
   function invalidateTableCaches() { for (const t of tabs) if (t.kind === 'table') t._force = true; }
-  function pkWhere(meta, rowValues, columns) {
+  // ---- параметризованные операторы буфера правок ----
+  // ЗНАЧЕНИЯ ячеек НИКОГДА не склеиваем в текст запроса: обратный слэш ломал литерал в MySQL
+  // (backslash-escapes), а строковый ключ «0123» уходил числом и WHERE попадал не в ту строку.
+  // Каждый оператор — { sql (с плейсхолдерами), params, preview (текст для показа/prodGuard) }.
+  function phFactory() {
+    const pg = dbActiveConn && dbActiveConn.type === 'postgres';
+    let n = 0;
+    return () => { n++; return pg ? '$' + n : '?'; };
+  }
+  function pkWhere(meta, rowValues, columns, ph, params) {
     const pk = meta.columns.filter((c) => c.pk);
-    return pk.map((c) => `${qIdent(c.name)} = ${lit(rowValues[columns.indexOf(c.name)])}`).join(' AND ');
+    return pk.map((c) => { params.push(rowValues[columns.indexOf(c.name)]); return `${qIdent(c.name)} = ${ph()}`; }).join(' AND ');
+  }
+  function pkWherePreview(meta, rowValues, columns) {
+    return meta.columns.filter((c) => c.pk).map((c) => `${qIdent(c.name)} = ${lit(rowValues[columns.indexOf(c.name)])}`).join(' AND ');
   }
   function buildChangeStatements(t, meta) {
     const cols = t.lastResult.columns; const rows = t.lastResult.rows; const b = t.buffer; const out = [];
+    const tq = qual(t.schema, t.table);
     for (const ri of Object.keys(b.edits)) {
       if (b.deletes.has(+ri)) continue; // deleted wins
-      const set = Object.entries(b.edits[ri]).map(([col, val]) => `${qIdent(col)} = ${lit(val)}`).join(', ');
-      if (set) out.push(`UPDATE ${qual(t.schema, t.table)} SET ${set} WHERE ${pkWhere(meta, rows[ri], cols)};`);
+      const entries = Object.entries(b.edits[ri]);
+      if (!entries.length) continue;
+      const ph = phFactory(); const params = [];
+      const set = entries.map(([col, val]) => { params.push(val); return `${qIdent(col)} = ${ph()}`; }).join(', ');
+      const where = pkWhere(meta, rows[ri], cols, ph, params);
+      const setPrev = entries.map(([col, val]) => `${qIdent(col)} = ${lit(val)}`).join(', ');
+      out.push({ sql: `UPDATE ${tq} SET ${set} WHERE ${where}`, params, preview: `UPDATE ${tq} SET ${setPrev} WHERE ${pkWherePreview(meta, rows[ri], cols)};` });
     }
-    for (const ri of b.deletes) out.push(`DELETE FROM ${qual(t.schema, t.table)} WHERE ${pkWhere(meta, rows[ri], cols)};`);
-    for (const obj of b.inserts) { const keys = Object.keys(obj); if (!keys.length) continue; out.push(`INSERT INTO ${qual(t.schema, t.table)} (${keys.map(qIdent).join(', ')}) VALUES (${keys.map((k) => lit(obj[k])).join(', ')});`); }
+    for (const ri of b.deletes) {
+      const ph = phFactory(); const params = [];
+      const where = pkWhere(meta, rows[ri], cols, ph, params);
+      out.push({ sql: `DELETE FROM ${tq} WHERE ${where}`, params, preview: `DELETE FROM ${tq} WHERE ${pkWherePreview(meta, rows[ri], cols)};` });
+    }
+    for (const obj of b.inserts) {
+      const keys = Object.keys(obj); if (!keys.length) continue;
+      const ph = phFactory(); const params = [];
+      const vals = keys.map((k) => { params.push(obj[k]); return ph(); }).join(', ');
+      out.push({ sql: `INSERT INTO ${tq} (${keys.map(qIdent).join(', ')}) VALUES (${vals})`, params, preview: `INSERT INTO ${tq} (${keys.map(qIdent).join(', ')}) VALUES (${keys.map((k) => lit(obj[k])).join(', ')});` });
+    }
     return out;
   }
+  const stmtsPreview = (stmts) => stmts.map((s) => s.preview).join('\n');
   function renderChangesBar(t, meta, hostEl) {
     hostEl.innerHTML = ''; const n = pendingCount(t); if (!n) return;
     const bar = el('div', 'db-changes');
     bar.appendChild(el('span', 'db-changes-info', `Изменений: ${n}`));
-    const prev = el('button', 'btn', 'Просмотр SQL'); prev.onclick = () => { const sql = buildChangeStatements(t, meta).join('\n'); const { m } = makeModal(`<h2>Изменения (SQL)</h2><pre class="db-ddl-pre" style="max-height:60vh">${sql.replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]))}</pre>`); m.classList.add('db-modal'); };
+    const prev = el('button', 'btn', 'Просмотр SQL'); prev.onclick = () => { const sql = stmtsPreview(buildChangeStatements(t, meta)); const { m } = makeModal(`<h2>Изменения (SQL)</h2><pre class="db-ddl-pre" style="max-height:60vh">${sql.replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]))}</pre>`); m.classList.add('db-modal'); };
     const apply = el('button', 'btn primary', 'Применить'); apply.onclick = () => {
       const stmts = buildChangeStatements(t, meta); if (!stmts.length) return;
-      const doApply = async () => { const r = await lite.db.transaction(dbActiveId, stmts); if (r && r.ok) { toast(`Применено: ${r.count}`); clearBuffer(t); t._force = true; renderTabBody($('#db-tabbody')); } else toast((r && r.error) || 'Ошибка применения', { kind: 'err' }); };
-      prodGuard(stmts.join(' '), doApply);
+      // в БД уезжают { sql, params } — значения отдельно от текста; preview нужен только для показа
+      const doApply = async () => { const r = await lite.db.transaction(dbActiveId, stmts.map(({ sql, params }) => ({ sql, params }))); if (r && r.ok) { toast(`Применено: ${r.count}`); clearBuffer(t); t._force = true; renderTabBody($('#db-tabbody')); } else toast((r && r.error) || 'Ошибка применения', { kind: 'err' }); };
+      prodGuard(stmtsPreview(stmts), doApply);
     };
     const roll = el('button', 'btn', 'Откатить'); roll.onclick = () => { clearBuffer(t); renderTabBody($('#db-tabbody')); };
     bar.append(prev, apply, roll); hostEl.appendChild(bar);
@@ -965,7 +995,7 @@ export function initDb(host) {
     wrap.innerHTML = '';
     if (err) { wrap.appendChild(el('div', 'docker-err', err)); return; }
     const bar = el('div', 'db-ddl-bar');
-    const copy = el('button', 'btn', 'Копировать'); copy.onclick = () => { navigator.clipboard.writeText(ddl || ''); toast('DDL скопирован'); };
+    const copy = el('button', 'btn', 'Копировать'); copy.onclick = () => { lite.copyText(ddl || ''); toast('DDL скопирован'); };
     bar.appendChild(copy); wrap.appendChild(bar);
     const pre = el('pre', 'db-ddl-pre'); pre.textContent = ddl || '(DDL недоступен)'; wrap.appendChild(pre);
   }
@@ -1054,7 +1084,11 @@ export function initDb(host) {
       if (editable && buffer) buffer.inserts.forEach((obj, ii) => tb.appendChild(insertRow(obj, ii)));
       tbl.appendChild(tb); wrap.appendChild(tbl);
     }
-    document.addEventListener('mouseup', () => { dragging = false; });
+    // Завершение драг-выделения ловим ОДНОРАЗОВЫМ слушателем, который вешаем в момент начала драга.
+    // Раньше document-слушатель вешался на КАЖДЫЙ рендер грида и никогда не снимался: вкладка таблицы
+    // перерисовывается на смене вкладки, сортировке и на каждом тике автообновления (от 5 с), а каждое
+    // замыкание держало массив rows — за часы работы накапливались сотни слушателей и копий данных.
+    const beginDrag = () => { dragging = true; document.addEventListener('mouseup', () => { dragging = false; }, { once: true }); };
 
     function dataRow(rowv, ri) {
       const tr = document.createElement('tr'); tr.dataset.ri = ri;
@@ -1088,7 +1122,7 @@ export function initDb(host) {
             paintSel(); reportSel(); wrap.focus({ preventScroll: true });
             return;
           }
-          dragging = true; sel.clear(); anchor = [ri, ci]; cur = [ri, ci]; sel.add(cellKey(ri, ci)); paintSel(); reportSel(); if (document.getElementById('db-valpanel')) showCellValue(v, columns[ci]); wrap.focus({ preventScroll: true });
+          beginDrag(); sel.clear(); anchor = [ri, ci]; cur = [ri, ci]; sel.add(cellKey(ri, ci)); paintSel(); reportSel(); if (document.getElementById('db-valpanel')) showCellValue(v, columns[ci]); wrap.focus({ preventScroll: true });
         };
         td.onmouseenter = () => { if (dragging && anchor) { sel.clear(); const [ar, ac] = anchor; for (let r = Math.min(ar, ri); r <= Math.max(ar, ri); r++) for (let c = Math.min(ac, ci); c <= Math.max(ac, ci); c++) sel.add(cellKey(r, c)); paintSel(); reportSel(); } };
         if (editable && buffer) td.ondblclick = () => startEdit(td, ri, ci, v, false);
@@ -1149,7 +1183,7 @@ export function initDb(host) {
     wrap.addEventListener('keydown', (e) => {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'c' && sel.size) {
         e.preventDefault();
-        navigator.clipboard.writeText(selText()); toast(`Скопировано ячеек: ${sel.size}`); return;
+        lite.copyText(selText()); toast(`Скопировано ячеек: ${sel.size}`); return;
       }
       const NAV = ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Home', 'End', 'PageUp', 'PageDown'];
       if (NAV.includes(e.key)) {
@@ -1266,7 +1300,7 @@ export function initDb(host) {
       const foldAll = iconBtn('drow-act', 'fold', 'Свернуть всё', 13); foldAll.onclick = () => { jvSetDeep(root, true); jvRender(body, root); };
       const unfoldAll = iconBtn('drow-act', 'unfold', 'Развернуть всё', 13); unfoldAll.onclick = () => { jvSetDeep(root, false); jvRender(body, root); };
       const firstLvl = iconBtn('drow-act', 'list-ordered', 'Развернуть первый уровень', 13); firstLvl.onclick = () => { jvSetDeep(root, true); root.collapsed = false; jvRender(body, root); };
-      const copyJson = iconBtn('drow-act', 'braces', 'Копировать весь JSON', 13); copyJson.onclick = () => { navigator.clipboard.writeText(JSON.stringify(det.data, null, 2)); toast('JSON скопирован'); };
+      const copyJson = iconBtn('drow-act', 'braces', 'Копировать весь JSON', 13); copyJson.onclick = () => { lite.copyText(JSON.stringify(det.data, null, 2)); toast('JSON скопирован'); };
       const infoBtn = iconBtn('drow-act', 'info', 'Информация о JSON', 13);
       const applyInfo = () => { const on = !!dbUi.jsonInfo; info.classList.toggle('on', on); infoBtn.classList.toggle('on', on); };
       infoBtn.onclick = () => { dbUi.jsonInfo = !dbUi.jsonInfo; saveDbUi(); applyInfo(); };
@@ -1285,7 +1319,7 @@ export function initDb(host) {
       jvRender(body, root);
     } else {
       const copy = iconBtn('drow-act', 'copy', 'Копировать значение', 13);
-      copy.onclick = () => { navigator.clipboard.writeText(v == null ? '' : (typeof v === 'object' ? JSON.stringify(v, null, 2) : String(v))); toast('Скопировано'); };
+      copy.onclick = () => { lite.copyText(v == null ? '' : (typeof v === 'object' ? JSON.stringify(v, null, 2) : String(v))); toast('Скопировано'); };
       head.append(copy);
       if (det.kind === 'null') { const p = el('pre', 'db-valpanel-pre db-null'); p.textContent = 'NULL'; body.appendChild(p); }
       else { const p = el('pre', 'db-valpanel-pre'); p.textContent = det.text; if (det.kind === 'number') p.classList.add('jv-num'); body.appendChild(p); }
@@ -1376,7 +1410,7 @@ export function initDb(host) {
     res.innerHTML = '<div class="git-loading">Выполняю…</div>';
     t.lastResult = null;
     if (t.cancelBtn && dbActiveConn.type !== 'sqlite') t.cancelBtn.style.display = '';
-    const seq = ++sqlSeq; t._seq = seq; const t0 = performance.now();
+    const seq = ++execSeq; t._seq = seq; const t0 = performance.now();
     const r = await lite.db.query(dbActiveId, text);
     if (t._seq !== seq) return;
     if (t.cancelBtn) t.cancelBtn.style.display = 'none';
@@ -1510,7 +1544,7 @@ export function initDb(host) {
       { label: 'DDL', action: () => openDdlTab(schema, table) },
       { label: 'Изменить структуру…', action: () => tableEditor(schema, table) },
       { sep: true },
-      { label: 'Копировать имя', action: () => { navigator.clipboard.writeText(table); toast('Скопировано'); } },
+      { label: 'Копировать имя', action: () => { lite.copyText(table); toast('Скопировано'); } },
       { label: 'INSERT-шаблон', action: () => insertTemplate(schema, table) },
       { sep: true },
       { label: 'DROP TABLE…', danger: true, action: () => showConfirm('Удалить таблицу?', `${qn} будет удалена безвозвратно.`, 'DROP', () => autorun(`DROP TABLE ${qn};`)) },
@@ -1518,13 +1552,13 @@ export function initDb(host) {
   }
   function cellMenu(e, val, colName, rowValues, t, columns, ri, meta, resultObj, selInfo) {
     const items = [
-      { label: 'Копировать значение', action: () => { navigator.clipboard.writeText(val == null ? '' : (typeof val === 'object' ? JSON.stringify(val) : String(val))); toast('Скопировано'); } },
+      { label: 'Копировать значение', action: () => { lite.copyText(val == null ? '' : (typeof val === 'object' ? JSON.stringify(val) : String(val))); toast('Скопировано'); } },
       { label: 'Показать значение', action: () => showCellValue(val, colName) },
-      { label: 'Копировать имя колонки', action: () => { navigator.clipboard.writeText(colName); toast('Скопировано'); } },
+      { label: 'Копировать имя колонки', action: () => { lite.copyText(colName); toast('Скопировано'); } },
     ];
     // выделено несколько ячеек (Ctrl/Shift-клики или драг) → копируем именно их, а не ячейку под курсором
     if (selInfo && selInfo.size > 1) {
-      items.splice(1, 0, { label: `Копировать выбранные (${selInfo.size})`, action: () => { navigator.clipboard.writeText(selInfo.text()); toast(`Скопировано ячеек: ${selInfo.size}`); } });
+      items.splice(1, 0, { label: `Копировать выбранные (${selInfo.size})`, action: () => { lite.copyText(selInfo.text()); toast(`Скопировано ячеек: ${selInfo.size}`); } });
     }
     if (t && columns) {
       items.push({ sep: true });
@@ -1586,7 +1620,7 @@ export function initDb(host) {
       { label: 'Сортировать ↓', action: () => { t.orderBy = colName; t.orderDir = 'desc'; t.page = 0; renderTabBody($('#db-tabbody')); } },
       { sep: true },
       { label: 'Профайлинг колонки', action: () => profileColumn(t, colName, meta) },
-      { label: 'Копировать имя колонки', action: () => { navigator.clipboard.writeText(colName); toast('Скопировано'); } },
+      { label: 'Копировать имя колонки', action: () => { lite.copyText(colName); toast('Скопировано'); } },
     ]);
   }
   async function profileColumn(t, colName, meta) {
@@ -1686,7 +1720,7 @@ export function initDb(host) {
   }
   function copyInList(colName, ci, rows) {
     const vals = [...new Set(rows.map((r) => r[ci]).filter((v) => v != null))];
-    navigator.clipboard.writeText(`${qIdent(colName)} IN (${vals.map(lit).join(', ')})`); toast(`Скопировано значений: ${vals.length}`);
+    lite.copyText(`${qIdent(colName)} IN (${vals.map(lit).join(', ')})`); toast(`Скопировано значений: ${vals.length}`);
   }
   function copyResultAs(fmt, columns, rows, name) {
     let text = '';
@@ -1694,7 +1728,7 @@ export function initDb(host) {
     else if (fmt === 'csv') { const esc = (v) => v == null ? '' : /[",\n]/.test(String(v)) ? '"' + String(v).replace(/"/g, '""') + '"' : String(v); text = [columns.join(','), ...rows.map((r) => r.map(esc).join(','))].join('\n'); }
     else if (fmt === 'json') { text = JSON.stringify(rows.map((r) => Object.fromEntries(columns.map((c, i) => [c, r[i]]))), null, 2); }
     else { text = rows.map((r) => `INSERT INTO ${name || 'tbl'} (${columns.join(', ')}) VALUES (${r.map(lit).join(', ')});`).join('\n'); }
-    navigator.clipboard.writeText(text); toast(`Скопировано строк: ${rows.length}`);
+    lite.copyText(text); toast(`Скопировано строк: ${rows.length}`);
   }
   // reverse-FK: tables whose foreign key points at t.table.colName → open filtered by the value
   async function showUsages(t, colName, val) {
@@ -1783,7 +1817,7 @@ export function initDb(host) {
     refreshPreview();
     m.appendChild(el('div', 'db-exp-prevhint', 'Предпросмотр (первые 30 строк)')); m.appendChild(prev);
     const acts = el('div', 'gm-actions'); acts.style.marginTop = '12px';
-    const copy = el('button', 'btn', 'Копировать в буфер'); copy.onclick = () => { const text = formatResult(fmtId, columns, rows, name); navigator.clipboard.writeText(text); toast(`Скопировано строк: ${rows.length}`); };
+    const copy = el('button', 'btn', 'Копировать в буфер'); copy.onclick = () => { const text = formatResult(fmtId, columns, rows, name); lite.copyText(text); toast(`Скопировано строк: ${rows.length}`); };
     const saveBtn = el('button', 'btn primary', 'Сохранить в файл…'); saveBtn.onclick = async () => {
       const fmt = EXPORT_FORMATS.find((f) => f.id === fmtId); const text = formatResult(fmtId, columns, rows, name);
       const dir = (pathIn.value || dbUi.exportDir || '').trim();
@@ -2279,7 +2313,7 @@ export function initDb(host) {
     log.scrollTop = log.scrollHeight;
   }
   // small "copy whole message" button (raw text) shown top-right of a bubble
-  function aiCopyBtn(text, title) { const b = iconBtn('db-ai-copy', 'copy', title || 'Копировать', 13); b.onclick = (e) => { e.stopPropagation(); navigator.clipboard.writeText(text || ''); toast('Скопировано'); }; return b; }
+  function aiCopyBtn(text, title) { const b = iconBtn('db-ai-copy', 'copy', title || 'Копировать', 13); b.onclick = (e) => { e.stopPropagation(); lite.copyText(text || ''); toast('Скопировано'); }; return b; }
   function renderAiMsg(msg, host) {
     const st = aiSession();
     if (msg.role === 'user') { const w = el('div', 'db-ai-msg user'); const bub = el('div', 'db-ai-bubble'); bub.appendChild(el('div', 'db-ai-text', msg.text)); bub.appendChild(aiCopyBtn(msg.text, 'Копировать сообщение')); w.appendChild(bub); return w; }
@@ -2350,7 +2384,7 @@ export function initDb(host) {
     const acts = el('div', 'db-ai-sqlacts');
     const run = el('button', 'btn primary', 'Выполнить'); run.disabled = !ro; run.onclick = () => aiExecute(host, sql, chart);
     const edit = el('button', 'btn', 'Изменить'); edit.onclick = () => showPrompt('Правка запроса', 'SQL (только чтение):', sql, (v) => { if (v && v.trim()) aiExecute(host, v.trim(), chart); });
-    const copy = iconBtn('drow-act', 'copy', 'Копировать', 13); copy.onclick = () => { navigator.clipboard.writeText(sql); toast('Скопировано'); };
+    const copy = iconBtn('drow-act', 'copy', 'Копировать', 13); copy.onclick = () => { lite.copyText(sql); toast('Скопировано'); };
     const toCon = iconBtn('drow-act', 'arrow-right', 'Открыть в SQL-консоли', 13); toCon.onclick = () => { openSqlTab(sql); if (setWsViewFn) setWsViewFn('desk'); };
     acts.append(run, edit, copy, toCon);
     card.append(bar, pre, acts);

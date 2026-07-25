@@ -659,11 +659,13 @@ export function initGit(host) {
       const amend = amendCb.checked;
       if (conflictSet.size) { toast('Сначала разрешите конфликты', { kind: 'err' }); return; }
       if (!sel.length && !amend) { toast('Не выбрано ни одного файла', { kind: 'err' }); return; }
-      const allIncluded = sel.length === committableKeys.length;
       const btn = withPush ? commitPush : commit;
       btn.disabled = true; btn.classList.add('loading');
-      // amend без файлов → files:[] (маркер «только сообщение», main ничего не добавляет)
-      const filesArg = (amend && !sel.length) ? [] : (allIncluded ? null : sel);
+      // amend без файлов → files:[] (маркер «только сообщение», main ничего не добавляет).
+      // Иначе — ВСЕГДА явный список выбранных путей. Раньше «выбрано всё» отправлялось как null
+      // (= git add -A), и файл, появившийся на диске после отрисовки списка (агент работает
+      // параллельно — обычный для этого редактора случай), молча уезжал в коммит.
+      const filesArg = (amend && !sel.length) ? [] : sel;
       const r = await lite.git.commit(p.path, message, withPush, filesArg, amend);
       btn.classList.remove('loading');
       if (r.ok) { toast(amend ? 'Коммит переписан (amend)' : (withPush ? 'Закоммичено и запушено' : 'Закоммичено')); msg.value = ''; setDraft(p.path, ''); selectedChangeFile = null; renderGitPanel(p); renderProjects(); }

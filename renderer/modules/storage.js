@@ -789,8 +789,8 @@ export function initStorage(host) {
     dd.appendChild(menuRow('external-link', 'Открыть в вивере редактора', () => { closeMenus(); stageToViewer(fo); }));
     dd.appendChild(menuRow('download', 'Скачать…', () => { closeMenus(); downloadObjects([fo]); }));
     if (cp.presign || cp.acl || cp.publicUrl) dd.appendChild(menuRow('link', 'Доступ и ссылки…', () => { closeMenus(); linkModal(fo.key); }));
-    dd.appendChild(menuRow('copy', 'Копировать ключ', () => { closeMenus(); navigator.clipboard.writeText(fo.key); toast('Ключ скопирован'); }));
-    dd.appendChild(menuRow('copy', 'Копировать s3:// URI', () => { closeMenus(); navigator.clipboard.writeText(`s3://${curBucket}/${fo.key}`); toast('URI скопирован'); }));
+    dd.appendChild(menuRow('copy', 'Копировать ключ', () => { closeMenus(); lite.copyText(fo.key); toast('Ключ скопирован'); }));
+    dd.appendChild(menuRow('copy', 'Копировать s3:// URI', () => { closeMenus(); lite.copyText(`s3://${curBucket}/${fo.key}`); toast('URI скопирован'); }));
     dd.appendChild(menuRow('terminal', 'Путь в терминал', () => { closeMenus(); try { sendToTerminal(`s3://${curBucket}/${fo.key}`); toast('Отправлено в терминал'); } catch (_) { toast('Терминал недоступен', { kind: 'err' }); } }));
     if (canWrite()) {
       dd.appendChild(menuRow('copy', 'Копировать в…', () => { closeMenus(); copyMoveModal(fo, false); }));
@@ -806,7 +806,7 @@ export function initStorage(host) {
     const dd = el('div', 'menu-dropdown');
     dd.appendChild(menuRow('folder', 'Открыть', () => { closeMenus(); navigateTo(curBucket, d.prefix); }));
     dd.appendChild(menuRow('download', 'Скачать папку…', () => { closeMenus(); downloadPrefix(d); }));
-    dd.appendChild(menuRow('copy', 'Копировать префикс', () => { closeMenus(); navigator.clipboard.writeText(d.prefix); toast('Префикс скопирован'); }));
+    dd.appendChild(menuRow('copy', 'Копировать префикс', () => { closeMenus(); lite.copyText(d.prefix); toast('Префикс скопирован'); }));
     if (canWrite()) {
       dd.appendChild(menuRow('trash', 'Удалить со всем содержимым', () => { closeMenus(); deletePrefix(d); }, 'danger'));
     }
@@ -1014,7 +1014,7 @@ export function initStorage(host) {
         out.innerHTML = '';
         const inp = el('input', 'st-linkinp'); inp.value = r.url; inp.readOnly = true;
         const cpBtn = el('button', 'btn', 'Копировать');
-        cpBtn.onclick = () => { navigator.clipboard.writeText(r.url); toast('Ссылка скопирована'); };
+        cpBtn.onclick = () => { lite.copyText(r.url); toast('Ссылка скопирована'); };
         out.append(inp, cpBtn);
         out.appendChild(el('div', 'st-dim', `Действует до ${fmtDate(r.expiresAt)}. Ссылка даёт доступ любому, кто её получит.`));
       };
@@ -1065,7 +1065,7 @@ export function initStorage(host) {
         pubRow.appendChild(el('span', 'st-linklabel', 'Публичная ссылка:'));
         const inp = el('input', 'st-linkinp'); inp.value = u.url; inp.readOnly = true;
         const cpBtn = el('button', 'btn', 'Копировать');
-        cpBtn.onclick = () => { navigator.clipboard.writeText(u.url); toast('Ссылка скопирована'); };
+        cpBtn.onclick = () => { lite.copyText(u.url); toast('Ссылка скопирована'); };
         pubRow.append(inp, cpBtn);
       };
       setRow(!!a.public); fillPub(!!a.public);

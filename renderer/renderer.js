@@ -5,9 +5,7 @@ import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { SearchAddon } from '@xterm/addon-search';
 import { WebLinksAddon } from '@xterm/addon-web-links';
-import { WebglAddon } from '@xterm/addon-webgl';
-import { CanvasAddon } from '@xterm/addon-canvas';
-import { Unicode11Addon } from '@xterm/addon-unicode11';
+// WebGL/Canvas/Unicode11-аддоны здесь не нужны: их подключает termutil.js (loadFastRenderer/applyUnicode11).
 import '@xterm/xterm/css/xterm.css';
 
 // CodeMirror/marked/showMinimap/codeedit — переехали в окно вивера (renderer/modules/files.js).
@@ -27,7 +25,7 @@ import { el, icon, iconBtn, hydrateIcons, toast, makeModal, showConfirm, showPro
 import { initExtensions } from './modules/extensions.js';
 // initFiles — вивер+дерево мигрированы в отдельное окно (renderer/module-entry.js).
 
-const APP_VERSION = 'alpha v1.1.100';
+const APP_VERSION = 'alpha v1.1.101';
 const GUTTER = 5;
 // Системный терминал («Система · ~») мигрирован в отдельное окно (renderer/modules/scratch.js):
 // его id `__scratch__::tN` маршрутизируются main'ом в окно-владельца, в ядре их больше не обрабатываем.
@@ -1218,7 +1216,7 @@ async function pasteInto(id) {
   if (text) lite.pty.write(id, text);
   // Reading the clipboard is async (IPC round-trip) and the right-click menu steals
   // focus — without this the terminal looks "frozen" until clicked. Refocus the xterm.
-  const rec = terms.get(id);
+  const rec = isExtTerm(id) ? extTerms.get(id) : terms.get(id); // dev-терминал модуля живёт в extTerms
   if (rec && rec.term) { try { rec.term.focus(); } catch (_) {} }
 }
 // Smart Ctrl+C: if there's a non-empty selection, copy it (and clear, so the next
@@ -1313,11 +1311,16 @@ function refitActiveTerminal(focusIt) {
     try { rec.fit.fit(); lite.pty.resize(asid, rec.term.cols, rec.term.rows); if (focusIt) rec.term.focus(); } catch (_) {}
   });
 }
+// ⚠ id из контекстного меню терминала может быть и dev-терминалом модуля (`__extterm__::tN`) —
+// его НЕТ в `terms`. Раньше обе функции молча падали на activeSessionId(), и «Перезапустить» в
+// терминале папки модуля перезапускал PTY активного проекта, убивая работающего там агента.
 function clearTerminal(id) {
+  if (isExtTerm(id)) { const r = extTerms.get(id); if (r) { try { r.term.clear(); } catch (_) {} r.term.focus(); } return; }
   const sid = (id && terms.has(id)) ? id : activeSessionId();
   const rec = terms.get(sid); if (rec) { try { rec.term.clear(); } catch (_) {} rec.term.focus(); }
 }
 function restartTerminal(id) {
+  if (isExtTerm(id)) { restartExtTerminal(id); return; }
   const sid = (id && terms.has(id)) ? id : activeSessionId();
   const rec = terms.get(sid);
   const proj = rec && projects.find((p) => p.id === rec.projId);
@@ -1329,6 +1332,14 @@ function restartTerminal(id) {
   lite.pty.restart({ id: sid, cwd: proj.path, cols: rec.term.cols, rows: rec.term.rows });
   rec.term.focus();
 }
+// Перезапуск dev-терминала модуля — в его СОБСТВЕННОЙ папке (cwd запоминаем при создании).
+function restartExtTerminal(id) {
+  const r = extTerms.get(id);
+  if (!r) return;
+  try { r.term.reset(); } catch (_) {}
+  lite.pty.restart({ id, cwd: r.cwd, cols: r.term.cols, rows: r.term.rows });
+  r.term.focus();
+}
 
 
 // Терминал dev-папки модуля: PTY+xterm в переданном контейнере (живёт в #ext-pane).
@@ -1338,7 +1349,7 @@ function createExtTerminal(container, cwd) {
   // Без onKey: у dev-терминала модуля нет вкладок, а Ctrl+F открыл бы поиск ЧУЖОГО
   // (активного проектного) терминала — поэтому поиск здесь не перехватываем (как было).
   const { term, fit, search } = buildXterm(container, id, { cwd });
-  extTerms.set(id, { term, fit, search, container });
+  extTerms.set(id, { term, fit, search, container, cwd }); // cwd — для «Перезапустить» из контекст-меню
   return {
     id,
     write: (s) => lite.pty.write(id, s),
@@ -2218,7 +2229,9 @@ function openPromptsManager(projId) {
 }
 
 // terminal right-click menu
-function showTermMenu(x, y, term, projId) {
+// `sid` — id ИМЕННО того терминала, по которому кликнули: сессия проекта (`p…::tN`) ИЛИ
+// dev-терминал модуля (`__extterm__::tN`). Все действия обязаны идти по нему, а не по активной вкладке.
+function showTermMenu(x, y, term, sid) {
   closeMenus();
   const dd = el('div', 'menu-dropdown');
   dd.style.minWidth = '160px';
@@ -2228,12 +2241,12 @@ function showTermMenu(x, y, term, projId) {
     lite.copyText(term.getSelection());
     if (term.clearSelection) term.clearSelection();
   } : null, hasSel ? '' : 'disabled'));
-  dd.appendChild(menuRow('clipboard', 'Вставить', () => { closeMenus(); pasteInto(projId); }));
+  dd.appendChild(menuRow('clipboard', 'Вставить', () => { closeMenus(); pasteInto(sid); }));
   dd.appendChild(el('div', 'menu-sep'));
-  addPromptsItem(dd, projId);
+  addPromptsItem(dd, sid);
   dd.appendChild(el('div', 'menu-sep'));
-  dd.appendChild(menuRow('eraser', 'Очистить', () => { closeMenus(); clearTerminal(projId); }));
-  dd.appendChild(menuRow('refresh', 'Перезапустить', () => { closeMenus(); restartTerminal(projId); }));
+  dd.appendChild(menuRow('eraser', 'Очистить', () => { closeMenus(); clearTerminal(sid); }));
+  dd.appendChild(menuRow('refresh', 'Перезапустить', () => { closeMenus(); restartTerminal(sid); }));
   dd.addEventListener('click', (e) => e.stopPropagation());
   placeMenu(dd, x, y);
 }

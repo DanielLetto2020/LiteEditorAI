@@ -497,9 +497,22 @@ export function initTextProc(host) {
   }
   async function saveFileAs() {
     if (!lite.tp.saveFileAs) { toast('Нативный диалог недоступен', { kind: 'err' }); return false; }
-    const r = await lite.tp.saveFileAs({ content: currentMarkdown(), name: currentName, ext: 'md' });
+    // Формат — по тому, что открыто (как в saveFile): раньше «Сохранить как» всегда отдавал markdown,
+    // и открытый .html молча превращался в md-текст.
+    const wasHtml = /\.html?$/i.test(currentFile || currentName || '');
+    const r = await lite.tp.saveFileAs({
+      content: wasHtml ? htmlDocWrap(currentHtml()) : currentMarkdown(),
+      name: currentName, ext: wasHtml ? 'html' : 'md',
+    });
     if (!r || r.canceled) return false;
     if (!r.ok) { toast(r.error || 'Не удалось сохранить файл', { kind: 'err' }); return false; }
+    // Пользователь мог сменить расширение прямо в диалоге — приводим содержимое к выбранному формату.
+    const nowHtml = /\.html?$/i.test(r.file || '');
+    if (nowHtml !== wasHtml) {
+      const fixed = nowHtml ? htmlDocWrap(currentHtml()) : currentMarkdown();
+      const w = await lite.fs.writeFile(r.file, fixed);
+      if (w && w.error) { toast('Ошибка сохранения: ' + w.error, { kind: 'err' }); return false; }
+    }
     currentFile = r.file; currentName = r.name; dirty = false;
     if (typeof saveCurrentTabState === 'function') {
         const tab = openTabs.find(t => t.id === activeTabId);

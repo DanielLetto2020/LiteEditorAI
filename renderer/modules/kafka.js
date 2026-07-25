@@ -882,7 +882,7 @@ export function initKafka(host) {
       if (mMsg.key != null) mh.appendChild(badge('key: ' + mMsg.key, 'ключ сообщения', 'type'));
       mh.appendChild(el('span', 'rmq-msg-bytes', fmtB(mMsg.size)));
       const cp = iconBtn('drow-act', 'copy', 'Скопировать payload', 12);
-      cp.onclick = () => { navigator.clipboard.writeText(mMsg.value || '').then(() => toast('Скопировано')); };
+      cp.onclick = () => { lite.copyText(mMsg.value || ''); toast('Скопировано'); };
       mh.appendChild(cp);
       blk.appendChild(mh);
       let text = mMsg.value || '';
@@ -1114,7 +1114,7 @@ export function initKafka(host) {
     if (p.key != null) head.appendChild(badge('key: ' + p.key, 'ключ сообщения', 'type'));
     head.appendChild(el('span', 'rmq-msg-bytes', fmtB(p.size)));
     const cp = iconBtn('drow-act', 'copy', 'Скопировать payload', 12);
-    cp.onclick = (e) => { e.stopPropagation(); navigator.clipboard.writeText(p.value || '').then(() => toast('Скопировано')); };
+    cp.onclick = (e) => { e.stopPropagation(); lite.copyText(p.value || ''); toast('Скопировано'); };
     head.appendChild(cp);
     row.appendChild(head);
     row.appendChild(el('div', 'rmq-tl-prev', (p.value || '').replace(/\s+/g, ' ').slice(0, 180) || '(пустой payload)'));
