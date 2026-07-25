@@ -6,6 +6,7 @@
 import {
   el, icon, iconBtn, toast, makeModal, showConfirm, showPrompt, hydrateIcons, setErrorSink, applyLayoutSwap, ICONS,
 } from './ui.js';
+import { initI18n } from './i18n.js';
 import { createCodeEditor } from './codeedit.js';
 import { termThemeFor } from './themes.js';
 import { applyFrame } from './frame.js';
@@ -321,4 +322,5 @@ function boot() {
 }
 
 // fetch the editor's current project first, then boot
+initI18n();   // язык окна модуля — тот же, что у редактора (словарь синхронно из main)
 lite.app.getActiveProject().then((p) => { activeProj = p || null; boot(); }).catch(() => boot());

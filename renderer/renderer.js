@@ -10,6 +10,7 @@ import '@xterm/xterm/css/xterm.css';
 
 // CodeMirror/marked/showMinimap/codeedit — переехали в окно вивера (renderer/modules/files.js).
 // В ядре остались только терминал (xterm) + темы/термутилы.
+import { initI18n, t, translate as i18nTranslate, getLocale } from './i18n.js';
 import { THEMES, TERM_THEME, DEFAULT_THEME } from './themes.js';
 import { FRAME_COLORS, frameConf, applyFrame } from './frame.js';
 import { loadFastRenderer, applyUnicode11, copySelection } from './termutil.js';
@@ -25,7 +26,7 @@ import { el, icon, iconBtn, hydrateIcons, toast, makeModal, showConfirm, showPro
 import { initExtensions } from './modules/extensions.js';
 // initFiles — вивер+дерево мигрированы в отдельное окно (renderer/module-entry.js).
 
-const APP_VERSION = 'alpha v1.1.105';
+const APP_VERSION = 'alpha v1.1.112';
 const GUTTER = 5;
 // Системный терминал («Система · ~») мигрирован в отдельное окно (renderer/modules/scratch.js):
 // его id `__scratch__::tN` маршрутизируются main'ом в окно-владельца, в ядре их больше не обрабатываем.
@@ -2555,6 +2556,8 @@ function showSettings() {
       <section class="set-group">
         <div class="set-group-h"><span class="set-ic">🎨</span> Внешний вид</div>
         <div class="set-group-body">
+          <label class="set-row"><span>Язык интерфейса</span><select id="st-lang"></select></label>
+          <div class="set-hint">Языки — подключаемые файлы <code>locales/&lt;код&gt;.json</code>. Свой язык или правки к готовому положите в папку пользовательских локалей — она перекрывает встроенные. <button class="btn tiny" id="st-lang-dir" type="button">Открыть папку языков</button></div>
           <label class="set-row"><span>Тема</span><select id="st-theme"></select></label>
           <label class="set-row"><span>Размер шрифта</span><input type="number" id="st-font" min="9" max="24"></label>
         </div>
@@ -2616,8 +2619,28 @@ function showSettings() {
   const font = m.querySelector('#st-font'); font.value = settings.fontSize;
   const ssOn = m.querySelector('#st-ss'); ssOn.checked = settings.screensaver !== false;
   const ssMin = m.querySelector('#st-ss-min'); ssMin.value = settings.screensaverMins || 5;
+  // Язык интерфейса: список собирает main (встроенные locales/ + пользовательские ~/.LiteEditorAI/locales/).
+  const langSel = m.querySelector('#st-lang');
+  lite.i18n.list().then(({ current, list }) => {
+    langSel.innerHTML = '';
+    for (const l of (list || [])) {
+      const o = document.createElement('option');
+      o.value = l.code;
+      o.textContent = l.nativeName + (l.nativeName === l.name ? '' : ` · ${l.name}`) + (l.builtin ? '' : ' (свой)');
+      langSel.appendChild(o);
+    }
+    langSel.value = current || 'ru';
+  }).catch(() => {});
+  langSel.addEventListener('change', async () => {
+    const r = await lite.i18n.set(langSel.value);        // main разошлёт словарь во все окна — перевод применится на лету
+    if (r && r.error) toast(r.error, { kind: 'err' });
+  });
+  m.querySelector('#st-lang-dir').onclick = async () => {
+    const r = await lite.i18n.openUserDir();
+    if (r && r.error) toast(r.error, { kind: 'err' });
+  };
   const themeSel = m.querySelector('#st-theme');
-  for (const [key, t] of Object.entries(THEMES)) { const o = document.createElement('option'); o.value = key; o.textContent = t.label; themeSel.appendChild(o); }
+  for (const [key, th] of Object.entries(THEMES)) { const o = document.createElement('option'); o.value = key; o.textContent = th.label; themeSel.appendChild(o); }
   themeSel.value = THEMES[settings.theme] ? settings.theme : DEFAULT_THEME;
   themeSel.addEventListener('change', () => { settings.theme = themeSel.value; saveSettings(); applyTheme(); }); // live preview
   // Рамка окна — живой предпросмотр: применяется сразу и уезжает в окна модулей (шина settingsChanged).
@@ -3165,4 +3188,5 @@ function cycleProject(dir) {
   if (next) setActive(next.id);
 }
 
+initI18n();   // словарь приходит синхронно из main → интерфейс сразу на выбранном языке
 init();

@@ -13,7 +13,7 @@ A terminal-first desktop workspace for developers who **supervise AI coding agen
 [![Built with Electron](https://img.shields.io/badge/Electron-42-47848F.svg?logo=electron&logoColor=white)](https://www.electronjs.org/)
 [![Status: alpha](https://img.shields.io/badge/status-alpha-orange.svg)](#status)
 
-**English** · [Русский](README.ru.md) · [lite-editor-ai.ru](https://lite-editor-ai.ru)
+**English** · [Русский](README.ru.md) · [简体中文](README.zh.md) · [lite-editor-ai.ru](https://lite-editor-ai.ru)
 
 </div>
 
@@ -23,9 +23,9 @@ A terminal-first desktop workspace for developers who **supervise AI coding agen
 mark the two agents waiting for an answer, and the badge in the title bar counts them.*
 
 > [!NOTE]
-> **The interface is currently Russian-only.** English localization is the top item on the roadmap — if you
-> want it sooner, [open an issue](https://github.com/DanielLetto2020/LiteEditorAI/issues) and say so, or help
-> with it: it is the single most valuable first contribution right now.
+> **Interface language: English, Russian or 简体中文** — switch it in *Settings → Interface language*, applied
+> live without a restart. Languages are **pluggable files** (`locales/<code>.json`), so adding your own is one
+> file and no build — see [Languages](#languages).
 
 ## Why
 
@@ -140,6 +140,23 @@ where **your own AI agent** writes the code against the bundled spec (`GUIDE.md`
 to it). The result appears under "My modules" and can be hot-reloaded. A simple example (a calculator) ships
 with the app; the spec for authors is in [`module-kit/`](module-kit/).
 
+## Languages
+
+The interface ships in **English, Russian and Simplified Chinese**; pick one in *Settings → Interface language*
+and it applies immediately — no restart, no reopening of module windows.
+
+Every language is a plain JSON file where the key is the original string:
+
+```
+locales/en.json              # bundled with the app
+~/.LiteEditorAI/locales/     # your own files; they override the bundled ones
+```
+
+To add a language, copy `locales/en.json`, translate the values, drop it in as `<code>.json` and pick it in the
+settings — no rebuild required. The same folder also lets you fix a wording you dislike in an existing language:
+put just that one key in your own file. `node scripts/i18n-extract.js` refreshes the source dictionary and
+reports how complete each locale is; strings a locale is missing fall back to English rather than Russian.
+
 ## Themes
 
 Six themes — Neumorphism (default), Glass, Material, Catppuccin, Gruvbox, Aurora. The terminal is recoloured
@@ -206,8 +223,8 @@ open the PR **into `contrib`** (not `main`). Accepted changes are ported into de
 the next releases; review is manual, at the maintainer's discretion. Details in
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
-Looking for a first contribution? **English localization of the UI** is the most valuable thing anyone could
-pick up right now.
+**Translations are very welcome**: a language is one file in [`locales/`](locales/), so translating the whole
+interface into your language means editing a single JSON — no build, no code.
 
 ## Acknowledgements
 
