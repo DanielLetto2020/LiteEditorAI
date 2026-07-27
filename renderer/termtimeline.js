@@ -30,6 +30,7 @@
 const MAX_MARKS = 400;      // потолок числа маркеров на терминал (старые отбрасываем)
 const QUIET_MS = 20000;     // пауза в выводе, после которой ставим засечку «новое дело»
 const TICK_MS = 60000;      // минимальный шаг между метками-минутами
+const RAIL_STEP = 5;        // шаг делений рельса, в строках экрана
 
 const pad2 = (n) => (n < 10 ? '0' + n : String(n));
 const hhmm = (ts) => { const d = new Date(ts); return pad2(d.getHours()) + ':' + pad2(d.getMinutes()); };
@@ -55,6 +56,11 @@ export function attachTimeline(term, container, { enabled = false, fontSize = 13
   const root = document.createElement('div');
   root.className = 'term-timeline';
   root.setAttribute('data-no-i18n', '');   // время и цифры переводить нечего
+  // Рельс с делениями — под метками (метки рисуются поверх). Засечки ставятся только по
+  // событиям, поэтому в тишине полоса была бы пустой; рельс даёт ей опору и ритм.
+  const rail = document.createElement('div');
+  rail.className = 'ttl-rail';
+  root.appendChild(rail);
   const inner = document.createElement('div');
   inner.className = 'ttl-inner';
   root.appendChild(inner);
@@ -68,6 +74,7 @@ export function attachTimeline(term, container, { enabled = false, fontSize = 13
   let on = enabled;
   let raf = 0;
   let lastHtml = null;        // подпись отрисованного состояния: гасит лишние правки DOM
+  let lastRail = null;        // подпись рельса — он зависит только от геометрии, не от меток
 
   let curFont = fontSize;
   // Ширина шкалы и отступ под неё считаются в JS (зависят от кегля). Отступ вешается на САМ
@@ -171,6 +178,23 @@ export function attachTimeline(term, container, { enabled = false, fontSize = 13
       const alive = marks.filter((m) => !m.marker.isDisposed);
       marks.length = 0;
       for (const m of alive) marks.push(m);
+    }
+
+    // Деления рельса привязаны к СТРОКАМ экрана, а не ко времени: интерполировать минуты
+    // между засечками нельзя — вывод идёт рывками, и деление встало бы не туда, соврав про
+    // «когда это было». Поэтому они меняются только при смене кегля/размера окна, и
+    // перестраиваются по своей подписи, а не каждый кадр.
+    const railSig = Math.round(top) + '|' + Math.round(cell * 100) + '|' + term.rows;
+    if (railSig !== lastRail) {
+      lastRail = railSig;
+      rail.style.top = top + 'px';
+      rail.replaceChildren();
+      for (let y = RAIL_STEP; y < term.rows; y += RAIL_STEP) {
+        const t = document.createElement('div');
+        t.className = 'ttl-tick';
+        t.style.top = Math.round(y * cell) + 'px';
+        rail.appendChild(t);
+      }
     }
 
     const rows = [];

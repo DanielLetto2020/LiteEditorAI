@@ -450,9 +450,19 @@ body.viewer-zen #vcs-topbar { display: none !important; }
      фон терминала (он занимает и зону padding, где стоит шкала) закрывает метки. */
   position: absolute; left: 0; top: 0; bottom: 0; z-index: 2; overflow: hidden;
   font-family: "JetBrains Mono", "Fira Code", monospace; line-height: 1;
-  border-right: 1px solid var(--border); user-select: none; pointer-events: none;
+  /* border-right — ось шкалы, на неё приходят и деления, и штрихи засечек; поэтому
+     --border-strong, а не --border: как разделитель он был почти не виден. */
+  border-right: 1px solid var(--border-strong); user-select: none; pointer-events: none;
 }
 .ttl-inner { position: absolute; left: 0; right: 0; }
+/* Деления рельса. Осью служит border-right самой полосы — на неё же приходят штрихи засечек,
+   поэтому отдельную линию не рисуем (получилась бы двойная). Между засечками полоса иначе
+   стояла бы пустой.
+   Деления РАВНОМЕРНЫ и тусклее засечек: делить их на «мелкие/крупные» значило бы намекнуть
+   на структуру, которой нет — строка экрана не единица времени. Отличие от данных держится
+   на цвете (--border против --border-strong у засечек) и на подписи, которой у декора нет. */
+.ttl-rail { position: absolute; left: 0; right: 0; }
+.ttl-tick { position: absolute; right: 0; width: 5px; height: 1px; background: var(--border); }
 .ttl-mark {
   position: absolute; right: 6px; display: flex; align-items: center;
   color: var(--text-dim); white-space: nowrap; pointer-events: auto;
