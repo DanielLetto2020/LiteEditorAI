@@ -9,7 +9,6 @@
 import { el, icon, toast, showConfirm, showPrompt, baseName, makeModal } from '../ui.js';
 import { ensureLanguage } from '../codeedit.js';
 
-const $ = (sel) => document.querySelector(sel);
 const lite = window.lite;
 
 export function initGit(host) {

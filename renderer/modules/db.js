@@ -701,7 +701,7 @@ export function initDb(host) {
   function openDiffTab() { const key = 'diff'; if (!findTab(key)) tabs.push({ key, kind: 'diff', title: 'Сравнение' }); activate(key); }
   function openDdlTab(schema, table, objKind) { const key = 'ddl:' + (objKind || '') + ':' + (schema || '') + '.' + table; if (!findTab(key)) tabs.push({ key, kind: 'ddl', schema, table, objKind, title: 'DDL: ' + table }); activate(key); }
 
-  function renderTabBar(bar, body) {
+  function renderTabBar(bar, _body) {
     if (!bar) return; bar.innerHTML = '';
     if (!tabs.length) { bar.appendChild(el('span', 'db-tab-empty', 'Откройте таблицу в дереве или создайте SQL-запрос')); return; }
     for (const t of tabs) {
@@ -1691,7 +1691,7 @@ export function initDb(host) {
     const Chart = await loadChartLib();
     if (!Chart) { container.appendChild(el('div', 'docker-err', 'Библиотека графиков не загрузилась')); return null; }
     const wrap = el('div', 'db-chart-canvaswrap'); const canvas = document.createElement('canvas'); wrap.appendChild(canvas); container.appendChild(wrap);
-    let instance = null;
+    let instance;
     try { instance = new Chart(canvas, buildChartConfig(type, columns, rows, spec)); }
     catch (e) { container.innerHTML = ''; container.appendChild(el('div', 'docker-err', 'Не построить график: ' + (e.message || e))); return null; }
     if (opts.download) { const dl = iconBtn('db-chart-dl', 'download', 'Скачать PNG', 14); dl.onclick = () => downloadCanvas(canvas, (spec.title || 'chart')); wrap.appendChild(dl); }
@@ -1723,7 +1723,7 @@ export function initDb(host) {
     lite.copyText(`${qIdent(colName)} IN (${vals.map(lit).join(', ')})`); toast(`Скопировано значений: ${vals.length}`);
   }
   function copyResultAs(fmt, columns, rows, name) {
-    let text = '';
+    let text;
     if (fmt === 'markdown') { text = '| ' + columns.join(' | ') + ' |\n| ' + columns.map(() => '---').join(' | ') + ' |\n' + rows.map((r) => '| ' + r.map((v) => v == null ? '' : String(typeof v === 'object' ? JSON.stringify(v) : v).replace(/\|/g, '\\|').replace(/\n/g, ' ')).join(' | ') + ' |').join('\n'); }
     else if (fmt === 'csv') { const esc = (v) => v == null ? '' : /[",\n]/.test(String(v)) ? '"' + String(v).replace(/"/g, '""') + '"' : String(v); text = [columns.join(','), ...rows.map((r) => r.map(esc).join(','))].join('\n'); }
     else if (fmt === 'json') { text = JSON.stringify(rows.map((r) => Object.fromEntries(columns.map((c, i) => [c, r[i]]))), null, 2); }
@@ -1840,7 +1840,6 @@ export function initDb(host) {
 
   // ============================================================ SQL formatter (lightweight, no deps)
   function formatSql(s) {
-    const kw = ['select', 'from', 'where', 'and', 'or', 'order by', 'group by', 'having', 'limit', 'offset', 'left join', 'right join', 'inner join', 'join', 'on', 'insert into', 'values', 'update', 'set', 'delete from', 'union all', 'union'];
     let out = s.replace(/\s+/g, ' ').trim();
     const breakBefore = ['from', 'where', 'order by', 'group by', 'having', 'limit', 'offset', 'left join', 'right join', 'inner join', 'join', 'union all', 'union', 'set', 'values'];
     for (const k of breakBefore) out = out.replace(new RegExp('\\s+' + k.replace(/ /g, '\\s+') + '\\b', 'gi'), '\n' + k.toUpperCase());
@@ -1850,7 +1849,7 @@ export function initDb(host) {
   }
 
   // ============================================================ ER diagram (SVG, draggable)
-  async function renderErTab(body, t) {
+  async function renderErTab(body, _t) {
     const host2 = el('div', 'db-er'); body.appendChild(host2); host2.innerHTML = '<div class="git-loading">Чтение связей…</div>';
     const rel = await lite.db.relations(dbActiveId);
     host2.innerHTML = '';
@@ -1906,7 +1905,7 @@ export function initDb(host) {
   }
 
   // ============================================================ query builder (visual)
-  async function renderBuilderTab(body, t) {
+  async function renderBuilderTab(body, _t) {
     const host2 = el('div', 'db-qb'); body.appendChild(host2);
     host2.appendChild(el('div', 'db-qb-title', 'Конструктор запроса'));
     const tableSel = el('select', 'db-qb-sel');
@@ -1946,7 +1945,7 @@ export function initDb(host) {
   function labelWrap(label, node) { const w = el('div', 'db-field'); w.appendChild(el('label', null, label)); w.appendChild(node); return w; }
 
   // ============================================================ schema diff (two connections)
-  async function renderDiffTab(body, t) {
+  async function renderDiffTab(body, _t) {
     const host2 = el('div', 'db-diff'); body.appendChild(host2);
     host2.appendChild(el('div', 'db-qb-title', 'Сравнение схем'));
     const sel = el('select', 'db-qb-sel'); sel.appendChild(new Option('— другое подключение —', ''));
@@ -2157,7 +2156,7 @@ export function initDb(host) {
         const name = a.name.toLowerCase();
         if (name.startsWith('on')) { n.removeAttribute(a.name); return; }
         if (name === 'href' || name === 'src') {
-          let proto = ''; try { proto = new URL(a.value, location.href).protocol; } catch (_) { n.removeAttribute(a.name); return; }
+          let proto; try { proto = new URL(a.value, location.href).protocol; } catch (_) { n.removeAttribute(a.name); return; }
           const ok = (name === 'src') ? ['http:', 'https:', 'data:'] : ['http:', 'https:', 'mailto:'];
           if (!ok.includes(proto)) n.removeAttribute(a.name);
         }
@@ -2402,7 +2401,7 @@ export function initDb(host) {
     aiPersist(); renderAiChat(host);
     aiRun(host);   // feed the result back so the agent writes a conclusion / next step
   }
-  function aiResultCard(msg, host) {
+  function aiResultCard(msg, _host) {
     const card = el('div', 'db-ai-resultcard');
     const bar = el('div', 'db-ai-resultbar');
     bar.append(icon('database', 13), el('span', 'db-ai-resultlabel', msg.pending ? 'Выполняется…' : (msg.error ? 'Ошибка' : `Результат · строк: ${(msg.rows || []).length}`)));

@@ -49,7 +49,6 @@ const MON = ['янв', 'фев', 'мар', 'апр', 'мая', 'июн', 'июл
 // Важность задачи/заметки (NotePriority) — метка + класс подсветки (как в вебе).
 const PRIO = { low: 'низкий', normal: 'обычный', high: 'высокий', urgent: 'срочно' };
 const TASK_STATUS = { todo: 'К выполнению', in_progress: 'В работе', done: 'Выполнено', blocked: 'Блок' };
-const NOTE_STATUS = { open: 'открыто', done: 'выполнено', archived: 'архив' };
 // Опции форм (точные enum'ы бэкенда: validNotePriority / validNoteViewMode /
 // validTaskStatus / validNoteStatus — см. notes.go/tasks.go IterFlow).
 const PRIO_OPTS = [['low', 'низкий'], ['normal', 'обычный'], ['high', 'высокий'], ['urgent', 'срочно']];

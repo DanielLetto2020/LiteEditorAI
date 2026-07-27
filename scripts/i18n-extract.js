@@ -129,7 +129,7 @@ function unescape(raw) {
 }
 
 // HTML-сущности → символы: в DOM окажется именно символ, значит и ключ должен быть таким
-// («О&nbsp;программе» в разметке = «О программе» в текстовом узле).
+// («О&nbsp;программе» в разметке = «О программе» (обычный пробел) в текстовом узле).
 const ENTITIES = { nbsp: ' ', amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", laquo: '«', raquo: '»', mdash: '—', ndash: '–', hellip: '…', middot: '·', times: '×', deg: '°', copy: '©' };
 function decodeEntities(s) {
   return s

@@ -18,29 +18,53 @@ try { WebSocket = require('ws'); } catch (_) { /* ws не установлен �
 // после обрыва мобильной сети стоит один кадр ~5КБ вместо мегабайтного снапшота.
 const FRAME_MS = 200;       // минимальный интервал между кадрами (trailing debounce)
 
+// Заглушки обработчиков: настоящие приходят из main через init()/set*-сеттеры ниже.
+// Сигнатуры проставлены JSDoc'ом не для красоты — без них пустая стрелка выводится как
+// «функция без аргументов», и проверка типов считает ошибкой КАЖДЫЙ реальный вызов.
+/** @type {{ log: (level: string, scope: string, msg: string, extra?: any) => void }} */
 let logger = { log() {} };
 let getSessions = () => ({ sessions: [], projects: [] });
-let screenFrame = () => null;  // (sid, styled) → {cols,rows,lines[],cursor:[x,y],alt,styled?,curIdx?} — задаётся из main
+/** @type {(sid: string, styled?: boolean) => ({cols:number,rows:number,lines:any[],cursor:number[],alt?:boolean,styled?:boolean,curIdx?:number}|null)} */
+let screenFrame = () => null;  // задаётся из main
+/** @type {(sid: string, data: string) => void} */
 let writeInput = () => {};
-let onPaste = () => {};        // (sid, text) — пульт вставляет текст из своего буфера обмена
+/** @type {(sid: string, text: string) => void} */
+let onPaste = () => {};        // пульт вставляет текст из своего буфера обмена
+/** @type {(projId: string) => void} */
 let openProject = () => {};
+/** @type {(sid: string) => void} */
 let onSelect = () => {};
+/** @type {(sid: string) => void} */
 let onClose = () => {};
+/** @type {(name: string) => void} */
 let onNewFolder = () => {};
 let onRestartApp = () => {};
+/** @type {(reqId: any, sid: string, before: any, size: any) => void} */
 let onHistoryGet = () => {};
+/** @type {(reqId: any, path: string) => void} */
 let onStoreList = () => {};
+/** @type {(reqId: any, path: string) => void} */
 let onStoreGet = () => {};
+/** @type {(reqId: any, path: string) => void} */
 let onStoreGetZip = () => {};
+/** @type {(reqId: any) => void} */
 let onStoreCancel = () => {};
-let onTasksGet = () => {};        // (reqId, id) — пульт запросил список задач (проектный/общий)
-let onTasksSet = () => {};        // (id, notes) — пульт сохранил список задач
-let onNoteToTerminal = () => {};  // (projId, text) — пульт: вставить текст задачи в терминал проекта
-let onPultPresence = () => {};   // (connected:boolean) — пульт подключился/отключился
-let onPairRequest = () => {};    // ({device,name,pubkey,code}) — пульт просит одобрить устройство
-let onPultsChanged = () => {};   // (list) — состав подключённых пультов изменился (для бейджа в UI)
-let onSysInfo = () => {};        // ({device,info,loc}) — пульт прислал системную инфу/гео
-let isBlocked = () => false;     // (device) → доступ устройству отключён в редакторе
+/** @type {(reqId: any, id: string) => void} */
+let onTasksGet = () => {};        // пульт запросил список задач (проектный/общий)
+/** @type {(id: any, notes: any) => void} */
+let onTasksSet = () => {};        // пульт сохранил список задач
+/** @type {(projId: string, text: any) => void} */
+let onNoteToTerminal = () => {};  // пульт: вставить текст задачи в терминал проекта
+/** @type {(connected: boolean) => void} */
+let onPultPresence = () => {};   // пульт подключился/отключился
+/** @type {(req: { device: string, name: string, pubkey: string, code: string }) => void} */
+let onPairRequest = () => {};    // пульт просит одобрить устройство
+/** @type {(list: any[]) => void} */
+let onPultsChanged = () => {};   // состав подключённых пультов изменился (для бейджа в UI)
+/** @type {(info: { device: string, what: string, info: any, loc: any }) => void} */
+let onSysInfo = () => {};        // пульт прислал системную инфу/гео
+/** @type {(device: string) => boolean} */
+let isBlocked = () => false;     // доступ устройству отключён в редакторе
 
 let appConnected = false;        // есть ли сейчас хотя бы один пульт (role=app) на связи
 

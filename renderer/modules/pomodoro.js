@@ -51,7 +51,7 @@ export function initPomodoro(host) {
   let paneOpen = false;
   let live = { running: false, paused: false, phase: 'idle', remaining: 0, total: 1, cycle: 0, tech: null };
   let logCache = [];
-  let unsubTick = null, unsubLog = null;
+  let unsubTick = null;
 
   // ---------------- конфиг (свои техники + выбор + цель + флаги) ----------------
   const persisted = (host.STORE && host.STORE.pomodoro) || {};
@@ -426,7 +426,7 @@ export function initPomodoro(host) {
     renderBody();
     if (!unsubTick) {
       unsubTick = lite.pomodoro.onTick((s) => { live = s || live; updateTimer(); });
-      unsubLog = lite.pomodoro.onLogChanged(() => refreshHistory());
+      lite.pomodoro.onLogChanged(() => refreshHistory());
       refreshLive();
       refreshHistory();
     }

@@ -43,7 +43,7 @@ function fmtBytes(n) {
   return (v >= 100 ? Math.round(v) : v.toFixed(1)) + ' ' + u[i];
 }
 // Числа с разделителем разрядов (узкий пробел).
-function fmtNum(n) { return (n || 0).toLocaleString('ru-RU').replace(/ /g, ' '); }
+function fmtNum(n) { return (n || 0).toLocaleString('ru-RU').replace(/\u00a0/g, '\u202f'); }
 
 export function initAudit(host) {
   const { layout, GUTTER, saveUiState, refitActiveTerminal, activeProject, closeOtherPanels, openInViewer, sendToTerminal } = host;
@@ -464,7 +464,7 @@ export function initAudit(host) {
     if (!openInViewer) { toast('Вивер недоступен'); return; }
     // Путь от бэкенда — относительный с '/'; собираем абсолютный через корень проекта.
     const sep = p.path.includes('\\') ? '\\' : '/';
-    const abs = p.path.replace(/[\/]+$/, '') + sep + rel.split('/').join(sep);
+    const abs = p.path.replace(/\/+$/, '') + sep + rel.split('/').join(sep);
     openInViewer(abs, line || undefined);
   }
 

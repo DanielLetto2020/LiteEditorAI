@@ -10,7 +10,7 @@ import '@xterm/xterm/css/xterm.css';
 
 // CodeMirror/marked/showMinimap/codeedit — переехали в окно вивера (renderer/modules/files.js).
 // В ядре остались только терминал (xterm) + темы/термутилы.
-import { initI18n, t as tt, translate as i18nTranslate, getLocale } from './i18n.js';
+import { initI18n, t as tt } from './i18n.js';
 import { THEMES, TERM_THEME, DEFAULT_THEME } from './themes.js';
 import { FRAME_COLORS, frameConf, applyFrame } from './frame.js';
 import { loadFastRenderer, applyUnicode11, copySelection } from './termutil.js';
@@ -26,7 +26,7 @@ import { el, icon, iconBtn, hydrateIcons, toast, makeModal, showConfirm, showPro
 import { initExtensions } from './modules/extensions.js';
 // initFiles — вивер+дерево мигрированы в отдельное окно (renderer/module-entry.js).
 
-const APP_VERSION = 'alpha v1.1.114';
+const APP_VERSION = 'alpha v1.1.116';
 const GUTTER = 5;
 // Системный терминал («Система · ~») мигрирован в отдельное окно (renderer/modules/scratch.js):
 // его id `__scratch__::tN` маршрутизируются main'ом в окно-владельца, в ядре их больше не обрабатываем.
@@ -820,8 +820,7 @@ async function checkProjectsExistence() {
 // so we must NOT treat trailing $, #, ❯ as "waiting" (that's just idle/ready).
 // PROMPT_RE is a narrow backup for plain CLIs (git/ssh/sudo) that don't bell.
 const PROMPT_RE = /\(y\/n\)|\[y\/n\]|\[Y\/n\]|\(yes\/no\)|overwrite\?|password[^\n]{0,24}:|passphrase[^\n]{0,24}:|press\s+(?:enter|return|any key)|continue\?/i;
-// eslint-disable-next-line no-control-regex
-const ANSI_RE = /\x1b\][^\x07]*\x07|\x1b\[[0-?]*[ -\/]*[@-~]|\x1b[@-_]|[\x00-\x08\x0b-\x1f\x7f]/g;
+const ANSI_RE = /\x1b\][^\x07]*\x07|\x1b\[[0-?]*[ -/]*[@-~]|\x1b[@-_]|[\x00-\x08\x0b-\x1f\x7f]/g;
 const stripAnsi = (str) => str.replace(ANSI_RE, '');
 // A real "attention" bell vs the BEL that merely terminates an OSC title sequence
 // (ESC ] 0 ; title BEL) — which bash/zsh/Claude emit on every prompt. Strip OSC

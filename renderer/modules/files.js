@@ -1406,7 +1406,7 @@ export function initFiles(host) {
       return syms;
     }
     if (ext === 'css' || ext === 'scss') {
-      for (let i = 0; i < lines.length; i++) { if (/^\s*@(media|keyframes|supports|import|font-face)/.test(lines[i])) continue; const m = /^([.#&:\[a-zA-Z][^{};]*?)\s*\{/.exec(lines[i]); if (m) push(i + 1, m[1].trim().slice(0, 60), 'rule'); }
+      for (let i = 0; i < lines.length; i++) { if (/^\s*@(media|keyframes|supports|import|font-face)/.test(lines[i])) continue; const m = /^([.#&:[a-zA-Z][^{};]*?)\s*\{/.exec(lines[i]); if (m) push(i + 1, m[1].trim().slice(0, 60), 'rule'); }
       return syms;
     }
     // JS/TS/JSX и прочие C-подобные
