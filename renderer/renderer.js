@@ -14,6 +14,7 @@ import { initI18n, t as tt } from './i18n.js';
 import { THEMES, TERM_THEME, DEFAULT_THEME } from './themes.js';
 import { FRAME_COLORS, frameConf, applyFrame } from './frame.js';
 import { loadFastRenderer, applyUnicode11, copySelection } from './termutil.js';
+import { attachTimeline } from './termtimeline.js';
 // initTextProc — «Обработка текста» мигрирована в отдельное окно (renderer/module-entry.js).
 import { el, icon, iconBtn, hydrateIcons, toast, makeModal, showConfirm, showPrompt, baseName, ICONS, setErrorSink } from './ui.js';
 // initGit — модуль «Git» мигрирован в отдельное окно (renderer/module-entry.js).
@@ -26,7 +27,7 @@ import { el, icon, iconBtn, hydrateIcons, toast, makeModal, showConfirm, showPro
 import { initExtensions } from './modules/extensions.js';
 // initFiles — вивер+дерево мигрированы в отдельное окно (renderer/module-entry.js).
 
-const APP_VERSION = 'alpha v1.1.116';
+const APP_VERSION = 'alpha v1.1.119';
 const GUTTER = 5;
 // Системный терминал («Система · ~») мигрирован в отдельное окно (renderer/modules/scratch.js):
 // его id `__scratch__::tN` маршрутизируются main'ом в окно-владельца, в ядре их больше не обрабатываем.
@@ -53,7 +54,7 @@ function persist(key, value) { STORE[key] = value; lite.store.set(key, value); }
 function projId(p) { let h = 5381; for (let i = 0; i < p.length; i++) h = ((h << 5) + h + p.charCodeAt(i)) >>> 0; return 'p' + h.toString(36); }
 
 // ---------------------------------------------------------------- settings (tiny on purpose)
-const DEFAULT_SETTINGS = { notifications: true, sound: false, idleMs: 1200, fontSize: 13, workingDir: '', scanDirs: [], theme: 'neumorphism', onboarded: false, shell: '', minimap: true, notesTab: 'project', frameOn: true, frameColor: 'green', framePulse: true, framePeriodS: 6 };
+const DEFAULT_SETTINGS = { notifications: true, sound: false, idleMs: 1200, fontSize: 13, workingDir: '', scanDirs: [], theme: 'neumorphism', onboarded: false, shell: '', minimap: true, notesTab: 'project', frameOn: true, frameColor: 'green', framePulse: true, framePeriodS: 6, termTimeline: false };
 function loadSettings() { return { ...DEFAULT_SETTINGS, ...(STORE.settings || {}) }; }
 let settings = loadSettings();
 function saveSettings() { persist('settings', settings); }
@@ -785,7 +786,7 @@ function doCloseProject(id) {
     for (const sid of tabs.sessions) {
       lite.pty.kill(sid);
       const rec = terms.get(sid);
-      if (rec) { clearTimeout(rec.idleTimer); try { rec.term.dispose(); } catch (_) {} rec.container.remove(); terms.delete(sid); }
+      if (rec) { clearTimeout(rec.idleTimer); try { rec.timeline.dispose(); } catch (_) {} try { rec.term.dispose(); } catch (_) {} rec.container.remove(); terms.delete(sid); }
       projState.delete(sid);
     }
     tabsByProj.delete(id);
@@ -1011,9 +1012,16 @@ function buildXterm(container, id, { cwd, onInput, onKey } = {}) {
   applyUnicode11(term);
   term.open(container);
   loadFastRenderer(term);
+  // Шкала времени слева — подключается ДО первого fit(): она забирает ширину у области вывода,
+  // и cols должны считаться уже с её учётом, иначе первый же resize уедет на несколько колонок.
+  const timeline = attachTimeline(term, container, {
+    enabled: settings.termTimeline === true,
+    fontSize: settings.fontSize,
+    onGeometry: () => requestAnimationFrame(() => { try { fit.fit(); lite.pty.resize(id, term.cols, term.rows); } catch (_) {} }),
+  });
   fit.fit();
   lite.pty.create({ id, cwd, cols: term.cols, rows: term.rows });
-  term.onData((data) => { if (onInput) onInput(data); lite.pty.write(id, data); });
+  term.onData((data) => { timeline.markInput(data); if (onInput) onInput(data); lite.pty.write(id, data); });
   term.onResize(({ cols, rows }) => lite.pty.resize(id, cols, rows));
   term.attachCustomKeyEventHandler((e) => {
     if (e.type !== 'keydown') return true;
@@ -1028,14 +1036,21 @@ function buildXterm(container, id, { cwd, onInput, onKey } = {}) {
     return true;
   });
   container.addEventListener('contextmenu', (e) => { e.preventDefault(); showTermMenu(e.clientX, e.clientY, term, id); });
-  return { term, fit, search };
+  return { term, fit, search, timeline };
+}
+// Вкл/выкл шкалы времени во ВСЕХ живых терминалах (настройка применяется на лету, без перезапуска).
+function applyTimeline() {
+  const on = settings.termTimeline === true;
+  for (const rec of terms.values()) { try { rec.timeline.setEnabled(on); } catch (_) {} }
+  for (const rec of extTerms.values()) { try { rec.timeline.setEnabled(on); } catch (_) {} }
+  refitActiveTerminal();
 }
 
 function createSession(proj, name, custom) {
   const id = proj.id + '::t' + (++sessionSeq);
   const container = el('div', 'term-instance');
   $('#terminals').appendChild(container);
-  const { term, fit, search } = buildXterm(container, id, {
+  const { term, fit, search, timeline } = buildXterm(container, id, {
     cwd: proj.path,
     onInput: () => { const r = terms.get(id); if (r) r.lastInputAt = Date.now(); },
     onKey: (e) => {
@@ -1046,7 +1061,7 @@ function createSession(proj, name, custom) {
     },
   });
   term.registerLinkProvider(fileLinkProvider(term, proj.path));
-  const rec = { term, fit, search, container, projId: proj.id, name, customName: !!custom, idleTimer: null, sawBell: false, tail: '', busyStart: 0, lastInputAt: 0, activitySeq: 0 };
+  const rec = { term, fit, search, timeline, container, projId: proj.id, name, customName: !!custom, idleTimer: null, sawBell: false, tail: '', busyStart: 0, lastInputAt: 0, activitySeq: 0 };
   terms.set(id, rec);
   // Имя вкладки из заголовка терминала (OSC ]0;…): Claude/агент в промпте пишет туда
   // текущую задачу, шелл — user@host:cwd. Подхватываем как имя вкладки, пока пользователь
@@ -1179,7 +1194,7 @@ function closeTab(sid) {
   const t = tabsByProj.get(activeId); if (!t || t.sessions.length <= 1) return; // keep ≥1 tab
   lite.pty.kill(sid);
   const rec = terms.get(sid);
-  if (rec) { clearTimeout(rec.idleTimer); try { rec.term.dispose(); } catch (_) {} rec.container.remove(); terms.delete(sid); }
+  if (rec) { clearTimeout(rec.idleTimer); try { rec.timeline.dispose(); } catch (_) {} try { rec.term.dispose(); } catch (_) {} rec.container.remove(); terms.delete(sid); }
   projState.delete(sid);
   const i = t.sessions.indexOf(sid);
   t.sessions.splice(i, 1);
@@ -1328,9 +1343,9 @@ function refitActiveTerminal(focusIt) {
 // его НЕТ в `terms`. Раньше обе функции молча падали на activeSessionId(), и «Перезапустить» в
 // терминале папки модуля перезапускал PTY активного проекта, убивая работающего там агента.
 function clearTerminal(id) {
-  if (isExtTerm(id)) { const r = extTerms.get(id); if (r) { try { r.term.clear(); } catch (_) {} r.term.focus(); } return; }
+  if (isExtTerm(id)) { const r = extTerms.get(id); if (r) { try { r.term.clear(); } catch (_) {} try { r.timeline.reset(); } catch (_) {} r.term.focus(); } return; }
   const sid = (id && terms.has(id)) ? id : activeSessionId();
-  const rec = terms.get(sid); if (rec) { try { rec.term.clear(); } catch (_) {} rec.term.focus(); }
+  const rec = terms.get(sid); if (rec) { try { rec.term.clear(); } catch (_) {} try { rec.timeline.reset(); } catch (_) {} rec.term.focus(); }
 }
 function restartTerminal(id) {
   if (isExtTerm(id)) { restartExtTerminal(id); return; }
@@ -1339,6 +1354,7 @@ function restartTerminal(id) {
   const proj = rec && projects.find((p) => p.id === rec.projId);
   if (!proj || !rec) return;
   try { rec.term.reset(); } catch (_) {}
+  try { rec.timeline.reset(); } catch (_) {}
   rec.sawBell = false; rec.tail = ''; rec.busyStart = Date.now();
   clearTimeout(rec.idleTimer);
   setProjState(sid, 'busy');
@@ -1350,6 +1366,7 @@ function restartExtTerminal(id) {
   const r = extTerms.get(id);
   if (!r) return;
   try { r.term.reset(); } catch (_) {}
+  try { r.timeline.reset(); } catch (_) {}
   lite.pty.restart({ id, cwd: r.cwd, cols: r.term.cols, rows: r.term.rows });
   r.term.focus();
 }
@@ -1361,14 +1378,14 @@ function createExtTerminal(container, cwd) {
   const id = EXT_TERM_ID + '::t' + (++extTermSeq);
   // Без onKey: у dev-терминала модуля нет вкладок, а Ctrl+F открыл бы поиск ЧУЖОГО
   // (активного проектного) терминала — поэтому поиск здесь не перехватываем (как было).
-  const { term, fit, search } = buildXterm(container, id, { cwd });
-  extTerms.set(id, { term, fit, search, container, cwd }); // cwd — для «Перезапустить» из контекст-меню
+  const { term, fit, search, timeline } = buildXterm(container, id, { cwd });
+  extTerms.set(id, { term, fit, search, timeline, container, cwd }); // cwd — для «Перезапустить» из контекст-меню
   return {
     id,
     write: (s) => lite.pty.write(id, s),
     focus: () => { try { term.focus(); } catch (_) {} },
     refit: () => requestAnimationFrame(() => { try { fit.fit(); lite.pty.resize(id, term.cols, term.rows); } catch (_) {} }),
-    dispose: () => { lite.pty.kill(id); try { term.dispose(); } catch (_) {} extTerms.delete(id); },
+    dispose: () => { lite.pty.kill(id); try { timeline.dispose(); } catch (_) {} try { term.dispose(); } catch (_) {} extTerms.delete(id); },
   };
 }
 
@@ -1378,8 +1395,8 @@ function createExtTerminal(container, cwd) {
 // ---------------------------------------------------------------- font size
 let watchedRoot = null; // we live-watch only the active project to limit inotify use
 function applyFontSize() {
-  for (const rec of terms.values()) { rec.term.options.fontSize = settings.fontSize; try { rec.fit.fit(); } catch (_) {} }
-  for (const rec of extTerms.values()) { rec.term.options.fontSize = settings.fontSize; try { rec.fit.fit(); } catch (_) {} }
+  for (const rec of terms.values()) { rec.term.options.fontSize = settings.fontSize; try { rec.timeline.setFontSize(settings.fontSize); } catch (_) {} try { rec.fit.fit(); } catch (_) {} }
+  for (const rec of extTerms.values()) { rec.term.options.fontSize = settings.fontSize; try { rec.timeline.setFontSize(settings.fontSize); } catch (_) {} try { rec.fit.fit(); } catch (_) {} }
   document.documentElement.style.setProperty('--editor-fs', settings.fontSize + 'px');
   refitActiveTerminal();
   try { lite.app.settingsChanged(settings); } catch (_) {} // окно «Система · ~» подхватит размер шрифта
@@ -2581,6 +2598,8 @@ function showSettings() {
       <section class="set-group">
         <div class="set-group-h"><span class="set-ic">🖥️</span> Терминал</div>
         <div class="set-group-body">
+          <label class="set-row"><span>Шкала времени слева</span><input type="checkbox" id="st-timeline"></label>
+          <div class="set-hint">Узкая полоса вдоль терминала с засечками времени: когда отправлена команда, когда вывод возобновился после паузы, смена минуты. Едет вместе с текстом при прокрутке и не попадает в копирование.</div>
           <div class="set-row col"><span>Оболочка терминала — применяется к новым терминалам (старые — ⟳)</span>
             <div class="path-pick">
               <select id="st-shell"></select>
@@ -2666,6 +2685,9 @@ function showSettings() {
     settings.framePeriodS = Math.max(2, Math.min(30, parseInt(framePeriod.value, 10) || 6));
     framePeriod.value = settings.framePeriodS; frameLive();
   });
+  // Шкала времени — живой предпросмотр: видно сразу, без «Готово» (как тема и рамка).
+  const tline = m.querySelector('#st-timeline'); tline.checked = settings.termTimeline === true;
+  tline.addEventListener('change', () => { settings.termTimeline = tline.checked; saveSettings(); applyTimeline(); });
   // Выбор оболочки терминала — платформо-зависимо (Windows: PowerShell/cmd/свой; Linux: bash/свой).
   const shellSel = m.querySelector('#st-shell');
   const shellPath = m.querySelector('#st-shell-path');
@@ -2752,6 +2774,7 @@ function paletteActions() {
   acts.push({ label: 'Поиск в терминале', hint: 'Ctrl+F', run: openTermSearch });
   acts.push({ label: 'Поиск по всем терминалам', hint: 'Ctrl+Shift+F', run: showGlobalSearch });
   acts.push({ label: 'Очистить терминал', run: () => clearTerminal() });
+  acts.push({ label: 'Шкала времени слева — вкл/выкл', hint: settings.termTimeline === true ? 'сейчас включена' : 'сейчас выключена', run: () => { settings.termTimeline = settings.termTimeline !== true; saveSettings(); applyTimeline(); } });
   acts.push({ label: 'Перезапустить терминал', run: () => restartTerminal() });
   acts.push({ label: 'Настройки…', run: showSettings });
   // Дифф/превью/поиск по файлу — теперь действия внутри окна вивера (его кнопки/горячие клавиши).

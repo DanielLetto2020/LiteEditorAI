@@ -438,6 +438,47 @@ body.viewer-zen #vcs-topbar { display: none !important; }
 .chat-usage { flex: 0 0 auto; font-size: 11px; color: var(--text-mute); white-space: nowrap; }
 .term-instance { position: absolute; inset: 0; padding: 6px 4px 6px 10px; }
 .term-instance .xterm { height: 100%; }
+/* Шкала времени слева от вывода (renderer/termtimeline.js).
+   Позиционируется АБСОЛЮТНО, а не флексом: видимость вкладок переключается инлайновым
+   display (block/none) на том же контейнере, и любой display из класса им перебивается.
+   Место под шкалу освобождается padding-left'ом САМОГО .xterm (ставит JS), а НЕ контейнера:
+   FitAddon вычитает из доступной ширины padding элемента терминала и padding родителя не
+   видит — с отступом на контейнере cols считались бы по старой ширине и вывод вылезал бы
+   за край. Ширину шкалы и отступ выставляет JS: они зависят от кегля. */
+.term-timeline {
+  /* z-index обязателен: .xterm тоже позиционирован и идёт в DOM позже, поэтому без него
+     фон терминала (он занимает и зону padding, где стоит шкала) закрывает метки. */
+  position: absolute; left: 0; top: 0; bottom: 0; z-index: 2; overflow: hidden;
+  font-family: "JetBrains Mono", "Fira Code", monospace; line-height: 1;
+  /* border-right — ось шкалы, на неё приходят и деления, и штрихи засечек; поэтому
+     --border-strong, а не --border: как разделитель он был почти не виден. */
+  border-right: 1px solid var(--border-strong); user-select: none; pointer-events: none;
+}
+.ttl-inner { position: absolute; left: 0; right: 0; }
+/* Деления рельса. Осью служит border-right самой полосы — на неё же приходят штрихи засечек,
+   поэтому отдельную линию не рисуем (получилась бы двойная). Между засечками полоса иначе
+   стояла бы пустой.
+   Деления РАВНОМЕРНЫ и тусклее засечек: делить их на «мелкие/крупные» значило бы намекнуть
+   на структуру, которой нет — строка экрана не единица времени. Отличие от данных держится
+   на цвете (--border против --border-strong у засечек) и на подписи, которой у декора нет. */
+.ttl-rail { position: absolute; left: 0; right: 0; }
+.ttl-tick { position: absolute; right: 0; width: 5px; height: 1px; background: var(--border); }
+.ttl-mark {
+  position: absolute; right: 6px; display: flex; align-items: center;
+  color: var(--text-dim); white-space: nowrap; pointer-events: auto;
+}
+/* засечка на самой линии — чтобы метка читалась как отметка на шкале, а не как текст рядом */
+.ttl-mark::after {
+  content: ''; position: absolute; right: -6px; top: 50%; width: 5px; height: 1px;
+  background: var(--border-strong);
+}
+/* --green, а не --accent-glow: последний — токен СВЕЧЕНИЯ с альфой 0.45–0.7, и метка 10 px
+   получала контраст 2.4–3.9 (в теме по умолчанию 2.83 — ниже порога даже для крупного текста).
+   --green задан во всех темах и даёт 5.8–11.8. */
+.ttl-mark.cmd { color: var(--green); }                  /* отправлен ввод — начало команды/промпта */
+.ttl-mark.cmd::after { background: var(--green); width: 7px; right: -7px; }
+.ttl-mark.gap { color: var(--text-mute); }              /* вывод после паузы — граница между делами */
+.ttl-mark.tick { color: var(--text-dim); opacity: .75; } /* просто смена минуты */
 /* hide the terminal scrollbar entirely (wheel scroll still works) */
 .xterm-viewport { scrollbar-width: none; }
 .xterm-viewport::-webkit-scrollbar { width: 0; height: 0; display: none; }

@@ -3823,5 +3823,10 @@
  "Максим Кузьминский ·": "Maksim Kuzminskiy ·",
  "О программе": "About",
  "Терминал {0}": "Terminal {0}",
- "Сессия {0}": "Session {0}"
+ "Сессия {0}": "Session {0}",
+ "сейчас включена": "currently on",
+ "сейчас выключена": "currently off",
+ "Узкая полоса вдоль терминала с засечками времени: когда отправлена команда, когда вывод возобновился после паузы, смена минуты. Едет вместе с текстом при прокрутке и не попадает в копирование.": "A narrow strip along the terminal with time marks: when a command was sent, when output resumed after a pause, and each new minute. It scrolls with the text and is never included when copying.",
+ "Шкала времени слева": "Time scale on the left",
+ "Шкала времени слева — вкл/выкл": "Time scale on the left — on/off"
 }

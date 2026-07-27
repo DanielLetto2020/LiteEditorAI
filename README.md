@@ -54,6 +54,11 @@ A traffic light shows the state without switching anywhere: **working** (spinner
 answer** (amber) · **done** (green). The project card aggregates all its tabs, and the title bar carries a
 counter — *how many agents are blocked on you*. Notifications included.
 
+An optional **time scale** runs down the left edge of the terminal. It marks when you sent a command, when
+output resumed after a pause, and every new minute — so an hour of agent output stops being an undated wall
+of text. It is a separate layer, not text in the buffer: the agent's own rendering stays intact, and the
+time never lands in your copy. Off by default — *Settings → Terminal*, or `Ctrl+K`.
+
 The clip above also shows the command palette (`Ctrl+K`) and the module catalog.
 [Full-size video](assets/screenshots/demo.mp4).
 
