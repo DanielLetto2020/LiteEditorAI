@@ -3,6 +3,9 @@ name: CI
 # Lightweight checks on every push / PR: pure-Node unit tests (shell selection,
 # anti-traversal name guard, pult SGR line codec) + a syntax/bundle smoke check.
 # These run WITHOUT Electron — no node-pty rebuild, no display — so they're fast.
+#
+# The same four gates run locally via .claude/gauntlet.json (std-gauntlet).
+# Keep both in sync: a gate that only exists on one side stops being trusted.
 on:
   push:
     branches: [main, contrib]
@@ -16,9 +19,20 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+          cache: npm
       - name: Unit tests (pure Node, no Electron)
         run: npm test
       - name: Syntax check (main/preload/remote)
         run: node -c main.js && node -c preload.js && node -c remote.js
       - name: Install deps + bundle frontend
         run: npm ci --ignore-scripts && npm run build
+      - name: Lint
+        run: npm run lint
+      - name: Types (JSDoc via tsc, see tsconfig.check.json)
+        run: npm run typecheck
+      # Mutation testing scores the tests themselves. The local ratchet state lives in
+      # .claude/ and is not committed, so CI enforces a fixed floor instead.
+      - name: Mutation testing
+        run: npm run mutation
+        env:
+          MUTATION_MIN: 79

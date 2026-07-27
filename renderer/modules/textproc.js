@@ -445,8 +445,11 @@ export function initTextProc(host) {
       return markDirty();
     }
     if (cmd === 'toggleNumbers') {
+      // ⚠️ window.cm в проекте никто не присваивает — ветка сейчас недостижима, и в markdown
+      // кнопка всегда вставляет нумерованный список. Обращение через window, чтобы это не было
+      // ещё и ReferenceError, если экземпляр CodeMirror когда-нибудь начнут туда класть.
       if (mode === 'markdown' && window.cm) {
-        cm.setOption('lineNumbers', !cm.getOption('lineNumbers'));
+        window.cm.setOption('lineNumbers', !window.cm.getOption('lineNumbers'));
       } else {
         document.execCommand('insertOrderedList');
       }
@@ -1206,7 +1209,7 @@ export function initTextProc(host) {
     }
   }
 
-  function onFsChange(proj, files) {
+  function onFsChange(proj, _files) {
     if (activeProj && activeProj.path === proj.path) {
       renderTree(proj);
     }

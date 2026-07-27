@@ -23,7 +23,7 @@ const DIFF_LANGS = {
 // Язык по имени файла или строке заголовка диффа ('+++ b/path.ext\t...').
 function langForName(s) {
   if (!s) return null;
-  const name = String(s).replace(/^[+\-]{3}\s+/, '').split('\t')[0].trim();
+  const name = String(s).replace(/^[+-]{3}\s+/, '').split('\t')[0].trim();
   const m = name.match(/\.([a-zA-Z0-9]+)$/);
   return (m && DIFF_LANGS[m[1].toLowerCase()]) || null;
 }

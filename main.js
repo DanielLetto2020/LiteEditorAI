@@ -495,7 +495,7 @@ function agendaShowNotification(r) {
     const title = String(r.text || '').split('\n')[0].trim() || 'Напоминание';
     let body = 'Напоминание';
     const d = r.at ? new Date(r.at) : null;
-    if (d && !isNaN(d)) body = r.allDay
+    if (d && !isNaN(d.getTime())) body = r.allDay
       ? d.toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' })
       : d.toLocaleString('ru-RU', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
     const n = new Notification({ title: '🔔 ' + title, body, silent: false });
@@ -758,7 +758,7 @@ ipcMain.handle('tp:openFile', async (e) => {
 });
 ipcMain.handle('tp:saveFileAs', async (e, { content, name, ext } = {}) => {
   const last = loadState().lastOpenDir;
-  const base = String(name || 'Безымянный').replace(/[\/\\:*?"<>|]+/g, '_').replace(/\.[^.]+$/, '');
+  const base = String(name || 'Безымянный').replace(/[/\\:*?"<>|]+/g, '_').replace(/\.[^.]+$/, '');
   const res = await dialog.showSaveDialog(senderWin(e) || mainWindow, {
     title: 'Сохранить документ как',
     defaultPath: path.join(last && fs.existsSync(last) ? last : os.homedir(), `${base}.${ext || 'md'}`),
@@ -971,7 +971,7 @@ function ctxmineStat(dir) {
   for (const { fp, mt } of files) {
     let st; try { st = fs.statSync(fp); } catch (_) { continue; }
     bytes += st.size; if (!first || mt < first) first = mt; if (mt > last) last = mt;
-    let txt = ''; try { txt = fs.readFileSync(fp, 'utf8'); } catch (_) { continue; }
+    let txt; try { txt = fs.readFileSync(fp, 'utf8'); } catch (_) { continue; }
     for (const line of txt.split('\n')) { const s = line.trim(); if (!s) continue; let o; try { o = JSON.parse(s); } catch (_) { continue; } if (ctxmineMsg(o)) messages++; }
   }
   return { sessions: files.length, messages, bytes, first, last };
@@ -991,7 +991,7 @@ function ctxmineDistill(dir, capChars, doneNames) {
     const name = path.basename(fp);
     if (done.has(name)) continue;                 // уже разобрана в прошлый раз
     if (capped) { remaining++; continue; }        // лимит исчерпан — просто считаем остаток
-    let txt = ''; try { txt = fs.readFileSync(fp, 'utf8'); } catch (_) { continue; }
+    let txt; try { txt = fs.readFileSync(fp, 'utf8'); } catch (_) { continue; }
     const parts = ['\n----- новая сессия -----'];
     let any = false, cnt = 0;
     for (const line of txt.split('\n')) {
@@ -1856,7 +1856,7 @@ ipcMain.handle('settings:export', async () => {
 // Notes export/import: generic JSON file save/open (assembly + merge happen in the renderer,
 // which owns the project list and notesGet/notesSet). Mirrors the settings handlers above.
 ipcMain.handle('notes:exportFile', async (_e, { json, name }) => {
-  const safe = String(name || 'lite-notes').replace(/[\/\\:*?"<>|]+/g, '_').slice(0, 80);
+  const safe = String(name || 'lite-notes').replace(/[/\\:*?"<>|]+/g, '_').slice(0, 80);
   const last = loadState().lastOpenDir;
   const res = await dialog.showSaveDialog(mainWindow, {
     title: 'Экспорт заметок',
@@ -2309,7 +2309,7 @@ function restartAppSafely() {
   };
   server.on('error', (e) => fail('server ' + (e && e.message)));
   server.listen(0, '127.0.0.1', () => {
-    const port = server.address().port;
+    const port = /** @type {import('net').AddressInfo} */ (server.address()).port;
     let child;
     try {
       child = spawn(process.execPath, process.argv.slice(1), {
@@ -2357,10 +2357,10 @@ const MIME = { txt:'text/plain', md:'text/markdown', json:'application/json', js
 function mimeOf(name) { const e = String(name).split('.').pop().toLowerCase(); return MIME[e] || 'application/octet-stream'; }
 // Бэкпрешер: не заливаем релей быстрее, чем он отдаёт (по bufferedAmount сокета).
 function remoteDrain() {
-  return new Promise((resolve) => {
+  return /** @type {Promise<void>} */ (new Promise((resolve) => {
     const check = () => { if (remote.bufferedAmount() < 512 * 1024) resolve(); else setTimeout(check, 15); };
     check();
-  });
+  }));
 }
 async function streamFileToPult(reqId, filePath, displayName) {
   let fd, stat;
@@ -2578,6 +2578,10 @@ function remoteStoreState() {
 }
 
 // Регистрация/вход: дергаем указанный пользователем релей, сохраняем {login, token, host, enabled}, поднимаем соединение.
+/**
+ * @param {string} kind
+ * @param {{ login?: string, password?: string, host?: string }} [creds]
+ */
 async function remoteAuth(kind, { login, password, host } = {}) {
   host = normalizeRelayHost(host || (readStoreKey('remote') || {}).host || '');
   if (!host) return { ok: false, error: 'Укажите хост релея (например relay.example.com)' };
@@ -2739,7 +2743,7 @@ ipcMain.handle('pomodoro:getState', () => pomoSnapshot());
 ipcMain.handle('pomodoro:history', () => readPomoLog());
 // Экспорт/импорт своих техник (JSON-файл через системный диалог).
 ipcMain.handle('pomodoro:exportFile', async (_e, { json, name } = {}) => {
-  const safe = String(name || 'lite-pomodoro').replace(/[\/\\:*?"<>|]+/g, '_').slice(0, 80);
+  const safe = String(name || 'lite-pomodoro').replace(/[/\\:*?"<>|]+/g, '_').slice(0, 80);
   const last = loadState().lastOpenDir;
   const res = await dialog.showSaveDialog(mainWindow, {
     title: 'Экспорт техник помодоро',
@@ -2806,7 +2810,7 @@ ipcMain.on('editor:openInViewer', (_e, payload) => routeOpenInViewer(payload));
 function stageTextForViewer(name, content) {
   // Контент бывает чувствительным (SQL-выгрузки, конфиги с хоста) → каталог 0700 / файл 0600,
   // имя каталога — из CSPRNG (общий /tmp, соседний юзер не должен ни читать, ни угадать путь).
-  const base = String(name || 'export.txt').replace(/[\/\\:*?"<>|]/g, '_').slice(0, 120) || 'export.txt';
+  const base = String(name || 'export.txt').replace(/[/\\:*?"<>|]/g, '_').slice(0, 120) || 'export.txt';
   const dir = path.join(os.tmpdir(), 'lite-editor-view', Date.now().toString(36) + crypto.randomBytes(9).toString('hex'));
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   const file = path.join(dir, base);
@@ -3445,7 +3449,7 @@ function smExtract(spec, cap) {
     default: return undefined;
   }
 }
-function smNum(v) { return parseFloat(String(v == null ? '' : v).replace(',', '.').replace(/[^0-9.eE+\-]/g, '')); }
+function smNum(v) { return parseFloat(String(v == null ? '' : v).replace(',', '.').replace(/[^0-9.eE+-]/g, '')); }
 function smCompare(val, cmp, exp) {
   const s = (v) => (v === undefined || v === null ? '' : String(v));
   switch (cmp) {
@@ -4123,6 +4127,7 @@ const AUDIT_MINIFIED_MAXLINE = 1000;                          // строка д
 const AUDIT_FIND_CAP = 800;                                   // потолок на общий список меток/секретов
 const AUDIT_GIT_COMMITS = 2000;                               // глубина истории для churn/возраста
 // Правила секретов — консервативный набор с низким FP (имя правила → regex).
+/** @type {Array<[string, RegExp]>} */
 const AUDIT_SECRET_RULES = [
   ['AWS access key', /AKIA[0-9A-Z]{16}/],
   ['Google API key', /AIza[0-9A-Za-z_-]{35}/],
@@ -4531,7 +4536,7 @@ function seoTls(u) {
     const socket = tls.connect({ host: u.hostname, port, servername: u.hostname, rejectUnauthorized: false, timeout: SEO_TIMEOUT }, () => {
       const c = socket.getPeerCertificate(true);
       const proto = socket.getProtocol();
-      const cipher = socket.getCipher() || {};
+      const cipher = socket.getCipher() || /** @type {{ name?: string }} */ ({});
       const authorized = socket.authorized;
       const authError = socket.authorizationError ? String(socket.authorizationError) : '';
       socket.end();
@@ -4571,7 +4576,7 @@ async function seoDns(host) {
   try { const d = await dns.promises.resolveTxt('_dmarc.' + host); dmarc = d.map((p) => p.join('')).find((t) => /^v=DMARC1/i.test(t)) || null; } catch {}
   r.mail = {
     spf: { found: !!spf, value: spf || '' },
-    dmarc: { found: !!dmarc, value: dmarc || '', policy: dmarc ? (/(p=[a-z]+)/i.exec(dmarc) || [, ''])[1] : '' },
+    dmarc: { found: !!dmarc, value: dmarc || '', policy: dmarc ? (/(p=[a-z]+)/i.exec(dmarc) || ['', ''])[1] : '' },
   };
   return r;
 }
@@ -4616,7 +4621,7 @@ function seoCookies(headers) {
     const name = (line.split('=')[0] || '').trim();
     return {
       name, secure: /;\s*secure/i.test(line), httpOnly: /;\s*httponly/i.test(line),
-      sameSite: (/;\s*samesite\s*=\s*(\w+)/i.exec(line) || [, ''])[1],
+      sameSite: (/;\s*samesite\s*=\s*(\w+)/i.exec(line) || ['', ''])[1],
     };
   });
 }
@@ -5088,7 +5093,7 @@ ipcMain.handle('git:branchCreate', async (_e, { root, name, base, checkout }) =>
   const nm = (name || '').trim();
   // Имя из пользовательского ввода: ведущий '-' git примет за флаг (как в git:clone выше),
   // а пробелы/спецсимволы — невалидный ref. Отсекаем до вызова с понятной ошибкой.
-  if (!nm || nm.startsWith('-') || /[\s~^:?*\[\\]/.test(nm) || nm.includes('..')) return { ok: false, error: 'Недопустимое имя ветки' };
+  if (!nm || nm.startsWith('-') || /[\s~^:?*[\\]/.test(nm) || nm.includes('..')) return { ok: false, error: 'Недопустимое имя ветки' };
   return gitRun(root, checkout ? ['checkout', '-b', nm, base] : ['branch', nm, base]);
 });
 ipcMain.handle('git:init', async (_e, root) => gitRun(root, ['init']));
@@ -5277,7 +5282,7 @@ ipcMain.handle('git:commitFileDiff', async (_e, { root, hash, file } = {}) => {
 
 // ---------------------------------------------------------------- git: branches (local + remote) & ops (PhpStorm-style)
 // Отсекаем argv-инъекшн/невалидные ref'ы (ведущий '-', пробелы/спецсимволы, '..'); '/' разрешён (remote/feature).
-const BAD_REF = (s) => !s || String(s).startsWith('-') || /[\s~^:?*\[\\]/.test(String(s)) || String(s).includes('..');
+const BAD_REF = (s) => !s || String(s).startsWith('-') || /[\s~^:?*[\\]/.test(String(s)) || String(s).includes('..');
 ipcMain.handle('git:branches', async (_e, root) => {
   if (!root || !fs.existsSync(root)) return { repo: false };
   const top = await git(root, ['rev-parse', '--show-toplevel']);
@@ -5420,7 +5425,7 @@ ipcMain.handle('containers:remoteSet', async (_e, { rhId, engine } = {}) => {
     };
   };
   const socks = scan.sockets || {};
-  let sockPath = null;
+  let sockPath;
   if (engine === 'docker' || engine === 'podman') { // явный выбор (из модалки или запомненный) — строго его сокет
     sockPath = socks[engine] || null;
     if (!sockPath && denied[engine]) return await deniedErr(engine);

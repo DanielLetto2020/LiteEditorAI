@@ -14,7 +14,6 @@ const lite = window.lite;
 const GLOBAL_ID = '__global__';
 
 // офсеты напоминания (за сколько ДО срока уведомить), мс
-const REMIND_MS = { at: 0, '10m': 10 * 60000, '1h': 3600000, '1d': 86400000 };
 const REMIND_LABEL = { '': 'Без напоминания', at: 'В момент срока', '10m': 'За 10 минут', '1h': 'За час', '1d': 'За день' };
 const REMIND_ORDER = ['', 'at', '10m', '1h', '1d'];
 

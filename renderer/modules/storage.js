@@ -37,7 +37,7 @@ const IMG_EXT = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'ico
 const extOf = (name) => String(name).split('.').pop().toLowerCase();
 
 export function initStorage(host) {
-  const { settings, activeProject, createCodeEditor, STORE, persist,
+  const { activeProject, createCodeEditor, STORE, persist,
     menuRow, placeMenu, closeMenus, sendToTerminal, openInViewer,
     showConfirm: hostConfirm } = host;
   const confirm2 = hostConfirm || showConfirm;
@@ -988,7 +988,7 @@ export function initStorage(host) {
   // ---------------- доступ и ссылки ----------------
   async function linkModal(key) {
     const cp = caps();
-    const { m, close } = makeModal(`<h2>Доступ и ссылки</h2><div id="stl" class="st-links"></div>`);
+    const { m } = makeModal(`<h2>Доступ и ссылки</h2><div id="stl" class="st-links"></div>`);
     m.classList.add('db-modal');
     const box = m.querySelector('#stl');
     box.appendChild(el('div', 'st-linkkey', key));
@@ -1231,7 +1231,7 @@ export function initStorage(host) {
   });
 
   // ============================================================ контракт панели
-  function setOpen(open, opts = {}) {
+  function setOpen(open, _opts = {}) {
     stOpen = !!open;
     const pane = $('#storage-pane');
     if (pane) pane.classList.toggle('hidden', !stOpen);

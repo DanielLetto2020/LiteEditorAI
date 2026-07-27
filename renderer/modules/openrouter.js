@@ -14,7 +14,7 @@ const $ = (sel) => document.querySelector(sel);
 const lite = window.lite;
 
 export function initOpenRouter(host) {
-  const { STORE, persist, settings, closeMenus,
+  const { STORE, persist, closeMenus,
           layout, GUTTER, saveUiState, refitActiveTerminal, closeOtherPanels } = host;
 
   // ---- состояние панели правого слота ----
@@ -125,7 +125,7 @@ export function initOpenRouter(host) {
         if (name.startsWith('on')) { n.removeAttribute(a.name); return; }
         if (name === 'href' || name === 'src') {
           // allowlist URL schemes: links → http(s)/mailto; img src → http(s)/data. Drop the rest.
-          let proto = '';
+          let proto;
           try { proto = new URL(a.value, location.href).protocol; } catch (_) { n.removeAttribute(a.name); return; }
           const ok = (name === 'src') ? ['http:', 'https:', 'data:'] : ['http:', 'https:', 'mailto:'];
           if (!ok.includes(proto)) n.removeAttribute(a.name);

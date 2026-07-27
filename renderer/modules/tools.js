@@ -215,7 +215,6 @@ function cronNext(c, from, count) {
 }
 function cronDescribe(c) {
   const r = c.raw;
-  const part = (i, one, many) => (r[i] === '*' ? many : one + ' ' + r[i]);
   return [
     'Минуты: ' + (r[0] === '*' ? 'каждую минуту' : r[0]),
     'Часы: ' + (r[1] === '*' ? 'каждый час' : r[1]),
@@ -370,7 +369,7 @@ function stripGutter(s) {
 function unwrapText(src, o) {
   o = o || {};
   let t = String(src).replace(/\r\n?/g, '\n').replace(ANSI_RE, '');
-  t = t.replace(/[   ]/g, ' ').replace(/[​‌‍‎‏﻿]/g, '');
+  t = t.replace(/[\u00a0\u202f\u2007]/g, ' ').replace(/[\u200b\u200c\u200d\u200e\u200f\ufeff]/g, '');
   let lines = t.split('\n').map((x) => x.replace(/[ \t]+$/, ''));
   if (o.gutter !== false) lines = lines.map(stripGutter);
 
@@ -861,8 +860,8 @@ export function initTools(host) {
     const parts = token.trim().split('.');
     if (parts.length < 2) throw new Error('Не похоже на JWT (нужно ≥2 части через точку)');
     let header, payload;
-    try { header = JSON.parse(b64urlDecode(parts[0])); } catch (_) { throw new Error('Header не декодируется'); }
-    try { payload = JSON.parse(b64urlDecode(parts[1])); } catch (_) { throw new Error('Payload не декодируется'); }
+    try { header = JSON.parse(b64urlDecode(parts[0])); } catch (e) { throw new Error('Header не декодируется', { cause: e }); }
+    try { payload = JSON.parse(b64urlDecode(parts[1])); } catch (e) { throw new Error('Payload не декодируется', { cause: e }); }
     return { header, payload, signature: parts[2] || '' };
   }
 
