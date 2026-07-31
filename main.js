@@ -2838,6 +2838,21 @@ ipcMain.handle('rh:fsOpenInViewer', async (_e, { id, path: p } = {}) => {
     return { ok: true, file };
   } catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
 });
+// «Скачать файл с хоста»: нативный диалог сохранения + потоковая выгрузка (бинарники тоже,
+// без порога просмотра). Окно-владелец берём у отправителя — диалог модален своему окну модуля.
+ipcMain.handle('rh:fsDownload', async (e, { id, path: p } = {}) => {
+  const base = path.posix.basename(String(p || '')) || 'file';
+  const last = loadState().lastOpenDir;
+  const res = await dialog.showSaveDialog(senderWin(e) || mainWindow, {
+    title: 'Скачать файл с хоста',
+    defaultPath: path.join(last && fs.existsSync(last) ? last : os.homedir(), base),
+  });
+  if (res.canceled || !res.filePath) return { canceled: true };
+  const r = await rhApi.downloadFile(id, p, res.filePath);
+  if (!r || !r.ok) return { ok: false, error: (r && r.error) || 'не удалось скачать файл' };
+  saveState({ lastOpenDir: path.dirname(res.filePath) });
+  return { ok: true, file: res.filePath };
+});
 ipcMain.on('editor:refreshTree', (_e, payload) => { const w = filesWindow(); if (w) w.webContents.send('editor:refreshTree', payload); });
 // «Git» из редактора: открыть окно вивера (если закрыто) и переключить его на секцию «Коммит».
 ipcMain.on('editor:focusGit', () => {

@@ -3,7 +3,9 @@
 // бэкенд — window.lite.rh.* (ssh2/basic-ftp в main, lib/remotehost.js). xterm импортируется здесь.
 // host: { STORE, persist, settings, layout, GUTTER, saveUiState, refitActiveTerminal,
 //         closeOtherPanels, termTheme, applyUnicode11, loadFastRenderer, copySelection }
-import { el, icon, iconBtn, toast, makeModal, showConfirm } from '../ui.js';
+import { el, icon, iconBtn, toast, makeModal, showConfirm, fileTypeSvg, folderTypeSvg } from '../ui.js';
+import { createCodeEditor, ensureLanguage } from '../codeedit.js';
+import { t } from '../i18n.js';
 import { kpFormButtons } from '../kpicker.js';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
@@ -26,13 +28,14 @@ export function initRh(host) {
   let rhSessions = [];             // ordered session ids (вкладки)
   let rhActiveSession = null;
   let rhSeq = 0, rhRenderSeq = 0;
-  let rhFiles = null;              // активный браузер файлов: { connId, name, type, path, entries, loading, file, error }
+  // активный браузер файлов: { connId, name, type, root, dirs:Map, expanded:Set, sel, file, mounted }
+  let rhFiles = null;
   let rhUi = (STORE.rhUi && typeof STORE.rhUi === 'object') ? STORE.rhUi : {}; // { catCollapsed }
   function setRhOpen(open, opts = {}) {
     if (open === rhOpen) { if (open) renderRhPanel(); return; }
     // Right slot holds one module — opening RemoteHost closes the others (chat is separate).
     if (open) closeOtherPanels('rh');
-    if (!open && rhFiles) { try { lite.rh.fsClose(rhFiles.connId); } catch (_) {} rhFiles = null; if (rhView === 'files') rhView = rhSessions.length ? 'session' : 'list'; }
+    if (!open && rhFiles) { rhDropFiles(); if (rhView === 'files') rhView = rhSessions.length ? 'session' : 'list'; }
     const delta = layout.rh + GUTTER;
     rhOpen = open;
     $('#rh-pane').classList.toggle('hidden', !open);
@@ -52,17 +55,35 @@ export function initRh(host) {
     $('#rh-conns').style.display = showSession ? 'none' : '';
     $('#rh-term').style.display = showSession ? 'block' : 'none';
     if (showSession) { $('#rh-title').textContent = rhTerms.get(rhActiveSession).name; showActiveRhSession(); return; }
-    if (rhView === 'files' && rhFiles) { renderRhFiles(); return; }
+    if (rhView === 'files' && rhFiles) { syncRhFiles(); return; }
     $('#rh-title').textContent = 'Удалённые хосты';
     const body = $('#rh-conns');
+    body.classList.remove('rh-fsmode');
     body.innerHTML = '<div class="git-loading">Загрузка подключений…</div>';
     try { const r = await lite.rh.list(); rhConnsList = r.connections || []; rhSecure = r.secure !== false; }
     catch (_) { rhConnsList = []; }
     if (seq !== rhRenderSeq || !rhOpen) return;
     renderRhConnections(body);
   }
-  // Вернуться к списку хостов; если был открыт браузер файлов — закрыть его соединение.
-  function rhGoList() { if (rhFiles) { try { lite.rh.fsClose(rhFiles.connId); } catch (_) {} rhFiles = null; } rhView = 'list'; renderRhPanel(); }
+  // Снять текущий CodeMirror (пересборка каркаса / закрытие файла) — DOM уходит, объект надо гасить явно.
+  function rhDestroyEditor() {
+    if (!rhFiles || !rhFiles.ed) return;
+    try { rhFiles.ed.destroy(); } catch (_) { /* вьюха уже снята вместе с DOM */ }
+    rhFiles.ed = null;
+    if (rhFiles.file) rhFiles.file.ed = null;
+  }
+  // Закрыть браузер файлов: снять редактор (иначе висит CodeMirror и слушатели) и SFTP/FTP-соединение.
+  function rhDropFiles() {
+    if (!rhFiles) return;
+    rhDestroyEditor();
+    try { lite.rh.fsClose(rhFiles.connId); } catch (_) { /* соединение уже закрыто в main */ }
+    rhFiles = null;
+    $('#rh-conns').classList.remove('rh-fsmode');
+  }
+  // Вернуться к списку хостов; несохранённый файл сначала спросит, что с ним делать.
+  function rhGoList() {
+    rhGuardDirty(() => { rhDropFiles(); rhView = 'list'; renderRhPanel(); });
+  }
   function renderRhConnections(body) {
     body.innerHTML = '';
     const top = el('div', 'db-topbar');
@@ -401,71 +422,300 @@ export function initRh(host) {
     });
   }
 
-  // ---- file browser (read-only): SFTP (ssh/sftp) или FTP
+  // ---- файловый браузер: дерево каталогов + редактор открытого файла
+  // Дерево держит кэш каталогов (path → { entries, loading, error }) и множество раскрытых путей.
+  // Рендер дерева синхронный по кэшу; недостающий раскрытый каталог подгружается лениво и
+  // перерисовывает ТОЛЬКО дерево — редактор при этом не пересоздаётся (иначе терялись бы правки).
+  const RH_INDENT = 12;                          // отступ уровня вложенности, px
   function rhHumanSize(n) { if (!n && n !== 0) return ''; if (n < 1024) return n + ' B'; if (n < 1048576) return (n / 1024).toFixed(1) + ' KB'; if (n < 1073741824) return (n / 1048576).toFixed(1) + ' MB'; return (n / 1073741824).toFixed(1) + ' GB'; }
   function rhJoin(base, name) {
     if (name === '..') { const b = String(base).replace(/\/+$/, ''); const i = b.lastIndexOf('/'); return i <= 0 ? '/' : b.slice(0, i); }
     return (base === '/' ? '' : String(base).replace(/\/+$/, '')) + '/' + name;
   }
+  // epoch ms → 'YYYY-MM-DD' (+ ' HH:MM') в ЛОКАЛЬНОЙ зоне пользователя: mtime с хоста приходит в UTC,
+  // формат фиксированный (не локалезависимый), чтобы колонка дерева не «прыгала» по ширине.
+  function rhFmtDate(ms, withTime) {
+    if (!ms) return '';
+    const d = new Date(ms);
+    const p = (n) => String(n).padStart(2, '0');
+    const day = `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+    return withTime ? `${day} ${p(d.getHours())}:${p(d.getMinutes())}` : day;
+  }
+  // Тип узла словами — для подсказки и шапки открытого файла.
+  function rhKindLabel(e) {
+    if (!e) return '';
+    if (e.link) return 'Символическая ссылка';
+    if (e.dir) return 'Каталог';
+    if (e.type === 's') return 'Сокет';
+    if (e.type === 'p') return 'Канал (FIFO)';
+    if (e.type === 'b' || e.type === 'c') return 'Устройство';
+    return 'Файл';
+  }
+
   async function rhOpenFiles(c) {
-    rhFiles = { connId: c.id, name: c.name || c.host, type: c.type || 'ssh', path: '~', entries: null, loading: true, file: null, error: null };
+    rhFiles = { connId: c.id, name: c.name || c.host, type: c.type || 'ssh', root: '~', dirs: new Map(), expanded: new Set(), file: null, sel: null, mounted: false };
     rhView = 'files';
     renderRhPanel();
-    await rhLoadDir('~');
+    const r = await lite.rh.fsList(c.id, '~');
+    if (!rhFiles || rhFiles.connId !== c.id || rhView !== 'files') return;
+    if (r.error) { rhFiles.dirs.set('~', { error: r.error }); toast(r.error, { kind: 'err', ttl: 8000 }); }
+    else { rhFiles.root = r.path; rhFiles.dirs.set(r.path, { entries: r.entries }); }
+    renderRhFiles();
   }
+  // Загрузить каталог в кэш. Ошибку показываем и в дереве, и тостом (уходит в лог).
   async function rhLoadDir(p) {
     if (!rhFiles) return;
     const connId = rhFiles.connId;
-    rhFiles.loading = true; rhFiles.file = null; rhFiles.error = null; renderRhFiles();
+    rhFiles.dirs.set(p, { ...(rhFiles.dirs.get(p) || {}), loading: true, error: null });
+    renderRhTree();
     const r = await lite.rh.fsList(connId, p);
     if (!rhFiles || rhFiles.connId !== connId || rhView !== 'files') return;
-    rhFiles.loading = false;
-    if (r.error) rhFiles.error = r.error;
-    else { rhFiles.path = r.path; rhFiles.entries = r.entries; }
-    renderRhFiles();
+    const node = { loading: false };
+    if (r.error) { node.error = r.error; toast(r.error, { kind: 'err', ttl: 8000 }); }
+    else node.entries = r.entries;
+    rhFiles.dirs.set(p, node);
+    renderRhTree();
   }
-  async function rhOpenFile(name) {
+  // Сменить корень дерева (кнопки «вверх» / «сделать корнем»).
+  function rhSetRoot(p) {
     if (!rhFiles) return;
-    const connId = rhFiles.connId;
-    const full = rhJoin(rhFiles.path, name);
-    rhFiles.loading = true; renderRhFiles();
-    const r = await lite.rh.fsRead(connId, full);
-    if (!rhFiles || rhFiles.connId !== connId || rhView !== 'files') return;
-    rhFiles.loading = false;
-    rhFiles.file = { name, path: full, error: r.error, binary: r.binary, content: r.content, size: r.size };
-    renderRhFiles();
+    rhFiles.root = p;
+    rhFiles.expanded.delete(p);
+    if (!rhFiles.dirs.has(p)) { rhLoadDir(p); return; }
+    renderRhTree();
   }
+  // Перечитать всё дерево с хоста (кнопка «Обновить» в шапке): кэш сбрасываем, раскрытые пути
+  // остаются — ленивый рендер догрузит их заново.
+  function rhRefreshTree() {
+    if (!rhFiles) return;
+    rhFiles.dirs.clear();
+    rhLoadDir(rhFiles.root);
+  }
+  function rhToggleDir(p) {
+    if (!rhFiles) return;
+    if (rhFiles.expanded.has(p)) { rhFiles.expanded.delete(p); renderRhTree(); return; }
+    rhFiles.expanded.add(p);
+    if (!rhFiles.dirs.has(p)) rhLoadDir(p); else renderRhTree();
+  }
+
+  // Каркас режима файлов: панель пути + сплит «дерево | открытый файл».
+  // Пересоздаёт редактор, поэтому зовётся только при смене файла/корня, не при обновлении дерева.
   function renderRhFiles() {
     if (!rhFiles) return;
     $('#rh-title').textContent = rhFiles.name;
     $('#rh-back').style.display = '';
     const body = $('#rh-conns');
+    rhDestroyEditor();
+    body.classList.add('rh-fsmode');
     body.innerHTML = '';
     const bar = el('div', 'rh-fbar');
-    const up = iconBtn('drow-act', 'chevron-up', 'Вверх', 14); up.onclick = () => rhLoadDir(rhJoin(rhFiles.path, '..'));
-    const pathEl = el('span', 'rh-fpath', rhFiles.path || ''); pathEl.title = rhFiles.path || '';
-    const refresh = iconBtn('drow-act', 'refresh', 'Обновить', 14); refresh.onclick = () => rhLoadDir(rhFiles.path);
-    bar.append(up, pathEl, refresh);
+    const up = iconBtn('drow-act', 'chevron-up', 'На уровень выше', 14);
+    up.onclick = () => rhSetRoot(rhJoin(rhFiles.root, '..'));
+    const pathEl = el('span', 'rh-fpath', rhFiles.root || ''); pathEl.title = rhFiles.root || '';
+    const copyPath = iconBtn('drow-act', 'copy', 'Скопировать путь', 14);
+    copyPath.onclick = () => { lite.copyText(rhFiles.root || ''); toast('Путь скопирован'); };
+    const refresh = iconBtn('drow-act', 'refresh', 'Обновить дерево', 14);
+    refresh.onclick = () => rhRefreshTree();
+    bar.append(up, pathEl, copyPath, refresh);
     body.appendChild(bar);
-    if (rhFiles.file) { renderRhFileContent(body); return; }
-    if (rhFiles.loading) { body.appendChild(el('div', 'git-loading', 'Загрузка…')); return; }
-    if (rhFiles.error) { body.appendChild(el('div', 'db-warn', '⚠ ' + rhFiles.error)); return; }
-    const list = el('div', 'rh-flist');
-    if (!rhFiles.entries || !rhFiles.entries.length) list.appendChild(el('div', 'docker-empty', 'Пусто'));
-    for (const e of (rhFiles.entries || [])) {
-      const r = el('div', 'rh-frow');
-      r.appendChild(icon(e.dir ? 'folder' : 'file', 15));
-      r.appendChild(el('span', 'rh-fname', e.name));
-      if (!e.dir) {
-        r.appendChild(el('span', 'rh-fsize', rhHumanSize(e.size)));
-        const ed = iconBtn('drow-act rh-fedit', 'code', 'Редактировать в вивере (сохранение уйдёт на хост)', 13);
-        ed.onclick = (ev) => { ev.stopPropagation(); rhEditInViewer(rhJoin(rhFiles.path, e.name)); };
-        r.appendChild(ed);
-      }
-      r.onclick = () => e.dir ? rhLoadDir(rhJoin(rhFiles.path, e.name)) : rhOpenFile(e.name);
-      list.appendChild(r);
+    const wrap = el('div', 'rh-fwrap' + (rhFiles.file ? ' has-file' : ''));
+    wrap.appendChild(el('div', 'rh-tree'));
+    if (rhFiles.file) wrap.appendChild(rhFileView());
+    body.appendChild(wrap);
+    rhFiles.mounted = true;
+    renderRhTree();
+  }
+  // Вызов из renderRhPanel: каркас уже стоит → обновляем только дерево (редактор не трогаем).
+  function syncRhFiles() {
+    if (!rhFiles) return;
+    if (!rhFiles.mounted || !$('#rh-conns').classList.contains('rh-fsmode')) renderRhFiles();
+    else { $('#rh-title').textContent = rhFiles.name; $('#rh-back').style.display = ''; renderRhTree(); }
+  }
+  function renderRhTree() {
+    const treeEl = $('#rh-conns .rh-tree');
+    if (!treeEl || !rhFiles) return;
+    treeEl.innerHTML = '';
+    buildRhLevel(rhFiles.root, treeEl, 0);
+  }
+  function buildRhLevel(dirPath, container, depth) {
+    const node = rhFiles.dirs.get(dirPath);
+    const pad = depth * RH_INDENT + 6;
+    if (!node || node.loading) { const l = el('div', 'rh-tload', 'Загрузка…'); l.style.paddingLeft = pad + 'px'; container.appendChild(l); return; }
+    if (node.error) { const w = el('div', 'rh-terr', '⚠ ' + node.error); w.style.paddingLeft = pad + 'px'; container.appendChild(w); return; }
+    const entries = node.entries || [];
+    if (!entries.length) { const e = el('div', 'rh-tempty', 'Пусто'); e.style.paddingLeft = pad + 'px'; container.appendChild(e); return; }
+    for (const ent of entries) {
+      const full = rhJoin(dirPath, ent.name);
+      container.appendChild(rhTreeRow(ent, full, depth));
+      if (ent.dir && rhFiles.expanded.has(full)) buildRhLevel(full, container, depth + 1);
     }
-    body.appendChild(list);
+  }
+  function rhTreeRow(ent, full, depth) {
+    const open = ent.dir && rhFiles.expanded.has(full);
+    const row = el('div', 'rh-trow' + (ent.dir ? ' dir' : '') + (rhFiles.sel === full ? ' sel' : ''));
+    row.style.paddingLeft = (depth * RH_INDENT + 6) + 'px';
+    row.appendChild(el('span', 'rh-chev', ent.dir ? (open ? '▾' : '▸') : ''));
+    row.appendChild(ent.dir ? folderTypeSvg(open) : fileTypeSvg(ent.name));
+    const name = el('span', 'rh-tname' + (ent.link ? ' link' : '') + (ent.broken ? ' broken' : ''), ent.name);
+    row.appendChild(name);
+    if (ent.perms) row.appendChild(el('span', 'rh-tperm', (ent.link ? 'l' : ent.dir ? 'd' : (ent.type || '-')) + ent.perms));
+    if (!ent.dir) row.appendChild(el('span', 'rh-tsize', rhHumanSize(ent.size)));
+    if (ent.mtime) row.appendChild(el('span', 'rh-tdate', rhFmtDate(ent.mtime)));
+    const acts = el('div', 'rh-tacts');
+    if (!ent.dir) {
+      const dl = iconBtn('drow-act', 'download', 'Скачать файл', 13);
+      dl.onclick = (e) => { e.stopPropagation(); rhDownload(full); };
+      const ed = iconBtn('drow-act', 'code', 'Открыть в вивере редактора', 13);
+      ed.onclick = (e) => { e.stopPropagation(); rhEditInViewer(full); };
+      acts.append(dl, ed);
+    } else {
+      const rootBtn = iconBtn('drow-act', 'folder', 'Сделать корнем дерева', 13);
+      rootBtn.onclick = (e) => { e.stopPropagation(); rhSetRoot(full); };
+      acts.appendChild(rootBtn);
+    }
+    row.appendChild(acts);
+    const tip = [rhKindLabel(ent), full];
+    if (ent.target) tip.push('→ ' + ent.target);
+    if (ent.owner || ent.group) tip.push(`${ent.owner || '?'}:${ent.group || '?'}`);
+    if (ent.mode) tip.push(ent.mode);
+    if (ent.mtime) tip.push(rhFmtDate(ent.mtime, true));
+    row.title = tip.filter(Boolean).join(' · ');
+    row.onclick = () => {
+      if (ent.dir) { rhToggleDir(full); return; }
+      if (ent.broken) { toast(t('Битая ссылка: {0}', ent.target || full), { kind: 'err' }); return; }
+      rhGuardDirty(() => rhOpenFileEntry(ent, full));
+    };
+    return row;
+  }
+
+  // ---- открытый файл: редактор с номерами строк, подсветкой по типу и сохранением на хост
+  // Несохранённые правки защищены и при открытии другого файла, и при закрытии/уходе из вида.
+  function rhGuardDirty(proceed) {
+    const f = rhFiles && rhFiles.file;
+    if (!f || !f.dirty) { proceed(); return; }
+    showConfirm('Файл изменён', `«${f.name}»: несохранённые правки будут потеряны.`, 'Отбросить', proceed,
+      'Сохранить и продолжить', () => { rhSaveFile().then((ok) => { if (ok) proceed(); }); });
+  }
+  async function rhOpenFileEntry(ent, full) {
+    if (!rhFiles) return;
+    const connId = rhFiles.connId;
+    rhFiles.sel = full;
+    rhFiles.file = { name: ent.name, path: full, entry: ent, loading: true, dirty: false };
+    renderRhFiles();
+    const r = await lite.rh.fsRead(connId, full);
+    if (!rhFiles || rhFiles.connId !== connId || rhView !== 'files' || !rhFiles.file || rhFiles.file.path !== full) return;
+    rhFiles.file = {
+      name: ent.name, path: full, entry: ent, loading: false, dirty: false,
+      error: r.error, tooBig: r.tooBig, binary: r.binary, content: r.content, size: r.size != null ? r.size : ent.size, meta: r.meta || null,
+    };
+    if (r.error) toast(r.error, { kind: 'err', ttl: 8000 });
+    renderRhFiles();
+  }
+  function rhCloseFile() {
+    rhGuardDirty(() => { if (!rhFiles) return; rhFiles.file = null; rhFiles.sel = null; renderRhFiles(); });
+  }
+  async function rhSaveFile() {
+    const f = rhFiles && rhFiles.file;
+    if (!f || !rhFiles.ed) return false;
+    const content = rhFiles.ed.getValue();
+    const r = await lite.rh.fsWrite(rhFiles.connId, f.path, content);
+    if (!r || !r.ok) { toast((r && r.error) || 'Не удалось сохранить файл на хосте', { kind: 'err', ttl: 9000 }); return false; }
+    f.dirty = false; f.content = content;
+    const dot = $('#rh-dirty'); if (dot) dot.style.display = 'none';
+    // перечитать каталог файла — иначе размер и дата в дереве остаются от версии до сохранения
+    const dir = rhJoin(f.path, '..');
+    if (rhFiles.dirs.has(dir)) rhLoadDir(dir);
+    toast(t('Сохранено на хосте: {0}', f.name));
+    return true;
+  }
+  async function rhDownload(fullPath) {
+    if (!rhFiles) return;
+    const r = await lite.rh.fsDownload(rhFiles.connId, fullPath);
+    if (!r || r.canceled) return;
+    if (!r.ok) { toast(r.error || 'Не удалось скачать файл', { kind: 'err', ttl: 9000 }); return; }
+    toast(t('Скачано: {0}', r.file), { ttl: 6000 });
+  }
+  // Копируем выделение, а если его нет — весь файл (как «скопировать содержимое» в IDE).
+  function rhCopyOpen() {
+    const f = rhFiles && rhFiles.file;
+    if (!f) return;
+    let text = f.content || '';
+    if (rhFiles.ed) {
+      const st = rhFiles.ed.view.state;
+      const sel = st.selection.main;
+      text = sel.empty ? st.doc.toString() : st.sliceDoc(sel.from, sel.to);
+    }
+    if (!text) { toast('Нечего копировать', { kind: 'err' }); return; }
+    lite.copyText(text);
+    toast('Скопировано в буфер обмена');
+  }
+  function rhMetaChips(f) {
+    const box = el('div', 'rh-fmeta');
+    const chip = (ic, text, title) => { const c = el('span', 'rh-chip'); c.append(icon(ic, 12), el('span', null, text)); if (title) c.title = title; box.appendChild(c); };
+    const ent = f.entry || {};
+    const meta = f.meta || {};
+    const perms = meta.perms || ent.perms || '';
+    const mode = meta.mode || ent.mode || '';
+    if (perms) chip('key', ((ent.link ? 'l' : (meta.type || ent.type || '-')) + perms) + (mode ? ' · ' + mode : ''), 'Права доступа');
+    const owner = ent.owner || meta.owner || '';
+    const group = ent.group || meta.group || '';
+    if (owner || group) chip('users', `${owner || '?'}:${group || '?'}`, 'Владелец и группа');
+    const size = f.size != null ? f.size : ent.size;
+    if (size != null) chip('file', rhHumanSize(size) + (size > 1024 ? ` (${size} B)` : ''), 'Размер');
+    const mtime = meta.mtime || ent.mtime;
+    if (mtime) chip('clock', rhFmtDate(mtime, true), 'Изменён');
+    chip('info', rhKindLabel(ent) + (ent.target ? ' → ' + ent.target : ''), 'Тип');
+    return box;
+  }
+  function rhFileView() {
+    const f = rhFiles.file;
+    const view = el('div', 'rh-fileview');
+    const head = el('div', 'rh-fchead');
+    head.appendChild(fileTypeSvg(f.name));
+    const nameEl = el('span', 'rh-fcname', f.name); nameEl.title = f.path;
+    head.appendChild(nameEl);
+    const dirty = el('span', 'rh-fdirty', '●'); dirty.id = 'rh-dirty'; dirty.title = 'Есть несохранённые правки';
+    dirty.style.display = f.dirty ? '' : 'none';
+    head.appendChild(dirty);
+    head.appendChild(el('div', 'rh-fcspace'));
+    const editable = !f.loading && !f.error && !f.binary;
+    if (editable) {
+      const save = iconBtn('drow-act', 'save', 'Сохранить на хосте (Ctrl+S)', 14); save.onclick = () => rhSaveFile();
+      const copy = iconBtn('drow-act', 'copy', 'Копировать (выделение или весь файл)', 14); copy.onclick = () => rhCopyOpen();
+      head.append(save, copy);
+    }
+    const dl = iconBtn('drow-act', 'download', 'Скачать файл', 14); dl.onclick = () => rhDownload(f.path);
+    head.appendChild(dl);
+    if (editable) { const viewer = iconBtn('drow-act', 'code', 'Открыть в вивере редактора', 14); viewer.onclick = () => rhEditInViewer(f.path); head.appendChild(viewer); }
+    const close = iconBtn('drow-act', 'x', 'Закрыть файл', 14); close.onclick = () => rhCloseFile();
+    head.appendChild(close);
+    view.appendChild(head);
+    view.appendChild(rhMetaChips(f));
+    if (f.loading) { view.appendChild(el('div', 'git-loading', 'Загрузка файла…')); return view; }
+    if (f.error) {
+      view.appendChild(el('div', 'db-warn', '⚠ ' + f.error));
+      if (f.tooBig) view.appendChild(el('div', 'rh-hint', 'Файл больше 2 МБ — в редакторе не открывается, но его можно скачать кнопкой ↓ в шапке.'));
+      return view;
+    }
+    if (f.binary) { view.appendChild(el('div', 'rh-hint', 'Бинарный файл — текстовый редактор не показывает его содержимое. Скачайте файл кнопкой ↓ в шапке.')); return view; }
+    const host = el('div', 'rh-fed');
+    view.appendChild(host);
+    // Подсветку выбираем по имени файла (реестр языков CodeMirror), поэтому редактор создаём
+    // после загрузки языка — вьюха одноразовая, реконфигурация ей не нужна.
+    ensureLanguage(f.name).then((language) => {
+      if (!rhFiles || !rhFiles.file || rhFiles.file.path !== f.path || !host.isConnected) return;
+      const ed = createCodeEditor(host, {
+        doc: f.content || '', language,
+        onChange: () => { f.dirty = true; const d = $('#rh-dirty'); if (d) d.style.display = ''; },
+      });
+      rhFiles.ed = ed; f.ed = ed;
+      try { ed.view.focus(); } catch (_) { /* окно могли увести фокусом — не критично */ }
+    });
+    // Ctrl+S внутри редактора: CodeMirror эту комбинацию не занимает, ловим на контейнере.
+    view.addEventListener('keydown', (e) => {
+      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.code === 'KeyS') { e.preventDefault(); rhSaveFile(); }
+    });
+    return view;
   }
   // Открыть удалённый файл в вивере: main снимет tmp-копию и будет заливать каждое сохранение
   // обратно на хост (SFTP/FTP) — полноценная правка, а не только просмотр.
@@ -475,24 +725,6 @@ export function initRh(host) {
     const r = await lite.rh.fsOpenInViewer(rhFiles.connId, fullPath);
     if (!r || !r.ok) { toast((r && r.error) || 'Не удалось открыть в вивере', { kind: 'err', ttl: 8000 }); return; }
     toast('Файл в вивере. Ctrl+S / автосейв заливает правки на хост', { ttl: 6000 });
-  }
-  function renderRhFileContent(body) {
-    const f = rhFiles.file;
-    const head = el('div', 'rh-fchead');
-    const back = iconBtn('drow-act', 'chevron-left', 'К списку файлов', 14); back.onclick = () => { rhFiles.file = null; renderRhFiles(); };
-    head.append(back, icon('file', 14), el('span', 'rh-fcname', f.name));
-    if (f.size != null) head.appendChild(el('span', 'rh-fsize', rhHumanSize(f.size)));
-    if (!f.error && !f.binary) {
-      const ed = iconBtn('drow-act rh-fedit', 'code', 'Редактировать в вивере (сохранение уйдёт на хост)', 13);
-      ed.onclick = () => rhEditInViewer(f.path);
-      head.appendChild(ed);
-    }
-    body.appendChild(head);
-    if (rhFiles.loading) { body.appendChild(el('div', 'git-loading', 'Загрузка…')); return; }
-    if (f.error) { body.appendChild(el('div', 'db-warn', '⚠ ' + f.error)); return; }
-    if (f.binary) { body.appendChild(el('div', 'docker-empty', 'Бинарный файл — просмотр недоступен')); return; }
-    const pre = el('pre', 'rh-fview'); pre.textContent = f.content || '';
-    body.appendChild(pre);
   }
 
   // Глобальные IPC-подписки на поток данных SSH-сессий (вызывается ядром из init, как раньше).

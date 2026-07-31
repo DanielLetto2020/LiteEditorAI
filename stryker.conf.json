@@ -28,6 +28,7 @@
     "lib/shell.js",
     "lib/portparse.js",
     "lib/dbdetect.js",
+    "lib/fsmeta.js",
     "lib/i18n.js"
   ],
   "_comment_thresholds": "break: null — прогон намеренно не падает сам. Планку держит храповик std-gauntlet (.claude/.ratchet.json): ухудшать нельзя, улучшать не обязательно. high/low влияют только на цвет отчёта.",
