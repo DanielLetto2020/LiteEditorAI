@@ -2567,18 +2567,47 @@ textarea.sm-hdr { font-family: var(--mono, ui-monospace, monospace); font-size: 
 .rh-name-line { display: flex; align-items: center; gap: 7px; }
 .rh-live { font-size: 9.5px; font-weight: 700; letter-spacing: .03em; color: var(--accent-contrast); background: var(--green); border-radius: 7px; padding: 1px 6px; }
 .rh-hint { font-size: 11.5px; line-height: 1.45; color: var(--text-mute); background: var(--hover); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; }
-/* remote file browser (read-only) */
-.rh-fbar { display: flex; align-items: center; gap: 6px; padding-bottom: 7px; border-bottom: 1px solid var(--border); position: sticky; top: -10px; background: var(--panel); z-index: 1; }
+/* remote files: дерево каталогов слева + редактор открытого файла справа */
+#rh-conns.rh-fsmode { overflow: hidden; gap: 0; padding: 10px 10px 0; }
+.rh-fbar { display: flex; align-items: center; gap: 6px; padding-bottom: 7px; border-bottom: 1px solid var(--border); background: var(--panel); z-index: 1; }
 .rh-fpath { flex: 1; min-width: 0; font-size: 11.5px; color: var(--text-dim); font-family: "JetBrains Mono", monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; direction: rtl; text-align: left; }
-.rh-flist { display: flex; flex-direction: column; }
-.rh-frow { display: flex; align-items: center; gap: 8px; padding: 5px 7px; border-radius: 7px; cursor: pointer; font-size: 12.5px; }
-.rh-frow:hover { background: var(--hover); }
-.rh-frow > svg { color: var(--text-mute); flex: 0 0 auto; }
-.rh-fname { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
-.rh-fsize { flex: 0 0 auto; font-size: 10.5px; color: var(--text-mute); }
-.rh-fchead { display: flex; align-items: center; gap: 8px; padding-bottom: 8px; border-bottom: 1px solid var(--border); }
-.rh-fcname { flex: 1; min-width: 0; font-size: 13px; font-weight: 600; color: var(--green-bright); overflow: hidden; text-overflow: ellipsis; }
-.rh-fview { flex: 1; min-height: 0; overflow: auto; margin: 0; padding: 8px 4px; font-family: "JetBrains Mono", monospace; font-size: 11.5px; line-height: 1.5; color: var(--text-dim); white-space: pre; }
+.rh-fwrap { flex: 1; min-height: 0; display: flex; margin: 0 -10px; }
+/* контейнер-запросы: колонки метаданных уступают место имени, когда дерево узкое
+   (сплит с открытым файлом). Полный набор данных всегда есть в подсказке строки. */
+.rh-tree { flex: 1; min-width: 0; overflow: auto; padding: 6px 6px 12px; container-type: inline-size; }
+@container (max-width: 430px) { .rh-tdate { display: none; } }
+@container (max-width: 330px) { .rh-tperm { display: none; } }
+@container (max-width: 240px) { .rh-tsize { display: none; } }
+.rh-fwrap.has-file .rh-tree { flex: 0 0 clamp(200px, 32%, 320px); border-right: 1px solid var(--border); }
+.rh-trow { display: flex; align-items: center; gap: 6px; padding: 3px 6px 3px 0; border-radius: 6px; cursor: pointer; font-size: 12.5px; line-height: 1.5; white-space: nowrap; }
+.rh-trow:hover { background: var(--hover); }
+.rh-trow.sel { background: var(--accent-soft); }
+.rh-trow .ti { flex: 0 0 14px; }
+.rh-chev { flex: 0 0 10px; width: 10px; color: var(--text-mute); font-size: 9px; }
+.rh-tname { flex: 1 1 auto; min-width: 64px; overflow: hidden; text-overflow: ellipsis; color: var(--text); }
+.rh-trow.dir .rh-tname { font-weight: 500; }
+.rh-tname.link { font-style: italic; color: var(--green-bright); }
+.rh-tname.broken { color: var(--danger); text-decoration: line-through; }
+.rh-tperm { flex: 0 0 auto; font-family: "JetBrains Mono", monospace; font-size: 10px; color: var(--text-mute); letter-spacing: -.02em; }
+.rh-tsize { flex: 0 0 auto; font-size: 10.5px; color: var(--text-mute); min-width: 52px; text-align: right; }
+.rh-tdate { flex: 0 0 auto; font-size: 10.5px; color: var(--text-mute); }
+.rh-tacts { flex: 0 0 auto; display: flex; gap: 2px; opacity: 0; }
+.rh-trow:hover .rh-tacts { opacity: 1; }
+.rh-tload, .rh-tempty { font-size: 11.5px; color: var(--text-mute); padding: 3px 0; }
+.rh-terr { font-size: 11.5px; color: var(--danger); padding: 3px 0; white-space: normal; }
+/* открытый файл */
+.rh-fileview { flex: 1; min-width: 0; display: flex; flex-direction: column; padding: 8px 10px 0; }
+.rh-fchead { display: flex; align-items: center; gap: 7px; padding-bottom: 8px; border-bottom: 1px solid var(--border); }
+.rh-fcname { min-width: 0; font-size: 13px; font-weight: 600; color: var(--green-bright); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rh-fcspace { flex: 1; }
+.rh-fdirty { color: var(--warn); font-size: 12px; }
+.rh-fmeta { display: flex; flex-wrap: wrap; gap: 4px 8px; padding: 7px 0; }
+.rh-chip { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; color: var(--text-dim); background: var(--hover); border: 1px solid var(--border); border-radius: 7px; padding: 2px 7px; font-family: "JetBrains Mono", monospace; }
+.rh-chip > svg { color: var(--text-mute); }
+.rh-fed { flex: 1; min-height: 0; overflow: hidden; margin: 0 -10px; }
+.rh-fed .cm-editor { height: 100%; }
+/* узкая панель: открытый файл занимает её целиком, дерево возвращается кнопкой «закрыть файл» */
+@media (max-width: 760px) { .rh-fwrap.has-file .rh-tree { display: none; } }
 
 /* ---------------- user modules (extensions): общая панель правого слота ---------------- */
 #ext-pane { flex: 0 0 420px; min-width: 280px; border-left: 1px solid var(--border); display: flex; flex-direction: column; background: var(--panel); }

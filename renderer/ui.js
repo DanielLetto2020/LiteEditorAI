@@ -47,6 +47,36 @@ export function svgEl(html) {
   t.innerHTML = html.trim();
   return t.content.firstChild;
 }
+// ---------------------------------------------------------------- file-type glyphs
+// Значки типов файлов для деревьев (вивер + «Удалённые хосты»): форма одна, тип различается
+// цветом — как в деревьях IDE. Цвета намеренно вне темы: это опознавательный признак языка,
+// одинаковый во всех темах (та же логика, что у подсветки синтаксиса).
+const EXT_COLORS = {
+  js: '#e8d44d', jsx: '#e8d44d', mjs: '#e8d44d', cjs: '#e8d44d',
+  ts: '#4a9be0', tsx: '#4a9be0',
+  py: '#5fa6dd', json: '#cbcb41', md: '#9fb3a9', markdown: '#9fb3a9',
+  html: '#e3733b', htm: '#e3733b', css: '#9b6bd6', scss: '#cf6ba0',
+  png: '#b07cd6', jpg: '#b07cd6', jpeg: '#b07cd6', gif: '#b07cd6', webp: '#b07cd6', svg: '#ffb13b',
+  sh: '#89e051', bash: '#89e051', yml: '#dd6c6c', yaml: '#dd6c6c', toml: '#b07a4a',
+  lock: '#7a8a82', txt: '#9fb3a9', env: '#e2c08d', sql: '#e38f3b', vue: '#41b883', go: '#4ad0e0', rs: '#dd8855',
+  php: '#8892bf', rb: '#cc342d', java: '#e07c3e', c: '#6f9ad3', h: '#6f9ad3', cpp: '#6f9ad3',
+  conf: '#e2c08d', ini: '#e2c08d', log: '#7a8a82', zip: '#c0a060', gz: '#c0a060', tar: '#c0a060',
+};
+/** Расширение в нижнем регистре без точки ('app.JS' → 'js'); без расширения → ''. */
+export function extOf(name) { if (!name) return ''; const i = String(name).lastIndexOf('.'); return i > 0 ? String(name).slice(i + 1).toLowerCase() : ''; }
+function colorFor(name) { return EXT_COLORS[extOf(name)] || '#8aa79a'; }
+/** Значок файла, окрашенный по расширению имени. */
+export function fileTypeSvg(name) {
+  return svgEl(`<svg class="ti" viewBox="0 0 16 16" width="14" height="14">
+    <path fill="${colorFor(name)}" opacity="0.95" d="M3.5 1.4h5.1L13 5.3v9.3a1 1 0 0 1-1 1H3.5a1 1 0 0 1-1-1V2.4a1 1 0 0 1 1-1z"/>
+    <path fill="#06120c" opacity="0.4" d="M8.6 1.4 13 5.3H9.1a.5.5 0 0 1-.5-.5z"/></svg>`);
+}
+/** Значок папки: открытая — светлее закрытой. */
+export function folderTypeSvg(open) {
+  const c = open ? '#7fd9ad' : '#56b98a';
+  return svgEl(`<svg class="ti" viewBox="0 0 16 16" width="14" height="14">
+    <path fill="${c}" d="M1.4 3.6h4.2l1.2 1.5H14.6a1 1 0 0 1 1 1v6.4a1 1 0 0 1-1 1H1.4a1 1 0 0 1-1-1V4.6a1 1 0 0 1 1-1z"/></svg>`);
+}
 // ---------------------------------------------------------------- icon set
 // One consistent line-icon family (Lucide-ish): 24-grid, currentColor stroke, rounded.
 // Inner markup only; icon() wraps it. Fill-based glyphs set their own fill/stroke.

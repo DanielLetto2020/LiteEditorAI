@@ -584,8 +584,10 @@ contextBridge.exposeInMainWorld('lite', {
     close: (sessionId) => ipcRenderer.send('rh:close', { sessionId }),
     onData: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('rh:data', h); return () => ipcRenderer.removeListener('rh:data', h); },
     onExit: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('rh:exit', h); return () => ipcRenderer.removeListener('rh:exit', h); },
-    fsList: (id, path) => ipcRenderer.invoke('rh:fsList', { id, path }),
-    fsRead: (id, path) => ipcRenderer.invoke('rh:fsRead', { id, path }),
+    fsList: (id, path) => ipcRenderer.invoke('rh:fsList', { id, path }),   // → {ok,path,entries:[{name,dir,link,size,perms,mode,owner,group,mtime}]}
+    fsRead: (id, path) => ipcRenderer.invoke('rh:fsRead', { id, path }),   // → {ok,content|binary,size,meta?} | {error,tooBig?}
+    fsStat: (id, path) => ipcRenderer.invoke('rh:fsStat', { id, path }),   // → {ok,meta:{perms,mode,owner,group,mtime,size}|null}
+    fsDownload: (id, path) => ipcRenderer.invoke('rh:fsDownload', { id, path }), // диалог «сохранить как» + выгрузка (бинарники тоже)
     fsClose: (id) => ipcRenderer.send('rh:fsClose', { id }),
     // Запись файла на хост (SFTP/FTP) + открытие удалённого файла в вивере (tmp-копия, save-back в main).
     fsWrite: (id, path, content) => ipcRenderer.invoke('rh:fsWrite', { id, path, content }),
