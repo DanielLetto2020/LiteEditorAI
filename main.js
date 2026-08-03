@@ -828,10 +828,34 @@ ipcMain.on('tp:abort', (_e, { reqId } = {}) => {
 // We stream stdout chunks so the chat feels live. Stateless: the renderer re-sends the full
 // transcript + schema each turn, so no agent-side session is needed.
 // Claude streams real tokens with stream-json + partial messages; codex stays plain-text.
+// Промпт несёт структуру базы и строки результата, поэтому оба агента получают его ТОЛЬКО через
+// stdin: argv виден в `ps` любому пользователю системы («codex exec -» читает инструкции оттуда).
 const DBAI_AGENTS = {
-  claude: { cmd: 'claude', args: ['-p', '--output-format', 'stream-json', '--verbose', '--include-partial-messages'], via: 'stdin', stream: 'json' },
-  codex: { cmd: 'codex', args: ['exec'], via: 'arg', stream: 'text' },
+  claude: { cmd: 'claude', args: ['-p', '--output-format', 'stream-json', '--verbose', '--include-partial-messages'], stream: 'json' },
+  codex: { cmd: 'codex', args: ['exec', '-'], stream: 'text' },
 };
+// Транскрипты чатов AI-DB — по файлу на подключение. В общем dbUi они раздували стор: сессия
+// хранит до 200 строк результата на сообщение, и весь этот объём переписывался при любом
+// сохранении раскладки модуля. Формат файла: { sessions: [...], activeId }.
+const dbaiDir = () => path.join(storeDir, 'dbai');
+const dbaiFile = (connId) => path.join(dbaiDir(), String(connId).replace(/[^\w.-]/g, '_') + '.json');
+ipcMain.handle('dbai:sessionsGet', (_e, { connId } = {}) => {
+  const file = dbaiFile(connId);
+  if (!fs.existsSync(file)) return null;   // истории просто ещё нет — это не ошибка
+  try { return JSON.parse(fs.readFileSync(file, 'utf8')); }
+  catch (e) { return { error: String(e.message || e) }; }
+});
+ipcMain.handle('dbai:sessionsSet', (_e, { connId, data } = {}) => {
+  try {
+    fs.mkdirSync(dbaiDir(), { recursive: true });
+    atomicWriteSync(dbaiFile(connId), JSON.stringify(data || {}));
+    return { ok: true };
+  } catch (e) { return { ok: false, error: String(e.message || e) }; }
+});
+ipcMain.handle('dbai:sessionsDelete', (_e, { connId } = {}) => {
+  try { fs.rmSync(dbaiFile(connId), { force: true }); return { ok: true }; }
+  catch (e) { return { ok: false, error: String(e.message || e) }; }
+});
 const dbaiReqs = new Map();
 // Глушит карту in-flight задач разом: значение — ChildProcess (.kill) или ClientRequest/сокет (.destroy).
 function killReqMap(m) {
@@ -841,7 +865,7 @@ function killReqMap(m) {
 ipcMain.on('dbai:run', (e, { reqId, agent, prompt } = {}) => {
   const sender = e.sender;
   const conf = DBAI_AGENTS[agent] || DBAI_AGENTS.claude;
-  const args = conf.via === 'arg' ? [...conf.args, prompt || ''] : [...conf.args];
+  const args = [...conf.args];
   let child;
   try { child = spawn(conf.cmd, args, { cwd: os.homedir(), env: tpEnv() }); }
   catch (err) { safeSend(sender, 'dbai:error', { reqId, error: 'не запустить «' + conf.cmd + '»: ' + (err.message || err) }); return; }
@@ -875,7 +899,7 @@ ipcMain.on('dbai:run', (e, { reqId, agent, prompt } = {}) => {
     if (any) safeSend(sender, 'dbai:done', { reqId });
     else safeSend(sender, 'dbai:error', { reqId, error: errOut.trim() || ('агент завершился с кодом ' + code) });
   });
-  if (conf.via === 'stdin') { try { child.stdin.write(prompt || ''); child.stdin.end(); } catch (_) {} }
+  try { child.stdin.write(prompt || ''); child.stdin.end(); } catch (_) {}
 });
 ipcMain.on('dbai:abort', (e, { reqId } = {}) => {
   const c = dbaiReqs.get(reqId);
@@ -902,10 +926,13 @@ ipcMain.handle('dbai:apiModels', async (_e, { baseUrl, key } = {}) => {
     req.end();
   });
 });
-ipcMain.on('dbai:apiRun', (e, { reqId, baseUrl, key, model, prompt } = {}) => {
+ipcMain.on('dbai:apiRun', (e, { reqId, baseUrl, key, model, messages, usage } = {}) => {
   const sender = e.sender;
   let u; try { u = new URL(String(baseUrl).replace(/\/$/, '') + '/chat/completions'); } catch (_) { safeSend(sender, 'dbai:error', { reqId, error: 'неверный адрес провайдера' }); return; }
-  const body = JSON.stringify({ model, messages: [{ role: 'user', content: prompt || '' }], stream: true });
+  // Полноценный многоходовой диалог с ролью system: одним склеенным user-сообщением модель хуже
+  // держит правила, а провайдер не может кешировать неизменную часть промпта (схему БД).
+  const msgs = Array.isArray(messages) && messages.length ? messages : [{ role: 'user', content: '' }];
+  const body = JSON.stringify({ model, messages: msgs, stream: true, ...(usage ? { stream_options: { include_usage: true } } : {}) });
   const headers = { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body), ...(key ? { Authorization: 'Bearer ' + key } : {}) };
   const req = dbaiHttpMod(u).request(u, { method: 'POST', headers }, (res) => {
     if (res.statusCode >= 400) { let err = ''; res.on('data', (c) => { err += c; }); res.on('end', () => { let msg = 'HTTP ' + res.statusCode; try { const j = JSON.parse(err); if (j.error && j.error.message) msg = j.error.message; } catch (_) {} if (!dbaiReqs.has(reqId)) return; dbaiReqs.delete(reqId); safeSend(sender, 'dbai:error', { reqId, error: msg }); }); return; }
@@ -916,7 +943,14 @@ ipcMain.on('dbai:apiRun', (e, { reqId, baseUrl, key, model, prompt } = {}) => {
         const line = buf.slice(0, idx).trim(); buf = buf.slice(idx + 1);
         if (!line.startsWith('data:')) continue;
         const payload = line.slice(5).trim(); if (payload === '[DONE]') continue;
-        try { const j = JSON.parse(payload); const ch = j.choices && j.choices[0]; const delta = ch && ch.delta && ch.delta.content; if (delta) { any = true; safeSend(sender, 'dbai:data', { reqId, chunk: delta }); } } catch (_) {}
+        try {
+          const j = JSON.parse(payload);
+          const ch = j.choices && j.choices[0];
+          const delta = ch && ch.delta && ch.delta.content;
+          if (delta) { any = true; safeSend(sender, 'dbai:data', { reqId, chunk: delta }); }
+          // последний кадр со stream_options.include_usage несёт счётчики токенов
+          if (j.usage) safeSend(sender, 'dbai:usage', { reqId, model: j.model || model, usage: j.usage });
+        } catch (_) {}
       }
     });
     res.on('end', () => { if (!dbaiReqs.has(reqId)) return; dbaiReqs.delete(reqId); if (any) safeSend(sender, 'dbai:done', { reqId }); else safeSend(sender, 'dbai:error', { reqId, error: 'пустой ответ модели' }); });

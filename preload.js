@@ -192,6 +192,10 @@ contextBridge.exposeInMainWorld('lite', {
     onData: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('dbai:data', h); return () => ipcRenderer.removeListener('dbai:data', h); },
     onDone: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('dbai:done', h); return () => ipcRenderer.removeListener('dbai:done', h); },
     onError: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('dbai:error', h); return () => ipcRenderer.removeListener('dbai:error', h); },
+    onUsage: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('dbai:usage', h); return () => ipcRenderer.removeListener('dbai:usage', h); },
+    sessionsGet: (connId) => ipcRenderer.invoke('dbai:sessionsGet', { connId }),
+    sessionsSet: (connId, data) => ipcRenderer.invoke('dbai:sessionsSet', { connId, data }),
+    sessionsDelete: (connId) => ipcRenderer.invoke('dbai:sessionsDelete', { connId }),
   },
 
   // «Анализ диалогов» — майнинг правил из транскриптов Claude Code (вкладка модуля «Контекст»).
@@ -468,6 +472,7 @@ contextBridge.exposeInMainWorld('lite', {
     ping: (id) => ipcRenderer.invoke('db:ping', { id }),
     reconnect: (id) => ipcRenderer.invoke('db:reconnect', { id }),
     query: (id, sql) => ipcRenderer.invoke('db:query', { id, sql }),
+    queryRo: (id, sql, opts) => ipcRenderer.invoke('db:queryRo', { id, sql, ...(opts || {}) }),
     saveText: (defaultName, text) => ipcRenderer.invoke('db:saveText', { defaultName, text }),
     openText: () => ipcRenderer.invoke('db:openText'),
     chooseDir: () => ipcRenderer.invoke('db:chooseDir'),

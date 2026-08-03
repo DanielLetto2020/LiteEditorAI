@@ -40,6 +40,7 @@ export function initDb(host) {
   let wsView = 'desk';
   const aiChats = new Map();      // connId -> { messages:[], busy, reqId, agent }
   let aiSeq = 0;
+  let aiSessQuery = '';           // фильтр списка сессий (живёт до закрытия панели, не персистится)
 
   // auto-refresh timer (DataGrip-style): reloads the active TABLE tab on an interval
   let autoRefSec = (typeof dbUi.autoRefSec === 'number') ? dbUi.autoRefSec : 0;   // 0 = off/pause
@@ -91,7 +92,14 @@ export function initDb(host) {
     connStates.set(dbActiveId, { conn: dbActiveConn, schema: dbSchema, cols: dbColsCache, objects: dbObjectsCache,
       relations: dbRelationsCache, tabs, activeKey, meta: metaCache, navStack, navPtr, wsView });
   }
-  function dbDispose() { stopAutoRef(); destroyAllEditors(); const vp = document.getElementById('db-valpanel'); if (vp) vp.remove(); for (const d of aiChats.values()) for (const s of (d.sessions || [])) { if (s._reqId) { try { lite.dbai.abort(s._reqId); } catch (_) {} s._reqId = null; s._busy = false; } } }
+  function dbDispose() {
+    stopAutoRef(); destroyAllEditors();
+    const vp = document.getElementById('db-valpanel'); if (vp) vp.remove();
+    for (const d of aiChats.values()) for (const s of (d.sessions || [])) { if (s._reqId) { try { lite.dbai.abort(s._reqId); } catch (_) {} s._reqId = null; s._busy = false; } }
+    // отложенная запись транскриптов не должна потеряться при закрытии панели
+    for (const [connId, timer] of aiSaveTimers) { clearTimeout(timer); void aiFlush(connId); }   // ошибку покажет сама aiFlush
+    aiSaveTimers.clear();
+  }
   function saveDbUi() { persist('dbUi', dbUi); }
   function dbCatHue(name) { let h = 0; for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) % 360; return h; }
 
@@ -199,6 +207,11 @@ export function initDb(host) {
     del.onclick = (e) => { e.stopPropagation(); showConfirm('Удалить подключение?', `«${c.name}» удалится из списка (сама БД не трогается).`, 'Удалить', async () => {
       await lite.db.delete(c.id);
       openConns = openConns.filter((x) => x !== c.id); connStates.delete(c.id); // вкладку тоже закрываем
+      // за подключением уходит и его чат с базой: файл транскрипта, кэши схемы и таймер записи
+      const t = aiSaveTimers.get(c.id); if (t) { clearTimeout(t); aiSaveTimers.delete(c.id); }
+      aiChats.delete(c.id); aiLoaded.delete(c.id); aiExtrasByConn.delete(c.id);
+      const rm = await lite.dbai.sessionsDelete(c.id);
+      if (rm && rm.ok === false) toast('История чатов не удалена: ' + (rm.error || 'ошибка'), { kind: 'err' });
       if (dbUi.sessions) delete dbUi.sessions[c.id];
       dbUi.openTabs = openConns.slice(); saveDbUi();
       if (dbActiveId === c.id) { dbActiveId = null; dbActiveConn = null; tabs = []; activeKey = null; }
@@ -434,6 +447,9 @@ export function initDb(host) {
     const prod = el('input'); prod.type = 'checkbox'; prod.checked = !!c.isProd;
     const prodLabel = el('label', 'db-check db-check-warn'); prodLabel.append(prod, document.createTextNode(' PRODUCTION — предупреждать перед изменяющими запросами'));
     f.appendChild(prodLabel);
+    const noCloud = el('input'); noCloud.type = 'checkbox'; noCloud.checked = !!c.noCloud;
+    const noCloudLabel = el('label', 'db-check db-check-warn'); noCloudLabel.append(noCloud, document.createTextNode(' Не отправлять данные во внешние модели (AI-DB получит только структуру)'));
+    f.appendChild(noCloudLabel);
     const syncType = () => {
       const t = typeSel.value;
       hostWrap.style.display = t === 'sqlite' ? 'none' : '';
@@ -446,7 +462,7 @@ export function initDb(host) {
     typeSel.onchange = () => { if (!port.value || DEF_PORTS.has(+port.value)) port.value = DB_DEF_PORT[typeSel.value] || ''; syncType(); };
     sshOn.onchange = syncType; syncType();
     const collect = () => {
-      const o = { id: c.id, name: name.value.trim(), type: typeSel.value, category: getCategory(), readOnly: ro.checked, color: colorSel.value, isProd: prod.checked };
+      const o = { id: c.id, name: name.value.trim(), type: typeSel.value, category: getCategory(), readOnly: ro.checked, color: colorSel.value, isProd: prod.checked, noCloud: noCloud.checked };
       if (typeSel.value === 'sqlite') { o.file = file.value.trim(); o.database = o.file; }
       else { o.host = host2.value.trim(); o.port = +port.value || DB_DEF_PORT[typeSel.value]; o.user = user.value.trim(); o.database = database.value.trim(); o.ssl = ssl.checked; o.sslInsecure = sslIns.checked; o.sshEnabled = sshOn.checked; o.sshHost = sshHost.value.trim(); o.sshPort = +sshPort.value || 22; o.sshUser = sshUser.value.trim(); if (sshPass.value) o.sshPassword = sshPass.value; }
       if (pass.value) o.password = pass.value;
@@ -483,14 +499,14 @@ export function initDb(host) {
     if (dbActiveConn.isProd) head.appendChild(el('span', 'db-prod-badge', 'PROD'));
     side.appendChild(head);
     const pingNow = () => { statusDot.className = 'db-status-dot'; lite.db.ping(dbActiveId).then((r) => { if (r && r.ok) { statusDot.classList.add('ok'); statusDot.title = 'Соединение активно'; } else { statusDot.classList.add('err'); statusDot.title = 'Нет соединения: ' + ((r && r.error) || '') + ' — клик для переподключения'; } }); };
-    statusDot.onclick = async () => { statusDot.className = 'db-status-dot'; statusDot.title = 'Переподключение…'; const r = await lite.db.reconnect(dbActiveId); if (r && r.ok) { toast('Переподключено'); dbSchema = null; dbColsCache = null; dbObjectsCache = null; metaCache.clear(); invalidateTableCaches(); pingNow(); renderDbWorkspace(body); } else { statusDot.classList.add('err'); toast((r && r.error) || 'Не удалось', { kind: 'err' }); } };
+    statusDot.onclick = async () => { statusDot.className = 'db-status-dot'; statusDot.title = 'Переподключение…'; const r = await lite.db.reconnect(dbActiveId); if (r && r.ok) { toast('Переподключено'); dbSchema = null; dbColsCache = null; dbObjectsCache = null; metaCache.clear(); aiExtrasByConn.delete(dbActiveId); invalidateTableCaches(); pingNow(); renderDbWorkspace(body); } else { statusDot.classList.add('err'); toast((r && r.error) || 'Не удалось', { kind: 'err' }); } };
     pingNow();
     const tools = el('div', 'db-side-tools');
     const tNewSql = iconBtn('drow-act', 'terminal', 'Новый SQL-запрос', 15); tNewSql.onclick = () => openSqlTab();
     const tEr = iconBtn('drow-act', 'graph', 'ER-диаграмма', 15); tEr.onclick = () => openErTab();
     const tQb = iconBtn('drow-act', 'filter', 'Конструктор запроса', 15); tQb.onclick = () => openBuilderTab();
     const tDiff = iconBtn('drow-act', 'diff', 'Сравнить схемы', 15); tDiff.onclick = () => openDiffTab();
-    const tRefresh = iconBtn('drow-act', 'refresh', 'Обновить схему (дерево объектов)', 15); tRefresh.onclick = () => { dbSchema = null; dbColsCache = null; dbObjectsCache = null; metaCache.clear(); dbRelationsCache = null; invalidateTableCaches(); renderDbWorkspace(body); };
+    const tRefresh = iconBtn('drow-act', 'refresh', 'Обновить схему (дерево объектов)', 15); tRefresh.onclick = () => { dbSchema = null; dbColsCache = null; dbObjectsCache = null; metaCache.clear(); dbRelationsCache = null; aiExtrasByConn.delete(dbActiveId); invalidateTableCaches(); renderDbWorkspace(body); };
     tools.append(tNewSql, tEr, tQb, tDiff, tRefresh);
     side.appendChild(tools);
     const search = el('input', 'db-tree-search'); search.placeholder = 'Поиск объекта…'; search.value = dbUi.treeSearch || '';
@@ -1393,15 +1409,19 @@ export function initDb(host) {
     });
   }
   // substitute :name parameters via a prompt before running (skips ::casts and array-slices follow no \w)
-  function runWithParams(text, cont) {
+  function runWithParams(text, cont, onCancel) {
     const names = [...new Set([...text.matchAll(/(?<!:):([A-Za-z_]\w*)/g)].map((m) => m[1]))];
     if (!names.length) { cont(text); return; }
-    const { m, close } = makeModal('<h2>Параметры запроса</h2><div class="db-form" id="dbparams"></div>'); m.classList.add('db-modal');
+    let settled = false;   // отмену тоже сообщаем — вызывающий может ждать ответа промисом
+    const finish = (v) => { if (settled) return; settled = true; if (v == null) { if (onCancel) onCancel(); } else cont(v); };
+    const { m, close } = makeModal('<h2>Параметры запроса</h2><div class="db-form" id="dbparams"></div>', () => finish(null));
+    m.classList.add('db-modal');
     const host = m.querySelector('#dbparams'); const ins = {};
     for (const n of names) { const w = el('div', 'db-field'); w.append(el('label', null, ':' + n)); const i = el('input'); ins[n] = i; w.append(i); host.appendChild(w); }
     const acts = el('div', 'gm-actions'); acts.style.marginTop = '10px';
-    const ok = el('button', 'btn primary', 'Выполнить'); ok.onclick = () => { let out = text; for (const n of names) out = out.replace(new RegExp('(?<!:):' + n + '\\b', 'g'), lit(ins[n].value === '' ? null : ins[n].value)); close(); cont(out); };
-    const cancel = el('button', 'btn', 'Отмена'); cancel.onclick = close; acts.append(ok, cancel); host.appendChild(acts);
+    const ok = el('button', 'btn primary', 'Выполнить'); ok.onclick = () => { let out = text; for (const n of names) out = out.replace(new RegExp('(?<!:):' + n + '\\b', 'g'), lit(ins[n].value === '' ? null : ins[n].value)); finish(out); close(); };
+    const cancel = el('button', 'btn', 'Отмена'); cancel.onclick = () => { finish(null); close(); };
+    acts.append(ok, cancel); host.appendChild(acts);
     setTimeout(() => ins[names[0]].focus(), 30);
   }
   async function execSql(t, text) {
@@ -1485,13 +1505,16 @@ export function initDb(host) {
   // ---- query history + named saved queries (persisted in dbUi)
   function pushHistory(sql) { dbUi.history = dbUi.history || []; if (dbUi.history[0] === sql) return; dbUi.history.unshift(sql); if (dbUi.history.length > 50) dbUi.history.length = 50; saveDbUi(); }
   function loadInto(t, s) { if (t.editor) t.editor.dispatch({ changes: { from: 0, to: t.editor.state.doc.length, insert: s } }); }
-  function saveNamedQuery(t) {
-    const sql = (t.editor && t.editor.state.doc.toString().trim()) || ''; if (!sql) { toast('Пустой запрос'); return; }
+  // общий путь «сохранить SQL в избранные»: из консоли (по кнопке вкладки) и из карточки AI-ответа
+  function saveQueryAs(sql) {
+    const text = String(sql || '').trim(); if (!text) { toast('Пустой запрос'); return; }
     showPrompt('Сохранить запрос', 'Имя запроса', '', (name) => {
       dbUi.saved = dbUi.saved || []; const i = dbUi.saved.findIndex((x) => x.name === name);
-      if (i >= 0) dbUi.saved[i].sql = sql; else dbUi.saved.unshift({ name, sql }); saveDbUi(); toast('Сохранено: ' + name);
+      if (i >= 0) dbUi.saved[i].sql = text; else dbUi.saved.unshift({ name, sql: text });
+      saveDbUi(); toast('Сохранено: ' + name);
     });
   }
+  function saveNamedQuery(t) { saveQueryAs((t.editor && t.editor.state.doc.toString()) || ''); }
   const SNIPPETS = [
     ['Список таблиц', "SELECT table_schema, table_name FROM information_schema.tables WHERE table_schema NOT IN ('pg_catalog','information_schema','mysql','performance_schema','sys') ORDER BY 1,2;"],
     ['Размеры таблиц (Postgres)', 'SELECT relname AS table, pg_size_pretty(pg_total_relation_size(relid)) AS size FROM pg_stat_user_tables ORDER BY pg_total_relation_size(relid) DESC;'],
@@ -1996,67 +2019,195 @@ export function initDb(host) {
 
   // ============================================================ AI-DB (read-only chat with the database)
   let setWsViewFn = null;   // set by renderDbWorkspace so cards can switch back to «Рабочий стол»
-  // per-connection chat: multiple named sessions (create / switch / delete) + persistence in dbUi.
+  // per-connection chat: несколько именованных сессий (создать/переключить/удалить).
   // session = { id, title, ts, messages[], _busy, _reqId, _streamEl }  (underscore = runtime-only)
+  // Транскрипты лежат в ~/.LiteEditorAI/dbai/<connId>.json (см. dbai:sessionsGet/Set), а не в dbUi:
+  // там они переписывались целиком при каждом сохранении раскладки модуля.
+  const aiLoaded = new Set();       // connId, для которых транскрипт уже прочитан с диска
+  const aiSaveTimers = new Map();   // connId → таймер отложенной записи
+  const AI_KEEP_MSGS = 200;         // сколько последних сообщений сессии храним на диске
+  function aiNewSessionObj() { return { id: 's' + (++aiSeq), title: 'Новый чат', ts: Date.now(), pinned: false, systemNote: '', pinTables: [], extraConns: [], usage: null, messages: [] }; }
+  function aiStateFromSaved(saved) {
+    const list = (saved && Array.isArray(saved.sessions) ? saved.sessions : []).filter(Boolean);
+    const sessions = list.length
+      ? list.map((s) => ({ id: s.id, title: s.title, ts: s.ts, pinned: !!s.pinned, systemNote: s.systemNote || '', pinTables: s.pinTables || [], extraConns: s.extraConns || [], usage: s.usage || null, messages: s.messages || [] }))
+      : [aiNewSessionObj()];
+    let activeId = (saved && saved.activeId) || sessions[0].id;
+    if (!sessions.some((s) => s.id === activeId)) activeId = sessions[0].id;
+    return { sessions, activeId, agent: (dbUi.aiAgent || 'claude') };
+  }
+  // читаем транскрипт с диска; если его нет — забираем данные из старого места (dbUi) и переносим
+  async function aiLoadSessions(connId) {
+    if (aiLoaded.has(connId)) return;
+    const r = await lite.dbai.sessionsGet(connId);
+    if (r && r.error) toast('Не удалось прочитать историю чатов: ' + r.error, { kind: 'err' });
+    let saved = (r && !r.error && Array.isArray(r.sessions)) ? r : null;
+    let migrated = false;
+    if (!saved) {
+      const legacy = (dbUi.aiSessions && dbUi.aiSessions[connId]) || null;
+      if (legacy && legacy.length) { saved = { sessions: legacy, activeId: (dbUi.aiActive || {})[connId] || null }; migrated = true; }
+    }
+    aiLoaded.add(connId);
+    if (saved) aiChats.set(connId, aiStateFromSaved(saved));
+    if (migrated) {
+      delete dbUi.aiSessions[connId];
+      if (dbUi.aiActive) delete dbUi.aiActive[connId];
+      if (dbUi.aiSessions && !Object.keys(dbUi.aiSessions).length) delete dbUi.aiSessions;
+      if (dbUi.aiActive && !Object.keys(dbUi.aiActive).length) delete dbUi.aiActive;
+      saveDbUi();
+      const res = await lite.dbai.sessionsSet(connId, aiSerializeState(aiChats.get(connId)));
+      if (!res || !res.ok) toast('Не удалось перенести историю чатов в файл' + (res && res.error ? ': ' + res.error : ''), { kind: 'err' });
+    }
+  }
   function aiData() {
     let d = aiChats.get(dbActiveId);
-    if (!d) {
-      const saved = (dbUi.aiSessions && dbUi.aiSessions[dbActiveId]) || null;
-      const sessions = (saved && saved.length) ? saved.map((s) => ({ id: s.id, title: s.title, ts: s.ts, pinned: !!s.pinned, messages: s.messages || [] })) : [{ id: 's' + (++aiSeq), title: 'Новый чат', ts: Date.now(), pinned: false, messages: [] }];
-      let activeId = (dbUi.aiActive && dbUi.aiActive[dbActiveId]) || sessions[0].id;
-      if (!sessions.some((s) => s.id === activeId)) activeId = sessions[0].id;
-      d = { sessions, activeId, agent: (dbUi.aiAgent || 'claude') };
-      aiChats.set(dbActiveId, d);
-    }
+    if (!d) { d = aiStateFromSaved(null); aiChats.set(dbActiveId, d); }
     return d;
   }
   function aiSession() { const d = aiData(); let s = d.sessions.find((x) => x.id === d.activeId); if (!s) { s = d.sessions[0]; d.activeId = s.id; } return s; }
+  // «Авто-вывод»: звать ли модель за отчётом сразу после выполнения запроса (по умолчанию — да)
+  const aiAutoReport = () => dbUi.aiAutoReport !== false;
+  // ── расход токенов по сессии: приходит от провайдера (stream_options.include_usage), цена —
+  // из прайса выбранной модели. CLI-агенты счётчиков не отдают, поэтому у них бейджа не будет.
+  function aiModelCost(model, inTok, outTok) {
+    const m = (aiProviders().openrouter.models || []).find((x) => x.id === model);
+    if (!m || !m.pricing) return 0;
+    return inTok * (+m.pricing.prompt || 0) + outTok * (+m.pricing.completion || 0);
+  }
+  function aiAddUsage(st, model, usage) {
+    const inTok = +(usage.prompt_tokens || 0) || 0, outTok = +(usage.completion_tokens || 0) || 0;
+    if (!inTok && !outTok) return;
+    const u = st.usage || (st.usage = { in: 0, out: 0, cost: 0 });
+    u.in += inTok; u.out += outTok;
+    const cost = usage.cost != null ? (+usage.cost || 0) : aiModelCost(model, inTok, outTok);
+    u.cost += cost;
+  }
+  function aiUsageText(u) { return `${humanCount(u.in + u.out)} ток.` + (u.cost ? ` · $${u.cost < 0.01 ? u.cost.toFixed(4) : u.cost.toFixed(2)}` : ''); }
+  function aiSyncUsage(host) {
+    const st = aiSession(); const badge = host.querySelector('.db-ai-usage');
+    if (!badge) { if (st.usage) renderAiChat(host); return; }   // бейджа ещё нет — покажем его полным рендером
+    badge.textContent = st.usage ? aiUsageText(st.usage) : '';
+  }
+  // Внешний агент = всё, кроме Ollama/LM Studio на локальном адресе: CLI claude/codex тоже
+  // отправляют промпт в облако своего вендора, поэтому «локальным» считается только свой сервер.
+  function agentIsCloud(agentId) {
+    const ag = parseAgentId(agentId);
+    if (ag.kind !== 'ollama' && ag.kind !== 'lmstudio') return true;
+    const ep = providerEndpoint(ag.kind);
+    let hostname;
+    try { hostname = new URL(ep.base).hostname; } catch (_) { return true; }   // адрес не разобрали — считаем внешним
+    return !['localhost', '127.0.0.1', '::1', '0.0.0.0'].includes(hostname);
+  }
+  // данные (строки результата и примеры значений) наружу не отдаём
+  function aiDataWithheld() { return !!(dbActiveConn && dbActiveConn.noCloud) && agentIsCloud(aiData().agent); }
   function serializeAiMsg(m) {
-    if (m.role === 'result') return { role: 'result', sql: m.sql, chart: m.chart || null, columns: m.columns || null, colTypes: m.colTypes || null, rows: m.rows ? m.rows.slice(0, 200) : null, rowsTrunc: !!(m.rows && m.rows.length > 200), error: m.error || null, summary: m.summary || '' };
+    if (m.role === 'result') return { role: 'result', sql: m.sql, chart: m.chart || null, note: m.note || '', connId: m.connId || null, connName: m.connName || '', columns: m.columns || null, colTypes: m.colTypes || null, rows: m.rows ? m.rows.slice(0, 200) : null, rowsTrunc: !!(m.rows && m.rows.length > 200), error: m.error || null, summary: m.summary || '' };
     return { role: m.role, text: m.text || '' };
   }
+  function aiSerializeState(d) {
+    return {
+      activeId: d.activeId,
+      sessions: d.sessions.map((s) => ({
+        id: s.id, title: s.title, ts: s.ts, pinned: !!s.pinned, systemNote: s.systemNote || '',
+        pinTables: s.pinTables || [], extraConns: s.extraConns || [], usage: s.usage || null,
+        messages: (s.messages || []).slice(-AI_KEEP_MSGS).map(serializeAiMsg),
+      })),
+    };
+  }
+  // запись отложенная: aiPersist зовут после каждого чанка диалога, а файл писать столько раз незачем
   function aiPersist() {
-    const d = aiChats.get(dbActiveId); if (!d) return;
-    dbUi.aiSessions = dbUi.aiSessions || {}; dbUi.aiActive = dbUi.aiActive || {};
-    dbUi.aiSessions[dbActiveId] = d.sessions.map((s) => ({ id: s.id, title: s.title, ts: s.ts, pinned: !!s.pinned, messages: (s.messages || []).map(serializeAiMsg) }));
-    dbUi.aiActive[dbActiveId] = d.activeId; saveDbUi();
+    const connId = dbActiveId;
+    const d = aiChats.get(connId);
+    if (!d || !aiLoaded.has(connId)) return;   // до загрузки не пишем — затёрли бы историю на диске
+    const prev = aiSaveTimers.get(connId); if (prev) clearTimeout(prev);
+    aiSaveTimers.set(connId, setTimeout(() => { aiSaveTimers.delete(connId); void aiFlush(connId); }, 400));
+  }
+  // никогда не отклоняется: зовут её и из «закрываем панель», где обрабатывать отказ уже некому
+  async function aiFlush(connId) {
+    const d = aiChats.get(connId); if (!d || !aiLoaded.has(connId)) return;
+    try {
+      const r = await lite.dbai.sessionsSet(connId, aiSerializeState(d));
+      if (!r || !r.ok) toast('Не удалось сохранить историю чата' + (r && r.error ? ': ' + r.error : ''), { kind: 'err' });
+    } catch (e) { toast('Не удалось сохранить историю чата: ' + (e && e.message ? e.message : e), { kind: 'err' }); }
   }
   function aiSessTitle(s) { if (s.title && s.title !== 'Новый чат') return s.title; const u = (s.messages || []).find((m) => m.role === 'user'); return (u && u.text) ? u.text.slice(0, 40) : 'Новый чат'; }
-  function aiNewSession(host) { const d = aiData(); const s = { id: 's' + (++aiSeq), title: 'Новый чат', ts: Date.now(), messages: [] }; d.sessions.unshift(s); d.activeId = s.id; aiPersist(); renderAiChat(host); }
+  function aiNewSession(host) { const d = aiData(); const s = aiNewSessionObj(); d.sessions.unshift(s); d.activeId = s.id; aiPersist(); renderAiChat(host); }
   function aiSwitchSession(host, id) { const d = aiData(); const cur = aiSession(); if (cur._reqId) { try { lite.dbai.abort(cur._reqId); } catch (_) {} cur._busy = false; cur._reqId = null; } d.activeId = id; aiPersist(); renderAiChat(host); }
   function aiDeleteSession(host, id) {
     const d = aiData(); const i = d.sessions.findIndex((x) => x.id === id); if (i < 0) return;
     const s = d.sessions[i]; if (s._reqId) { try { lite.dbai.abort(s._reqId); } catch (_) {} }
     d.sessions.splice(i, 1);
-    if (!d.sessions.length) d.sessions.push({ id: 's' + (++aiSeq), title: 'Новый чат', ts: Date.now(), messages: [] });
+    if (!d.sessions.length) d.sessions.push(aiNewSessionObj());
     if (d.activeId === id) d.activeId = d.sessions[Math.max(0, i - 1)].id;
     aiPersist(); renderAiChat(host);
   }
   function aiTyping() { const w = el('div', 'db-ai-typing'); w.append(el('span', 'db-ai-dot'), el('span', 'db-ai-dot'), el('span', 'db-ai-dot')); return w; }
   const AI_SUGGEST = ['Какие таблицы есть в базе и сколько в них строк?', 'Покажи поля таблицы …', 'Сделай срез: топ-10 по …', 'Сколько записей за последний месяц?'];
 
-  // compact schema doc for the agent: per-table columns (+ types/PK/FK where known), row estimates
-  function buildAiSchemaDoc() {
+  // ── схема для агента: подробно — то, что нужно сейчас; остальное — списком имён.
+  // Слепая обрезка по объёму отрезала бы как раз нужную таблицу на большой базе, поэтому
+  // подробности получают закреплённые + упомянутые в диалоге таблицы, а дальше — сколько влезет.
+  const AI_SCHEMA_BUDGET = 16000;
+  function aiTableBlock(key, fkBy, est) {
+    const cols = dbColsCache || {};
+    const { samples, comments } = aiExtras();
+    const withheld = aiDataWithheld();   // примеры значений — это данные, во внешнюю модель их не отдаём
+    const tail = (cn) => {
+      const v = withheld ? null : samples[key + '.' + cn]; const cm = comments[key + '.' + cn];
+      return (cm ? ` — ${cm}` : '') + (v && v.length ? ` (значения: ${v.join(', ')})` : '');
+    };
+    const meta = metaCache.get(key); const rc = est[key]; const tcm = comments[key];
+    const out = [`\n## ${key}${rc != null && rc >= 0 ? ` (~${humanCount(rc)} строк)` : ''}${tcm ? ` — ${tcm}` : ''}`];
+    if (meta && meta.columns) { for (const c of meta.columns) out.push(`- ${c.name} ${c.type || ''}${c.pk ? ' PK' : ''}${c.fk ? ` FK→${c.fk.table}.${c.fk.column}` : ''}${c.nullable === false ? ' NOT NULL' : ''}`.trim() + tail(c.name)); }
+    else { for (const cn of cols[key] || []) { const fk = fkBy.get(key + '.' + cn); out.push(`- ${cn}${fk ? ` FK→${fk}` : ''}${tail(cn)}`); } }
+    return out.join('\n');
+  }
+  function aiBareName(key) { const i = key.indexOf('.'); return i < 0 ? key : key.slice(i + 1); }
+  // таблицы, названные в диалоге (по словам — дёшево и точнее регулярок по каждому имени)
+  function aiMentionedTables(st, keys) {
+    const text = ((st && st.messages) || []).map((m) => (m.role === 'result' ? (m.sql || '') : (m.text || ''))).join('\n').toLowerCase();
+    if (!text) return new Set();
+    const words = new Set(text.match(/[a-zA-Z_][a-zA-Z0-9_]*/g) || []);
+    return new Set(keys.filter((k) => words.has(aiBareName(k).toLowerCase()) || words.has(k.toLowerCase())));
+  }
+  function buildAiSchemaDoc(st) {
     const dialect = dbActiveConn ? dbActiveConn.type : 'postgres';
-    const lines = [`СУБД/диалект: ${DB_TYPES[dialect] || dialect}`];
-    const rels = dbRelationsCache || [];
+    const head = [`СУБД/диалект: ${DB_TYPES[dialect] || dialect}`];
     const fkBy = new Map();
-    for (const r of rels) { const k = (r.fromSchema ? r.fromSchema + '.' : '') + r.fromTable + '.' + r.fromColumn; fkBy.set(k, `${r.toTable}.${r.toColumn}`); }
+    for (const r of (dbRelationsCache || [])) { const k = (r.fromSchema ? r.fromSchema + '.' : '') + r.fromTable + '.' + r.fromColumn; fkBy.set(k, `${r.toTable}.${r.toColumn}`); }
     const est = (dbObjectsCache && dbObjectsCache.rowEstimates) || {};
     const cols = dbColsCache || {};
     const keys = Object.keys(cols).sort();
-    if (!keys.length) return lines.join('\n') + '\n(схема ещё читается)';
-    for (const key of keys) {
-      const meta = metaCache.get(key); const rc = est[key];
-      lines.push(`\n## ${key}${rc != null && rc >= 0 ? ` (~${humanCount(rc)} строк)` : ''}`);
-      if (meta && meta.columns) { for (const c of meta.columns) lines.push(`- ${c.name} ${c.type || ''}${c.pk ? ' PK' : ''}${c.fk ? ` FK→${c.fk.table}.${c.fk.column}` : ''}${c.nullable === false ? ' NOT NULL' : ''}`.trim()); }
-      else { for (const cn of cols[key]) { const fk = fkBy.get(key + '.' + cn); lines.push(`- ${cn}${fk ? ` FK→${fk}` : ''}`); } }
+    if (!keys.length) return head.join('\n') + '\n(схема ещё читается)';
+    const pinned = new Set(((st && st.pinTables) || []).filter((k) => cols[k]));
+    const mentioned = aiMentionedTables(st, keys);
+    const priority = (k) => (pinned.has(k) ? 0 : mentioned.has(k) ? 1 : 2);
+    const order = keys.slice().sort((a, b) => priority(a) - priority(b) || a.localeCompare(b));
+    const blocks = []; const rest = [];
+    let used = 0;
+    for (const key of order) {
+      const block = aiTableBlock(key, fkBy, est);
+      // приоритетные (закреплённые/упомянутые) кладём всегда, остальные — пока есть бюджет;
+      // жёсткий потолок вдвое выше бюджета — на случай, когда закреплена половина базы
+      if ((priority(key) < 2 && used < AI_SCHEMA_BUDGET * 2) || used + block.length <= AI_SCHEMA_BUDGET) { blocks.push(block); used += block.length; }
+      else {
+        const rc = est[key];
+        rest.push(`${key} (${rc != null && rc >= 0 ? `~${humanCount(rc)} строк, ` : ''}${(cols[key] || []).length} колонок)`);
+      }
     }
-    let doc = lines.join('\n');
-    if (doc.length > 16000) doc = doc.slice(0, 16000) + '\n… (схема обрезана — спрашивайте конкретные таблицы)';
-    return doc;
+    const parts = [...head];
+    parts.push(`Таблиц всего: ${keys.length}. Подробная структура ниже — для ${blocks.length}.`);
+    parts.push(...blocks.sort());
+    if (rest.length) {
+      parts.push(`\n=== ОСТАЛЬНЫЕ ТАБЛИЦЫ (только имена) ===`);
+      parts.push(rest.sort().join('\n'));
+      parts.push('\nНужна структура какой-то из них — запроси её строкой «@schema <таблица> [<таблица2> …]» и дождись ответа приложения, НЕ придумывай колонки.');
+    }
+    return parts.join('\n');
   }
-  function buildAiPrompt(st) {
+  // Единый источник промпта: системная часть + ходы диалога. CLI-агенты получают всё одной
+  // строкой (у них нет ролей), API-провайдеры — нормальный messages[] с ролью system.
+  function buildAiParts(st) {
     const dialect = dbActiveConn ? (DB_TYPES[dbActiveConn.type] || dbActiveConn.type) : 'SQL';
     const sys = [
       'Ты — ассистент-аналитик базы данных, работающий СТРОГО НА ЧТЕНИЕ.',
@@ -2074,7 +2225,8 @@ export function initDb(host) {
       '6) ВЫБОР ФОРМАТА. Если пользователь НЕ указал формат, но ответ хорошо смотрелся бы графиком/таблицей — спроси формат через @ask с вариантами: «Текстом», «Таблицей» (если уместно), «Графиком». После выбора выдай нужное (для графика — SELECT + @chart). Если формат очевиден (короткий факт → текст; набор строк → таблица) — не спрашивай, выдай сразу.',
       '7) Если вопрос чисто справочный (например «какие поля у таблицы»), отвечай ТЕКСТОМ по схеме без запроса.',
       '8) После выполнения запроса тебе вернут результат (колонки + строки). Тогда дай краткий понятный вывод/отчёт на русском (markdown: заголовки, списки, выделения). Не дублируй всю таблицу — она уже показана пользователю.',
-      '9) Если тебе не хватает данных или вопрос неоднозначен — НЕ ГАДАЙ. Задай уточняющий вопрос пользователю строго в формате (каждая директива с новой строки):',
+      '9) ОШИБКА СУБД. Если запрос упал — прочитай текст ошибки, одной строкой объясни причину и СРАЗУ дай исправленный запрос новым блоком ```sql. Не повторяй тот же запрос и не проси пользователя чинить самому.',
+      '10) Если тебе не хватает данных или вопрос неоднозначен — НЕ ГАДАЙ. Задай уточняющий вопрос пользователю строго в формате (каждая директива с новой строки):',
       '@ask <твой короткий вопрос>     — если нужно выбрать ОДИН вариант;',
       '@askmulti <твой вопрос>         — если можно выбрать НЕСКОЛЬКО вариантов;',
       'затем перечисли варианты, каждый с новой строки:',
@@ -2082,22 +2234,38 @@ export function initDb(host) {
       '@opt <вариант 2>',
       'Каждый @opt — короткий вариант (1–6 слов). Приложение само добавит поле «Свой ответ» и кнопку «Отправить» — их указывать не нужно. Используй этот механизм всегда, когда требуется уточнение.',
       '',
+      ...(st.systemNote ? ['=== ИНСТРУКЦИЯ ПОЛЬЗОВАТЕЛЯ ДЛЯ ЭТОЙ СЕССИИ (соблюдать всегда) ===', st.systemNote, ''] : []),
       '=== СТРУКТУРА БД ===',
-      buildAiSchemaDoc(),
+      buildAiSchemaDoc(st),
+      aiExtraSchemaDoc(st),
     ].join('\n');
-    const convo = st.messages.map((m) => {
-      if (m.role === 'assistant' && m.streaming) return '';   // skip the in-flight placeholder
-      if (m.role === 'user') return `\n[ПОЛЬЗОВАТЕЛЬ]:\n${m.text}`;
-      if (m.role === 'assistant') return `\n[ТЫ]:\n${m.text}`;
-      if (m.role === 'result') return `\n[РЕЗУЛЬТАТ ВЫПОЛНЕНИЯ ЗАПРОСА]:\n${m.summary}`;
-      return '';
-    }).join('\n');
+    const turns = [];
+    for (const m of st.messages) {
+      if (m.role === 'assistant' && m.streaming) continue;   // placeholder текущего ответа
+      if (m.role === 'user') turns.push({ role: 'user', text: m.text || '' });
+      else if (m.role === 'assistant') turns.push({ role: 'assistant', text: m.text || '' });
+      else if (m.role === 'result') turns.push({ role: 'user', text: `[РЕЗУЛЬТАТ ВЫПОЛНЕНИЯ ЗАПРОСА]:\n${m.summary}` + (m.note ? `\n[ИНСТРУКЦИЯ ПОЛЬЗОВАТЕЛЯ К ОТЧЁТУ]: ${m.note}` : '') });
+    }
+    return { sys, turns };
+  }
+  function buildAiPrompt(st) {
+    const { sys, turns } = buildAiParts(st);
+    const convo = turns.map((t) => (t.role === 'user' ? `\n[ПОЛЬЗОВАТЕЛЬ]:\n${t.text}` : `\n[ТЫ]:\n${t.text}`)).join('\n');
     return sys + '\n\n=== ДИАЛОГ ===' + convo + '\n\n[ТЫ]:';
+  }
+  function buildAiMessages(st) {
+    const { sys, turns } = buildAiParts(st);
+    const msgs = [{ role: 'system', content: sys }];
+    for (const t of turns) msgs.push({ role: t.role, content: t.text });
+    if (msgs.length === 1) msgs.push({ role: 'user', content: '' });
+    return msgs;
   }
   function aiResultSummary(sql, r) {
     if (!r || r.error) return `Ошибка выполнения: ${(r && r.error) || 'неизвестно'}\nSQL: ${sql}`;
     const cols = r.columns || [], rows = r.rows || [];
     let s = `Запрос вернул строк: ${rows.length}. Колонки: ${cols.join(', ')}.`;
+    // подключение помечено «не отправлять данные наружу», а агент внешний → отдаём только структуру
+    if (aiDataWithheld()) return s + '\nСами строки не передаются: подключение помечено «не отправлять данные во внешние модели». Делай выводы по структуре и агрегатам (COUNT/SUM/AVG), запрашивая их отдельными запросами.';
     if (rows.length) {
       const sample = rows.slice(0, 30).map((row) => cols.map((_, i) => { const v = fmtVal(row[i]); return v == null ? 'NULL' : v; }).join(' | ')).join('\n');
       s += `\nДанные (до 30 строк):\n${cols.join(' | ')}\n${sample}`;
@@ -2128,6 +2296,14 @@ export function initDb(host) {
     const fence = text.match(/```chart\s*([\s\S]*?)```/i);
     if (fence) { try { const j = JSON.parse(fence[1].trim()); chart = { type: j.type, x: j.x, y: Array.isArray(j.y) ? j.y : [j.y].filter((v) => v != null), title: j.title || '' }; } catch (_) {} text = text.replace(fence[0], ''); }
     if (!chart) { const cm = text.match(/@chart\s+(\w[\w-]*)\s+x=(\S+)\s+y=(\S+)(?:\s+title=([^\n]+))?/i); if (cm) { chart = { type: cm[1], x: cm[2], y: cm[3].split(',').map((s) => s.trim()).filter(Boolean), title: (cm[4] || '').trim() }; text = text.replace(cm[0], ''); } }
+    // schema request: «@schema users public.orders» → приложение подставит структуру и переспросит
+    let schemaReq = null;
+    const schM = text.match(/^[ \t>*-]*@schema[:\s]+(.+)$/im);
+    if (schM) {
+      const names = schM[1].split(/[\s,;]+/).map((s) => s.replace(/[`"'.,]+$/g, '').replace(/^[`"']+/, '')).filter(Boolean);
+      if (names.length) schemaReq = names;
+      text = text.replace(/^[ \t>*-]*@schema[:\s]+.*$/gim, '');
+    }
     // clarification directive: @ask (single) / @askmulti (multiple) + @opt lines
     let ask = null;
     const askM = text.match(/^[ \t>*-]*@(askmulti|ask)[:\s]+(.+)$/im);
@@ -2141,6 +2317,7 @@ export function initDb(host) {
     while ((m = re.exec(text))) { if (m.index > last) parts.push({ type: 'md', text: text.slice(last, m.index) }); parts.push({ type: 'sql', sql: m[1].trim(), chart: attached ? null : chart }); attached = true; last = re.lastIndex; }
     if (last < text.length) parts.push({ type: 'md', text: text.slice(last) });
     if (ask) parts.push({ type: 'ask', ask });
+    if (schemaReq) parts.push({ type: 'schema', tables: schemaReq });
     if (chart && !attached) parts.push({ type: 'chart', chart });   // standalone → render from last result
     return parts;
   }
@@ -2185,7 +2362,9 @@ export function initDb(host) {
     return null;
   }
   const aiEnabled = (list, id) => list.some((x) => x.id === id);
-  function aiToggleModel(list, m, on) { const i = list.findIndex((x) => x.id === m.id); if (on) { if (i < 0) list.push({ id: m.id, name: m.name || m.id }); } else if (i >= 0) list.splice(i, 1); }
+  // pricing/context сохраняем вместе с моделью — по ним считается стоимость сессии (иначе цену
+  // пришлось бы каждый раз тянуть из каталога заново)
+  function aiToggleModel(list, m, on) { const i = list.findIndex((x) => x.id === m.id); if (on) { if (i < 0) list.push({ id: m.id, name: m.name || m.id, pricing: m.pricing || null, context: m.context || 0 }); } else if (i >= 0) list.splice(i, 1); }
   function aiModelRow(m, list, cfg, extra) {
     const row = el('div', 'db-prov-mrow');
     const cb = el('input'); cb.type = 'checkbox'; cb.checked = aiEnabled(list, m.id); cb.onchange = () => { aiToggleModel(list, m, cb.checked); saveProviders(cfg); };
@@ -2234,6 +2413,178 @@ export function initDb(host) {
     const acts = el('div', 'gm-actions'); acts.style.marginTop = '12px'; const done = el('button', 'btn primary', 'Готово'); done.onclick = () => { close(); renderAiChat(host); }; acts.appendChild(done); m.appendChild(acts);
     paint();
   }
+  // ── кросс-БД: чат привязан к подключению, но сравнить две базы иначе невозможно. Схемы
+  // дополнительных подключений идут в промпт кратко (имена таблиц и колонок), а выполняется
+  // запрос на той базе, которую выбрали в карточке.
+  const aiExtraSchemaCache = new Map();   // connId → компактный текст схемы
+  const AI_EXTRA_BUDGET = 4000;
+  function aiExtraConns(st) { return (st.extraConns || []).filter((id) => id !== dbActiveId && dbConnsList.some((c) => c.id === id)); }
+  function aiConnName(id) { const c = dbConnsList.find((x) => x.id === id); return (c && c.name) || id; }
+  async function aiLoadExtraSchemas(st) {
+    for (const id of aiExtraConns(st)) {
+      if (aiExtraSchemaCache.has(id)) continue;
+      const r = await lite.db.columns(id);
+      if (!r || r.error) { toast(`База «${aiConnName(id)}»: схема не прочитана` + (r && r.error ? ` (${r.error})` : ''), { kind: 'err' }); aiExtraSchemaCache.set(id, ''); continue; }
+      const cols = r.columns || {};
+      const lines = [];
+      let used = 0;
+      for (const key of Object.keys(cols).sort()) {
+        const line = `- ${key}: ${(cols[key] || []).join(', ')}`;
+        if (used + line.length > AI_EXTRA_BUDGET) { lines.push(`- … ещё ${Object.keys(cols).length - lines.length} таблиц`); break; }
+        lines.push(line); used += line.length;
+      }
+      aiExtraSchemaCache.set(id, lines.join('\n'));
+    }
+  }
+  function aiExtraSchemaDoc(st) {
+    const ids = aiExtraConns(st);
+    if (!ids.length) return '';
+    const parts = ['', '=== ДРУГИЕ ПОДКЛЮЧЁННЫЕ БАЗЫ ===',
+      'Запрос к такой базе начинай первой строкой «-- @db <имя базы>» — приложение выполнит его на ней. Межбазовых JOIN не бывает: для сравнения дай ОТДЕЛЬНЫЙ запрос на каждую базу.'];
+    for (const id of ids) parts.push(`\n## база «${aiConnName(id)}»`, aiExtraSchemaCache.get(id) || '(схема не прочитана)');
+    return parts.join('\n');
+  }
+  function openExtraConnsModal(host) {
+    const st = aiSession();
+    const others = dbConnsList.filter((c) => c.id !== dbActiveId);
+    const { m, close } = makeModal('<h2>Другие базы в контексте</h2>'); m.classList.add('db-modal', 'db-prov-modal');
+    m.appendChild(el('div', 'db-prov-sub', 'Схемы отмеченных баз агент увидит дополнительно и сможет предложить запрос к любой из них — выполнится он на выбранной базе.'));
+    if (!others.length) { m.appendChild(el('div', 'db-prov-empty', 'Других подключений пока нет')); return; }
+    const sel = new Set(st.extraConns || []);
+    const list = el('div', 'db-prov-list');
+    for (const c of others) {
+      const row = el('div', 'db-prov-mrow');
+      const cb = el('input'); cb.type = 'checkbox'; cb.checked = sel.has(c.id);
+      cb.onchange = () => { if (cb.checked) sel.add(c.id); else sel.delete(c.id); };
+      const lab = el('label', 'db-prov-mcheck'); lab.appendChild(cb);
+      const info = el('div', 'db-prov-minfo');
+      info.append(el('div', 'db-prov-mname', c.name), el('div', 'db-prov-mmeta', `${DB_TYPES[c.type] || c.type}${c.database ? ' · ' + c.database : ''}`));
+      row.append(lab, info); list.appendChild(row);
+    }
+    m.appendChild(list);
+    const acts = el('div', 'gm-actions'); acts.style.marginTop = '12px';
+    const save = el('button', 'btn primary', 'Сохранить');
+    save.onclick = () => { st.extraConns = [...sel]; aiPersist(); close(); renderAiChat(host); };
+    acts.appendChild(save); m.appendChild(acts);
+  }
+  // ── экспорт сессии: разбор с базой — это готовый отчёт, но вынести его наружу было нечем
+  function aiMdTable(cols, rows, max = 50) {
+    const esc = (v) => { const s = fmtVal(v); return String(s == null ? 'NULL' : s).replace(/\|/g, '\\|').replace(/\s*\n\s*/g, ' '); };
+    const out = ['| ' + cols.join(' | ') + ' |', '| ' + cols.map(() => '---').join(' | ') + ' |'];
+    for (const r of rows.slice(0, max)) out.push('| ' + cols.map((_, i) => esc(r[i])).join(' | ') + ' |');
+    if (rows.length > max) out.push('', `_… ещё ${rows.length - max} строк_`);
+    return out;
+  }
+  function aiExportMarkdown(st) {
+    const conn = (dbActiveConn && dbActiveConn.name) || 'база';
+    const lines = [`# ${aiSessTitle(st)}`, '', `База: ${conn} · дата: ${new Date(st.ts || Date.now()).toLocaleString('ru-RU')}`, ''];
+    if (st.systemNote) lines.push('> Инструкция сессии: ' + st.systemNote, '');
+    for (const m of st.messages) {
+      if (m.role === 'user') lines.push('## Вопрос', '', m.text || '', '');
+      else if (m.role === 'assistant') { if (!m.streaming && (m.text || '').trim()) lines.push('## Ответ', '', m.text, ''); }
+      else if (m.role === 'result') {
+        lines.push('### Запрос' + (m.connName ? ` — база «${m.connName}»` : ''), '', '```sql', m.sql || '', '```', '');
+        if (m.note) lines.push('_Инструкция к отчёту: ' + m.note + '_', '');
+        if (m.error) lines.push('**Ошибка:** ' + m.error, '');
+        else if (m.columns) {
+          lines.push(`**Результат — строк: ${(m.rows || []).length}**`, '');
+          if (m.chart) lines.push(`{{chart:${m._mid || ''}}}`, '');
+          lines.push(...aiMdTable(m.columns, m.rows || []), '');
+        }
+      }
+    }
+    if (st.usage && (st.usage.in || st.usage.out)) lines.push('---', '', `Расход агента: ${aiUsageText(st.usage)}`);
+    return lines.join('\n');
+  }
+  // графики живут только в DOM (Chart.js рисует в canvas) — в HTML-отчёт кладём их снимки
+  function aiChartPngs(host) {
+    const map = new Map();
+    host.querySelectorAll('.db-ai-log > [data-mid] canvas').forEach((cv) => {
+      const holder = cv.closest('[data-mid]');
+      if (!holder || map.has(holder.dataset.mid)) return;
+      try { map.set(holder.dataset.mid, cv.toDataURL('image/png')); } catch (_) { /* пустой/грязный canvas — просто без картинки */ }
+    });
+    return map;
+  }
+  function aiExportSession(host) {
+    const st = aiSession();
+    if (!st.messages.length) { toast('Сессия пуста — экспортировать нечего'); return; }
+    const md = aiExportMarkdown(st);
+    const base = (aiSessTitle(st) || 'chat').replace(/[^\wа-яА-ЯёЁ -]+/g, '').trim().slice(0, 40) || 'chat';
+    const saveMd = async () => {
+      const r = await lite.db.saveText(base + '.md', md.replace(/^\{\{chart:[^}]*\}\}\n?/gm, ''));
+      if (r && r.error) toast(r.error, { kind: 'err' }); else if (!r || !r.canceled) toast('Отчёт сохранён');
+    };
+    const saveHtml = async () => {
+      const pngs = aiChartPngs(host);
+      const withCharts = md.replace(/\{\{chart:([^}]*)\}\}/g, (_m, mid) => (pngs.get(mid) ? `<img src="${pngs.get(mid)}" alt="график">` : ''));
+      let body; try { body = marked.parse(withCharts, { gfm: true, breaks: true }); } catch (_) { body = null; }
+      if (body == null) { toast('Не удалось собрать HTML-отчёт', { kind: 'err' }); return; }
+      const html = `<!doctype html><html lang="ru"><head><meta charset="utf-8"><title>${aiSessTitle(st)}</title>
+<style>body{font:14px/1.55 -apple-system,Segoe UI,Roboto,sans-serif;max-width:60rem;margin:2rem auto;padding:0 1rem;color:#1a1d21}
+h1{font-size:1.6rem}h2{font-size:1.2rem;margin-top:2rem}h3{font-size:1rem;color:#555}
+table{border-collapse:collapse;margin:.6rem 0;font-size:.85rem;display:block;overflow-x:auto}
+th,td{border:1px solid #d7dbe0;padding:.25rem .5rem;text-align:left}th{background:#f3f5f7}
+pre{background:#f6f8fa;border:1px solid #e3e7ea;border-radius:.4rem;padding:.6rem .8rem;overflow-x:auto}
+code{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:.85em}img{max-width:100%}
+blockquote{border-left:3px solid #c9ced4;margin:0;padding:.2rem 0 .2rem .8rem;color:#555}</style></head><body>${body}</body></html>`;
+      const r = await lite.db.saveText(base + '.html', html);
+      if (r && r.error) toast(r.error, { kind: 'err' }); else if (!r || !r.canceled) toast('Отчёт сохранён');
+    };
+    showConfirm('Экспорт сессии', 'В каком формате сохранить отчёт? HTML сохраняет графики картинками, Markdown — только текст и таблицы.',
+      'HTML', saveHtml, 'Markdown', saveMd);
+  }
+  // какие таблицы всегда идут агенту с полной структурой (остальные — списком имён)
+  function openPinTablesModal(host) {
+    const st = aiSession();
+    const keys = Object.keys(dbColsCache || {}).sort();
+    const { m, close } = makeModal('<h2>Таблицы в контексте агента</h2>'); m.classList.add('db-modal', 'db-prov-modal');
+    m.appendChild(el('div', 'db-prov-sub', 'Отмеченные таблицы всегда уходят агенту с полной структурой. Остальные он видит списком имён и может запросить отдельно.'));
+    if (!keys.length) { m.appendChild(el('div', 'db-prov-empty', 'Схема ещё читается — попробуйте позже')); return; }
+    const sel = new Set(st.pinTables || []);
+    const bar = el('div', 'db-prov-bar');
+    const search = el('input', 'db-prov-search'); search.placeholder = 'Фильтр таблиц…';
+    const status = el('span', 'db-prov-status');
+    bar.append(search, status); m.appendChild(bar);
+    const list = el('div', 'db-prov-list'); m.appendChild(list);
+    const draw = () => {
+      const q = search.value.trim().toLowerCase();
+      list.innerHTML = '';
+      status.textContent = sel.size ? sel.size + ' выбрано' : 'ничего не выбрано';
+      const shown = (q ? keys.filter((k) => k.toLowerCase().includes(q)) : keys).slice(0, 500);
+      if (!shown.length) { list.appendChild(el('div', 'db-prov-empty', 'Ничего не найдено')); return; }
+      for (const k of shown) {
+        const row = el('div', 'db-prov-mrow');
+        const cb = el('input'); cb.type = 'checkbox'; cb.checked = sel.has(k);
+        cb.onchange = () => { if (cb.checked) sel.add(k); else sel.delete(k); status.textContent = sel.size ? sel.size + ' выбрано' : 'ничего не выбрано'; };
+        const lab = el('label', 'db-prov-mcheck'); lab.appendChild(cb);
+        const info = el('div', 'db-prov-minfo');
+        info.append(el('div', 'db-prov-mname', k), el('div', 'db-prov-mmeta', ((dbColsCache || {})[k] || []).length + ' колонок'));
+        row.append(lab, info); list.appendChild(row);
+      }
+    };
+    search.oninput = draw; draw();
+    const acts = el('div', 'gm-actions'); acts.style.marginTop = '12px';
+    const clear = el('button', 'btn', 'Снять все'); clear.onclick = () => { sel.clear(); draw(); };
+    const save = el('button', 'btn primary', 'Сохранить');
+    save.onclick = async () => { const picked = [...sel]; close(); st.pinTables = picked; aiPersist(); renderAiChat(host); await aiPinTables(picked); };
+    acts.append(clear, save); m.appendChild(acts);
+  }
+  // инструкция сессии: правила ответа/глоссарий, которые уезжают агенту с каждым вопросом
+  function openSessionNoteModal(host) {
+    const st = aiSession();
+    const { m, close } = makeModal('<h2>Инструкция сессии</h2>'); m.classList.add('db-modal');
+    m.appendChild(el('div', 'db-prov-sub', 'Действует только в этой сессии и уезжает агенту с каждым вопросом: правила ответа, бизнес-глоссарий, особенности данных.'));
+    const ta = el('textarea', 'db-ai-notearea'); ta.rows = 8; ta.value = st.systemNote || '';
+    ta.placeholder = 'Напр.: выручка = amount × qty; даты считать по МСК; отвечать таблицей, без вступлений.';
+    m.appendChild(ta);
+    const acts = el('div', 'gm-actions'); acts.style.marginTop = '12px';
+    const clear = el('button', 'btn', 'Очистить'); clear.onclick = () => { ta.value = ''; ta.focus(); };
+    const save = el('button', 'btn primary', 'Сохранить');
+    save.onclick = () => { st.systemNote = ta.value.trim(); aiPersist(); close(); renderAiChat(host); };
+    acts.append(clear, save); m.appendChild(acts);
+    setTimeout(() => ta.focus(), 30);
+  }
   const RU_MONTHS = ['января', 'февраля', 'марта', 'апреля', 'мая', 'июня', 'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря'];
   function aiDayKey(ts) { const dt = new Date(ts || 0); return dt.getFullYear() + '-' + dt.getMonth() + '-' + dt.getDate(); }
   function aiDateLabel(ts) { const dt = new Date(ts || 0); return `${dt.getDate()} ${RU_MONTHS[dt.getMonth()]} ${dt.getFullYear()}`; }
@@ -2243,20 +2594,41 @@ export function initDb(host) {
     row.appendChild(el('div', 'db-ai-sess-t', aiSessTitle(s)));
     const acts = el('div', 'db-ai-sess-acts');
     const pin = iconBtn('db-ai-sess-act' + (s.pinned ? ' on' : ''), 'pin', s.pinned ? 'Открепить' : 'Закрепить', 13); pin.onclick = (e) => { e.stopPropagation(); s.pinned = !s.pinned; aiPersist(); renderAiChat(host); };
+    const ren = iconBtn('db-ai-sess-act', 'pencil', 'Переименовать', 13); ren.onclick = (e) => { e.stopPropagation(); showPrompt('Переименовать сессию', 'Название:', aiSessTitle(s), (v) => { s.title = String(v).trim(); aiPersist(); renderAiChat(host); }); };
     const del = iconBtn('db-ai-sess-act danger', 'trash', 'Удалить сессию', 13); del.onclick = (e) => { e.stopPropagation(); showConfirm('Удалить сессию?', `Сессия «${aiSessTitle(s)}» будет удалена безвозвратно.`, 'Удалить', () => aiDeleteSession(host, s.id)); };
-    acts.append(pin, del); row.appendChild(acts);
+    acts.append(pin, ren, del); row.appendChild(acts);
     row.onclick = () => { if (s.id !== d.activeId) aiSwitchSession(host, s.id); };
     return row;
   }
+  // поиск по сессиям: название + текст реплик (результаты запросов не ищем — там данные, не разговор)
+  function aiSessMatch(s, q) {
+    if (!q) return true;
+    if (aiSessTitle(s).toLowerCase().includes(q)) return true;
+    return (s.messages || []).some((m) => (m.role === 'user' || m.role === 'assistant') && String(m.text || '').toLowerCase().includes(q));
+  }
   function renderSessionList(list, d, host) {
     list.innerHTML = '';
-    const pinned = d.sessions.filter((s) => s.pinned).sort((a, b) => (b.ts || 0) - (a.ts || 0));
-    const others = d.sessions.filter((s) => !s.pinned).sort((a, b) => (b.ts || 0) - (a.ts || 0));
+    const q = aiSessQuery.trim().toLowerCase();
+    const found = d.sessions.filter((s) => aiSessMatch(s, q));
+    if (!found.length) { list.appendChild(el('div', 'db-prov-empty', 'Ничего не найдено')); return; }
+    const pinned = found.filter((s) => s.pinned).sort((a, b) => (b.ts || 0) - (a.ts || 0));
+    const others = found.filter((s) => !s.pinned).sort((a, b) => (b.ts || 0) - (a.ts || 0));
     if (pinned.length) { list.appendChild(el('div', 'db-ai-sess-group', 'Закреплённые')); for (const s of pinned) list.appendChild(aiSessionRow(s, d, host)); }
     let lastKey = null;
     for (const s of others) { const k = aiDayKey(s.ts); if (k !== lastKey) { list.appendChild(el('div', 'db-ai-sess-group', aiDateLabel(s.ts))); lastKey = k; } list.appendChild(aiSessionRow(s, d, host)); }
   }
   function renderAiChat(host) {
+    // транскрипт читается с диска один раз на подключение — до этого рисовать нечего
+    if (!aiLoaded.has(dbActiveId)) {
+      const connId = dbActiveId;
+      destroyChartsIn(host);
+      host.innerHTML = '';
+      host.appendChild(el('div', 'git-loading', 'Загрузка истории чатов…'));
+      aiLoadSessions(connId)
+        .then(() => { if (dbActiveId === connId && wsView === 'ai') renderAiChat(host); })
+        .catch((e) => toast('Не удалось открыть историю чатов: ' + (e && e.message ? e.message : e), { kind: 'err' }));
+      return;
+    }
     const d = aiData(); const st = aiSession(); st._streamEl = null;
     destroyChartsIn(host);
     host.innerHTML = '';
@@ -2273,14 +2645,53 @@ export function initDb(host) {
       const collapseBtn = iconBtn('drow-act', 'chevron-left', 'Свернуть панель', 15); collapseBtn.onclick = toggleSess;
       colHead.append(collapseBtn, el('span', 'db-ai-sessions-title', 'Сессии'));
       const newBtn = el('button', 'db-ai-sessnew'); newBtn.append(icon('plus', 13), el('span', null, 'Новый')); newBtn.title = 'Новая сессия'; newBtn.onclick = () => aiNewSession(host);
-      colHead.appendChild(newBtn); col.appendChild(colHead);
-      const slist = el('div', 'db-ai-sessions-list'); renderSessionList(slist, d, host); col.appendChild(slist);
+      colHead.appendChild(newBtn);
+      const slist = el('div', 'db-ai-sessions-list'); renderSessionList(slist, d, host);
+      const sbox = el('div', 'db-ai-sess-searchbox');
+      const sIn = el('input', 'db-ai-sess-search'); sIn.placeholder = 'Поиск по сессиям…'; sIn.value = aiSessQuery;
+      // перерисовываем только список — иначе полный ре-рендер чата отбирает фокус на каждой букве
+      sIn.oninput = () => { aiSessQuery = sIn.value; renderSessionList(slist, d, host); };
+      sbox.appendChild(sIn);
+      col.append(colHead, sbox, slist);
     }
     // ── right: chat column ──
     const chat = el('div', 'db-ai-chat-col');
     const head = el('div', 'db-ai-head');
     head.append(icon('sparkles', 15), el('span', 'db-ai-title', 'Чат с базой'), el('span', 'db-ro-badge', 'read-only'));
+    if (dbActiveConn && dbActiveConn.noCloud) {
+      const b = el('span', 'db-ai-privacy-badge', aiDataWithheld() ? 'данные не отправляются' : 'локальная модель');
+      b.title = aiDataWithheld()
+        ? 'Подключение помечено «не отправлять данные во внешние модели»: агент получает только структуру, без строк и примеров значений.'
+        : 'Выбрана локальная модель — данные не покидают эту машину.';
+      head.appendChild(b);
+    }
     const sp = el('span'); sp.style.flex = '1'; head.appendChild(sp);
+    const autoBtn = el('button', 'db-ai-toggle' + (aiAutoReport() ? ' on' : ''));
+    autoBtn.append(icon('sparkles', 13), el('span', null, 'Авто-вывод'));
+    autoBtn.title = 'Включено: после выполнения запроса агент сам пишет вывод. Выключено: результат просто показывается, вывод — по кнопке.';
+    autoBtn.onclick = () => { dbUi.aiAutoReport = !aiAutoReport(); saveDbUi(); renderAiChat(host); };
+    const noteBtn = el('button', 'db-ai-toggle' + (st.systemNote ? ' on' : ''));
+    noteBtn.append(icon('note', 13), el('span', null, 'Инструкция'));
+    noteBtn.title = st.systemNote ? 'Инструкция сессии задана — нажмите, чтобы изменить' : 'Задать инструкцию для этой сессии (правила ответа, глоссарий)';
+    noteBtn.onclick = () => openSessionNoteModal(host);
+    const extraCount = aiExtraConns(st).length;
+    const extraBtn = el('button', 'db-ai-toggle' + (extraCount ? ' on' : ''));
+    extraBtn.append(icon('layers', 13), el('span', null, 'Ещё базы' + (extraCount ? ' · ' + extraCount : '')));
+    extraBtn.title = 'Добавить схемы других подключений в контекст агента (кросс-БД сравнение)';
+    extraBtn.onclick = () => openExtraConnsModal(host);
+    const expBtn = iconBtn('drow-act', 'download', 'Экспорт сессии в отчёт', 15);
+    expBtn.onclick = () => aiExportSession(host);
+    if (st.usage && (st.usage.in || st.usage.out)) {
+      const badge = el('span', 'db-ai-usage', aiUsageText(st.usage));
+      badge.title = `Отправлено токенов: ${st.usage.in} · получено: ${st.usage.out}` + (st.usage.cost ? ` · оценка стоимости: $${st.usage.cost.toFixed(4)}` : '');
+      head.appendChild(badge);
+    }
+    const pinCount = (st.pinTables || []).length;
+    const tblBtn = el('button', 'db-ai-toggle' + (pinCount ? ' on' : ''));
+    tblBtn.append(icon('database', 13), el('span', null, 'Таблицы' + (pinCount ? ' · ' + pinCount : '')));
+    tblBtn.title = 'Какие таблицы всегда показывать агенту с полной структурой';
+    tblBtn.onclick = () => openPinTablesModal(host);
+    head.append(autoBtn, tblBtn, extraBtn, noteBtn, expBtn);
     const agentSel = el('select', 'db-ai-agent'); agentSel.title = 'Агент / модель';
     const addOpt = (val, label, parent) => { const o = document.createElement('option'); o.value = val; o.textContent = label; if (val === d.agent) o.selected = true; (parent || agentSel).appendChild(o); };
     addOpt('claude', 'Claude'); addOpt('codex', 'Codex');
@@ -2290,7 +2701,12 @@ export function initDb(host) {
     grp('Ollama', pc.ollama.models, 'Ollama', 'ollama');
     grp('LM Studio', pc.lmstudio.models, 'LMStudio', 'lmstudio');
     const og = document.createElement('optgroup'); og.label = '—'; addOpt('__settings__', '⚙ Настроить модели…', og); agentSel.appendChild(og);
-    agentSel.onchange = () => { if (agentSel.value === '__settings__') { agentSel.value = d.agent; openProvidersModal(host); return; } d.agent = agentSel.value; dbUi.aiAgent = agentSel.value; saveDbUi(); };
+    agentSel.onchange = () => {
+      if (agentSel.value === '__settings__') { agentSel.value = d.agent; openProvidersModal(host); return; }
+      d.agent = agentSel.value; dbUi.aiAgent = agentSel.value; saveDbUi();
+      if (dbActiveConn && dbActiveConn.noCloud && agentIsCloud(agentSel.value)) toast('Внешняя модель: агент получит только структуру базы, без строк данных');
+      renderAiChat(host);
+    };
     head.append(agentSel);
     const log = el('div', 'db-ai-log');
     if (!st.messages.length) {
@@ -2300,35 +2716,122 @@ export function initDb(host) {
       for (const s of AI_SUGGEST) { const c = el('button', 'db-ai-chip', s); c.onclick = () => { ta.value = s; ta.focus(); }; chips.appendChild(c); }
       w.appendChild(chips); log.appendChild(w);
     }
-    for (const msg of st.messages) log.appendChild(renderAiMsg(msg, host));
+    log.classList.toggle('busy', !!st._busy);
+    for (const msg of st.messages) log.appendChild(aiMakeNode(msg, host));
     const inputBar = el('div', 'db-ai-inputbar');
     const ta = el('textarea', 'db-ai-input'); ta.placeholder = 'Спросите о данных… (Enter — отправить, Shift+Enter — перенос)'; ta.rows = 2; ta.disabled = !!st._busy;
-    const send = el('button', 'btn primary db-ai-send'); send.textContent = st._busy ? 'Стоп' : 'Спросить';
+    const send = el('button', 'btn primary db-ai-send'); send.textContent = st._busy ? 'Стоп' : (st._editing ? 'Переспросить' : 'Спросить');
     send.onclick = () => { if (st._busy) { lite.dbai.abort(st._reqId); return; } const v = ta.value.trim(); if (v) { ta.value = ''; aiSend(host, v); } };
     ta.onkeydown = (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send.onclick(); } };
     inputBar.append(ta, send);
-    chat.append(head, log, inputBar);
+    chat.append(head, log);
+    if (st._editing) {
+      const eb = el('div', 'db-ai-editbar');
+      eb.append(icon('pencil', 12), el('span', 'db-ai-editbar-t', 'Правка сообщения — всё, что было после него, будет пересоздано'));
+      const cancelEd = el('button', 'btn', 'Отмена'); cancelEd.onclick = () => { st._editing = null; renderAiChat(host); };
+      eb.appendChild(cancelEd); chat.appendChild(eb);
+      ta.value = st._editing.text;
+      setTimeout(() => { ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); }, 0);
+    }
+    chat.appendChild(inputBar);
     host.append(col, chat);
     log.scrollTop = log.scrollHeight;
   }
-  // small "copy whole message" button (raw text) shown top-right of a bubble
-  function aiCopyBtn(text, title) { const b = iconBtn('db-ai-copy', 'copy', title || 'Копировать', 13); b.onclick = (e) => { e.stopPropagation(); lite.copyText(text || ''); toast('Скопировано'); }; return b; }
+  // ── инкрементальный рендер: полная перерисовка на каждое событие убивала графики и гриды
+  // прошлых сообщений и заметно тормозила на длинной сессии. Точечно добавляем/заменяем ОДИН узел,
+  // а состояние «идёт запрос» переключаем классом, а не пересборкой DOM.
+  function aiLogEl(host) { return host.querySelector('.db-ai-log'); }
+  function aiMsgNode(host, msg) { return msg._mid ? host.querySelector(`.db-ai-log > [data-mid="${msg._mid}"]`) : null; }
+  function aiMakeNode(msg, host) {
+    if (!msg._mid) msg._mid = 'm' + (++aiSeq);
+    const node = renderAiMsg(msg, host);
+    node.dataset.mid = msg._mid;
+    return node;
+  }
+  function aiSyncBusy(host) {
+    const st = aiSession();
+    const log = aiLogEl(host); if (log) log.classList.toggle('busy', !!st._busy);
+    const ta = host.querySelector('.db-ai-input'); if (ta) ta.disabled = !!st._busy;
+    const send = host.querySelector('.db-ai-send'); if (send) send.textContent = st._busy ? 'Стоп' : (st._editing ? 'Переспросить' : 'Спросить');
+  }
+  function aiNearBottom(log) { return log.scrollHeight - log.scrollTop - log.clientHeight < 80; }
+  function aiRefreshMsg(host, msg, opts = {}) {
+    const old = aiMsgNode(host, msg);
+    if (!old) { if (!opts.silent) renderAiChat(host); return; }
+    destroyChartsIn(old);
+    old.replaceWith(aiMakeNode(msg, host));
+    aiSyncBusy(host);
+  }
+  function aiAppendMsg(host, msg) {
+    const st = aiSession();
+    const log = aiLogEl(host); if (!log) { renderAiChat(host); return; }
+    const stick = aiNearBottom(log);
+    const welcome = log.querySelector('.db-ai-welcome'); if (welcome) welcome.remove();
+    const prev = st.messages[st.messages.indexOf(msg) - 1];
+    if (prev) aiRefreshMsg(host, prev, { silent: true });   // бывший последний теряет кнопки «последнего»
+    log.appendChild(aiMakeNode(msg, host));
+    aiSyncBusy(host);
+    if (stick) log.scrollTop = log.scrollHeight;
+  }
+  // hover-actions strip (top-right of a bubble): copy / regenerate / edit
+  function aiCopyBtn(text, title) { const b = iconBtn('db-ai-act', 'copy', title || 'Копировать', 13); b.onclick = (e) => { e.stopPropagation(); lite.copyText(text || ''); toast('Скопировано'); }; return b; }
+  function aiMsgActs(...btns) { const w = el('div', 'db-ai-msgacts'); for (const b of btns) if (b) w.appendChild(b); return w; }
+  // переиграть ход: срезаем сообщение и всё, что было после него, и спрашиваем модель заново
+  function aiRegen(host, msg) {
+    const st = aiSession(); if (st._busy) return;
+    const i = st.messages.indexOf(msg); if (i < 0) return;
+    st.messages.length = i; st._editing = null;
+    aiPersist(); renderAiChat(host); aiRun(host);
+  }
+  // правка своего сообщения: текст уезжает в поле ввода, отправка срезает всё, что было после него
+  function aiEditStart(host, msg) {
+    const st = aiSession(); if (st._busy) return;
+    const i = st.messages.indexOf(msg); if (i < 0) return;
+    st._editing = { idx: i, text: msg.text || '' };
+    renderAiChat(host);
+  }
   function renderAiMsg(msg, host) {
     const st = aiSession();
-    if (msg.role === 'user') { const w = el('div', 'db-ai-msg user'); const bub = el('div', 'db-ai-bubble'); bub.appendChild(el('div', 'db-ai-text', msg.text)); bub.appendChild(aiCopyBtn(msg.text, 'Копировать сообщение')); w.appendChild(bub); return w; }
+    const last = st.messages[st.messages.length - 1] === msg;
+    if (msg.role === 'user') {
+      const w = el('div', 'db-ai-msg user'); const bub = el('div', 'db-ai-bubble');
+      bub.appendChild(el('div', 'db-ai-text', msg.text));
+      const ed = iconBtn('db-ai-act', 'pencil', 'Изменить и переспросить', 13);
+      ed.dataset.idle = '1';   // во время запроса гасится классом .busy, а не пересборкой узла
+      ed.onclick = (e) => { e.stopPropagation(); aiEditStart(host, msg); };
+      bub.appendChild(aiMsgActs(aiCopyBtn(msg.text, 'Копировать сообщение'), ed));
+      w.appendChild(bub); return w;
+    }
     if (msg.role === 'result') return aiResultCard(msg, host);
     const w = el('div', 'db-ai-msg asst'); const bub = el('div', 'db-ai-bubble md');
-    if (msg.streaming) { if (msg.text) bub.textContent = msg.text; else bub.appendChild(aiTyping()); st._streamEl = bub; }
+    if (msg.streaming) {
+      // поток пишем в отдельный сегмент с markdown-типографикой; по завершении узел пересобирается
+      const seg = el('div', 'db-ai-md');
+      if (msg.text) mdInto(seg, msg.text); else seg.appendChild(aiTyping());
+      bub.appendChild(seg); st._streamEl = seg;
+    }
     else {
       const parts = parseAssistant(msg.text || '');
       if (!parts.length) bub.textContent = '(пусто)';
       for (const p of parts) {
         if (p.type === 'md') { if (p.text.trim()) { const seg = el('div', 'db-ai-md'); mdInto(seg, p.text); bub.appendChild(seg); } }
         else if (p.type === 'ask') bub.appendChild(aiAskCard(host, p.ask));
+        else if (p.type === 'schema') bub.appendChild(aiSchemaCard(host, p.tables));
         else if (p.type === 'chart') bub.appendChild(aiStandaloneChart(host, p.chart));
         else bub.appendChild(aiSqlCard(host, p.sql, p.chart));
       }
-      if ((msg.text || '').trim()) bub.appendChild(aiCopyBtn(msg.text, 'Копировать ответ ИИ'));
+      // план из нескольких запросов: гоняем их подряд, не дёргая модель после каждого
+      const steps = parts.filter((p) => p.type === 'sql' && isReadOnlyQuery(p.sql));
+      if (steps.length > 1) {
+        const wrap = el('div', 'db-ai-multirun');
+        const all = el('button', 'btn primary', `Выполнить все по очереди · ${steps.length}`);
+        all.dataset.idle = '1';
+        all.onclick = () => { all.disabled = true; aiExecuteAll(host, steps.map((p) => ({ sql: p.sql, chart: p.chart }))); };
+        wrap.appendChild(all); bub.appendChild(wrap);
+      }
+      const regen = last ? iconBtn('db-ai-act', 'refresh', 'Переспросить — пересоздать этот ответ', 13) : null;
+      if (regen) { regen.dataset.idle = '1'; regen.onclick = (e) => { e.stopPropagation(); aiRegen(host, msg); }; }
+      if ((msg.text || '').trim() || regen) bub.appendChild(aiMsgActs((msg.text || '').trim() ? aiCopyBtn(msg.text, 'Копировать ответ ИИ') : null, regen));
     }
     w.appendChild(bub); return w;
   }
@@ -2364,6 +2867,148 @@ export function initDb(host) {
     refresh();
     return card;
   }
+  // «@schema users orders» от агента: сопоставляем имена с реальными ключами схемы
+  function aiResolveTables(names) {
+    const keys = Object.keys(dbColsCache || {});
+    const out = [];
+    for (const n of names) {
+      const low = String(n).toLowerCase();
+      const k = keys.find((x) => x.toLowerCase() === low) || keys.find((x) => aiBareName(x).toLowerCase() === low);
+      if (k && !out.includes(k)) out.push(k);
+    }
+    return out;
+  }
+  // ── частые значения низкокардинальных колонок: без них агент сочиняет WHERE status = 'Оплачен'
+  // там, где в базе лежит 'paid'. Берём готовую статистику СУБД (один запрос на всю базу), а не
+  // DISTINCT по каждой колонке. SQLite такой статистики не отдаёт — там просто без примеров.
+  const aiExtrasByConn = new Map();   // connId → { samples: {'schema.table.col': ['paid',…]}, comments: {'schema.table[.col]': '…'} }
+  const AI_SAMPLE_MAX = 6;
+  function parsePgArrayText(s) {
+    const out = []; const str = String(s || '');
+    const body = str.startsWith('{') ? str.slice(1, -1) : str;
+    let cur = '', q = false;
+    for (let i = 0; i < body.length; i++) {
+      const ch = body[i];
+      if (q) { if (ch === '\\') { cur += body[++i] || ''; } else if (ch === '"') q = false; else cur += ch; continue; }
+      if (ch === '"') { q = true; continue; }
+      if (ch === ',') { out.push(cur); cur = ''; continue; }
+      cur += ch;
+    }
+    if (cur) out.push(cur);
+    return out.map((v) => v.trim()).filter(Boolean);
+  }
+  async function aiLoadSamples(type) {
+    const sql = type === 'postgres'
+      // только строковые/enum/bool колонки и не *_id: идентификаторы и числа как «примеры» бесполезны
+      ? `SELECT s.schemaname || '.' || s.tablename AS t, s.attname AS c, s.most_common_vals::text AS v
+         FROM pg_stats s
+         JOIN pg_namespace n ON n.nspname = s.schemaname
+         JOIN pg_class cl ON cl.relnamespace = n.oid AND cl.relname = s.tablename
+         JOIN pg_attribute a ON a.attrelid = cl.oid AND a.attname = s.attname
+         JOIN pg_type ty ON ty.oid = a.atttypid
+         WHERE s.schemaname NOT IN ('pg_catalog', 'information_schema')
+           AND s.most_common_vals IS NOT NULL AND s.n_distinct > 0 AND s.n_distinct <= 50
+           AND (ty.typname IN ('text', 'varchar', 'bpchar', 'name', 'bool') OR ty.typtype = 'e')
+           AND s.attname !~ '(^|_)id$' LIMIT 2000`
+      : type === 'mysql'
+        ? `SELECT CONCAT(TABLE_SCHEMA, '.', TABLE_NAME) AS t, COLUMN_NAME AS c, COLUMN_TYPE AS v
+           FROM information_schema.COLUMNS WHERE DATA_TYPE IN ('enum', 'set') AND TABLE_SCHEMA = DATABASE() LIMIT 2000`
+        : null;
+    const map = {};
+    if (!sql) return map;
+    const r = await lite.db.queryRo(dbActiveId, sql);
+    // нет прав на статистику — не ошибка сценария: просто идём без примеров значений
+    if (r && !r.error && Array.isArray(r.rows)) {
+      for (const row of r.rows) {
+        const [t, c, v] = row;
+        if (!t || !c || v == null) continue;
+        const list = type === 'mysql'
+          ? [...String(v).matchAll(/'((?:[^']|'')*)'/g)].map((m) => m[1].replace(/''/g, "'"))
+          : parsePgArrayText(v);
+        const vals = list.slice(0, AI_SAMPLE_MAX).map((s) => (s.length > 24 ? s.slice(0, 24) + '…' : s));
+        if (vals.length) map[t + '.' + c] = vals;
+      }
+    }
+    return map;
+  }
+  // ── комментарии таблиц и колонок (COMMENT ON / COLUMN COMMENT): самый дешёвый прирост точности,
+  // потому что объясняют агенту смысл поля лучше, чем его имя.
+  async function aiLoadComments(type) {
+    const sql = type === 'postgres'
+      ? `SELECT n.nspname || '.' || c.relname AS t, '' AS col, obj_description(c.oid, 'pg_class') AS d
+         FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+         WHERE c.relkind IN ('r', 'v', 'm', 'p') AND n.nspname NOT IN ('pg_catalog', 'information_schema')
+           AND obj_description(c.oid, 'pg_class') IS NOT NULL
+         UNION ALL
+         SELECT n.nspname || '.' || c.relname, a.attname, col_description(c.oid, a.attnum)
+         FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+         JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped
+         WHERE c.relkind IN ('r', 'v', 'm', 'p') AND n.nspname NOT IN ('pg_catalog', 'information_schema')
+           AND col_description(c.oid, a.attnum) IS NOT NULL
+         LIMIT 3000`
+      : type === 'mysql'
+        ? `SELECT CONCAT(TABLE_SCHEMA, '.', TABLE_NAME) AS t, '' AS col, TABLE_COMMENT AS d
+           FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_COMMENT <> ''
+           UNION ALL
+           SELECT CONCAT(TABLE_SCHEMA, '.', TABLE_NAME), COLUMN_NAME, COLUMN_COMMENT
+           FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND COLUMN_COMMENT <> ''
+           LIMIT 3000`
+        : null;   // SQLite комментариев не хранит
+    const map = {};
+    if (!sql) return map;
+    const r = await lite.db.queryRo(dbActiveId, sql);
+    if (r && !r.error && Array.isArray(r.rows)) {
+      for (const row of r.rows) {
+        const [t, col, d] = row;
+        const text = String(d == null ? '' : d).replace(/\s+/g, ' ').trim();
+        if (!t || !text) continue;
+        map[col ? t + '.' + col : t] = text.length > 160 ? text.slice(0, 160) + '…' : text;
+      }
+    }
+    return map;
+  }
+  function aiExtras() { return aiExtrasByConn.get(dbActiveId) || { samples: {}, comments: {} }; }
+  async function aiLoadExtras() {
+    if (aiExtrasByConn.has(dbActiveId)) return;
+    const type = dbActiveConn ? dbActiveConn.type : null;
+    const [samples, comments] = await Promise.all([aiLoadSamples(type), aiLoadComments(type)]);
+    aiExtrasByConn.set(dbActiveId, { samples, comments });
+  }
+  // подтянуть метаданные (типы/PK/FK) для таблиц, которые попадут в промпт подробно;
+  // getMeta не кидает, а возвращает {error} — поэтому Promise.all тут безопасен
+  async function aiEnsureMeta(st) {
+    const keys = Object.keys(dbColsCache || {});
+    const want = [...new Set([...(st.pinTables || []), ...aiMentionedTables(st, keys)])].filter((k) => keys.includes(k) && !metaCache.has(k)).slice(0, 12);
+    if (!want.length) return;
+    await Promise.all(want.map((k) => { const i = k.indexOf('.'); return getMeta(i < 0 ? '' : k.slice(0, i), i < 0 ? k : k.slice(i + 1)); }));
+  }
+  async function aiPinTables(keys) {
+    const st = aiSession();
+    st.pinTables = [...new Set([...(st.pinTables || []), ...keys])];
+    for (const k of keys) {
+      if (metaCache.has(k)) continue;
+      const i = k.indexOf('.');
+      const r = await getMeta(i < 0 ? '' : k.slice(0, i), i < 0 ? k : k.slice(i + 1));
+      if (r && r.error) toast(r.error, { kind: 'err' });
+    }
+    aiPersist();
+  }
+  function aiSchemaCard(host, tables) {
+    const st = aiSession();
+    const card = el('div', 'db-ai-sqlcard');
+    const resolved = aiResolveTables(tables);
+    const bar = el('div', 'db-ai-sqlbar');
+    bar.append(icon('database', 13), el('span', 'db-ai-sqllabel', 'Агент запросил структуру таблиц'));
+    card.append(bar, el('div', 'db-ai-schemalist', (resolved.length ? resolved : tables).join(', ')));
+    if (!resolved.length) { card.appendChild(el('div', 'db-ai-warn', 'Таких таблиц в базе нет — уточните название в следующем сообщении.')); return card; }
+    const missing = resolved.filter((k) => !(st.pinTables || []).includes(k));
+    if (!missing.length) { card.appendChild(el('div', 'db-ai-schemaok', 'Структура передана агенту.')); return card; }
+    const acts = el('div', 'db-ai-sqlacts');
+    const go = el('button', 'btn primary', 'Показать структуру и продолжить');
+    go.onclick = async () => { go.disabled = true; await aiPinTables(missing); renderAiChat(host); aiRun(host); };
+    acts.appendChild(go); card.appendChild(acts);
+    return card;
+  }
   // a chart the agent attached without (or after) the SQL → draw it from the latest result in the session
   function aiStandaloneChart(host, chart) {
     const st = aiSession();
@@ -2375,47 +3020,172 @@ export function initDb(host) {
     renderChartCanvas(wrap, spec.type, data.columns, data.rows, spec, { download: true });
     return wrap;
   }
+  // «Выполнить с промптом»: инструкция едет вместе с результатом, поэтому вывод агента следует
+  // указанию пользователя, а не собственному представлению модели об отчёте.
+  const AI_RUN_PRESETS = ['Кратко: 3 главных вывода', 'Только цифры, без воды', 'Найди аномалии и выбросы', 'Построй график по этим данным', 'Сравни с предыдущим периодом'];
+  function aiRunNoteBox(onRun) {
+    const box = el('div', 'db-ai-runprompt hidden');
+    box.appendChild(el('div', 'db-ai-runprompt-h', 'Что учесть в ответе'));
+    const ta = el('textarea', 'db-ai-custominput'); ta.rows = 2;
+    ta.placeholder = 'Напр.: «выводы списком, отметь, каких данных не хватает» (Ctrl+Enter — выполнить)';
+    box.appendChild(ta);
+    const chips = el('div', 'db-ai-chips');
+    for (const p of AI_RUN_PRESETS) { const c = el('button', 'db-ai-chip', p); c.onclick = () => { const cur = ta.value.trim(); ta.value = cur ? cur.replace(/[;.]\s*$/, '') + '; ' + p : p; ta.focus(); }; chips.appendChild(c); }
+    box.appendChild(chips);
+    const acts = el('div', 'db-ai-runprompt-acts');
+    const go = el('button', 'btn primary', 'Выполнить с промптом');
+    const cancel = el('button', 'btn', 'Отмена');
+    acts.append(cancel, go); box.appendChild(acts);
+    const hide = () => box.classList.add('hidden');
+    go.onclick = () => { const v = ta.value.trim(); hide(); onRun(v); };
+    cancel.onclick = hide;
+    ta.onkeydown = (e) => {
+      if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); go.onclick(); return; }
+      if (e.key === 'Escape') { e.preventDefault(); hide(); }
+    };
+    return { element: box, toggle: () => { box.classList.toggle('hidden'); if (!box.classList.contains('hidden')) ta.focus(); } };
+  }
+  // ── предохранители выполнения: время запроса ограничиваем всегда, а на PRODUCTION ещё и
+  // спрашиваем подтверждение и предлагаем LIMIT — тяжёлое чтение на боевой базе тоже инцидент.
+  const AI_TIMEOUT_MS = 30000, AI_PROD_TIMEOUT_MS = 15000, AI_PROD_LIMIT = 1000;
+  function sqlStripped(sql) { return String(sql).replace(/--[^\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, '').replace(/'(?:[^']|'')*'/g, "''"); }
+  function sqlHasLimit(sql) { return /\blimit\b|\bfetch\s+first\b|\btop\s+\d/i.test(sqlStripped(sql)); }
+  function sqlIsSingleSelect(sql) {
+    const t = sqlStripped(sql).replace(/;\s*$/, '');
+    return /^\s*\(*\s*(select|with)\b/i.test(t) && !t.includes(';');
+  }
+  function aiProdConfirm(sql) {
+    return new Promise((resolve) => {
+      if (!(dbActiveConn && dbActiveConn.isProd)) { resolve(sql); return; }
+      let done = false;
+      const finish = (v) => { if (!done) { done = true; resolve(v); } };
+      const { m, close } = makeModal('<h2>PRODUCTION</h2>', () => finish(null));
+      m.classList.add('db-modal');
+      m.appendChild(el('div', 'db-prov-sub', `Подключение «${dbActiveConn.name}» помечено как PRODUCTION. Запрос только читает, но нагрузку на боевую базу всё равно создаёт.`));
+      const pre = el('pre', 'db-ai-sql'); pre.textContent = sql; m.appendChild(pre);
+      const canLimit = sqlIsSingleSelect(sql) && !sqlHasLimit(sql);
+      let addLimit = canLimit;
+      if (canLimit) {
+        const cb = el('input'); cb.type = 'checkbox'; cb.checked = true;
+        cb.onchange = () => { addLimit = cb.checked; };
+        const lbl = el('label', 'db-check'); lbl.append(cb, document.createTextNode(` Добавить LIMIT ${AI_PROD_LIMIT}`));
+        m.appendChild(lbl);
+      }
+      const acts = el('div', 'gm-actions'); acts.style.marginTop = '12px';
+      const cancel = el('button', 'btn', 'Отмена'); cancel.onclick = () => { finish(null); close(); };
+      const go = el('button', 'btn primary', 'Выполнить');
+      go.onclick = () => { finish(addLimit ? String(sql).replace(/;\s*$/, '') + `\nLIMIT ${AI_PROD_LIMIT}` : sql); close(); };
+      acts.append(cancel, go); m.appendChild(acts);
+    });
+  }
+  // «-- @db <имя>» первой строкой = запрос адресован другой подключённой базе
+  function aiSqlTargetConn(st, sql) {
+    const m = String(sql).match(/^\s*--\s*@db\s+(.+)$/im);
+    if (!m) return dbActiveId;
+    const want = m[1].trim().toLowerCase().replace(/^[«"']|[»"']$/g, '');
+    const hit = aiExtraConns(st).find((id) => aiConnName(id).toLowerCase() === want);
+    return hit || dbActiveId;
+  }
   function aiSqlCard(host, sql, chart) {
+    const st = aiSession();
     const card = el('div', 'db-ai-sqlcard');
     const ro = isReadOnlyQuery(sql);
     const bar = el('div', 'db-ai-sqlbar'); bar.append(icon('terminal', 13), el('span', 'db-ai-sqllabel', ro ? 'Предложенный запрос (чтение)' : 'Запрос отклонён: не только чтение'));
+    const extras = aiExtraConns(st);
+    let target = aiSqlTargetConn(st, sql);
+    if (extras.length) {
+      const sp = el('span'); sp.style.flex = '1'; bar.appendChild(sp);
+      const sel = el('select', 'db-ai-agent'); sel.title = 'На какой базе выполнить';
+      for (const id of [dbActiveId, ...extras]) { const o = document.createElement('option'); o.value = id; o.textContent = aiConnName(id); if (id === target) o.selected = true; sel.appendChild(o); }
+      sel.onchange = () => { target = sel.value; };
+      bar.appendChild(sel);
+    }
     const pre = el('pre', 'db-ai-sql'); pre.textContent = sql;
     const acts = el('div', 'db-ai-sqlacts');
-    const run = el('button', 'btn primary', 'Выполнить'); run.disabled = !ro; run.onclick = () => aiExecute(host, sql, chart);
-    const edit = el('button', 'btn', 'Изменить'); edit.onclick = () => showPrompt('Правка запроса', 'SQL (только чтение):', sql, (v) => { if (v && v.trim()) aiExecute(host, v.trim(), chart); });
+    const go = (opts) => aiExecute(host, sql, chart, { ...opts, connId: target });
+    const run = el('button', 'btn primary', 'Выполнить'); run.disabled = !ro; run.onclick = () => go({});
+    const noteBox = aiRunNoteBox((note) => go({ note }));
+    const withNote = el('button', 'btn', 'С промптом…'); withNote.disabled = !ro; withNote.title = 'Выполнить и задать инструкцию к ответу агента';
+    withNote.onclick = () => noteBox.toggle();
+    const runQuiet = iconBtn('drow-act', 'play', 'Выполнить без вывода агента', 13); runQuiet.disabled = !ro; runQuiet.onclick = () => go({ report: false });
+    const edit = el('button', 'btn', 'Изменить'); edit.onclick = () => showPrompt('Правка запроса', 'SQL (только чтение):', sql, (v) => { if (v && v.trim()) aiExecute(host, v.trim(), chart, { connId: target }); });
+    const fav = iconBtn('drow-act', 'star', 'В избранные запросы', 13); fav.onclick = () => saveQueryAs(sql);
     const copy = iconBtn('drow-act', 'copy', 'Копировать', 13); copy.onclick = () => { lite.copyText(sql); toast('Скопировано'); };
     const toCon = iconBtn('drow-act', 'arrow-right', 'Открыть в SQL-консоли', 13); toCon.onclick = () => { openSqlTab(sql); if (setWsViewFn) setWsViewFn('desk'); };
-    acts.append(run, edit, copy, toCon);
-    card.append(bar, pre, acts);
+    acts.append(run, withNote, edit, runQuiet, fav, copy, toCon);
+    card.append(bar, pre, acts, noteBox.element);
     if (!ro) card.appendChild(el('div', 'db-ai-warn', 'Этот инструмент выполняет только читающие запросы.'));
     return card;
   }
-  async function aiExecute(host, sql, chart) {
-    if (!isReadOnlyQuery(sql)) { toast('Разрешены только читающие запросы (SELECT/WITH/EXPLAIN)', { kind: 'err' }); return; }
+  // подстановка :параметров — тот же путь, что в SQL-консоли (отмена = запрос не выполняем)
+  const aiWithParams = (sqlText) => new Promise((resolve) => runWithParams(sqlText, resolve, () => resolve(null)));
+  async function aiExecute(host, sqlIn, chart, opts = {}) {
+    if (!isReadOnlyQuery(sqlIn)) { toast('Разрешены только читающие запросы (SELECT/WITH/EXPLAIN)', { kind: 'err' }); return; }
+    const withParams = await aiWithParams(sqlIn);
+    if (!withParams) return;
+    const sql = await aiProdConfirm(withParams);
+    if (!sql) return;   // на PRODUCTION пользователь отказался
     const st = aiSession();
-    const resMsg = { role: 'result', sql, chart, pending: true }; st.messages.push(resMsg); renderAiChat(host);
-    const r = await lite.db.query(dbActiveId, sql);
+    const connId = opts.connId || dbActiveId;
+    const conn = dbConnsList.find((c) => c.id === connId) || dbActiveConn;
+    const isProd = !!(conn && conn.isProd);
+    const onOtherDb = connId !== dbActiveId;
+    const resMsg = { role: 'result', sql, chart, note: opts.note || '', connId, connName: onOtherDb ? aiConnName(connId) : '', pending: true };
+    st.messages.push(resMsg); aiAppendMsg(host, resMsg);
+    const r = await lite.db.queryRo(connId, sql, { timeoutMs: isProd ? AI_PROD_TIMEOUT_MS : AI_TIMEOUT_MS });
     resMsg.pending = false;
     if (r && r.error) resMsg.error = r.error; else if (r) { resMsg.columns = r.columns; resMsg.colTypes = r.colTypes; resMsg.rows = r.rows; }
-    resMsg.summary = aiResultSummary(sql, r || {});
-    aiPersist(); renderAiChat(host);
-    aiRun(host);   // feed the result back so the agent writes a conclusion / next step
+    resMsg.summary = (onOtherDb ? `База: ${aiConnName(connId)}\n` : '') + aiResultSummary(sql, r || {});
+    aiPersist(); aiRefreshMsg(host, resMsg);
+    // feed the result back so the agent writes a conclusion / next step (unless the user turned it off)
+    if (opts.report != null ? opts.report : aiAutoReport()) aiRun(host);
   }
-  function aiResultCard(msg, _host) {
+  async function aiExecuteAll(host, items) {
+    const st = aiSession(); if (st._runningAll) return;
+    st._runningAll = true;
+    try { for (const it of items) await aiExecute(host, it.sql, it.chart, { report: false }); }
+    catch (e) { toast('Шаг плана не выполнен: ' + (e && e.message ? e.message : e), { kind: 'err' }); }
+    finally { st._runningAll = false; }
+    if (aiAutoReport()) aiRun(host);
+  }
+  function aiResultCard(msg, host) {
+    const st = aiSession();
     const card = el('div', 'db-ai-resultcard');
     const bar = el('div', 'db-ai-resultbar');
-    bar.append(icon('database', 13), el('span', 'db-ai-resultlabel', msg.pending ? 'Выполняется…' : (msg.error ? 'Ошибка' : `Результат · строк: ${(msg.rows || []).length}`)));
+    bar.append(icon('database', 13), el('span', 'db-ai-resultlabel', (msg.connName ? `[${msg.connName}] ` : '') + (msg.pending ? 'Выполняется…' : (msg.error ? 'Ошибка' : `Результат · строк: ${(msg.rows || []).length}`))));
     const sp = el('span'); sp.style.flex = '1'; bar.appendChild(sp);
+    // «Выполняется…» без стоп-крана — это подвисшая карточка; отмену умеет сама СУБД (db:cancel)
+    if (msg.pending) {
+      const stop = iconBtn('drow-act danger', 'stop', 'Отменить запрос', 13);
+      stop.onclick = async () => {
+        stop.disabled = true;
+        const r = await lite.db.cancel(msg.connId || dbActiveId);
+        if (!r || !r.ok) { stop.disabled = false; toast((r && r.error) || 'Не удалось отменить запрос', { kind: 'err' }); }
+      };
+      bar.appendChild(stop);
+    }
+    // no conclusion followed (auto-report off or executed silently) → let the user ask for one
+    if (!msg.pending && st.messages[st.messages.length - 1] === msg) {
+      if (msg.error) {
+        const fix = iconBtn('drow-act', 'wrench', 'Попросить исправить запрос', 13); fix.dataset.idle = '1';
+        fix.onclick = () => aiSend(host, 'Запрос упал с ошибкой (см. выше). Объясни причину и дай исправленный SQL.');
+        bar.appendChild(fix);
+      }
+      const ask = iconBtn('drow-act', 'sparkles', msg.error ? 'Отправить ошибку агенту' : 'Попросить вывод агента', 13);
+      ask.dataset.idle = '1'; ask.onclick = () => aiRun(host); bar.appendChild(ask);
+    }
     if (!msg.pending && !msg.error && msg.columns) {
       const exp = iconBtn('drow-act', 'download', 'Экспорт / копирование', 13); exp.onclick = () => openExportModal({ columns: msg.columns, rows: msg.rows }, 'ai_query'); bar.appendChild(exp);
       if (msg.rows && msg.rows.length) { const chartBtn = iconBtn('drow-act', 'graph', 'График', 13); chartBtn.onclick = () => openChart(msg.columns, msg.colTypes, msg.rows); bar.appendChild(chartBtn); }
     }
     card.appendChild(bar);
+    if (msg.note) { const n = el('div', 'db-ai-resultnote'); n.append(icon('sparkles', 12), el('span', null, msg.note)); card.appendChild(n); }
     const sqlDet = el('details', 'db-ai-resultsql'); sqlDet.append(el('summary', null, 'SQL'), (() => { const p = el('pre', 'db-ai-sql'); p.textContent = msg.sql; return p; })()); card.appendChild(sqlDet);
     if (msg.pending) { card.appendChild(el('div', 'git-loading', 'Запрос выполняется…')); return card; }
     if (msg.error) { card.appendChild(el('div', 'docker-err', msg.error)); return card; }
     if (!msg.columns) { card.appendChild(el('div', 'db-ai-warn', 'Результат не сохранён — выполните запрос снова.')); return card; }
     if (msg.rowsTrunc) card.appendChild(el('div', 'db-ai-warn', 'Показаны первые 200 строк (полный результат не сохраняется).'));
+    if (aiDataWithheld()) card.appendChild(el('div', 'db-ai-warn', 'Данные показаны только здесь: во внешнюю модель отправлены лишь имена колонок и число строк.'));
     // chart (if the agent attached one) + collapsed table below — best-effort, never silently dropped
     let drewChart = false;
     if (msg.chart && msg.columns && msg.rows && msg.rows.length) {
@@ -2428,30 +3198,82 @@ export function initDb(host) {
     if (drewChart) gridWrap.classList.add('collapsed');
     return card;
   }
-  function aiSend(host, text) { const st = aiSession(); if (!st.messages.some((m) => m.role === 'user')) st.title = text.slice(0, 40); st.ts = Date.now(); st.messages.push({ role: 'user', text }); aiPersist(); renderAiChat(host); aiRun(host); }
+  function aiSend(host, text) {
+    const st = aiSession();
+    // правка: срезаем хвост диалога (idx мог устареть, если сообщения уже срезали переспросом)
+    const wasEditing = !!st._editing;
+    if (st._editing) { st.messages.length = Math.min(st._editing.idx, st.messages.length); st._editing = null; }
+    if (!st.messages.some((m) => m.role === 'user')) st.title = text.slice(0, 40);
+    st._schemaAuto = 0;   // новый вопрос — снова разрешаем авто-подстановку структуры
+    st.ts = Date.now();
+    const msg = { role: 'user', text };
+    st.messages.push(msg);
+    aiPersist();
+    if (wasEditing) renderAiChat(host); else aiAppendMsg(host, msg);   // после правки хвост срезан — нужен полный рендер
+    aiRun(host);
+  }
+  // агент попросил структуру → подставляем её сами, но не больше двух раз подряд:
+  // дальше решает пользователь кнопкой в карточке, иначе цикл «прошу — не то — прошу снова»
+  async function aiMaybeAutoSchema(host, msg) {
+    const st = aiSession(); if (st._busy) return;
+    const req = parseAssistant(msg.text || '').find((p) => p.type === 'schema');
+    if (!req) { st._schemaAuto = 0; return; }
+    if ((st._schemaAuto || 0) >= 2) return;
+    const fresh = aiResolveTables(req.tables).filter((k) => !(st.pinTables || []).includes(k));
+    if (!fresh.length) return;
+    st._schemaAuto = (st._schemaAuto || 0) + 1;
+    await aiPinTables(fresh);
+    renderAiChat(host); aiRun(host);
+  }
   async function aiRun(host) {
     const data = aiData(); const st = aiSession(); if (st._busy) return; st._busy = true;
     if (!dbColsCache) { const cr = await lite.db.columns(dbActiveId); if (cr && !cr.error) dbColsCache = cr.columns || {}; }
     if (!dbRelationsCache) { try { await getRelations(); } catch (_) {} }
+    await aiEnsureMeta(st);   // типы/PK/FK для таблиц, которые точно попадут в промпт
+    await aiLoadExtras();     // комментарии и частые значения колонок (один раз на подключение)
+    await aiLoadExtraSchemas(st);   // схемы дополнительных баз, если их подключили к контексту
     const asst = { role: 'assistant', text: '', streaming: true }; st.messages.push(asst);
-    renderAiChat(host);
+    aiAppendMsg(host, asst);
     const reqId = 'dbai-' + (++aiSeq) + '-' + dbActiveId; st._reqId = reqId;
-    let offData, offDone, offErr;
-    const cleanup = () => { offData && offData(); offDone && offDone(); offErr && offErr(); st._busy = false; st._reqId = null; };
-    offData = lite.dbai.onData((d) => { if (d.reqId !== reqId) return; asst.text += d.chunk || ''; if (st._streamEl) { st._streamEl.textContent = asst.text; const log = host.querySelector('.db-ai-log'); if (log) log.scrollTop = log.scrollHeight; } });
-    offDone = lite.dbai.onDone((d) => { if (d.reqId !== reqId) return; asst.streaming = false; cleanup(); aiPersist(); renderAiChat(host); });
-    offErr = lite.dbai.onError((d) => { if (d.reqId !== reqId) return; asst.streaming = false; if (!asst.text) asst.text = '⚠️ ' + (d.error || 'ошибка агента'); cleanup(); aiPersist(); renderAiChat(host); toast(d.error || 'Ошибка агента', { kind: 'err' }); });
-    const prompt = buildAiPrompt(st);
+    let offData, offDone, offErr, offUsage;
+    const cleanup = () => { offData && offData(); offDone && offDone(); offErr && offErr(); offUsage && offUsage(); st._busy = false; st._reqId = null; st._streamEl = null; };
+    offUsage = lite.dbai.onUsage((d) => { if (d.reqId !== reqId) return; aiAddUsage(st, d.model, d.usage || {}); aiPersist(); aiSyncUsage(host); });
+    // поток рисуем markdown'ом (сырой текст с ``` и заголовками читать невозможно), но не чаще
+    // раза в STREAM_PAINT_MS — иначе разбор и перерисовка на каждый токен съедают кадры
+    const STREAM_PAINT_MS = 120;
+    let lastPaint = 0, paintQueued = false;
+    const paintStream = () => {
+      paintQueued = false; lastPaint = performance.now();
+      if (!st._streamEl) return;
+      const log = aiLogEl(host);
+      const stick = log ? aiNearBottom(log) : false;
+      mdInto(st._streamEl, asst.text);   // незакрытый ``` marked рисует как код — при завершении узел пересоберётся целиком
+      if (log && stick) log.scrollTop = log.scrollHeight;
+    };
+    offData = lite.dbai.onData((d) => {
+      if (d.reqId !== reqId) return;
+      asst.text += d.chunk || '';
+      if (!st._streamEl) return;
+      const since = performance.now() - lastPaint;
+      if (since >= STREAM_PAINT_MS) paintStream();
+      else if (!paintQueued) { paintQueued = true; setTimeout(paintStream, STREAM_PAINT_MS - since); }
+    });
+    offDone = lite.dbai.onDone((d) => {
+      if (d.reqId !== reqId) return;
+      asst.streaming = false; cleanup(); aiPersist(); aiRefreshMsg(host, asst);
+      aiMaybeAutoSchema(host, asst).catch((e) => toast('Не удалось подставить структуру: ' + (e && e.message ? e.message : e), { kind: 'err' }));
+    });
+    offErr = lite.dbai.onError((d) => { if (d.reqId !== reqId) return; asst.streaming = false; if (!asst.text) asst.text = '⚠️ ' + (d.error || 'ошибка агента'); cleanup(); aiPersist(); aiRefreshMsg(host, asst); toast(d.error || 'Ошибка агента', { kind: 'err' }); });
     const ag = parseAgentId(data.agent);
-    if (ag.kind === 'claude' || ag.kind === 'codex') { lite.dbai.run(reqId, ag.kind, prompt); return; }
+    if (ag.kind === 'claude' || ag.kind === 'codex') { lite.dbai.run(reqId, ag.kind, buildAiPrompt(st)); return; }
     // API providers (OpenRouter / Ollama / LM Studio)
     const ep = providerEndpoint(ag.kind);
     if (!ep || !ag.model) { offErr({ reqId, error: 'Провайдер не настроен. Откройте «⚙ Настроить модели…».' }); return; }
     if (ag.kind === 'or' && !ep.key) { offErr({ reqId, error: 'Не задан API-ключ OpenRouter (⚙ Настроить модели…).' }); return; }
-    lite.dbai.apiRun(reqId, { baseUrl: ep.base, key: ep.key, model: ag.model, prompt });
+    lite.dbai.apiRun(reqId, { baseUrl: ep.base, key: ep.key, model: ag.model, messages: buildAiMessages(st), usage: ag.kind === 'or' });
   }
 
-  function refresh() { dbSchema = null; dbColsCache = null; dbObjectsCache = null; metaCache.clear(); dbRelationsCache = null; invalidateTableCaches(); if (dbOpen) renderDbPanel(); }
+  function refresh() { dbSchema = null; dbColsCache = null; dbObjectsCache = null; metaCache.clear(); dbRelationsCache = null; aiExtrasByConn.clear(); invalidateTableCaches(); if (dbOpen) renderDbPanel(); }
   document.addEventListener('keydown', (e) => { if (dbOpen && dbActiveId && (e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === 'p') { e.preventDefault(); openPalette(); } });
   return { isOpen: () => dbOpen, setOpen: setDbOpen, toggle: toggleDb, renderPanel: renderDbPanel, refresh, openFromContainer, openSqlFromViewer };
 }
