@@ -28,6 +28,7 @@ import { initDb } from './modules/db.js';
 import { initRmq } from './modules/rmq.js';
 import { initStorage } from './modules/storage.js';
 import { initKafka } from './modules/kafka.js';
+import { initJira } from './modules/jira.js';
 import { initOpenRouter } from './modules/openrouter.js';
 import { initTextProc } from './modules/textproc.js';
 import { initContainers } from './modules/containers.js';
@@ -160,6 +161,12 @@ const MODULES = {
       lite.kafka.onOpenFromContainer((p) => { try { mod.openFromContainer(p); } catch (_) {} });
       try { lite.kafka.panelReady(); } catch (_) {} // флаш отложенных openFromContainer из main
     },
+  },
+  // «Jira» — трекер чужих задач: аккаунтов может быть несколько (работа/личный/клиентский),
+  // поэтому окно самостоятельное и от активного проекта редактора не зависит.
+  jira: {
+    title: 'Jira', init: initJira, project: false,
+    wire: (mod) => { bind('#jira-refresh', () => mod.refresh()); },
   },
   chat: {
     title: 'OpenRouter', init: initOpenRouter, project: false,

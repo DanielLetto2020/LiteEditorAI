@@ -27,7 +27,7 @@ import { el, icon, iconBtn, hydrateIcons, toast, makeModal, showConfirm, showPro
 import { initExtensions } from './modules/extensions.js';
 // initFiles — вивер+дерево мигрированы в отдельное окно (renderer/module-entry.js).
 
-const APP_VERSION = 'alpha v1.1.123';
+const APP_VERSION = 'alpha v1.1.124';
 const GUTTER = 5;
 // Системный терминал («Система · ~») мигрирован в отдельное окно (renderer/modules/scratch.js):
 // его id `__scratch__::tN` маршрутизируются main'ом в окно-владельца, в ядре их больше не обрабатываем.
@@ -1552,7 +1552,7 @@ const panels = new Map(); // id -> { isOpen(), setOpen(open, opts) }
 // Правый слот редактора теперь держит только «Мои модули» (ext); всё остальное — отдельные окна.
 const PANEL_ORDER = [];
 // Модули, мигрированные в отдельные окна (открываются через lite.module.open, не как панель правого слота).
-const WINDOW_MODULES = new Set(['tools', 'iterflow', 'seo', 'audit', 'company', 'notes', 'db', 'rmq', 'kafka', 'chat', 'doc', 'docker', 'rh', 'ctx', 'scratch', 'files', 'pomodoro', 'monitor', 'keepass', 'sitemon', 'storage']);
+const WINDOW_MODULES = new Set(['tools', 'iterflow', 'seo', 'audit', 'company', 'notes', 'db', 'rmq', 'kafka', 'chat', 'doc', 'docker', 'rh', 'ctx', 'scratch', 'files', 'pomodoro', 'monitor', 'keepass', 'sitemon', 'storage', 'jira']);
 function registerPanel(id, api) { panels.set(id, api); }
 function closeOtherPanels(selfId) {
   for (const id of PANEL_ORDER) {
@@ -1621,6 +1621,7 @@ const QUICK_BUILTIN = [
   { id: 'audit',   icon: 'grid',     label: 'Аудит — анализ проекта' },
   { id: 'company', icon: 'users',    label: 'ИИ компания — команда агентов над проектом' },
   { id: 'iterflow', icon: 'layers',  label: 'IterFlow — задачи итераций (трекер)' },
+  { id: 'jira',    icon: 'jira',     label: 'Jira — свои задачи из нескольких аккаунтов' },
   { id: 'seo',     icon: 'globe',    label: 'WEB/SEO аудит — анализ сайта' },
   { id: 'tools',   icon: 'wrench',   label: 'Инструменты — base64, JSON/YAML, хэши, regex…' },
   { id: 'chat',    icon: 'chat',     label: 'OpenRouter — чат по своим API-ключам' },
@@ -2007,6 +2008,7 @@ const BUILTIN_MODS = [
   { id: 'storage',  icon: 'cloud',    title: 'Внешние хранилища',  desc: 'S3 · бакеты · публичные ссылки', project: true },
   { id: 'rh',       icon: 'globe',    title: 'Удалённые хосты',    desc: 'SSH-сессии к серверам' },
   { id: 'iterflow', icon: 'layers',   title: 'IterFlow',           desc: 'задачи итераций из трекера' },
+  { id: 'jira',     icon: 'jira',     title: 'Jira',               desc: 'свои задачи из нескольких аккаунтов' },
   { id: 'seo',      icon: 'globe',    title: 'WEB/SEO аудит',      desc: 'сайт: безопасность, SEO, сеть' },
   { id: 'tools',    icon: 'wrench',   title: 'Инструменты',        desc: 'base64, JSON/YAML, хэши, JWT, regex, diff' },
   { id: 'chat',     icon: 'chat',     title: 'OpenRouter',         desc: 'чат по своим API-ключам' },
@@ -2770,6 +2772,7 @@ function paletteActions() {
   acts.push({ label: 'Задачи — заметки проекта', run: () => openModule('notes') });
   acts.push({ label: 'ИИ компания — команда агентов над проектом', run: () => openModule('company') });
   acts.push({ label: 'Помодоро — таймер работы/отдыха', run: () => openModule('pomodoro') });
+  acts.push({ label: 'Jira — свои задачи из нескольких аккаунтов', run: () => openModule('jira') });
   acts.push({ label: 'Режим «один терминал»', run: toggleSingle });
   acts.push({ label: 'Поиск в терминале', hint: 'Ctrl+F', run: openTermSearch });
   acts.push({ label: 'Поиск по всем терминалам', hint: 'Ctrl+Shift+F', run: showGlobalSearch });
