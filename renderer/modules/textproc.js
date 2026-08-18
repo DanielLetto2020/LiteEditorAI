@@ -152,7 +152,7 @@ export function initTextProc(host) {
   let activeTabId = null;
   let nextTabId = 1;
   let activeProj = null;
-  let chatAgent = ['claude', 'codex', 'gemini', 'antigravity'].includes(settings.tpAgent) ? settings.tpAgent : 'claude';
+  let chatAgent = ['claude', 'codex', 'antigravity'].includes(settings.tpAgent) ? settings.tpAgent : 'claude';
   // Режим: 'chat' (Ассистент — текст в ответ) | 'agent' (Агент — правит файл сам).
   let chatMode = settings.tpMode === 'agent' ? 'agent' : 'chat';
   // Режим берём из тумблера для всех моделей (Antigravity в чате идёт как `agy --mode plan`).
@@ -1072,7 +1072,7 @@ export function initTextProc(host) {
     // в разметке уже лежит .tp-seg-thumb → children.length===0 не срабатывало никогда, кнопки моделей не строились
     if (!box.querySelector('.tp-seg-btn')) {
       box.innerHTML = '<span class="tp-seg-thumb"></span>';
-      [['claude', 'Claude'], ['codex', 'Codex'], ['gemini', 'Gemini'], ['antigravity', 'Antigravity']].forEach(([id, lbl]) => {
+      [['claude', 'Claude'], ['codex', 'Codex'], ['antigravity', 'Antigravity']].forEach(([id, lbl]) => {
         const btn = el('button', 'tp-seg-btn', lbl);
         btn.type = 'button';
         btn.title = 'Модель ' + lbl;

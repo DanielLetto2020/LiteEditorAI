@@ -802,12 +802,14 @@ ipcMain.handle('tp:exportDocx', async (e, { content, name } = {}) => {
   });
 });
 
+// Gemini убран (август 2026): Google закрыл бесплатный Gemini Code Assist для личных
+// аккаунтов, CLI отвечает IneligibleTierError 'This client is no longer supported' и
+// отправляет на Antigravity — он у нас уже есть ниже. Возвращать только с платным ключом.
 // Две оси: МОДЕЛЬ (какую утилиту звать) × РЕЖИМ (чат/агент).
 // ЧАТ-режим: одноразовый прогон, возвращает текст в чат (без правки файла).
 const TP_CHAT = {
   claude: { cmd: 'claude', args: ['-p', '--output-format', 'text'], via: 'stdin' },
   codex:  { cmd: 'codex',  args: ['exec'], via: 'arg' },
-  gemini: { cmd: 'gemini', args: ['-p'], via: 'arg' },
   // Antigravity в роли ассистента: --mode plan = рассуждает и отвечает текстом, файлы НЕ правит.
   // --dangerously-skip-permissions здесь безопасен (в plan-режиме менять нечего) и нужен, чтобы agy
   // не завис на запросе подтверждения, которое в неинтерактивном прогоне некому нажать.
@@ -822,15 +824,14 @@ const TP_CHAT = {
 };
 // АГЕНТ-режим: автономно правит файл (авто-одобрение), запуск через PTY. Промпт — последним аргументом.
 // Флаги авто-одобрения проверены по докам: claude --permission-mode acceptEdits, codex --full-auto,
-// gemini --yolo, agy --dangerously-skip-permissions. При смене версий CLI сверить `--help`.
+// agy --dangerously-skip-permissions. При смене версий CLI сверить `--help`.
 const TP_AGENT = {
   claude:      { cmd: 'claude', args: ['--permission-mode', 'acceptEdits', '-p'] },
   codex:       { cmd: 'codex',  args: ['exec', '--full-auto'] },
-  gemini:      { cmd: 'gemini', args: ['--yolo', '-p'] },
   antigravity: { cmd: 'agy',    args: ['--dangerously-skip-permissions', '-p'] },
 };
 // Флаг выбора конкретной модели у каждой утилиты (значение подставляется, если задан modelId).
-const TP_MODEL_FLAG = { claude: '--model', codex: '-m', gemini: '-m', antigravity: '--model' };
+const TP_MODEL_FLAG = { claude: '--model', codex: '-m', antigravity: '--model' };
 // Обратная совместимость с прежним плоским объектом (на случай если где-то ещё ссылаются).
 const TP_AGENTS = TP_CHAT;
 // GUI-приложение, запущенное из Dock/Finder, наследует минимальный PATH и не видит Homebrew,
@@ -870,7 +871,6 @@ function tpEnv() {
 const TP_LOGIN_CMD = {
   claude: 'claude',      // внутри сессии: /login
   codex: 'codex login',
-  gemini: 'gemini',      // мастер входа на первом экране
   agy: 'agy',            // интерактивная сессия кэширует креды для -p
 };
 const TP_AUTH_RE = [
@@ -882,7 +882,6 @@ const TP_AUTH_RE = [
   /\bunauthorized\b/i,
   /\b401\b[^\n]{0,40}\b(?:unauthorized|auth)/i,
   /\b(?:invalid|missing|expired)\s+(?:api\s*key|credentials?|token)\b/i,
-  /\bno longer supported for gemini code assist\b/i,
   /\bsession (?:has )?expired\b/i,
 ];
 // Возвращает {error, authRequired, loginCmd} если текст похож на отказ по авторизации, иначе null.
@@ -946,7 +945,7 @@ function tpRunAgent(sender, { reqId, model, prompt, cwd, conf: confIn }) {
   });
 }
 
-// { reqId, model, mode, prompt, cwd, file }. mode: 'chat' | 'agent'. model: claude|codex|gemini|antigravity.
+// { reqId, model, mode, prompt, cwd, file }. mode: 'chat' | 'agent'. model: claude|codex|antigravity.
 // Поддержан и старый формат { agent } (agent === модель; antigravity ⇒ агент-режим).
 ipcMain.on('tp:run', (e, { reqId, model, mode, agent, prompt, cwd, file } = {}) => {
   const sender = e.sender;
