@@ -3924,7 +3924,7 @@ body.preview-full .prev-frame { width: 100%; height: 100%; }
 .tp-folder-glyph svg { width: 16px; height: 16px; }
 
 .tp-tree { flex: 1; overflow-y: auto; padding: 4px 8px; }
-.tp-tabs-container { display: flex; align-items: flex-end; overflow-x: auto; flex: none; padding: 0 10px 0 0; gap: 4px; }
+.tp-tabs-container { display: flex; align-items: flex-end; overflow-x: auto; flex: none; padding: 0 10px 0 0; gap: 4px; position: sticky; top: 0; z-index: 100; background: var(--bg-primary, transparent); }
 .tp-tabs-container::-webkit-scrollbar { display: none; }
 .tp-doc-tab { display: inline-flex; align-items: center; gap: 8px; padding: 0 12px; height: 32px; font-size: 13px; color: var(--tp-text-2); cursor: pointer; border: 1px solid rgba(0,0,0,0.03); border-radius: 10px 10px 0 0; background: rgba(255,255,255,0.35); transition: background 0.2s ease, color 0.2s ease; user-select: none; flex: 0 0 auto; max-width: 190px; white-space: nowrap; overflow: hidden; }
 .tp-doc-tab > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 0 1 auto; }
@@ -3939,7 +3939,9 @@ body.preview-full .prev-frame { width: 100%; height: 100%; }
 .tp-shell { position: relative; z-index: 1; flex: 0 0 auto; display: flex; flex-direction: column; min-width: 0; }
 
 /* ---- toolbar ---- */
-.tp-toolbar { min-width: 0; flex: none; height: 54px; display: flex; align-items: center; gap: 10px; padding: 0 14px; border-radius: 19px; background: var(--tp-glass-bg); backdrop-filter: blur(28px) saturate(180%); -webkit-backdrop-filter: blur(28px) saturate(180%); border: 1px solid var(--tp-glass-border); box-shadow: var(--tp-glass-shadow), var(--tp-glass-inset); }
+.tp-toolbar { min-width: 0; flex: none; height: 54px; display: flex; align-items: center; gap: 10px; padding: 0 14px; border-radius: 19px; background: var(--tp-glass-bg); backdrop-filter: blur(28px) saturate(180%); -webkit-backdrop-filter: blur(28px) saturate(180%); border: 1px solid var(--tp-glass-border); box-shadow: var(--tp-glass-shadow), var(--tp-glass-inset); overflow-x: auto; scrollbar-width: none; }
+.tp-toolbar > * { flex-shrink: 0; }
+.tp-toolbar::-webkit-scrollbar { display: none; }
 .tp-tb-group { display: flex; gap: 2px; }
 .tp-icon-btn {
   width: 30px; height: 30px; border: none; background: transparent; border-radius: 9px; cursor: pointer;
@@ -3972,7 +3974,8 @@ body.preview-full .prev-frame { width: 100%; height: 100%; }
 .tp-seg-btn {
   padding: 5px 12px; border-radius: 8px; font-size: 12px; font-weight: 600; cursor: pointer; border: none;
   font-family: inherit; background: transparent; color: var(--tp-text-2);
-  transition: color .18s; position: relative; z-index: 1;
+  transition: color .18s; position: relative; z-index: 1; white-space: nowrap; flex-shrink: 0;
+  display: inline-flex; align-items: center; justify-content: center; gap: 4px;
 }
 .tp-segment.sm .tp-seg-btn { padding: 5px 12px; font-size: 12px; }
 .tp-seg-btn.active { color: var(--tp-accent); }
@@ -4003,12 +4006,39 @@ body.preview-full .prev-frame { width: 100%; height: 100%; }
 
 /* ---- workspace: canvas (page) + inspector ---- */
 .tp-workspace { display: grid; grid-template-columns: var(--tp-side-w) 1fr var(--tp-insp-w); flex: 1; height: 100%; min-height: 0; padding: 0 14px 16px 14px; transition: grid-template-columns 0.35s cubic-bezier(0.25, 0.8, 0.25, 1); }
-.tp-canvas { min-width: 0; height: 100%; overflow: auto; display: flex; flex-direction: column; align-items: center; padding: 0 10px 40px; gap: 22px; }
+.tp-canvas { min-width: 0; height: 100%; overflow: auto; display: flex; flex-direction: column; align-items: center; padding: 0 10px 40px; gap: 22px; position: relative; }
 .tp-page-wrap { display: flex; flex-direction: column; width: 100%; max-width: 1000px; flex-shrink: 0; }
 .tp-page {
   width: 100%; max-width: 1000px; min-height: 1010px; background: var(--tp-page-bg); border-radius: 14px;
   box-shadow: var(--tp-page-shadow); padding: 92px 96px; box-sizing: border-box;
   flex-shrink: 0;
+}
+@media (max-width: 1100px) {
+  /* padding здесь больше не задаём: поля считаются от ширины холста ниже (clamp + cqi).
+     Раньше это правило спорило с медиазапросом 800px и container query — поля прыгали ступенями. */
+  .tp-inspector { display: none !important; }
+  .tp-layout .tp-workspace, 
+  .tp-layout .tp-shell-row,
+  .tp-layout.sidebar-collapsed .tp-workspace,
+  .tp-layout.sidebar-collapsed .tp-shell-row { 
+    grid-template-columns: var(--tp-side-w) 1fr 0; 
+  }
+  .tp-layout.sidebar-collapsed .tp-workspace,
+  .tp-layout.sidebar-collapsed .tp-shell-row { 
+    grid-template-columns: 0px 1fr 0; 
+  }
+}
+/* Поля страницы считаются от ширины САМОГО холста, а не окна: при открытой AI-панели окно
+   бывает широким, а колонка с текстом — узкой, и поля в 96px съедали строку. Единицы cqi — это
+   1% ширины контейнера (.tp-page-wrap), поэтому поля ужимаются плавно, без ступеней.
+   Одно правило вместо трёх: прежние медиазапросы на 1100px и 800px тоже правили padding и
+   при разделении экрана срабатывали вместе, сжимая страницу вдвое сильнее нужного. */
+.tp-page-wrap { container-type: inline-size; container-name: tp-canvas; }
+.tp-page { padding: clamp(32px, 9cqi, 92px) clamp(16px, 9.5cqi, 96px); }
+@container tp-canvas (max-width: 560px) {
+  .tp-page { min-height: 0; border-radius: 10px; }
+  .tp-doc h1 { font-size: 26px; }
+  .tp-doc h2 { font-size: 19px; }
 }
 .tp-page-wrap .tp-page { border-top-left-radius: 0; }
 .tp-doc { min-height: 800px; display: block; outline: none; color: var(--tp-text); position: relative; }
@@ -4033,15 +4063,8 @@ body.preview-full .prev-frame { width: 100%; height: 100%; }
 .tp-doc p { margin: 0 0 var(--doc-p-spacing, 1em); }
 .tp-doc ul, .tp-doc ol { margin: 0 0 8px; padding-left: 26px; }
 
-.tp-doc:empty::before {
-  content: "Начните печатать / или откройте файл";
-  color: var(--tp-text-3);
-  pointer-events: none;
-  font-style: italic;
-  display: block;
-  text-align: center;
-  margin-top: 100px;
-}
+/* Старое центрированное приглашение убрано: оно конфликтовало с приглашением у курсора
+   (.tp-doc.tp-doc-empty::before выше). Теперь одно приглашение — на уровне курсора. */
 .tp-doc li { margin: 3px 0; }
 .tp-doc code { font-family: var(--tp-mono); font-size: .9em; background: rgba(0,0,0,.05); padding: 1px 5px; border-radius: 5px; }
 .tp-doc u { text-decoration: underline; }
@@ -4176,16 +4199,51 @@ body.preview-full .prev-frame { width: 100%; height: 100%; }
 .tp-bubble { max-width: 88%; padding: 8px 11px; font-size: 12.5px; line-height: 1.5; white-space: pre-wrap; border-radius: 14px 14px 4px 14px; }
 .tp-msg.user .tp-bubble { background: var(--tp-accent-soft); border: 1px solid var(--tp-accent-border); color: #1c3a5e; }
 .tp-msg.agent .tp-bubble { max-width: 92%; background: rgba(255,255,255,.72); border: 1px solid rgba(255,255,255,.7); color: #33343a; border-radius: 14px 14px 14px 4px; }
+/* Сообщение «агент не авторизован»: заметная, но не тревожная плашка с командой входа. */
+.tp-msg-auth .tp-bubble {
+  background: rgba(255,196,87,.16); border: 1px solid rgba(217,119,87,.35);
+  white-space: pre-wrap; font-size: 12px; line-height: 1.5;
+}
+/* Ответ агента отрисован как Markdown+KaTeX: ужимаем типографику под размер пузыря и убираем
+   элементы, уместные в документе, но не в чате (номер формулы, переключатель исходника). */
+.tp-bubble-rich { line-height: 1.5; }
+.tp-bubble-rich > :first-child { margin-top: 0; }
+.tp-bubble-rich > :last-child { margin-bottom: 0; }
+.tp-bubble-rich p { margin: 0 0 7px; }
+.tp-bubble-rich h1, .tp-bubble-rich h2, .tp-bubble-rich h3 { font-size: 13.5px; font-weight: 650; margin: 9px 0 5px; letter-spacing: 0; }
+.tp-bubble-rich ul, .tp-bubble-rich ol { margin: 0 0 7px; padding-left: 20px; }
+.tp-bubble-rich li { margin: 2px 0; }
+.tp-bubble-rich code { font-family: var(--tp-mono); font-size: .92em; background: rgba(0,0,0,.05); padding: 1px 4px; border-radius: 4px; }
+.tp-bubble-rich pre { overflow-x: auto; margin: 6px 0; }
+.tp-bubble-rich .tp-formula-block { margin: 8px 0; padding: 2px 0; min-height: 0; background: none; border: none; }
+.tp-bubble-rich .tp-formula-num, .tp-bubble-rich .tp-formula-toggle, .tp-bubble-rich .tp-formula-src { display: none; }
+.tp-bubble-rich .tp-formula-render { overflow-x: auto; overflow-y: hidden; }
+.tp-bubble-rich .katex { font-size: 1.02em; }
 .tp-bubble-actions { margin-top: 6px; display: flex; gap: 6px; }
 .tp-bubble-replace { padding: 4px 8px; border-radius: 6px; background: var(--tp-accent-soft); color: var(--tp-accent-text); border: none; font-size: 11px; cursor: pointer; }
 
 .tp-chat-input-row { padding: 10px 13px; border-top: 1px solid var(--tp-border-soft); }
 .tp-chat-input-box { display: flex; align-items: flex-end; gap: 8px; background: var(--tp-input-bg); border: 1px solid var(--tp-border); border-radius: 13px; padding: 8px 10px; }
-.tp-chat-input-box textarea { flex: 1; background: transparent; border: none; resize: none; color: var(--tp-text); font: inherit; font-size: 12.5px; outline: none; max-height: 100px; line-height: 1.4; }
+/* align-items: flex-end прижимал однострочный textarea к низу коробки, и текст стоял криво
+   относительно круглых кнопок. center — ровно по центру; при росте до нескольких строк
+   кнопки остаются по центру и это выглядит нормально. */
+.tp-chat-input-box { align-items: center; }
+.tp-chat-input-box textarea {
+  flex: 1; background: transparent; border: none; resize: none; color: var(--tp-text);
+  font: inherit; font-size: 12.5px; outline: none; max-height: 100px;
+  line-height: 1.45; padding: 4px 0; margin: 0; display: block; box-sizing: border-box;
+}
 .tp-chat-send {
   width: 32px; height: 32px; flex: none; border-radius: 10px; border: none; background: var(--tp-accent); color: #fff;
   cursor: pointer; display: inline-flex; align-items: center; justify-content: center; box-shadow: 0 3px 10px rgba(10,132,255,.4);
 }
+/* Скрепка: приложен ли документ к сообщению. Выкл — обычный разговор без контекста. */
+.tp-chat-attach {
+  width: 28px; height: 28px; flex: none; border-radius: 9px; border: none; background: transparent; color: var(--tp-text-mute);
+  cursor: pointer; display: inline-flex; align-items: center; justify-content: center; transition: background .15s, color .15s;
+}
+.tp-chat-attach:hover { background: var(--tp-hover); color: var(--tp-text); }
+.tp-chat-attach.active { background: var(--tp-accent-soft); color: var(--tp-accent-text); }
 
 /* model list cost/size chips */
 .chat-model-row .cm-meta { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
@@ -4653,6 +4711,82 @@ body.pomo-compact .pomo-btn { padding: 6px 11px; font-size: 12px; }
 
 /* панель массовых действий (выбор → применить в файлы; тумблеры фильтров триажа) */
 .mine-bulk { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 0 0 8px; margin-bottom: 4px; border-bottom: 1px dashed var(--border); }
+/* Paragraph Numbering */
+.show-paragraph-numbers {
+  counter-reset: paragraph;
+}
+.tp-doc.tp-doc-empty.show-paragraph-numbers::before {
+  left: 32px;
+}
+.show-paragraph-numbers p {
+  position: relative;
+  counter-increment: paragraph;
+  padding-left: 32px !important;
+}
+.show-paragraph-numbers p::before {
+  content: counter(paragraph);
+  position: absolute;
+  left: 0;
+  top: 6px;
+  bottom: 6px;
+  width: 20px;
+  border-right: 2px solid #0a84ff;
+  color: #0a84ff;
+  font-size: 11px;
+  font-family: var(--mono, "JetBrains Mono", monospace);
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding-right: 6px;
+  box-sizing: border-box;
+  opacity: 0.8;
+}
+/* Heading styles in paragraph numbering mode */
+.show-paragraph-numbers h1,
+.show-paragraph-numbers h2 {
+  position: relative;
+  padding-left: 32px !important;
+}
+.show-paragraph-numbers h1::before {
+  content: 'H1';
+  position: absolute;
+  left: 0;
+  top: 6px;
+  bottom: 6px;
+  width: 20px;
+  border-right: 3px solid #0a84ff;
+  color: #0a84ff;
+  font-size: 9px;
+  font-weight: 700;
+  font-family: var(--mono, "JetBrains Mono", monospace);
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding-right: 5px;
+  box-sizing: border-box;
+  opacity: 0.9;
+  letter-spacing: -0.5px;
+}
+.show-paragraph-numbers h2::before {
+  content: 'H2';
+  position: absolute;
+  left: 0;
+  top: 6px;
+  bottom: 6px;
+  width: 20px;
+  border-right: 3px solid #ff9500;
+  color: #ff9500;
+  font-size: 9px;
+  font-weight: 700;
+  font-family: var(--mono, "JetBrains Mono", monospace);
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding-right: 5px;
+  box-sizing: border-box;
+  opacity: 0.9;
+  letter-spacing: -0.5px;
+}
 .mine-bulk-n { font-size: 11.5px; color: var(--text-dim); }
 .btn.sm { padding: 4px 10px; font-size: 11.5px; }
 .mine-toggle { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: var(--text-dim); cursor: pointer; }
@@ -4939,23 +5073,37 @@ body.win-frame.win-frame-pulse::after {
 .tp-pill .tp-select, .tp-select.tp-select-inline { height: 30px; border-radius: 9px; padding: 0 8px; font-size: 12.5px; }
 .tp-btn-group .tp-pill-btn { width: 34px; height: 30px; border-radius: 8px; }
 .tp-btn-group-wide .tp-pill-btn { flex: 1; width: auto; height: 32px; border-radius: 8px; }
-.tp-scrubber { width: 14px; flex: none; position: relative; margin: 6px 2px 40px 0; display: none !important; }
-.tp-scrubber-track { position: relative; width: 14px; height: 100%; margin: 0 auto; cursor: pointer; }
-.tp-scrubber-track::before { content: ''; position: absolute; top: 0; bottom: 0; left: 5px; width: 4px; border-radius: 3px; background: var(--tp-border-soft); }
+/* ---- TOC hover-popover (появляется при наведении на зону скроллбара) ---- */
+.tp-toc-panel {
+  position: absolute; right: 0; top: 60px;
+  width: 320px; max-height: calc(100% - 80px); overflow-y: auto;
+  padding: 14px 16px; border-radius: 12px 0 0 12px;
+  background: rgba(255,255,255,0.85); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
+  border: 1px solid rgba(0,0,0,0.08); border-right: none;
+  box-shadow: -4px 0 24px rgba(0,0,0,0.08);
+  opacity: 0; pointer-events: none;
+  transform: translateX(8px);
+  transition: opacity 0.25s ease, transform 0.25s ease;
+  z-index: 200;
+}
+.tp-toc-panel.visible {
+  opacity: 1; pointer-events: auto; transform: translateX(0);
+}
+.tp-toc-title {
+  font-weight: 600; font-size: 11px; margin-bottom: 10px; color: var(--tp-text-3);
+  letter-spacing: 1px; text-transform: uppercase;
+}
+.tp-scrubber { display: flex; flex-direction: column; gap: 4px; }
 .tp-scrubber-tick {
-  position: absolute; left: 50%; transform: translate(-50%, -50%); width: 8px; height: 8px; border-radius: 50%;
-  background: var(--tp-glass-border-strong); border: 1px solid rgba(255,255,255,0.8); cursor: pointer;
-  transition: transform .12s, background .12s;
+  font-size: 13px; color: var(--tp-text-2); cursor: pointer;
+  transition: color 0.15s, background 0.15s;
+  line-height: 1.45; padding: 3px 8px; border-radius: 6px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.tp-scrubber-tick-h1 { width: 9px; height: 9px; background: rgba(10,132,255,0.55); }
-.tp-scrubber-tick-h2 { width: 7px; height: 7px; background: rgba(10,132,255,0.4); }
-.tp-scrubber-tick-h3 { width: 6px; height: 6px; background: rgba(10,132,255,0.28); }
-.tp-scrubber-tick:hover { transform: translate(-50%, -50%) scale(1.5); }
-.tp-scrubber-thumb {
-  position: absolute; left: 50%; transform: translate(-50%, -50%); width: 12px; height: 12px; border-radius: 50%;
-  background: var(--tp-glass-bg-strong); border: 1px solid var(--tp-glass-border-strong);
-  box-shadow: var(--tp-glass-shadow-sm); pointer-events: none;
-}
+.tp-scrubber-tick:hover { color: var(--tp-accent); background: rgba(10,132,255,0.08); }
+.tp-scrubber-tick-h1 { font-weight: 600; color: var(--tp-text-1); }
+.tp-scrubber-tick-h2 { padding-left: 20px; font-size: 12.5px; }
+.tp-scrubber-tick-h3 { padding-left: 34px; font-size: 12px; }
 
 
 /* Responsive Toolbar */
@@ -4974,6 +5122,9 @@ body.win-frame.win-frame-pulse::after {
 .show-paragraph-numbers {
   counter-reset: paragraph;
 }
+.tp-doc.tp-doc-empty.show-paragraph-numbers::before {
+  left: 32px;
+}
 .show-paragraph-numbers p {
   position: relative;
   counter-increment: paragraph;
@@ -4991,11 +5142,57 @@ body.win-frame.win-frame-pulse::after {
   font-size: 11px;
   font-family: var(--mono, "JetBrains Mono", monospace);
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: flex-end;
   padding-right: 6px;
   box-sizing: border-box;
   opacity: 0.8;
+}
+/* Heading styles in paragraph numbering mode */
+.show-paragraph-numbers h1,
+.show-paragraph-numbers h2 {
+  position: relative;
+  padding-left: 32px !important;
+}
+.show-paragraph-numbers h1::before {
+  content: 'H1';
+  position: absolute;
+  left: 0;
+  top: 6px;
+  bottom: 6px;
+  width: 20px;
+  border-right: 3px solid #0a84ff;
+  color: #0a84ff;
+  font-size: 9px;
+  font-weight: 700;
+  font-family: var(--mono, "JetBrains Mono", monospace);
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding-right: 5px;
+  box-sizing: border-box;
+  opacity: 0.9;
+  letter-spacing: -0.5px;
+}
+.show-paragraph-numbers h2::before {
+  content: 'H2';
+  position: absolute;
+  left: 0;
+  top: 6px;
+  bottom: 6px;
+  width: 20px;
+  border-right: 3px solid #ff9500;
+  color: #ff9500;
+  font-size: 9px;
+  font-weight: 700;
+  font-family: var(--mono, "JetBrains Mono", monospace);
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding-right: 5px;
+  box-sizing: border-box;
+  opacity: 0.9;
+  letter-spacing: -0.5px;
 }
 
 
@@ -5038,8 +5235,13 @@ body.win-frame.win-frame-pulse::after {
 #doc-open-btn .tp-btn-label, #doc-save-btn .tp-btn-label { white-space: nowrap; }
 #doc-open-btn { width: 118px; }
 #doc-save-btn { width: 132px; }
+#doc-toggle-inspector { transition: width 0.40s cubic-bezier(0.4,0,0.2,1), padding 0.40s cubic-bezier(0.4,0,0.2,1); overflow: hidden; white-space: nowrap; flex: 0 0 auto; box-sizing: border-box; width: 112px; }
 .tp-layout:not(.sidebar-collapsed) #doc-open-btn,
-.tp-layout:not(.sidebar-collapsed) #doc-save-btn { width: 34px; padding-left: 9px; padding-right: 9px; }
+.tp-layout:not(.sidebar-collapsed) #doc-save-btn,
+.tp-toolbar-narrow #doc-open-btn,
+.tp-toolbar-narrow #doc-save-btn,
+.tp-toolbar-narrow #doc-toggle-inspector { width: 34px; padding-left: 9px; padding-right: 9px; }
+.tp-toolbar-narrow #doc-toggle-inspector .tp-btn-label { display: none; }
 
 
 /* ================= Мелкие фиксы (2026-07) ================= */
@@ -5074,5 +5276,30 @@ body.win-frame.win-frame-pulse::after {
 .tp-shell-row--tabs { pointer-events: none; }
 .tp-shell-row--tabs .tp-search { pointer-events: auto; }
 /* Приподнятая полоса вкладок должна лежать НАД .tp-shell (z-index:1), иначе сама панель
-   .tp-shell перехватывает клики по вкладкам и «+». */
-.tp-tabs-container { position: relative; z-index: 2; }
+   .tp-shell перехватывает клики по вкладкам и «+».
+   Раньше здесь стояло position: relative — оно перебивало sticky из основного правила, и
+   полоса вкладок уезжала вверх при прокрутке документа. Возвращаем прилипание. */
+.tp-tabs-container {
+  position: sticky; top: 0; z-index: 20;
+  /* Под вкладками не должен просвечивать текст страницы: матовая подложка «стола». */
+  background: rgba(238,241,247,.82);
+  backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+  padding-top: 2px;
+}
+
+
+/* ================= Раскрытие/схлопывание панелей: без «наезда» кнопок (2026-08) ================= */
+/* Колонки .tp-shell-row (тулбар и строка поиска) анимируют ширину (0 ⇄ панель) ~0.4с. Всё это
+   время узкая колонка была УЖЕ своего содержимого, а grid-элемент по умолчанию не сжимается
+   ниже min-content — поэтому иконки дерева и поиск на секунду вылезали за свою колонку и
+   наезжали на соседние кнопки. Лечим двумя правилами:
+   1) колонка может стать сколь угодно узкой (min-width: 0) и обрезает содержимое (overflow: hidden);
+   2) содержимое внутри держит свой размер (flex: 0 0 auto), то есть кнопки не «сминаются»
+      друг в друга, а просто плавно уезжают за край.
+   Рабочую зону (.tp-workspace: дерево / страница / инспектор) НЕ трогаем — там жёсткая ширина
+   инспектора завязана на его внутреннюю раскладку. */
+.tp-shell-row > * { min-width: 0; }
+.tp-shell-row--toolbar .tp-sidebar-actions, .tp-shell-row--tabs .tp-search { overflow: hidden; }
+.tp-sidebar-actions > * { flex: 0 0 auto; }
+.tp-search .tp-search-icon { flex: 0 0 auto; }
+.tp-search input { min-width: 0; }

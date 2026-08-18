@@ -775,17 +775,64 @@ ipcMain.handle('tp:saveFileAs', async (e, { content, name, ext } = {}) => {
   } catch (e2) { return { ok: false, error: String(e2.message || e2) }; }
 });
 
-// Как звать CLI в неинтерактивном режиме и куда подавать промпт (stdin/arg).
-// gemini — официальный Gemini CLI из PATH (идея из PR #6; там был захардкожен macOS-путь Antigravity).
-const TP_AGENTS = {
+ipcMain.handle('tp:exportDocx', async (e, { content, name } = {}) => {
+  const last = loadState().lastOpenDir;
+  const base = String(name || 'Безымянный').replace(/[\/\\:*?"<>|]+/g, '_').replace(/\.[^.]+$/, '');
+  const res = await dialog.showSaveDialog(senderWin(e) || mainWindow, {
+    title: 'Экспорт в DOCX (через Pandoc)',
+    defaultPath: path.join(last && fs.existsSync(last) ? last : os.homedir(), `${base}.docx`),
+    filters: [{ name: 'Word Document', extensions: ['docx'] }],
+  });
+  if (res.canceled || !res.filePath) return { canceled: true };
+  
+  return new Promise((resolve) => {
+    const tmpPath = path.join(os.tmpdir(), `liteeditor_export_${Date.now()}.md`);
+    fs.writeFileSync(tmpPath, String(content || ''));
+    
+    const { execFile } = require('child_process');
+    execFile('pandoc', ['-f', 'markdown', '-t', 'docx', '-o', res.filePath, tmpPath], (err) => {
+      try { fs.unlinkSync(tmpPath); } catch (_) {}
+      if (err) {
+        resolve({ ok: false, error: 'Ошибка Pandoc (убедитесь что он установлен): ' + err.message });
+      } else {
+        saveState({ lastOpenDir: path.dirname(res.filePath) });
+        resolve({ ok: true, file: res.filePath, name: path.basename(res.filePath) });
+      }
+    });
+  });
+});
+
+// Две оси: МОДЕЛЬ (какую утилиту звать) × РЕЖИМ (чат/агент).
+// ЧАТ-режим: одноразовый прогон, возвращает текст в чат (без правки файла).
+const TP_CHAT = {
   claude: { cmd: 'claude', args: ['-p', '--output-format', 'text'], via: 'stdin' },
-  codex: { cmd: 'codex', args: ['exec'], via: 'arg' },
+  codex:  { cmd: 'codex',  args: ['exec'], via: 'arg' },
   gemini: { cmd: 'gemini', args: ['-p'], via: 'arg' },
-  // agy: одноразовый прогон — «-p» (--print). Промпт идёт ПОСЛЕДНИМ аргументом (сразу за -p).
-  // --dangerously-skip-permissions = авто-одобрение правок (родной флаг agy, не только Claude).
-  // Запускаем через PTY (см. tpRunAntigravity): без TTY «agy -p» молча теряет вывод.
-  antigravity: { cmd: 'agy', args: ['--dangerously-skip-permissions', '-p'], via: 'arg', pty: true },
+  // Antigravity в роли ассистента: --mode plan = рассуждает и отвечает текстом, файлы НЕ правит.
+  // --dangerously-skip-permissions здесь безопасен (в plan-режиме менять нечего) и нужен, чтобы agy
+  // не завис на запросе подтверждения, которое в неинтерактивном прогоне некому нажать.
+  // --disable-slash-commands НЕ ставим: agy отключает вместе с ним и plan-режим
+  // («--mode plan has no effect while slash command expansion is disabled»).
+  // pty: true — agy -p молча зависает/теряет stdout вне TTY (issue #76/#318), поэтому только PTY.
+  antigravity: {
+    cmd: 'agy',
+    args: ['--mode', 'plan', '--dangerously-skip-permissions', '--output-format', 'text', '-p'],
+    via: 'arg', pty: true,
+  },
 };
+// АГЕНТ-режим: автономно правит файл (авто-одобрение), запуск через PTY. Промпт — последним аргументом.
+// Флаги авто-одобрения проверены по докам: claude --permission-mode acceptEdits, codex --full-auto,
+// gemini --yolo, agy --dangerously-skip-permissions. При смене версий CLI сверить `--help`.
+const TP_AGENT = {
+  claude:      { cmd: 'claude', args: ['--permission-mode', 'acceptEdits', '-p'] },
+  codex:       { cmd: 'codex',  args: ['exec', '--full-auto'] },
+  gemini:      { cmd: 'gemini', args: ['--yolo', '-p'] },
+  antigravity: { cmd: 'agy',    args: ['--dangerously-skip-permissions', '-p'] },
+};
+// Флаг выбора конкретной модели у каждой утилиты (значение подставляется, если задан modelId).
+const TP_MODEL_FLAG = { claude: '--model', codex: '-m', gemini: '-m', antigravity: '--model' };
+// Обратная совместимость с прежним плоским объектом (на случай если где-то ещё ссылаются).
+const TP_AGENTS = TP_CHAT;
 // GUI-приложение, запущенное из Dock/Finder, наследует минимальный PATH и не видит Homebrew,
 // npm-global, agy и т.п. Один раз спрашиваем PATH у логин-шелла пользователя (там подхватываются
 // ~/.zprofile/.zshrc с реальными путями) и кэшируем. Промпт при этом НЕ уходит в шелл — мы только
@@ -816,6 +863,42 @@ function tpEnv() {
   ].filter(Boolean);
   return { ...process.env, PATH: extra.join(sep) + sep + (process.env.PATH || '') };
 }
+// ---- Единый разбор «ты не авторизован» от любого агента --------------------------------------
+// CLI-агенты запускаются неинтерактивно, поэтому свой запрос логина они не могут показать
+// пользователю — он приходит обычным текстом в stdout/stderr и тонет в чате. Ловим типовые
+// формулировки всех известных нам утилит и возвращаем фронту готовую подсказку с командой входа.
+const TP_LOGIN_CMD = {
+  claude: 'claude',      // внутри сессии: /login
+  codex: 'codex login',
+  gemini: 'gemini',      // мастер входа на первом экране
+  agy: 'agy',            // интерактивная сессия кэширует креды для -p
+};
+const TP_AUTH_RE = [
+  /\bnot logged ?in\b/i,
+  /\bauthentication required\b/i,
+  /\bplease (?:run )?(?:\/)?login\b/i,
+  /\byou (?:must|need to) (?:log ?in|sign ?in|authenticate)\b/i,
+  /\bsign in with google\b/i,
+  /\bunauthorized\b/i,
+  /\b401\b[^\n]{0,40}\b(?:unauthorized|auth)/i,
+  /\b(?:invalid|missing|expired)\s+(?:api\s*key|credentials?|token)\b/i,
+  /\bno longer supported for gemini code assist\b/i,
+  /\bsession (?:has )?expired\b/i,
+];
+// Возвращает {error, authRequired, loginCmd} если текст похож на отказ по авторизации, иначе null.
+function tpAuthProblem(cmd, text) {
+  const s = String(text || '');
+  if (!s.trim()) return null;
+  if (!TP_AUTH_RE.some((re) => re.test(s))) return null;
+  const loginCmd = TP_LOGIN_CMD[cmd] || cmd;
+  return {
+    authRequired: true,
+    loginCmd,
+    error: 'Агент «' + cmd + '» не авторизован.\n\nОткройте терминал и выполните:\n  ' + loginCmd
+      + '\n\nЗатем войдите в аккаунт и повторите запрос здесь.\n\nОтвет агента:\n' + s.trim().slice(0, 600),
+  };
+}
+
 const tpReqs = new Map(); // reqId -> ChildProcess
 // Живой стриминг ответа в чат (tp:data, идея из PR #6), но через spawn как раньше — БЕЗ PTY:
 // под PTY stderr сливается в stdout, CLI видит TTY (спиннеры/контрол-коды), терминал эхоит промпт,
@@ -827,11 +910,12 @@ function tpStripAnsi(s) {
     .replace(/\x1B\[[0-9;?]*[ -/]*[@-~]/g, '')          // CSI (цвета, курсор)
     .replace(/\r/g, '');
 }
-// agy запускаем в псевдотерминале (node-pty): он проверяет TTY на старте и без него теряет вывод.
-// PTY также даёт полноценное окружение агента. Промпт передаём аргументом (без shell) — инъекций нет.
-function tpRunAntigravity(sender, { reqId, prompt, cwd }) {
-  const conf = TP_AGENTS.antigravity;
-  const args = [...conf.args, prompt || '']; // agy --dangerously-skip-permissions -p "<промпт>"
+// АГЕНТ-режим для любой модели. Запуск в псевдотерминале (node-pty): CLI проверяет TTY на старте и
+// без него теряет вывод; PTY также даёт полноценное окружение агента. Промпт — аргументом (без shell).
+// conf можно передать явно (чат-режим Antigravity тоже требует PTY) — иначе берётся агентный конфиг.
+function tpRunAgent(sender, { reqId, model, prompt, cwd, conf: confIn }) {
+  const conf = confIn || TP_AGENT[model] || TP_AGENT.antigravity;
+  const args = [...conf.args, prompt || ''];
   let child;
   try {
     child = pty.spawn(conf.cmd, args, {
@@ -840,28 +924,40 @@ function tpRunAntigravity(sender, { reqId, prompt, cwd }) {
       env: tpEnv(),
     });
   } catch (err) {
-    safeSend(sender, 'tp:error', { reqId, error: 'не запустить «agy» (установлен и в PATH?): ' + (err.message || err) });
+    safeSend(sender, 'tp:error', { reqId, error: 'не запустить «' + conf.cmd + '» (установлен и в PATH?): ' + (err.message || err) });
     return;
   }
   tpReqs.set(reqId, child);
   let out = '';
-  // agy может думать долго (--print-timeout по умолчанию 5 мин) — даём запас 8 минут.
+  // Агент может думать долго — даём запас 8 минут.
   const to = setTimeout(() => {
-    if (tpReqs.has(reqId)) { tpReqs.delete(reqId); try { child.kill(); } catch (_) {} safeSend(sender, 'tp:error', { reqId, error: 'таймаут: agy не ответил за 8 минут' }); }
+    if (tpReqs.has(reqId)) { tpReqs.delete(reqId); try { child.kill(); } catch (_) {} safeSend(sender, 'tp:error', { reqId, error: 'таймаут: агент «' + conf.cmd + '» не ответил за 8 минут' }); }
   }, 480000);
   child.onData((d) => { const chunk = tpStripAnsi(d); out += chunk; safeSend(sender, 'tp:data', { reqId, chunk }); });
   child.onExit(({ exitCode }) => {
     if (!tpReqs.has(reqId)) return; tpReqs.delete(reqId); clearTimeout(to);
     const text = out.trim();
-    if (exitCode === 0 || text) safeSend(sender, 'tp:done', { reqId, text: text || 'agy завершил работу.' });
-    else safeSend(sender, 'tp:error', { reqId, error: text || ('agy завершился с кодом ' + exitCode) });
+    // Отказ по авторизации приходит обычным текстом и выглядел бы как «ответ» агента — ловим его
+    // раньше, чем отдадим фронту, и превращаем в понятную инструкцию со входом.
+    const auth = tpAuthProblem(conf.cmd, text);
+    if (auth) { safeSend(sender, 'tp:error', { reqId, ...auth }); return; }
+    if (exitCode === 0 || text) safeSend(sender, 'tp:done', { reqId, text: text || (conf.cmd + ' завершил работу.') });
+    else safeSend(sender, 'tp:error', { reqId, error: text || (conf.cmd + ' завершился с кодом ' + exitCode) });
   });
 }
 
-ipcMain.on('tp:run', (e, { reqId, agent, prompt, cwd, file } = {}) => {
+// { reqId, model, mode, prompt, cwd, file }. mode: 'chat' | 'agent'. model: claude|codex|gemini|antigravity.
+// Поддержан и старый формат { agent } (agent === модель; antigravity ⇒ агент-режим).
+ipcMain.on('tp:run', (e, { reqId, model, mode, agent, prompt, cwd, file } = {}) => {
   const sender = e.sender;
-  if (agent === 'antigravity') { tpRunAntigravity(sender, { reqId, prompt, cwd }); return; }
-  const conf = TP_AGENTS[agent] || TP_AGENTS.claude;
+  const m = model || agent || 'claude';
+  // Старый формат вызова { agent: 'antigravity' } без mode подразумевал агент-режим — сохраняем.
+  const md = (!mode && agent === 'antigravity') ? 'agent' : (mode || 'chat');
+  if (md === 'agent') { tpRunAgent(sender, { reqId, model: m, prompt, cwd }); return; }
+  // ЧАТ-режим — обычный spawn, стрим stdout/stderr.
+  const conf = TP_CHAT[m] || TP_CHAT.claude;
+  // …кроме утилит, которым нужен настоящий TTY (agy): их гоняем через PTY тем же путём, что и агента.
+  if (conf.pty) { tpRunAgent(sender, { reqId, model: m, prompt, cwd, conf }); return; }
   const args = conf.via === 'arg' ? [...conf.args, prompt || ''] : [...conf.args];
   let child;
   try { child = spawn(conf.cmd, args, { cwd: cwd || os.homedir(), env: tpEnv() }); }
@@ -882,6 +978,9 @@ ipcMain.on('tp:run', (e, { reqId, agent, prompt, cwd, file } = {}) => {
   child.on('close', (code) => {
     if (!tpReqs.has(reqId)) return; tpReqs.delete(reqId); clearTimeout(to);
     const text = out.trim();
+    // См. tpAuthProblem: «not logged in» и родня приходят как обычный текст — переводим в инструкцию.
+    const auth = tpAuthProblem(conf.cmd, text + '\n' + errOut);
+    if (auth) { safeSend(sender, 'tp:error', { reqId, ...auth }); return; }
     if (code === 0 || text) safeSend(sender, 'tp:done', { reqId, text: text || errOut.trim() || 'Агент успешно завершил работу.' });
     else safeSend(sender, 'tp:error', { reqId, error: errOut.trim() || ('агент завершился с кодом ' + code) });
   });
@@ -2341,7 +2440,61 @@ app.on('before-quit', () => { try { errledger.flush(); } catch (_) {} logger.log
 app.whenReady().then(() => {
   const gpu = !(process.env.LITE_NO_GPU === '1' || process.env.LITE_SOFTWARE_RENDER === '1');
   logger.log('info', 'app', `ready — electron ${process.versions.electron}, chrome ${process.versions.chrome}, node ${process.versions.node}, gpu=${gpu}`);
-  Menu.setApplicationMenu(null); // we draw our own menu in the custom titlebar
+  const template = [
+    ...(process.platform === 'darwin' ? [{
+      label: app.name,
+      submenu: [
+        { role: 'about' },
+        { type: 'separator' },
+        { role: 'hide' },
+        { role: 'hideOthers' },
+        { role: 'unhide' },
+        { type: 'separator' },
+        { role: 'quit' }
+      ]
+    }] : []),
+    {
+      label: 'File',
+      submenu: [
+        {
+          label: 'Новый файл',
+          accelerator: 'CmdOrCtrl+N',
+          click: (item, focusedWindow) => {
+            if (focusedWindow) focusedWindow.webContents.send('menu:newFile');
+          }
+        },
+        { type: 'separator' },
+        {
+          label: 'Save As...',
+          accelerator: 'CmdOrCtrl+Shift+S',
+          click: (item, focusedWindow) => {
+            if (focusedWindow) focusedWindow.webContents.send('menu:saveAs');
+          }
+        },
+        {
+          label: 'Export to DOCX...',
+          click: (item, focusedWindow) => {
+            if (focusedWindow) focusedWindow.webContents.send('menu:exportDocx');
+          }
+        },
+        { type: 'separator' },
+        process.platform === 'darwin' ? { role: 'close' } : { role: 'quit' }
+      ]
+    },
+    {
+      label: 'Edit',
+      submenu: [
+        { role: 'undo' },
+        { role: 'redo' },
+        { type: 'separator' },
+        { role: 'cut' },
+        { role: 'copy' },
+        { role: 'paste' },
+        { role: 'selectAll' }
+      ]
+    }
+  ];
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
   createWindow();
   createTray();
   // Переоткрыть окна модулей, открытые в прошлой сессии (проектозависимые подхватят активный
@@ -3769,9 +3922,13 @@ ipcMain.handle('fs:readDir', async (_e, dir) => {
     const out = await Promise.all(entries.map(async (d) => {
       const full = path.join(dir, d.name);
       let isDir = d.isDirectory();
-      // симлинк на папку: Dirent.isDirectory() == false → иначе показался бы файлом и клик читал бы каталог как файл. stat резолвит цель (битый симлинк → строка-файл).
-      if (d.isSymbolicLink()) { try { isDir = (await fs.promises.stat(full)).isDirectory(); } catch (_) { isDir = false; } }
-      return { name: d.name, path: full, dir: isDir };
+      let statObj = null;
+      try { statObj = await fs.promises.stat(full); } catch (_) {}
+      if (d.isSymbolicLink() && statObj) { isDir = statObj.isDirectory(); }
+      
+      const ctime = statObj ? (statObj.birthtimeMs || statObj.ctimeMs) : 0;
+      const mtime = statObj ? statObj.mtimeMs : 0;
+      return { name: d.name, path: full, dir: isDir, ctime, mtime };
     }));
     return out
       .filter((e) => !(e.dir && IGNORE_DIRS.has(e.name)))

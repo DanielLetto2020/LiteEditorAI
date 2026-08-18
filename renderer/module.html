@@ -146,11 +146,11 @@
 <span class="tp-sep"></span>
 <div id="doc-mode-toggle" class="tp-segment">
                 <span class="tp-seg-thumb"></span>
-                <button data-mode="wysiwyg" class="tp-seg-btn active" title="Режим разметки (WYSIWYG)">Разметка</button>
-                <button data-mode="markdown" class="tp-seg-btn" title="Режим Markdown (исходник)">Markdown</button>
+                <button data-mode="wysiwyg" class="tp-seg-btn active" title="Режим разметки (WYSIWYG)"><span data-icon="pencil"></span></button>
+                <button data-mode="markdown" class="tp-seg-btn" title="Режим Markdown (исходник)"><span style="font-weight: 800; font-family: var(--mono, monospace); letter-spacing: -0.5px;">MD</span></button>
               </div>
 <span class="tp-sep"></span>
-<button id="doc-toggle-inspector" class="tp-btn tp-btn-accent" title="Показать / скрыть правую панель"><span data-icon="panels"></span>Панели</button>
+<button id="doc-toggle-inspector" class="tp-btn tp-btn-accent" title="Показать / скрыть правую панель"><span data-icon="panels"></span><span class="tp-btn-label">Панели</span></button>
 </div>
   </div>
   <div class="tp-shell-row tp-shell-row--tabs">
@@ -170,9 +170,13 @@
     <div class="tp-page-wrap">
       <div id="doc-tabs-container" class="tp-tabs-container"></div>
       <div class="tp-page">
-        <div id="doc-editor-wysiwyg" class="tp-doc" contenteditable="true" spellcheck="false" data-placeholder="Напишите что-нибудь…"></div>
+        <div id="doc-editor-wysiwyg" class="tp-doc" contenteditable="true" spellcheck="false" data-placeholder="Начните печатать или откройте файл"></div>
         <div id="doc-editor-md" class="tp-doc tp-doc-md" contenteditable="true" spellcheck="false" hidden data-placeholder="Начните писать в Markdown…"></div>
       </div>
+    </div>
+    <div id="doc-toc-panel" class="tp-toc-panel">
+      <div class="tp-toc-title">Содержание</div>
+      <div id="doc-scrubber-track" class="tp-scrubber"></div>
     </div>
   </div>
 
@@ -274,6 +278,13 @@
               <!-- AI TAB -->
               <div id="doc-panel-ai" class="tp-panel-ai">
                 <div class="tp-ai-row">
+                  <span class="tp-label">Режим</span>
+                  <div id="doc-ai-mode" class="tp-segment sm">
+                    <span class="tp-seg-thumb"></span>
+                    <!-- filled by JS -->
+                  </div>
+                </div>
+                <div class="tp-ai-row">
                   <span class="tp-label">Модель</span>
                   <div id="doc-ai-models" class="tp-segment sm">
                     <span class="tp-seg-thumb"></span>
@@ -291,6 +302,7 @@
                 <div id="doc-ai-chat-log" class="tp-chat-log"><!-- chat history --></div>
                 <div class="tp-chat-input-row">
                   <div class="tp-chat-input-box">
+                    <button id="doc-ai-attach" class="tp-chat-attach" type="button" title="Приложить документ к сообщению" data-icon="paperclip" data-icon-size="15"></button>
                     <textarea id="doc-ai-chat-input" rows="1" placeholder="Что сделать с текстом?"></textarea>
                     <button id="doc-ai-chat-send" class="tp-chat-send" title="Отправить (Enter)" data-icon="send"></button>
                   </div>

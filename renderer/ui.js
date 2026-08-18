@@ -141,6 +141,7 @@ export const ICONS = {
   formula: '<path d="M16.5 5h-9l5 7-5 7h9.5"/>',
   hash: '<line x1="4" y1="9" x2="20" y2="9"></line><line x1="4" y1="15" x2="20" y2="15"></line><line x1="10" y1="3" x2="8" y2="21"></line><line x1="16" y1="3" x2="14" y2="21"></line>',
   send: '<path d="M20.5 3.5L10.5 13.5"/><path d="M20.5 3.5l-6.5 17-3.5-7.5-7.5-3.5z"/>',
+  paperclip: '<path d="M20.4 11.1l-8.3 8.3a5 5 0 0 1-7.1-7.1l8.5-8.5a3.3 3.3 0 0 1 4.7 4.7l-8.5 8.5a1.7 1.7 0 0 1-2.4-2.4l7.8-7.8"/>',
   'obs-new-file': '<path d="M13.5 3.5H7a1 1 0 0 0-1 1v15a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1V8z"/><path d="M13.5 3.5V8H18"/><path d="M12 11.5v5M9.5 14h5"/>',
   'obs-new-folder': '<path d="M3.5 6.5a1 1 0 0 1 1-1h4.6l2 2.5h8.4a1 1 0 0 1 1 1v9.5a1 1 0 0 1-1 1h-15a1 1 0 0 1-1-1z"/><path d="M12 11.5v5M9.5 14h5"/>',
   'obs-sort': '<path d="M11 7h9M11 12h6M11 17h4"/><path d="M6 5v14M3.5 16.5L6 19l2.5-2.5"/>',

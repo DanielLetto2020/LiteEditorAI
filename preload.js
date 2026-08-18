@@ -64,6 +64,9 @@ contextBridge.exposeInMainWorld('lite', {
     onAgendaChanged: (cb) => { const h = (_e, p) => cb(p && p.id); ipcRenderer.on('app:agendaChanged', h); return () => ipcRenderer.removeListener('app:agendaChanged', h); },
     // Клик по нативному уведомлению напоминания → окно «Задачи» переключается на вкладку «Календарь».
     onAgendaFocus: (cb) => { const h = () => cb(); ipcRenderer.on('agenda:focus', h); return () => ipcRenderer.removeListener('agenda:focus', h); },
+    onNewFile: (cb) => { const h = () => cb(); ipcRenderer.on('menu:newFile', h); return () => ipcRenderer.removeListener('menu:newFile', h); },
+    onSaveAs: (cb) => { const h = () => cb(); ipcRenderer.on('menu:saveAs', h); return () => ipcRenderer.removeListener('menu:saveAs', h); },
+    onExportDocx: (cb) => { const h = () => cb(); ipcRenderer.on('menu:exportDocx', h); return () => ipcRenderer.removeListener('menu:exportDocx', h); },
   },
 
   // Действия окна модуля над редактором (форвард через main). Send-side зовёт окно модуля,
@@ -168,6 +171,7 @@ contextBridge.exposeInMainWorld('lite', {
     onError: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('tp:error', h); return () => ipcRenderer.removeListener('tp:error', h); },
     openFile: () => ipcRenderer.invoke('tp:openFile'),               // → {ok,file,name,content}|{canceled}|{ok:false,error}
     saveFileAs: (opts) => ipcRenderer.invoke('tp:saveFileAs', opts), // {content,name,ext} → {ok,file,name}|{canceled}|{ok:false,error}
+    exportDocx: (opts) => ipcRenderer.invoke('tp:exportDocx', opts),
   },
 
   // AI-DB chat (streaming, read-only SQL author) for the «Базы данных» module.
