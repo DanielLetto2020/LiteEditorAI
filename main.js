@@ -884,9 +884,56 @@ const TP_AUTH_RE = [
   /\b(?:invalid|missing|expired)\s+(?:api\s*key|credentials?|token)\b/i,
   /\bsession (?:has )?expired\b/i,
 ];
+// ---- Проверка «готов ли агент» ДО отправки запроса ------------------------------------------
+// Файлы с кредами каждой утилиты. Запускать сам CLI ради проверки нельзя: это секунды ожидания
+// и поход в сеть на каждое открытие панели, поэтому смотрим, есть ли сохранённый вход на диске.
+// Это подсказка, а не запрет: отправку мы не блокируем, ошибку от агента всё равно разберём.
+// ВАЖНО: формат ответа — объект на каждого агента ({installed, loggedIn, cmd, loginCmd}).
+// Панель читает именно поля; плоский `{claude: true}` её ломает (было однажды переписано агентом).
+const TP_AUTH_FILES = {
+  claude: [
+    path.join(os.homedir(), '.claude', '.credentials.json'),
+    path.join(os.homedir(), '.claude.json'),
+    path.join(os.homedir(), '.anthropic'),
+  ],
+  codex: [path.join(os.homedir(), '.codex', 'auth.json')],
+  antigravity: [
+    path.join(os.homedir(), '.gemini', 'jetski-standalone-oauth-token'),
+    path.join(os.homedir(), '.gemini', 'oauth_creds.json'),
+    path.join(os.homedir(), '.config', 'agy', 'credentials.json'),
+  ],
+};
+// Ищем исполняемый файл в PATH сами: `which` в GUI-сессии видит не тот PATH, что агенты.
+function tpWhich(cmd) {
+  const dirs = String(tpEnv().PATH || '').split(path.delimiter).filter(Boolean);
+  const exts = process.platform === 'win32' ? ['.cmd', '.exe', '.bat', ''] : [''];
+  for (const dir of dirs) {
+    for (const ext of exts) {
+      const full = path.join(dir, cmd + ext);
+      try { fs.accessSync(full, fs.constants.X_OK); return full; } catch (_) {}
+    }
+  }
+  return null;
+}
+ipcMain.handle('tp:agentStatus', () => {
+  const out = {};
+  for (const id of Object.keys(TP_CHAT)) {
+    const cmd = TP_CHAT[id].cmd;
+    const files = TP_AUTH_FILES[id] || [];
+    out[id] = {
+      cmd,
+      installed: !!tpWhich(cmd),
+      loggedIn: files.some((f) => { try { return fs.existsSync(f); } catch (_) { return false; } }),
+      loginCmd: TP_LOGIN_CMD[cmd] || cmd,
+    };
+  }
+  return out;
+});
+
 // Возвращает {error, authRequired, loginCmd} если текст похож на отказ по авторизации, иначе null.
 function tpAuthProblem(cmd, text) {
-  const s = String(text || '');
+  let s = String(text || '');
+  s = tpStripAnsi(s);
   if (!s.trim()) return null;
   if (!TP_AUTH_RE.some((re) => re.test(s))) return null;
   const loginCmd = TP_LOGIN_CMD[cmd] || cmd;

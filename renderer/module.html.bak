@@ -85,8 +85,7 @@
     <div class="tp-sidebar-actions">
                 <button class="tp-icon-btn sm" id="btn-tree-new-file" title="Новый файл" data-icon="obs-new-file"></button>
                 <button class="tp-icon-btn sm" id="btn-tree-new-folder" title="Новая папка" data-icon="obs-new-folder"></button>
-                <button class="tp-icon-btn sm" id="btn-tree-sort" title="Сортировка (правой кнопкой — выбор)" data-icon="obs-sort"></button>
-                <button class="tp-icon-btn sm" id="btn-tree-hidden" title="Показать скрытые файлы" data-icon="eye-off"></button>
+                <button class="tp-icon-btn sm" id="btn-tree-sort" title="Сортировка" data-icon="obs-sort"></button>
                 <button class="tp-icon-btn sm" id="btn-tree-collapse" title="Свернуть все" data-icon="obs-collapse"></button>
               </div>
     <div class="tp-toolbar tp-toolbar-merged">
@@ -147,11 +146,11 @@
 <span class="tp-sep"></span>
 <div id="doc-mode-toggle" class="tp-segment">
                 <span class="tp-seg-thumb"></span>
-                <button data-mode="wysiwyg" class="tp-seg-btn active" title="Режим разметки (WYSIWYG)"><span data-icon="pencil"></span></button>
-                <button data-mode="markdown" class="tp-seg-btn" title="Режим Markdown (исходник)"><span style="font-weight: 800; font-family: var(--mono, monospace); letter-spacing: -0.5px;">MD</span></button>
+                <button data-mode="wysiwyg" class="tp-seg-btn active" title="Режим разметки (WYSIWYG)">Разметка</button>
+                <button data-mode="markdown" class="tp-seg-btn" title="Режим Markdown (исходник)">Markdown</button>
               </div>
 <span class="tp-sep"></span>
-<button id="doc-toggle-inspector" class="tp-btn tp-btn-accent" title="Показать / скрыть правую панель"><span data-icon="panels"></span><span class="tp-btn-label">Панели</span></button>
+<button id="doc-toggle-inspector" class="tp-btn tp-btn-accent" title="Показать / скрыть правую панель"><span data-icon="panels"></span>Панели</button>
 </div>
   </div>
   <div class="tp-shell-row tp-shell-row--tabs">
@@ -175,9 +174,10 @@
         <div id="doc-editor-md" class="tp-doc tp-doc-md" contenteditable="true" spellcheck="false" hidden data-placeholder="Начните писать в Markdown…"></div>
       </div>
     </div>
-    <!-- Навигация по главам: чёрточки у правого края + всплывающая подпись при наведении. -->
-    <div id="doc-toc-rail" class="tp-toc-rail" hidden><!-- засечки глав, filled by JS --></div>
-    <div id="doc-toc-list" class="tp-toc-list" hidden><!-- полный список глав, filled by JS --></div>
+    <div id="doc-toc-panel" class="tp-toc-panel">
+      <div class="tp-toc-title">Содержание</div>
+      <div id="doc-scrubber-track" class="tp-scrubber"></div>
+    </div>
   </div>
 
             <div id="doc-inspector" class="tp-inspector">
@@ -291,7 +291,6 @@
                     <!-- filled by JS -->
                   </div>
                 </div>
-                <div id="doc-ai-agent-status" class="tp-agent-status" hidden><!-- filled by JS --></div>
                 <div class="tp-ai-block">
                   <div class="tp-label">Роль агента</div>
                   <div id="doc-ai-roles" class="tp-chips"><!-- filled by JS --></div>
@@ -303,7 +302,6 @@
                 <div id="doc-ai-chat-log" class="tp-chat-log"><!-- chat history --></div>
                 <div class="tp-chat-input-row">
                   <div class="tp-chat-input-box">
-                    <button id="doc-ai-attach" class="tp-chat-attach" type="button" title="Приложить документ к сообщению" data-icon="paperclip" data-icon-size="15"></button>
                     <textarea id="doc-ai-chat-input" rows="1" placeholder="Что сделать с текстом?"></textarea>
                     <button id="doc-ai-chat-send" class="tp-chat-send" title="Отправить (Enter)" data-icon="send"></button>
                   </div>

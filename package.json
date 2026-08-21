@@ -13,7 +13,7 @@
   "scripts": {
     "test": "node test/safe-name.test.js && node test/sgrline.test.js && node test/shell.test.js && node test/portparse.test.js",
     "build": "node build.js",
-    "start": "node build.js && electron --no-sandbox --class=LiteEditorAI .",
+    "start": "node scripts/kill-running.js && node build.js && electron --no-sandbox --class=LiteEditorAI .",
     "watch": "node build.js --watch",
     "rebuild": "electron-rebuild -f -o node-pty",
     "postinstall": "electron-rebuild -f -o node-pty || echo 'node-pty rebuild skipped — run: npm run rebuild'",

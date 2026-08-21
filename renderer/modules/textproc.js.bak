@@ -152,80 +152,15 @@ export function initTextProc(host) {
   let activeTabId = null;
   let nextTabId = 1;
   let activeProj = null;
-  let chatAgent = ['claude', 'codex', 'antigravity'].includes(settings.tpAgent) ? settings.tpAgent : 'claude';
+  let chatAgent = ['claude', 'codex', 'gemini', 'antigravity'].includes(settings.tpAgent) ? settings.tpAgent : 'claude';
   // Режим: 'chat' (Ассистент — текст в ответ) | 'agent' (Агент — правит файл сам).
   let chatMode = settings.tpMode === 'agent' ? 'agent' : 'chat';
-  // Режим берём из тумблера для всех моделей (Antigravity в чате идёт как `agy --mode plan`).
-  const effMode = () => chatMode;
-  // Скрепка: приложен ли документ к сообщению. Выключена — обычный разговор без контекста.
-  // Точечная правка абзаца делается через всплывающую панель у выделения, поэтому скрепка = весь документ.
-  let attachDoc = settings.tpAttachDoc !== false;
+  // Antigravity — только агент; для остальных режим берём из тумблера.
+  const effMode = () => (chatAgent === 'antigravity' ? 'agent' : chatMode);
   let chatRole = 'Без роли';
   let chatLog = [];
   let aiSeq = 0;
-  // Сортировка дерева. TREE_SORTS — все доступные порядки; в «цикле» участвуют только
-  // отмеченные пользователем (левый клик по кнопке листает их по кругу, правый — меню).
-  const TREE_SORTS = [
-    { id: 'az',  label: 'Имя: А → Я' },
-    { id: 'za',  label: 'Имя: Я → А' },
-    { id: 'new', label: 'Изменён: сначала новые' },
-    { id: 'old', label: 'Изменён: сначала старые' },
-  ];
-  let treeSortMode = TREE_SORTS.some((x) => x.id === settings.tpSortMode) ? settings.tpSortMode : 'az';
-  let treeSortCycle = Array.isArray(settings.tpSortCycle) && settings.tpSortCycle.length
-    ? settings.tpSortCycle.filter((id) => TREE_SORTS.some((x) => x.id === id))
-    : ['az', 'za'];
-  // Скрытые файлы: точечные (.obsidian и т.п.) + вручную спрятанные пути.
-  let treeShowHidden = settings.tpShowHidden === true;
-  let treeHiddenPaths = Array.isArray(settings.tpHiddenPaths) ? settings.tpHiddenPaths.slice() : [];
-  function isHiddenEntry(e) {
-    return (e.name || '').startsWith('.') || treeHiddenPaths.includes(e.path);
-  }
-  function sortEntries(list) {
-    const byName = (a, b) => a.name.localeCompare(b.name);
-    const t = (e) => new Date(e.mtime || e.ctime || 0).getTime();
-    if (treeSortMode === 'za') return list.sort((a, b) => byName(b, a));
-    if (treeSortMode === 'new') return list.sort((a, b) => t(b) - t(a) || byName(a, b));
-    if (treeSortMode === 'old') return list.sort((a, b) => t(a) - t(b) || byName(a, b));
-    return list.sort(byName);
-  }
-
-  // ---- Контекстное меню (правая кнопка / два пальца) --------------------------------------
-  // Пункт: { label, onClick } | { label, checked, order, onToggle } | { sep: true } | { title: '…' }
-  function showContextMenu(x, y, items) {
-    document.querySelectorAll('.tp-ctx-menu').forEach((m) => m.remove());
-    const menu = el('div', 'tp-ctx-menu');
-    items.forEach((it) => {
-      if (it.sep) { menu.appendChild(el('div', 'tp-ctx-sep')); return; }
-      if (it.title) { menu.appendChild(el('div', 'tp-ctx-title', it.title)); return; }
-      const row = el('div', 'tp-ctx-item' + (it.active ? ' active' : ''));
-      if (it.onToggle) {
-        const box = el('button', 'tp-ctx-check' + (it.checked ? ' on' : ''), it.checked ? String(it.order) : '');
-        box.type = 'button';
-        box.title = it.checked ? 'Убрать из переключения по кругу' : 'Добавить в переключение по кругу';
-        box.onclick = (e) => { e.stopPropagation(); it.onToggle(); };
-        row.appendChild(box);
-      }
-      const lbl = el('span', 'tp-ctx-label', it.label);
-      row.appendChild(lbl);
-      lbl.onclick = () => { menu.remove(); if (it.onClick) it.onClick(); };
-      menu.appendChild(row);
-    });
-    document.body.appendChild(menu);
-    const w = menu.offsetWidth, h = menu.offsetHeight;
-    menu.style.left = Math.round(Math.max(8, Math.min(x, window.innerWidth - w - 8))) + 'px';
-    menu.style.top = Math.round(Math.max(8, Math.min(y, window.innerHeight - h - 8))) + 'px';
-    const close = (e) => {
-      if (menu.contains(e.target)) return;
-      menu.remove();
-      document.removeEventListener('mousedown', close, true);
-    };
-    setTimeout(() => document.addEventListener('mousedown', close, true), 0);
-    document.addEventListener('keydown', function esc(e) {
-      if (e.key === 'Escape') { menu.remove(); document.removeEventListener('keydown', esc); }
-    });
-    return menu;
-  }
+  let treeSortMode = 'az';
   
   function fileBadge(name) {
     const ext = (name.split('.').pop() || '').toLowerCase();
@@ -271,143 +206,24 @@ export function initTextProc(host) {
       return {
         el: h,
         level: h.tagName.toLowerCase(),
-        text: h.textContent.trim().slice(0, 80),
-        top: offset,
+        text: h.textContent.trim().slice(0, 60),
         ratio: Math.max(0, Math.min(1, offset / maxScroll)),
       };
     });
   }
-  // Навигация по главам «как в дипсике»: у правого края идёт столбик коротких чёрточек —
-  // по одной на заголовок. Наводишь на любую — на её месте разворачивается весь список глав
-  // (названия слева, чёрточки остаются справа, строка под курсором подсвечена). Клик — переход.
-  let tocMarks = [];          // [{ mark, row, item }]
-  let tocHideTimer = null;
   function renderScrubber() {
-    const rail = $('#doc-toc-rail');
-    const list = $('#doc-toc-list');
-    const clear = () => {
-      if (rail) { rail.innerHTML = ''; rail.hidden = true; }
-      if (list) { list.innerHTML = ''; list.hidden = true; list.classList.remove('visible'); }
-      tocMarks = [];
-      tocHasContent = false;
-    };
-    if (!rail || !list || mode !== 'wysiwyg') { clear(); return; }
+    const track = $('#doc-scrubber-track');
+    if (!track || mode !== 'wysiwyg') { if (track) track.innerHTML = ''; tocHasContent = false; return; }
     const marks = computeHeadingMarks();
-    if (marks.length === 0) { clear(); return; }
+    if (marks.length === 0) { track.innerHTML = ''; tocHasContent = false; return; }
     tocHasContent = true;
-    rail.innerHTML = '';
-    list.innerHTML = '';
-    rail.hidden = false;
-    list.hidden = true;
-    list.classList.remove('visible');
-
-    const jump = (m) => { hideTocList(true); m.el.scrollIntoView({ behavior: 'smooth', block: 'start' }); };
-    // Фактический шаг между чёрточками и «плотный» режим списка для длинных документов.
-    const railH = Math.max(80, (document.querySelector('.tp-canvas')?.getBoundingClientRect().height || 600) - 100);
-    const railStep = Math.max(5, Math.min(14, Math.floor(railH / marks.length)));
-    list.classList.toggle('dense', marks.length > 24);
-
-    tocMarks = marks.map((m, i) => {
-      // Чёрточки распределены по рейке ровно, а не по месту главы в тексте: так они не
-      // слипаются в кучу на длинных документах и совпадают со строками раскрытого списка.
-      const row = el('div', 'tp-toc-rail-row ' + m.level);
-      row.style.top = (((i + 0.5) / marks.length) * 100) + '%';
-      // Глав может быть много: сужаем строку-мишень под фактический шаг, иначе они
-      // перекрывают друг друга и навести можно только на последнюю.
-      if (railStep < 14) { row.style.height = railStep + 'px'; row.style.marginTop = (-railStep / 2) + 'px'; }
-      row.appendChild(el('div', 'tp-toc-rail-dash'));
-      row.addEventListener('mouseenter', () => showTocList(row));
-      row.addEventListener('click', (e) => { e.stopPropagation(); jump(m); });
-      rail.appendChild(row);
-
-      // Строка раскрытого списка: название прижато вправо, к своей чёрточке.
-      const item = el('div', 'tp-toc-item ' + m.level);
-      const text = el('span', 'tp-toc-item-text', m.text);
-      text.title = m.text;
-      item.appendChild(text);
-      item.appendChild(el('span', 'tp-toc-item-dash'));
-      item.addEventListener('click', (e) => { e.stopPropagation(); jump(m); });
-      list.appendChild(item);
-
-      return { mark: m, row, item };
-    });
-    placeTocRail();
-    updateTocActive();
-  }
-
-  // Раскрыть список на месте той чёрточки, на которую навели.
-  function showTocList(anchorRow) {
-    const rail = $('#doc-toc-rail');
-    const list = $('#doc-toc-list');
-    const canvas = document.querySelector('.tp-canvas');
-    if (!rail || !list || !canvas || !tocMarks.length) return;
-    clearTimeout(tocHideTimer);
-    detachTocLayer();
-    list.hidden = false;
-    const railRect = rail.getBoundingClientRect();
-    const cRect = canvas.getBoundingClientRect();
-    // Правый край списка совпадает с рейкой: чёрточки остаются на своих местах, слева к ним
-    // «выезжают» названия — панель не прыгает в другой угол экрана.
-    list.style.right = Math.round(Math.max(0, window.innerWidth - railRect.right)) + 'px';
-    // Длинное содержание должно использовать всю доступную высоту, а не обрезаться на середине.
-    list.style.maxHeight = Math.round(Math.max(160, cRect.height - 24)) + 'px';
-    const aRect = (anchorRow || rail).getBoundingClientRect();
-    const h = list.offsetHeight;
-    const top = Math.max(cRect.top + 8, Math.min(aRect.top + aRect.height / 2 - h / 2, cRect.bottom - h - 8));
-    list.style.top = Math.round(top) + 'px';
-    list.classList.add('visible');
-    rail.classList.add('is-open'); // сами чёрточки на рейке гасим: их место занял список
-    // Если список прокручиваемый — показываем ту главу, на которую навели, и текущую рядом.
-    if (list.scrollHeight > list.clientHeight) {
-      const anchor = tocMarks.find((t) => t.row === anchorRow) || tocMarks.find((t) => t.item.classList.contains('current'));
-      if (anchor) list.scrollTop = Math.max(0, anchor.item.offsetTop - list.clientHeight / 2);
-    }
-  }
-  function hideTocList(now) {
-    const rail = $('#doc-toc-rail');
-    const list = $('#doc-toc-list');
-    if (!list) return;
-    clearTimeout(tocHideTimer);
-    const doHide = () => {
-      list.classList.remove('visible');
-      list.hidden = true;
-      if (rail) rail.classList.remove('is-open');
-    };
-    if (now) doHide();
-    else tocHideTimer = setTimeout(doHide, 160);
-  }
-
-  // Рейка и список нарисованы поверх страницы (position: fixed). Держим их прямо в body:
-  // внутри .tp-canvas они оказывались под её собственной полосой прокрутки, и та забирала
-  // себе наведение и клики — чёрточки было видно, но нажать на них было нельзя.
-  function detachTocLayer() {
-    const rail = $('#doc-toc-rail');
-    const list = $('#doc-toc-list');
-    [rail, list].forEach((n) => { if (n && n.parentElement !== document.body) document.body.appendChild(n); });
-  }
-  function placeTocRail() {
-    const rail = $('#doc-toc-rail');
-    const canvas = document.querySelector('.tp-canvas');
-    if (!rail || !canvas || rail.hidden) return;
-    detachTocLayer();
-    const r = canvas.getBoundingClientRect();
-    // Ширина полосы прокрутки: рейку ставим ЛЕВЕЕ неё, иначе она перекрывает чёрточки.
-    const sb = Math.max(0, canvas.offsetWidth - canvas.clientWidth);
-    rail.style.top = Math.round(r.top + 60) + 'px';
-    rail.style.height = Math.round(Math.max(80, r.height - 100)) + 'px';
-    rail.style.right = Math.round(Math.max(4, window.innerWidth - r.right + sb + 2)) + 'px';
-  }
-
-  // Текущая глава = последний заголовок выше верхней кромки экрана.
-  function updateTocActive() {
-    const canvas = document.querySelector('.tp-canvas');
-    if (!canvas || !tocMarks.length) return;
-    const y = canvas.scrollTop + 90;
-    let idx = 0;
-    tocMarks.forEach((t, i) => { if (t.mark.top <= y) idx = i; });
-    tocMarks.forEach((t, i) => {
-      t.row.classList.toggle('active', i === idx);
-      t.item.classList.toggle('current', i === idx);
+    track.innerHTML = '';
+    marks.forEach((m) => {
+      const tick = el('div', 'tp-scrubber-tick tp-scrubber-tick-' + m.level);
+      tick.textContent = m.text;
+      tick.title = m.text;
+      tick.onclick = (e) => { e.stopPropagation(); m.el.scrollIntoView({ behavior: 'smooth', block: 'start' }); };
+      track.appendChild(tick);
     });
   }
 
@@ -433,24 +249,6 @@ export function initTextProc(host) {
     const nameLabel = $('#doc-name-label');
     if (nameLabel) nameLabel.textContent = currentName;
   }
-  // Тулбар — полоса с прокруткой (overflow), поэтому выпадающее меню, нарисованное внутри неё,
-  // срезалось по её краю и выбрать пункт было нельзя. Показываем меню отдельным слоем:
-  // position: fixed + координаты кнопки. Заодно не даём вылезти за край окна.
-  function placeMenuByButton(btn, menu, align) {
-    const r = btn.getBoundingClientRect();
-    menu.style.position = 'fixed';
-    menu.style.margin = '0';
-    menu.style.top = Math.round(r.bottom + 4) + 'px';
-    const w = menu.offsetWidth || 160;
-    const left = align === 'right' ? (r.right - w) : r.left;
-    menu.style.left = Math.round(Math.max(8, Math.min(left, window.innerWidth - w - 8))) + 'px';
-    menu.style.right = 'auto';
-    const maxH = Math.max(140, window.innerHeight - r.bottom - 20);
-    menu.style.maxHeight = maxH + 'px';
-  }
-
-  // Ссылки на функции масштаба: они объявлены внутри setupUI, а нужны обработчику кнопки «Панели».
-  let tpSetZoomRef = null, tpFitZoomRef = null;
   function updateThumb(container, activeBtn) {
     if (!container || !activeBtn) return;
     const thumb = container.querySelector('.tp-seg-thumb');
@@ -490,16 +288,7 @@ export function initTextProc(host) {
     $$('.tp-seg-btn[data-mode]').forEach((b) => { b.onclick = () => setMode(b.dataset.mode); });
     $$('.tp-tab[data-tab]').forEach((b) => { b.onclick = () => setTab(b.dataset.tab); });
 
-    $('#doc-toggle-inspector').onclick = () => {
-      const layoutEl = document.querySelector('.tp-layout');
-      const collapsed = layoutEl.classList.toggle('inspector-collapsed');
-      // Убрал панель — значит хочет читать шире: подгоняем страницу по ширине.
-      // Вернул — возвращаем 100%. Ждём конца анимации панели, иначе меряем на лету.
-      setTimeout(() => {
-        if (collapsed) { if (tpFitZoomRef) tpFitZoomRef(); }
-        else if (tpSetZoomRef) tpSetZoomRef(1);
-      }, 440);
-    };
+    $('#doc-toggle-inspector').onclick = () => document.querySelector('.tp-layout').classList.toggle('inspector-collapsed');
     const toggleSidebarBtn = $('#doc-toggle-sidebar');
     if (toggleSidebarBtn) toggleSidebarBtn.onclick = toggleSidebar;
 
@@ -535,7 +324,7 @@ export function initTextProc(host) {
           e.stopPropagation();
           const hidden = overflowMenu.hasAttribute('hidden');
           document.querySelectorAll('.tp-dd-menu').forEach(m => m.setAttribute('hidden', ''));
-          if (hidden) { overflowMenu.removeAttribute('hidden'); placeMenuByButton(overflowBtn, overflowMenu, 'right'); }
+          if (hidden) overflowMenu.removeAttribute('hidden');
           else overflowMenu.setAttribute('hidden', '');
         });
       }
@@ -547,18 +336,8 @@ export function initTextProc(host) {
       function reflow() {
         if (reflowing || !overflowBtnWrap) return;
         reflowing = true;
-        
-        // Сначала возвращаем всё в исходное состояние (все кнопки на месте, тексты показаны)
-        tbMerged.classList.remove('tp-toolbar-narrow');
         while (visibleCount < collapsibles.length) { tbMerged.insertBefore(collapsibles[visibleCount], overflowBtnWrap); visibleCount++; }
         overflowBtnWrap.setAttribute('hidden', '');
-        
-        // ШАГ 1: Если не влезает, сначала жертвуем текстом на крупных кнопках (превращаем в иконки)
-        if (tbMerged.scrollWidth > tbMerged.clientWidth + 1) {
-          tbMerged.classList.add('tp-toolbar-narrow');
-        }
-        
-        // ШАГ 2: Если даже после превращения в иконки всё ещё не влезает, начинаем прятать инструменты форматирования
         if (tbMerged.scrollWidth > tbMerged.clientWidth + 1) {
           overflowBtnWrap.removeAttribute('hidden');
           while (visibleCount > 0 && tbMerged.scrollWidth > tbMerged.clientWidth + 1) {
@@ -606,7 +385,6 @@ export function initTextProc(host) {
         const wasHidden = menu.hidden;
         $$('.tp-dd-menu').forEach(m => m.hidden = true);
         menu.hidden = !wasHidden;
-        if (!menu.hidden) placeMenuByButton(btn, menu, 'left');
       };
       dd.querySelectorAll('.tp-dd-item').forEach(item => {
         item.onmousedown = (e) => e.preventDefault();
@@ -618,7 +396,8 @@ export function initTextProc(host) {
           btn.querySelector('span:first-child').textContent = item.textContent;
           if (dd.id === 'doc-zoom-dd') {
             const val = parseFloat(item.dataset.val) || 1;
-            tpSetZoom(val);
+            tpApplyZoom(val);
+            window.tpCurrentZoom = val;
           } else if (dd.id === 'doc-lineheight-dd') {
             const val = parseFloat(item.dataset.val) || 1.6;
             const doc = document.querySelector('.tp-doc');
@@ -664,49 +443,25 @@ export function initTextProc(host) {
       wrap.style.zoom = val;
     }
 
-    // Применить масштаб и синхронизировать подпись в выпадашке «100%».
-    let zoomPending = window.tpCurrentZoom || 1; // накопитель для колеса, см. ниже
-    function tpSetZoom(val) {
-      window.tpCurrentZoom = Math.max(0.25, Math.min(val, 3.0));
-      zoomPending = window.tpCurrentZoom; // выбор из списка/подгон по ширине сбивает накопитель колеса
-      tpApplyZoom(window.tpCurrentZoom);
-      const zoomBtn = document.querySelector('#doc-zoom-dd .tp-dd-btn span:first-child');
-      if (zoomBtn) zoomBtn.textContent = Math.round(window.tpCurrentZoom * 100) + '%';
-      document.querySelectorAll('#doc-zoom-dd .tp-dd-item').forEach((i) => {
-        i.classList.toggle('active', Math.abs(parseFloat(i.dataset.val) - window.tpCurrentZoom) < 0.001);
-      });
-    }
-    tpSetZoomRef = tpSetZoom;
-
-    // Подгон страницы по ширине рабочей зоны (вызывается при скрытии правой панели).
-    function tpFitZoomToWidth() {
-      const canvas = document.querySelector('.tp-canvas');
-      const wrap = document.querySelector('.tp-page-wrap');
-      if (!canvas || !wrap) return;
-      // Ширина колонки изменилась вместе с панелью → «родную» ширину страницы мерим заново.
-      window.tpBaseWrapW = null;
-      const prevZoom = wrap.style.zoom, prevW = wrap.style.width, prevMaxW = wrap.style.maxWidth;
-      wrap.style.zoom = ''; wrap.style.width = ''; wrap.style.maxWidth = '';
-      const base = Math.round(wrap.getBoundingClientRect().width);
-      wrap.style.zoom = prevZoom; wrap.style.width = prevW; wrap.style.maxWidth = prevMaxW;
-      if (!base) return;
-      tpSetZoom(Math.max(1, Math.min(2, (canvas.clientWidth - 24) / base)));
-    }
-    tpFitZoomRef = tpFitZoomToWidth;
-
-    // Масштаб колесом с Ctrl / щипком на тачпаде.
+    // Touchpad Pinch-to-Zoom
     window.tpCurrentZoom = window.tpCurrentZoom || 1;
     const workspace = document.querySelector('.tp-workspace');
     if (workspace) {
-      let zoomRaf = 0;
       workspace.addEventListener('wheel', (e) => {
-        if (!e.ctrlKey) return;
-        e.preventDefault();
-        // Колесо и тачпад присылают события пачками, а смена масштаба перекладывает весь
-        // документ заново. Копим дельту и перерисовываем один раз на кадр — иначе «кисель».
-        zoomPending = Math.max(0.25, Math.min(zoomPending - e.deltaY * 0.01, 3.0));
-        if (zoomRaf) return;
-        zoomRaf = requestAnimationFrame(() => { zoomRaf = 0; tpSetZoom(zoomPending); });
+        if (e.ctrlKey) {
+          e.preventDefault();
+          const zoomSpeed = 0.01;
+          window.tpCurrentZoom -= e.deltaY * zoomSpeed;
+          window.tpCurrentZoom = Math.max(0.25, Math.min(window.tpCurrentZoom, 3.0));
+
+          tpApplyZoom(window.tpCurrentZoom);
+
+          const zoomBtn = document.querySelector('#doc-zoom-dd .tp-dd-btn span:first-child');
+          if (zoomBtn) {
+            zoomBtn.textContent = Math.round(window.tpCurrentZoom * 100) + '%';
+          }
+          document.querySelectorAll('#doc-zoom-dd .tp-dd-item').forEach(i => i.classList.remove('active'));
+        }
       }, { passive: false });
     }
 
@@ -722,19 +477,13 @@ export function initTextProc(host) {
 
     renderModels();
     renderMode();
-    renderAttach();
-    updateCtxHint();
-    watchCanvasScroll();
     renderRoles();
     renderSymbols();
-    refreshAgentStatus();
-    setTimeout(renderScrubber, 400); // документ восстанавливается асинхронно — досчитываем содержание
 
     const fi = $('#doc-formula-input');
     fi.oninput = renderFormulaCardPreview;
     $('#doc-formula-blockmode').onchange = renderFormulaCardPreview;
     $('#doc-formula-insert').onclick = insertFormulaFromCard;
-    renderFormulaCardPreview(); // в поле лежит формула по умолчанию — показываем её сразу, без первого клика
 
     $('#doc-open-btn').onclick = openFile;
     $('#doc-save-btn').onclick = saveFile;
@@ -751,18 +500,11 @@ export function initTextProc(host) {
         toast('Экспортировано в ' + r.name);
       });
     }
-    // Файл → Новый файл (Cmd/Ctrl+N) из системного меню.
-    if (window.lite.app.onNewFile) window.lite.app.onNewFile(() => createNewTab());
     document.addEventListener('keydown', (e) => {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') { e.preventDefault(); saveFile(); }
     });
 
     $('#doc-ai-chat-send').onclick = sendChat;
-    const attachBtn = $('#doc-ai-attach');
-    if (attachBtn) attachBtn.onclick = () => {
-      attachDoc = !attachDoc; settings.tpAttachDoc = attachDoc; saveSettings();
-      renderAttach(); updateCtxHint();
-    };
     $('#doc-ai-chat-input').onkeydown = (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendChat(); } };
 
     $('#doc-editor-wysiwyg').addEventListener('input', markDirty);
@@ -803,32 +545,28 @@ export function initTextProc(host) {
       }
     });
 
-    // Рейка живёт поверх страницы: при изменении размера окна пересчитываем её координаты.
-    window.addEventListener('resize', () => { placeTocRail(); hideTocList(true); });
-    const tocRailEl = $('#doc-toc-rail');
-    const tocListEl = $('#doc-toc-list');
-    if (tocRailEl) {
-      // Достаточно навести на полосу вообще: берём ближайшую к курсору чёрточку.
-      // Требовать попадания точно в засечку — слишком строго, промахнуться легко.
-      const openNearest = (e) => {
-        if (!tocMarks.length) return;
-        let best = null, bestD = Infinity;
-        tocMarks.forEach((t) => {
-          const r = t.row.getBoundingClientRect();
-          const d = Math.abs(r.top + r.height / 2 - e.clientY);
-          if (d < bestD) { bestD = d; best = t.row; }
-        });
-        if (best) showTocList(best);
-      };
-      tocRailEl.addEventListener('mouseenter', openNearest);
-      tocRailEl.addEventListener('mousemove', (e) => { if (!$('#doc-toc-list').classList.contains('visible')) openNearest(e); });
-      tocRailEl.addEventListener('mouseleave', () => hideTocList());
+    const canvasEl = document.querySelector('.tp-canvas');
+    const tocPanel = $('#doc-toc-panel');
+    if (canvasEl && tocPanel) {
+      let tocHideTimer = null;
+      const HOVER_ZONE = 40; // px from right edge to trigger
+      canvasEl.addEventListener('mousemove', (e) => {
+        if (!tocHasContent) return;
+        const rect = canvasEl.getBoundingClientRect();
+        const distFromRight = rect.right - e.clientX;
+        if (distFromRight <= HOVER_ZONE) {
+          clearTimeout(tocHideTimer);
+          tocPanel.classList.add('visible');
+        }
+      });
+      tocPanel.addEventListener('mouseenter', () => { clearTimeout(tocHideTimer); });
+      tocPanel.addEventListener('mouseleave', () => {
+        tocHideTimer = setTimeout(() => tocPanel.classList.remove('visible'), 300);
+      });
+      canvasEl.addEventListener('mouseleave', () => {
+        tocHideTimer = setTimeout(() => tocPanel.classList.remove('visible'), 300);
+      });
     }
-    if (tocListEl) {
-      tocListEl.addEventListener('mouseenter', () => clearTimeout(tocHideTimer));
-      tocListEl.addEventListener('mouseleave', () => hideTocList());
-    }
-
     $('#doc-editor-wysiwyg').addEventListener('click', (e) => {
       const btn = e.target.closest('.tp-formula-toggle');
       if (btn) { e.preventDefault(); btn.parentElement.classList.toggle('show-src'); }
@@ -941,9 +679,6 @@ export function initTextProc(host) {
     updateThumb($('#doc-inspector-tabs'), activeBtn);
     $('#doc-panel-edit').hidden = t !== 'edit';
     $('#doc-panel-ai').hidden = t !== 'ai';
-    // Карточка «Формула» скрыта через hidden: KaTeX в скрытом блоке рисуется вхолостую,
-    // поэтому предпросмотр обновляем в момент открытия вкладки.
-    if (t === 'edit') renderFormulaCardPreview();
   }
 
   function updateToolbarState() {
@@ -1138,20 +873,10 @@ export function initTextProc(host) {
   }
 
   // ---- AI Chat (реальный агент через lite.tp.run → main.js спавнит claude/codex CLI) ----
-  // Скрепка снята — контекст не шлём вовсе; нажата — шлём документ целиком.
-  // Точечная работа с абзацем идёт через всплывающую панель у выделения, а не через чат.
   function selForChat() {
-    if (!attachDoc) return { text: '', whole: false, none: true };
+    const sel = window.getSelection();
+    if (sel && !sel.isCollapsed && getActiveEditor().contains(sel.anchorNode)) return { text: sel.toString(), whole: false };
     return { text: currentMarkdown(), whole: true };
-  }
-  // Кнопка-скрепка у поля ввода: включает/выключает передачу документа.
-  function renderAttach() {
-    const btn = $('#doc-ai-attach');
-    if (!btn) return;
-    btn.classList.toggle('active', attachDoc);
-    btn.title = attachDoc
-      ? 'Документ приложен — снимите, чтобы просто поговорить'
-      : 'Документ не приложен — нажмите, чтобы приложить';
   }
   function renderChatLog() {
     const box = $('#doc-ai-chat-log');
@@ -1160,28 +885,7 @@ export function initTextProc(host) {
       const w = el('div', 'tp-msg ' + m.role);
       if (m.reqId) w.dataset.req = m.reqId; // якорь для in-place стриминга (tp:data)
       const b = el('div', 'tp-bubble');
-      // Ответ агента прогоняем через тот же конвейер, что и документ (Markdown + KaTeX), иначе
-      // формулы висят в чате сырым текстом вида $\frac{a}{b}$. Во время стрима — обычный текст:
-      // рендерить недописанную формулу бессмысленно, KaTeX ругался бы на каждый чанк.
-      if (m.role === 'agent' && !m.busy && m.text) {
-        b.classList.add('tp-bubble-rich');
-        b.innerHTML = DOMPurify.sanitize(mdToHtml(m.text), { ADD_ATTR: ['contenteditable', 'data-tex'] });
-      } else {
-        b.textContent = m.busy ? (m.text + ' ⏳') : m.text;
-      }
-      // Отказ по авторизации: команду входа даём кнопкой, чтобы не набирать руками.
-      if (m.loginCmd) {
-        w.classList.add('tp-msg-auth');
-        const acts = el('div', 'tp-bubble-actions');
-        const copyBtn = el('button', 'tp-bubble-replace', 'Скопировать «' + m.loginCmd + '»');
-        copyBtn.type = 'button';
-        copyBtn.onclick = async () => {
-          try { await navigator.clipboard.writeText(m.loginCmd); toast('Команда скопирована — вставьте её в терминал'); }
-          catch (_) { toast('Не удалось скопировать', { kind: 'err' }); }
-        };
-        acts.appendChild(copyBtn);
-        b.appendChild(acts);
-      }
+      b.textContent = m.busy ? (m.text + ' ⏳') : m.text;
       if (m.role === 'agent' && !m.busy && !m.noReplace) {
         const acts = el('div', 'tp-bubble-actions');
         const replaceBtn = el('button', 'tp-bubble-replace', 'Заменить');
@@ -1210,9 +914,6 @@ export function initTextProc(host) {
     const nearBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 48;
     if (nearBottom) box.scrollTop = box.scrollHeight;
   }
-  // Памятка о нумерации абзацев: нужна обоим режимам — пользователь может попросить
-  // «перепиши абзац 7», а номера в редакторе считаются не так, как их посчитал бы агент.
-  const NUMBERING_NOTE = 'Важно: визуальные номера абзацев в редакторе присваиваются ТОЛЬКО обычным текстовым абзацам. Заголовки (###), блоки кода (```) и формулы ($$) пропускаются и НЕ нумеруются. Если пользователь просит отредактировать конкретный абзац по номеру, считай только обычный текст!';
   async function composePrompt(sel, instruction) {
     const parts = [];
     if (chatRole !== 'Без роли' && activeProj) {
@@ -1230,30 +931,16 @@ export function initTextProc(host) {
     if (effMode() === 'agent') {
       parts.push(`Отредактируй файл: ${currentFile || 'текущий файл'}`);
       parts.push(`Инструкция: ${instruction}`);
-      if (!sel.whole && !sel.none) {
+      if (!sel.whole) {
         parts.push('Ограничься редактированием только этого фрагмента:\n===ФРАГМЕНТ===\n' + sel.text + '\n===КОНЕЦ===');
       }
-      if (sel.whole) parts.push(NUMBERING_NOTE);
-      return parts.join('\n\n');
-    }
-
-    // Скрепка снята — это обычный разговор: ни документа, ни требования «верни только текст».
-    if (sel.none) {
-      parts.push(instruction);
       return parts.join('\n\n');
     }
 
     parts.push(instruction);
-    // Режим «Ассистент» — это разговор: модель отвечает репликой, документ не переписывает.
-    // Раньше здесь стояло «верни ТОЛЬКО итоговый текст», и на любую фразу в чат падал весь документ.
-    // Правкой текста занимается режим «Агент» (он редактирует файл на диске).
-    parts.push(
-      'Ниже приложен ' + (sel.whole ? 'документ пользователя (Markdown)' : 'фрагмент текста') + ' — это контекст для ответа.\n' +
-      'Отвечай обычной репликой, по существу и кратко. НЕ выводи документ целиком и не пересказывай его, ' +
-      'если об этом не попросили прямо. Если просят показать конкретную правку — покажи только изменённый кусок.'
-    );
+    parts.push('Ниже — ' + (sel.whole ? 'весь документ (Markdown)' : 'фрагмент текста') + '. Верни ТОЛЬКО итоговый текст для замены: без пояснений, без приветствий.');
     if (sel.whole) {
-      parts.push(NUMBERING_NOTE);
+      parts.push('Важно: визуальные номера абзацев в редакторе присваиваются ТОЛЬКО обычным текстовым абзацам. Заголовки (###), блоки кода (```) и формулы ($$) пропускаются и НЕ нумеруются. Если пользователь просит отредактировать конкретный абзац по номеру, считай только обычный текст!');
     }
     parts.push('===ФРАГМЕНТ===\n' + sel.text + '\n===КОНЕЦ===');
     return parts.join('\n\n');
@@ -1265,8 +952,7 @@ export function initTextProc(host) {
     const sel = selForChat();
     ta.value = '';
     chatLog.push({ role: 'user', text: instruction });
-    // Без приложенного документа ответ — реплика в разговоре, вставлять её в текст незачем.
-    const am = { role: 'agent', text: '', busy: true, noReplace: sel.none, reqId: 'tpq' + (++aiSeq) };
+    const am = { role: 'agent', text: '', busy: true, reqId: 'tpq' + (++aiSeq) };
     chatLog.push(am);
     while (chatLog.length > 200) chatLog.shift(); // кап истории: чат не растёт бесконечно
     renderChatLog();
@@ -1287,15 +973,7 @@ export function initTextProc(host) {
       am.text = text || '';
       cleanup(); renderChatLog();
     });
-    const offErr = lite.tp.onError(({ reqId: r, error, authRequired, loginCmd }) => {
-      if (r !== am.reqId) return;
-      am.busy = false;
-      am.noReplace = true;      // текст ошибки нечего вставлять в документ
-      am.text = String(error);
-      am.loginCmd = authRequired ? loginCmd : null; // → в пузыре появится кнопка с командой входа
-      if (authRequired) refreshAgentStatus();         // и подсказка над чатом тоже обновится
-      cleanup(); renderChatLog();
-    });
+    const offErr = lite.tp.onError(({ reqId: r, error }) => { if (r !== am.reqId) return; am.busy = false; am.text = 'Ошибка: ' + String(error); cleanup(); renderChatLog(); });
     const cleanup = () => { try { offData(); offDone(); offErr(); } catch (_) {} };
     
     const prompt = await composePrompt(sel, instruction);
@@ -1314,59 +992,17 @@ export function initTextProc(host) {
       file: currentFile || null
     });
   }
-  // ---- Готовность агента: установлен ли CLI и выполнен ли вход ----------------------------
-  // Проверка идёт по файлам с кредами (см. main.js) — это подсказка, а не запрет: отправить
-  // запрос всё равно можно, а точную причину отказа мы разберём из ответа агента.
-  const AGENT_LABELS = { claude: 'Claude', codex: 'Codex', antigravity: 'Antigravity' };
-  let agentStatus = null;
-  async function refreshAgentStatus() {
-    try { agentStatus = await lite.tp.agentStatus(); } catch (_) { agentStatus = null; }
-    renderAgentStatus();
-  }
-  function renderAgentStatus() {
-    const box = $('#doc-ai-agent-status');
-    if (!box) return;
-    const st = agentStatus && agentStatus[chatAgent];
-    box.innerHTML = '';
-    if (!st || (st.installed && st.loggedIn)) { box.hidden = true; return; }
-    box.hidden = false;
-    const label = AGENT_LABELS[chatAgent] || chatAgent;
-    if (!st.installed) {
-      box.appendChild(el('div', 'tp-agent-status-text',
-        `Утилита «${st.cmd}» не найдена на компьютере — модель ${label} работать не будет. Установите её и откройте панель заново.`));
-      return;
-    }
-    const how = chatAgent === 'claude'
-      ? `Запустите в терминале «${st.loginCmd}» и внутри наберите /login.`
-      : `Выполните в терминале: ${st.loginCmd}`;
-    box.appendChild(el('div', 'tp-agent-status-text', `Похоже, вход в ${label} не выполнен. ${how}`));
-    const row = el('div', 'tp-agent-status-actions');
-    const send = el('button', 'tp-btn tp-btn-accent', 'Вставить команду в терминал');
-    send.onclick = () => {
-      try { host.sendToTerminal(st.loginCmd); toast('Команда отправлена в терминал главного окна'); }
-      catch (_) { toast('Не удалось открыть терминал', { kind: 'err' }); }
-    };
-    const copy = el('button', 'tp-btn', 'Скопировать');
-    copy.onclick = async () => {
-      try { await navigator.clipboard.writeText(st.loginCmd); toast('Команда скопирована'); } catch (_) {}
-    };
-    const again = el('button', 'tp-btn', 'Проверить снова');
-    again.onclick = () => refreshAgentStatus();
-    row.append(send, copy, again);
-    box.appendChild(row);
-  }
-
   function renderModels() {
     const box = $('#doc-ai-models');
     // в разметке уже лежит .tp-seg-thumb → children.length===0 не срабатывало никогда, кнопки моделей не строились
     if (!box.querySelector('.tp-seg-btn')) {
       box.innerHTML = '<span class="tp-seg-thumb"></span>';
-      [['claude', 'Claude'], ['codex', 'Codex'], ['antigravity', 'Antigravity']].forEach(([id, lbl]) => {
+      [['claude', 'Claude'], ['codex', 'Codex'], ['gemini', 'Gemini'], ['antigravity', 'Antigravity']].forEach(([id, lbl]) => {
         const btn = el('button', 'tp-seg-btn', lbl);
         btn.type = 'button';
         btn.title = 'Модель ' + lbl;
         btn.dataset.id = id;
-        btn.onclick = () => { chatAgent = id; settings.tpAgent = id; saveSettings(); renderModels(); renderMode(); renderAgentStatus(); };
+        btn.onclick = () => { chatAgent = id; settings.tpAgent = id; saveSettings(); renderModels(); renderMode(); };
         box.appendChild(btn);
       });
     }
@@ -1381,7 +1017,7 @@ export function initTextProc(host) {
     // Need a tiny delay for layout to calculate offsetWidth if first time rendering
     requestAnimationFrame(() => updateThumb(box, activeBtn));
   }
-  // Тумблер режима: Ассистент (чат) / Агент (правит файл). Доступен для всех моделей.
+  // Тумблер режима: Ассистент (чат) / Агент (правит файл). У antigravity зафиксирован на «Агент».
   function renderMode() {
     const box = $('#doc-ai-mode');
     if (!box) return;
@@ -1394,18 +1030,21 @@ export function initTextProc(host) {
         btn.title = tip;
         btn.dataset.mode = id;
         btn.onclick = () => {
+          if (chatAgent === 'antigravity') return; // у antigravity режим только «Агент»
           chatMode = id; settings.tpMode = id; saveSettings(); renderMode();
         };
         box.appendChild(btn);
       });
     }
+    const locked = chatAgent === 'antigravity';
     const shown = effMode();
     let activeBtn = null;
     box.querySelectorAll('.tp-seg-btn').forEach(btn => {
       const isActive = shown === btn.dataset.mode;
       btn.className = 'tp-seg-btn' + (isActive ? ' active' : '');
-      btn.disabled = false;
-      btn.style.opacity = '';
+      const dim = locked && btn.dataset.mode === 'chat';
+      btn.disabled = dim;
+      btn.style.opacity = dim ? '0.4' : '';
       if (isActive) activeBtn = btn;
     });
     requestAnimationFrame(() => updateThumb(box, activeBtn));
@@ -1518,28 +1157,22 @@ export function initTextProc(host) {
     });
   }
 
-  // Блок «Контекст» в AI-панели: что именно уйдёт модели при следующей отправке.
-  function updateCtxHint() {
-    const ctxText = $('#doc-ai-ctx-text');
-    if (!ctxText) return;
-    if (!attachDoc) {
-      ctxText.textContent = 'Документ не приложен — обычный разговор. Скрепка у поля ввода прикладывает текст.';
-      ctxText.classList.remove('filled');
-      return;
-    }
-    const chars = currentMarkdown().length;
-    ctxText.textContent = chars
-      ? `Документ приложен целиком (${chars.toLocaleString('ru-RU')} символов). Для правки одного абзаца выделите его в тексте или укажите номер абзаца — включите нумерацию в режиме «Разметка». Работает и в «Ассистенте», и в «Агенте».`
-      : 'Документ пуст — приложить нечего.';
-    ctxText.classList.toggle('filled', !!chars);
-  }
-
   // Контекст для AI-панели: выделенный в документе фрагмент
   document.addEventListener('selectionchange', () => {
     if (!docOpen) return;
+    const ctxText = $('#doc-ai-ctx-text');
     const sel = window.getSelection();
     const hasSel = sel && !sel.isCollapsed && sel.toString().trim();
-    updateCtxHint();
+    if (ctxText) {
+      if (hasSel) { 
+        const text = sel.toString(); 
+        ctxText.textContent = text.slice(0, 100) + (text.length > 100 ? '…' : ''); 
+        ctxText.classList.add('filled'); 
+      } else if (document.activeElement && document.activeElement.id !== 'doc-ai-chat-input') {
+        ctxText.textContent = 'Выделите фрагмент в документе — он попадёт сюда. Ответ можно вставить кнопкой «Заменить».'; 
+        ctxText.classList.remove('filled'); 
+      }
+    }
     if (!hasSel) {
       if (selPopupEl && selPopupEl.style.display !== 'none' && selPopupEl.contains(document.activeElement)) return;
       hideSelPopup();
@@ -1759,31 +1392,9 @@ export function initTextProc(host) {
     const layout = sidebar.closest('.tp-layout');
     if (layout) layout.classList.toggle('sidebar-collapsed', sidebar.classList.contains('hidden'));
     
-    if (!sidebar.classList.contains('hidden')) {
-      if (activeProj) renderTree(activeProj);
-      setTimeout(maybeShowNewFileTip, 600); // после анимации раскрытия панели
+    if (!sidebar.classList.contains('hidden') && activeProj) {
+      renderTree(activeProj);
     }
-  }
-
-  // Кнопку «новый файл» в панели дерева не замечают (её ищут в меню «Файл»).
-  // Один раз при первом показе дерева подсказываем, что она тут.
-  function maybeShowNewFileTip() {
-    if (settings.tpTipNewFile === 'seen') return;
-    const btn = $('#btn-tree-new-file');
-    if (!btn || !btn.getBoundingClientRect().width) return;
-    settings.tpTipNewFile = 'seen';
-    saveSettings();
-    const r = btn.getBoundingClientRect();
-    const tip = el('div', 'tp-tip');
-    tip.appendChild(el('div', 'tp-tip-title', 'Новый документ — здесь'));
-    tip.appendChild(el('div', null, 'Эта кнопка создаёт файл в папке проекта. Рядом: новая папка, сортировка (правой кнопкой — выбор порядка) и показ скрытых файлов.'));
-    const ok = el('button', 'tp-btn tp-btn-accent', 'Понятно');
-    ok.onclick = () => tip.remove();
-    tip.appendChild(ok);
-    document.body.appendChild(tip);
-    tip.style.left = Math.round(Math.max(12, Math.min(r.left - 8, window.innerWidth - tip.offsetWidth - 12))) + 'px';
-    tip.style.top = Math.round(r.bottom + 10) + 'px';
-    setTimeout(() => tip.remove(), 20000);
   }
 
   const btnNewFile = $('#btn-tree-new-file');
@@ -1821,88 +1432,10 @@ export function initTextProc(host) {
     });
   };
 
-  // Меню по правой кнопке на файле/папке: спрятать из дерева или вернуть обратно.
-  function showEntryMenu(ev, entry) {
-    ev.preventDefault();
-    ev.stopPropagation();
-    const manual = treeHiddenPaths.includes(entry.path);
-    const items = [{ title: entry.name }];
-    items.push(manual
-      ? { label: 'Показывать снова', onClick: () => setEntryHidden(entry.path, false) }
-      : { label: 'Скрыть из дерева', onClick: () => setEntryHidden(entry.path, true) });
-    items.push({ sep: true });
-    items.push({ label: treeShowHidden ? 'Не показывать скрытые' : 'Показать скрытые файлы', onClick: toggleShowHidden });
-    showContextMenu(ev.clientX, ev.clientY, items);
-  }
-  function setEntryHidden(path, hidden) {
-    treeHiddenPaths = treeHiddenPaths.filter((x) => x !== path);
-    if (hidden) treeHiddenPaths.push(path);
-    settings.tpHiddenPaths = treeHiddenPaths;
-    saveSettings();
-    if (hidden && !treeShowHidden) toast('Скрыто. Вернуть — кнопка с глазом в панели слева');
-    if (activeProj) renderTree(activeProj);
-  }
-  function toggleShowHidden() {
-    treeShowHidden = !treeShowHidden;
-    settings.tpShowHidden = treeShowHidden;
-    saveSettings();
-    updateHiddenBtn();
-    if (activeProj) renderTree(activeProj);
-  }
-  function updateHiddenBtn() {
-    const b = $('#btn-tree-hidden');
-    if (!b) return;
-    b.classList.toggle('active', treeShowHidden);
-    b.title = treeShowHidden ? 'Скрытые файлы показаны — нажмите, чтобы спрятать' : 'Показать скрытые файлы';
-    b.innerHTML = '';
-    b.removeAttribute('data-icon'); // иконку ставим руками: hydrateIcons отрабатывает один раз при старте
-    b.appendChild(host.icon(treeShowHidden ? 'eye' : 'eye-off', 22));
-  }
-  function applySort(id) {
-    treeSortMode = id;
-    settings.tpSortMode = id;
-    saveSettings();
-    updateSortBtn();
-    if (activeProj) renderTree(activeProj);
-  }
-  function updateSortBtn() {
-    if (!btnSort) return;
-    const cur = TREE_SORTS.find((x) => x.id === treeSortMode);
-    btnSort.title = 'Сортировка: ' + (cur ? cur.label : treeSortMode) + ' (правой кнопкой — выбор)';
-  }
-  // Левый клик листает по кругу только отмеченные порядки.
   if (btnSort) btnSort.onclick = () => {
-    const cycle = treeSortCycle.length ? treeSortCycle : ['az', 'za'];
-    const i = cycle.indexOf(treeSortMode);
-    applySort(cycle[(i + 1) % cycle.length]);
+    treeSortMode = (treeSortMode === 'az') ? 'za' : 'az';
+    if (activeProj) renderTree(activeProj);
   };
-  // Правый клик: выбрать порядок сразу (клик по названию) либо отметить,
-  // какие порядки участвуют в переключении по кругу (клик по квадратику с номером).
-  if (btnSort) btnSort.addEventListener('contextmenu', (ev) => {
-    ev.preventDefault();
-    const build = () => TREE_SORTS.map((sortItem) => ({
-      label: sortItem.label,
-      active: sortItem.id === treeSortMode,
-      checked: treeSortCycle.includes(sortItem.id),
-      order: treeSortCycle.indexOf(sortItem.id) + 1,
-      onClick: () => applySort(sortItem.id),
-      onToggle: () => {
-        if (treeSortCycle.includes(sortItem.id)) {
-          if (treeSortCycle.length > 1) treeSortCycle = treeSortCycle.filter((x) => x !== sortItem.id);
-          else { toast('Хотя бы один порядок должен остаться'); return; }
-        } else treeSortCycle.push(sortItem.id);
-        settings.tpSortCycle = treeSortCycle;
-        saveSettings();
-        showContextMenu(ev.clientX, ev.clientY, [{ title: 'Сортировка' }, ...build()]); // перерисовать с новыми номерами
-      },
-    }));
-    showContextMenu(ev.clientX, ev.clientY, [{ title: 'Сортировка' }, ...build()]);
-  });
-
-  const btnHidden = $('#btn-tree-hidden');
-  if (btnHidden) btnHidden.onclick = toggleShowHidden;
-  updateHiddenBtn();
-  updateSortBtn();
 
   if (btnCollapse) btnCollapse.onclick = () => {
     document.querySelectorAll('.tp-tree-folder-children').forEach(el => el.style.display = 'none');
@@ -1952,12 +1485,16 @@ export function initTextProc(host) {
 
     const buildTree = async (dirPath, container, level) => {
         const entries = await lite.fs.readDir(dirPath);
-
+        
         let hasFiles = false;
-        // Скрытые (точечные + спрятанные вручную) показываем только при включённом «глазе».
-        const visible = entries.filter((e) => treeShowHidden || !isHiddenEntry(e));
-        const dirs = sortEntries(visible.filter((e) => e.dir));
-        const files = sortEntries(visible.filter((e) => !e.dir && (e.name.endsWith('.md') || e.name.endsWith('.txt') || e.name.endsWith('.docx'))));
+        const dirs = entries.filter(e => e.dir).sort((a,b) => {
+          if (treeSortMode === 'za') return b.name.localeCompare(a.name);
+          return a.name.localeCompare(b.name);
+        });
+        const files = entries.filter(e => !e.dir && (e.name.endsWith('.md') || e.name.endsWith('.txt') || e.name.endsWith('.docx'))).sort((a,b) => {
+          if (treeSortMode === 'za') return b.name.localeCompare(a.name);
+          return a.name.localeCompare(b.name);
+        });
         
         for (const d of dirs) {
           if (d.name === 'Roles' || d.name === '.git' || d.name === 'node_modules') continue;
@@ -1966,8 +1503,7 @@ export function initTextProc(host) {
           folderDiv.className = 'tp-tree-folder';
           
           const header = document.createElement('div');
-          header.className = 'tp-tree-folder-header' + (isHiddenEntry(d) ? ' tp-tree-hidden' : '');
-          header.addEventListener('contextmenu', (ev) => showEntryMenu(ev, d));
+          header.className = 'tp-tree-folder-header';
           
           const icon = document.createElement('span');
           icon.className = 'tp-tree-icon';
@@ -2012,8 +1548,7 @@ export function initTextProc(host) {
         
         for (const f of files) {
           const item = document.createElement('div');
-          item.className = 'tp-tree-item' + (isHiddenEntry(f) ? ' tp-tree-hidden' : '');
-          item.addEventListener('contextmenu', (ev) => showEntryMenu(ev, f));
+          item.className = 'tp-tree-item';
           
           if (f.ctime && f.mtime) {
             const cStr = new Date(f.ctime).toLocaleString();
@@ -2089,17 +1624,12 @@ export function initTextProc(host) {
       html: isHtml ? safeHtml : mdToHtml(r.content),
       md: mdSrc,
       mode: 'wysiwyg',
-      dirty: false,
-      // Позиция чтения с прошлого запуска: файл открывается там, где его закрыли.
-      scrollTop: savedScrollFor(absPath)
+      dirty: false
     };
     
     openTabs.push(tab);
     renderTabsUI();
     switchToTab(id);
-    // switchToTab выходит сразу, если вкладка уже активна (бывает при восстановлении сессии),
-    // и тогда содержание не пересчитывалось. Строим его явно, когда текст уже в редакторе.
-    setTimeout(renderScrubber, 60);
   }
 
   function renderTabsUI() {
@@ -2151,45 +1681,12 @@ export function initTextProc(host) {
     }
   }
 
-  // ---- Позиция чтения --------------------------------------------------------------------
-  // Храним scrollTop по абсолютному пути файла, чтобы документ открывался там, где его закрыли.
-  // Карта чистится до 50 последних файлов, иначе settings разрастается без предела.
-  function savedScrollFor(absPath) {
-    const map = settings.tpScroll;
-    return (map && typeof map[absPath] === 'number') ? map[absPath] : 0;
-  }
-  function rememberScroll(absPath, top) {
-    if (!absPath) return;
-    if (!settings.tpScroll || typeof settings.tpScroll !== 'object') settings.tpScroll = {};
-    settings.tpScroll[absPath] = top;
-    const keys = Object.keys(settings.tpScroll);
-    if (keys.length > 50) delete settings.tpScroll[keys[0]];
-  }
-  // Слушатель скролла: активная вкладка помнит позицию всегда, а не только при переключении.
-  // Пишем в settings редко (через таймер) — сохранение на каждый пиксель прокрутки било бы по диску.
-  let scrollSaveTimer = null;
-  function watchCanvasScroll() {
-    const canvas = document.querySelector('.tp-canvas');
-    if (!canvas || canvas.dataset.scrollWatched) return;
-    canvas.dataset.scrollWatched = '1';
-    canvas.addEventListener('scroll', () => {
-      updateTocActive();
-      const tab = openTabs.find(t => t.id === activeTabId);
-      if (!tab) return;
-      tab.scrollTop = canvas.scrollTop;
-      if (!tab.absPath) return;
-      clearTimeout(scrollSaveTimer);
-      scrollSaveTimer = setTimeout(() => { rememberScroll(tab.absPath, tab.scrollTop); saveSettings(); }, 700);
-    }, { passive: true });
-  }
-
   // Запоминаем набор открытых сохранённых файлов и активный — для восстановления при следующем запуске.
   function persistSession() {
     try {
       settings.tpOpenFiles = openTabs.filter(t => t.absPath).map(t => t.absPath);
       const act = openTabs.find(t => t.id === activeTabId);
       if (act && act.absPath) settings.tpLastFile = act.absPath;
-      openTabs.forEach(t => { if (t.absPath && typeof t.scrollTop === 'number') rememberScroll(t.absPath, t.scrollTop); });
       saveSettings();
     } catch (e) {}
   }
