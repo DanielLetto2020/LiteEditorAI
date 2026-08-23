@@ -167,17 +167,30 @@
   <div id="doc-sidebar" class="tp-sidebar hidden">
     <div id="doc-tree" class="tp-tree"></div>
   </div>
+  <!-- Колонка документа: полоса вкладок ВНЕ прокручиваемой области, поэтому текст под неё
+       не подлезает и никакая подложка под вкладками не нужна. -->
+  <div class="tp-canvas-col">
+    <div id="doc-tabs-container" class="tp-tabs-container"></div>
   <div class="tp-canvas">
     <div class="tp-page-wrap">
-      <div id="doc-tabs-container" class="tp-tabs-container"></div>
       <div class="tp-page">
-        <div id="doc-editor-wysiwyg" class="tp-doc" contenteditable="true" spellcheck="false" data-placeholder="Начните печатать или откройте файл"></div>
-        <div id="doc-editor-md" class="tp-doc tp-doc-md" contenteditable="true" spellcheck="false" hidden data-placeholder="Начните писать в Markdown…"></div>
+        <!-- Лупа: при масштабе >100% лист остаётся прежнего размера, а содержимое внутри
+             увеличивается и ездит внутри него. tp-zoom-view — окно, tp-zoom-sizer задаёт
+             размер прокрутки, tp-zoom-inner масштабируется. При 100% всё это не работает. -->
+        <div class="tp-zoom-view">
+          <div class="tp-zoom-sizer">
+            <div class="tp-zoom-inner">
+              <div id="doc-editor-wysiwyg" class="tp-doc" contenteditable="true" spellcheck="false" data-placeholder="Начните печатать или откройте файл"></div>
+              <div id="doc-editor-md" class="tp-doc tp-doc-md" contenteditable="true" spellcheck="false" hidden data-placeholder="Начните писать в Markdown…"></div>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
     <!-- Навигация по главам: чёрточки у правого края + всплывающая подпись при наведении. -->
     <div id="doc-toc-rail" class="tp-toc-rail" hidden><!-- засечки глав, filled by JS --></div>
     <div id="doc-toc-list" class="tp-toc-list" hidden><!-- полный список глав, filled by JS --></div>
+  </div>
   </div>
 
             <div id="doc-inspector" class="tp-inspector">

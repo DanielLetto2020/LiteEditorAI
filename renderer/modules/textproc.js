@@ -393,8 +393,11 @@ export function initTextProc(host) {
     const r = canvas.getBoundingClientRect();
     // Ширина полосы прокрутки: рейку ставим ЛЕВЕЕ неё, иначе она перекрывает чёрточки.
     const sb = Math.max(0, canvas.offsetWidth - canvas.clientWidth);
-    rail.style.top = Math.round(r.top + 60) + 'px';
-    rail.style.height = Math.round(Math.max(80, r.height - 100)) + 'px';
+    // Отступ сверху был 60px — он компенсировал полосу вкладок, лежавшую внутри прокрутки.
+    // Вкладки вынесены наружу, верх области прокрутки теперь и есть верх текста, поэтому
+    // рейка идёт по всей высоте — вровень с полосой прокрутки, без ступеньки посередине.
+    rail.style.top = Math.round(r.top + 12) + 'px';
+    rail.style.height = Math.round(Math.max(80, r.height - 24)) + 'px';
     rail.style.right = Math.round(Math.max(4, window.innerWidth - r.right + sb + 2)) + 'px';
   }
 
@@ -412,6 +415,7 @@ export function initTextProc(host) {
   }
 
   function scheduleScrubberUpdate() {
+    window.tpZoomBase = null; // текст правили — высота содержимого другая
     clearTimeout(scrubberDebounceTimer);
     scrubberDebounceTimer = setTimeout(renderScrubber, 800);
   }
@@ -436,6 +440,11 @@ export function initTextProc(host) {
   // Тулбар — полоса с прокруткой (overflow), поэтому выпадающее меню, нарисованное внутри неё,
   // срезалось по её краю и выбрать пункт было нельзя. Показываем меню отдельным слоем:
   // position: fixed + координаты кнопки. Заодно не даём вылезти за край окна.
+  // Меню выпадашек переносятся в конец страницы (см. ниже), поэтому искать их пункты
+  // «внутри выпадашки» больше нельзя — ищем по метке владельца.
+  function ddItems(ddId) {
+    return Array.from(document.querySelectorAll('.tp-dd-menu[data-owner="' + ddId + '"] .tp-dd-item'));
+  }
   function placeMenuByButton(btn, menu, align) {
     const r = btn.getBoundingClientRect();
     menu.style.position = 'fixed';
@@ -495,10 +504,7 @@ export function initTextProc(host) {
       const collapsed = layoutEl.classList.toggle('inspector-collapsed');
       // Убрал панель — значит хочет читать шире: подгоняем страницу по ширине.
       // Вернул — возвращаем 100%. Ждём конца анимации панели, иначе меряем на лету.
-      setTimeout(() => {
-        if (collapsed) { if (tpFitZoomRef) tpFitZoomRef(); }
-        else if (tpSetZoomRef) tpSetZoomRef(1);
-      }, 440);
+      setTimeout(() => { if (tpFitZoomRef) tpFitZoomRef(collapsed); }, 440);
     };
     const toggleSidebarBtn = $('#doc-toggle-sidebar');
     if (toggleSidebarBtn) toggleSidebarBtn.onclick = toggleSidebar;
@@ -531,6 +537,7 @@ export function initTextProc(host) {
       );
 
       if (overflowBtn) {
+        if (overflowMenu && overflowMenu.parentElement !== document.body) document.body.appendChild(overflowMenu);
         overflowBtn.addEventListener('click', (e) => {
           e.stopPropagation();
           const hidden = overflowMenu.hasAttribute('hidden');
@@ -608,12 +615,13 @@ export function initTextProc(host) {
         menu.hidden = !wasHidden;
         if (!menu.hidden) placeMenuByButton(btn, menu, 'left');
       };
+      // ВАЖНО: обработчики вешаем ДО переноса, пока меню ещё внутри выпадашки.
       dd.querySelectorAll('.tp-dd-item').forEach(item => {
         item.onmousedown = (e) => e.preventDefault();
         item.onclick = (e) => {
           e.stopPropagation();
           menu.hidden = true;
-          dd.querySelectorAll('.tp-dd-item').forEach(i => i.classList.remove('active'));
+          ddItems(dd.id).forEach(i => i.classList.remove('active'));
           item.classList.add('active');
           btn.querySelector('span:first-child').textContent = item.textContent;
           if (dd.id === 'doc-zoom-dd') {
@@ -631,10 +639,16 @@ export function initTextProc(host) {
           }
         };
       });
+      // У панели инструментов включено размытие фона, а такой блок становится точкой отсчёта
+      // для «плавающих» элементов и вдобавок обрезает их своим краем. Поэтому меню выселяем
+      // в конец страницы: только там координаты считаются от окна и ничто их не режет.
+      menu.dataset.owner = dd.id;
+      if (menu.parentElement !== document.body) document.body.appendChild(menu);
     });
     
     document.addEventListener('click', (e) => {
-      if (!e.target.closest('.tp-dropdown')) {
+      // Меню теперь лежит вне выпадашки, поэтому проверяем и его самого.
+      if (!e.target.closest('.tp-dropdown') && !e.target.closest('.tp-dd-menu')) {
         $$('.tp-dd-menu').forEach(m => m.hidden = true);
       }
     });
@@ -644,69 +658,168 @@ export function initTextProc(host) {
     // за canvas, и правый край длинных заголовков обрезается без возможности доскроллить.
     // zoom меняет поток: появляется прокрутка, заголовки не «уходят за страницу».
     // Масштабируем .tp-page-wrap (вкладки + страница вместе), чтобы закладка не отрывалась.
-    function tpApplyZoom(val) {
-      const wrap = document.querySelector('.tp-page-wrap');
+    // ЛУПА. Лист остаётся ровно таким же — той же ширины и высоты, на том же месте.
+    // Увеличивается только содержимое ВНУТРИ него, вокруг точки под курсором, и ездит
+    // прокруткой внутри листа. Строки не перевёрстываются: увеличение делает transform,
+    // а он не меняет раскладку. Размер области прокрутки задаёт распорка (tp-zoom-sizer),
+    // иначе окно не знало бы, что содержимое стало больше.
+    function tpApplyZoom(val, anchor) {
       const page = document.querySelector('.tp-page');
-      if (!wrap) return;
-      if (page) { page.style.transform = ''; page.style.transformOrigin = ''; page.style.zoom = ''; } // сброс старого transform-подхода
+      const view = document.querySelector('.tp-zoom-view');
+      const sizer = document.querySelector('.tp-zoom-sizer');
+      const inner = document.querySelector('.tp-zoom-inner');
+      const wrap = document.querySelector('.tp-page-wrap');
+      if (wrap) { wrap.style.zoom = ''; wrap.style.width = ''; wrap.style.maxWidth = ''; } // остатки прежних подходов
+      if (!page || !view || !sizer || !inner) return;
+
+      const prevScale = window.tpCurrentZoom || 1;
+      // Точка содержимого, которая должна остаться под курсором.
+      let keep = null;
+      if (anchor && page.classList.contains('is-zoomed')) {
+        keep = {
+          x: (view.scrollLeft + anchor.x) / prevScale,
+          y: (view.scrollTop + anchor.y) / prevScale,
+          px: anchor.x, py: anchor.y,
+        };
+      }
+
+      // Сброс режима лупы (нужен и при 100%, и при уменьшении).
+      const resetMagnifier = () => {
+        window.tpZoomBase = null;
+        page.classList.remove('is-zoomed');
+        page.style.padding = '';
+        view.style.height = ''; view.style.width = '';
+        sizer.style.width = ''; sizer.style.height = '';
+        inner.style.transform = ''; inner.style.width = '';
+      };
+
+      // Вкладки — «шапка» листа, поэтому при уменьшении они должны мельчать вместе с ним,
+      // иначе широкая полоса вкладок висит над узкой страницей.
+      const tabsBar = document.querySelector('#doc-tabs-container');
+      const setTabsScale = (v) => { if (tabsBar) tabsBar.style.zoom = v < 1 ? String(v) : ''; };
+
       if (Math.abs(val - 1) < 0.001) {
-        wrap.style.zoom = ''; wrap.style.width = ''; wrap.style.maxWidth = '';
+        resetMagnifier();
+        if (wrap) wrap.style.zoom = '';
+        setTabsScale(1);
         return;
       }
-      // Зафиксировать «родную» ширину в px один раз: width:100% иначе нейтрализует zoom.
-      if (window.tpBaseWrapW == null) {
-        const prev = wrap.style.zoom; wrap.style.zoom = '';
-        window.tpBaseWrapW = Math.round(wrap.getBoundingClientRect().width);
-        wrap.style.zoom = prev;
+
+      // МЕНЬШЕ 100% — уменьшается сам лист, как в Word: страница становится мельче и целиком
+      // помещается на экран, а интерфейс остаётся прежнего размера. Лупа тут не при чём:
+      // разглядывать нечего, наоборот — нужен общий вид.
+      if (val < 1) {
+        resetMagnifier();
+        if (wrap) wrap.style.zoom = String(val);
+        setTabsScale(val);
+        return;
       }
-      wrap.style.width = window.tpBaseWrapW + 'px';
-      wrap.style.maxWidth = window.tpBaseWrapW + 'px';
-      wrap.style.zoom = val;
+      if (wrap) wrap.style.zoom = '';
+      setTabsScale(1);
+
+      // «Родные» размеры содержимого при 100%. Мерить их на каждом щелчке колеса нельзя:
+      // браузер пересчитывает раскладку всего документа дважды за кадр — отсюда рывки.
+      // Меряем один раз и запоминаем; сбрасываем при смене документа, режима, размера окна
+      // и после правок текста.
+      if (!window.tpZoomBase) {
+        inner.style.transform = ''; inner.style.width = '';
+        sizer.style.width = ''; sizer.style.height = '';
+        view.style.height = ''; view.style.width = '';
+        page.style.padding = '';
+        page.classList.remove('is-zoomed');
+        const r = inner.getBoundingClientRect();
+        const cs = getComputedStyle(page);
+        window.tpZoomBase = {
+          w: Math.round(r.width), h: Math.round(r.height),
+          padX: parseFloat(cs.paddingLeft) || 0, padY: parseFloat(cs.paddingTop) || 0,
+        };
+      }
+      const baseW = window.tpZoomBase.w, baseH = window.tpZoomBase.h;
+      const padX0 = window.tpZoomBase.padX, padY0 = window.tpZoomBase.padY;
+      if (!baseW || !baseH) { window.tpZoomBase = null; return; }
+
+      // Поля листа мягко убираются по мере увеличения: при 100% они полные, к 200% сходят
+      // на нет. Иначе крупный текст читается «внутри рамки» — белая кайма съедает место,
+      // которого при увеличении и так не хватает.
+      const k = Math.max(0, Math.min(1, 2 - val));
+      const padX = Math.round(padX0 * k), padY = Math.round(padY0 * k);
+      page.style.padding = padY + 'px ' + padX + 'px';
+
+      // Окно растёт ровно на столько, на сколько ушли поля, — то есть максимум до размера
+      // самого листа. Сам лист при этом не меняется ни на пиксель.
+      page.classList.add('is-zoomed');
+      view.style.width = Math.round(baseW + 2 * (padX0 - padX)) + 'px';
+      view.style.height = Math.round(baseH + 2 * (padY0 - padY)) + 'px';
+      sizer.style.width = Math.round(baseW * val) + 'px';
+      sizer.style.height = Math.round(baseH * val) + 'px';
+      inner.style.width = baseW + 'px';
+      inner.style.transform = 'scale(' + val + ')';
+
+      // Возвращаем под курсор ту же точку содержимого.
+      if (keep) {
+        view.scrollLeft = Math.max(0, keep.x * val - keep.px);
+        view.scrollTop = Math.max(0, keep.y * val - keep.py);
+      } else if (anchor) {
+        view.scrollLeft = Math.max(0, anchor.x * val - anchor.x);
+        view.scrollTop = Math.max(0, anchor.y * val - anchor.y);
+      }
     }
 
     // Применить масштаб и синхронизировать подпись в выпадашке «100%».
     let zoomPending = window.tpCurrentZoom || 1; // накопитель для колеса, см. ниже
-    function tpSetZoom(val) {
-      window.tpCurrentZoom = Math.max(0.25, Math.min(val, 3.0));
-      zoomPending = window.tpCurrentZoom; // выбор из списка/подгон по ширине сбивает накопитель колеса
-      tpApplyZoom(window.tpCurrentZoom);
+    function tpSetZoom(val, anchor) {
+      const next = Math.max(0.25, Math.min(val, 3.0));
+      tpApplyZoom(next, anchor);      // считает от прежнего масштаба, поэтому вызывается ДО его смены
+      window.tpCurrentZoom = next;
+      zoomPending = next;             // выбор из списка сбивает накопитель колеса
       const zoomBtn = document.querySelector('#doc-zoom-dd .tp-dd-btn span:first-child');
       if (zoomBtn) zoomBtn.textContent = Math.round(window.tpCurrentZoom * 100) + '%';
-      document.querySelectorAll('#doc-zoom-dd .tp-dd-item').forEach((i) => {
+      ddItems('doc-zoom-dd').forEach((i) => {
         i.classList.toggle('active', Math.abs(parseFloat(i.dataset.val) - window.tpCurrentZoom) < 0.001);
       });
     }
     tpSetZoomRef = tpSetZoom;
 
-    // Подгон страницы по ширине рабочей зоны (вызывается при скрытии правой панели).
-    function tpFitZoomToWidth() {
+    // Панель убрали — места стало больше. Раньше здесь увеличивался масштаб; теперь честнее
+    // просто расширить сам лист: строка становится длиннее, размер текста не меняется.
+    function tpFitPageToWidth(wide) {
       const canvas = document.querySelector('.tp-canvas');
-      const wrap = document.querySelector('.tp-page-wrap');
-      if (!canvas || !wrap) return;
-      // Ширина колонки изменилась вместе с панелью → «родную» ширину страницы мерим заново.
-      window.tpBaseWrapW = null;
-      const prevZoom = wrap.style.zoom, prevW = wrap.style.width, prevMaxW = wrap.style.maxWidth;
-      wrap.style.zoom = ''; wrap.style.width = ''; wrap.style.maxWidth = '';
-      const base = Math.round(wrap.getBoundingClientRect().width);
-      wrap.style.zoom = prevZoom; wrap.style.width = prevW; wrap.style.maxWidth = prevMaxW;
-      if (!base) return;
-      tpSetZoom(Math.max(1, Math.min(2, (canvas.clientWidth - 24) / base)));
+      if (!canvas) return;
+      if (!wide) { canvas.style.removeProperty('--tp-page-max'); return; }
+      const avail = Math.max(600, canvas.clientWidth - 24);
+      canvas.style.setProperty('--tp-page-max', Math.round(Math.min(avail, 1400)) + 'px');
     }
-    tpFitZoomRef = tpFitZoomToWidth;
+    tpFitZoomRef = tpFitPageToWidth;
 
     // Масштаб колесом с Ctrl / щипком на тачпаде.
     window.tpCurrentZoom = window.tpCurrentZoom || 1;
     const workspace = document.querySelector('.tp-workspace');
     if (workspace) {
-      let zoomRaf = 0;
+      let zoomRaf = 0, zoomAnchor = null;
       workspace.addEventListener('wheel', (e) => {
         if (!e.ctrlKey) return;
         e.preventDefault();
+        // Точка под курсором в координатах окна-листа: именно она должна остаться на месте.
+        const view = document.querySelector('.tp-zoom-view');
+        if (view) {
+          const r = view.getBoundingClientRect();
+          zoomAnchor = { x: e.clientX - r.left, y: e.clientY - r.top };
+        }
         // Колесо и тачпад присылают события пачками, а смена масштаба перекладывает весь
         // документ заново. Копим дельту и перерисовываем один раз на кадр — иначе «кисель».
         zoomPending = Math.max(0.25, Math.min(zoomPending - e.deltaY * 0.01, 3.0));
         if (zoomRaf) return;
-        zoomRaf = requestAnimationFrame(() => { zoomRaf = 0; tpSetZoom(zoomPending); });
+        zoomRaf = requestAnimationFrame(() => {
+          zoomRaf = 0;
+          // Мягкий магнит на 100%: рядом со стом процентами показываем ровно 100 и держим,
+          // пока колесо не «переедет» зону притяжения. Так легко вернуться к исходному виду
+          // и не получить случайные 98 или 103 процента.
+          const SNAP = 0.06;
+          const raw = zoomPending;                       // накопитель колеса — «настоящее» значение
+          const shown = Math.abs(raw - 1) < SNAP ? 1 : raw;
+          tpSetZoom(shown, zoomAnchor);
+          zoomPending = raw;                             // иначе из зоны притяжения не выехать
+        });
       }, { passive: false });
     }
 
@@ -915,6 +1028,7 @@ export function initTextProc(host) {
       if (isActive) activeBtn = b;
     });
     updateThumb($('#doc-mode-toggle'), activeBtn);
+    window.tpZoomBase = null; // содержимое сменилось — прежний замер для лупы недействителен
     $('#doc-editor-wysiwyg').hidden = mode !== 'wysiwyg';
     $('#doc-editor-md').hidden = mode !== 'markdown';
     renderScrubber();
@@ -960,7 +1074,7 @@ export function initTextProc(host) {
       const formatDd = $('#doc-format-dd');
       if (formatDd) {
         let matched = false;
-        formatDd.querySelectorAll('.tp-dd-item').forEach(item => {
+        ddItems('doc-format-dd').forEach(item => {
           const val = item.dataset.val.replace(/[<>]/g, '').toLowerCase();
           const fmt = (format || 'p').replace(/[<>]/g, '').toLowerCase();
           const isActive = (val === fmt || (val === 'p' && (fmt === '' || fmt === 'div')));
@@ -2102,6 +2216,21 @@ export function initTextProc(host) {
     setTimeout(renderScrubber, 60);
   }
 
+  // Полоса вкладок вынесена из прокручиваемой области, своей полосы прокрутки у неё нет.
+  // Без этого вкладки и страница разъезжаются на ширину скроллбара.
+  function alignTabsBar() {
+    const canvas = document.querySelector('.tp-canvas');
+    if (!canvas || !tabsContainer) return;
+    const sb = Math.max(0, canvas.offsetWidth - canvas.clientWidth);
+    // Страница центрируется внутри области прокрутки, а та у́же на ширину полосы прокрутки.
+    // Чтобы левые края вкладок и страницы совпали, полосе вкладок нужны И правый отступ
+    // на ширину скроллбара, И такая же прибавка к предельной ширине: иначе сама полоса
+    // остаётся отцентрованной по-старому и уезжает вправо на половину скроллбара.
+    tabsContainer.style.paddingRight = (10 + sb) + 'px';
+    tabsContainer.style.maxWidth = (1020 + sb) + 'px';
+  }
+  window.addEventListener('resize', () => { window.tpZoomBase = null; alignTabsBar(); });
+
   function renderTabsUI() {
     tabsContainer.innerHTML = '';
     openTabs.forEach(t => {
@@ -2130,6 +2259,7 @@ export function initTextProc(host) {
     addBtn.title = 'Новая вкладка';
     addBtn.onclick = () => createNewTab();
     tabsContainer.appendChild(addBtn);
+    alignTabsBar();
   }
   
   async function restoreLastOrNew() {

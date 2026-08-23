@@ -3808,7 +3808,7 @@ body.preview-full .prev-frame { width: 100%; height: 100%; }
    палитра «стол + бумага» (как в Word/Office — страница остаётся белой независимо от темы
    приложения), поэтому токены свои (--tp-*), а не общие --bg/--panel/--text темы. Все цвета проходят
    через эти токены один раз — дальше только var(--tp-*), без хардкода по месту. */
-.tp-root, .tp-sel-popup {
+.tp-root, .tp-sel-popup, .tp-toc-list, .tp-toc-rail {
   --tp-desk: linear-gradient(140deg,#eef1f7,#e7ecf5 60%,#eaf3f0);
   --tp-blob-a: #ffd8a8; --tp-blob-b: #d0bfff; --tp-blob-c: #99e9f2; --tp-blob-d: #ffc9d6;
   --tp-page-bg: rgba(255,255,255,0.94);
@@ -3820,7 +3820,9 @@ body.preview-full .prev-frame { width: 100%; height: 100%; }
   --tp-glass-shadow: 0 10px 30px rgba(30,40,80,0.13);
   --tp-glass-shadow-sm: 0 8px 24px rgba(30,40,80,0.12);
   --tp-glass-inset: inset 0 1px 0 rgba(255,255,255,0.9);
-  --tp-page-shadow: 0 24px 60px rgba(30,40,80,0.2), 0 2px 6px rgba(0,0,0,.06), inset 0 1px 0 rgba(255,255,255,0.9);
+  /* Отрицательный разброс поджимает тень к листу: она уходит вниз, а вверх, за верхний край
+     страницы, ореол больше не выходит — там читалась слабая граница раздела. */
+  --tp-page-shadow: 0 18px 30px -26px rgba(30,40,80,0.26), 0 2px 5px -4px rgba(0,0,0,.06), inset 0 1px 0 rgba(255,255,255,0.9);
   --tp-text: #1c1c1e; --tp-text-1: #1c1c1e; --tp-text-2: #5a5a5e; --tp-text-3: #a0a0a6; --tp-text-mute: #8a8a8e;
   --tp-border: rgba(0,0,0,.08); --tp-border-soft: rgba(0,0,0,.05);
   --tp-hover: rgba(0,0,0,.05);
@@ -4006,10 +4008,14 @@ body.preview-full .prev-frame { width: 100%; height: 100%; }
 
 /* ---- workspace: canvas (page) + inspector ---- */
 .tp-workspace { display: grid; grid-template-columns: var(--tp-side-w) 1fr var(--tp-insp-w); flex: 1; height: 100%; min-height: 0; padding: 0 14px 16px 14px; transition: grid-template-columns 0.35s cubic-bezier(0.25, 0.8, 0.25, 1); }
-.tp-canvas { min-width: 0; height: 100%; overflow: auto; display: flex; flex-direction: column; align-items: center; padding: 0 10px 40px; gap: 22px; position: relative; }
-.tp-page-wrap { display: flex; flex-direction: column; width: 100%; max-width: 1000px; flex-shrink: 0; }
+.tp-canvas { min-width: 0; height: 100%; overflow: auto; display: flex; flex-direction: column; align-items: flex-start; padding: 0 10px 40px; gap: 22px; position: relative; }
+/* Лист центрируется отступами, а не выравниванием контейнера: при увеличении он шире
+   области прокрутки, и с align-items:center левый край уезжал бы за границу без
+   возможности до него доскроллить. С margin:auto лист просто прижимается влево. */
+.tp-canvas > .tp-page-wrap { margin: 0 auto; }
+.tp-page-wrap { display: flex; flex-direction: column; width: 100%; max-width: var(--tp-page-max, 1000px); flex-shrink: 0; }
 .tp-page {
-  width: 100%; max-width: 1000px; min-height: 1010px; background: var(--tp-page-bg); border-radius: 14px;
+  width: 100%; max-width: var(--tp-page-max, 1000px); min-height: 1010px; background: var(--tp-page-bg); border-radius: 14px;
   box-shadow: var(--tp-page-shadow); padding: 92px 96px; box-sizing: border-box;
   flex-shrink: 0;
 }
@@ -4037,9 +4043,11 @@ body.preview-full .prev-frame { width: 100%; height: 100%; }
 .tp-page { padding: clamp(32px, 9cqi, 92px) clamp(16px, 9.5cqi, 96px); }
 @container tp-canvas (max-width: 560px) {
   .tp-page { min-height: 0; border-radius: 10px; }
-  .tp-doc h1 { font-size: 26px; }
-  .tp-doc h2 { font-size: 19px; }
+  .tp-doc h1 { font-size: 1.58em; }
+  .tp-doc h2 { font-size: 1.15em; }
 }
+/* Левый верхний угол листа — прямой: он сходится с левым краем полосы вкладок, и на стыке
+   не должно быть круглого выступа. Левые края выровнены точно (см. alignTabsBar). */
 .tp-page-wrap .tp-page { border-top-left-radius: 0; }
 .tp-doc { min-height: 800px; display: block; outline: none; color: var(--tp-text); position: relative; }
 /* Приглашение к работе в пустом документе: полупрозрачный текст на первой строке (курсор виден
@@ -4054,11 +4062,11 @@ body.preview-full .prev-frame { width: 100%; height: 100%; }
   white-space: pre-wrap;
 }
 .tp-doc[hidden], .tp-panel-edit[hidden], .tp-panel-ai[hidden] { display: none !important; }
-.tp-doc:not(.tp-doc-md) { font-family: -apple-system, "SF Pro Text", "Inter", sans-serif; font-size: 16.5px; line-height: 1.6; }
-.tp-doc-md { font-family: var(--tp-mono); font-size: 13.5px; line-height: 1.6; white-space: pre-wrap; word-break: break-word; }
-.tp-doc h1 { font-size: 32px; font-weight: 700; letter-spacing: -.02em; margin: 22px 0 12px; }
-.tp-doc h2 { font-size: 22px; font-weight: 600; letter-spacing: -.01em; margin: 18px 0 10px; }
-.tp-doc h3 { font-size: 20px; font-weight: 700; letter-spacing: -.01em; margin: 16px 0 8px; }
+.tp-doc:not(.tp-doc-md) { font-family: -apple-system, "SF Pro Text", "Inter", sans-serif; font-size: calc(16.5px * var(--tp-doc-zoom, 1)); line-height: 1.6; }
+.tp-doc-md { font-family: var(--tp-mono); font-size: calc(13.5px * var(--tp-doc-zoom, 1)); line-height: 1.6; white-space: pre-wrap; word-break: break-word; }
+.tp-doc h1 { font-size: 1.94em; font-weight: 700; letter-spacing: -.02em; margin: 22px 0 12px; }
+.tp-doc h2 { font-size: 1.33em; font-weight: 600; letter-spacing: -.01em; margin: 18px 0 10px; }
+.tp-doc h3 { font-size: 1.21em; font-weight: 700; letter-spacing: -.01em; margin: 16px 0 8px; }
 .tp-doc h1:first-child, .tp-doc h2:first-child, .tp-doc h3:first-child, .tp-doc p:first-child { margin-top: 0; }
 .tp-doc p { margin: 0 0 var(--doc-p-spacing, 1em); }
 .tp-doc ul, .tp-doc ol { margin: 0 0 8px; padding-left: 26px; }
@@ -4989,7 +4997,7 @@ body.win-frame.win-frame-pulse::after {
   color: var(--tp-text);
   width: max-content;
   max-width: max-content;
-  max-height: max-content;
+  max-height: fit-content;
 }
 .tp-sel-popup[hidden] { display: none !important; }
 
@@ -5272,9 +5280,9 @@ body.win-frame.win-frame-pulse::after {
    полоса вкладок уезжала вверх при прокрутке документа. Возвращаем прилипание. */
 .tp-tabs-container {
   position: sticky; top: 0; z-index: 20;
-  /* Под вкладками не должен просвечивать текст страницы: матовая подложка «стола». */
-  background: rgba(238,241,247,.82);
-  backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+  /* Подложка убрана: вкладки вынесены из прокрутки (см. блок «Полоса вкладок вне прокрутки»),
+     текст под них больше не подлезает, и прятать его нечем не нужно. */
+  background: transparent;
   padding-top: 2px;
 }
 
@@ -5412,10 +5420,10 @@ body.win-frame.win-frame-pulse::after {
   width: 292px; padding: 8px 8px 8px 6px;
   /* Сильно прозрачное стекло: список лежит поверх страницы, и текст под ним должен
      угадываться, иначе панель воспринимается как «заплатка» поверх документа. */
-  border-radius: 16px; background: rgba(255,255,255,.46);
-  backdrop-filter: blur(16px) saturate(180%); -webkit-backdrop-filter: blur(16px) saturate(180%);
-  border: 1px solid rgba(255,255,255,.75); box-shadow: 0 12px 34px rgba(30,40,80,.16);
-  overflow-y: auto; overscroll-behavior: contain;
+  border-radius: 16px; background: rgba(255,255,255,.82);
+  backdrop-filter: blur(26px) saturate(180%); -webkit-backdrop-filter: blur(26px) saturate(180%);
+  border: 1px solid var(--tp-glass-border); box-shadow: var(--tp-glass-shadow);
+  overflow-y: auto; overscroll-behavior: contain; height: fit-content;
   opacity: 0; transform: translateX(8px);
   transition: opacity .13s ease, transform .13s ease;
 }
@@ -5431,15 +5439,15 @@ body.win-frame.win-frame-pulse::after {
   transition: color .12s ease;
 }
 .tp-toc-item-dash {
-  flex: 0 0 auto; height: 2px; border-radius: 2px; background: rgba(30,50,90,.30);
+  flex: 0 0 auto; height: 2px; border-radius: 2px; background: rgba(30,50,90,.45);
   transition: background .12s ease, height .12s ease;
 }
 .tp-toc-item.h1 .tp-toc-item-dash { width: 16px; }
 .tp-toc-item.h2 .tp-toc-item-dash { width: 11px; }
 .tp-toc-item.h3 .tp-toc-item-dash { width: 7px; }
 .tp-toc-item.h2 .tp-toc-item-text { font-size: 12px; }
-.tp-toc-item.h3 .tp-toc-item-text { font-size: 11.5px; color: var(--tp-text-3); }
-.tp-toc-item:hover { background: rgba(255,255,255,.55); }
+.tp-toc-item.h3 .tp-toc-item-text { font-size: 11.5px; color: var(--tp-text-2); }
+.tp-toc-item:hover { background: var(--tp-accent-soft); }
 .tp-toc-item:hover .tp-toc-item-text { color: var(--tp-accent); }
 .tp-toc-item:hover .tp-toc-item-dash { background: var(--tp-accent); }
 /* глава, в которой сейчас находишься */
@@ -5454,3 +5462,58 @@ body.win-frame.win-frame-pulse::after {
 .tp-toc-list::-webkit-scrollbar-thumb { background: rgba(30,50,90,.22); border-radius: 8px; border: 2px solid transparent; background-clip: content-box; }
 .tp-toc-list::-webkit-scrollbar-thumb:hover { background: rgba(30,50,90,.34); background-clip: content-box; }
 .tp-toc-list::-webkit-scrollbar-track { background: transparent; }
+
+
+/* ================= Полоса вкладок вне прокрутки (2026-08) =================
+   Раньше вкладки лежали внутри прокручиваемой области и были приклеены к её верху,
+   поэтому текст документа проезжал прямо под ними. Чтобы он не просвечивал, под вкладки
+   подкладывали сплошную серую плашку — она давала прямоугольную рамку, линию слева и
+   разницу тонов с общим фоном.
+   Теперь вкладки вынесены из прокрутки: подлезать под них нечему, плашка не нужна,
+   страница лежит прямо на общем фоне. */
+.tp-canvas-col {
+  min-width: 0; min-height: 0; display: flex; flex-direction: column;
+  /* Подъём на 51px переехал сюда с .tp-canvas: он выравнивает вкладку по строке поиска,
+     а теперь верхний край колонки — это и есть полоса вкладок. */
+  position: relative; top: -51px; height: calc(100% + 51px);
+}
+/* flex-basis обязан быть 0: с basis:auto область прокрутки растягивалась по высоте текста,
+   переставала быть «окном» и прокрутка пропадала совсем. */
+.tp-canvas-col > .tp-canvas {
+  flex: 1 1 0%; min-height: 0; height: auto; top: 0;
+}
+/* Полоса вкладок: без подложки, без прилипания, выровнена по ширине страницы.
+   Правый отступ подгоняется под ширину полосы прокрутки — иначе вкладки и страница
+   разъезжаются на несколько пикселей. */
+.tp-canvas-col > .tp-tabs-container {
+  flex: none; position: static; z-index: 3;
+  background: transparent; backdrop-filter: none; -webkit-backdrop-filter: none;
+  width: 100%; max-width: 1020px; margin: 0 auto; padding: 2px 10px 0 10px;
+}
+
+
+/* Полоса с кнопками бросала вниз крупную тень (30px размытия). Она затемняла зону вкладок,
+   а ниже начиналась страница со своей тенью — на стыке двух затенённых зон читалась
+   граница раздела. Тень делаем короче и слабее: объём остаётся, полосы не видно. */
+.tp-shell-row--toolbar .tp-toolbar { box-shadow: 0 3px 10px rgba(30,40,80,.035), var(--tp-glass-inset); }
+
+
+/* ================= Лупа: увеличение внутри неподвижного листа (2026-08) =================
+   Масштаб не меняет ни лист, ни раскладку. Лист становится окном: содержимое внутри него
+   увеличивается вокруг курсора и ездит прокруткой, строки не перевёрстываются.
+   При 100% ни одно из этих правил не действует — разметка ведёт себя как обычно. */
+.tp-zoom-view { position: relative; }
+/* Поля листа уходят плавно, а не скачком — увеличение должно ощущаться как приближение,
+   а не как перестройка страницы. */
+.tp-page { transition: padding .18s cubic-bezier(.4,0,.2,1); }
+.tp-zoom-inner { transform-origin: 0 0; }
+.tp-page.is-zoomed .tp-zoom-view { overflow: auto; overscroll-behavior: contain; }
+.tp-page.is-zoomed .tp-zoom-sizer { position: relative; }
+.tp-page.is-zoomed .tp-zoom-inner { position: absolute; top: 0; left: 0; }
+/* полосы прокрутки внутри листа — тонкие, чтобы не спорили с бумагой */
+.tp-page.is-zoomed .tp-zoom-view::-webkit-scrollbar { width: 10px; height: 10px; }
+.tp-page.is-zoomed .tp-zoom-view::-webkit-scrollbar-thumb {
+  background: rgba(30,50,90,.22); border-radius: 8px; border: 2px solid transparent; background-clip: content-box;
+}
+.tp-page.is-zoomed .tp-zoom-view::-webkit-scrollbar-thumb:hover { background: rgba(30,50,90,.34); background-clip: content-box; }
+.tp-page.is-zoomed .tp-zoom-view::-webkit-scrollbar-track { background: transparent; }
