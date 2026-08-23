@@ -14,7 +14,6 @@ const lite = window.lite;
 const GLOBAL_ID = '__global__';
 
 // офсеты напоминания (за сколько ДО срока уведомить), мс
-const REMIND_MS = { at: 0, '10m': 10 * 60000, '1h': 3600000, '1d': 86400000 };
 const REMIND_LABEL = { '': 'Без напоминания', at: 'В момент срока', '10m': 'За 10 минут', '1h': 'За час', '1d': 'За день' };
 const REMIND_ORDER = ['', 'at', '10m', '1h', '1d'];
 
@@ -446,7 +445,7 @@ export function createAgendaView(host) {
     let cmd = '';
     lite.agenda.mcpCommand({ projId: p && p.id }).then((r) => { cmd = (r && r.cmd) || ''; cmdBox.textContent = cmd; }).catch(() => { cmdBox.textContent = '(не удалось получить команду)'; });
 
-    const copy = async (text, okMsg) => { try { await navigator.clipboard.writeText(text); toast(okMsg); } catch (_) { toast('Не удалось скопировать', { kind: 'err' }); } };
+    const copy = (text, okMsg) => { try { lite.copyText(text); toast(okMsg); } catch (_) { toast('Не удалось скопировать', { kind: 'err' }); } };
     m.querySelector('[data-copycmd]').onclick = () => cmd ? copy(cmd, 'Команда скопирована') : toast('Команда ещё не готова');
     m.querySelector('[data-copyhint]').onclick = () => copy(AGENT_HINT, 'Подсказка скопирована — вставьте агенту');
     m.querySelector('[data-cancel]').onclick = () => close();

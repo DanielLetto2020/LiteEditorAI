@@ -5,16 +5,16 @@ import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { SearchAddon } from '@xterm/addon-search';
 import { WebLinksAddon } from '@xterm/addon-web-links';
-import { WebglAddon } from '@xterm/addon-webgl';
-import { CanvasAddon } from '@xterm/addon-canvas';
-import { Unicode11Addon } from '@xterm/addon-unicode11';
+// WebGL/Canvas/Unicode11-аддоны здесь не нужны: их подключает termutil.js (loadFastRenderer/applyUnicode11).
 import '@xterm/xterm/css/xterm.css';
 
 // CodeMirror/marked/showMinimap/codeedit — переехали в окно вивера (renderer/modules/files.js).
 // В ядре остались только терминал (xterm) + темы/термутилы.
+import { initI18n, t as tt } from './i18n.js';
 import { THEMES, TERM_THEME, DEFAULT_THEME } from './themes.js';
 import { FRAME_COLORS, frameConf, applyFrame } from './frame.js';
 import { loadFastRenderer, applyUnicode11, copySelection } from './termutil.js';
+import { attachTimeline } from './termtimeline.js';
 // initTextProc — «Обработка текста» мигрирована в отдельное окно (renderer/module-entry.js).
 import { el, icon, iconBtn, hydrateIcons, toast, makeModal, showConfirm, showPrompt, baseName, ICONS, setErrorSink } from './ui.js';
 // initGit — модуль «Git» мигрирован в отдельное окно (renderer/module-entry.js).
@@ -27,7 +27,7 @@ import { el, icon, iconBtn, hydrateIcons, toast, makeModal, showConfirm, showPro
 import { initExtensions } from './modules/extensions.js';
 // initFiles — вивер+дерево мигрированы в отдельное окно (renderer/module-entry.js).
 
-const APP_VERSION = 'alpha v1.1.100';
+const APP_VERSION = 'alpha v1.1.123';
 const GUTTER = 5;
 // Системный терминал («Система · ~») мигрирован в отдельное окно (renderer/modules/scratch.js):
 // его id `__scratch__::tN` маршрутизируются main'ом в окно-владельца, в ядре их больше не обрабатываем.
@@ -54,7 +54,7 @@ function persist(key, value) { STORE[key] = value; lite.store.set(key, value); }
 function projId(p) { let h = 5381; for (let i = 0; i < p.length; i++) h = ((h << 5) + h + p.charCodeAt(i)) >>> 0; return 'p' + h.toString(36); }
 
 // ---------------------------------------------------------------- settings (tiny on purpose)
-const DEFAULT_SETTINGS = { notifications: true, sound: false, idleMs: 1200, fontSize: 13, workingDir: '', scanDirs: [], theme: 'neumorphism', onboarded: false, shell: '', minimap: true, notesTab: 'project', frameOn: true, frameColor: 'green', framePulse: true, framePeriodS: 6 };
+const DEFAULT_SETTINGS = { notifications: true, sound: false, idleMs: 1200, fontSize: 13, workingDir: '', scanDirs: [], theme: 'neumorphism', onboarded: false, shell: '', minimap: true, notesTab: 'project', frameOn: true, frameColor: 'green', framePulse: true, framePeriodS: 6, termTimeline: false };
 function loadSettings() { return { ...DEFAULT_SETTINGS, ...(STORE.settings || {}) }; }
 let settings = loadSettings();
 function saveSettings() { persist('settings', settings); }
@@ -312,6 +312,7 @@ function focusProject(id) {
 // ---------------------------------------------------------------- remote pult modal
 function showRemote() {
   closeMenus();
+  let timer = null;   // объявлен ДО makeModal: onClose-колбэк ниже гасит опрос статуса
   const { m, close } = makeModal(`
     <h2><span style="color:var(--green-bright)">📱</span> Удалённый пульт</h2>
     <div class="about-desc">
@@ -322,7 +323,10 @@ function showRemote() {
       <code>relay/</code> репозитория.
     </div>
     <div class="or-add" id="rmt-body"></div>
-    <div class="modal-actions"><button class="btn" id="rmt-close">Закрыть</button></div>`);
+    <div class="modal-actions"><button class="btn" id="rmt-close">Закрыть</button></div>`,
+    // onClose срабатывает на ЛЮБОМ пути закрытия (кнопка/Esc/фон) — иначе опрос статуса
+    // продолжал тикать после закрытия по Esc до следующего срабатывания
+    () => clearInterval(timer));
   const realClose = () => { clearInterval(timer); close(); };
   m.querySelector('#rmt-close').onclick = realClose;
   const body = m.querySelector('#rmt-body');
@@ -427,7 +431,7 @@ function showRemote() {
       statusEl.style.color = st.connected ? 'var(--green-bright)' : 'var(--warn)';
     }
   }
-  const timer = setInterval(tick, 2500);
+  timer = setInterval(tick, 2500);
   tick();
 }
 
@@ -782,7 +786,7 @@ function doCloseProject(id) {
     for (const sid of tabs.sessions) {
       lite.pty.kill(sid);
       const rec = terms.get(sid);
-      if (rec) { clearTimeout(rec.idleTimer); try { rec.term.dispose(); } catch (_) {} rec.container.remove(); terms.delete(sid); }
+      if (rec) { clearTimeout(rec.idleTimer); try { rec.timeline.dispose(); } catch (_) {} try { rec.term.dispose(); } catch (_) {} rec.container.remove(); terms.delete(sid); }
       projState.delete(sid);
     }
     tabsByProj.delete(id);
@@ -817,8 +821,7 @@ async function checkProjectsExistence() {
 // so we must NOT treat trailing $, #, ❯ as "waiting" (that's just idle/ready).
 // PROMPT_RE is a narrow backup for plain CLIs (git/ssh/sudo) that don't bell.
 const PROMPT_RE = /\(y\/n\)|\[y\/n\]|\[Y\/n\]|\(yes\/no\)|overwrite\?|password[^\n]{0,24}:|passphrase[^\n]{0,24}:|press\s+(?:enter|return|any key)|continue\?/i;
-// eslint-disable-next-line no-control-regex
-const ANSI_RE = /\x1b\][^\x07]*\x07|\x1b\[[0-?]*[ -\/]*[@-~]|\x1b[@-_]|[\x00-\x08\x0b-\x1f\x7f]/g;
+const ANSI_RE = /\x1b\][^\x07]*\x07|\x1b\[[0-?]*[ -/]*[@-~]|\x1b[@-_]|[\x00-\x08\x0b-\x1f\x7f]/g;
 const stripAnsi = (str) => str.replace(ANSI_RE, '');
 // A real "attention" bell vs the BEL that merely terminates an OSC title sequence
 // (ESC ] 0 ; title BEL) — which bash/zsh/Claude emit on every prompt. Strip OSC
@@ -976,8 +979,17 @@ const HOTKEYS = [
   { test: (e) => e.code === 'KeyF' && e.shiftKey,                   run: () => showGlobalSearch() }, // Ctrl+Shift+F — поиск по всем сессиям (идея 9)
   { test: (e) => /^Digit[1-9]$/.test(e.code) && !e.shiftKey,        run: (e) => { const p = projects[+e.code.slice(5) - 1]; if (p) setActive(p.id); } },
 ];
+// Поле ввода, где Ctrl-комбо должны доставаться самому полю (модалки, палитра, формы), — но НЕ
+// скрытая textarea xterm'а: она и есть ввод терминала, там перехват обязателен (это фикс B1,
+// иначе Ctrl+\ уходит SIGQUIT'ом агенту, а Ctrl+K режет строку в readline).
+function isTextEntry(t) {
+  if (!t || (t.closest && t.closest('.xterm'))) return false;
+  const tag = (t.tagName || '').toLowerCase();
+  return tag === 'input' || tag === 'textarea' || tag === 'select' || t.isContentEditable === true;
+}
 function runGlobalHotkey(e) {
   if (!e.ctrlKey || e.metaKey) return false;
+  if (isTextEntry(e.target)) return false;
   for (const h of HOTKEYS) { if (h.test(e)) { e.preventDefault(); h.run(e); return true; } }
   return false;
 }
@@ -1000,9 +1012,16 @@ function buildXterm(container, id, { cwd, onInput, onKey } = {}) {
   applyUnicode11(term);
   term.open(container);
   loadFastRenderer(term);
+  // Шкала времени слева — подключается ДО первого fit(): она забирает ширину у области вывода,
+  // и cols должны считаться уже с её учётом, иначе первый же resize уедет на несколько колонок.
+  const timeline = attachTimeline(term, container, {
+    enabled: settings.termTimeline === true,
+    fontSize: settings.fontSize,
+    onGeometry: () => requestAnimationFrame(() => { try { fit.fit(); lite.pty.resize(id, term.cols, term.rows); } catch (_) {} }),
+  });
   fit.fit();
   lite.pty.create({ id, cwd, cols: term.cols, rows: term.rows });
-  term.onData((data) => { if (onInput) onInput(data); lite.pty.write(id, data); });
+  term.onData((data) => { timeline.markInput(data); if (onInput) onInput(data); lite.pty.write(id, data); });
   term.onResize(({ cols, rows }) => lite.pty.resize(id, cols, rows));
   term.attachCustomKeyEventHandler((e) => {
     if (e.type !== 'keydown') return true;
@@ -1017,14 +1036,21 @@ function buildXterm(container, id, { cwd, onInput, onKey } = {}) {
     return true;
   });
   container.addEventListener('contextmenu', (e) => { e.preventDefault(); showTermMenu(e.clientX, e.clientY, term, id); });
-  return { term, fit, search };
+  return { term, fit, search, timeline };
+}
+// Вкл/выкл шкалы времени во ВСЕХ живых терминалах (настройка применяется на лету, без перезапуска).
+function applyTimeline() {
+  const on = settings.termTimeline === true;
+  for (const rec of terms.values()) { try { rec.timeline.setEnabled(on); } catch (_) {} }
+  for (const rec of extTerms.values()) { try { rec.timeline.setEnabled(on); } catch (_) {} }
+  refitActiveTerminal();
 }
 
 function createSession(proj, name, custom) {
   const id = proj.id + '::t' + (++sessionSeq);
   const container = el('div', 'term-instance');
   $('#terminals').appendChild(container);
-  const { term, fit, search } = buildXterm(container, id, {
+  const { term, fit, search, timeline } = buildXterm(container, id, {
     cwd: proj.path,
     onInput: () => { const r = terms.get(id); if (r) r.lastInputAt = Date.now(); },
     onKey: (e) => {
@@ -1035,7 +1061,7 @@ function createSession(proj, name, custom) {
     },
   });
   term.registerLinkProvider(fileLinkProvider(term, proj.path));
-  const rec = { term, fit, search, container, projId: proj.id, name, customName: !!custom, idleTimer: null, sawBell: false, tail: '', busyStart: 0, lastInputAt: 0, activitySeq: 0 };
+  const rec = { term, fit, search, timeline, container, projId: proj.id, name, customName: !!custom, idleTimer: null, sawBell: false, tail: '', busyStart: 0, lastInputAt: 0, activitySeq: 0 };
   terms.set(id, rec);
   // Имя вкладки из заголовка терминала (OSC ]0;…): Claude/агент в промпте пишет туда
   // текущую задачу, шелл — user@host:cwd. Подхватываем как имя вкладки, пока пользователь
@@ -1161,14 +1187,14 @@ function addTab() {
   const proj = activeProject(); if (!proj) return;
   ensureProjectTabs(proj);
   const t = tabsByProj.get(proj.id);
-  const sid = createSession(proj, 'Терминал ' + (t.sessions.length + 1));
+  const sid = createSession(proj, tt('Терминал {0}', t.sessions.length + 1));
   t.active = sid; saveProjTabs(); showActiveTerminal();
 }
 function closeTab(sid) {
   const t = tabsByProj.get(activeId); if (!t || t.sessions.length <= 1) return; // keep ≥1 tab
   lite.pty.kill(sid);
   const rec = terms.get(sid);
-  if (rec) { clearTimeout(rec.idleTimer); try { rec.term.dispose(); } catch (_) {} rec.container.remove(); terms.delete(sid); }
+  if (rec) { clearTimeout(rec.idleTimer); try { rec.timeline.dispose(); } catch (_) {} try { rec.term.dispose(); } catch (_) {} rec.container.remove(); terms.delete(sid); }
   projState.delete(sid);
   const i = t.sessions.indexOf(sid);
   t.sessions.splice(i, 1);
@@ -1218,7 +1244,7 @@ async function pasteInto(id) {
   if (text) lite.pty.write(id, text);
   // Reading the clipboard is async (IPC round-trip) and the right-click menu steals
   // focus — without this the terminal looks "frozen" until clicked. Refocus the xterm.
-  const rec = terms.get(id);
+  const rec = isExtTerm(id) ? extTerms.get(id) : terms.get(id); // dev-терминал модуля живёт в extTerms
   if (rec && rec.term) { try { rec.term.focus(); } catch (_) {} }
 }
 // Smart Ctrl+C: if there's a non-empty selection, copy it (and clear, so the next
@@ -1313,21 +1339,36 @@ function refitActiveTerminal(focusIt) {
     try { rec.fit.fit(); lite.pty.resize(asid, rec.term.cols, rec.term.rows); if (focusIt) rec.term.focus(); } catch (_) {}
   });
 }
+// ⚠ id из контекстного меню терминала может быть и dev-терминалом модуля (`__extterm__::tN`) —
+// его НЕТ в `terms`. Раньше обе функции молча падали на activeSessionId(), и «Перезапустить» в
+// терминале папки модуля перезапускал PTY активного проекта, убивая работающего там агента.
 function clearTerminal(id) {
+  if (isExtTerm(id)) { const r = extTerms.get(id); if (r) { try { r.term.clear(); } catch (_) {} try { r.timeline.reset(); } catch (_) {} r.term.focus(); } return; }
   const sid = (id && terms.has(id)) ? id : activeSessionId();
-  const rec = terms.get(sid); if (rec) { try { rec.term.clear(); } catch (_) {} rec.term.focus(); }
+  const rec = terms.get(sid); if (rec) { try { rec.term.clear(); } catch (_) {} try { rec.timeline.reset(); } catch (_) {} rec.term.focus(); }
 }
 function restartTerminal(id) {
+  if (isExtTerm(id)) { restartExtTerminal(id); return; }
   const sid = (id && terms.has(id)) ? id : activeSessionId();
   const rec = terms.get(sid);
   const proj = rec && projects.find((p) => p.id === rec.projId);
   if (!proj || !rec) return;
   try { rec.term.reset(); } catch (_) {}
+  try { rec.timeline.reset(); } catch (_) {}
   rec.sawBell = false; rec.tail = ''; rec.busyStart = Date.now();
   clearTimeout(rec.idleTimer);
   setProjState(sid, 'busy');
   lite.pty.restart({ id: sid, cwd: proj.path, cols: rec.term.cols, rows: rec.term.rows });
   rec.term.focus();
+}
+// Перезапуск dev-терминала модуля — в его СОБСТВЕННОЙ папке (cwd запоминаем при создании).
+function restartExtTerminal(id) {
+  const r = extTerms.get(id);
+  if (!r) return;
+  try { r.term.reset(); } catch (_) {}
+  try { r.timeline.reset(); } catch (_) {}
+  lite.pty.restart({ id, cwd: r.cwd, cols: r.term.cols, rows: r.term.rows });
+  r.term.focus();
 }
 
 
@@ -1337,14 +1378,14 @@ function createExtTerminal(container, cwd) {
   const id = EXT_TERM_ID + '::t' + (++extTermSeq);
   // Без onKey: у dev-терминала модуля нет вкладок, а Ctrl+F открыл бы поиск ЧУЖОГО
   // (активного проектного) терминала — поэтому поиск здесь не перехватываем (как было).
-  const { term, fit, search } = buildXterm(container, id, { cwd });
-  extTerms.set(id, { term, fit, search, container });
+  const { term, fit, search, timeline } = buildXterm(container, id, { cwd });
+  extTerms.set(id, { term, fit, search, timeline, container, cwd }); // cwd — для «Перезапустить» из контекст-меню
   return {
     id,
     write: (s) => lite.pty.write(id, s),
     focus: () => { try { term.focus(); } catch (_) {} },
     refit: () => requestAnimationFrame(() => { try { fit.fit(); lite.pty.resize(id, term.cols, term.rows); } catch (_) {} }),
-    dispose: () => { lite.pty.kill(id); try { term.dispose(); } catch (_) {} extTerms.delete(id); },
+    dispose: () => { lite.pty.kill(id); try { timeline.dispose(); } catch (_) {} try { term.dispose(); } catch (_) {} extTerms.delete(id); },
   };
 }
 
@@ -1354,8 +1395,8 @@ function createExtTerminal(container, cwd) {
 // ---------------------------------------------------------------- font size
 let watchedRoot = null; // we live-watch only the active project to limit inotify use
 function applyFontSize() {
-  for (const rec of terms.values()) { rec.term.options.fontSize = settings.fontSize; try { rec.fit.fit(); } catch (_) {} }
-  for (const rec of extTerms.values()) { rec.term.options.fontSize = settings.fontSize; try { rec.fit.fit(); } catch (_) {} }
+  for (const rec of terms.values()) { rec.term.options.fontSize = settings.fontSize; try { rec.timeline.setFontSize(settings.fontSize); } catch (_) {} try { rec.fit.fit(); } catch (_) {} }
+  for (const rec of extTerms.values()) { rec.term.options.fontSize = settings.fontSize; try { rec.timeline.setFontSize(settings.fontSize); } catch (_) {} try { rec.fit.fit(); } catch (_) {} }
   document.documentElement.style.setProperty('--editor-fs', settings.fontSize + 'px');
   refitActiveTerminal();
   try { lite.app.settingsChanged(settings); } catch (_) {} // окно «Система · ~» подхватит размер шрифта
@@ -1420,13 +1461,14 @@ function jumpToSession(projId, sid) {
   showActiveTerminal();
 }
 function showGlobalSearch() {
+  let timer = null;   // объявлен ДО makeModal: onClose гасит отложенный поиск (иначе он бил по снятому DOM)
   const { m, close } = makeModal(`
     <h2>🔎 Поиск по всем терминалам</h2>
     <input type="text" id="gs-q" placeholder="искать в выводе всех открытых сессий…" spellcheck="false" autocomplete="off">
-    <div id="gs-results" class="gs-results"></div>`);
+    <div id="gs-results" class="gs-results"></div>`,
+  () => clearTimeout(timer));
   const input = m.querySelector('#gs-q');
   const box = m.querySelector('#gs-results');
-  let timer = null;
   const run = () => {
     const q = input.value.trim();
     box.innerHTML = '';
@@ -2249,7 +2291,9 @@ function openPromptsManager(projId) {
 }
 
 // terminal right-click menu
-function showTermMenu(x, y, term, projId) {
+// `sid` — id ИМЕННО того терминала, по которому кликнули: сессия проекта (`p…::tN`) ИЛИ
+// dev-терминал модуля (`__extterm__::tN`). Все действия обязаны идти по нему, а не по активной вкладке.
+function showTermMenu(x, y, term, sid) {
   closeMenus();
   const dd = el('div', 'menu-dropdown');
   dd.style.minWidth = '160px';
@@ -2259,12 +2303,12 @@ function showTermMenu(x, y, term, projId) {
     lite.copyText(term.getSelection());
     if (term.clearSelection) term.clearSelection();
   } : null, hasSel ? '' : 'disabled'));
-  dd.appendChild(menuRow('clipboard', 'Вставить', () => { closeMenus(); pasteInto(projId); }));
+  dd.appendChild(menuRow('clipboard', 'Вставить', () => { closeMenus(); pasteInto(sid); }));
   dd.appendChild(el('div', 'menu-sep'));
-  addPromptsItem(dd, projId);
+  addPromptsItem(dd, sid);
   dd.appendChild(el('div', 'menu-sep'));
-  dd.appendChild(menuRow('eraser', 'Очистить', () => { closeMenus(); clearTerminal(projId); }));
-  dd.appendChild(menuRow('refresh', 'Перезапустить', () => { closeMenus(); restartTerminal(projId); }));
+  dd.appendChild(menuRow('eraser', 'Очистить', () => { closeMenus(); clearTerminal(sid); }));
+  dd.appendChild(menuRow('refresh', 'Перезапустить', () => { closeMenus(); restartTerminal(sid); }));
   dd.addEventListener('click', (e) => e.stopPropagation());
   placeMenu(dd, x, y);
 }
@@ -2559,6 +2603,8 @@ function showSettings() {
       <section class="set-group">
         <div class="set-group-h"><span class="set-ic">🎨</span> Внешний вид</div>
         <div class="set-group-body">
+          <label class="set-row"><span>Язык интерфейса</span><select id="st-lang"></select></label>
+          <div class="set-hint">Языки — подключаемые файлы <code>locales/&lt;код&gt;.json</code>. Свой язык или правки к готовому положите в папку пользовательских локалей — она перекрывает встроенные. <button class="btn tiny" id="st-lang-dir" type="button">Открыть папку языков</button></div>
           <label class="set-row"><span>Тема</span><select id="st-theme"></select></label>
           <label class="set-row"><span>Размер шрифта</span><input type="number" id="st-font" min="9" max="24"></label>
         </div>
@@ -2583,6 +2629,8 @@ function showSettings() {
       <section class="set-group">
         <div class="set-group-h"><span class="set-ic">🖥️</span> Терминал</div>
         <div class="set-group-body">
+          <label class="set-row"><span>Шкала времени слева</span><input type="checkbox" id="st-timeline"></label>
+          <div class="set-hint">Узкая полоса вдоль терминала с засечками времени: когда отправлена команда, когда вывод возобновился после паузы, смена минуты. Едет вместе с текстом при прокрутке и не попадает в копирование.</div>
           <div class="set-row col"><span>Оболочка терминала — применяется к новым терминалам (старые — ⟳)</span>
             <div class="path-pick">
               <select id="st-shell"></select>
@@ -2620,8 +2668,28 @@ function showSettings() {
   const font = m.querySelector('#st-font'); font.value = settings.fontSize;
   const ssOn = m.querySelector('#st-ss'); ssOn.checked = settings.screensaver !== false;
   const ssMin = m.querySelector('#st-ss-min'); ssMin.value = settings.screensaverMins || 5;
+  // Язык интерфейса: список собирает main (встроенные locales/ + пользовательские ~/.LiteEditorAI/locales/).
+  const langSel = m.querySelector('#st-lang');
+  lite.i18n.list().then(({ current, list }) => {
+    langSel.innerHTML = '';
+    for (const l of (list || [])) {
+      const o = document.createElement('option');
+      o.value = l.code;
+      o.textContent = l.nativeName + (l.nativeName === l.name ? '' : ` · ${l.name}`) + (l.builtin ? '' : ' (свой)');
+      langSel.appendChild(o);
+    }
+    langSel.value = current || 'ru';
+  }).catch(() => {});
+  langSel.addEventListener('change', async () => {
+    const r = await lite.i18n.set(langSel.value);        // main разошлёт словарь во все окна — перевод применится на лету
+    if (r && r.error) toast(r.error, { kind: 'err' });
+  });
+  m.querySelector('#st-lang-dir').onclick = async () => {
+    const r = await lite.i18n.openUserDir();
+    if (r && r.error) toast(r.error, { kind: 'err' });
+  };
   const themeSel = m.querySelector('#st-theme');
-  for (const [key, t] of Object.entries(THEMES)) { const o = document.createElement('option'); o.value = key; o.textContent = t.label; themeSel.appendChild(o); }
+  for (const [key, th] of Object.entries(THEMES)) { const o = document.createElement('option'); o.value = key; o.textContent = th.label; themeSel.appendChild(o); }
   themeSel.value = THEMES[settings.theme] ? settings.theme : DEFAULT_THEME;
   themeSel.addEventListener('change', () => { settings.theme = themeSel.value; saveSettings(); applyTheme(); }); // live preview
   // Рамка окна — живой предпросмотр: применяется сразу и уезжает в окна модулей (шина settingsChanged).
@@ -2648,6 +2716,9 @@ function showSettings() {
     settings.framePeriodS = Math.max(2, Math.min(30, parseInt(framePeriod.value, 10) || 6));
     framePeriod.value = settings.framePeriodS; frameLive();
   });
+  // Шкала времени — живой предпросмотр: видно сразу, без «Готово» (как тема и рамка).
+  const tline = m.querySelector('#st-timeline'); tline.checked = settings.termTimeline === true;
+  tline.addEventListener('change', () => { settings.termTimeline = tline.checked; saveSettings(); applyTimeline(); });
   // Выбор оболочки терминала — платформо-зависимо (Windows: PowerShell/cmd/свой; Linux: bash/свой).
   const shellSel = m.querySelector('#st-shell');
   const shellPath = m.querySelector('#st-shell-path');
@@ -2735,6 +2806,7 @@ function paletteActions() {
   acts.push({ label: 'Поиск в терминале', hint: 'Ctrl+F', run: openTermSearch });
   acts.push({ label: 'Поиск по всем терминалам', hint: 'Ctrl+Shift+F', run: showGlobalSearch });
   acts.push({ label: 'Очистить терминал', run: () => clearTerminal() });
+  acts.push({ label: 'Шкала времени слева — вкл/выкл', hint: settings.termTimeline === true ? 'сейчас включена' : 'сейчас выключена', run: () => { settings.termTimeline = settings.termTimeline !== true; saveSettings(); applyTimeline(); } });
   acts.push({ label: 'Перезапустить терминал', run: () => restartTerminal() });
   acts.push({ label: 'Настройки…', run: showSettings });
   // Дифф/превью/поиск по файлу — теперь действия внутри окна вивера (его кнопки/горячие клавиши).
@@ -3181,4 +3253,5 @@ function cycleProject(dir) {
   if (next) setActive(next.id);
 }
 
+initI18n();   // словарь приходит синхронно из main → интерфейс сразу на выбранном языке
 init();

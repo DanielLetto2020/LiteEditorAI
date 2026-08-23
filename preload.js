@@ -17,6 +17,20 @@ contextBridge.exposeInMainWorld('lite', {
   // Forward renderer-side errors/events to the main-process file log.
   log: (level, ...args) => ipcRenderer.send('log:renderer', { level, args }),
 
+  // Локализация: словарь берём СИНХРОННО (до первого прохода по DOM — иначе
+  // интерфейс мигнёт русским), смена языка приходит событием во все окна.
+  i18n: {
+    current: () => { try { return ipcRenderer.sendSync('i18n:current') || { code: 'ru', dict: {} }; } catch (_) { return { code: 'ru', dict: {} }; } },
+    list: () => ipcRenderer.invoke('i18n:list'),
+    set: (code) => ipcRenderer.invoke('i18n:set', { code }),
+    openUserDir: () => ipcRenderer.invoke('i18n:openUserDir'),
+    onChange: (cb) => {
+      const h = (_e, p) => cb(p);
+      ipcRenderer.on('i18n:changed', h);
+      return () => ipcRenderer.removeListener('i18n:changed', h);
+    },
+  },
+
   win: {
     minimize: () => ipcRenderer.send('win:minimize'),
     maximizeToggle: () => ipcRenderer.send('win:maximizeToggle'),
@@ -184,6 +198,10 @@ contextBridge.exposeInMainWorld('lite', {
     onData: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('dbai:data', h); return () => ipcRenderer.removeListener('dbai:data', h); },
     onDone: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('dbai:done', h); return () => ipcRenderer.removeListener('dbai:done', h); },
     onError: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('dbai:error', h); return () => ipcRenderer.removeListener('dbai:error', h); },
+    onUsage: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('dbai:usage', h); return () => ipcRenderer.removeListener('dbai:usage', h); },
+    sessionsGet: (connId) => ipcRenderer.invoke('dbai:sessionsGet', { connId }),
+    sessionsSet: (connId, data) => ipcRenderer.invoke('dbai:sessionsSet', { connId, data }),
+    sessionsDelete: (connId) => ipcRenderer.invoke('dbai:sessionsDelete', { connId }),
   },
 
   // «Анализ диалогов» — майнинг правил из транскриптов Claude Code (вкладка модуля «Контекст»).
@@ -460,6 +478,7 @@ contextBridge.exposeInMainWorld('lite', {
     ping: (id) => ipcRenderer.invoke('db:ping', { id }),
     reconnect: (id) => ipcRenderer.invoke('db:reconnect', { id }),
     query: (id, sql) => ipcRenderer.invoke('db:query', { id, sql }),
+    queryRo: (id, sql, opts) => ipcRenderer.invoke('db:queryRo', { id, sql, ...(opts || {}) }),
     saveText: (defaultName, text) => ipcRenderer.invoke('db:saveText', { defaultName, text }),
     openText: () => ipcRenderer.invoke('db:openText'),
     chooseDir: () => ipcRenderer.invoke('db:chooseDir'),
@@ -576,8 +595,10 @@ contextBridge.exposeInMainWorld('lite', {
     close: (sessionId) => ipcRenderer.send('rh:close', { sessionId }),
     onData: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('rh:data', h); return () => ipcRenderer.removeListener('rh:data', h); },
     onExit: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('rh:exit', h); return () => ipcRenderer.removeListener('rh:exit', h); },
-    fsList: (id, path) => ipcRenderer.invoke('rh:fsList', { id, path }),
-    fsRead: (id, path) => ipcRenderer.invoke('rh:fsRead', { id, path }),
+    fsList: (id, path) => ipcRenderer.invoke('rh:fsList', { id, path }),   // → {ok,path,entries:[{name,dir,link,size,perms,mode,owner,group,mtime}]}
+    fsRead: (id, path) => ipcRenderer.invoke('rh:fsRead', { id, path }),   // → {ok,content|binary,size,meta?} | {error,tooBig?}
+    fsStat: (id, path) => ipcRenderer.invoke('rh:fsStat', { id, path }),   // → {ok,meta:{perms,mode,owner,group,mtime,size}|null}
+    fsDownload: (id, path) => ipcRenderer.invoke('rh:fsDownload', { id, path }), // диалог «сохранить как» + выгрузка (бинарники тоже)
     fsClose: (id) => ipcRenderer.send('rh:fsClose', { id }),
     // Запись файла на хост (SFTP/FTP) + открытие удалённого файла в вивере (tmp-копия, save-back в main).
     fsWrite: (id, path, content) => ipcRenderer.invoke('rh:fsWrite', { id, path, content }),

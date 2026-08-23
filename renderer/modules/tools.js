@@ -1,5 +1,5 @@
 // LiteEditor — модуль «Инструменты»: devtools-комбайн правого слота (швейцарский нож).
-// Системная панель (НЕ привязана к проекту, как db/containers): 18 вкладок-инструментов,
+// Системная панель (НЕ привязана к проекту, как db/containers): 21 вкладка-инструмент,
 // все преобразования — чисто клиентские (в рендерере), бэкенда нет вообще. Из window.lite
 // нужны только copyText / readClipboard (буфер) — оба моста уже есть, новых не добавляем.
 // Изолирован по образцу db.js: всё из ядра — через host; UI-хелперы — из ui.js; темизация —
@@ -170,8 +170,12 @@ function cronField(expr, min, max) {
     else if (range.includes('-')) { const ab = range.split('-'); lo = parseInt(ab[0], 10); hi = parseInt(ab[1], 10); }
     else { lo = hi = parseInt(range, 10); }
     if (isNaN(lo) || isNaN(hi) || isNaN(step) || step < 1) throw new Error('Поле cron не разобрано: «' + part + '»');
-    for (let v = lo; v <= hi; v += step) if (v >= min && v <= max) set.add(v);
+    // Значения вне диапазона поля — ошибка, а не тихо пустое множество: раньше «60 * * * *»
+    // молча превращалось в «нет запусков в ближайшие 5 лет» вместо внятной подсказки.
+    if (lo < min || hi > max || lo > hi) throw new Error(`Значение «${part}» вне диапазона ${min}–${max}`);
+    for (let v = lo; v <= hi; v += step) set.add(v);
   }
+  if (!set.size) throw new Error('Поле cron пустое: «' + expr + '»');
   return set;
 }
 function parseCron(expr) {
@@ -180,23 +184,37 @@ function parseCron(expr) {
   const dow = cronField(f[4], 0, 7); if (dow.has(7)) dow.add(0); // воскресенье = 0 и 7
   return { min: cronField(f[0], 0, 59), hour: cronField(f[1], 0, 23), dom: cronField(f[2], 1, 31), mon: cronField(f[3], 1, 12), dow, raw: f };
 }
+// Обход по ДНЯМ: неподходящий день пропускается целиком (сутки = 1 шаг вместо 1440 проверок минут).
+// Раньше поминутный перебор на 5 лет вперёд занимал ~280 мс синхронно на каждое нажатие клавиши,
+// если выражение невыполнимо (напр. «0 0 30 2 *» — 30 февраля) — окно ощутимо подвисало.
 function cronNext(c, from, count) {
-  const res = []; const d = new Date(from.getTime()); d.setSeconds(0, 0); d.setMinutes(d.getMinutes() + 1);
+  const res = [];
   const domStar = c.raw[2] === '*', dowStar = c.raw[4] === '*';
-  for (let i = 0; i < 525600 * 5 && res.length < count; i++) {
-    if (c.min.has(d.getMinutes()) && c.hour.has(d.getHours()) && c.mon.has(d.getMonth() + 1)) {
-      const domOk = c.dom.has(d.getDate()), dowOk = c.dow.has(d.getDay());
+  const hours = [...c.hour].sort((a, b) => a - b);
+  const mins = [...c.min].sort((a, b) => a - b);
+  const start = new Date(from.getTime()); start.setSeconds(0, 0); start.setMinutes(start.getMinutes() + 1);
+  const day = new Date(start.getFullYear(), start.getMonth(), start.getDate());
+  for (let i = 0; i < 366 * 5 && res.length < count; i++) {
+    const dayOk = c.mon.has(day.getMonth() + 1) && (() => {
+      const domOk = c.dom.has(day.getDate()), dowOk = c.dow.has(day.getDay());
       // стандарт cron: если ограничены ОБА (день месяца и день недели) — совпадение по ЛЮБОМУ
-      const dayOk = (domStar && dowStar) ? true : (domStar ? dowOk : (dowStar ? domOk : (domOk || dowOk)));
-      if (dayOk) res.push(new Date(d.getTime()));
+      return (domStar && dowStar) ? true : (domStar ? dowOk : (dowStar ? domOk : (domOk || dowOk)));
+    })();
+    if (dayOk) {
+      for (const h of hours) {
+        for (const m of mins) {
+          const t = new Date(day.getFullYear(), day.getMonth(), day.getDate(), h, m, 0, 0);
+          if (t >= start) { res.push(t); if (res.length >= count) break; }
+        }
+        if (res.length >= count) break;
+      }
     }
-    d.setMinutes(d.getMinutes() + 1);
+    day.setDate(day.getDate() + 1);
   }
   return res;
 }
 function cronDescribe(c) {
   const r = c.raw;
-  const part = (i, one, many) => (r[i] === '*' ? many : one + ' ' + r[i]);
   return [
     'Минуты: ' + (r[0] === '*' ? 'каждую минуту' : r[0]),
     'Часы: ' + (r[1] === '*' ? 'каждый час' : r[1]),
@@ -239,14 +257,39 @@ const hex2 = (n) => clamp(Math.round(n), 0, 255).toString(16).padStart(2, '0');
 
 // ---- diff (LCS по строкам → unified-подобный текст для renderDiffInto) ----
 function lineDiff(a, b) {
-  const A = a.split('\n'), B = b.split('\n'), n = A.length, m = B.length;
+  const A = a.split('\n'), B = b.split('\n');
+  // Совпадающие «шапка» и «хвост» в LCS не участвуют — срезаем их до построения таблицы.
+  // На типичных правках это уменьшает n×m на порядки (раньше даже одна изменённая строка
+  // в большом файле честно считала всю матрицу).
+  let head = 0;
+  while (head < A.length && head < B.length && A[head] === B[head]) head++;
+  let tail = 0;
+  while (tail < A.length - head && tail < B.length - head && A[A.length - 1 - tail] === B[B.length - 1 - tail]) tail++;
+  const midA = A.slice(head, A.length - tail), midB = B.slice(head, B.length - tail);
+  const n = midA.length, m = midB.length;
   if (n * m > 4000000) throw new Error('Слишком большие тексты для построчного диффа');
-  const dp = Array.from({ length: n + 1 }, () => new Array(m + 1).fill(0));
-  for (let i = n - 1; i >= 0; i--) for (let j = m - 1; j >= 0; j--) dp[i][j] = A[i] === B[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
-  const out = []; let i = 0, j = 0, changes = 0;
-  while (i < n && j < m) { if (A[i] === B[j]) { out.push(' ' + A[i]); i++; j++; } else if (dp[i + 1][j] >= dp[i][j + 1]) { out.push('-' + A[i]); i++; changes++; } else { out.push('+' + B[j]); j++; changes++; } }
-  while (i < n) { out.push('-' + A[i++]); changes++; }
-  while (j < m) { out.push('+' + B[j++]); changes++; }
+  // Int32Array вместо массива массивов: та же таблица занимает ~4 байта на ячейку вместо ~8+
+  // на элемент JS-массива и не плодит миллионы объектов.
+  const w = m + 1;
+  const dp = new Int32Array((n + 1) * w);
+  for (let i = n - 1; i >= 0; i--) {
+    for (let j = m - 1; j >= 0; j--) {
+      dp[i * w + j] = midA[i] === midB[j]
+        ? dp[(i + 1) * w + (j + 1)] + 1
+        : Math.max(dp[(i + 1) * w + j], dp[i * w + (j + 1)]);
+    }
+  }
+  const out = []; let changes = 0;
+  for (let k = 0; k < head; k++) out.push(' ' + A[k]);
+  let i = 0, j = 0;
+  while (i < n && j < m) {
+    if (midA[i] === midB[j]) { out.push(' ' + midA[i]); i++; j++; }
+    else if (dp[(i + 1) * w + j] >= dp[i * w + (j + 1)]) { out.push('-' + midA[i]); i++; changes++; }
+    else { out.push('+' + midB[j]); j++; changes++; }
+  }
+  while (i < n) { out.push('-' + midA[i++]); changes++; }
+  while (j < m) { out.push('+' + midB[j++]); changes++; }
+  for (let k = A.length - tail; k < A.length; k++) out.push(' ' + A[k]);
   return { text: out.join('\n'), changes };
 }
 
@@ -300,6 +343,77 @@ function jsonErrAt(text, e) {
   return msg + ' (строка ' + line + ', столбец ' + col + ')';
 }
 
+// ---- склейка «ломаного» текста (скопирован из терминала — жёсткие переносы по ширине) ----
+// Убираем «мягкие» переносы, оставленные терминалом, сохраняя настоящую структуру:
+// пустая строка = граница абзаца, списки/заголовки/таблицы — своими строками, код — как есть.
+const ANSI_RE = /\x1B\[[0-9;?]*[ -/]*[@-~]|\x1B\][^\x07\x1B]*(?:\x07|\x1B\\)/g;
+const RE_BULLET = /^(?:[-*+•‣▪◦–—]|\d{1,3}[.)]|[a-zа-яё][.)])[ \t]+/i;
+const RE_HEAD = /^#{1,6}[ \t]+/;
+const RE_HR = /^([-*_=])\1{2,}[ \t]*$/;
+const RE_TABLE = /^\|.*\|[ \t]*$/;
+const RE_FENCE = /^(?:```|~~~)/;
+const RE_BOXLINE = /^[\s─━═╌╍┄┅┈┉╭╮╯╰┌┐└┘├┤┬┴┼╔╗╚╝╠╣╦╩╬+=_*-]*$/;
+
+const RE_TAIL_BORDER = /[ \t]*[│┃║▏▕|]+[ \t]*$/;   // закрывающая стенка рамки в конце строки
+function stripGutter(s) {
+  if (/[─━═╌╍┄┅┈┉╭╮╯╰┌┐└┘├┤┬┴┼╔╗╚╝╠╣╦╩╬]/.test(s) && RE_BOXLINE.test(s)) return ''; // строка-рамка целиком
+  if (RE_TABLE.test(s.trim())) return s;                                             // '|' в таблице — не префикс
+  // префикс заменяем пробелами той же ширины: иначе строка-«шапка» (⏺ …) окажется
+  // левее остальных, общий отступ посчитается как 0 и не снимется у всего блока
+  const out = s.replace(/^[ \t]*(?:[│┃║▏▕|>⏺●⎿]+[ \t]?)+/, (m) => ' '.repeat(m.length));
+  // Если слева была стенка рамки — справа у неё есть парная: снимаем и её, иначе в тексте
+  // оставался мусорный хвост вида «текст │».
+  return out !== s ? out.replace(RE_TAIL_BORDER, '') : out;
+}
+
+function unwrapText(src, o) {
+  o = o || {};
+  let t = String(src).replace(/\r\n?/g, '\n').replace(ANSI_RE, '');
+  t = t.replace(/[\u00a0\u202f\u2007]/g, ' ').replace(/[\u200b\u200c\u200d\u200e\u200f\ufeff]/g, '');
+  let lines = t.split('\n').map((x) => x.replace(/[ \t]+$/, ''));
+  if (o.gutter !== false) lines = lines.map(stripGutter);
+
+  // снять общий отступ блока (после выравнивания префиксов он одинаков у всех строк)
+  let common = Infinity;
+  for (const l of lines) { if (!l.trim()) continue; const n = l.length - l.trimStart().length; if (n < common) common = n; }
+  if (common > 0 && common < Infinity) lines = lines.map((l) => (l.trim() ? l.slice(common) : ''));
+
+  const out = [];
+  let buf = null, fence = false;
+  let blankBefore = true;   // предыдущая строка пустая (или начало текста) — только там начинается код отступом
+  let inCode = false;       // идёт блок кода с отступом ≥4: держим его дословно, пока отступ не кончится
+  const flush = () => { if (buf) { out.push(buf.indent + (o.squeeze !== false ? buf.text.replace(/[ \t]{2,}/g, ' ') : buf.text)); buf = null; } };
+
+  for (const raw of lines) {
+    const trimmed = raw.trim();
+    const indent = raw.slice(0, raw.length - raw.trimStart().length);
+    if (RE_FENCE.test(trimmed)) { flush(); fence = !fence; out.push(raw); blankBefore = false; inCode = false; continue; }
+    if (fence) { out.push(raw); continue; }                                        // тело ``` — дословно
+    if (!trimmed) { flush(); out.push(''); blankBefore = true; inCode = false; continue; } // граница абзаца
+    // Код отступом. Блок начинается, когда отступ ≥4 И это НЕ продолжение текущего абзаца:
+    //   • абзац закрыт (пустая строка / начало текста) — классический indented code;
+    //   • либо отступ резко вырос относительно абзаца (≥ +4) — код сразу после строки-заголовка.
+    // Прежнее условие (`!buf`) второй случай не ловило: первая строка кода уезжала в хвост абзаца,
+    // и «Беречь блоки кода» склеивал текст с кодом.
+    if (o.code !== false && indent.length >= 4 && (inCode || blankBefore || !buf || indent.length >= buf.indent.length + 4)) {
+      flush(); out.push(raw); inCode = true; blankBefore = false; continue;
+    }
+    inCode = false;
+    blankBefore = false;
+    if (RE_TABLE.test(trimmed) || RE_HR.test(trimmed) || RE_HEAD.test(trimmed)) { flush(); out.push(raw); continue; }
+    if (RE_BULLET.test(trimmed)) { flush(); buf = { indent, text: trimmed }; continue; } // новый пункт
+    if (!buf) { buf = { indent, text: trimmed }; continue; }
+    if (o.sentence !== false && /[.!?:;…][»"')\]]?$/.test(buf.text)) { flush(); buf = { indent, text: trimmed }; continue; }
+    if (o.hyphen && /[a-zа-яё]-$/i.test(buf.text) && /^[a-zа-яё]/i.test(trimmed)) buf.text = buf.text.slice(0, -1) + trimmed;
+    else buf.text += ' ' + trimmed;
+  }
+  flush();
+
+  let res = out.join('\n');
+  if (o.blank !== false) res = res.replace(/\n{3,}/g, '\n\n');
+  return res.replace(/^\n+|\s+$/g, '');
+}
+
 // ============================ модуль ============================
 export function initTools(host) {
   const { STORE, persist, layout, GUTTER, saveUiState, refitActiveTerminal, closeOtherPanels } = host;
@@ -320,7 +434,7 @@ export function initTools(host) {
     ['Медиа', [['img', 'Base64 ↔ Картинка', 'image']]],
     ['Крипто', [['hash', 'Хэши', 'key'], ['jwt', 'JWT', 'key']]],
     ['Время', [['ts', 'Timestamp', 'refresh'], ['cron', 'Cron', 'refresh']]],
-    ['Текст', [['case', 'Регистр / транслит', 'pencil'], ['lines', 'Строки', 'note'], ['regex', 'Regex', 'search'], ['diff', 'Diff', 'diff'], ['lorem', 'Lorem', 'note']]],
+    ['Текст', [['unwrap', 'Склейка строк', 'align-justify'], ['case', 'Регистр / транслит', 'pencil'], ['lines', 'Строки', 'note'], ['regex', 'Regex', 'search'], ['diff', 'Diff', 'diff'], ['lorem', 'Lorem', 'note']]],
     ['Цвет', [['color', 'Цвет', 'palette']]],
   ];
 
@@ -426,6 +540,24 @@ export function initTools(host) {
       id: 'cron', rows: 1,
       compute: (t) => { const c = parseCron(t); const next = cronNext(c, new Date(), 7); return cronDescribe(c) + '\n\nБлижайшие запуски:\n' + (next.length ? next.map((d) => '• ' + d.toLocaleString('ru-RU')).join('\n') : '— нет в ближайшие 5 лет'); },
       inPh: '*/5 * * * *', outPh: 'Расшифровка',
+    }),
+    unwrap: (root) => buildIO(root, {
+      id: 'unwrap', rows: 10,
+      optsRender: (box, refresh, ctx) => {
+        const o = ctx.opts;
+        const defs = [
+          ['gutter', 'Снимать префиксы (│ > ⏺, рамки)', true],
+          ['sentence', 'Не склеивать после точки', true],
+          ['squeeze', 'Схлопывать пробелы', true],
+          ['code', 'Беречь блоки кода', true],
+          ['blank', 'Убирать лишние пустые строки', true],
+          ['hyphen', 'Чинить перенос по дефису', false],
+        ];
+        for (const [k, l, def] of defs) { if (o[k] == null) o[k] = def; box.appendChild(chk(l, o[k], (v) => { o[k] = v; refresh(); })); }
+      },
+      compute: (t, ctx) => unwrapText(t, ctx.opts),
+      inPh: 'Вставьте текст, порванный переносами терминала…',
+      outPh: 'Склеенный текст',
     }),
     lines: (root) => buildIO(root, {
       id: 'lines', rows: 8,
@@ -728,8 +860,8 @@ export function initTools(host) {
     const parts = token.trim().split('.');
     if (parts.length < 2) throw new Error('Не похоже на JWT (нужно ≥2 части через точку)');
     let header, payload;
-    try { header = JSON.parse(b64urlDecode(parts[0])); } catch (_) { throw new Error('Header не декодируется'); }
-    try { payload = JSON.parse(b64urlDecode(parts[1])); } catch (_) { throw new Error('Payload не декодируется'); }
+    try { header = JSON.parse(b64urlDecode(parts[0])); } catch (e) { throw new Error('Header не декодируется', { cause: e }); }
+    try { payload = JSON.parse(b64urlDecode(parts[1])); } catch (e) { throw new Error('Payload не декодируется', { cause: e }); }
     return { header, payload, signature: parts[2] || '' };
   }
 
@@ -814,7 +946,8 @@ export function initTools(host) {
           count++;
           if (m.index > last) hl.appendChild(document.createTextNode(src.slice(last, m.index)));
           const mk = el('mark', 'tl-mark', m[0]); hl.appendChild(mk); last = m.index + m[0].length;
-          if (m[0] === '' ) { last++; } // защита от пустых совпадений
+          // пустое совпадение не двигаем принудительно: matchAll сам продвигает lastIndex,
+          // а прежний last++ съедал следующий символ из подсветки
           const row = el('div', 'tl-match'); row.appendChild(el('span', 'tl-match-n', '#' + count));
           row.appendChild(el('span', 'tl-match-v', JSON.stringify(m[0])));
           if (m.length > 1) row.appendChild(el('span', 'tl-match-g', 'группы: ' + m.slice(1).map((g) => JSON.stringify(g)).join(', ')));

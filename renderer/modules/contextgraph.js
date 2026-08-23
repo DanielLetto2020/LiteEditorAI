@@ -1876,7 +1876,7 @@ export function initCtx(host) {
     const acts = el('div', 'mine-card-acts');
     const ed = el('button', 'icon-btn'); ed.title = 'Изменить'; ed.appendChild(icon('pencil', 14)); ed.addEventListener('click', () => editRule(r)); acts.appendChild(ed);
     const ig = el('button', 'icon-btn'); ig.title = r.status === 'ignored' ? 'Вернуть' : 'Игнорировать'; ig.appendChild(icon(r.status === 'ignored' ? 'refresh' : 'x', 14)); ig.addEventListener('click', () => ignoreRule(r)); acts.appendChild(ig);
-    const cp = el('button', 'icon-btn'); cp.title = 'Скопировать'; cp.appendChild(icon('copy', 14)); cp.addEventListener('click', () => { try { navigator.clipboard.writeText(ruleToText(r)); toast('Скопировано', { kind: 'ok' }); } catch (_) {} }); acts.appendChild(cp);
+    const cp = el('button', 'icon-btn'); cp.title = 'Скопировать'; cp.appendChild(icon('copy', 14)); cp.addEventListener('click', () => { try { lite.copyText(ruleToText(r)); toast('Скопировано', { kind: 'ok' }); } catch (_) {} }); acts.appendChild(cp);
     top.appendChild(acts); card.appendChild(top);
     const chips = el('div', 'mine-chips');
     if (r.category) chips.appendChild(chip(CAT_RU[r.category] || r.category, 'cat'));
@@ -2039,7 +2039,7 @@ export function initCtx(host) {
       confSel.value = mine.conf; confSel.addEventListener('change', () => { mine.conf = confSel.value; renderGroups(); });
       filters.appendChild(confSel);
       filters.appendChild(el('div', 'mine-fl-sp'));
-      const cpAll = el('button', 'btn', 'Копировать всё'); cpAll.addEventListener('click', () => { try { navigator.clipboard.writeText(mineExportText()); toast('Реестр скопирован', { kind: 'ok' }); } catch (_) {} });
+      const cpAll = el('button', 'btn', 'Копировать всё'); cpAll.addEventListener('click', () => { try { lite.copyText(mineExportText()); toast('Реестр скопирован', { kind: 'ok' }); } catch (_) {} });
       filters.appendChild(cpAll);
       const exp = el('button', 'btn', 'Экспорт JSON'); exp.addEventListener('click', mineExportJson);
       filters.appendChild(exp);

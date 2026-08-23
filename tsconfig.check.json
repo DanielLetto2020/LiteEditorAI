@@ -1,0 +1,47 @@
+{
+  "//": [
+    "Проверка типов по JSDoc — гейт `types` из .claude/gauntlet.json. Кода на TypeScript в проекте нет:",
+    "tsc здесь работает как статический анализатор чистого JS (checkJs), ничего не компилирует (noEmit).",
+    "",
+    "ИМЯ ФАЙЛА НАМЕРЕННО НЕ tsconfig.json: esbuild автоматически читает корневой tsconfig.json и берёт",
+    "оттуда target/useDefineForClassFields — то есть сборка фронта начала бы зависеть от настроек линтера.",
+    "Запуск: npx tsc -p tsconfig.check.json (или npm run typecheck)",
+    "",
+    "strict выключен осознанно. Со strict проект даёт ~9200 ошибок (в основном implicit any),",
+    "без него — сотни. Гейт, который нельзя сделать зелёным, отключают в первый же день, поэтому",
+    "в проверку берутся только области, проходящие начисто.",
+    "",
+    "СЕЙЧАС ПОД ПРОВЕРКОЙ: весь Node-слой — main.js, remote.js, preload.js, lib/**, scripts/**, test/**.",
+    "ОСТАЛОСЬ (карта долга на 2026-07-27): renderer/** — ~279 ошибок в 32 файлах из 34. Починил файл —",
+    "добавь его в include; проверка подтягивает и импорты, поэтому файл вводится вместе со своими",
+    "зависимостями."
+  ],
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "module": "preserve",
+    "allowJs": true,
+    "checkJs": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "strict": false,
+    "types": ["node"]
+  },
+  "include": [
+    "lib/**/*.js",
+    "test/**/*.js",
+    "scripts/**/*.js",
+    "types/**/*.d.ts",
+    "main.js",
+    "preload.js",
+    "remote.js",
+    "errledger.js",
+    "logger.js"
+  ],
+  "exclude": [
+    "node_modules",
+    "scripts/install-desktop.js",
+    "scripts/build-mobile.js"
+  ]
+}

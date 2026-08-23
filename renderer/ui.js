@@ -3,6 +3,9 @@
 // Everything here is pure DOM: no core state, no window.lite calls.
 
 import hljs from 'highlight.js/lib/common';
+// Единые точки вывода текста (тосты, confirm/prompt) переводят свои аргументы сами —
+// поэтому сообщения всех модулей локализуются без правок в самих модулях.
+import { t } from './i18n.js';
 
 const $ = (sel) => document.querySelector(sel);
 
@@ -18,14 +21,14 @@ const DIFF_LANGS = {
   toml: 'ini', make: 'makefile', dockerfile: 'dockerfile', r: 'r',
 };
 // Язык по имени файла или строке заголовка диффа ('+++ b/path.ext\t...').
-export function langForName(s) {
+function langForName(s) {
   if (!s) return null;
-  const name = String(s).replace(/^[+\-]{3}\s+/, '').split('\t')[0].trim();
+  const name = String(s).replace(/^[+-]{3}\s+/, '').split('\t')[0].trim();
   const m = name.match(/\.([a-zA-Z0-9]+)$/);
   return (m && DIFF_LANGS[m[1].toLowerCase()]) || null;
 }
 // Подсветить кусок кода (sanitized HTML от hljs); при неизвестном языке/ошибке вернуть null.
-export function highlightCode(text, lang) {
+function highlightCode(text, lang) {
   if (!lang || !text || !hljs.getLanguage(lang)) return null;
   try { return hljs.highlight(text, { language: lang, ignoreIllegals: true }).value; }
   catch (_) { return null; }
@@ -43,6 +46,36 @@ export function svgEl(html) {
   const t = document.createElement('template');
   t.innerHTML = html.trim();
   return t.content.firstChild;
+}
+// ---------------------------------------------------------------- file-type glyphs
+// Значки типов файлов для деревьев (вивер + «Удалённые хосты»): форма одна, тип различается
+// цветом — как в деревьях IDE. Цвета намеренно вне темы: это опознавательный признак языка,
+// одинаковый во всех темах (та же логика, что у подсветки синтаксиса).
+const EXT_COLORS = {
+  js: '#e8d44d', jsx: '#e8d44d', mjs: '#e8d44d', cjs: '#e8d44d',
+  ts: '#4a9be0', tsx: '#4a9be0',
+  py: '#5fa6dd', json: '#cbcb41', md: '#9fb3a9', markdown: '#9fb3a9',
+  html: '#e3733b', htm: '#e3733b', css: '#9b6bd6', scss: '#cf6ba0',
+  png: '#b07cd6', jpg: '#b07cd6', jpeg: '#b07cd6', gif: '#b07cd6', webp: '#b07cd6', svg: '#ffb13b',
+  sh: '#89e051', bash: '#89e051', yml: '#dd6c6c', yaml: '#dd6c6c', toml: '#b07a4a',
+  lock: '#7a8a82', txt: '#9fb3a9', env: '#e2c08d', sql: '#e38f3b', vue: '#41b883', go: '#4ad0e0', rs: '#dd8855',
+  php: '#8892bf', rb: '#cc342d', java: '#e07c3e', c: '#6f9ad3', h: '#6f9ad3', cpp: '#6f9ad3',
+  conf: '#e2c08d', ini: '#e2c08d', log: '#7a8a82', zip: '#c0a060', gz: '#c0a060', tar: '#c0a060',
+};
+/** Расширение в нижнем регистре без точки ('app.JS' → 'js'); без расширения → ''. */
+export function extOf(name) { if (!name) return ''; const i = String(name).lastIndexOf('.'); return i > 0 ? String(name).slice(i + 1).toLowerCase() : ''; }
+function colorFor(name) { return EXT_COLORS[extOf(name)] || '#8aa79a'; }
+/** Значок файла, окрашенный по расширению имени. */
+export function fileTypeSvg(name) {
+  return svgEl(`<svg class="ti" viewBox="0 0 16 16" width="14" height="14">
+    <path fill="${colorFor(name)}" opacity="0.95" d="M3.5 1.4h5.1L13 5.3v9.3a1 1 0 0 1-1 1H3.5a1 1 0 0 1-1-1V2.4a1 1 0 0 1 1-1z"/>
+    <path fill="#06120c" opacity="0.4" d="M8.6 1.4 13 5.3H9.1a.5.5 0 0 1-.5-.5z"/></svg>`);
+}
+/** Значок папки: открытая — светлее закрытой. */
+export function folderTypeSvg(open) {
+  const c = open ? '#7fd9ad' : '#56b98a';
+  return svgEl(`<svg class="ti" viewBox="0 0 16 16" width="14" height="14">
+    <path fill="${c}" d="M1.4 3.6h4.2l1.2 1.5H14.6a1 1 0 0 1 1 1v6.4a1 1 0 0 1-1 1H1.4a1 1 0 0 1-1-1V4.6a1 1 0 0 1 1-1z"/></svg>`);
 }
 // ---------------------------------------------------------------- icon set
 // One consistent line-icon family (Lucide-ish): 24-grid, currentColor stroke, rounded.
@@ -180,17 +213,17 @@ let _errSink = null;
 export function setErrorSink(fn) { _errSink = typeof fn === 'function' ? fn : null; }
 
 export function toast(msg, opts = {}) {
-  if (opts.kind === 'err' && _errSink && !opts.silent) { try { _errSink(String(msg)); } catch (_) {} }
-  const t = el('div', 'toast' + (opts.kind ? ' ' + opts.kind : ''));
-  t.appendChild(el('span', 'toast-msg', msg));
+  if (opts.kind === 'err' && _errSink && !opts.silent) { try { _errSink(String(msg)); } catch (_) {} }  // в лог — исходный текст
+  const box = el('div', 'toast' + (opts.kind ? ' ' + opts.kind : ''));
+  box.appendChild(el('span', 'toast-msg', t(msg)));
   if (opts.actionLabel) {
-    const b = el('button', 'toast-act', opts.actionLabel);
-    b.onclick = () => { t.remove(); opts.action && opts.action(); };
-    t.appendChild(b);
+    const b = el('button', 'toast-act', t(opts.actionLabel));
+    b.onclick = () => { box.remove(); opts.action && opts.action(); };
+    box.appendChild(b);
   }
-  $('#toasts').appendChild(t);
-  requestAnimationFrame(() => t.classList.add('show'));
-  setTimeout(() => { t.classList.remove('show'); setTimeout(() => t.remove(), 250); }, opts.ttl || 4000);
+  $('#toasts').appendChild(box);
+  requestAnimationFrame(() => box.classList.add('show'));
+  setTimeout(() => { box.classList.remove('show'); setTimeout(() => box.remove(), 250); }, opts.ttl || 4000);
 }
 
 // Render a unified diff string into a container, line-classed like the viewer's diff.
@@ -252,14 +285,14 @@ export function showConfirm(title, text, yesLabel, onYes, altLabel, onAlt) {
       <button class="btn" id="cm-alt" style="display:none"></button>
       <button class="btn primary" id="cm-yes"></button>
     </div>`);
-  m.querySelector('.cm-title').textContent = title;
-  m.querySelector('.cm-text').textContent = text;
-  m.querySelector('#cm-yes').textContent = yesLabel;
+  m.querySelector('.cm-title').textContent = t(title);
+  m.querySelector('.cm-text').textContent = t(text);
+  m.querySelector('#cm-yes').textContent = t(yesLabel);
   m.querySelector('#cm-no').onclick = close;
   m.querySelector('#cm-yes').onclick = () => { close(); onYes(); };
   if (altLabel) {
     const alt = m.querySelector('#cm-alt');
-    alt.style.display = ''; alt.textContent = altLabel;
+    alt.style.display = ''; alt.textContent = t(altLabel);
     alt.onclick = () => { close(); onAlt && onAlt(); };
   }
   setTimeout(() => m.querySelector('#cm-yes').focus(), 30);
@@ -272,17 +305,17 @@ export function showPrompt(title, label, initial, onOk) {
     <div class="field"><label></label><input type="text" id="pr-in" autocomplete="off" spellcheck="false"></div>
     <div class="err" id="pr-err"></div>
     <div class="modal-actions"><button class="btn" id="pr-cancel">Отмена</button><button class="btn primary" id="pr-ok">Ок</button></div>`);
-  m.querySelector('h2').textContent = title;
-  m.querySelector('label').textContent = label;
+  m.querySelector('h2').textContent = t(title);
+  m.querySelector('label').textContent = t(label);
   const inp = m.querySelector('#pr-in'); inp.value = initial || '';
   const err = m.querySelector('#pr-err');
   setTimeout(() => { inp.focus(); inp.select(); }, 30);
   m.querySelector('#pr-cancel').onclick = close;
   const ok = async () => {
     const v = inp.value.trim();
-    if (!v) { err.textContent = 'Введи имя'; return; }
+    if (!v) { err.textContent = t('Введи имя'); return; }
     const res = await onOk(v);
-    if (res && res.error) { err.textContent = res.error; return; }
+    if (res && res.error) { err.textContent = t(res.error); return; }
     close();
   };
   m.querySelector('#pr-ok').onclick = ok;

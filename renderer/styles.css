@@ -441,6 +441,47 @@ body.viewer-zen #vcs-topbar { display: none !important; }
 .chat-usage { flex: 0 0 auto; font-size: 11px; color: var(--text-mute); white-space: nowrap; }
 .term-instance { position: absolute; inset: 0; padding: 6px 4px 6px 10px; }
 .term-instance .xterm { height: 100%; }
+/* Шкала времени слева от вывода (renderer/termtimeline.js).
+   Позиционируется АБСОЛЮТНО, а не флексом: видимость вкладок переключается инлайновым
+   display (block/none) на том же контейнере, и любой display из класса им перебивается.
+   Место под шкалу освобождается padding-left'ом САМОГО .xterm (ставит JS), а НЕ контейнера:
+   FitAddon вычитает из доступной ширины padding элемента терминала и padding родителя не
+   видит — с отступом на контейнере cols считались бы по старой ширине и вывод вылезал бы
+   за край. Ширину шкалы и отступ выставляет JS: они зависят от кегля. */
+.term-timeline {
+  /* z-index обязателен: .xterm тоже позиционирован и идёт в DOM позже, поэтому без него
+     фон терминала (он занимает и зону padding, где стоит шкала) закрывает метки. */
+  position: absolute; left: 0; top: 0; bottom: 0; z-index: 2; overflow: hidden;
+  font-family: "JetBrains Mono", "Fira Code", monospace; line-height: 1;
+  /* border-right — ось шкалы, на неё приходят и деления, и штрихи засечек; поэтому
+     --border-strong, а не --border: как разделитель он был почти не виден. */
+  border-right: 1px solid var(--border-strong); user-select: none; pointer-events: none;
+}
+.ttl-inner { position: absolute; left: 0; right: 0; }
+/* Деления рельса. Осью служит border-right самой полосы — на неё же приходят штрихи засечек,
+   поэтому отдельную линию не рисуем (получилась бы двойная). Между засечками полоса иначе
+   стояла бы пустой.
+   Деления РАВНОМЕРНЫ и тусклее засечек: делить их на «мелкие/крупные» значило бы намекнуть
+   на структуру, которой нет — строка экрана не единица времени. Отличие от данных держится
+   на цвете (--border против --border-strong у засечек) и на подписи, которой у декора нет. */
+.ttl-rail { position: absolute; left: 0; right: 0; }
+.ttl-tick { position: absolute; right: 0; width: 5px; height: 1px; background: var(--border); }
+.ttl-mark {
+  position: absolute; right: 6px; display: flex; align-items: center;
+  color: var(--text-dim); white-space: nowrap; pointer-events: auto;
+}
+/* засечка на самой линии — чтобы метка читалась как отметка на шкале, а не как текст рядом */
+.ttl-mark::after {
+  content: ''; position: absolute; right: -6px; top: 50%; width: 5px; height: 1px;
+  background: var(--border-strong);
+}
+/* --green, а не --accent-glow: последний — токен СВЕЧЕНИЯ с альфой 0.45–0.7, и метка 10 px
+   получала контраст 2.4–3.9 (в теме по умолчанию 2.83 — ниже порога даже для крупного текста).
+   --green задан во всех темах и даёт 5.8–11.8. */
+.ttl-mark.cmd { color: var(--green); }                  /* отправлен ввод — начало команды/промпта */
+.ttl-mark.cmd::after { background: var(--green); width: 7px; right: -7px; }
+.ttl-mark.gap { color: var(--text-mute); }              /* вывод после паузы — граница между делами */
+.ttl-mark.tick { color: var(--text-dim); opacity: .75; } /* просто смена минуты */
 /* hide the terminal scrollbar entirely (wheel scroll still works) */
 .xterm-viewport { scrollbar-width: none; }
 .xterm-viewport::-webkit-scrollbar { width: 0; height: 0; display: none; }
@@ -2365,6 +2406,9 @@ textarea.sm-hdr { font-family: var(--mono, ui-monospace, monospace); font-size: 
 .db-ai-sessions-title { font-size: 13px; font-weight: 600; color: var(--text); flex: 1; }
 .db-ai-sessnew { display: inline-flex; align-items: center; gap: 4px; flex: 0 0 auto; font-size: 11.5px; color: var(--text-dim); background: var(--bg-input); border: 1px dashed var(--border-strong); border-radius: 8px; padding: 4px 10px; cursor: pointer; }
 .db-ai-sessnew:hover { color: var(--green-bright); border-color: var(--border-accent); }
+.db-ai-sess-searchbox { padding: 8px 8px 2px 2px; }
+.db-ai-sess-search { width: 100%; background: var(--bg-input); border: 1px solid var(--border-strong); color: var(--text); border-radius: 7px; padding: 6px 9px; font-size: 12px; outline: none; }
+.db-ai-sess-search:focus { border-color: var(--border-accent); }
 .db-ai-sessions-list { flex: 1; min-height: 0; overflow: auto; padding: 6px 8px 6px 0; display: flex; flex-direction: column; gap: 2px; }
 .db-ai-sess-group { font-size: 10.5px; font-weight: 700; letter-spacing: .03em; text-transform: uppercase; color: var(--text-mute); padding: 12px 6px 4px; }
 .db-ai-sess-group:first-child { padding-top: 4px; }
@@ -2382,7 +2426,17 @@ textarea.sm-hdr { font-family: var(--mono, ui-monospace, monospace); font-size: 
 .db-ai-chat-col { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; padding-left: 12px; }
 .db-ai-head { display: flex; align-items: center; gap: 8px; padding: 2px 2px 8px; border-bottom: 1px solid var(--border); }
 .db-ai-title { font-size: 13px; font-weight: 600; color: var(--text); }
+.db-ai-usage { font-size: 11px; color: var(--text-mute); font-family: "JetBrains Mono", monospace; white-space: nowrap; }
+.db-ai-privacy-badge { font-size: 10px; font-weight: 700; letter-spacing: .02em; text-transform: uppercase; color: var(--warn); border: 1px solid var(--warn); border-radius: 6px; padding: 1px 6px; }
 .db-ai-agent { background: var(--bg-input); border: 1px solid var(--border-strong); color: var(--text); border-radius: 7px; padding: 3px 6px; font-size: 11.5px; outline: none; }
+/* переключатели режима в шапке чата (авто-вывод и т.п.) */
+.db-ai-toggle { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; color: var(--text-mute); background: var(--bg-input); border: 1px solid var(--border-strong); border-radius: 7px; padding: 3px 9px; cursor: pointer; }
+.db-ai-toggle:hover { color: var(--text); }
+.db-ai-toggle > svg { opacity: .45; }
+.db-ai-toggle.on { color: var(--green-bright); border-color: var(--border-accent); }
+.db-ai-toggle.on > svg { opacity: 1; }
+.db-ai-notearea { width: 100%; resize: vertical; min-height: 120px; background: var(--bg-input); border: 1px solid var(--border-strong); color: var(--text); border-radius: 9px; padding: 9px 12px; font: inherit; font-size: 13px; line-height: 1.5; outline: none; }
+.db-ai-notearea:focus { border-color: var(--border-accent); }
 /* clarification (ask) card — Claude-terminal style: vertical plaques + custom controls */
 .db-ai-askcard { margin: 8px 0; width: 100%; max-width: 920px; min-width: min(320px, 100%); border: 1px solid var(--border-accent); border-radius: 11px; overflow: hidden; background: var(--panel); }
 .db-ai-askq { padding: 10px 13px 6px; font-size: 13.5px; font-weight: 600; color: var(--text); }
@@ -2444,6 +2498,8 @@ textarea.sm-hdr { font-family: var(--mono, ui-monospace, monospace); font-size: 
 .db-ai-dot:nth-child(2) { animation-delay: .15s; } .db-ai-dot:nth-child(3) { animation-delay: .3s; }
 @keyframes db-ai-bounce { 0%, 80%, 100% { transform: scale(.5); opacity: .4; } 40% { transform: scale(1); opacity: 1; } }
 .db-ai-log { flex: 1; min-height: 0; overflow: auto; display: flex; flex-direction: column; gap: 12px; padding: 12px 2px; }
+/* идёт запрос: действия, требующие покоя, гасим классом — дешевле, чем пересобирать сообщения */
+.db-ai-log.busy [data-idle] { opacity: .35; pointer-events: none; }
 .db-ai-welcome { color: var(--text-mute); padding: 8px 2px; }
 .db-ai-welcome-h { font-size: 14px; font-weight: 600; color: var(--text); margin-bottom: 4px; }
 .db-ai-welcome-s { font-size: 12px; line-height: 1.5; max-width: 560px; }
@@ -2458,9 +2514,11 @@ textarea.sm-hdr { font-family: var(--mono, ui-monospace, monospace); font-size: 
 .db-ai-msg.user .db-ai-bubble { border-color: var(--border-accent); background: color-mix(in srgb, var(--border-accent) 16%, var(--bg-input)); }
 .db-ai-msg.asst .db-ai-bubble { max-width: 100%; width: 100%; }
 .db-ai-text { white-space: pre-wrap; word-break: break-word; }
-.db-ai-copy { position: absolute; top: 6px; right: 6px; opacity: 0; transition: opacity .12s; background: var(--panel); border: 1px solid var(--border); border-radius: 6px; }
-.db-ai-bubble:hover .db-ai-copy { opacity: .65; }
-.db-ai-copy:hover { opacity: 1; }
+.db-ai-msgacts { position: absolute; top: 6px; right: 6px; display: flex; gap: 4px; opacity: 0; transition: opacity .12s; }
+.db-ai-bubble:hover .db-ai-msgacts { opacity: .65; }
+.db-ai-msgacts:hover { opacity: 1; }
+.db-ai-act { background: var(--panel); border: 1px solid var(--border); border-radius: 6px; }
+.db-ai-act:hover { border-color: var(--border-accent); color: var(--green-bright); }
 .db-ai-md { font-size: 13px; }
 .db-ai-md p { margin: 6px 0; } .db-ai-md h1, .db-ai-md h2, .db-ai-md h3 { font-size: 14px; margin: 8px 0 4px; }
 .db-ai-md ul, .db-ai-md ol { margin: 6px 0; padding-left: 20px; }
@@ -2474,6 +2532,17 @@ textarea.sm-hdr { font-family: var(--mono, ui-monospace, monospace); font-size: 
 .db-ai-sql { margin: 0; padding: 9px 11px; font-family: "JetBrains Mono", monospace; font-size: 12px; color: var(--green-bright); white-space: pre-wrap; word-break: break-word; }
 .db-ai-sqlacts { display: flex; align-items: center; gap: 6px; padding: 7px 9px; border-top: 1px solid var(--border); }
 .db-ai-warn { font-size: 11px; color: var(--warn); padding: 0 11px 8px; }
+.db-ai-multirun { display: flex; justify-content: flex-end; padding: 4px 0 2px; }
+.db-ai-schemalist { padding: 8px 11px; font-family: "JetBrains Mono", monospace; font-size: 12px; color: var(--text); word-break: break-word; }
+.db-ai-schemaok { font-size: 11px; color: var(--green-bright); padding: 0 11px 9px; }
+/* «выполнить с промптом»: инструкция к отчёту агента */
+.db-ai-runprompt { display: flex; flex-direction: column; gap: 8px; padding: 9px 11px; border-top: 1px solid var(--border); background: var(--bg-input); }
+.db-ai-runprompt.hidden { display: none; }
+.db-ai-runprompt-h { font-size: 11px; color: var(--text-dim); }
+.db-ai-runprompt .db-ai-chips { margin-top: 0; }
+.db-ai-runprompt-acts { display: flex; gap: 6px; justify-content: flex-end; }
+.db-ai-resultnote { display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--text-dim); padding: 7px 9px 0; }
+.db-ai-resultnote > svg { flex: 0 0 auto; color: var(--green-bright); }
 /* executed-result card */
 .db-ai-resultcard { margin: 4px 0; border: 1px solid var(--border); border-radius: 9px; overflow: hidden; background: var(--panel); }
 .db-ai-resultbar { display: flex; align-items: center; gap: 6px; padding: 6px 9px; background: var(--bg-input); border-bottom: 1px solid var(--border); font-size: 12px; color: var(--text); }
@@ -2483,6 +2552,9 @@ textarea.sm-hdr { font-family: var(--mono, ui-monospace, monospace); font-size: 
 .db-ai-chart { padding: 8px; border-bottom: 1px solid var(--border); }
 .db-ai-grid { max-height: 360px; min-height: 0; display: flex; flex-direction: column; }
 .db-ai-grid.collapsed { max-height: 200px; }
+.db-ai-editbar { display: flex; align-items: center; gap: 7px; margin-top: 8px; padding: 6px 10px; border: 1px solid var(--border-accent); border-radius: 8px; background: var(--bg-input); font-size: 11.5px; color: var(--text-dim); }
+.db-ai-editbar > svg { flex: 0 0 auto; color: var(--green-bright); }
+.db-ai-editbar-t { flex: 1; min-width: 0; }
 .db-ai-inputbar { display: flex; gap: 8px; align-items: flex-end; padding-top: 8px; border-top: 1px solid var(--border); }
 .db-ai-input { flex: 1; resize: none; background: var(--bg-input); border: 1px solid var(--border-strong); color: var(--text); border-radius: 9px; padding: 8px 11px; font: inherit; font-size: 13px; outline: none; max-height: 140px; }
 .db-ai-input:focus { border-color: var(--border-accent); }
@@ -2529,18 +2601,47 @@ textarea.sm-hdr { font-family: var(--mono, ui-monospace, monospace); font-size: 
 .rh-name-line { display: flex; align-items: center; gap: 7px; }
 .rh-live { font-size: 9.5px; font-weight: 700; letter-spacing: .03em; color: var(--accent-contrast); background: var(--green); border-radius: 7px; padding: 1px 6px; }
 .rh-hint { font-size: 11.5px; line-height: 1.45; color: var(--text-mute); background: var(--hover); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; }
-/* remote file browser (read-only) */
-.rh-fbar { display: flex; align-items: center; gap: 6px; padding-bottom: 7px; border-bottom: 1px solid var(--border); position: sticky; top: -10px; background: var(--panel); z-index: 1; }
+/* remote files: дерево каталогов слева + редактор открытого файла справа */
+#rh-conns.rh-fsmode { overflow: hidden; gap: 0; padding: 10px 10px 0; }
+.rh-fbar { display: flex; align-items: center; gap: 6px; padding-bottom: 7px; border-bottom: 1px solid var(--border); background: var(--panel); z-index: 1; }
 .rh-fpath { flex: 1; min-width: 0; font-size: 11.5px; color: var(--text-dim); font-family: "JetBrains Mono", monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; direction: rtl; text-align: left; }
-.rh-flist { display: flex; flex-direction: column; }
-.rh-frow { display: flex; align-items: center; gap: 8px; padding: 5px 7px; border-radius: 7px; cursor: pointer; font-size: 12.5px; }
-.rh-frow:hover { background: var(--hover); }
-.rh-frow > svg { color: var(--text-mute); flex: 0 0 auto; }
-.rh-fname { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
-.rh-fsize { flex: 0 0 auto; font-size: 10.5px; color: var(--text-mute); }
-.rh-fchead { display: flex; align-items: center; gap: 8px; padding-bottom: 8px; border-bottom: 1px solid var(--border); }
-.rh-fcname { flex: 1; min-width: 0; font-size: 13px; font-weight: 600; color: var(--green-bright); overflow: hidden; text-overflow: ellipsis; }
-.rh-fview { flex: 1; min-height: 0; overflow: auto; margin: 0; padding: 8px 4px; font-family: "JetBrains Mono", monospace; font-size: 11.5px; line-height: 1.5; color: var(--text-dim); white-space: pre; }
+.rh-fwrap { flex: 1; min-height: 0; display: flex; margin: 0 -10px; }
+/* контейнер-запросы: колонки метаданных уступают место имени, когда дерево узкое
+   (сплит с открытым файлом). Полный набор данных всегда есть в подсказке строки. */
+.rh-tree { flex: 1; min-width: 0; overflow: auto; padding: 6px 6px 12px; container-type: inline-size; }
+@container (max-width: 430px) { .rh-tdate { display: none; } }
+@container (max-width: 330px) { .rh-tperm { display: none; } }
+@container (max-width: 240px) { .rh-tsize { display: none; } }
+.rh-fwrap.has-file .rh-tree { flex: 0 0 clamp(200px, 32%, 320px); border-right: 1px solid var(--border); }
+.rh-trow { display: flex; align-items: center; gap: 6px; padding: 3px 6px 3px 0; border-radius: 6px; cursor: pointer; font-size: 12.5px; line-height: 1.5; white-space: nowrap; }
+.rh-trow:hover { background: var(--hover); }
+.rh-trow.sel { background: var(--accent-soft); }
+.rh-trow .ti { flex: 0 0 14px; }
+.rh-chev { flex: 0 0 10px; width: 10px; color: var(--text-mute); font-size: 9px; }
+.rh-tname { flex: 1 1 auto; min-width: 64px; overflow: hidden; text-overflow: ellipsis; color: var(--text); }
+.rh-trow.dir .rh-tname { font-weight: 500; }
+.rh-tname.link { font-style: italic; color: var(--green-bright); }
+.rh-tname.broken { color: var(--danger); text-decoration: line-through; }
+.rh-tperm { flex: 0 0 auto; font-family: "JetBrains Mono", monospace; font-size: 10px; color: var(--text-mute); letter-spacing: -.02em; }
+.rh-tsize { flex: 0 0 auto; font-size: 10.5px; color: var(--text-mute); min-width: 52px; text-align: right; }
+.rh-tdate { flex: 0 0 auto; font-size: 10.5px; color: var(--text-mute); }
+.rh-tacts { flex: 0 0 auto; display: flex; gap: 2px; opacity: 0; }
+.rh-trow:hover .rh-tacts { opacity: 1; }
+.rh-tload, .rh-tempty { font-size: 11.5px; color: var(--text-mute); padding: 3px 0; }
+.rh-terr { font-size: 11.5px; color: var(--danger); padding: 3px 0; white-space: normal; }
+/* открытый файл */
+.rh-fileview { flex: 1; min-width: 0; display: flex; flex-direction: column; padding: 8px 10px 0; }
+.rh-fchead { display: flex; align-items: center; gap: 7px; padding-bottom: 8px; border-bottom: 1px solid var(--border); }
+.rh-fcname { min-width: 0; font-size: 13px; font-weight: 600; color: var(--green-bright); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rh-fcspace { flex: 1; }
+.rh-fdirty { color: var(--warn); font-size: 12px; }
+.rh-fmeta { display: flex; flex-wrap: wrap; gap: 4px 8px; padding: 7px 0; }
+.rh-chip { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; color: var(--text-dim); background: var(--hover); border: 1px solid var(--border); border-radius: 7px; padding: 2px 7px; font-family: "JetBrains Mono", monospace; }
+.rh-chip > svg { color: var(--text-mute); }
+.rh-fed { flex: 1; min-height: 0; overflow: hidden; margin: 0 -10px; }
+.rh-fed .cm-editor { height: 100%; }
+/* узкая панель: открытый файл занимает её целиком, дерево возвращается кнопкой «закрыть файл» */
+@media (max-width: 760px) { .rh-fwrap.has-file .rh-tree { display: none; } }
 
 /* ---------------- user modules (extensions): общая панель правого слота ---------------- */
 #ext-pane { flex: 0 0 420px; min-width: 280px; border-left: 1px solid var(--border); display: flex; flex-direction: column; background: var(--panel); }
@@ -3335,7 +3436,11 @@ body.preview-full .prev-frame { width: 100%; height: 100%; }
   transform: translateY(12px); opacity: 0; transition: transform .2s, opacity .2s;
 }
 .toast.show { transform: translateY(0); opacity: 1; }
-.toast.err { border-color: rgba(247,118,142,0.5); }
+/* Тосты по типу: цвет рамки — только из токенов темы (контракт тем), прозрачность через color-mix.
+   Раньше был лишь .toast.err (да и тот хардкодом), поэтому kind:'ok'/'warn' выглядели как обычные. */
+.toast.err  { border-color: color-mix(in srgb, var(--danger) 55%, transparent); }
+.toast.warn { border-color: color-mix(in srgb, var(--warn) 55%, transparent); }
+.toast.ok   { border-color: color-mix(in srgb, var(--add) 55%, transparent); }
 .toast-act {
   flex: 0 0 auto; padding: 5px 11px; border-radius: 8px; cursor: pointer; font-size: 12.5px;
   background: var(--green); border: 0; color: var(--accent-contrast); font-weight: 600;

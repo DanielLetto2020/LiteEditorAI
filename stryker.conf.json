@@ -1,0 +1,42 @@
+{
+  "$schema": "./node_modules/@stryker-mutator/core/schema/stryker-schema.json",
+  "_comment": "Мутационное тестирование. Тесты проекта — чистый node+assert без фреймворка, поэтому раннер command (npm test). Мутируем только модули, у которых есть тесты: мутанты в непокрытом коде выживают все и превращают метрику в шум. Появился тест на новый модуль lib/* — допиши файл в mutate.",
+  "packageManager": "npm",
+  "testRunner": "command",
+  "commandRunner": {
+    "command": "npm test"
+  },
+  "coverageAnalysis": "off",
+  "_comment_ignore": "Stryker копирует проект в песочницу целиком. Тестам нужны только lib/, test/ и манифест, поэтому исключаем всё остальное: иначе копируются мегабайты renderer/dist и android, а симлинки-каталоги .claude/rules/std-* роняют копирование с EISDIR.",
+  "ignorePatterns": [
+    "**",
+    "!lib/**",
+    "!test/**",
+    "!locales/**",
+    "!package.json"
+  ],
+  "reporters": ["html", "json", "clear-text", "progress"],
+  "htmlReporter": {
+    "fileName": "reports/mutation/index.html"
+  },
+  "jsonReporter": {
+    "fileName": "reports/mutation/mutation.json"
+  },
+  "mutate": [
+    "lib/safe-name.js",
+    "lib/sgrline.js",
+    "lib/shell.js",
+    "lib/portparse.js",
+    "lib/dbdetect.js",
+    "lib/fsmeta.js",
+    "lib/i18n.js"
+  ],
+  "_comment_thresholds": "break: null — прогон намеренно не падает сам. Планку держит храповик std-gauntlet (.claude/.ratchet.json): ухудшать нельзя, улучшать не обязательно. high/low влияют только на цвет отчёта.",
+  "thresholds": {
+    "high": 85,
+    "low": 60,
+    "break": null
+  },
+  "timeoutMS": 15000,
+  "concurrency": 4
+}

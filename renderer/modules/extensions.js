@@ -141,7 +141,7 @@ export function initExtensions(host) {
       rec.error = String((e && e.message) || e);
       if (rec.container) { try { rec.container.remove(); } catch (_) {} rec.container = null; }
       rec.instance = null; rec.ctx = null;
-      toast(`Модуль «${modName(rec)}» не загрузился: ${rec.error}`, { kind: 'error' });
+      toast(`Модуль «${modName(rec)}» не загрузился: ${rec.error}`, { kind: 'err' });
       try { lite.log('error', 'ext activate failed', rec.id, rec.error); } catch (_) {}
     }
   }
@@ -161,7 +161,9 @@ export function initExtensions(host) {
     const rec = mods.get(id);
     if (!rec) return;
     setEnabled(id, on);
-    if (on && rec.status === 'off' && !rec.error) await loadModule(rec);
+    // 'broken' тоже поднимаем: прежнее условие (только 'off') делало переключатель бесполезным
+    // ровно в том случае, когда модуль чинят и хотят включить обратно.
+    if (on && rec.status !== 'on' && !rec.error) await loadModule(rec);
     else if (!on && rec.status !== 'off') unloadModule(rec);
   }
 
@@ -174,7 +176,7 @@ export function initExtensions(host) {
     const r = await lite.ext.scan().catch(() => null);
     const m = r && r.modules.find((x) => x.id === id);
     if (m) { rec.dir = m.dir; rec.manifest = m.manifest || rec.manifest; rec.error = m.error || ''; rec.mainUrl = m.mainUrl; rec.mainFile = m.mainFile; }
-    if (rec.error) { toast(`Модуль «${modName(rec)}»: ${rec.error}`, { kind: 'error' }); if (wasActive) setOpen(false); return; }
+    if (rec.error) { toast(`Модуль «${modName(rec)}»: ${rec.error}`, { kind: 'err' }); if (wasActive) setOpen(false); return; }
     await loadModule(rec);
     if (rec.status === 'on') { toast(`Модуль «${modName(rec)}» перезагружен`); if (wasActive) openExt(id); }
     else if (wasActive) setOpen(false);
@@ -218,7 +220,7 @@ export function initExtensions(host) {
   function paletteActions() {
     const acts = [];
     for (const rec of mods.values()) if (rec.status === 'on')
-      for (const [title, fn] of rec.commands) acts.push({ label: title, run: () => { try { fn(); } catch (e) { toast(`Модуль «${modName(rec)}»: ${String((e && e.message) || e)}`, { kind: 'error' }); } } });
+      for (const [title, fn] of rec.commands) acts.push({ label: title, run: () => { try { fn(); } catch (e) { toast(`Модуль «${modName(rec)}»: ${String((e && e.message) || e)}`, { kind: 'err' }); } } });
     return acts;
   }
 
@@ -279,7 +281,7 @@ export function initExtensions(host) {
         const dt = devTerms.get(rec.id);
         if (dt) { try { dt.handle.dispose(); } catch (_) {} dt.box.remove(); devTerms.delete(rec.id); }
         const r = await lite.fs.trash(rec.dir).catch((e) => ({ error: String(e) }));
-        if (r && r.error) { toast('Не удалось удалить: ' + r.error, { kind: 'error' }); return; }
+        if (r && r.error) { toast('Не удалось удалить: ' + r.error, { kind: 'err' }); return; }
         mods.delete(rec.id);
         toast('Модуль «' + modName(rec) + '» удалён');
         if (host.modsChanged) { try { host.modsChanged(); } catch (_) {} }
@@ -348,12 +350,12 @@ export function initExtensions(host) {
     btn.addEventListener('click', async () => {
       const name = nameIn.value.trim();
       const id = slugify(name);
-      if (!name) { toast('Укажите имя модуля', { kind: 'error' }); return; }
-      if (!id) { toast('Из имени не вышло корректное имя папки — добавьте латиницу/цифры', { kind: 'error' }); return; }
-      if (mods.has(id)) { toast('Модуль с папкой «' + id + '» уже есть', { kind: 'error' }); return; }
+      if (!name) { toast('Укажите имя модуля', { kind: 'err' }); return; }
+      if (!id) { toast('Из имени не вышло корректное имя папки — добавьте латиницу/цифры', { kind: 'err' }); return; }
+      if (mods.has(id)) { toast('Модуль с папкой «' + id + '» уже есть', { kind: 'err' }); return; }
       btn.disabled = true;
       const r = await lite.ext.scaffold({ id, name }).catch((e) => ({ error: String(e) }));
-      if (!r || r.error) { btn.disabled = false; toast('Не удалось создать модуль: ' + ((r && r.error) || 'ошибка'), { kind: 'error' }); return; }
+      if (!r || r.error) { btn.disabled = false; toast('Не удалось создать модуль: ' + ((r && r.error) || 'ошибка'), { kind: 'err' }); return; }
       await rescan(true);
       const rec = mods.get(id);
       if (rec) await openDevTerminal(rec);

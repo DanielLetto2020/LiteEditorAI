@@ -1,6 +1,6 @@
 {
   "name": "liteeditor-ai",
-  "version": "1.1.100-alpha",
+  "version": "1.1.123-alpha",
   "description": "Lightweight editor for working with AI coding agents in the terminal",
   "main": "main.js",
   "author": "Максим Кузьминский <i@m-letto.ru>",
@@ -11,7 +11,10 @@
     "url": "https://github.com/DanielLetto2020/LiteEditorAI.git"
   },
   "scripts": {
-    "test": "node test/safe-name.test.js && node test/sgrline.test.js && node test/shell.test.js && node test/portparse.test.js",
+    "test": "node test/safe-name.test.js && node test/sgrline.test.js && node test/shell.test.js && node test/portparse.test.js && node test/dbdetect.test.js && node test/fsmeta.test.js && node test/i18n.test.js",
+    "lint": "eslint .",
+    "typecheck": "tsc -p tsconfig.check.json",
+    "mutation": "node scripts/stryker-gate.js",
     "build": "node build.js",
     "start": "node scripts/kill-running.js && node build.js && electron --no-sandbox --class=LiteEditorAI .",
     "watch": "node build.js --watch",
@@ -59,9 +62,9 @@
     "amqplib": "^2.0.1",
     "basic-ftp": "^6.0.1",
     "chart.js": "^4.5.1",
-    "dompurify": "^3.2.4",
+    "dompurify": "^3.4.12",
     "highlight.js": "^11.11.1",
-    "js-yaml": "^4.2.0",
+    "js-yaml": "^4.3.0",
     "kafkajs": "^2.2.4",
     "katex": "^0.16.21",
     "kdbxweb": "^2.1.1",
@@ -76,10 +79,16 @@
   },
   "devDependencies": {
     "@electron/rebuild": "^4.0.4",
+    "@eslint/js": "^10.0.1",
+    "@stryker-mutator/core": "^9.6.1",
+    "@types/node": "^26.1.1",
     "electron": "^42.4.0",
-    "electron-builder": "^26.8.1",
+    "electron-builder": "^26.15.3",
     "esbuild": "^0.28.1",
-    "sharp": "^0.33.5"
+    "eslint": "^10.8.0",
+    "globals": "^17.8.0",
+    "sharp": "^0.35.3",
+    "typescript": "^7.0.2"
   },
   "overrides": {
     "@electron/get": {
@@ -88,7 +97,10 @@
     "node-gyp": {
       "undici": "^6.27.0"
     },
-    "@xmldom/xmldom": "0.8.13"
+    "@xmldom/xmldom": "0.8.13",
+    "brace-expansion": "^5.0.8",
+    "tar": "^7.5.22",
+    "qs": "^6.15.3"
   },
   "build": {
     "appId": "com.mletto.liteeditorai",
@@ -111,6 +123,7 @@
       "logger.js",
       "errledger.js",
       "lib/**",
+      "locales/**",
       "mcp/**",
       "package.json",
       "renderer/index.html",

@@ -1,6 +1,7 @@
 // LiteEditor — Electron main process.
 // Thin backend: project picker, PTY lifecycle, file ops, window controls.
 const { app, BrowserWindow, ipcMain, dialog, shell, Menu, clipboard, screen, Tray, nativeImage, crashReporter, safeStorage, Notification } = require('electron');
+const i18n = require('./lib/i18n');   // локализация: словари — подключаемые файлы locales/*.json
 const dbBackend = require('./lib/db');
 const rhBackend = require('./lib/remotehost');
 const { guessDbKind, dbPrefillFromInspect, guessMqKind, rmqPrefillFromInspect, kafkaPrefillFromInspect, guessWebKind, webPrefillFromInspect, guessStorageKind, storagePrefillFromInspect } = require('./lib/dbdetect'); // «Контейнеры» → «Базы данных»/«RabbitMQ»/«Kafka»/«Мониторинг сайтов»/«Внешние хранилища»
@@ -494,7 +495,7 @@ function agendaShowNotification(r) {
     const title = String(r.text || '').split('\n')[0].trim() || 'Напоминание';
     let body = 'Напоминание';
     const d = r.at ? new Date(r.at) : null;
-    if (d && !isNaN(d)) body = r.allDay
+    if (d && !isNaN(d.getTime())) body = r.allDay
       ? d.toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' })
       : d.toLocaleString('ru-RU', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
     const n = new Notification({ title: '🔔 ' + title, body, silent: false });
@@ -757,7 +758,7 @@ ipcMain.handle('tp:openFile', async (e) => {
 });
 ipcMain.handle('tp:saveFileAs', async (e, { content, name, ext } = {}) => {
   const last = loadState().lastOpenDir;
-  const base = String(name || 'Безымянный').replace(/[\/\\:*?"<>|]+/g, '_').replace(/\.[^.]+$/, '');
+  const base = String(name || 'Безымянный').replace(/[/\\:*?"<>|]+/g, '_').replace(/\.[^.]+$/, '');
   const res = await dialog.showSaveDialog(senderWin(e) || mainWindow, {
     title: 'Сохранить документ как',
     defaultPath: path.join(last && fs.existsSync(last) ? last : os.homedir(), `${base}.${ext || 'md'}`),
@@ -1043,10 +1044,34 @@ ipcMain.on('tp:abort', (_e, { reqId } = {}) => {
 // We stream stdout chunks so the chat feels live. Stateless: the renderer re-sends the full
 // transcript + schema each turn, so no agent-side session is needed.
 // Claude streams real tokens with stream-json + partial messages; codex stays plain-text.
+// Промпт несёт структуру базы и строки результата, поэтому оба агента получают его ТОЛЬКО через
+// stdin: argv виден в `ps` любому пользователю системы («codex exec -» читает инструкции оттуда).
 const DBAI_AGENTS = {
-  claude: { cmd: 'claude', args: ['-p', '--output-format', 'stream-json', '--verbose', '--include-partial-messages'], via: 'stdin', stream: 'json' },
-  codex: { cmd: 'codex', args: ['exec'], via: 'arg', stream: 'text' },
+  claude: { cmd: 'claude', args: ['-p', '--output-format', 'stream-json', '--verbose', '--include-partial-messages'], stream: 'json' },
+  codex: { cmd: 'codex', args: ['exec', '-'], stream: 'text' },
 };
+// Транскрипты чатов AI-DB — по файлу на подключение. В общем dbUi они раздували стор: сессия
+// хранит до 200 строк результата на сообщение, и весь этот объём переписывался при любом
+// сохранении раскладки модуля. Формат файла: { sessions: [...], activeId }.
+const dbaiDir = () => path.join(storeDir, 'dbai');
+const dbaiFile = (connId) => path.join(dbaiDir(), String(connId).replace(/[^\w.-]/g, '_') + '.json');
+ipcMain.handle('dbai:sessionsGet', (_e, { connId } = {}) => {
+  const file = dbaiFile(connId);
+  if (!fs.existsSync(file)) return null;   // истории просто ещё нет — это не ошибка
+  try { return JSON.parse(fs.readFileSync(file, 'utf8')); }
+  catch (e) { return { error: String(e.message || e) }; }
+});
+ipcMain.handle('dbai:sessionsSet', (_e, { connId, data } = {}) => {
+  try {
+    fs.mkdirSync(dbaiDir(), { recursive: true });
+    atomicWriteSync(dbaiFile(connId), JSON.stringify(data || {}));
+    return { ok: true };
+  } catch (e) { return { ok: false, error: String(e.message || e) }; }
+});
+ipcMain.handle('dbai:sessionsDelete', (_e, { connId } = {}) => {
+  try { fs.rmSync(dbaiFile(connId), { force: true }); return { ok: true }; }
+  catch (e) { return { ok: false, error: String(e.message || e) }; }
+});
 const dbaiReqs = new Map();
 // Глушит карту in-flight задач разом: значение — ChildProcess (.kill) или ClientRequest/сокет (.destroy).
 function killReqMap(m) {
@@ -1056,7 +1081,7 @@ function killReqMap(m) {
 ipcMain.on('dbai:run', (e, { reqId, agent, prompt } = {}) => {
   const sender = e.sender;
   const conf = DBAI_AGENTS[agent] || DBAI_AGENTS.claude;
-  const args = conf.via === 'arg' ? [...conf.args, prompt || ''] : [...conf.args];
+  const args = [...conf.args];
   let child;
   try { child = spawn(conf.cmd, args, { cwd: os.homedir(), env: tpEnv() }); }
   catch (err) { safeSend(sender, 'dbai:error', { reqId, error: 'не запустить «' + conf.cmd + '»: ' + (err.message || err) }); return; }
@@ -1090,7 +1115,7 @@ ipcMain.on('dbai:run', (e, { reqId, agent, prompt } = {}) => {
     if (any) safeSend(sender, 'dbai:done', { reqId });
     else safeSend(sender, 'dbai:error', { reqId, error: errOut.trim() || ('агент завершился с кодом ' + code) });
   });
-  if (conf.via === 'stdin') { try { child.stdin.write(prompt || ''); child.stdin.end(); } catch (_) {} }
+  try { child.stdin.write(prompt || ''); child.stdin.end(); } catch (_) {}
 });
 ipcMain.on('dbai:abort', (e, { reqId } = {}) => {
   const c = dbaiReqs.get(reqId);
@@ -1117,10 +1142,13 @@ ipcMain.handle('dbai:apiModels', async (_e, { baseUrl, key } = {}) => {
     req.end();
   });
 });
-ipcMain.on('dbai:apiRun', (e, { reqId, baseUrl, key, model, prompt } = {}) => {
+ipcMain.on('dbai:apiRun', (e, { reqId, baseUrl, key, model, messages, usage } = {}) => {
   const sender = e.sender;
   let u; try { u = new URL(String(baseUrl).replace(/\/$/, '') + '/chat/completions'); } catch (_) { safeSend(sender, 'dbai:error', { reqId, error: 'неверный адрес провайдера' }); return; }
-  const body = JSON.stringify({ model, messages: [{ role: 'user', content: prompt || '' }], stream: true });
+  // Полноценный многоходовой диалог с ролью system: одним склеенным user-сообщением модель хуже
+  // держит правила, а провайдер не может кешировать неизменную часть промпта (схему БД).
+  const msgs = Array.isArray(messages) && messages.length ? messages : [{ role: 'user', content: '' }];
+  const body = JSON.stringify({ model, messages: msgs, stream: true, ...(usage ? { stream_options: { include_usage: true } } : {}) });
   const headers = { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body), ...(key ? { Authorization: 'Bearer ' + key } : {}) };
   const req = dbaiHttpMod(u).request(u, { method: 'POST', headers }, (res) => {
     if (res.statusCode >= 400) { let err = ''; res.on('data', (c) => { err += c; }); res.on('end', () => { let msg = 'HTTP ' + res.statusCode; try { const j = JSON.parse(err); if (j.error && j.error.message) msg = j.error.message; } catch (_) {} if (!dbaiReqs.has(reqId)) return; dbaiReqs.delete(reqId); safeSend(sender, 'dbai:error', { reqId, error: msg }); }); return; }
@@ -1131,7 +1159,14 @@ ipcMain.on('dbai:apiRun', (e, { reqId, baseUrl, key, model, prompt } = {}) => {
         const line = buf.slice(0, idx).trim(); buf = buf.slice(idx + 1);
         if (!line.startsWith('data:')) continue;
         const payload = line.slice(5).trim(); if (payload === '[DONE]') continue;
-        try { const j = JSON.parse(payload); const ch = j.choices && j.choices[0]; const delta = ch && ch.delta && ch.delta.content; if (delta) { any = true; safeSend(sender, 'dbai:data', { reqId, chunk: delta }); } } catch (_) {}
+        try {
+          const j = JSON.parse(payload);
+          const ch = j.choices && j.choices[0];
+          const delta = ch && ch.delta && ch.delta.content;
+          if (delta) { any = true; safeSend(sender, 'dbai:data', { reqId, chunk: delta }); }
+          // последний кадр со stream_options.include_usage несёт счётчики токенов
+          if (j.usage) safeSend(sender, 'dbai:usage', { reqId, model: j.model || model, usage: j.usage });
+        } catch (_) {}
       }
     });
     res.on('end', () => { if (!dbaiReqs.has(reqId)) return; dbaiReqs.delete(reqId); if (any) safeSend(sender, 'dbai:done', { reqId }); else safeSend(sender, 'dbai:error', { reqId, error: 'пустой ответ модели' }); });
@@ -1186,7 +1221,7 @@ function ctxmineStat(dir) {
   for (const { fp, mt } of files) {
     let st; try { st = fs.statSync(fp); } catch (_) { continue; }
     bytes += st.size; if (!first || mt < first) first = mt; if (mt > last) last = mt;
-    let txt = ''; try { txt = fs.readFileSync(fp, 'utf8'); } catch (_) { continue; }
+    let txt; try { txt = fs.readFileSync(fp, 'utf8'); } catch (_) { continue; }
     for (const line of txt.split('\n')) { const s = line.trim(); if (!s) continue; let o; try { o = JSON.parse(s); } catch (_) { continue; } if (ctxmineMsg(o)) messages++; }
   }
   return { sessions: files.length, messages, bytes, first, last };
@@ -1206,7 +1241,7 @@ function ctxmineDistill(dir, capChars, doneNames) {
     const name = path.basename(fp);
     if (done.has(name)) continue;                 // уже разобрана в прошлый раз
     if (capped) { remaining++; continue; }        // лимит исчерпан — просто считаем остаток
-    let txt = ''; try { txt = fs.readFileSync(fp, 'utf8'); } catch (_) { continue; }
+    let txt; try { txt = fs.readFileSync(fp, 'utf8'); } catch (_) { continue; }
     const parts = ['\n----- новая сессия -----'];
     let any = false, cnt = 0;
     for (const line of txt.split('\n')) {
@@ -2071,7 +2106,7 @@ ipcMain.handle('settings:export', async () => {
 // Notes export/import: generic JSON file save/open (assembly + merge happen in the renderer,
 // which owns the project list and notesGet/notesSet). Mirrors the settings handlers above.
 ipcMain.handle('notes:exportFile', async (_e, { json, name }) => {
-  const safe = String(name || 'lite-notes').replace(/[\/\\:*?"<>|]+/g, '_').slice(0, 80);
+  const safe = String(name || 'lite-notes').replace(/[/\\:*?"<>|]+/g, '_').slice(0, 80);
   const last = loadState().lastOpenDir;
   const res = await dialog.showSaveDialog(mainWindow, {
     title: 'Экспорт заметок',
@@ -2470,9 +2505,9 @@ function createTray() {
     tray = new Tray(nativeImage.createFromPath(iconPng).resize({ width: 18, height: 18 }));
     tray.setToolTip('LiteEditorAI');
     tray.setContextMenu(Menu.buildFromTemplate([
-      { label: 'Показать LiteEditor', click: showWindow },
+      { label: i18n.t('Показать LiteEditor'), click: showWindow },
       { type: 'separator' },
-      { label: 'Выход', click: () => app.quit() },
+      { label: i18n.t('Выход'), click: () => app.quit() },
     ]));
     tray.on('click', showWindow);
   } catch (_) { tray = null; }
@@ -2484,6 +2519,12 @@ app.on('child-process-gone', (_e, d) =>
 app.on('before-quit', () => { try { errledger.flush(); } catch (_) {} logger.log('info', 'app', 'before-quit'); });
 
 app.whenReady().then(() => {
+  // Язык интерфейса — до создания окон: рендерер забирает словарь синхронно при старте.
+  try {
+    const lang = ((readStoreKey('settings') || {}).lang || 'ru');
+    i18n.setLocale(lang);
+    logger.log('info', 'i18n', `locale=${i18n.locale()}, строк в словаре: ${Object.keys(i18n.dictionary()).length}`);
+  } catch (_) {}
   const gpu = !(process.env.LITE_NO_GPU === '1' || process.env.LITE_SOFTWARE_RENDER === '1');
   logger.log('info', 'app', `ready — electron ${process.versions.electron}, chrome ${process.versions.chrome}, node ${process.versions.node}, gpu=${gpu}`);
   const template = [
@@ -2572,7 +2613,7 @@ function restartAppSafely() {
   };
   server.on('error', (e) => fail('server ' + (e && e.message)));
   server.listen(0, '127.0.0.1', () => {
-    const port = server.address().port;
+    const port = /** @type {import('net').AddressInfo} */ (server.address()).port;
     let child;
     try {
       child = spawn(process.execPath, process.argv.slice(1), {
@@ -2620,10 +2661,10 @@ const MIME = { txt:'text/plain', md:'text/markdown', json:'application/json', js
 function mimeOf(name) { const e = String(name).split('.').pop().toLowerCase(); return MIME[e] || 'application/octet-stream'; }
 // Бэкпрешер: не заливаем релей быстрее, чем он отдаёт (по bufferedAmount сокета).
 function remoteDrain() {
-  return new Promise((resolve) => {
+  return /** @type {Promise<void>} */ (new Promise((resolve) => {
     const check = () => { if (remote.bufferedAmount() < 512 * 1024) resolve(); else setTimeout(check, 15); };
     check();
-  });
+  }));
 }
 async function streamFileToPult(reqId, filePath, displayName) {
   let fd, stat;
@@ -2841,6 +2882,10 @@ function remoteStoreState() {
 }
 
 // Регистрация/вход: дергаем указанный пользователем релей, сохраняем {login, token, host, enabled}, поднимаем соединение.
+/**
+ * @param {string} kind
+ * @param {{ login?: string, password?: string, host?: string }} [creds]
+ */
 async function remoteAuth(kind, { login, password, host } = {}) {
   host = normalizeRelayHost(host || (readStoreKey('remote') || {}).host || '');
   if (!host) return { ok: false, error: 'Укажите хост релея (например relay.example.com)' };
@@ -2946,6 +2991,32 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
 });
 
+// ---------------------------------------------------------------- локализация
+// Язык живёт в settings.lang; словари — подключаемые файлы (locales/ + ~/.LiteEditorAI/locales/).
+// Рендерер берёт словарь СИНХРОННО при старте, чтобы интерфейс не мигал русским.
+function i18nPayload() {
+  // Никаких обращений к диску: это синхронный ответ на старте КАЖДОГО окна.
+  return { code: i18n.locale(), dict: i18n.dictionary(), rtl: i18n.isRtl() };
+}
+ipcMain.on('i18n:current', (e) => { e.returnValue = i18nPayload(); });
+ipcMain.handle('i18n:list', () => ({ current: i18n.locale(), list: i18n.available() }));
+ipcMain.handle('i18n:set', (_e, { code } = {}) => {
+  const known = i18n.available().some((l) => l.code === String(code || '').toLowerCase());
+  if (!known) return { ok: false, error: 'Неизвестный язык' };
+  i18n.setLocale(code);
+  const st = readStoreKey('settings') || {};
+  st.lang = i18n.locale();
+  writeStoreKey('settings', st);
+  const payload = i18nPayload();
+  for (const w of BrowserWindow.getAllWindows()) { try { w.webContents.send('i18n:changed', payload); } catch (_) {} }
+  try { updateTrayTooltip(); } catch (_) {}
+  return { ok: true, code: i18n.locale() };
+});
+ipcMain.handle('i18n:openUserDir', async () => {
+  try { fs.mkdirSync(i18n.USER_DIR, { recursive: true }); await shell.openPath(i18n.USER_DIR); return { ok: true, dir: i18n.USER_DIR }; }
+  catch (e) { return { ok: false, error: String(e && e.message || e) }; }
+});
+
 // ---------------------------------------------------------------- window controls
 // Действуют на окно ОТПРАВИТЕЛЯ (редактор ИЛИ окно модуля), не на mainWindow жёстко.
 function senderWin(e) { try { return BrowserWindow.fromWebContents(e.sender); } catch (_) { return null; } }
@@ -2976,7 +3047,7 @@ ipcMain.handle('pomodoro:getState', () => pomoSnapshot());
 ipcMain.handle('pomodoro:history', () => readPomoLog());
 // Экспорт/импорт своих техник (JSON-файл через системный диалог).
 ipcMain.handle('pomodoro:exportFile', async (_e, { json, name } = {}) => {
-  const safe = String(name || 'lite-pomodoro').replace(/[\/\\:*?"<>|]+/g, '_').slice(0, 80);
+  const safe = String(name || 'lite-pomodoro').replace(/[/\\:*?"<>|]+/g, '_').slice(0, 80);
   const last = loadState().lastOpenDir;
   const res = await dialog.showSaveDialog(mainWindow, {
     title: 'Экспорт техник помодоро',
@@ -3053,7 +3124,7 @@ ipcMain.on('editor:openInViewer', (_e, payload) => routeOpenInViewer(payload));
 function stageTextForViewer(name, content) {
   // Контент бывает чувствительным (SQL-выгрузки, конфиги с хоста) → каталог 0700 / файл 0600,
   // имя каталога — из CSPRNG (общий /tmp, соседний юзер не должен ни читать, ни угадать путь).
-  const base = String(name || 'export.txt').replace(/[\/\\:*?"<>|]/g, '_').slice(0, 120) || 'export.txt';
+  const base = String(name || 'export.txt').replace(/[/\\:*?"<>|]/g, '_').slice(0, 120) || 'export.txt';
   const dir = path.join(os.tmpdir(), 'lite-editor-view', Date.now().toString(36) + crypto.randomBytes(9).toString('hex'));
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   const file = path.join(dir, base);
@@ -3080,6 +3151,21 @@ ipcMain.handle('rh:fsOpenInViewer', async (_e, { id, path: p } = {}) => {
     routeOpenInViewer({ path: file });
     return { ok: true, file };
   } catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
+});
+// «Скачать файл с хоста»: нативный диалог сохранения + потоковая выгрузка (бинарники тоже,
+// без порога просмотра). Окно-владелец берём у отправителя — диалог модален своему окну модуля.
+ipcMain.handle('rh:fsDownload', async (e, { id, path: p } = {}) => {
+  const base = path.posix.basename(String(p || '')) || 'file';
+  const last = loadState().lastOpenDir;
+  const res = await dialog.showSaveDialog(senderWin(e) || mainWindow, {
+    title: 'Скачать файл с хоста',
+    defaultPath: path.join(last && fs.existsSync(last) ? last : os.homedir(), base),
+  });
+  if (res.canceled || !res.filePath) return { canceled: true };
+  const r = await rhApi.downloadFile(id, p, res.filePath);
+  if (!r || !r.ok) return { ok: false, error: (r && r.error) || 'не удалось скачать файл' };
+  saveState({ lastOpenDir: path.dirname(res.filePath) });
+  return { ok: true, file: res.filePath };
 });
 ipcMain.on('editor:refreshTree', (_e, payload) => { const w = filesWindow(); if (w) w.webContents.send('editor:refreshTree', payload); });
 // «Git» из редактора: открыть окно вивера (если закрыто) и переключить его на секцию «Коммит».
@@ -3177,10 +3263,22 @@ ipcMain.on('editor:sendNoteToTerminal', (_e, payload) => forwardToEditor('editor
 ipcMain.on('editor:refreshProjects', () => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('editor:refreshProjects'); });
 
 // Reflect how many agents need attention on the tray tooltip (and macOS title).
+let trayAttention = 0;
+function updateTrayTooltip() {
+  if (!tray) return;
+  tray.setToolTip(trayAttention > 0 ? `LiteEditorAI — ${i18n.t('{0} ждут ответа', trayAttention)}` : 'LiteEditorAI');
+  try {
+    tray.setContextMenu(Menu.buildFromTemplate([
+      { label: i18n.t('Показать LiteEditor'), click: showWindow },
+      { type: 'separator' },
+      { label: i18n.t('Выход'), click: () => app.quit() },
+    ]));
+  } catch (_) {}
+}
 ipcMain.on('tray:update', (_e, { attention } = {}) => {
-  const n = attention || 0;
-  if (tray) tray.setToolTip(n > 0 ? `LiteEditorAI — ${n} ждут ответа` : 'LiteEditorAI');
-  if (process.platform === 'darwin' && app.dock) app.setBadgeCount(n);
+  trayAttention = attention || 0;
+  updateTrayTooltip();
+  if (process.platform === 'darwin' && app.dock) app.setBadgeCount(trayAttention);
 });
 
 // Grow/shrink the window to the right by dx px (used when the viewer opens, so
@@ -3680,7 +3778,7 @@ function smExtract(spec, cap) {
     default: return undefined;
   }
 }
-function smNum(v) { return parseFloat(String(v == null ? '' : v).replace(',', '.').replace(/[^0-9.eE+\-]/g, '')); }
+function smNum(v) { return parseFloat(String(v == null ? '' : v).replace(',', '.').replace(/[^0-9.eE+-]/g, '')); }
 function smCompare(val, cmp, exp) {
   const s = (v) => (v === undefined || v === null ? '' : String(v));
   switch (cmp) {
@@ -4362,6 +4460,7 @@ const AUDIT_MINIFIED_MAXLINE = 1000;                          // строка д
 const AUDIT_FIND_CAP = 800;                                   // потолок на общий список меток/секретов
 const AUDIT_GIT_COMMITS = 2000;                               // глубина истории для churn/возраста
 // Правила секретов — консервативный набор с низким FP (имя правила → regex).
+/** @type {Array<[string, RegExp]>} */
 const AUDIT_SECRET_RULES = [
   ['AWS access key', /AKIA[0-9A-Z]{16}/],
   ['Google API key', /AIza[0-9A-Za-z_-]{35}/],
@@ -4770,7 +4869,7 @@ function seoTls(u) {
     const socket = tls.connect({ host: u.hostname, port, servername: u.hostname, rejectUnauthorized: false, timeout: SEO_TIMEOUT }, () => {
       const c = socket.getPeerCertificate(true);
       const proto = socket.getProtocol();
-      const cipher = socket.getCipher() || {};
+      const cipher = socket.getCipher() || /** @type {{ name?: string }} */ ({});
       const authorized = socket.authorized;
       const authError = socket.authorizationError ? String(socket.authorizationError) : '';
       socket.end();
@@ -4810,7 +4909,7 @@ async function seoDns(host) {
   try { const d = await dns.promises.resolveTxt('_dmarc.' + host); dmarc = d.map((p) => p.join('')).find((t) => /^v=DMARC1/i.test(t)) || null; } catch {}
   r.mail = {
     spf: { found: !!spf, value: spf || '' },
-    dmarc: { found: !!dmarc, value: dmarc || '', policy: dmarc ? (/(p=[a-z]+)/i.exec(dmarc) || [, ''])[1] : '' },
+    dmarc: { found: !!dmarc, value: dmarc || '', policy: dmarc ? (/(p=[a-z]+)/i.exec(dmarc) || ['', ''])[1] : '' },
   };
   return r;
 }
@@ -4855,7 +4954,7 @@ function seoCookies(headers) {
     const name = (line.split('=')[0] || '').trim();
     return {
       name, secure: /;\s*secure/i.test(line), httpOnly: /;\s*httponly/i.test(line),
-      sameSite: (/;\s*samesite\s*=\s*(\w+)/i.exec(line) || [, ''])[1],
+      sameSite: (/;\s*samesite\s*=\s*(\w+)/i.exec(line) || ['', ''])[1],
     };
   });
 }
@@ -5327,7 +5426,7 @@ ipcMain.handle('git:branchCreate', async (_e, { root, name, base, checkout }) =>
   const nm = (name || '').trim();
   // Имя из пользовательского ввода: ведущий '-' git примет за флаг (как в git:clone выше),
   // а пробелы/спецсимволы — невалидный ref. Отсекаем до вызова с понятной ошибкой.
-  if (!nm || nm.startsWith('-') || /[\s~^:?*\[\\]/.test(nm) || nm.includes('..')) return { ok: false, error: 'Недопустимое имя ветки' };
+  if (!nm || nm.startsWith('-') || /[\s~^:?*[\\]/.test(nm) || nm.includes('..')) return { ok: false, error: 'Недопустимое имя ветки' };
   return gitRun(root, checkout ? ['checkout', '-b', nm, base] : ['branch', nm, base]);
 });
 ipcMain.handle('git:init', async (_e, root) => gitRun(root, ['init']));
@@ -5516,7 +5615,7 @@ ipcMain.handle('git:commitFileDiff', async (_e, { root, hash, file } = {}) => {
 
 // ---------------------------------------------------------------- git: branches (local + remote) & ops (PhpStorm-style)
 // Отсекаем argv-инъекшн/невалидные ref'ы (ведущий '-', пробелы/спецсимволы, '..'); '/' разрешён (remote/feature).
-const BAD_REF = (s) => !s || String(s).startsWith('-') || /[\s~^:?*\[\\]/.test(String(s)) || String(s).includes('..');
+const BAD_REF = (s) => !s || String(s).startsWith('-') || /[\s~^:?*[\\]/.test(String(s)) || String(s).includes('..');
 ipcMain.handle('git:branches', async (_e, root) => {
   if (!root || !fs.existsSync(root)) return { repo: false };
   const top = await git(root, ['rev-parse', '--show-toplevel']);
@@ -5659,7 +5758,7 @@ ipcMain.handle('containers:remoteSet', async (_e, { rhId, engine } = {}) => {
     };
   };
   const socks = scan.sockets || {};
-  let sockPath = null;
+  let sockPath;
   if (engine === 'docker' || engine === 'podman') { // явный выбор (из модалки или запомненный) — строго его сокет
     sockPath = socks[engine] || null;
     if (!sockPath && denied[engine]) return await deniedErr(engine);

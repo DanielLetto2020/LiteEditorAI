@@ -4,6 +4,7 @@
 // PTY общие (lite.pty.*), id вида `__scratch__::tN`; main маршрутизирует pty:data в окно-владельца.
 // host: { settings, termTheme, layout, GUTTER, saveUiState, refitActiveTerminal, closeOtherPanels }
 import { el, iconBtn, icon, showPrompt } from '../ui.js';
+import { t } from '../i18n.js';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { SearchAddon } from '@xterm/addon-search';
@@ -87,7 +88,7 @@ export function initScratch(host) {
       return true;
     });
     container.addEventListener('contextmenu', (e) => { e.preventDefault(); termMenu(e.clientX, e.clientY, term, id); });
-    scratchTerms.set(id, { term, fit, search, container, name: name || ('Терминал ' + (scratchSessions.length + 1)) });
+    scratchTerms.set(id, { term, fit, search, container, name: name || t('Терминал {0}', scratchSessions.length + 1) });
     scratchSessions.push(id);
     return id;
   }
@@ -118,7 +119,7 @@ export function initScratch(host) {
     bar.appendChild(add);
   }
   function switchScratchTab(sid) { if (!scratchTerms.has(sid)) return; scratchActiveId = sid; showActiveScratch(); }
-  function addScratchTab() { scratchActiveId = createScratchSession('Терминал ' + (scratchSessions.length + 1)); showActiveScratch(); }
+  function addScratchTab() { scratchActiveId = createScratchSession(t('Терминал {0}', scratchSessions.length + 1)); showActiveScratch(); }
   function closeScratchTab(sid) {
     if (scratchSessions.length <= 1) return; // keep ≥1
     lite.pty.kill(sid);

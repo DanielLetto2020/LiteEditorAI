@@ -3,7 +3,7 @@
 // Вивер и дерево делят ИЗМЕНЯЕМОЕ состояние (currentFile/gitFiles/expandedDirs/dirty), поэтому
 // живут вместе в одном модуле. DOM-скелет — в module.html (#viewer-pane/#tree-pane/#commit-pane/
 // #log-pane); host — window-host из module-entry.js; действия редактора идут через lite.editorBus.
-import { el, svgEl, icon, toast, showConfirm, showPrompt, baseName, makeModal } from '../ui.js';
+import { el, icon, toast, showConfirm, showPrompt, baseName, makeModal, extOf, fileTypeSvg, folderTypeSvg } from '../ui.js';
 import { languageFor, ensureLanguage } from '../codeedit.js';
 import { initGit } from './git.js';
 import { EditorView, keymap, lineNumbers, highlightActiveLine, highlightActiveLineGutter, drawSelection, gutter, GutterMarker, rectangularSelection, crosshairCursor, Decoration, ViewPlugin, WidgetType } from '@codemirror/view';
@@ -589,15 +589,24 @@ export function initFiles(host) {
   // ---------------------------------------------------------------- viewer preview (md/image/html)
   // Чистим распарсенный markdown ПЕРЕД вставкой в DOM. CSP уже блокирует исполнение инлайн-скриптов,
   // это второй рубеж (и страховка, если CSP когда-нибудь ослабят): убираем активные узлы и обработчики.
+  // Работаем по инертному DocumentFragment (<template>): его разметка не «оживает» — ресурсы не
+  // запрашиваются и обработчики не навешиваются, поэтому чистка гарантированно опережает живой DOM.
   function sanitizePreviewHtml(root) {
-    root.querySelectorAll('script, iframe, frame, object, embed, base, link, meta').forEach((n) => n.remove());
+    root.querySelectorAll('script, style, iframe, frame, object, embed, base, link, meta, form').forEach((n) => n.remove());
     root.querySelectorAll('*').forEach((n) => {
       for (const attr of [...n.attributes]) {
         const name = attr.name.toLowerCase();
         if (name.startsWith('on')) n.removeAttribute(attr.name); // инлайн-обработчики (onerror/onclick/…)
-        else if (/^(href|src|xlink:href)$/.test(name) && /^\s*javascript:/i.test(attr.value)) n.removeAttribute(attr.name);
+        else if (/^(href|src|xlink:href)$/.test(name) && /^(javascript|vbscript):/i.test(attr.value.replace(/[\s-]/g, ''))) n.removeAttribute(attr.name);
       }
     });
+  }
+  // Разобрать markdown в ИНЕРТНЫЙ фрагмент, вычистить его и только потом отдать наружу.
+  function safeMarkdownFragment(md) {
+    const tpl = document.createElement('template');
+    try { tpl.innerHTML = marked.parse(md || '', { breaks: true }); } catch (_) { return null; }
+    sanitizePreviewHtml(tpl.content);
+    return tpl.content;
   }
   // Наполнить #preview-view рендером (без переключения display/previewMode) — переиспользуется полным превью и сплитом.
   async function fillPreview(kind, file, content) {
@@ -613,8 +622,8 @@ export function initFiles(host) {
       else { const img = el('img', 'prev-img'); img.src = res.url; view.appendChild(img); }
     } else if (kind === 'markdown') {
       const div = el('div', 'prev-md');
-      try { div.innerHTML = marked.parse(content || '', { breaks: true }); } catch (_) { div.textContent = content || ''; }
-      sanitizePreviewHtml(div); // defense-in-depth поверх CSP: вырезать <script>/iframe/инлайн-обработчики/javascript:
+      const frag = safeMarkdownFragment(content); // разбор+чистка в инертном template, потом в живой DOM
+      if (frag) div.replaceChildren(...frag.childNodes); else div.textContent = content || '';
       const base = dirName(file);
       div.querySelectorAll('img').forEach((im) => { // resolve relative image paths from the file's folder
         const s = im.getAttribute('src') || '';
@@ -625,8 +634,11 @@ export function initFiles(host) {
     } else if (kind === 'html') {
       const frame = document.createElement('iframe');
       frame.className = 'prev-frame';
-      // load from disk (not srcdoc) so relative css/js/img resolve against the project folder
-      frame.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-forms allow-popups allow-modals');
+      // load from disk (not srcdoc) so relative css/js/img resolve against the project folder.
+      // allow-same-origin НЕ выдаём: вместе с allow-scripts эта пара снимает песочницу целиком
+      // (страница получает свой origin и доступ к parent/storage). Относительные пути и скрипты
+      // внутри превью работают и без него — резолв идёт от URL документа, а не от origin.
+      frame.setAttribute('sandbox', 'allow-scripts allow-forms allow-popups allow-modals');
       frame.src = fileUrl(file);
       view.appendChild(frame);
     }
@@ -1121,28 +1133,6 @@ export function initFiles(host) {
   }
 
   // ---------------------------------------------------------------- file tree
-  const EXT_COLORS = {
-    js: '#e8d44d', jsx: '#e8d44d', mjs: '#e8d44d', cjs: '#e8d44d',
-    ts: '#4a9be0', tsx: '#4a9be0',
-    py: '#5fa6dd', json: '#cbcb41', md: '#9fb3a9', markdown: '#9fb3a9',
-    html: '#e3733b', htm: '#e3733b', css: '#9b6bd6', scss: '#cf6ba0',
-    png: '#b07cd6', jpg: '#b07cd6', jpeg: '#b07cd6', gif: '#b07cd6', webp: '#b07cd6', svg: '#ffb13b',
-    sh: '#89e051', bash: '#89e051', yml: '#dd6c6c', yaml: '#dd6c6c', toml: '#b07a4a',
-    lock: '#7a8a82', txt: '#9fb3a9', env: '#e2c08d', sql: '#e38f3b', vue: '#41b883', go: '#4ad0e0', rs: '#dd8855',
-  };
-  function extOf(name) { if (!name) return ''; const i = name.lastIndexOf('.'); return i > 0 ? name.slice(i + 1).toLowerCase() : ''; }
-  function colorFor(name) { return EXT_COLORS[extOf(name)] || '#8aa79a'; }
-  function fileSvg(color) {
-    return svgEl(`<svg class="ti" viewBox="0 0 16 16" width="14" height="14">
-      <path fill="${color}" opacity="0.95" d="M3.5 1.4h5.1L13 5.3v9.3a1 1 0 0 1-1 1H3.5a1 1 0 0 1-1-1V2.4a1 1 0 0 1 1-1z"/>
-      <path fill="#06120c" opacity="0.4" d="M8.6 1.4 13 5.3H9.1a.5.5 0 0 1-.5-.5z"/></svg>`);
-  }
-  function folderSvg(open) {
-    const c = open ? '#7fd9ad' : '#56b98a';
-    return svgEl(`<svg class="ti" viewBox="0 0 16 16" width="14" height="14">
-      <path fill="${c}" d="M1.4 3.6h4.2l1.2 1.5H14.6a1 1 0 0 1 1 1v6.4a1 1 0 0 1-1 1H1.4a1 1 0 0 1-1-1V4.6a1 1 0 0 1 1-1z"/></svg>`);
-  }
-
   async function renderTree(proj) {
     $('#tree-title').textContent = proj.name.toUpperCase();
     await loadGitStatus(proj);
@@ -1213,20 +1203,20 @@ export function initFiles(host) {
         row.style.paddingLeft = indent + 'px';
         row.dataset.path = ent.path;
         const chev = el('span', 'tree-chev', '▸');
-        let icon = folderSvg(false);
+        let folderIc = folderTypeSvg(false);
         const name = el('span', 'tree-name', ent.name);
         const gc = dirGitClass(ent.path); if (gc) name.classList.add(gc);
-        row.appendChild(chev); row.appendChild(icon); row.appendChild(name);
+        row.appendChild(chev); row.appendChild(folderIc); row.appendChild(name);
         const childBox = el('div', 'tree-children');
         childBox.style.display = 'none';
         const expand = async () => {
           if (childBox.childElementCount === 0) await buildDir(ent.path, childBox, depth + 1);
           childBox.style.display = 'block'; chev.textContent = '▾';
-          const nx = folderSvg(true); icon.replaceWith(nx); icon = nx;
+          const nx = folderTypeSvg(true); folderIc.replaceWith(nx); folderIc = nx;
         };
         const collapse = () => {
           childBox.style.display = 'none'; chev.textContent = '▸';
-          const nx = folderSvg(false); icon.replaceWith(nx); icon = nx;
+          const nx = folderTypeSvg(false); folderIc.replaceWith(nx); folderIc = nx;
         };
         row.addEventListener('click', async () => {
           if (expandedDirs.has(ent.path)) { expandedDirs.delete(ent.path); collapse(); }
@@ -1241,7 +1231,7 @@ export function initFiles(host) {
         row.style.paddingLeft = indent + 'px';
         row.dataset.path = ent.path;
         row.appendChild(el('span', 'tree-chev', ''));
-        row.appendChild(fileSvg(colorFor(ent.name)));
+        row.appendChild(fileTypeSvg(ent.name));
         const name = el('span', 'tree-name', ent.name);
         const gc = gitClassFor(ent.path); if (gc) name.classList.add(gc);
         row.appendChild(name);
@@ -1269,7 +1259,9 @@ export function initFiles(host) {
   function treeNewFile(parent) {
     showPrompt('Новый файл', 'Имя файла (можно путь: src/app.js)', '', async (name) => {
       const r = await lite.fs.create(parent, name, false);
-      if (r && !r.error) { await refreshTree(); if (r.path) { if (!viewerOpen) setViewerOpen(true); openFile(r.path); } }
+      // через openFileGuarded, а не openFile: при открытой плашке-конфликте автосейв выключен,
+      // и прямое открытие нового файла молча теряло несохранённые правки текущего
+      if (r && !r.error) { await refreshTree(); if (r.path) openFileGuarded(r.path); }
       return r;
     });
   }
@@ -1392,7 +1384,7 @@ export function initFiles(host) {
       return syms;
     }
     if (ext === 'css' || ext === 'scss') {
-      for (let i = 0; i < lines.length; i++) { if (/^\s*@(media|keyframes|supports|import|font-face)/.test(lines[i])) continue; const m = /^([.#&:\[a-zA-Z][^{};]*?)\s*\{/.exec(lines[i]); if (m) push(i + 1, m[1].trim().slice(0, 60), 'rule'); }
+      for (let i = 0; i < lines.length; i++) { if (/^\s*@(media|keyframes|supports|import|font-face)/.test(lines[i])) continue; const m = /^([.#&:[a-zA-Z][^{};]*?)\s*\{/.exec(lines[i]); if (m) push(i + 1, m[1].trim().slice(0, 60), 'rule'); }
       return syms;
     }
     // JS/TS/JSX и прочие C-подобные
@@ -1822,7 +1814,7 @@ export function initFiles(host) {
       tab.title = t;
       const gc = gitClassFor(t); // та же цветовая кодировка статуса, что и в дереве
       const nm = el('span', 'ftab-name' + (gc ? ' ' + gc : ''), baseName(t));
-      tab.appendChild(fileSvg(colorFor(t)));
+      tab.appendChild(fileTypeSvg(t));
       tab.appendChild(nm);
       const x = el('button', 'ftab-x'); x.title = pinnedTabs.has(t) ? 'Закреплён (ПКМ — меню)' : 'Закрыть';
       x.appendChild(icon(pinnedTabs.has(t) ? 'flag' : 'x', 12));
@@ -2161,8 +2153,8 @@ export function initFiles(host) {
       commitDiff: (projPath, hash, file, label) => showCommitDiff(projPath, hash, file, label), // дифф файла из коммита (дерево лога)
       showRawDiff: (label, diff) => showRawDiff(label, diff), // произвольный дифф в центре (diff ветки vs рабочее дерево)
       showCommitPane: () => showCommitPane(),         // git-компонент просит показать секцию коммита (после merge/resolve)
-      fileIcon: (name) => fileSvg(colorFor(name)),    // иконки типов файлов для дерева изменённых файлов коммита
-      folderIcon: () => folderSvg(false),
+      fileIcon: (name) => fileTypeSvg(name),    // иконки типов файлов для дерева изменённых файлов коммита
+      folderIcon: () => folderTypeSvg(false),
       // открыть изменённый файл из списка коммита в вивере (контекст-меню git-секции)
       openFile: (abs, line) => openFileGuarded(abs, line),
       menuRow, placeMenu, closeMenus, // меню-слой окна вивера — для контекст-меню строки файла

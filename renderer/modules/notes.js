@@ -32,18 +32,23 @@ const bodyOf = (t) => { const s = (t || ''); const i = s.indexOf('\n'); return i
 const genId = () => 'n' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
 const escAttr = (s) => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
 
-// markdown тела задачи (defense-in-depth поверх CSP: вырезаем активные узлы/обработчики; ссылки — наружу)
+// markdown тела задачи (defense-in-depth поверх CSP: вырезаем активные узлы/обработчики; ссылки — наружу).
+// Парсим в ИНЕРТНЫЙ <template>: там разметка не «оживает» (ресурсы не запрашиваются, обработчики не
+// навешиваются), поэтому чистка гарантированно выполняется ДО попадания узлов в живой DOM. Текст задачи
+// приходит в том числе с пульта и от MCP-сервера, так что доверять ему нельзя.
 function mdToSafeHtml(src) {
   const div = el('div', 'nt-md');
-  try { div.innerHTML = marked.parse(src || '', { breaks: true }); } catch (_) { div.textContent = src || ''; }
-  div.querySelectorAll('script, iframe, frame, object, embed, base, link, meta').forEach((n) => n.remove());
-  div.querySelectorAll('*').forEach((n) => {
+  const tpl = document.createElement('template');
+  try { tpl.innerHTML = marked.parse(src || '', { breaks: true }); } catch (_) { div.textContent = src || ''; return div; }
+  tpl.content.querySelectorAll('script, style, iframe, frame, object, embed, base, link, meta, form').forEach((n) => n.remove());
+  tpl.content.querySelectorAll('*').forEach((n) => {
     for (const a of [...n.attributes]) {
       const nm = a.name.toLowerCase();
       if (nm.startsWith('on')) n.removeAttribute(a.name);
-      else if (/^(href|src|xlink:href)$/.test(nm) && /^\s*javascript:/i.test(a.value)) n.removeAttribute(a.name);
+      else if (/^(href|src|xlink:href)$/.test(nm) && /^(javascript|vbscript):/i.test(a.value.replace(/[\s-]/g, ''))) n.removeAttribute(a.name);
     }
   });
+  div.replaceChildren(...tpl.content.childNodes);
   div.addEventListener('click', (e) => { const a = e.target.closest('a'); if (a && /^https?:/i.test(a.href)) { e.preventDefault(); lite.openExternal(a.href); } });
   return div;
 }
@@ -480,7 +485,7 @@ export function initNotes(host) {
     });
   }
   async function copyText(note) {
-    try { await navigator.clipboard.writeText(note.text || ''); toast('Скопировано в буфер'); }
+    try { lite.copyText(note.text || ''); toast('Скопировано в буфер'); }
     catch (_) { toast('Не удалось скопировать', { kind: 'err' }); }
   }
   function setView(v) {

@@ -446,7 +446,7 @@ export function initCompany(host) {
       const list = el('div', 'co-difffiles');
       for (const f of r.files) {
         const row = el('button', 'co-diffrow', f);
-        row.onclick = () => { const sep = p.path.includes('\\') ? '\\' : '/'; openInViewer && openInViewer(p.path.replace(/[\/]+$/, '') + sep + f.split('/').join(sep)); close(); };
+        row.onclick = () => { const sep = p.path.includes('\\') ? '\\' : '/'; openInViewer && openInViewer(p.path.replace(/\/+$/, '') + sep + f.split('/').join(sep)); close(); };
         list.appendChild(row);
       }
       root.appendChild(list);

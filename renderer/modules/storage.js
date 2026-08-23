@@ -37,7 +37,7 @@ const IMG_EXT = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'ico
 const extOf = (name) => String(name).split('.').pop().toLowerCase();
 
 export function initStorage(host) {
-  const { settings, activeProject, createCodeEditor, STORE, persist,
+  const { activeProject, createCodeEditor, STORE, persist,
     menuRow, placeMenu, closeMenus, sendToTerminal, openInViewer,
     showConfirm: hostConfirm } = host;
   const confirm2 = hostConfirm || showConfirm;
@@ -539,7 +539,6 @@ export function initStorage(host) {
     delete n.childBox.dataset.loaded;
     if (expanded.has(nodeKey(bucket, prefix))) await expandNode(n.chev, n.childBox, bucket, prefix, n.depth);
   }
-  const parentPrefix = (prefix) => String(prefix || '').replace(/[^/]*\/$/, '');
   // Подсветка активного узла дерева — после каждого перехода.
   function markTreeActive() {
     const activeKey = curBucket != null ? nodeKey(curBucket, curPrefix) : null;
@@ -789,8 +788,8 @@ export function initStorage(host) {
     dd.appendChild(menuRow('external-link', 'Открыть в вивере редактора', () => { closeMenus(); stageToViewer(fo); }));
     dd.appendChild(menuRow('download', 'Скачать…', () => { closeMenus(); downloadObjects([fo]); }));
     if (cp.presign || cp.acl || cp.publicUrl) dd.appendChild(menuRow('link', 'Доступ и ссылки…', () => { closeMenus(); linkModal(fo.key); }));
-    dd.appendChild(menuRow('copy', 'Копировать ключ', () => { closeMenus(); navigator.clipboard.writeText(fo.key); toast('Ключ скопирован'); }));
-    dd.appendChild(menuRow('copy', 'Копировать s3:// URI', () => { closeMenus(); navigator.clipboard.writeText(`s3://${curBucket}/${fo.key}`); toast('URI скопирован'); }));
+    dd.appendChild(menuRow('copy', 'Копировать ключ', () => { closeMenus(); lite.copyText(fo.key); toast('Ключ скопирован'); }));
+    dd.appendChild(menuRow('copy', 'Копировать s3:// URI', () => { closeMenus(); lite.copyText(`s3://${curBucket}/${fo.key}`); toast('URI скопирован'); }));
     dd.appendChild(menuRow('terminal', 'Путь в терминал', () => { closeMenus(); try { sendToTerminal(`s3://${curBucket}/${fo.key}`); toast('Отправлено в терминал'); } catch (_) { toast('Терминал недоступен', { kind: 'err' }); } }));
     if (canWrite()) {
       dd.appendChild(menuRow('copy', 'Копировать в…', () => { closeMenus(); copyMoveModal(fo, false); }));
@@ -806,7 +805,7 @@ export function initStorage(host) {
     const dd = el('div', 'menu-dropdown');
     dd.appendChild(menuRow('folder', 'Открыть', () => { closeMenus(); navigateTo(curBucket, d.prefix); }));
     dd.appendChild(menuRow('download', 'Скачать папку…', () => { closeMenus(); downloadPrefix(d); }));
-    dd.appendChild(menuRow('copy', 'Копировать префикс', () => { closeMenus(); navigator.clipboard.writeText(d.prefix); toast('Префикс скопирован'); }));
+    dd.appendChild(menuRow('copy', 'Копировать префикс', () => { closeMenus(); lite.copyText(d.prefix); toast('Префикс скопирован'); }));
     if (canWrite()) {
       dd.appendChild(menuRow('trash', 'Удалить со всем содержимым', () => { closeMenus(); deletePrefix(d); }, 'danger'));
     }
@@ -989,7 +988,7 @@ export function initStorage(host) {
   // ---------------- доступ и ссылки ----------------
   async function linkModal(key) {
     const cp = caps();
-    const { m, close } = makeModal(`<h2>Доступ и ссылки</h2><div id="stl" class="st-links"></div>`);
+    const { m } = makeModal(`<h2>Доступ и ссылки</h2><div id="stl" class="st-links"></div>`);
     m.classList.add('db-modal');
     const box = m.querySelector('#stl');
     box.appendChild(el('div', 'st-linkkey', key));
@@ -1014,7 +1013,7 @@ export function initStorage(host) {
         out.innerHTML = '';
         const inp = el('input', 'st-linkinp'); inp.value = r.url; inp.readOnly = true;
         const cpBtn = el('button', 'btn', 'Копировать');
-        cpBtn.onclick = () => { navigator.clipboard.writeText(r.url); toast('Ссылка скопирована'); };
+        cpBtn.onclick = () => { lite.copyText(r.url); toast('Ссылка скопирована'); };
         out.append(inp, cpBtn);
         out.appendChild(el('div', 'st-dim', `Действует до ${fmtDate(r.expiresAt)}. Ссылка даёт доступ любому, кто её получит.`));
       };
@@ -1065,7 +1064,7 @@ export function initStorage(host) {
         pubRow.appendChild(el('span', 'st-linklabel', 'Публичная ссылка:'));
         const inp = el('input', 'st-linkinp'); inp.value = u.url; inp.readOnly = true;
         const cpBtn = el('button', 'btn', 'Копировать');
-        cpBtn.onclick = () => { navigator.clipboard.writeText(u.url); toast('Ссылка скопирована'); };
+        cpBtn.onclick = () => { lite.copyText(u.url); toast('Ссылка скопирована'); };
         pubRow.append(inp, cpBtn);
       };
       setRow(!!a.public); fillPub(!!a.public);
@@ -1082,6 +1081,8 @@ export function initStorage(host) {
   function startUploads(paths) {
     if (!curBucket) { toast('Сначала откройте бакет', { kind: 'err' }); return; }
     const bucket = curBucket, prefix = curPrefix; // куда РЕАЛЬНО грузим — для точечного рефреша по завершении
+    // Объект с таким же ключом будет перезаписан безвозвратно — у S3 нет корзины, поэтому спрашиваем.
+    const existing = paths.map((p) => baseName(p)).filter((nm) => listing.files.some((f) => f.name === nm));
     const run = () => {
       for (const p of paths) {
         const name = baseName(p);
@@ -1094,8 +1095,15 @@ export function initStorage(host) {
       }
       paintTransfersBar();
     };
-    if (activeConn.isProd) guardedConfirm('Загрузить в PRODUCTION?', `Файлов: ${paths.length} → «${bucket}/${prefix}».`, 'Загрузить', run);
-    else run();
+    const start = () => {
+      if (!existing.length) { run(); return; }
+      const list = existing.slice(0, 5).join(', ') + (existing.length > 5 ? ` и ещё ${existing.length - 5}` : '');
+      guardedConfirm('Перезаписать существующие объекты?',
+        `В «${bucket}/${prefix}» уже есть: ${list}. Старая версия будет заменена безвозвратно — корзины у S3 нет.`,
+        'Перезаписать', run);
+    };
+    if (activeConn.isProd) guardedConfirm('Загрузить в PRODUCTION?', `Файлов: ${paths.length} → «${bucket}/${prefix}».`, 'Загрузить', start);
+    else start();
   }
   async function downloadObjects(objs) {
     const r = await lite.storage.pickDownloadDir();
@@ -1223,7 +1231,7 @@ export function initStorage(host) {
   });
 
   // ============================================================ контракт панели
-  function setOpen(open, opts = {}) {
+  function setOpen(open, _opts = {}) {
     stOpen = !!open;
     const pane = $('#storage-pane');
     if (pane) pane.classList.toggle('hidden', !stOpen);
