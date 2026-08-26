@@ -380,6 +380,31 @@ body.viewer-zen #vcs-topbar { display: none !important; }
 .card-tail { display: flex; align-items: center; gap: 0; flex: 0 0 auto; }
 /* ★ и ⋮ — всегда видимы (ховер-раскрывашка убрана; модули — в квикбаре под терминалом) */
 .card-acts { display: flex; align-items: center; gap: 5px; flex: 0 0 auto; }
+/* Метка «sync»: проект синхронизируется с сервером. Приглушена, как и звезда
+   в неактивном состоянии, — это признак, а не действие, нажимать её нечего. */
+.card-acts .sync-mark { flex: 0 0 auto; opacity: .8; }
+/* Зелёная — проект синхронизируется, серая — ещё нет; серая кликабельна. */
+.card-acts .sync-mark.on { color: var(--add); opacity: 1; }
+.card-acts .sync-mark.off { color: var(--text-mute); opacity: .55; cursor: pointer; }
+.card:hover .sync-mark.off { opacity: 1; }
+
+/* Окно подключения проекта к синхронизации. */
+.lk-steps { list-style: none; margin: 12px 0 0; padding: 0; font-size: 13px; }
+.lk-steps li { display: flex; gap: 8px; align-items: baseline; padding: 5px 0; flex-wrap: wrap; }
+/* Название шага не ломаем: рвётся пояснение, оно длиннее и терпит перенос. */
+.lk-steps .title { flex: 0 0 auto; white-space: nowrap; }
+.lk-steps .what { flex: 1 1 auto; min-width: 0; }
+.lk-steps .mark { flex: 0 0 auto; width: 16px; text-align: center; color: var(--text-dim); }
+.lk-steps li.ok .mark { color: var(--add); }
+.lk-steps li.bad .mark { color: var(--danger); }
+.lk-steps li.ask .mark { color: var(--warn); }
+.lk-steps .what { color: var(--text-dim); }
+.lk-ask { margin-top: 12px; padding: 10px; border: 1px solid var(--border); border-radius: 8px; font-size: 13px; }
+.lk-ask .files { color: var(--text-mute); font-size: 12px; margin: 6px 0; word-break: break-all; }
+.lk-ask .row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+.lk-msg { margin-top: 10px; font-size: 13px; min-height: 18px; }
+.lk-msg.bad { color: var(--danger); }
+.lk-msg.good { color: var(--add); }
 
 .card-add { text-align: center; color: var(--green); border-style: dashed; background: transparent; font-weight: 600; }
 .card-add:hover { background: var(--hover); }

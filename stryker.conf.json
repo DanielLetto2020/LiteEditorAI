@@ -15,7 +15,12 @@
     "!locales/**",
     "!package.json"
   ],
-  "reporters": ["html", "json", "clear-text", "progress"],
+  "reporters": [
+    "html",
+    "json",
+    "clear-text",
+    "progress"
+  ],
   "htmlReporter": {
     "fileName": "reports/mutation/index.html"
   },
@@ -29,7 +34,8 @@
     "lib/portparse.js",
     "lib/dbdetect.js",
     "lib/fsmeta.js",
-    "lib/i18n.js"
+    "lib/i18n.js",
+    "lib/sync.js"
   ],
   "_comment_thresholds": "break: null — прогон намеренно не падает сам. Планку держит храповик std-gauntlet (.claude/.ratchet.json): ухудшать нельзя, улучшать не обязательно. high/low влияют только на цвет отчёта.",
   "thresholds": {

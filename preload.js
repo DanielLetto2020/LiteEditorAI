@@ -17,6 +17,20 @@ contextBridge.exposeInMainWorld('lite', {
   // Forward renderer-side errors/events to the main-process file log.
   log: (level, ...args) => ipcRenderer.send('log:renderer', { level, args }),
 
+  // Какие из этих проектов домашняя машина синхронизирует с сервером. Сопоставление
+  // делает главный процесс: сравнивать надо разрешённые пути, здесь fs недоступен.
+  sync: {
+    match: (paths) => ipcRenderer.invoke('sync:match', paths),
+    // подключение проекта: осмотр (что произойдёт) и сама процедура по шагам
+    inspect: (projectPath) => ipcRenderer.invoke('sync:inspect', projectPath),
+    link: (projectPath, prefer) => ipcRenderer.invoke('sync:link', { path: projectPath, prefer }),
+    onLinkStep: (cb) => {
+      const h = (_e, step) => cb(step);
+      ipcRenderer.on('sync:linkStep', h);
+      return () => ipcRenderer.removeListener('sync:linkStep', h);
+    },
+  },
+
   // Локализация: словарь берём СИНХРОННО (до первого прохода по DOM — иначе
   // интерфейс мигнёт русским), смена языка приходит событием во все окна.
   i18n: {
