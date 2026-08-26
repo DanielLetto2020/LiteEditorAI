@@ -422,6 +422,8 @@ ipcMain.handle('sync:match', (_e, paths) => {
 // есть настройки синхронизации, а сам вызов обёрнут в try/catch (см. syncAvailable).
 let linker = null;
 function linkerModule() {
+  // @ts-ignore -- модуля намеренно нет в публичном дереве (каталог приватный),
+  // и проверка типов на CI не должна падать на его отсутствии.
   if (!linker) linker = require('./scripts/server-sync/lite-sync-link.js');
   return linker;
 }

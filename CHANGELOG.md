@@ -3,7 +3,7 @@
 Все заметные изменения LiteEditorAI. Формат — [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/),
 нумерация — [SemVer](https://semver.org/lang/ru/). Проект в стадии **alpha**.
 
-## [1.1.127] — 2026-08-26
+## [1.1.128] — 2026-08-26
 
 **Задачи Jira из нескольких аккаунтов прямо в редакторе, синхронизация рабочих копий между
 машинами — и закрытые предупреждения безопасности во всех зависимостях.**
@@ -44,6 +44,8 @@
 - Локализация дополнена: английский и упрощённый китайский снова покрывают интерфейс на 100 %.
 - `node-pty` пересобран под новый Electron; гейты стиля, типов, тестов и мутационного
   тестирования (80,2 % при пороге 79) зелёные.
+- Проверка типов больше не падает там, где нет приватного каталога синхронизации: модуль
+  подключается по факту наличия, а его отсутствие — штатный случай, а не ошибка сборки.
 
 ## [1.1.123] — 2026-08-03
 
@@ -2268,7 +2270,7 @@ AGENTS.md как граф на канве), и **цветной пульт** —
 [1.0.97]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.0.97
 [1.0.96]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.0.96
 [1.1.123]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.1.123
-[1.1.127]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.1.127
+[1.1.128]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.1.128
 [1.1.121]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.1.121
 [1.1.119]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.1.119
 [1.1.116]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.1.116
