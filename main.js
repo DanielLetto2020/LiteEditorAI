@@ -415,6 +415,11 @@ ipcMain.handle('sync:match', (_e, paths) => {
 // Подключение проекта к синхронизации. Процедура одна на оба редактора и живёт
 // рядом с демоном (scripts/server-sync/lite-sync-link.js): здесь мы на домашней
 // машине, поэтому запускаем её сразу, без заявок через сервер.
+// ⚠️ Проверка whitelist перед релизом (docs/RELEASE.md) показывает этот require
+// как `MISS scripts/server-sync/lite-sync-link.js` — и это ОЖИДАЕМО: каталог
+// приватный, в публичные сборки он не уезжает и в `build.files` ему не место.
+// Отсутствие модуля безопасно: до require дело доходит только когда на машине
+// есть настройки синхронизации, а сам вызов обёрнут в try/catch (см. syncAvailable).
 let linker = null;
 function linkerModule() {
   if (!linker) linker = require('./scripts/server-sync/lite-sync-link.js');
