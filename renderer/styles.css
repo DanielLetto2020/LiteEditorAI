@@ -380,6 +380,31 @@ body.viewer-zen #vcs-topbar { display: none !important; }
 .card-tail { display: flex; align-items: center; gap: 0; flex: 0 0 auto; }
 /* ★ и ⋮ — всегда видимы (ховер-раскрывашка убрана; модули — в квикбаре под терминалом) */
 .card-acts { display: flex; align-items: center; gap: 5px; flex: 0 0 auto; }
+/* Метка «sync»: проект синхронизируется с сервером. Приглушена, как и звезда
+   в неактивном состоянии, — это признак, а не действие, нажимать её нечего. */
+.card-acts .sync-mark { flex: 0 0 auto; opacity: .8; }
+/* Зелёная — проект синхронизируется, серая — ещё нет; серая кликабельна. */
+.card-acts .sync-mark.on { color: var(--add); opacity: 1; }
+.card-acts .sync-mark.off { color: var(--text-mute); opacity: .55; cursor: pointer; }
+.card:hover .sync-mark.off { opacity: 1; }
+
+/* Окно подключения проекта к синхронизации. */
+.lk-steps { list-style: none; margin: 12px 0 0; padding: 0; font-size: 13px; }
+.lk-steps li { display: flex; gap: 8px; align-items: baseline; padding: 5px 0; flex-wrap: wrap; }
+/* Название шага не ломаем: рвётся пояснение, оно длиннее и терпит перенос. */
+.lk-steps .title { flex: 0 0 auto; white-space: nowrap; }
+.lk-steps .what { flex: 1 1 auto; min-width: 0; }
+.lk-steps .mark { flex: 0 0 auto; width: 16px; text-align: center; color: var(--text-dim); }
+.lk-steps li.ok .mark { color: var(--add); }
+.lk-steps li.bad .mark { color: var(--danger); }
+.lk-steps li.ask .mark { color: var(--warn); }
+.lk-steps .what { color: var(--text-dim); }
+.lk-ask { margin-top: 12px; padding: 10px; border: 1px solid var(--border); border-radius: 8px; font-size: 13px; }
+.lk-ask .files { color: var(--text-mute); font-size: 12px; margin: 6px 0; word-break: break-all; }
+.lk-ask .row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+.lk-msg { margin-top: 10px; font-size: 13px; min-height: 18px; }
+.lk-msg.bad { color: var(--danger); }
+.lk-msg.good { color: var(--add); }
 
 .card-add { text-align: center; color: var(--green); border-style: dashed; background: transparent; font-weight: 600; }
 .card-add:hover { background: var(--hover); }
@@ -2147,6 +2172,218 @@ textarea.sm-hdr { font-family: var(--mono, ui-monospace, monospace); font-size: 
 /* export buttons */
 .db-exp-btn { font-size: 10.5px; font-weight: 700; letter-spacing: .03em; color: var(--text-dim); background: var(--bg-input); border: 1px solid var(--border-strong); border-radius: 7px; padding: 4px 8px; cursor: pointer; }
 .db-exp-btn:hover { color: var(--green-bright); border-color: var(--border-accent); }
+
+/* ---- Jira module (мульти-аккаунт; переиспользует db-* для форм и топбара) */
+#jira-pane { flex: 0 0 560px; min-width: 340px; border-left: 1px solid var(--border); display: flex; flex-direction: column; background: var(--panel); }
+.jira-wrap { flex: 1; min-height: 0; overflow: auto; display: flex; flex-direction: column; gap: 10px; padding: 8px 10px 14px; }
+.jira-tabs { display: flex; gap: 4px; padding: 8px 10px 0; flex: 0 0 auto; }
+.jira-tab { background: none; border: none; color: var(--text-dim); font-size: 12px; font-weight: 600; padding: 6px 12px; border-radius: 10px; cursor: pointer; }
+.jira-tab:hover { background: var(--hover); color: var(--text); }
+.jira-tab.active { background: var(--surface-2); color: var(--text); }
+
+.jira-sel, .jira-filter, .jira-jql { background: var(--bg-input); color: var(--text); border: 1px solid var(--border-strong); border-radius: 10px; font-size: 12px; padding: 5px 8px; }
+.jira-filter { flex: 1; min-width: 0; }
+.jira-jql-row { display: flex; gap: 6px; }
+.jira-jql { flex: 1; min-width: 0; font-family: var(--tp-mono, monospace); }
+
+.jira-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.jira-chip { background: var(--surface); color: var(--text-mute); border: 1px solid var(--border); border-radius: 10px; font-size: 11.5px; padding: 3px 9px; cursor: pointer; }
+.jira-chip.on { color: var(--text); border-color: var(--border-accent); background: var(--accent-soft); }
+
+.jira-count { font-size: 11.5px; color: var(--text-mute); }
+.jira-list { display: flex; flex-direction: column; gap: 8px; }
+.jira-group { display: flex; flex-direction: column; gap: 2px; }
+.jira-group-name { flex: 1; min-width: 0; font-size: 11.5px; font-weight: 700; color: var(--text-dim); }
+.jira-group-count { font-size: 11px; color: var(--text-mute); }
+
+.jira-row { display: flex; align-items: center; gap: 8px; padding: 7px 8px; border-radius: 10px; cursor: pointer; }
+.jira-row:hover { background: var(--hover); }
+.jira-row-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.jira-row-line { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.jira-row-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.jira-row-acts { display: flex; gap: 2px; flex: 0 0 auto; opacity: 0; }
+.jira-row:hover .jira-row-acts { opacity: 1; }
+.jira-key { font-size: 11.5px; font-weight: 700; color: var(--green); font-family: var(--tp-mono, monospace); flex: 0 0 auto; }
+.jira-summary { font-size: 12.5px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.jira-badge { font-size: 10.5px; color: var(--text-dim); background: var(--surface-2); border-radius: 10px; padding: 2px 7px; }
+.jira-dim { font-size: 11px; color: var(--text-mute); }
+.jira-acc { font-style: italic; }
+.jira-warn-text { color: var(--warn); }
+
+/* Полоска категории статуса: три категории Jira одинаковы во всех инсталляциях,
+   поэтому цвет берётся от них, а не от имени статуса (оно у каждой компании своё). */
+.jira-cat { flex: 0 0 auto; width: 3px; height: 26px; border-radius: 10px; background: var(--text-mute); }
+.jira-cat-new { background: var(--text-dim); }
+.jira-cat-prog { background: var(--info); }
+.jira-cat-done { background: var(--green); }
+
+.jira-hint { font-size: 11px; color: var(--text-mute); line-height: 1.5; }
+.jira-check { display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--text-dim); }
+.jira-help { display: flex; flex-direction: column; gap: 8px; padding: 10px 2px; }
+.jira-help-title { font-size: 12.5px; font-weight: 700; color: var(--text); }
+.jira-help-body { font-size: 11.5px; color: var(--text-dim); line-height: 1.7; }
+
+.jira-acc-list { display: flex; flex-direction: column; gap: 8px; }
+.jira-acc-card { display: flex; align-items: center; gap: 10px; padding: 10px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); }
+.jira-acc-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.jira-acc-name { font-size: 12.5px; font-weight: 700; color: var(--text); }
+
+.jira-sec-title { font-size: 11.5px; font-weight: 700; color: var(--text-dim); margin-top: 6px; }
+.jira-sub { display: flex; flex-direction: column; gap: 2px; }
+.jira-sub-row { display: flex; align-items: center; gap: 8px; padding: 4px 6px; border-radius: 10px; min-width: 0; }
+.jira-sub-row:hover { background: var(--hover); }
+.jira-block-head { display: flex; align-items: center; gap: 8px; }
+/* Описание читается как в самой задаче: моноширинных вставок не навязываем, перенос строк
+   сохраняем, текст выделяется и копируется. */
+.jira-desc { font-size: 12.5px; color: var(--text); line-height: 1.65; white-space: pre-wrap; word-break: break-word; user-select: text; max-height: 46vh; overflow: auto; background: var(--surface); border-radius: 12px; padding: 12px 14px; }
+.jira-acts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.jira-comments { display: flex; flex-direction: column; gap: 8px; max-height: 300px; overflow: auto; }
+.jira-comment { background: var(--surface); border-radius: 12px; padding: 8px 10px; }
+.jira-comment-body { font-size: 12px; color: var(--text-dim); line-height: 1.55; white-space: pre-wrap; }
+.jira-comment-form { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; }
+.jira-comment-input { background: var(--bg-input); color: var(--text); border: 1px solid var(--border-strong); border-radius: 12px; font-size: 12px; padding: 8px; min-height: 64px; resize: vertical; font-family: inherit; }
+/* Два класса намеренно: общее .modal { width:460px } объявлено НИЖЕ по файлу и при равной
+   специфичности перебивало бы ширину карточки. */
+.modal.jira-issue-modal { width: 96vw; max-width: 96vw; max-height: 92vh; overflow: auto; }
+.jira-clickable { cursor: pointer; }
+.jira-clickable:hover { background: var(--hover); }
+
+/* Аккордеон групп: заголовок-кнопка + сворачиваемое тело (состояние живёт в jiraUi.collapsed) */
+.jira-group-head { display: flex; align-items: center; gap: 8px; width: 100%; padding: 6px 6px; background: none; border: none; border-radius: 10px; cursor: pointer; text-align: left; }
+.jira-group-head:hover { background: var(--hover); }
+.jira-caret { flex: 0 0 auto; color: var(--text-mute); transition: transform 0.12s ease; }
+.jira-group-head.off .jira-caret { transform: rotate(-90deg); }
+.jira-group-body { display: flex; flex-direction: column; gap: 2px; }
+.jira-board-sel.hidden { display: none; }
+.jira-board-tag { font-size: 10.5px; color: var(--text-dim); background: var(--accent-soft); border: 1px solid var(--border-accent); border-radius: 10px; padding: 1px 7px; }
+/* Метка активного спринта: выделяется сильнее доски — это «что в работе прямо сейчас». */
+.jira-sprint-tag { font-size: 10.5px; font-weight: 600; color: var(--info); border: 1px solid var(--info); border-radius: 10px; padding: 1px 7px; }
+.jira-sprint-sel.hidden { display: none; }
+
+/* Поля инсталляции: имена приходят из /field, состав у каждой компании свой */
+.jira-fields { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 2px 16px; }
+.jira-field-row { display: flex; gap: 10px; padding: 4px 6px; border-radius: 10px; }
+.jira-field-row:hover { background: var(--hover); }
+.jira-field-n { flex: 0 0 45%; font-size: 11.5px; color: var(--text-mute); }
+.jira-field-v { flex: 1; min-width: 0; font-size: 12px; color: var(--text); word-break: break-word; }
+/* Карточка задачи: шапка (кто/что) + две колонки — слева содержание, справа паспорт задачи */
+.jira-card-head { display: flex; flex-direction: column; gap: 8px; padding-bottom: 12px; border-bottom: 1px solid var(--border); }
+.jira-head-top { display: flex; align-items: center; gap: 8px; }
+.jira-head-key { background: none; border: none; padding: 0; cursor: pointer; font-family: var(--tp-mono, monospace); font-size: 13px; font-weight: 700; color: var(--green); }
+.jira-head-key:hover { text-decoration: underline; }
+.jira-head-prio { font-size: 11.5px; color: var(--text-mute); }
+.jira-head-space { flex: 1; }
+.jira-head-agent { flex: 0 0 auto; }
+.jira-head-title { font-size: 17px; font-weight: 700; color: var(--text); line-height: 1.35; }
+.jira-head-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.jira-status-pill { font-size: 11.5px; font-weight: 600; color: var(--accent-contrast); background: var(--text-dim); border-radius: 10px; padding: 3px 10px; }
+.jira-status-pill.jira-cat-prog { background: var(--info); }
+.jira-status-pill.jira-cat-done { background: var(--green); }
+
+/* Панель управления над вкладками: статус с переходами и учёт времени */
+.jira-ctl { display: flex; flex-wrap: wrap; gap: 10px; margin: 12px 0; }
+.jira-ctl-box { flex: 1 1 300px; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 8px 12px; }
+.jira-ctl-l { font-size: 10.5px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; color: var(--text-mute); }
+.jira-ctl-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 6px; }
+.jira-time-chip { display: flex; align-items: baseline; gap: 5px; background: var(--surface-2); border-radius: 10px; padding: 3px 9px; }
+.jira-time-progress { display: flex; align-items: center; gap: 6px; flex: 1 1 120px; min-width: 100px; }
+.jira-time-progress .jira-time-bar { flex: 1; margin-top: 0; }
+
+/* Вкладки карточки: содержание идёт во всю ширину модалки */
+.jira-card-tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); }
+.jira-card-tab { background: none; border: none; border-bottom: 2px solid transparent; margin-bottom: -1px; padding: 8px 14px; font-size: 12.5px; font-weight: 600; color: var(--text-dim); cursor: pointer; }
+.jira-card-tab:hover { color: var(--text); }
+.jira-card-tab.active { color: var(--text); border-bottom-color: var(--green); }
+.jira-card-pane { display: flex; flex-direction: column; gap: 16px; padding-top: 14px; }
+
+.jira-block { display: flex; flex-direction: column; gap: 7px; }
+.jira-block-title { font-size: 11px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; color: var(--text-mute); }
+/* Тип задачи — главный визуальный признак в строке, поэтому выделен сильнее прочих меток */
+.jira-type-badge { font-size: 10.5px; font-weight: 600; color: var(--text); background: var(--surface-2); border: 1px solid var(--border-accent); border-radius: 10px; padding: 1px 9px; white-space: nowrap; }
+
+/* Избранное: своя группа сверху, строки перетаскиваются */
+.jira-fav-head { cursor: default; }
+.jira-fav-ic { color: var(--star); }
+.jira-fav-row { cursor: grab; }
+.jira-fav-row.dragging { opacity: 0.45; }
+.jira-fav-row.drop-here { box-shadow: inset 0 2px 0 var(--green); }
+.jira-star.on { color: var(--star); }
+
+/* Выпадашки-чекбоксы «что показывать» (статусы, типы) */
+.jira-filters { display: flex; flex-wrap: wrap; gap: 8px; }
+.jira-dd { position: relative; }
+.jira-dd-btn { background: var(--bg-input); color: var(--text-dim); border: 1px solid var(--border-strong); border-radius: 10px; font-size: 11.5px; padding: 5px 10px; cursor: pointer; }
+.jira-dd-btn:hover { color: var(--text); }
+.jira-dd-btn.active { color: var(--green); border-color: var(--border-accent); }
+.jira-dd-pop { position: absolute; z-index: 40; top: calc(100% + 4px); left: 0; min-width: 240px; max-height: 320px; overflow: auto; background: var(--bg-pop); border: 1px solid var(--border-strong); border-radius: 12px; box-shadow: 0 20px 50px rgba(0,0,0,0.5); padding: 6px; }
+.jira-dd-pop.hidden { display: none; }
+.jira-dd-acts { display: flex; gap: 6px; border-bottom: 1px solid var(--border); padding-bottom: 4px; margin-bottom: 4px; }
+.jira-dd-row { display: flex; align-items: center; gap: 8px; padding: 4px 6px; border-radius: 10px; cursor: pointer; }
+.jira-dd-row:hover { background: var(--hover); }
+.jira-dd-name { flex: 1; min-width: 0; font-size: 12px; color: var(--text); }
+.jira-dd-count { font-size: 11px; color: var(--text-mute); }
+
+.jira-link-type { flex: 0 0 auto; font-size: 10.5px; color: var(--text-mute); }
+.jira-discussion { display: flex; flex-direction: column; gap: 10px; }
+.jira-comment-who { font-size: 11px; color: var(--text-mute); margin-bottom: 3px; }
+/* Переходы идут в строку с переносом: из одного статуса их бывает несколько, и столбик
+   растягивал панель на пол-экрана. */
+.jira-tr-btn { flex: 0 0 auto; }
+
+/* Люди — в строку: карточки рядом, переносятся при нехватке ширины */
+.jira-people-row { display: flex; flex-wrap: wrap; gap: 10px; }
+.jira-people-row .jira-person { flex: 1 1 220px; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 8px 10px; }
+.jira-person { display: flex; align-items: center; gap: 9px; }
+
+/* Поля задачи: инструменты (саб-табы + поиск) и сетка в две колонки */
+.jira-fields-wrap { display: flex; flex-direction: column; gap: 8px; }
+.jira-fields-tools { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.jira-field-search { flex: 1; min-width: 160px; }
+.jira-subtabs { display: flex; gap: 4px; }
+.jira-subtabs.hidden { display: none; }
+.jira-subtab { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; font-size: 11.5px; color: var(--text-dim); padding: 4px 10px; cursor: pointer; }
+.jira-subtab:hover { color: var(--text); }
+.jira-subtab.active { color: var(--text); border-color: var(--border-accent); background: var(--accent-soft); }
+.jira-avatar { flex: 0 0 auto; width: 28px; height: 28px; border-radius: 16px; background: var(--accent-soft); border: 1px solid var(--border-accent); color: var(--green); font-size: 12px; font-weight: 700; display: flex; align-items: center; justify-content: center; }
+.jira-person-txt { min-width: 0; }
+.jira-person-name { font-size: 12.5px; color: var(--text); }
+.jira-person-sub { font-size: 10.5px; color: var(--text-mute); }
+
+.jira-time { display: flex; flex-direction: column; gap: 5px; }
+.jira-time-row { display: flex; justify-content: space-between; gap: 10px; }
+.jira-time-l { font-size: 11.5px; color: var(--text-mute); }
+.jira-time-v { font-size: 12px; color: var(--text); }
+.jira-time-bar { height: 5px; border-radius: 10px; background: var(--surface-2); overflow: hidden; margin-top: 4px; }
+.jira-time-fill { height: 100%; background: var(--green); }
+.jira-time-fill.over { background: var(--warn); }
+
+.jira-more { background: none; border: none; padding: 4px 6px; font-size: 11.5px; color: var(--green); cursor: pointer; text-align: left; }
+.jira-more:hover { text-decoration: underline; }
+
+/* Автообновление и «новые» задачи */
+.jira-auto-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.jira-min-sel { padding: 3px 6px; }
+.jira-unread { font-size: 11.5px; font-weight: 700; color: var(--green); }
+.jira-recent { background: var(--bg-input); color: var(--text-mute); border: 1px solid var(--border-strong); border-radius: 10px; font-size: 11.5px; padding: 4px 10px; cursor: pointer; }
+.jira-recent.active { color: var(--info); border-color: var(--info); }
+.jira-recent:disabled { cursor: default; opacity: 0.65; }
+.modal.jira-recent-modal { width: 60vw; max-width: 60vw; max-height: 80vh; overflow: auto; }
+.jira-unread.hidden { display: none; }
+/* Плавная пульсация непрочитанной задачи — гаснет, как только по ней кликнули (см. markRead). */
+@keyframes jiraNewPulse {
+  0%, 100% { background: transparent; box-shadow: inset 2px 0 0 var(--green); }
+  50% { background: var(--accent-soft); box-shadow: inset 2px 0 0 var(--green-bright); }
+}
+.jira-row.jira-new { animation: jiraNewPulse 2.4s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) {
+  .jira-row.jira-new { animation: none; background: var(--accent-soft); box-shadow: inset 2px 0 0 var(--green); }
+}
+
+.jira-stats { display: flex; flex-wrap: wrap; gap: 8px; }
+.jira-stat { flex: 1 1 90px; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 8px 10px; }
+.jira-stat-v { font-size: 16px; font-weight: 700; color: var(--text); }
+.jira-stat-l { font-size: 10.5px; color: var(--text-mute); }
+.jira-recon-out { display: flex; flex-direction: column; gap: 8px; }
 
 /* ===== IDE workspace: sidebar (tree) + main (tabs) ===== */
 .db-ide { flex: 1; min-height: 0; display: flex; align-items: stretch; gap: 0; }

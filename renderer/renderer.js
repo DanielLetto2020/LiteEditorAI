@@ -16,7 +16,7 @@ import { FRAME_COLORS, frameConf, applyFrame } from './frame.js';
 import { loadFastRenderer, applyUnicode11, copySelection } from './termutil.js';
 import { attachTimeline } from './termtimeline.js';
 // initTextProc — «Обработка текста» мигрирована в отдельное окно (renderer/module-entry.js).
-import { el, icon, iconBtn, hydrateIcons, toast, makeModal, showConfirm, showPrompt, baseName, ICONS, setErrorSink } from './ui.js';
+import { el, icon, iconBtn, hydrateIcons, toast, makeModal, showConfirm, showPrompt, baseName, ICONS, setErrorSink, syncMark } from './ui.js';
 // initGit — модуль «Git» мигрирован в отдельное окно (renderer/module-entry.js).
 // initCtx — модуль «Контекст» мигрирован в отдельное окно (renderer/module-entry.js).
 // initContainers — модуль «Контейнеры» мигрирован в отдельное окно (renderer/module-entry.js).
@@ -27,7 +27,7 @@ import { el, icon, iconBtn, hydrateIcons, toast, makeModal, showConfirm, showPro
 import { initExtensions } from './modules/extensions.js';
 // initFiles — вивер+дерево мигрированы в отдельное окно (renderer/module-entry.js).
 
-const APP_VERSION = 'alpha v1.1.123';
+const APP_VERSION = 'alpha v1.1.127';
 const GUTTER = 5;
 // Системный терминал («Система · ~») мигрирован в отдельное окно (renderer/modules/scratch.js):
 // его id `__scratch__::tN` маршрутизируются main'ом в окно-владельца, в ядре их больше не обрабатываем.
@@ -61,6 +61,14 @@ function saveSettings() { persist('settings', settings); }
 
 // ---------------------------------------------------------------- state
 let projects = [];
+// Пути проектов, которые демон синхронизации держит в согласии с сервером: по ним
+// в плашке появляется метка «sync». Держим множеством, потому что makeCard —
+// синхронный, а ответ главного процесса приходит обещанием.
+let syncedPaths = new Set();
+// Есть ли синхронизация на этой машине вообще. У чужого пользователя её нет —
+// и метки в карточках не появляются: обещать механизм, которого не существует,
+// хуже, чем промолчать.
+let syncAvailable = false;
 let activeId = null;
 const terms = new Map();          // sessionId -> { term, fit, search, container, projId, name, ... }
 const tabsByProj = new Map();     // projId -> { sessions: [sessionId...], active: sessionId }
@@ -181,6 +189,140 @@ function moveSection(key, dir) {
   saveSectionOrder(order); renderProjects();
 }
 
+// Спрашиваем главный процесс, какие из открытых проектов синхронизируются, и
+// перерисовываем список ТОЛЬКО если ответ изменился: опрос идёт по таймеру, а
+// перерисовка списка на каждый тик гасила бы наведение и открытые меню.
+async function refreshSynced() {
+  try {
+    const paths = projects.map((p) => p.path).filter(Boolean);
+    if (!paths.length) { if (syncedPaths.size) { syncedPaths = new Set(); renderProjects(); } return; }
+    const res = await window.lite?.sync?.match(paths);
+    const next = new Set(res && Array.isArray(res.paths) ? res.paths : []);
+    const nowAvailable = Boolean(res && res.available);
+    const same = next.size === syncedPaths.size && [...next].every((x) => syncedPaths.has(x)) && nowAvailable === syncAvailable;
+    if (!same) { syncedPaths = next; syncAvailable = nowAvailable; renderProjects(); }
+  } catch (_) { /* синхронизации на этой машине нет — плашки просто без метки */ }
+}
+
+// Подключение проекта к синхронизации. Здесь мы на домашней машине, поэтому
+// процедура идёт сразу: главный процесс запускает её и присылает шаги событиями.
+// Те же шаги видит веб-версия — процедура у них общая (scripts/server-sync/lite-sync-link.js).
+// Ключи шагов и состояний — латиницей: они уходят в className и в словарь
+// локализации, а переводить служебное значение незачем (в UI идут заголовки ниже).
+const LINK_TITLES = {
+  link: 'Связь с сервером',
+  project: 'Проект на второй стороне',
+  transfer: 'Первая передача файлов',
+  done: 'Запись в настройки синхронизации',
+};
+const LINK_MARKS = { run: '·', ok: '✓', bad: '✕', ask: '?' };
+
+function humanSize(bytes) {
+  if (!bytes) return '0 МБ';
+  const mb = bytes / 1048576;
+  return mb >= 1024 ? `${(mb / 1024).toFixed(1)} ГБ` : `${mb.toFixed(mb < 10 ? 1 : 0)} МБ`;
+}
+
+function showLinkDialog(p) {
+  const { m, close } = makeModal(`
+    <h2 class="cm-title">Подключить к синхронизации</h2>
+    <div class="about-desc" id="lk-what">Смотрю, что есть на обеих сторонах…</div>
+    <ol class="lk-steps" id="lk-steps" style="display:none"></ol>
+    <div class="lk-ask" id="lk-ask" style="display:none"></div>
+    <div class="lk-msg" id="lk-msg"></div>
+    <div class="modal-actions">
+      <button class="btn" id="lk-cancel">Отмена</button>
+      <button class="btn primary" id="lk-go" disabled>Подключить</button>
+    </div>`);
+  const what = m.querySelector('#lk-what');
+  const stepsBox = m.querySelector('#lk-steps');
+  const askBox = m.querySelector('#lk-ask');
+  const msg = m.querySelector('#lk-msg');
+  const go = m.querySelector('#lk-go');
+  const steps = [];
+  let stopListen = null;
+  const say = (text, kind = '') => { msg.textContent = text; msg.className = `lk-msg${kind ? ' ' + kind : ''}`; };
+
+  const drawSteps = () => {
+    if (!steps.length) return;
+    stepsBox.style.display = '';
+    stepsBox.innerHTML = '';
+    for (const step of steps) {
+      const li = el('li', step.state || '');
+      li.appendChild(el('span', 'mark', LINK_MARKS[step.state] || '·'));
+      li.appendChild(el('span', 'title', LINK_TITLES[step.key] || step.key));
+      if (step.text) li.appendChild(el('span', 'what', `— ${step.text}`));
+      stepsBox.appendChild(li);
+    }
+  };
+
+  const takeStep = (step) => {
+    const at = steps.findIndex((x) => x.key === step.key);
+    if (at >= 0) steps[at] = step; else steps.push(step);
+    drawSteps();
+  };
+
+  // Файлы разошлись — спрашиваем, чью сторону взять: молча затирать нельзя.
+  const askPrefer = (result) => {
+    askBox.style.display = '';
+    askBox.innerHTML = '';
+    askBox.appendChild(el('div', null, `Файлы различаются: ${result.report?.differ || 0}. Чью версию взять за верную?`));
+    const examples = result.report?.differExamples || [];
+    if (examples.length) askBox.appendChild(el('div', 'files', examples.slice(0, 6).join(', ')));
+    const row = el('div', 'row');
+    for (const [label, prefer] of [['Взять версию ПК', 'local'], ['Взять версию сервера', 'remote']]) {
+      const b = el('button', 'btn', label);
+      b.addEventListener('click', () => { askBox.style.display = 'none'; run(prefer); });
+      row.appendChild(b);
+    }
+    askBox.appendChild(row);
+  };
+
+  const run = async (prefer = null) => {
+    go.disabled = true;
+    go.textContent = 'Подключаю…';
+    say(prefer ? 'Продолжаю с выбранной стороной…' : 'Идёт подключение…');
+    steps.length = 0;
+    drawSteps();
+    stopListen = window.lite?.sync?.onLinkStep?.(takeStep) || null;
+    let result;
+    try { result = await window.lite.sync.link(p.path, prefer); } catch (e) { result = { ok: false, reason: String(e.message || e) }; }
+    if (stopListen) { stopListen(); stopListen = null; }
+
+    if (result.need === 'prefer') { say('Нужно ваше решение.'); askPrefer(result); return; }
+    if (result.ok) {
+      say('Готово: проект синхронизируется.', 'good');
+      go.textContent = 'Закрыть';
+      go.disabled = false;
+      go.onclick = close;
+      refreshSynced();
+      return;
+    }
+    say(result.reason || 'Подключить не удалось.', 'bad');
+    go.textContent = 'Повторить';
+    go.disabled = false;
+  };
+
+  m.querySelector('#lk-cancel').addEventListener('click', close);
+  go.addEventListener('click', () => run(null));
+
+  // Осмотр до согласия: размер обеих сторон и предупреждение о расхождении.
+  (async () => {
+    let info;
+    try { info = await window.lite.sync.inspect(p.path); } catch (e) { info = { ok: false, reason: String(e.message || e) }; }
+    if (!info || !info.ok) {
+      what.textContent = `${p.name}: подключение сейчас невозможно.`;
+      say(info?.reason || 'не удалось осмотреть проект', 'bad');
+      return;
+    }
+    const side = (s, name) => (s.exists ? `${name}: ${s.files} файлов, ${humanSize(s.bytes)}` : `${name}: проекта нет`);
+    what.innerHTML = `<b>${p.name}</b><br>${side(info.local, 'На ПК')}<br>${side(info.remote, 'На сервере')}`
+      + (info.differ ? `<br>Файлы различаются: ${info.differ} — спрошу, чью версию взять.` : '')
+      + '<br>Заменённое уедет в корзину, как при обычной сверке.';
+    go.disabled = false;
+  })();
+}
+
 function renderProjects() {
   const box = $('#projects');
   box.innerHTML = '';
@@ -286,6 +428,13 @@ function makeCard(p) {
   const kebab = iconBtn('card-kebab', 'dots-v', 'Меню проекта', 18);
   kebab.addEventListener('click', (e) => { e.stopPropagation(); showCardMenu(e.clientX, e.clientY, p); });
   const acts = el('div', 'card-acts');
+  if (syncAvailable) {
+    const linked = syncedPaths.has(p.path);
+    const mark = syncMark(12, linked ? 'Синхронизируется с сервером' : 'Не синхронизируется — нажмите, чтобы подключить');
+    mark.classList.add(linked ? 'on' : 'off');
+    if (!linked) mark.addEventListener('click', (e) => { e.stopPropagation(); showLinkDialog(p); });
+    acts.appendChild(mark);
+  }
   acts.append(star, kebab);
   const tail = el('div', 'card-tail');
   tail.append(acts);
@@ -1552,7 +1701,7 @@ const panels = new Map(); // id -> { isOpen(), setOpen(open, opts) }
 // Правый слот редактора теперь держит только «Мои модули» (ext); всё остальное — отдельные окна.
 const PANEL_ORDER = [];
 // Модули, мигрированные в отдельные окна (открываются через lite.module.open, не как панель правого слота).
-const WINDOW_MODULES = new Set(['tools', 'iterflow', 'seo', 'audit', 'company', 'notes', 'db', 'rmq', 'kafka', 'chat', 'doc', 'docker', 'rh', 'ctx', 'scratch', 'files', 'pomodoro', 'monitor', 'keepass', 'sitemon', 'storage']);
+const WINDOW_MODULES = new Set(['tools', 'iterflow', 'seo', 'audit', 'company', 'notes', 'db', 'rmq', 'kafka', 'chat', 'doc', 'docker', 'rh', 'ctx', 'scratch', 'files', 'pomodoro', 'monitor', 'keepass', 'sitemon', 'storage', 'jira']);
 function registerPanel(id, api) { panels.set(id, api); }
 function closeOtherPanels(selfId) {
   for (const id of PANEL_ORDER) {
@@ -1621,6 +1770,7 @@ const QUICK_BUILTIN = [
   { id: 'audit',   icon: 'grid',     label: 'Аудит — анализ проекта' },
   { id: 'company', icon: 'users',    label: 'ИИ компания — команда агентов над проектом' },
   { id: 'iterflow', icon: 'layers',  label: 'IterFlow — задачи итераций (трекер)' },
+  { id: 'jira',    icon: 'jira',     label: 'Jira — свои задачи из нескольких аккаунтов' },
   { id: 'seo',     icon: 'globe',    label: 'WEB/SEO аудит — анализ сайта' },
   { id: 'tools',   icon: 'wrench',   label: 'Инструменты — base64, JSON/YAML, хэши, regex…' },
   { id: 'chat',    icon: 'chat',     label: 'OpenRouter — чат по своим API-ключам' },
@@ -2007,6 +2157,7 @@ const BUILTIN_MODS = [
   { id: 'storage',  icon: 'cloud',    title: 'Внешние хранилища',  desc: 'S3 · бакеты · публичные ссылки', project: true },
   { id: 'rh',       icon: 'globe',    title: 'Удалённые хосты',    desc: 'SSH-сессии к серверам' },
   { id: 'iterflow', icon: 'layers',   title: 'IterFlow',           desc: 'задачи итераций из трекера' },
+  { id: 'jira',     icon: 'jira',     title: 'Jira',               desc: 'свои задачи из нескольких аккаунтов' },
   { id: 'seo',      icon: 'globe',    title: 'WEB/SEO аудит',      desc: 'сайт: безопасность, SEO, сеть' },
   { id: 'tools',    icon: 'wrench',   title: 'Инструменты',        desc: 'base64, JSON/YAML, хэши, JWT, regex, diff' },
   { id: 'chat',     icon: 'chat',     title: 'OpenRouter',         desc: 'чат по своим API-ключам' },
@@ -2770,6 +2921,7 @@ function paletteActions() {
   acts.push({ label: 'Задачи — заметки проекта', run: () => openModule('notes') });
   acts.push({ label: 'ИИ компания — команда агентов над проектом', run: () => openModule('company') });
   acts.push({ label: 'Помодоро — таймер работы/отдыха', run: () => openModule('pomodoro') });
+  acts.push({ label: 'Jira — свои задачи из нескольких аккаунтов', run: () => openModule('jira') });
   acts.push({ label: 'Режим «один терминал»', run: toggleSingle });
   acts.push({ label: 'Поиск в терминале', hint: 'Ctrl+F', run: openTermSearch });
   acts.push({ label: 'Поиск по всем терминалам', hint: 'Ctrl+Shift+F', run: showGlobalSearch });
@@ -3190,6 +3342,9 @@ function init() {
   applyFontSize();
   projects = loadProjectsFromDisk();
   renderProjects();
+  // Конфиг синхронизации меняется руками и редко — раз в полминуты достаточно.
+  refreshSynced();
+  setInterval(refreshSynced, 30000);
   if (projects.length) setActive(projects[0].id);
   else showActiveTerminal();
 

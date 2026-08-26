@@ -8,6 +8,7 @@ const { guessDbKind, dbPrefillFromInspect, guessMqKind, rmqPrefillFromInspect, k
 const rmqBackend = require('./lib/rmq');
 const kafkaBackend = require('./lib/kafka');
 const storageBackend = require('./lib/storage');
+const jiraBackend = require('./lib/jira');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
@@ -32,6 +33,7 @@ const remote = require('./remote'); // удалённый пульт (вкл. т
 const { safeChildName } = require('./lib/safe-name'); // анти-traversal для имён (в т.ч. с пульта)
 const { resolveShell: resolveShellPure } = require('./lib/shell'); // выбор оболочки терминала
 const sgrline = require('./lib/sgrline'); // стилизованные строки кадра пульта (цвета как мини-SGR)
+const syncmark = require('./lib/sync');   // метка «sync» в плашке: что домашняя машина держит в синхронизации с сервером
 
 app.setName('LiteEditorAI');
 app.setAppUserModelId('com.mletto.liteeditorai'); // Windows: имя/иконка/группировка в панели задач и уведомлениях
@@ -231,7 +233,7 @@ try {
   const legacy = path.join(os.homedir(), '.LiteEditor');
   if (!fs.existsSync(storeDir) && fs.existsSync(legacy)) fs.cpSync(legacy, storeDir, { recursive: true });
 } catch (_) {}
-const STORE_KEYS = ['projects', 'settings', 'layout', 'recents', 'lastParent', 'categories', 'sectionOrder', 'favOrder', 'accordions', 'dismissed', 'uiState', 'projTabs', 'openrouter', 'remote', 'shares', 'pultBlocked', 'dockerUi', 'dbConnections', 'dbUi', 'rhConnections', 'rhUi', 'textproc', 'tpPrompts', 'extData', 'extEnabled', 'quickbar', 'seoTargets', 'seoSites', 'moduleWins', 'mwLeft', 'mwLogH', 'gitFav', 'commitDrafts', 'bookmarks', 'promptSnippets', 'pomodoro', 'pomodoroLog', 'dbaiProviders', 'sessionSnaps', 'siteMon', 'rmqConnections', 'rmqUi', 'kafkaConnections', 'kafkaUi', 'stConnections', 'stUi'];
+const STORE_KEYS = ['projects', 'settings', 'layout', 'recents', 'lastParent', 'categories', 'sectionOrder', 'favOrder', 'accordions', 'dismissed', 'uiState', 'projTabs', 'openrouter', 'remote', 'shares', 'pultBlocked', 'dockerUi', 'dbConnections', 'dbUi', 'rhConnections', 'rhUi', 'textproc', 'tpPrompts', 'extData', 'extEnabled', 'quickbar', 'seoTargets', 'seoSites', 'moduleWins', 'mwLeft', 'mwLogH', 'gitFav', 'commitDrafts', 'bookmarks', 'promptSnippets', 'pomodoro', 'pomodoroLog', 'dbaiProviders', 'sessionSnaps', 'siteMon', 'rmqConnections', 'rmqUi', 'kafkaConnections', 'kafkaUi', 'stConnections', 'stUi', 'jiraAccounts', 'jiraUi'];
 // Папка-«стор» для шаринга с пультом (агент кладёт сюда файлы; в PTY доступна как $LITE_STORE).
 const pultStoreDir = path.join(storeDir, 'store');
 try { fs.mkdirSync(pultStoreDir, { recursive: true }); } catch (_) {}
@@ -341,6 +343,14 @@ storageBackend.registerStorageIpc({
   setConnections: (v) => writeStoreKey('stConnections', v),
 });
 
+// «Jira» backend (мульти-аккаунт + REST API v2, без зависимостей) — lib/jira.js.
+// storeDir нужен для выгрузки отчёта разведки в ~/.LiteEditorAI/jira/ (токен в отчёт не попадает).
+jiraBackend.registerJiraIpc({
+  ipcMain, safeStorage, storeDir,
+  getAccounts: () => readStoreKey('jiraAccounts'),
+  setAccounts: (v) => writeStoreKey('jiraAccounts', v),
+});
+
 // «RemoteHost» backend (интерактивные SSH-сессии + safeStorage-секреты) — lib/remotehost.js.
 // send() лениво ссылается на mainWindow (создаётся позже), вызывается только при живой сессии.
 const rhApi = rhBackend.registerRemoteIpc({
@@ -393,6 +403,65 @@ ipcMain.handle('logs:read', (_e, name) => {
 // Удалить один лог-файл / очистить старые (сегодняшний живой файл сохраняется).
 ipcMain.handle('logs:delete', (_e, name) => ({ ok: logger.removeFile(name) }));
 ipcMain.handle('logs:clearOld', () => ({ ok: true, removed: logger.clearOld() }));
+
+// ── Метка синхронизации в плашке проекта ────────────────────────────────────────────────────
+// Редактор синхронизацией не управляет: демон (scripts/server-sync/) живёт своей
+// жизнью, здесь мы только читаем его конфиг. Сопоставление делает главный процесс —
+// у рендерера нет fs, а сравнивать нужно разрешённые пути (симлинки, см. lib/sync.js).
+ipcMain.handle('sync:match', (_e, paths) => {
+  try { return { paths: syncmark.match(paths), available: syncAvailable() }; } catch (e) { return { paths: [], available: false, error: String(e) }; }
+});
+
+// Подключение проекта к синхронизации. Процедура одна на оба редактора и живёт
+// рядом с демоном (scripts/server-sync/lite-sync-link.js): здесь мы на домашней
+// машине, поэтому запускаем её сразу, без заявок через сервер.
+// ⚠️ Проверка whitelist перед релизом (docs/RELEASE.md) показывает этот require
+// как `MISS scripts/server-sync/lite-sync-link.js` — и это ОЖИДАЕМО: каталог
+// приватный, в публичные сборки он не уезжает и в `build.files` ему не место.
+// Отсутствие модуля безопасно: до require дело доходит только когда на машине
+// есть настройки синхронизации, а сам вызов обёрнут в try/catch (см. syncAvailable).
+let linker = null;
+function linkerModule() {
+  if (!linker) linker = require('./scripts/server-sync/lite-sync-link.js');
+  return linker;
+}
+
+// Синхронизация — личная оснастка владельца: её каталог (scripts/server-sync/)
+// приватный и в публичные сборки не попадает. Поэтому доступность проверяем по
+// факту: есть ли настройки и лежит ли рядом сама процедура. Нет — интерфейс о
+// синхронизации молчит, а не показывает кнопку, которая ничего не сделает.
+function syncAvailable() {
+  try {
+    if (!syncmark.available()) return false;
+    linkerModule();
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+ipcMain.handle('sync:inspect', (_e, projectPath) => {
+  try { return linkerModule().inspect(String(projectPath || '')); } catch (e) { return { ok: false, reason: String(e && e.message ? e.message : e) }; }
+});
+
+let linkRunning = false;
+ipcMain.handle('sync:link', async (_e, { path: projectPath, prefer } = {}) => {
+  // Процедура правит конфиг и переносит файлы — второй заход параллельно не пускаем.
+  if (linkRunning) return { ok: false, reason: 'подключение уже идёт' };
+  linkRunning = true;
+  try {
+    return await linkerModule().link(String(projectPath || ''), {
+      prefer: prefer === 'local' || prefer === 'remote' ? prefer : null,
+      onStep: (step) => {
+        if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('sync:linkStep', step);
+      },
+    });
+  } catch (e) {
+    return { ok: false, reason: String(e && e.message ? e.message : e) };
+  } finally {
+    linkRunning = false;
+  }
+});
 
 // ── Реестр ошибок (errors ledger) ───────────────────────────────────────────────────────────
 ipcMain.handle('errors:list', () => errledger.list());

@@ -17,6 +17,20 @@ contextBridge.exposeInMainWorld('lite', {
   // Forward renderer-side errors/events to the main-process file log.
   log: (level, ...args) => ipcRenderer.send('log:renderer', { level, args }),
 
+  // Какие из этих проектов домашняя машина синхронизирует с сервером. Сопоставление
+  // делает главный процесс: сравнивать надо разрешённые пути, здесь fs недоступен.
+  sync: {
+    match: (paths) => ipcRenderer.invoke('sync:match', paths),
+    // подключение проекта: осмотр (что произойдёт) и сама процедура по шагам
+    inspect: (projectPath) => ipcRenderer.invoke('sync:inspect', projectPath),
+    link: (projectPath, prefer) => ipcRenderer.invoke('sync:link', { path: projectPath, prefer }),
+    onLinkStep: (cb) => {
+      const h = (_e, step) => cb(step);
+      ipcRenderer.on('sync:linkStep', h);
+      return () => ipcRenderer.removeListener('sync:linkStep', h);
+    },
+  },
+
   // Локализация: словарь берём СИНХРОННО (до первого прохода по DOM — иначе
   // интерфейс мигнёт русским), смена языка приходит событием во все окна.
   i18n: {
@@ -483,6 +497,24 @@ contextBridge.exposeInMainWorld('lite', {
     // Вивер → «Базы данных»: выполнить SQL на выбранном подключении (та же очередь до готовности окна)
     openSql: (connId, sql) => ipcRenderer.send('db:openSql', { connId, sql }),
     onOpenSql: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('db:openSql', h); return () => ipcRenderer.removeListener('db:openSql', h); },
+  },
+  // Jira module — мульти-аккаунт + REST API v2 (lib/jira.js). Токен наружу не отдаётся:
+  // в списке аккаунтов приходит только флаг hasToken.
+  jira: {
+    list: () => ipcRenderer.invoke('jira:list'),
+    save: (account) => ipcRenderer.invoke('jira:save', { account }),
+    delete: (id) => ipcRenderer.invoke('jira:delete', { id }),
+    test: (account) => ipcRenderer.invoke('jira:test', { account }),
+    search: (id, preset, jql, limit) => ipcRenderer.invoke('jira:search', { id, preset, jql, limit }),
+    searchAll: (ids, preset, jql, limit) => ipcRenderer.invoke('jira:searchAll', { ids, preset, jql, limit }),
+    issue: (id, key) => ipcRenderer.invoke('jira:issue', { id, key }),
+    boards: (id, withIssues) => ipcRenderer.invoke('jira:boards', { id, withIssues }),
+    meta: (id) => ipcRenderer.invoke('jira:meta', { id }),
+    fields: (id) => ipcRenderer.invoke('jira:fields', { id }),
+    transition: (id, key, transitionId, fields) => ipcRenderer.invoke('jira:transition', { id, key, transitionId, fields }),
+    comment: (id, key, body) => ipcRenderer.invoke('jira:comment', { id, key, body }),
+    recon: (id, withTexts) => ipcRenderer.invoke('jira:recon', { id, withTexts }),
+    reconSave: (report) => ipcRenderer.invoke('jira:reconSave', { report }),
   },
   // RabbitMQ module — server profiles + management HTTP API (lib/rmq.js).
   rmq: {
