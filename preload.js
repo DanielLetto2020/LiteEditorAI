@@ -216,8 +216,9 @@ contextBridge.exposeInMainWorld('lite', {
   ctxmine: {
     scan: (projPath) => ipcRenderer.invoke('ctxmine:scan', { projPath }),
     analyze: (reqId, projPath, opts) => ipcRenderer.send('ctxmine:analyze', { reqId, projPath, ...(opts || {}) }),
+    sessions: (projPath, done) => ipcRenderer.invoke('ctxmine:sessions', { projPath, done }),
     abort: (reqId) => ipcRenderer.send('ctxmine:abort', { reqId }),
-    context: (projPath) => ipcRenderer.invoke('ctxmine:context', { projPath }), // → {global,project,agents} тексты (дедуп B)
+    context: (projPath) => ipcRenderer.invoke('ctxmine:context', { projPath }), // → {global,project} тексты (дедуп B)
     apply: (projPath, items) => ipcRenderer.invoke('ctxmine:apply', { projPath, items }), // → {ok,applied,errors} (запись A)
     onProgress: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('ctxmine:progress', h); return () => ipcRenderer.removeListener('ctxmine:progress', h); },
     onResult: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('ctxmine:result', h); return () => ipcRenderer.removeListener('ctxmine:result', h); },
@@ -225,31 +226,48 @@ contextBridge.exposeInMainWorld('lite', {
   },
 
   // «Контекст» — граф контекста агента (renderer/modules/contextgraph.js).
+  // Память Claude Code (~/.claude/projects/<enc>/memory): список фактов, индекс, расхождения,
+  // правка, удаление в корзину и восстановление. scope: 'project' | 'home' (память домашнего каталога).
+  ctxmem: {
+    list: (projPath, scope) => ipcRenderer.invoke('ctxmem:list', { projPath, scope }),
+    // Удаление НЕ стирает: файл уезжает в ~/.claude/custom-trash-memory, строка вырезается из MEMORY.md.
+    del: (projPath, scope, file) => ipcRenderer.invoke('ctxmem:delete', { projPath, scope, file }),
+    trash: () => ipcRenderer.invoke('ctxmem:trash'),
+    restore: (id) => ipcRenderer.invoke('ctxmem:restore', { id }),
+    read: (projPath, scope, file) => ipcRenderer.invoke('ctxmem:read', { projPath, scope, file }),
+    save: (projPath, scope, file, text) => ipcRenderer.invoke('ctxmem:save', { projPath, scope, file, text }),
+  },
+  // Файлы настроек Claude Code: <proj>/.claude (scope 'project') и ~/.claude (scope 'home').
+  // Запись всегда сначала кладёт копию в ~/.claude/custom-backups (ротация 10 на путь).
+  ctxfs: {
+    tree: (scope, projPath) => ipcRenderer.invoke('ctxfs:tree', { scope, projPath }),
+    // offset/limit — окно чтения больших файлов (границы подтягиваются к переводам строк)
+    read: (scope, projPath, rel, offset, limit) => ipcRenderer.invoke('ctxfs:read', { scope, projPath, rel, offset, limit }),
+    write: (scope, projPath, rel, text) => ipcRenderer.invoke('ctxfs:write', { scope, projPath, rel, text }),
+    artifactState: (scope, projPath, items) => ipcRenderer.invoke('ctxfs:artifactState', { scope, projPath, items }),
+    createArtifact: (opts) => ipcRenderer.invoke('ctxfs:createArtifact', opts),
+    hookStub: (title, detail) => ipcRenderer.invoke('ctxfs:hookStub', { title, detail }),
+    shcheck: (scope, projPath, rel) => ipcRenderer.invoke('ctxfs:shcheck', { scope, projPath, rel }),
+  },
+  // История копий (общая для памяти и файлов .claude)
+  ctxbk: {
+    list: (file) => ipcRenderer.invoke('ctxbk:list', { file }),
+    read: (id) => ipcRenderer.invoke('ctxbk:read', { id }),
+    restore: (id) => ipcRenderer.invoke('ctxbk:restore', { id }),
+  },
+  // Канва CLAUDE.md: файл — единственный носитель текста, модуль хранит только раскладку.
   ctx: {
-    load: (projId, agent, profileId) => ipcRenderer.invoke('ctx:load', { projId, agent, profileId }),
-    save: (projId, agent, graph, profileId) => ipcRenderer.invoke('ctx:save', { projId, agent, graph, profileId }),
-    profiles: (projId, agent) => ipcRenderer.invoke('ctx:profiles', { projId, agent }),
-    profileCreate: (projId, agent, name, fromId) => ipcRenderer.invoke('ctx:profileCreate', { projId, agent, name, fromId }),
-    profileRename: (projId, agent, id, name) => ipcRenderer.invoke('ctx:profileRename', { projId, agent, id, name }),
-    profileDelete: (projId, agent, id) => ipcRenderer.invoke('ctx:profileDelete', { projId, agent, id }),
-    profileSetActive: (projId, agent, id) => ipcRenderer.invoke('ctx:profileSetActive', { projId, agent, id }),
-    blockRead: (projId, projPath, node) => ipcRenderer.invoke('ctx:blockRead', { projId, projPath, node }),
-    blockWrite: (projId, projPath, node, text) => ipcRenderer.invoke('ctx:blockWrite', { projId, projPath, node, text }),
-    blockDelete: (projId, projPath, node) => ipcRenderer.invoke('ctx:blockDelete', { projId, projPath, node }),
-    compile: (opts) => ipcRenderer.invoke('ctx:compile', opts),
-    assembleText: (projId, projPath, agent, profileId) => ipcRenderer.invoke('ctx:assembleText', { projId, projPath, agent, profileId }),
-    snapshotOutput: (projId, projPath, agent, name) => ipcRenderer.invoke('ctx:snapshotOutput', { projId, projPath, agent, name }),
+    state: (projId, projPath) => ipcRenderer.invoke('ctx:state', { projId, projPath }),
+    save: (opts) => ipcRenderer.invoke('ctx:save', opts),               // пишет файл целиком + копия в историю
+    layout: (projId, graph) => ipcRenderer.invoke('ctx:layout', { projId, graph }),
+    points: (projId) => ipcRenderer.invoke('ctx:points', { projId }),
+    pointRead: (projId, id) => ipcRenderer.invoke('ctx:pointRead', { projId, id }),
+    pointDelete: (projId, id) => ipcRenderer.invoke('ctx:pointDelete', { projId, id }),
+    pointLock: (projId, id, locked) => ipcRenderer.invoke('ctx:pointLock', { projId, id, locked }),
+    pointNote: (projId, id, note) => ipcRenderer.invoke('ctx:pointNote', { projId, id, note }),
     watchOutputs: (projId, projPath) => ipcRenderer.send('ctx:watchOutputs', { projId, projPath }),
     unwatchOutputs: (projId) => ipcRenderer.send('ctx:unwatchOutputs', { projId }),
     onOutputChanged: (cb) => { const h = (_e, d) => cb(d); ipcRenderer.on('ctx:outputChanged', h); return () => ipcRenderer.removeListener('ctx:outputChanged', h); },
-    exportFile: (projId, projPath, agent, profileId) => ipcRenderer.invoke('ctx:exportFile', { projId, projPath, agent, profileId }),
-    points: (projId, agent) => ipcRenderer.invoke('ctx:points', { projId, agent }),
-    pointRead: (projId, agent, id) => ipcRenderer.invoke('ctx:pointRead', { projId, agent, id }),
-    pointDelete: (projId, agent, id) => ipcRenderer.invoke('ctx:pointDelete', { projId, agent, id }),
-    pointSetOriginal: (projId, agent, id) => ipcRenderer.invoke('ctx:pointSetOriginal', { projId, agent, id }),
-    snapshotOriginal: (projId, projPath, agent) => ipcRenderer.invoke('ctx:snapshotOriginal', { projId, projPath, agent }),
-    backupDir: (projPath, dir) => ipcRenderer.invoke('ctx:backupDir', { projPath, dir }),
-    backupMove: (projPath, from, to) => ipcRenderer.invoke('ctx:backupMove', { projPath, from, to }),
   },
 
   update: {

@@ -311,47 +311,43 @@
       <section id="ctx-pane" class="hidden">
         <div class="pane-head">
           <span id="ctx-title">Контекст</span>
-          <span id="ctx-stale" class="ctx-stale" title="Есть неподтверждённые изменения — нажми «Подтвердить»" hidden>●</span>
-          <button id="ctx-extern" class="ctx-extern" title="Файл изменён вне модуля (вероятно, агентом) — посмотреть и втянуть правки" hidden>⚠ файл изменён вне модуля</button>
+          <button id="ctx-extern" class="ctx-extern" title="Файл изменён агентом — перечитать канву" hidden>⚠ файл изменён агентом</button>
           <div class="drag-space-static"></div>
           <button id="ctx-help" class="icon-btn" title="Как это работает?" data-icon="help"></button>
-          <button id="ctx-settings" class="icon-btn" title="Настройки (бекапы, автосборка)" data-icon="sliders"></button>
+
         </div>
-        <div id="ctx-tabs" class="ctx-tabs"><!-- верхние вкладки модуля: Канва ↔ Анализ диалогов -->
-          <button class="ctx-tab active" data-tab="canvas" title="Канва контекста агента (блоки → CLAUDE.md/AGENTS.md)">Канва</button>
+        <div id="ctx-tabs" class="ctx-tabs"><!-- верхние вкладки модуля: Канва · Память · Анализ диалогов -->
+          <button class="ctx-tab active" data-tab="canvas" title="Канва контекста Claude Code (блоки → CLAUDE.md)">Канва</button>
+          <button class="ctx-tab" data-tab="mem" title="Память Claude Code по этому проекту (только чтение)">Память</button>
+          <button class="ctx-tab" data-tab="files" title="Файлы настроек Claude Code: .claude проекта и ~/.claude">Файлы</button>
           <button class="ctx-tab" data-tab="mine" title="Извлечь правила из истории диалогов с агентами по этому проекту">Анализ диалогов</button>
         </div>
-        <div id="ctx-agents" class="ctx-agents"></div><!-- переключатель агента (Claude/Codex): рендерится в contextgraph.js -->
-        <div id="ctx-profiles" class="ctx-profiles"></div><!-- вкладки-профили текущего агента -->
+        <!-- шапка канвы: имя файла, счётчики, бейдж внешней правки -->
         <div id="ctx-stats" class="ctx-stats"></div>
         <div id="ctx-canvas" class="ctx-canvas">
-          <!-- плавающая панель действий профиля/канвы (поверх канвы, правый верхний угол) -->
+          <!-- плавающая панель действий (поверх канвы, правый верхний угол) -->
           <div id="ctx-toolbar" class="ctx-toolbar">
             <div class="ctx-tb-row">
-              <button id="ctx-add" class="icon-btn" title="Добавить блок" data-icon="plus"></button>
-              <button id="ctx-group" class="icon-btn" title="Сгруппировать выделенные блоки (Ctrl+G)" data-icon="layers" hidden></button>
+              <button id="ctx-add" class="icon-btn" title="Добавить блок в конец файла" data-icon="plus"></button>
+              <button id="ctx-diff" class="icon-btn" title="Сравнить файл с последней версией" data-icon="columns"></button>
+              <button id="ctx-points" class="icon-btn ctx-tb-emoji" title="История версий">🕘</button>
+              <button id="ctx-align" class="icon-btn" title="Выровнять блоки сеткой (файл не меняется)" data-icon="grid"></button>
               <button id="ctx-fit" class="icon-btn" title="Уместить всё в экран" data-icon="maximize"></button>
-              <button id="ctx-points" class="icon-btn ctx-tb-emoji" title="Версии (точки восстановления)">🕘</button>
-            </div>
-            <div id="ctx-tb-actions" class="ctx-tb-row ctx-tb-actions" hidden>
-              <button id="ctx-reset" class="icon-btn" title="Сбросить неподтверждённые изменения — вернуть канву к последнему подтверждённому виду" data-icon="refresh" hidden></button>
-              <button id="ctx-apply" class="icon-btn ctx-apply-btn" title="Подтвердить изменения: сохранить канву и собрать файл агента (с бекапом)" data-icon="check" hidden></button>
             </div>
           </div>
-          <button id="ctx-wire-del" class="ctx-wire-del" title="Удалить соединение" hidden>×</button><!-- появляется при наведении на провод -->
-          <div id="ctx-marquee" class="ctx-marquee" hidden></div><!-- рамка выделения (Shift+протягивание) -->
           <div id="ctx-world" class="ctx-world">
-            <svg id="ctx-wires" class="ctx-wires"></svg>
             <div id="ctx-nodes"></div>
           </div>
-          <!-- лёгкий онбординг: нижняя плашка, закрывается один раз; основное управление — в тулбаре справа сверху -->
+          <!-- онбординг: пустой файл -->
           <div id="ctx-onboard" class="ctx-onboard" hidden>
-            <div class="ctx-onboard-tx"><b>Контекст агента из блоков.</b> Стартовый блок — это весь файл агента. Наведи на него курсор и нажми <b>✂</b> (или кнопку ниже), чтобы разложить его на блоки по заголовкам. Дальше: «+» добавить блок, 🕘 версии, выделить блоки и сгруппировать.</div>
-            <button id="ctx-ob-split" class="btn primary">✂ Распилить файл</button>
+            <div class="ctx-onboard-tx"><b>CLAUDE.md — это то, что Claude Code читает при старте.</b> Каждый заголовок файла становится блоком на канве. Правьте блоки — файл меняется сразу, прежняя версия уходит в историю (🕘).</div>
+            <button id="ctx-ob-create" class="btn primary">Создать файл</button>
             <button id="ctx-ob-help" class="btn">Как это работает</button>
             <button id="ctx-ob-close" class="icon-btn" title="Скрыть подсказку" data-icon="x"></button>
           </div>
         </div>
+        <div id="ctx-mem" class="ctx-mem"><!-- вкладка «Память»: факты из ~/.claude/.../memory (рендерится в contextgraph.js) --></div>
+        <div id="ctx-files" class="ctx-files"><!-- вкладка «Файлы»: дерево .claude + редактор (рендерится в contextgraph.js) --></div>
         <div id="ctx-mine" class="ctx-mine"><!-- вкладка «Анализ диалогов»: реестр правил из истории (рендерится в contextgraph.js) --></div>
       </section>
 

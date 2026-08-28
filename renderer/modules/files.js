@@ -4,7 +4,7 @@
 // живут вместе в одном модуле. DOM-скелет — в module.html (#viewer-pane/#tree-pane/#commit-pane/
 // #log-pane); host — window-host из module-entry.js; действия редактора идут через lite.editorBus.
 import { el, icon, toast, showConfirm, showPrompt, baseName, makeModal, extOf, fileTypeSvg, folderTypeSvg } from '../ui.js';
-import { languageFor, ensureLanguage } from '../codeedit.js';
+import { languageFor, ensureLanguage, mergeRoExtensions } from '../codeedit.js';
 import { initGit } from './git.js';
 import { EditorView, keymap, lineNumbers, highlightActiveLine, highlightActiveLineGutter, drawSelection, gutter, GutterMarker, rectangularSelection, crosshairCursor, Decoration, ViewPlugin, WidgetType } from '@codemirror/view';
 import { EditorState, Compartment, StateField, StateEffect, RangeSet } from '@codemirror/state';
@@ -935,14 +935,6 @@ export function initFiles(host) {
   function destroyMergeView() { if (mergeView) { try { mergeView.destroy(); } catch (_) {} mergeView = null; } }
   // Базовые read-only расширения панелей MergeView (сплит-дифф и модалка локальной истории) —
   // один набор, чтобы файл выглядел одинаково во всех дифф-вьюхах. Массив иммутабелен, шарится.
-  function mergeRoExtensions(file, onLangLoad) {
-    return [
-      EditorState.readOnly.of(true), EditorView.editable.of(false),
-      lineNumbers(), drawSelection(),
-      syntaxHighlighting(defaultHighlightStyle, { fallback: true }), oneDark,
-      ...(file ? [].concat(languageFor(file, onLangLoad)) : []),
-    ];
-  }
   // Дифф рабочего файла vs HEAD: unified + пара для сплита одним заходом. Заодно прогреваем язык —
   // сплит тогда строится сразу с подсветкой, без страховочного перерендера.
   async function fetchWorkingDiff(projPath, file) {

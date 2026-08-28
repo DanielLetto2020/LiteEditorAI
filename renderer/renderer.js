@@ -27,7 +27,7 @@ import { el, icon, iconBtn, hydrateIcons, toast, makeModal, showConfirm, showPro
 import { initExtensions } from './modules/extensions.js';
 // initFiles — вивер+дерево мигрированы в отдельное окно (renderer/module-entry.js).
 
-const APP_VERSION = 'alpha v1.1.128';
+const APP_VERSION = 'alpha v1.1.135';
 const GUTTER = 5;
 // Системный терминал («Система · ~») мигрирован в отдельное окно (renderer/modules/scratch.js):
 // его id `__scratch__::tN` маршрутизируются main'ом в окно-владельца, в ядре их больше не обрабатываем.
@@ -1218,30 +1218,7 @@ function createSession(proj, name, custom) {
   // промпт шлёт одно и то же) отсекаем сравнением — без дёрганья tab-бара.
   term.onTitleChange((t) => adoptTermTitle(id, t));
   tabsByProj.get(proj.id).sessions.push(id);
-  // «Контекст»: тихая автосборка — новая сессия агента должна найти готовый CLAUDE.md/AGENTS.md,
-  // если файла-выхода ещё нет. Логика бэкенд-only (lite.ctx.*), поэтому живёт в ядре, а не в окне ctx
-  // (окно ctx, если открыто, освежится по своему watch выходных файлов).
-  try { ctxAutoApply(proj); } catch (_) {}
   return id;
-}
-// Тихая автосборка контекста для проекта (порт из contextgraph.js: только бэкенд-вызовы, без UI).
-// Компилирует CLAUDE.md/AGENTS.md, ТОЛЬКО если файла-выхода ещё нет и автосборка не выключена в графе.
-const CTX_AGENTS = ['claude', 'codex'];
-const CTX_OUT_FILES = { claude: 'CLAUDE.md', codex: 'AGENTS.md' };
-async function ctxAutoApply(p) {
-  try {
-    for (const ag of CTX_AGENTS) {
-      const prof = await lite.ctx.profiles(p.id, ag);
-      const r0 = await lite.ctx.load(p.id, ag, prof && prof.active);
-      const g = r0 && r0.graph;
-      if (!g || (g.settings && g.settings.autoApply === false)) continue;
-      if (!(g.nodes || []).some((n) => n.type === 'text')) continue;
-      const o = (g.nodes || []).find((n) => n.type === 'out' && n.out === ag);
-      if (!o || !o.enabled) continue;
-      if (await lite.fs.exists(p.path + '/' + CTX_OUT_FILES[ag])) continue;
-      await lite.ctx.compile({ projId: p.id, projPath: p.path, agent: ag, profileId: prof && prof.active });
-    }
-  } catch (_) {}
 }
 // Ensure a project's sessions exist (restoring saved tab names on first open).
 function ensureProjectTabs(proj) {
@@ -1714,8 +1691,8 @@ function closeOtherPanels(selfId) {
 // В реестре панелей больше нет; открытие — openModule('files'). См. WINDOW_MODULES / module-entry.js.
 // Git мигрирован в отдельное окно (проектозависимое: следует за активным проектом редактора).
 // См. WINDOW_MODULES / module-entry.js.
-// «Контекст» (ctx) — граф контекста агента (канва n8n) мигрирован в отдельное окно (проектозависимое:
-// следует за активным проектом редактора). autoApply (тихая автосборка) портирована в ядро (ctxAutoApply).
+// «Контекст» (ctx) — канва файла CLAUDE.md мигрирована в отдельное окно (проектозависимое: следует
+// за активным проектом редактора). Тихой автосборки больше нет: канва пишет файл сама, собирать нечего.
 // Контейнеры (docker), «Базы данных» (db), «Удалённые хосты» (rh) мигрированы в отдельные окна
 // (самостоятельные). Стримы (containers:*/rh:*) маршрутизируются по окну-владельцу. См. module-entry.js.
 // scratch (системный терминал) мигрирован в отдельное окно — в реестре панелей больше нет.
