@@ -3,6 +3,14 @@
 Все заметные изменения LiteEditorAI. Формат — [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/),
 нумерация — [SemVer](https://semver.org/lang/ru/). Проект в стадии **alpha**.
 
+## [1.1.136] — 2026-08-28
+
+**Линтер поймал мёртвый код, оставшийся от переделки модуля.**
+
+### 🧹 Убрано
+- Функция `uid()` в модуле «Контекст» вызывалась восемь раз до переделки канвы и ноль раз после,
+  но объявление осталось — `npm run lint` падал на нём, а с ним и проверка `CI` на `main`.
+
 ## [1.1.135] — 2026-08-28
 
 **Публичные тексты приведены в соответствие модулю.**
@@ -2417,6 +2425,7 @@ AGENTS.md как граф на канве), и **цветной пульт** —
 [1.0.97]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.0.97
 [1.0.96]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.0.96
 [1.1.123]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.1.123
+[1.1.136]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.1.136
 [1.1.135]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.1.135
 [1.1.128]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.1.128
 [1.1.121]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.1.121
