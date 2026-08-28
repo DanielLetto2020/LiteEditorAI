@@ -195,7 +195,7 @@ const MODULES = {
       bind('#rh-back', () => mod.goList());
     },
   },
-  // ctx даёт confirmClose() (dirty-guard «есть неподтверждённые изменения») — закрытие окна
+  // ctx даёт confirmClose() (заглушка: канва пишет файл сразу) — закрытие окна
   // спрашивает его перед закрытием; свои кнопки канвы биндит сам в initCtx.
   ctx: { title: 'Контекст', init: initCtx, project: true },
   scratch: {
