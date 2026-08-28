@@ -4,7 +4,8 @@
 import { EditorView, keymap, lineNumbers, drawSelection, Decoration } from '@codemirror/view';
 import { EditorState, StateField, StateEffect } from '@codemirror/state';
 import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands';
-import { syntaxHighlighting, defaultHighlightStyle, indentOnInput, bracketMatching, LanguageDescription } from '@codemirror/language';
+import { syntaxHighlighting, defaultHighlightStyle, indentOnInput, bracketMatching, LanguageDescription,
+  foldGutter, codeFolding, foldKeymap, foldAll, unfoldAll } from '@codemirror/language';
 import { oneDark } from '@codemirror/theme-one-dark';
 import { languages as LANG_REGISTRY } from '@codemirror/language-data';
 
@@ -57,6 +58,18 @@ const marksField = StateField.define({
   provide: (f) => EditorView.decorations.from(f),
 });
 
+// Read-only набор расширений для панелей MergeView (дифф «было / стало»). Вынесен сюда из
+// files.js, чтобы им мог пользоваться и модуль «Контекст»: модулю нельзя импортировать другой
+// модуль (граф зависимостей — DAG ui.js ← modules ← core), а общие хелперы живут здесь.
+export function mergeRoExtensions(file, onLangLoad) {
+  return [
+    EditorState.readOnly.of(true), EditorView.editable.of(false),
+    lineNumbers(), drawSelection(),
+    syntaxHighlighting(defaultHighlightStyle, { fallback: true }), oneDark,
+    ...(file ? [].concat(languageFor(file, onLangLoad)) : []),
+  ];
+}
+
 // Lightweight read/write CodeMirror instance with line-marking + scroll helpers. Used for git
 // diffs (read-only, marked add/del lines) and any module needing a code view.
 export function createCodeEditor(parent, opts = {}) {
@@ -64,14 +77,20 @@ export function createCodeEditor(parent, opts = {}) {
     lineNumbers(), drawSelection(), history(), indentOnInput(), bracketMatching(),
     syntaxHighlighting(defaultHighlightStyle, { fallback: true }), oneDark, marksField,
     opts.language || [],
-    keymap.of([indentWithTab, ...defaultKeymap, ...historyKeymap]),
+    keymap.of([indentWithTab, ...defaultKeymap, ...historyKeymap, ...foldKeymap]),
   ];
+  // wrap — длинные строки переносятся вместо горизонтальной прокрутки (читать конфиги удобнее);
+  // fold — колонка со стрелками сворачивания блоков (объекты/массивы JSON, разделы markdown).
+  if (opts.wrap) exts.push(EditorView.lineWrapping);
+  if (opts.fold) exts.push(codeFolding(), foldGutter());
   if (opts.readOnly) exts.push(EditorState.readOnly.of(true), EditorView.editable.of(false));
   if (opts.onChange) exts.push(EditorView.updateListener.of((u) => { if (u.docChanged) opts.onChange(u.state.doc.toString()); }));
   const view = new EditorView({ state: EditorState.create({ doc: opts.doc || '', extensions: exts }), parent });
   return {
     view,
     getValue: () => view.state.doc.toString(),
+    foldAll: () => foldAll(view),
+    unfoldAll: () => unfoldAll(view),
     // specs: [{ fromLine, toLine, cls }] — 1-based включительно; подсвечивает целые строки.
     setMarks: (specs) => {
       const total = view.state.doc.lines;
