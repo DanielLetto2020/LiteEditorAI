@@ -196,14 +196,30 @@ export function initCtx(host) {
     renderAll();
     maybeFit();
   }
-  // Сетка: место i-го блока при выравнивании — по столбцам сверху вниз, потом вправо.
-  function gridSlot(i) {
-    const rows = Math.max(1, Math.floor((canvas.clientHeight - 80) / ROW_H)) || 4;
-    return { x: 60 + Math.floor(i / rows) * COL_W, y: 40 + (i % rows) * ROW_H };
+  // Сколько колонок в сетке. Не «сколько влезет в ширину»: карточки широкие, и в неразвёрнутом
+  // окне влезала одна — раскладка вытягивалась в столбик, а «Уместить всё» сжимал её до нечитаемого.
+  // Подбираем число колонок так, чтобы прямоугольник раскладки лучше всего вписался в канву,
+  // то есть дал максимальный масштаб.
+  function gridCols(n) {
+    const W = Math.max(320, canvas.clientWidth - 80), H = Math.max(240, canvas.clientHeight - 80);
+    let best = 1, bestZoom = 0;
+    for (let c = 1; c <= Math.max(1, n); c++) {
+      const rows = Math.ceil(n / c);
+      const zoom = Math.min(1, W / (c * COL_W), H / (rows * ROW_H));
+      if (zoom > bestZoom + 1e-6) { bestZoom = zoom; best = c; }
+    }
+    return best;
+  }
+  // Место i-го блока — СТРОКАМИ слева направо, как читается текст. Раскладка по столбцам формально
+  // тоже отражала порядок файла, но глазами читается поперёк («1, 4, 7» в первом ряду).
+  function gridSlot(i, cols) {
+    const c = cols || gridCols(blocks.length || 1);
+    return { x: 60 + (i % c) * COL_W, y: 40 + Math.floor(i / c) * ROW_H };
   }
   // «Выровнять» — разложить карточки сеткой в порядке разделов файла. Файл не трогает.
   function alignGrid() {
-    ordered().forEach((b, i) => { const g = gridSlot(i); b.x = g.x; b.y = g.y; });
+    const cols = gridCols(blocks.length || 1);
+    ordered().forEach((b, i) => { const g = gridSlot(i, cols); b.x = g.x; b.y = g.y; });
     renderNodes(); saveLayout();
     setTimeout(fitView, 60);
   }
@@ -345,7 +361,7 @@ export function initCtx(host) {
     if (points.length) bar.appendChild(el('span', 'ctx-chip', `${points.length} ${plural(points.length, 'версия', 'версии', 'версий')} в истории`));
     bar.appendChild(el('span', 'ctx-hint', 'Правки пишутся в файл сразу, прежняя версия — в историю'));
   }
-  const NODE_W = 260, ROW_H = 150, COL_W = 296;   // шаг сетки: карточка (260px) + зазор
+  const NODE_W = 520, ROW_H = 150, COL_W = 556;   // шаг сетки: карточка (520px) + зазор
   function fitView() {
     if (!blocks.length) { view = { x: 40, y: 40, z: 1 }; applyView(); saveLayout(); return; }
     const r = canvas.getBoundingClientRect();
@@ -473,6 +489,7 @@ export function initCtx(host) {
             </div>
             <span id="cxm-chars" class="ctx-mchars"></span>
             <div class="mine-fl-sp"></div>
+            <button class="btn sm" id="cxm-ask" title="Спросить агента про этот раздел (вставить в терминал, без Enter)">❯_ Спросить агента</button>
             <button class="btn sm" id="cxm-prev-b" title="Предыдущий раздел">◀</button>
             <button class="btn sm" id="cxm-next-b" title="Следующий раздел">▶</button>
           </div>
@@ -540,6 +557,12 @@ export function initCtx(host) {
         it.appendChild(el('span', 'ctx-bl-name', b.title));
         it.appendChild(el('span', 'ctx-bl-size', fmtTok(b.chars || 0)));
         if (cur && b.id === cur.id && dirty) it.appendChild(el('span', 'ctx-bl-dot', '●'));
+        // спросить агента про ЛЮБОЙ раздел, не открывая его: клик по кнопке не должен листать список
+        const ask = el('button', 'ctx-bl-ask');
+        ask.appendChild(icon('terminal', 12));
+        ask.title = 'Спросить агента про этот раздел (вставить в терминал, без Enter)';
+        ask.addEventListener('click', (e) => { e.stopPropagation(); askAbout(b); });
+        it.appendChild(ask);
         it.addEventListener('click', () => openBlock(b));
         listEl.appendChild(it);
       }
@@ -566,6 +589,7 @@ export function initCtx(host) {
     };
     m.querySelector('#cxm-mode-edit').addEventListener('click', () => setMode(false));
     m.querySelector('#cxm-mode-view').addEventListener('click', () => setMode(true));
+    m.querySelector('#cxm-ask').addEventListener('click', () => askAbout(cur));
     m.querySelector('#cxm-prev-b').addEventListener('click', () => step(-1));
     m.querySelector('#cxm-next-b').addEventListener('click', () => step(1));
     saveBtn.addEventListener('click', doSave);
