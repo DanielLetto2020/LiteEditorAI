@@ -271,9 +271,14 @@ function readStoreKey(key) {
 // (overwritten next time). Without this, dying during the write of projects.json would lose
 // the entire project list on the next launch (JSON.parse throws → undefined).
 function atomicWriteSync(file, data) {
-  const tmp = file + '.tmp';
+  // Пишем по РЕАЛЬНОМУ пути: rename поверх симлинка заменяет саму ссылку обычным файлом, и связь
+  // с общим файлом-целью рвётся молча (CLAUDE.md или конфиг вполне держат симлинком на шаблон —
+  // дальше правки уходили бы в копию, а общий файл больше не обновлялся).
+  let target = file;
+  try { if (fs.lstatSync(file).isSymbolicLink()) target = fs.realpathSync(file); } catch (_) {}
+  const tmp = target + '.tmp';
   fs.writeFileSync(tmp, data);
-  fs.renameSync(tmp, file);
+  fs.renameSync(tmp, target);
 }
 // Returns true on success. store:set is fire-and-forget (renderer updates its in-memory
 // snapshot before the write), so a swallowed failure = silent data loss after restart — we
