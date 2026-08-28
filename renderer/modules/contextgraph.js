@@ -17,7 +17,6 @@ import { createCodeEditor, languageFor, ensureLanguage, mergeRoExtensions } from
 const $ = (sel) => document.querySelector(sel);
 const lite = window.lite;
 
-const uid = () => 'n' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
 // Markdown → безопасный HTML для превью блока (контент мог прийти из чужого CLAUDE.md). DOMPurify
 // нет; парсим в инертный <template>, срезаем активные узлы/атрибуты, переносим очищенные ноды.
 function renderSafeMarkdown(target, src) {
