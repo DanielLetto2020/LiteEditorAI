@@ -2067,6 +2067,7 @@ function createWindow() {
   if (fs.existsSync(iconPng)) opts.icon = iconPng;
 
   mainWindow = new BrowserWindow(opts);
+  hardenNavigation(mainWindow);
   mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'));
   if (st.maximized) mainWindow.maximize();
 
@@ -2155,6 +2156,41 @@ function sendToOwner(sessionId, ch, payload) {
   if (wc && !wc.isDestroyed()) { wc.send(ch, payload); return; }
   if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(ch, payload);
 }
+// ── Навигация окон с мостом ───────────────────────────────────────────────────────────────────
+// preload применяется к КАЖДОМУ документу webContents, поэтому окно, ушедшее на внешний адрес,
+// отдаёт этому адресу весь window.lite — то есть файловую систему пользователя. А уйти есть куда:
+// превью markdown рисует обычные ссылки, а содержимое CLAUDE.md и памяти приходит из чужих
+// репозиториев и от агента. Поэтому окну разрешены ровно две свои страницы, всё остальное
+// уезжает в системный браузер.
+// Сравниваем file-URL с file-URL: pathname у file:// на Windows выглядит как «/C:/app/…», а
+// path.join даёт «C:\app\…» — прямое сравнение путей там не совпало бы НИКОГДА, и защита
+// заблокировала бы окну его собственную страницу.
+const APP_PAGES = new Set([
+  pathToFileURL(path.join(__dirname, 'renderer', 'index.html')).href,
+  pathToFileURL(path.join(__dirname, 'renderer', 'module.html')).href,
+]);
+function isAppPage(url) {
+  try {
+    const u = new URL(url);
+    if (u.protocol !== 'file:') return false;
+    u.hash = ''; u.search = '';        // module.html#ctx и ?query — та же страница
+    return APP_PAGES.has(u.href);
+  } catch (_) { return false; }
+}
+function hardenNavigation(win) {
+  const wc = win.webContents;
+  wc.on('will-navigate', (e, url) => {
+    if (isAppPage(url)) return;                       // своя страница и её перезагрузка
+    e.preventDefault();
+    logger.log('warn', 'window', 'навигация наружу отклонена: ' + String(url).slice(0, 200));
+    if (/^https?:/i.test(url)) { try { shell.openExternal(url); } catch (_) {} }
+  });
+  wc.setWindowOpenHandler(({ url }) => {
+    if (/^https?:/i.test(url)) { try { shell.openExternal(url); } catch (_) {} }
+    return { action: 'deny' };                        // отдельных окон без preload-контракта не заводим
+  });
+}
+
 function openModuleWindow(modId) {
   const existing = moduleWindows.get(modId);
   if (existing && !existing.isDestroyed()) { if (existing.isMinimized()) existing.restore(); existing.focus(); return; }
@@ -2170,6 +2206,7 @@ function openModuleWindow(modId) {
   if (Number.isInteger(saved.x) && Number.isInteger(saved.y)) { opts.x = saved.x; opts.y = saved.y; }
   if (fs.existsSync(iconPng)) opts.icon = iconPng;
   const win = new BrowserWindow(opts);
+  hardenNavigation(win);
   moduleWindows.set(modId, win);
   win.loadFile(path.join(__dirname, 'renderer', 'module.html'), { hash: modId });
   if (saved.maximized) win.maximize();
