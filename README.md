@@ -86,12 +86,19 @@ rollback** for everything the agent changed before you committed.
 Git lives in the same window: selective staging by checkbox, amend, commit / push / pull / fetch, stash,
 per-file history, cherry-pick / revert, three-pane conflict resolution, branch management.
 
-### 4. Compose the agent's context as a graph
+### 4. Keep the agent's context in order
 
-The **Context** module builds `CLAUDE.md` / `AGENTS.md` **as a node graph** (n8n-style): text blocks, profile
-groups you toggle on and off, token counters, restore points. Claude and Codex are configured independently.
-It can chop an existing `CLAUDE.md` into blocks for you, and mine rules out of your past Claude Code
-conversations.
+The **Context** module shows the project's `CLAUDE.md` as sections on a canvas: you see the token
+weight of every piece and of the whole file. Editing a section writes straight to the file, and the
+previous version goes into history — 50 copies, a lock against rotation, a comment per version and a
+diff against the current file. An edit made by the agent itself is noticed and saved too, so it can
+be rolled back just like your own.
+
+Three tabs sit next to it: **Memory** — what Claude Code remembered about the project (facts, links
+between them, mismatches with the index, a trash bin with restore); **Files** — the tree of the
+project's `.claude` and `~/.claude` with an editor, copy history and windowed viewing of large files;
+**Conversation analysis** — mining long-lived rules out of your history with the agent, writing them
+into `CLAUDE.md` or creating skill and command drafts.
 
 ## Install
 
@@ -117,7 +124,7 @@ position, and the set reopens on next launch. Project-bound modules follow the a
 | Module | What it does |
 |---|---|
 | 👁 **Project** (viewer + Git) | Code and git in one window — see [above](#3-see-what-the-agent-touched). Plus Markdown / image / HTML preview, project-wide replace (`Ctrl+Shift+R`, regex and `$1` groups), history search, favourite branches, git status inside the file tree. |
-| 🧠 **Context** | `CLAUDE.md` / `AGENTS.md` as a graph — see [above](#4-compose-the-agents-context-as-a-graph). |
+| 🧠 **Context** | `CLAUDE.md` by sections, memory, `.claude` files, conversation mining — see [above](#4-keep-the-agents-context-in-order). |
 | ✅ **Tasks** | TODO with statuses and priority, list **and kanban** (drag to change status), search, subtask checklists with progress, Markdown preview, project/global tabs, send a task straight into the terminal, JSON export/import. Plus a **Calendar** tab with due dates, **native reminders** and a month view — and a built-in **MCP server** (`lite-tasks`) so the agent in your terminal can read and set reminders itself. |
 | 🔍 **Audit** | Quick X-ray of a project: file types, largest files by lines/size with anomaly flags, media by weight, hygiene (junk in git, duplicates, minified, orphans), tech debt (TODO/FIXME and possible secrets — click jumps to the line), history (hot files by git churn, stale ones). Source: git-tracked or the whole directory; summary to clipboard, report export. |
 | 🤖 **AI company** | A team of agents on one project: a **director** agent decomposes the goal, "hires" specialists (coder, reviewer, tester…) and keeps a shared task board with progress; live log, role library, dry-run **plan mode**, budget cap, goal queue, run history with cost. |
