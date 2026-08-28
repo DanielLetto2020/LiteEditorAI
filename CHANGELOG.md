@@ -2425,6 +2425,7 @@ AGENTS.md как граф на канве), и **цветной пульт** —
 [1.0.97]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.0.97
 [1.0.96]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.0.96
 [1.1.123]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.1.123
+[1.1.136]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.1.136
 [1.1.135]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.1.135
 [1.1.128]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.1.128
 [1.1.121]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.1.121
