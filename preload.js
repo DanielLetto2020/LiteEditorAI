@@ -225,6 +225,36 @@ contextBridge.exposeInMainWorld('lite', {
   },
 
   // «Контекст» — граф контекста агента (renderer/modules/contextgraph.js).
+  // Память Claude Code (~/.claude/projects/<enc>/memory): список фактов, индекс, расхождения,
+  // правка, удаление в корзину и восстановление. scope: 'project' | 'home' (память домашнего каталога).
+  ctxmem: {
+    list: (projPath, scope) => ipcRenderer.invoke('ctxmem:list', { projPath, scope }),
+    // Удаление НЕ стирает: файл уезжает в ~/.claude/custom-trash-memory, строка вырезается из MEMORY.md.
+    del: (projPath, scope, file) => ipcRenderer.invoke('ctxmem:delete', { projPath, scope, file }),
+    trash: () => ipcRenderer.invoke('ctxmem:trash'),
+    restore: (id) => ipcRenderer.invoke('ctxmem:restore', { id }),
+    read: (projPath, scope, file) => ipcRenderer.invoke('ctxmem:read', { projPath, scope, file }),
+    save: (projPath, scope, file, text) => ipcRenderer.invoke('ctxmem:save', { projPath, scope, file, text }),
+  },
+  // Файлы настроек Claude Code: <proj>/.claude (scope 'project') и ~/.claude (scope 'home').
+  // Запись всегда сначала кладёт копию в ~/.claude/custom-backups (ротация 10 на путь).
+  ctxfs: {
+    tree: (scope, projPath) => ipcRenderer.invoke('ctxfs:tree', { scope, projPath }),
+    // offset/limit — окно чтения больших файлов (границы подтягиваются к переводам строк)
+    read: (scope, projPath, rel, offset, limit) => ipcRenderer.invoke('ctxfs:read', { scope, projPath, rel, offset, limit }),
+    write: (scope, projPath, rel, text) => ipcRenderer.invoke('ctxfs:write', { scope, projPath, rel, text }),
+    artifactState: (scope, projPath, items) => ipcRenderer.invoke('ctxfs:artifactState', { scope, projPath, items }),
+    createArtifact: (opts) => ipcRenderer.invoke('ctxfs:createArtifact', opts),
+    hookStub: (title, detail) => ipcRenderer.invoke('ctxfs:hookStub', { title, detail }),
+    shcheck: (scope, projPath, rel) => ipcRenderer.invoke('ctxfs:shcheck', { scope, projPath, rel }),
+  },
+  // История копий (общая для памяти и файлов .claude)
+  ctxbk: {
+    list: (file) => ipcRenderer.invoke('ctxbk:list', { file }),
+    read: (id) => ipcRenderer.invoke('ctxbk:read', { id }),
+    restore: (id) => ipcRenderer.invoke('ctxbk:restore', { id }),
+  },
+  // «Контекст» — граф контекста агента (renderer/modules/contextgraph.js).
   ctx: {
     load: (projId, agent, profileId) => ipcRenderer.invoke('ctx:load', { projId, agent, profileId }),
     save: (projId, agent, graph, profileId) => ipcRenderer.invoke('ctx:save', { projId, agent, graph, profileId }),
