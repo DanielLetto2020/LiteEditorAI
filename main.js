@@ -2631,6 +2631,13 @@ function openModuleWindow(modId) {
       // и обрываем анализ диалогов: без этого `claude -p` жил ещё до таймаута (5 мин), жёг токены и писал в мёртвый sender
       for (const c of ctxmineReqs.values()) { try { c.kill(); } catch (_) {} } ctxmineReqs.clear();
     }
+    // То же и для остальных окон с агентами: закрыли окно — обрывай его запросы. Иначе `claude -p`
+    // (или HTTP-стрим OpenRouter) доживал до своего таймаута — 2–5 минут работы и токенов в никуда,
+    // а «Директор» ИИ-компании ещё и detached, то есть переживал бы окно гарантированно.
+    if (modId === 'doc') killReqMap(tpReqs);         // «Обработка текста»
+    if (modId === 'db') killReqMap(dbaiReqs);        // AI-DB (child ИЛИ ClientRequest — killReqMap разбирает оба)
+    if (modId === 'chat') killReqMap(orReqs);        // OpenRouter
+    if (modId === 'company') { for (const c of companyReqs.values()) { try { companyKill(c); } catch (_) {} } companyReqs.clear(); }
     for (const [sid, wc] of ownerBySession) { try { if (wc.isDestroyed()) ownerBySession.delete(sid); } catch (_) { ownerBySession.delete(sid); } }
     broadcastModuleOpenSet();
   });
