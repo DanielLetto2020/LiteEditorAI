@@ -1069,6 +1069,11 @@ export function initTextProc(host) {
     }
   }
 
+  // Пути, которые СЕЙЧАС читаются с диска. Клик по файлу в дереве открывает вкладку, но между
+  // кликом и появлением вкладки идёт await: двойной клик (обычный жест в дереве файлов) успевал
+  // пройти проверку «уже открыт» дважды и заводил ДВЕ вкладки одного файла. Дальше правки в одной
+  // затирались сохранением другой — тихая потеря текста.
+  const openingFiles = new Set();
   async function openProjectFile(absPath) {
     // Check if already open
     let tab = openTabs.find(t => t.absPath === absPath);
@@ -1076,14 +1081,20 @@ export function initTextProc(host) {
       switchToTab(tab.id);
       return;
     }
-    
+    if (openingFiles.has(absPath)) return;
+    openingFiles.add(absPath);
+    try {
+      await openProjectFileInner(absPath);
+    } finally { openingFiles.delete(absPath); }
+  }
+  async function openProjectFileInner(absPath) {
     // Read file
     const r = await lite.fs.readFile(absPath);
     if (!r || r.error) {
       toast('Ошибка чтения файла', { kind: 'err' });
       return;
     }
-    
+
     // Create new tab
     const id = nextTabId++;
     const name = baseName(absPath);
@@ -1097,7 +1108,7 @@ export function initTextProc(host) {
       root.innerHTML = safeHtml;
       mdSrc = htmlToMd(root);
     }
-    tab = {
+    const tab = {
       id,
       absPath,
       name,
