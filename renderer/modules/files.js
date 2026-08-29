@@ -666,10 +666,21 @@ export function initFiles(host) {
     updateViewButtons();
     updateStatus(editor.state);
   }
-  function togglePreview() {
+  // Автосейв в превью и диффе намеренно не работает (там правит не редактор). Значит уходить туда
+  // с НЕсохранённым файлом нельзя: правка зависала бы в памяти без единого шанса попасть на диск —
+  // ни по таймеру, ни по вотчеру, — а выход из редактора сносит окна модулей мимо их dirty-guard,
+  // и она пропадала молча. Проверено: правка → сразу «Превью» → выход = правки на диске нет.
+  async function flushBeforeMode() {
+    if (dirty && currentFile) await saveCurrent();
+  }
+  async function togglePreview() {
     if (previewMode) { exitPreview(); editor.focus(); return; }
     const kind = previewKind(currentFile);
-    if (kind) showPreview(kind, currentFile, editor.state.doc.toString());
+    if (!kind) return;
+    const file = currentFile;
+    await flushBeforeMode();
+    if (currentFile !== file || previewMode) return;   // за время записи сменили файл или режим
+    showPreview(kind, currentFile, editor.state.doc.toString());
   }
   // B15: превью рядом с кодом (split) — редактор слева, живой рендер справа. Markdown обновляется по вводу,
   // HTML перезагружается из файла (после автосейва). Выход — кнопка «Оригинал» (радио-группа режимов).
@@ -969,6 +980,8 @@ export function initFiles(host) {
     if (!currentFile) return;
     const p = activeProject(); if (!p) return;
     const file = currentFile;
+    await flushBeforeMode();          // дифф сравнивает ДИСК с HEAD: несохранённая правка делала его враньём
+    if (currentFile !== file || diffMode) return;
     const d = await fetchWorkingDiff(p.path, file);
     if (currentFile !== file) return; // переключили файл за время await — не показываем устаревший дифф
     diffRevertTarget = null;          // дифф-кнопка из режима редактирования — не показываем откат ханка (стейл от «Коммита» сбрасываем)
