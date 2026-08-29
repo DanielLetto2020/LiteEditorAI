@@ -270,6 +270,10 @@ function readStoreKey(key) {
 // half-written (corrupt) JSON — the original file stays intact and a stale .tmp is harmless
 // (overwritten next time). Without this, dying during the write of projects.json would lose
 // the entire project list on the next launch (JSON.parse throws → undefined).
+// Суффикс временного соседа при атомарной записи. Вотчер и листинг дерева его отфильтровывают:
+// иначе сохранение файла В ПРОЕКТЕ (через atomicWriteSync это, например, CLAUDE.md) дёргало бы
+// дерево лишним «изменился файл» на соседа, которого через миллисекунду уже нет.
+const WRITE_TMP_SUFFIX = '.lite-tmp';
 function atomicWriteSync(file, data) {
   // Пишем по РЕАЛЬНОМУ пути: rename поверх симлинка заменяет саму ссылку обычным файлом, и связь
   // с общим файлом-целью рвётся молча (CLAUDE.md или конфиг вполне держат симлинком на шаблон —
@@ -279,15 +283,17 @@ function atomicWriteSync(file, data) {
   // Права существующей цели переносим на нового соседа: rename кладёт на её место файл, созданный
   // по umask, и цель с чувствительным содержимым (база KeePass, 0600) стала бы читаемой всем.
   let mode; try { mode = fs.statSync(target).mode & 0o777; } catch (_) {}
-  const tmp = target + '.tmp';
+  // Имя соседа уникально по процессу. У приложения нет single-instance-лока: второй запущенный
+  // редактор пишет ТЕ ЖЕ файлы стора, и с общим `X.tmp` два процесса писали бы в один временный
+  // файл вперемешку, после чего один переименовывал бы мешанину поверх цели. Для projects.json
+  // это ровно та потеря всего списка проектов, ради предотвращения которой запись и делалась
+  // атомарной. Тот же приём уже применён в mcp/lite-agenda-server.js, который пишет agenda/*.json
+  // из отдельного процесса.
+  const tmp = target + '.' + process.pid + WRITE_TMP_SUFFIX;
   fs.writeFileSync(tmp, data, mode == null ? undefined : { mode });
   if (mode != null) { try { fs.chmodSync(tmp, mode); } catch (_) {} }  // tmp мог остаться от прошлого краха — { mode } его не переоткрывает
   fs.renameSync(tmp, target);
 }
-// Суффикс временного соседа при записи файлов В ДЕРЕВЕ ПРОЕКТА (writeFileCrashSafe). Вотчер его
-// отфильтровывает: иначе каждое сохранение дёргало бы дерево лишним «изменился файл» на файл,
-// которого через миллисекунду уже нет.
-const WRITE_TMP_SUFFIX = '.lite-tmp';
 // Returns true on success. store:set is fire-and-forget (renderer updates its in-memory
 // snapshot before the write), so a swallowed failure = silent data loss after restart — we
 // log it; the boolean lets callers that DO care (import) detect a partial failure.

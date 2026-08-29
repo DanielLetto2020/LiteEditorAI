@@ -58,7 +58,9 @@ function flush() {
   if (writeTimer) { clearTimeout(writeTimer); writeTimer = null; }
   try {
     const str = serialize();
-    const tmp = file + '.tmp';
+    // Имя уникально по процессу: errors.json пишет и редактор, и (по документированной схеме)
+    // агент из своего процесса — с общим `X.tmp` две записи слились бы в одну мешанину.
+    const tmp = file + '.' + process.pid + '.tmp';
     fs.writeFileSync(tmp, str);
     fs.renameSync(tmp, file);     // атомарно: читатель видит либо старое, либо новое
     lastWritten = str;
