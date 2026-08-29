@@ -276,8 +276,12 @@ function atomicWriteSync(file, data) {
   // дальше правки уходили бы в копию, а общий файл больше не обновлялся).
   let target = file;
   try { if (fs.lstatSync(file).isSymbolicLink()) target = fs.realpathSync(file); } catch (_) {}
+  // Права существующей цели переносим на нового соседа: rename кладёт на её место файл, созданный
+  // по umask, и цель с чувствительным содержимым (база KeePass, 0600) стала бы читаемой всем.
+  let mode; try { mode = fs.statSync(target).mode & 0o777; } catch (_) {}
   const tmp = target + '.tmp';
-  fs.writeFileSync(tmp, data);
+  fs.writeFileSync(tmp, data, mode == null ? undefined : { mode });
+  if (mode != null) { try { fs.chmodSync(tmp, mode); } catch (_) {} }  // tmp мог остаться от прошлого краха — { mode } его не переоткрывает
   fs.renameSync(tmp, target);
 }
 // Суффикс временного соседа при записи файлов В ДЕРЕВЕ ПРОЕКТА (writeFileCrashSafe). Вотчер его
@@ -3885,7 +3889,7 @@ ipcMain.handle('keepass:add', async (_e, { title, username, password, url, notes
     if (notes) en.fields.set('Notes', String(notes));
     try { fs.copyFileSync(kpDbFile, kpDbFile + '.lite-bak'); } catch (_) {} // best-effort бэкап
     const ab = await kpDb.save();
-    fs.writeFileSync(kpDbFile, Buffer.from(ab));
+    atomicWriteSync(kpDbFile, Buffer.from(ab));   // не обычный writeFile: обрыв посреди записи убил бы .kdbx целиком
     kpListEntries(); // перестроить карту id → entry (включая новую запись)
     return { ok: true };
   } catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
