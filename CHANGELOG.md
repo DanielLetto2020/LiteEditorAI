@@ -3,7 +3,7 @@
 Все заметные изменения LiteEditorAI. Формат — [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/),
 нумерация — [SemVer](https://semver.org/lang/ru/). Проект в стадии **alpha**.
 
-## [1.1.174] — 2026-08-29
+## [1.1.174] — 2026-08-30
 
 **Android-пульт и релей удалены из проекта.** Последняя версия, где они были, — **v1.1.173**:
 оттуда можно скачать APK или восстановить исходники из git по тегу.
@@ -2549,6 +2549,7 @@ AGENTS.md как граф на канве), и **цветной пульт** —
 [1.0.97]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.0.97
 [1.0.96]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.0.96
 [1.1.123]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.1.123
+[1.1.174]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.1.174
 [1.1.173]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.1.173
 [1.1.136]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.1.136
 [1.1.135]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.1.135
