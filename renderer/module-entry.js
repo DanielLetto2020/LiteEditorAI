@@ -235,6 +235,19 @@ function saveSettings() { lite.store.set('settings', settings); lite.app.setting
 
 // Surface module errors to the main-process log (mirrors the editor's error sink).
 setErrorSink((msg) => { try { lite.log('error', '[module:' + modId + ']', msg); } catch (_) {} });
+// Необработанное исключение/промис В ОКНЕ МОДУЛЯ раньше не доходило никуда: sink ловит только
+// error-тосты, которые модуль позвал сам. В окне редактора эти два слушателя есть — здесь их
+// не было, и падение внутри любого из модулей-окон пропадало молча (в реестре ошибок пусто,
+// человек видит «просто не работает»). Тост — чтобы это было видно и без F12.
+const modLogErr = (...a) => { try { lite.log('error', '[module:' + modId + ']', ...a); } catch (_) {} };
+window.addEventListener('error', (e) => {
+  modLogErr('window.error', (e.error && e.error.stack) || e.message || '', e.filename ? `${e.filename}:${e.lineno}:${e.colno}` : '');
+  try { toast('Ошибка: ' + (e.message || (e.error && e.error.message) || 'см. F12'), { kind: 'err', ttl: 8000 }); } catch (_) {}
+});
+window.addEventListener('unhandledrejection', (e) => {
+  modLogErr('unhandledrejection', (e.reason && (e.reason.stack || e.reason.message)) || String(e.reason));
+  try { toast('Ошибка: ' + ((e.reason && e.reason.message) || e.reason || 'промис'), { kind: 'err', ttl: 8000 }); } catch (_) {}
+});
 
 let activeProj = null;   // cached active project of the editor (for project-dependent modules)
 let mod = null;          // the initialised module instance
