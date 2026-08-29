@@ -4222,5 +4222,6 @@
  "Проект закрыт — записывать правила некуда": "The project is closed — there is nowhere to write the rules",
  "❯_ Спросить агента": "❯_ Ask the agent",
  "ошибка записи": "write error",
- "таймаут: «claude mcp add» не ответил за 30 с": "timeout: “claude mcp add” did not respond within 30 s"
+ "таймаут: «claude mcp add» не ответил за 30 с": "timeout: “claude mcp add” did not respond within 30 s",
+ "Изменения применены в памяти, но НЕ записаны в файл базы: ": "Changes were applied in memory but NOT written to the database file: "
 }
