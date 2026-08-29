@@ -3295,7 +3295,6 @@ ipcMain.on('win:show', showWindow);
 // ── Окна модулей: open/close/реестр открытых ──────────────────────────────────────────
 ipcMain.on('module:open', (_e, { modId } = {}) => { if (modId) openModuleWindow(String(modId)); });
 ipcMain.on('module:close', (_e, { modId } = {}) => { const w = moduleWindows.get(String(modId)); if (w && !w.isDestroyed()) w.close(); });
-ipcMain.handle('module:openSet', () => ({ ids: [...moduleWindows.keys()] }));
 
 // ── Помодоро: пульт окна модуля управляет движком таймера в main ──────────────────────
 ipcMain.handle('pomodoro:start', (_e, { tech } = {}) => pomoStart(tech));
@@ -4908,7 +4907,6 @@ ipcMain.handle('iterflow:deleteTask', ifWrap((_e, { id }) => iterflowApi.deleteT
 ipcMain.handle('iterflow:createNote', ifWrap((_e, { projectId, body }) => iterflowApi.createNote(projectId, body)));
 ipcMain.handle('iterflow:updateNote', ifWrap((_e, { noteId, body }) => iterflowApi.updateNote(noteId, body)));
 ipcMain.handle('iterflow:deleteNote', ifWrap((_e, { noteId }) => iterflowApi.deleteNote(noteId)));
-ipcMain.handle('iterflow:reorderNotes', ifWrap((_e, { projectId, ids }) => iterflowApi.reorderNotes(projectId, ids)));
 
 ipcMain.handle('audit:scan', async (_e, { root, opts }) => {
   if (!root || !fs.existsSync(root)) return { error: 'Нет каталога проекта' };

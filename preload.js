@@ -71,7 +71,6 @@ contextBridge.exposeInMainWorld('lite', {
   module: {
     open: (modId) => ipcRenderer.send('module:open', { modId }),
     close: (modId) => ipcRenderer.send('module:close', { modId }),
-    openSet: () => ipcRenderer.invoke('module:openSet'),
     onOpenSet: (cb) => { const h = (_e, p) => cb(p && p.ids || []); ipcRenderer.on('module:openSet', h); return () => ipcRenderer.removeListener('module:openSet', h); },
   },
 
@@ -391,7 +390,6 @@ contextBridge.exposeInMainWorld('lite', {
     createNote: (projectId, body) => ipcRenderer.invoke('iterflow:createNote', { projectId, body }),
     updateNote: (noteId, body) => ipcRenderer.invoke('iterflow:updateNote', { noteId, body }),
     deleteNote: (noteId) => ipcRenderer.invoke('iterflow:deleteNote', { noteId }),
-    reorderNotes: (projectId, ids) => ipcRenderer.invoke('iterflow:reorderNotes', { projectId, ids }),
   },
 
   seo: {
@@ -545,7 +543,6 @@ contextBridge.exposeInMainWorld('lite', {
     queues: (id, vhost, spark) => ipcRenderer.invoke('rmq:queues', { id, vhost, spark }),
     exchanges: (id, vhost) => ipcRenderer.invoke('rmq:exchanges', { id, vhost }),
     connections: (id) => ipcRenderer.invoke('rmq:connections', { id }),
-    queueBindings: (id, vhost, queue) => ipcRenderer.invoke('rmq:queueBindings', { id, vhost, queue }),
     peek: (id, vhost, queue, count) => ipcRenderer.invoke('rmq:peek', { id, vhost, queue, count }),
     publish: (id, vhost, exchange, routingKey, payload, properties) => ipcRenderer.invoke('rmq:publish', { id, vhost, exchange, routingKey, payload, properties }),
     purge: (id, vhost, queue) => ipcRenderer.invoke('rmq:purge', { id, vhost, queue }),
@@ -641,7 +638,6 @@ contextBridge.exposeInMainWorld('lite', {
     onExit: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('rh:exit', h); return () => ipcRenderer.removeListener('rh:exit', h); },
     fsList: (id, path) => ipcRenderer.invoke('rh:fsList', { id, path }),   // → {ok,path,entries:[{name,dir,link,size,perms,mode,owner,group,mtime}]}
     fsRead: (id, path) => ipcRenderer.invoke('rh:fsRead', { id, path }),   // → {ok,content|binary,size,meta?} | {error,tooBig?}
-    fsStat: (id, path) => ipcRenderer.invoke('rh:fsStat', { id, path }),   // → {ok,meta:{perms,mode,owner,group,mtime,size}|null}
     fsDownload: (id, path) => ipcRenderer.invoke('rh:fsDownload', { id, path }), // диалог «сохранить как» + выгрузка (бинарники тоже)
     fsClose: (id) => ipcRenderer.send('rh:fsClose', { id }),
     // Запись файла на хост (SFTP/FTP) + открытие удалённого файла в вивере (tmp-копия, save-back в main).
