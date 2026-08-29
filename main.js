@@ -2638,6 +2638,13 @@ function openModuleWindow(modId) {
     if (modId === 'db') killReqMap(dbaiReqs);        // AI-DB (child ИЛИ ClientRequest — killReqMap разбирает оба)
     if (modId === 'chat') killReqMap(orReqs);        // OpenRouter
     if (modId === 'company') { for (const c of companyReqs.values()) { try { companyKill(c); } catch (_) {} } companyReqs.clear(); }
+    // «Контейнеры»: закрыть окно ✕ мимо closeDockerDetail() — и `logs -f` продолжал бы качать вывод
+    // мёртвому окну, а `exec -it` держал бы живую оболочку в контейнере до выхода из редактора.
+    // Тейлы rmq/kafka так уже умеют (sender.once('destroyed') в lib/), эти два — нет.
+    if (modId === 'docker') {
+      for (const cp of cLogProcs.values()) { try { cp.kill(); } catch (_) {} } cLogProcs.clear();
+      for (const p of cExecPtys.values()) { try { p.kill(); } catch (_) {} } cExecPtys.clear();
+    }
     for (const [sid, wc] of ownerBySession) { try { if (wc.isDestroyed()) ownerBySession.delete(sid); } catch (_) { ownerBySession.delete(sid); } }
     broadcastModuleOpenSet();
   });
