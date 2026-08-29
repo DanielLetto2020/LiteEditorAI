@@ -3,7 +3,7 @@
 Все заметные изменения LiteEditorAI. Формат — [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/),
 нумерация — [SemVer](https://semver.org/lang/ru/). Проект в стадии **alpha**.
 
-## [1.1.172] — 2026-08-29
+## [1.1.173] — 2026-08-29
 
 **Двадцать четыре круга сквозного аудита: 36 находок, каждая проверена запуском.** Больше всего
 досталось сохранению данных — нашлись пути, на которых работа пропадала молча. Ниже — по темам.
@@ -81,6 +81,9 @@
 ### 🧪 Тесты
 - Три новых набора в `npm test`: фильтр «только чтение» для SQL (35 проверок), защита путей при
   скачивании из хранилища (21) и реестр ошибок (7).
+- Набор снова гоняется **без установленных зависимостей** — так его и запускает CI (`npm test` идёт
+  до `npm ci`). Чистые функции вынесены в модули без зависимостей: `safeRelSegments` → `lib/safe-name.js`,
+  фильтр read-only SQL → новый `lib/sqlro.js`.
 
 ## [1.1.137] — 2026-08-28
 
@@ -2520,7 +2523,7 @@ AGENTS.md как граф на канве), и **цветной пульт** —
 [1.0.97]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.0.97
 [1.0.96]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.0.96
 [1.1.123]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.1.123
-[1.1.172]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.1.172
+[1.1.173]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.1.173
 [1.1.136]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.1.136
 [1.1.135]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.1.135
 [1.1.128]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.1.128
