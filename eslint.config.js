@@ -42,7 +42,6 @@ module.exports = [
       'release/**',
       'reports/**',           // отчёт Stryker
       '.stryker-tmp/**',
-      'android/**',
       'landing/**',
       'ansible/**',
     ],
@@ -68,12 +67,5 @@ module.exports = [
       globals: { ...globals.browser },
     },
     rules: { ...js.configs.recommended.rules, ...PROJECT_STYLE },
-  },
-
-  // Код пульта живёт в WebView, но подключает общий с ПК кодек через require:
-  // модульную систему тут разрешает esbuild на сборке APK, среда всё равно браузерная.
-  {
-    files: ['renderer/mobile.js'],
-    languageOptions: { sourceType: 'commonjs' },
   },
 ];

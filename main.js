@@ -22,17 +22,9 @@ const crypto = require('crypto');
 const vm = require('vm'); // песочница для пользовательских предикатов «Мониторинга сайтов»
 const { pathToFileURL } = require('url');
 const pty = require('node-pty');
-// Headless-xterm: на каждую сессию держим «теневой» терминал, который потребляет тот же
-// поток PTY. Пульту по сети идёт НЕ байтовый ANSI-стрим, а «проекция экрана» (принцип mosh):
-// видимый экран теневого терминала как простой текст + line-диффы (см. mirrorScreen и
-// движок кадров в remote.js). Сколько бы перерисовок ни делал TUI-агент, по сети уходит
-// только итоговое состояние. Пакет — pure-JS, нативных зависимостей нет.
-const { Terminal: HeadlessTerminal } = require('@xterm/headless');
 const logger = require('./logger');
-const remote = require('./remote'); // удалённый пульт (вкл. только при env LITE_REMOTE=1)
-const { safeChildName } = require('./lib/safe-name'); // анти-traversal для имён (в т.ч. с пульта)
+const { safeChildName } = require('./lib/safe-name'); // анти-traversal для имён папок/файлов
 const { resolveShell: resolveShellPure } = require('./lib/shell'); // выбор оболочки терминала
-const sgrline = require('./lib/sgrline'); // стилизованные строки кадра пульта (цвета как мини-SGR)
 const syncmark = require('./lib/sync');   // метка «sync» в плашке: что домашняя машина держит в синхронизации с сервером
 
 app.setName('LiteEditorAI');
@@ -64,104 +56,6 @@ let tray = null;
 let growDesiredWidth = null;
 let growAppliedWidth = null;
 const ptys = new Map();     // projectId -> IPty
-const ptySize = new Map();  // sessionId -> { cols, rows } — текущий размер PTY (для пульта)
-const mirrors = new Map();  // sessionId -> { term: HeadlessTerminal } — теневой терминал для пульта
-const MIRROR_SCROLLBACK = 20000;
-
-// --- Теневой терминал сессии (источник кадров «проекции экрана» для пульта) -----
-function mirrorCreate(id, cols, rows) {
-  mirrorDispose(id);
-  try {
-    const term = new HeadlessTerminal({
-      cols: cols || 80, rows: rows || 24, scrollback: MIRROR_SCROLLBACK, allowProposedApi: true,
-    });
-    mirrors.set(id, { term });
-  } catch (e) { logger.log('warn', 'mirror', 'create failed', e && e.message); }
-}
-function mirrorWrite(id, data) { const m = mirrors.get(id); if (m) { try { m.term.write(data); } catch (_) {} } }
-function mirrorResize(id, cols, rows) { const m = mirrors.get(id); if (m && cols > 0 && rows > 0) { try { m.term.resize(cols, rows); } catch (_) {} } }
-function mirrorDispose(id) { const m = mirrors.get(id); if (m) { try { m.term.dispose(); } catch (_) {} mirrors.delete(id); } }
-// Видимый экран сессии как простой текст: массив строк + курсор + флаг alt-буфера.
-// Это весь «снапшот», который нужен пульту, — ~5КБ вместо мегабайтного serialize().
-// styled (пульт попросил в select) → строки с цветами/атрибутами как мини-SGR
-// (lib/sgrline.js; строки остаются строками — диффер в remote.js не меняется) +
-// curIdx: индекс курсора В ПЛОСКОМ ТЕКСТЕ строки курсора. cursorX — в ЯЧЕЙКАХ, а
-// wide-символы (эмодзи/CJK) занимают 2 ячейки при .length 1-2 — пульту ширины ячеек
-// не видны, поэтому индекс считаем здесь, где они известны точно.
-function mirrorScreen(id, styled) {
-  const m = mirrors.get(id);
-  if (!m) return null;
-  try {
-    const term = m.term;
-    const buf = term.buffer.active;
-    const lines = [];
-    if (!styled) {
-      for (let y = 0; y < term.rows; y++) {
-        const line = buf.getLine(buf.baseY + y);
-        lines.push(line ? line.translateToString(true) : '');
-      }
-      return {
-        cols: term.cols, rows: term.rows, lines,
-        cursor: [buf.cursorX, buf.cursorY],
-        alt: buf.type === 'alternate',
-      };
-    }
-    const cellObj = buf.getNullCell();
-    let curIdx = -1;
-    for (let y = 0; y < term.rows; y++) {
-      const line = buf.getLine(buf.baseY + y);
-      if (!line) { lines.push(''); continue; }
-      const isCurY = (y === buf.cursorY);
-      const cells = [];
-      let plainLen = 0;   // длина плоского текста в JS-единицах (для curIdx)
-      for (let x = 0; x < line.length; x++) {
-        const c = line.getCell(x, cellObj);
-        if (!c) break;
-        // курсор на continuation-ячейке wide-символа → индекс ПОСЛЕ самого символа
-        if (isCurY && x === buf.cursorX) curIdx = plainLen;
-        if (c.getWidth() === 0) continue;   // continuation wide-символа — не ячейка
-        const ch = c.getChars() || ' ';
-        let fg = -1, bg = -1;
-        if (c.isFgRGB()) fg = sgrline.RGB | c.getFgColor();
-        else if (c.isFgPalette()) fg = c.getFgColor();
-        if (c.isBgRGB()) bg = sgrline.RGB | c.getBgColor();
-        else if (c.isBgPalette()) bg = c.getBgColor();
-        let fl = 0;
-        if (c.isBold()) fl |= 1;
-        if (c.isDim()) fl |= 2;
-        if (c.isItalic()) fl |= 4;
-        if (c.isUnderline()) fl |= 8;
-        if (c.isInverse()) fl |= 16;
-        cells.push({ ch, fg, bg, fl });
-        plainLen += ch.length;
-      }
-      if (isCurY && curIdx === -1) curIdx = plainLen + Math.max(0, buf.cursorX - line.length);
-      lines.push(sgrline.encodeLine(cells));
-    }
-    return {
-      cols: term.cols, rows: term.rows, lines,
-      cursor: [buf.cursorX, buf.cursorY], curIdx,
-      alt: buf.type === 'alternate', styled: true,
-    };
-  } catch (_) { return null; }
-}
-// История для пульта = SCROLLBACK теневого терминала (строки, ушедшие выше видимого
-// экрана normal-буфера). Раньше историю лепил stripped-ANSI транскрипт из сырого потока —
-// у TUI-агентов каждая перерисовка добавлялась заново («кривые повторяющиеся символы»).
-// Scrollback эмулирован честно: это ровно то, что видно при скролле в настоящем терминале.
-function mirrorScrollback(id) {
-  const m = mirrors.get(id);
-  if (!m) return '';
-  try {
-    const buf = m.term.buffer.normal;
-    const lines = [];
-    for (let y = 0; y < buf.baseY; y++) {
-      const line = buf.getLine(y);
-      lines.push(line ? line.translateToString(true) : '');
-    }
-    return lines.join('\n');
-  } catch (_) { return ''; }
-}
 const watchers = new Map(); // project root path -> { watcher, timer, pending:Set }
 
 // Resolve a shell that actually exists. $SHELL can point at a shell that was
@@ -233,31 +127,7 @@ try {
   const legacy = path.join(os.homedir(), '.LiteEditor');
   if (!fs.existsSync(storeDir) && fs.existsSync(legacy)) fs.cpSync(legacy, storeDir, { recursive: true });
 } catch (_) {}
-const STORE_KEYS = ['projects', 'settings', 'layout', 'recents', 'lastParent', 'categories', 'sectionOrder', 'favOrder', 'accordions', 'dismissed', 'projTabs', 'openrouter', 'remote', 'shares', 'pultBlocked', 'dockerUi', 'dbConnections', 'dbUi', 'rhConnections', 'rhUi', 'extData', 'extEnabled', 'quickbar', 'seoSites', 'moduleWins', 'mwLeft', 'mwLogH', 'gitFav', 'commitDrafts', 'bookmarks', 'promptSnippets', 'pomodoro', 'pomodoroLog', 'dbaiProviders', 'sessionSnaps', 'siteMon', 'rmqConnections', 'rmqUi', 'kafkaConnections', 'kafkaUi', 'stConnections', 'stUi', 'jiraAccounts', 'jiraUi'];
-// Папка-«стор» для шаринга с пультом (агент кладёт сюда файлы; в PTY доступна как $LITE_STORE).
-const pultStoreDir = path.join(storeDir, 'store');
-try { fs.mkdirSync(pultStoreDir, { recursive: true }); } catch (_) {}
-// Разрешённые с пульта папки (shares). По умолчанию — только стор. Пользователь добавляет
-// свои в Настройках; что добавить (хоть «/») — на его усмотрение и ответственность.
-function getPultShares() {
-  const raw = readStoreKey('shares');
-  const user = (Array.isArray(raw) ? raw : []).filter((s) => s && s.path)
-    .map((s) => ({ path: path.resolve(s.path), name: s.name || path.basename(s.path) || s.path }));
-  const out = [{ path: pultStoreDir, name: 'Стор' }];   // стор доступен всегда
-  const seen = new Set([pultStoreDir]);
-  for (const s of user) if (!seen.has(s.path)) { seen.add(s.path); out.push(s); }
-  return out;
-}
-// Путь разрешён, только если он внутри одной из shares. Сверяем РЕАЛЬНЫЕ пути (realpath),
-// иначе симлинк внутри шары (напр. store/evil → ~/.ssh) обошёл бы строковую проверку границы.
-function resolveInShares(p) {
-  let abs; try { abs = fs.realpathSync(path.resolve(p)); } catch (_) { return null; }
-  for (const s of getPultShares()) {
-    let base; try { base = fs.realpathSync(s.path); } catch (_) { continue; }
-    if (abs === base || abs.startsWith(base + path.sep)) return abs;
-  }
-  return null;
-}
+const STORE_KEYS = ['projects', 'settings', 'layout', 'recents', 'lastParent', 'categories', 'sectionOrder', 'favOrder', 'accordions', 'dismissed', 'projTabs', 'openrouter', 'dockerUi', 'dbConnections', 'dbUi', 'rhConnections', 'rhUi', 'extData', 'extEnabled', 'quickbar', 'seoSites', 'moduleWins', 'mwLeft', 'mwLogH', 'gitFav', 'commitDrafts', 'bookmarks', 'promptSnippets', 'pomodoro', 'pomodoroLog', 'dbaiProviders', 'sessionSnaps', 'siteMon', 'rmqConnections', 'rmqUi', 'kafkaConnections', 'kafkaUi', 'stConnections', 'stUi', 'jiraAccounts', 'jiraUi'];
 function ensureStoreDir() { try { fs.mkdirSync(storeDir, { recursive: true }); } catch (_) {} }
 function storeFile(key) { return path.join(storeDir, String(key).replace(/[^\w.-]/g, '_') + '.json'); }
 function readStoreKey(key) {
@@ -606,7 +476,7 @@ function startAgendaReminders() {
   setTimeout(agendaReminderTick, 4000);   // стартовый прогон — покажет пропущенные (один раз, гейт notifiedAt)
   setInterval(agendaReminderTick, 60000); // раз в минуту
 }
-// fs.watch на каталоге agenda: внешние записи (MCP-сервер / пульт) → освежить бейдж/ленту в окнах.
+// fs.watch на каталоге agenda: внешние записи (MCP-сервер) → освежить бейдж/ленту в окнах.
 function startAgendaWatch() {
   try { fs.mkdirSync(path.join(storeDir, 'agenda'), { recursive: true }); } catch (_) {}
   const timers = new Map();
@@ -2854,392 +2724,12 @@ app.whenReady().then(() => {
   // проект, когда редактор его запушит). Небольшая задержка — дать окну редактора подняться.
   setTimeout(reopenSavedModuleWindows, 600);
   startAgendaReminders();  // напоминалки Календаря (дата-задачи)
-  startAgendaWatch();      // подхват внешних записей напоминаний (MCP/пульт)
-  startRemotePult();
-  signalHeirReady();   // если нас запустили как «наследника» при перезагрузке с пульта — отрапортовать старой копии
+  startAgendaWatch();      // подхват внешних записей напоминаний (MCP-сервер)
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
 });
 
-// --- Безопасный перезапуск редактора по команде с пульта ------------------------
-// Старая копия поднимает локальный сокет, запускает новую копию (detached) с env
-// LITE_HEIR_PORT, ждёт от неё рукопожатие «загрузилась» и ТОЛЬКО ТОГДА закрывается.
-// Если новая копия не поднимется за 45с — старая остаётся жить (пульт не теряет ПК).
-let restarting = false;
-function restartAppSafely() {
-  if (restarting) return; restarting = true;
-  logger.log('info', 'remote', 'safe restart requested from pult');
-  const server = net.createServer();
-  let finished = false;
-  const fail = (why) => {
-    if (finished) return; finished = true; restarting = false;
-    try { server.close(); } catch (_) {}
-    logger.log('warn', 'remote', 'restart aborted: ' + why);
-  };
-  server.on('error', (e) => fail('server ' + (e && e.message)));
-  server.listen(0, '127.0.0.1', () => {
-    const port = /** @type {import('net').AddressInfo} */ (server.address()).port;
-    let child;
-    try {
-      child = spawn(process.execPath, process.argv.slice(1), {
-        detached: true, stdio: 'ignore', cwd: process.cwd(),
-        env: Object.assign({}, process.env, { LITE_HEIR_PORT: String(port) }),
-      });
-    } catch (e) { fail('spawn ' + (e && e.message)); return; }
-    child.on('error', (e) => fail('child ' + (e && e.message)));
-    child.unref();
-    const timer = setTimeout(() => fail('heir not ready in 45s'), 45000);
-    server.on('connection', (sock) => {
-      sock.on('data', (d) => {
-        if (finished || String(d).indexOf('ready') < 0) return;
-        finished = true; clearTimeout(timer);
-        logger.log('info', 'remote', 'heir ready → closing old instance');
-        try { server.close(); } catch (_) {}
-        setTimeout(() => app.exit(0), 250);   // даём наследнику долю секунды занять место
-      });
-    });
-  });
-}
-// Если нас запустили как наследника — после загрузки окна сообщаем старой копии «я жив».
-function signalHeirReady() {
-  const port = Number(process.env.LITE_HEIR_PORT);
-  if (!port || !mainWindow) return;
-  const ping = () => {
-    try {
-      const sock = net.connect(port, '127.0.0.1', () => { try { sock.write('ready'); sock.end(); } catch (_) {} });
-      sock.on('error', () => {});
-    } catch (_) {}
-  };
-  // did-finish-load = рендерер загрузился (редактор реально живой) → рапортуем.
-  // ping идемпотентен, поэтому держим оба триггера: событие (если ещё грузится) +
-  // таймер-подстраховку (если did-finish-load уже прошёл и once больше не сработает).
-  mainWindow.webContents.once('did-finish-load', () => setTimeout(ping, 400));
-  setTimeout(ping, 1500);
-}
-
-// ----------------------------------------------------------- стор (файлы для пульта)
-// Read-only шаринг: пульт может листать дерево внутри разрешённых папок (shares) и
-// СКАЧИВАТЬ файлы/папки (папка → zip). Никаких правок/удалений с пульта нет.
-const STORE_CHUNK = 64 * 1024;            // сырой размер чанка (≈85КБ в base64)
-const storeCancelled = new Set();         // reqId, отменённые пультом
-const MIME = { txt:'text/plain', md:'text/markdown', json:'application/json', js:'text/javascript', html:'text/html', css:'text/css', png:'image/png', jpg:'image/jpeg', jpeg:'image/jpeg', gif:'image/gif', webp:'image/webp', svg:'image/svg+xml', pdf:'application/pdf', zip:'application/zip', mp4:'video/mp4', mp3:'audio/mpeg' };
-function mimeOf(name) { const e = String(name).split('.').pop().toLowerCase(); return MIME[e] || 'application/octet-stream'; }
-// Бэкпрешер: не заливаем релей быстрее, чем он отдаёт (по bufferedAmount сокета).
-function remoteDrain() {
-  return /** @type {Promise<void>} */ (new Promise((resolve) => {
-    const check = () => { if (remote.bufferedAmount() < 512 * 1024) resolve(); else setTimeout(check, 15); };
-    check();
-  }));
-}
-async function streamFileToPult(reqId, filePath, displayName) {
-  let fd, stat;
-  try { stat = fs.statSync(filePath); fd = fs.openSync(filePath, 'r'); }
-  catch (e) { remote.send({ t: 'store:err', reqId, error: 'open: ' + (e && e.message) }); return; }
-  remote.send({ t: 'store:begin', reqId, name: displayName, size: stat.size, mime: mimeOf(displayName) });
-  const buf = Buffer.allocUnsafe(STORE_CHUNK);
-  let seq = 0, pos = 0;
-  try {
-    while (pos < stat.size) {
-      if (storeCancelled.has(reqId)) { storeCancelled.delete(reqId); remote.send({ t: 'store:err', reqId, error: 'cancelled' }); return; }
-      const n = fs.readSync(fd, buf, 0, STORE_CHUNK, pos);
-      if (n <= 0) break;
-      pos += n;
-      remote.send({ t: 'store:chunk', reqId, seq: seq++, data: buf.slice(0, n).toString('base64') });
-      await remoteDrain();
-    }
-    remote.send({ t: 'store:end', reqId });
-  } catch (e) { remote.send({ t: 'store:err', reqId, error: 'read: ' + (e && e.message) }); }
-  finally { try { fs.closeSync(fd); } catch (_) {} storeCancelled.delete(reqId); } // отмена, пришедшая под конец, иначе осталась бы в множестве навсегда
-}
-function zipDirToPult(reqId, dirPath) {
-  const tmp = path.join(os.tmpdir(), 'lite-store-' + Date.now() + '-' + Math.floor(Math.random() * 1e9) + '.zip');
-  // zip содержимого папки (cwd=dir, '.'); требует утилиту zip (есть на большинстве Linux).
-  // -y: симлинки хранятся как ссылки, а не разыменовываются — иначе симлинк внутри папки,
-  // указывающий наружу шары, утащил бы в архив содержимое внешнего файла.
-  execFile('zip', ['-r', '-y', '-q', tmp, '.'], { cwd: dirPath, maxBuffer: 8 * 1024 * 1024 }, (err) => {
-    if (err) { remote.send({ t: 'store:err', reqId, error: 'zip недоступен/ошибка: ' + (err.message || err) }); try { fs.unlinkSync(tmp); } catch (_) {} return; }
-    streamFileToPult(reqId, tmp, path.basename(dirPath) + '.zip').finally(() => { try { fs.unlinkSync(tmp); } catch (_) {} });
-  });
-}
-function pultStoreList(reqId, p) {
-  if (!p || p === '/' || p === '') {   // корень → отдаём сами shares как папки верхнего уровня
-    remote.send({ t: 'store:tree', reqId, path: '', entries: getPultShares().map((s) => ({ name: s.name, path: s.path, isDir: true })) });
-    return;
-  }
-  const abs = resolveInShares(p);
-  if (!abs) { remote.send({ t: 'store:err', reqId, error: 'доступ запрещён' }); return; }
-  let st; try { st = fs.statSync(abs); } catch (_) { remote.send({ t: 'store:err', reqId, error: 'нет доступа' }); return; }
-  if (!st.isDirectory()) { remote.send({ t: 'store:err', reqId, error: 'не папка' }); return; }
-  let names; try { names = fs.readdirSync(abs); } catch (e) { remote.send({ t: 'store:err', reqId, error: 'readdir: ' + (e && e.message) }); return; }
-  const entries = [];
-  for (const name of names) {
-    try { const full = path.join(abs, name); const s = fs.statSync(full); entries.push({ name, path: full, isDir: s.isDirectory(), size: s.size, mtime: s.mtimeMs }); }
-    catch (_) { /* нечитаемое пропускаем */ }
-  }
-  entries.sort((a, b) => (b.isDir - a.isDir) || a.name.localeCompare(b.name));
-  remote.send({ t: 'store:tree', reqId, path: abs, entries });
-}
-// Скачивание из стора: файл → стрим как есть, папка → zip. Один путь для onStoreGet и
-// onStoreGetZip (раньше был дубль pultStoreGetZip, отличавшийся лишь текстом ошибки).
-function pultStoreGet(reqId, p) {
-  const abs = resolveInShares(p);
-  if (!abs) { remote.send({ t: 'store:err', reqId, error: 'доступ запрещён' }); return; }
-  let st; try { st = fs.statSync(abs); } catch (_) { remote.send({ t: 'store:err', reqId, error: 'нет файла или папки' }); return; }
-  if (st.isDirectory()) zipDirToPult(reqId, abs); else streamFileToPult(reqId, abs, path.basename(abs));
-}
-
-// Удалённый пульт (Android). Поднимается только при LITE_REMOTE=1 — отдаёт пульту
-// список вкладок-сессий (метка = имя проекта · seq), зеркалит вывод PTY и пишет
-// ввод/промпт с пульта в нужный PTY. См. remote.js.
-let remoteActiveSid = '';   // активная вкладка десктопа (репортит рендерер) — для синка с пультом
-// Состояние для пульта: открытые сессии-терминалы + все проекты (с категориями).
-function buildRemoteState() {
-  const projects = readStoreKey('projects') || [];
-  const byId = {};
-  for (const p of projects) if (p && p.id) byId[p.id] = p;
-  const sessions = [];
-  const seqByProj = {};   // нумеруем вкладки последовательно по проекту (1,2,3…), а не по суффиксу sid —
-                          // иначе на пульте «Терминал 2», когда в редакторе это «Терминал 1»
-  for (const sid of ptys.keys()) {
-    const sz = ptySize.get(sid) || { cols: 80, rows: 24 };
-    if (sid === '__scratch__') { sessions.push({ sid, projId: null, proj: 'Система', tab: 'Системный (~)', label: 'Системный (~)', cols: sz.cols, rows: sz.rows }); continue; }
-    const i = sid.indexOf('::t');
-    if (i > 0) {
-      const projId = sid.slice(0, i);
-      const n = (seqByProj[projId] = (seqByProj[projId] || 0) + 1);
-      const proj = byId[projId];
-      const name = proj ? proj.name : projId;
-      sessions.push({ sid, projId, proj: name, tab: 'Терминал ' + n, label: name + ' · ' + n, cols: sz.cols, rows: sz.rows });
-    } else {
-      sessions.push({ sid, projId: null, proj: '', tab: sid, label: sid, cols: sz.cols, rows: sz.rows });
-    }
-  }
-  const projOut = projects.map((p) => ({ id: p.id, name: p.name, category: p.category || '', favorite: !!p.favorite }));
-  return { sessions, projects: projOut, active: remoteActiveSid };
-}
-// Открыть терминал для проекта по запросу с пульта → просим рендерер открыть
-// настоящую вкладку (как ＋ в редакторе), чтобы она появилась И на ПК, И на пульте.
-function remoteOpenProject(projId) {
-  sendTo(mainWindow, 'remote:openProject', { projId });
-}
-// История — ОКНОМ (ленивая подгрузка при скролле вверх на пульте): отдаём кусок
-// транскрипта ДО смещения before размером size; в begin/end кладём start/total,
-// чтобы пульт знал, откуда продолжать и когда транскрипт кончился (start=0).
-function remoteHistoryGet(reqId, sid, before, size) {
-  const text = mirrorScrollback(sid);
-  const total = text.length;
-  let end = total;
-  if (typeof before === 'number' && isFinite(before)) end = Math.max(0, Math.min(Math.floor(before), total));
-  const want = (typeof size === 'number' && size > 0) ? Math.min(Math.floor(size), 256 * 1024) : total;
-  const start = Math.max(0, end - want);
-  const slice = text.slice(start, end);
-  const CH = 32 * 1024;
-  remote.send({ t: 'history:begin', reqId, sid, size: slice.length, start, total });
-  for (let i = 0, seq = 0; i < slice.length; i += CH, seq++) {
-    remote.send({ t: 'history:chunk', reqId, sid, seq, data: slice.slice(i, i + CH) });
-  }
-  remote.send({ t: 'history:end', reqId, sid, start, total });
-}
-// Хост релея больше НЕ зашит — пользователь указывает свой (self-hosting). Пусто = пульт
-// не поднимается, пока не выполнен вход с хостом в модалке «Пульт».
-// Нормализуем введённый хост: срезаем схему (wss?://), путь и пробелы — остаётся голый host[:port].
-function normalizeRelayHost(s) {
-  return String(s || '').trim().replace(/^wss?:\/\//i, '').replace(/^https?:\/\//i, '').replace(/\/.*$/, '').trim();
-}
-// --- Задачи на пульте: читаем/пишем те же notes/<id>.json, что и панель «Задачи» ---
-function notesPath(id) { return path.join(storeDir, 'notes', String(id).replace(/[^\w.-]/g, '_') + '.json'); }
-function pultTasksGet(reqId, id) {
-  let notes = [];
-  try { notes = JSON.parse(fs.readFileSync(notesPath(id), 'utf8')); } catch (_) {}
-  if (!Array.isArray(notes)) notes = [];
-  remote.send({ t: 'tasks:data', reqId, id, notes });
-}
-function pultTasksSet(id, notes) {
-  if (!Array.isArray(notes)) return;
-  try {
-    fs.mkdirSync(path.join(storeDir, 'notes'), { recursive: true });
-    atomicWriteSync(notesPath(id), JSON.stringify(notes));
-    // Освежить открытую в редакторе панель «Задачи», если она показывает этот же список.
-    sendTo(mainWindow, 'remote:notesChanged', { id: String(id) });
-  } catch (e) { logger.log('warn', 'remote', 'pult tasks save failed: ' + (e && e.message)); }
-}
-// Пульт: вставить текст задачи в терминал проекта — переадресуем рендереру (как в панели «Задачи»).
-function pultNoteToTerminal(projId, text) {
-  sendTo(mainWindow, 'remote:noteToTerminal', { projId, text });
-}
-// Пульт: вставка из буфера обмена планшета в PTY (кнопка Ctrl+V). Семантика — как у
-// xterm.paste(): переводы строк → CR, и если приложение включило bracketed paste
-// (\x1b[?2004h), текст едет в скобках — иначе TUI-агент примет каждую строку за Enter.
-// Режим читаем у теневого терминала сессии: он проигрывает тот же поток, что и PTY.
-const PULT_PASTE_LIMIT = 100000;
-function pultPasteToPty(sid, text) {
-  const p = ptys.get(sid);
-  if (!p || !text) return;
-  let s = String(text).slice(0, PULT_PASTE_LIMIT).replace(/\r?\n/g, '\r');
-  const m = mirrors.get(sid);
-  const bracketed = !!(m && m.term && m.term.modes && m.term.modes.bracketedPasteMode);
-  if (bracketed) s = '\x1b[200~' + s.replace(/\x1b\[201~/g, '') + '\x1b[201~';   // вырезаем конец-вставки из текста
-  p.write(s);
-}
-function startRemotePult() {
-  try {
-    remote.init({
-      logger,
-      getSessions: buildRemoteState,
-      screenFrame: (sid, styled) => mirrorScreen(sid, styled),  // видимый экран сессии (проекция для пульта; styled — пульт умеет цвета)
-      writeInput: (sid, data) => { const p = ptys.get(sid); if (p) p.write(data); },
-      onPaste: (sid, text) => pultPasteToPty(sid, text),   // вставка из буфера планшета (bracketed paste, если TUI просил)
-      openProject: remoteOpenProject,
-      onSelect: (sid) => { sendTo(mainWindow, 'remote:select', { sid }); },
-      onClose: (sid) => { sendTo(mainWindow, 'remote:closeTab', { sid }); },
-      onNewFolder: (name) => { sendTo(mainWindow, 'remote:newFolder', { name }); },
-      onRestartApp: () => { restartAppSafely(); },
-      onHistoryGet: (reqId, sid, before, size) => remoteHistoryGet(reqId, sid, before, size),
-      onStoreList: (reqId, p) => pultStoreList(reqId, p),
-      onStoreGet: (reqId, p) => pultStoreGet(reqId, p),
-      onStoreGetZip: (reqId, p) => pultStoreGet(reqId, p),
-      onStoreCancel: (reqId) => {
-        storeCancelled.add(reqId);
-        // Отмена может прийти на уже завершённую (или вовсе неизвестную) передачу — снимать такой
-        // id некому. Держим только окно последних отмен, иначе множество растёт от каждого
-        // сообщения пульта, а его содержимое мы не контролируем.
-        while (storeCancelled.size > 256) storeCancelled.delete(storeCancelled.values().next().value);
-      },
-      // Задачи на пульте: тот же notes/<id>.json, что и панель «Задачи» в редакторе.
-      onTasksGet: (reqId, id) => pultTasksGet(reqId, id),
-      onTasksSet: (id, notes) => pultTasksSet(id, notes),
-      onNoteToTerminal: (projId, text) => pultNoteToTerminal(projId, text),
-      // Пульт смотрит «проекцию экрана» и размером PTY не владеет — на presence только лог.
-      onPultPresence: (connected) => { logger.log('info', 'remote', connected ? 'pult connected' : 'pult disconnected'); },
-      // Пульт просит одобрить устройство → показать модалку в редакторе.
-      onPairRequest: (info) => { sendTo(mainWindow, 'remote:pairRequest', info); },
-      // Учёт подключённых пультов (бейдж у версии) + блок-лист (доступ выключаем, не удаляя).
-      isBlocked: (device) => getPultBlocked().includes(device),
-      onPultsChanged: (list) => { sendTo(mainWindow, 'remote:pults', { list, blocked: getPultBlocked() }); },
-      onSysInfo: (m) => { sendTo(mainWindow, 'remote:sysinfo', m); },
-    });
-    const r = readStoreKey('remote') || {};
-    if (r.token && r.host) {
-      // Аккаунт + хост сохранены (вошли через модалку «Пульт»).
-      remote.apply({ host: normalizeRelayHost(r.host), token: r.token, enabled: r.enabled !== false });
-    } else if (process.env.LITE_REMOTE === '1' && process.env.LITE_RELAY_TOKEN && process.env.LITE_RELAY_URL) {
-      // Legacy: включение через env (общий токен + явный хост релея).
-      const host = normalizeRelayHost(process.env.LITE_RELAY_URL);
-      if (host) remote.apply({ host, token: process.env.LITE_RELAY_TOKEN, enabled: true });
-    }
-  } catch (e) { logger.log('error', 'remote', 'start failed', e); }
-}
-
-// POST JSON на релей (https). FastAPI-ошибки приходят как {detail:"..."}.
-function relayPost(host, pathname, body, extraHeaders) {
-  return new Promise((resolve) => {
-    let data;
-    try { data = Buffer.from(JSON.stringify(body)); } catch (_) { resolve({ status: 0, error: 'bad body' }); return; }
-    const headers = Object.assign({ 'Content-Type': 'application/json', 'Content-Length': data.length }, extraHeaders || {});
-    const req = https.request(
-      { host, path: pathname, method: 'POST', headers, timeout: 12000 },
-      (res) => { let buf = ''; res.on('data', (d) => (buf += d)); res.on('end', () => { let j = null; try { j = JSON.parse(buf); } catch (_) {} resolve({ status: res.statusCode, body: j }); }); }
-    );
-    req.on('timeout', () => { req.destroy(); resolve({ status: 0, error: 'timeout' }); });
-    req.on('error', (e) => resolve({ status: 0, error: String(e && e.message || e) }));
-    req.write(data); req.end();
-  });
-}
-
-function remoteStoreState() {
-  const r = readStoreKey('remote') || {};
-  const st = remote.status();
-  return { loggedIn: !!r.token, login: r.login || '', enabled: r.enabled !== false, connected: st.connected, host: r.host || '' };
-}
-
-// Регистрация/вход: дергаем указанный пользователем релей, сохраняем {login, token, host, enabled}, поднимаем соединение.
-/**
- * @param {string} kind
- * @param {{ login?: string, password?: string, host?: string }} [creds]
- */
-async function remoteAuth(kind, { login, password, host } = {}) {
-  host = normalizeRelayHost(host || (readStoreKey('remote') || {}).host || '');
-  if (!host) return { ok: false, error: 'Укажите хост релея (например relay.example.com)' };
-  const res = await relayPost(host, '/' + kind, { login, password });
-  if (res.status === 200 && res.body && res.body.token) {
-    const rec = { login: res.body.login || login, token: res.body.token, host, enabled: true };
-    writeStoreKey('remote', rec);
-    remote.apply({ host, token: rec.token, enabled: true });
-    return { ok: true, status: remoteStoreState() };
-  }
-  const msg = (res.body && (res.body.detail || res.body.error)) || res.error ||
-    (res.status === 401 ? 'Неверный логин или пароль' : res.status === 409 ? 'Логин занят' : `Ошибка (${res.status || 'нет связи'})`);
-  return { ok: false, error: String(msg) };
-}
-
-ipcMain.handle('remote:status', () => remoteStoreState());
-// «Выйти на всех устройствах» — снять одобрение со всех устройств аккаунта + отозвать сессии
-// (на случай потери планшета). Авторизуемся сохранённым токеном аккаунта.
-ipcMain.handle('remote:revokeAllDevices', async () => {
-  const r = readStoreKey('remote') || {};
-  if (!r.token) return { ok: false, error: 'не выполнен вход' };
-  const host = r.host || '';
-  const res = await relayPost(host, '/devices/revoke-all', {}, { Authorization: 'Bearer ' + r.token });
-  if (res.status === 200) return { ok: true };
-  return { ok: false, error: (res.body && (res.body.detail || res.body.error)) || res.error || `Ошибка (${res.status || 'нет связи'})` };
-});
-ipcMain.handle('remote:register', (_e, creds) => remoteAuth('register', creds || {}));
-ipcMain.handle('remote:login', (_e, creds) => remoteAuth('login', creds || {}));
-ipcMain.handle('remote:logout', () => {
-  const r = readStoreKey('remote') || {};
-  writeStoreKey('remote', { ...r, token: '', enabled: false });
-  remote.apply({ token: '', enabled: false });
-  return remoteStoreState();
-});
-ipcMain.handle('remote:setEnabled', (_e, { enabled } = {}) => {
-  const r = readStoreKey('remote') || {};
-  writeStoreKey('remote', { ...r, enabled: !!enabled });
-  remote.apply({ enabled: !!enabled });
-  return remoteStoreState();
-});
-// --- Пульты: список подключённых, блок-лист, запрос сисинфо/гео ----------------
-// «Отключить» НЕ удаляет устройство: device id кладётся в pultBlocked (стор) и пульту
-// шлётся адресный kick; при каждом следующем появлении заблокированного устройства
-// remote.js кикает его снова. «Вернуть» — убрать из списка, пульт подключится сам.
-function getPultBlocked() {
-  const v = readStoreKey('pultBlocked');
-  return Array.isArray(v) ? v : [];
-}
-ipcMain.handle('remote:pults', () => ({ list: remote.pultList(), blocked: getPultBlocked() }));
-ipcMain.handle('remote:pultBlock', (_e, { device } = {}) => {
-  device = String(device || '').trim();
-  if (device) {
-    const b = getPultBlocked();
-    if (!b.includes(device)) writeStoreKey('pultBlocked', b.concat([device]));
-    try { remote.kick(device); } catch (_) {}
-  }
-  return { list: remote.pultList(), blocked: getPultBlocked() };
-});
-ipcMain.handle('remote:pultUnblock', (_e, { device } = {}) => {
-  device = String(device || '').trim();
-  if (device) writeStoreKey('pultBlocked', getPultBlocked().filter((d) => d !== device));
-  return { list: remote.pultList(), blocked: getPultBlocked() };
-});
-// Запрос у конкретного пульта; what: 'info' (диагностика) | 'geo' (местоположение).
-// Ответ прилетит событием remote:sysinfo (c тем же what).
-ipcMain.on('remote:pultSysInfo', (_e, { device, what } = {}) => {
-  try { remote.send({ t: 'sysinfo:get', device: String(device || ''), what: String(what || '') }); } catch (_) {}
-});
-
-// Pairing: пользователь на ПК одобрил/отклонил устройство пульта → шлём решение релею.
-ipcMain.on('remote:pairApprove', (_e, { device } = {}) => {
-  try { remote.send({ t: 'pair:approve', device: String(device || ''), pubkey: '' }); } catch (_) {}
-});
-ipcMain.on('remote:pairDeny', (_e, { device } = {}) => {
-  try { remote.send({ t: 'pair:deny', device: String(device || '') }); } catch (_) {}
-});
-// Рендерер сообщает, какая вкладка активна на десктопе → шлём пульту (синк активной).
-ipcMain.on('remote:activeChanged', (_e, { sid } = {}) => {
-  if ((sid || '') === remoteActiveSid) return;
-  remoteActiveSid = sid || '';
-  try { remote.notifyState(); } catch (_) {}
-});
 
 app.on('window-all-closed', () => {
   for (const p of ptys.values()) { try { p.kill(); } catch (_) {} }
@@ -3348,7 +2838,7 @@ ipcMain.handle('pomodoro:importFile', async () => {
 ipcMain.on('app:setActiveProject', (_e, info) => { activeProjectInfo = info || null; broadcastToModules('app:activeProject', activeProjectInfo); });
 ipcMain.handle('app:getActiveProject', () => activeProjectInfo);
 ipcMain.on('app:settingsChanged', (_e, s) => broadcastToModules('app:settingsChanged', s || {}));
-// Задачи изменились (модуль/пульт) → разослать ВСЕМ окнам модулей КРОМЕ отправителя (иначе автор правки
+// Задачи изменились (окно «Задачи») → разослать ВСЕМ окнам модулей КРОМЕ отправителя (иначе автор правки
 // получил бы эхо своего же изменения и перезагрузил список после каждого клика) + в главное окно (для бейджа
 // счётчика активных задач на квикбаре). Отправитель сам уже знает об изменении и обновляет UI точечно.
 ipcMain.on('app:notesChanged', (e, { id } = {}) => {
@@ -3615,14 +3105,11 @@ ipcMain.handle('dialog:pickDir', async () => {
 });
 
 // ---------------------------------------------------------------- PTY
-// Окружение для пользовательских шеллов/exec: НЕ протаскиваем внутренние переменные редактора
-// (порт «наследника» при рестарте, секреты релея) в каждый терминал и контейнер (B9) — там им
-// не место и они утекали бы в `env` любого процесса агента.
-const PTY_ENV_DENY = new Set(['LITE_HEIR_PORT', 'LITE_RELAY_TOKEN', 'LITE_RELAY_URL', 'RELAY_SECRET']);
+// Окружение для пользовательских шеллов/exec. Своих служебных переменных редактор больше не
+// заводит (набор появлялся ради удалённого пульта и ушёл вместе с ним, см. v1.1.175), поэтому
+// среда передаётся как есть; аргумент extra позволяет добавить точечные переменные.
 function userShellEnv(extra) {
-  const env = {};
-  for (const k of Object.keys(process.env)) if (!PTY_ENV_DENY.has(k)) env[k] = process.env[k];
-  return Object.assign(env, extra || {});
+  return Object.assign({}, process.env, extra || {});
 }
 
 // owner = webContents окна, создавшего сессию (редактор для терминалов проектов, окно «Система · ~»
@@ -3642,8 +3129,7 @@ function spawnPtyFor(id, cwd, cols, rows, owner) {
       cols: cols || 80,
       rows: rows || 24,
       cwd: startCwd,
-      // SHELL → реальный шелл; LITE_STORE → папка-стор (агент кладёт туда файлы для пульта).
-      env: userShellEnv({ SHELL: shell, LITE_STORE: pultStoreDir }),
+      env: userShellEnv({ SHELL: shell }),   // SHELL → реальный шелл, а не тот, что унаследован от лаунчера
     });
   } catch (err) {
     logger.log('error', 'pty', 'spawn failed', err);
@@ -3652,30 +3138,19 @@ function spawnPtyFor(id, cwd, cols, rows, owner) {
     return { error: String(err.message || err) };
   }
   logger.log('info', 'pty', `spawned pid=${proc.pid}`);
-  mirrorCreate(id, cols, rows);   // свежий теневой терминал (сбрасывает scrollback при рестарте PTY)
-  proc.onData((data) => {
-    sendToOwner(id, 'pty:data', { id, data });     // окну-владельцу (редактор/scratch-окно)
-    mirrorWrite(id, data);                         // сначала в теневой терминал (кадр всегда консистентен)
-    try { remote.screenTouch(id); } catch (_) {}   // потом будим диффер кадров (debounce внутри)
-  });
+  proc.onData((data) => sendToOwner(id, 'pty:data', { id, data }));   // окну-владельцу (редактор/scratch-окно)
   proc.onExit(() => {
     if (ptys.get(id) && ptys.get(id) !== proc) return; // replaced by a restart — suppress stale exit
     ptys.delete(id);
-    ptySize.delete(id);
-    mirrorDispose(id);
     sendToOwner(id, 'pty:exit', { id });
     ownerBySession.delete(id); // сессия закрылась — не копим мёртвые id в карте маршрутизации (B4-LOW)
-    try { remote.exit(id); remote.notifyState(); } catch (_) {}
   });
   ptys.set(id, proc);
-  ptySize.set(id, { cols: cols || 80, rows: rows || 24 });
   return { ok: true };
 }
 ipcMain.handle('pty:create', (e, { id, cwd, cols, rows }) => {
   if (ptys.has(id)) { ownerBySession.set(id, e.sender); return { ok: true, existed: true }; }
-  const r = spawnPtyFor(id, cwd, cols, rows, e.sender);
-  try { remote.notifyState(); } catch (_) {} // обновить список вкладок на пульте
-  return r;
+  return spawnPtyFor(id, cwd, cols, rows, e.sender);
 });
 // Kill the existing PTY (if any) and start a fresh one in the same cwd.
 ipcMain.handle('pty:restart', (e, { id, cwd, cols, rows }) => {
@@ -3686,7 +3161,7 @@ ipcMain.handle('pty:restart', (e, { id, cwd, cols, rows }) => {
 ipcMain.on('pty:write', (_e, { id, data }) => { const p = ptys.get(id); if (p) p.write(data); });
 ipcMain.on('pty:resize', (_e, { id, cols, rows }) => {
   const p = ptys.get(id);
-  if (p && cols > 0 && rows > 0) { try { p.resize(cols, rows); } catch (_) {} ptySize.set(id, { cols, rows }); mirrorResize(id, cols, rows); try { remote.notifyState(); } catch (_) {} }
+  if (p && cols > 0 && rows > 0) { try { p.resize(cols, rows); } catch (_) {} }
 });
 ipcMain.on('pty:kill', (_e, { id }) => {
   const p = ptys.get(id);

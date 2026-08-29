@@ -1,6 +1,6 @@
 {
   "name": "liteeditor-ai",
-  "version": "1.1.173-alpha",
+  "version": "1.1.175-alpha",
   "description": "Lightweight editor for working with AI coding agents in the terminal",
   "main": "main.js",
   "author": "Максим Кузьминский <i@m-letto.ru>",
@@ -11,7 +11,7 @@
     "url": "https://github.com/DanielLetto2020/LiteEditorAI.git"
   },
   "scripts": {
-    "test": "node test/safe-name.test.js && node test/sgrline.test.js && node test/shell.test.js && node test/portparse.test.js && node test/dbdetect.test.js && node test/fsmeta.test.js && node test/i18n.test.js && node test/sync.test.js && node test/storage-path.test.js && node test/sql-readonly.test.js && node test/errledger.test.js",
+    "test": "node test/safe-name.test.js && node test/shell.test.js && node test/portparse.test.js && node test/dbdetect.test.js && node test/fsmeta.test.js && node test/i18n.test.js && node test/sync.test.js && node test/storage-path.test.js && node test/sql-readonly.test.js && node test/errledger.test.js",
     "lint": "eslint .",
     "typecheck": "tsc -p tsconfig.check.json",
     "mutation": "node scripts/stryker-gate.js",
@@ -57,7 +57,6 @@
     "@xterm/addon-unicode11": "^0.9.0",
     "@xterm/addon-web-links": "^0.12.0",
     "@xterm/addon-webgl": "^0.19.0",
-    "@xterm/headless": "^5.5.0",
     "@xterm/xterm": "^5.5.0",
     "amqplib": "^2.0.1",
     "basic-ftp": "^6.0.1",
@@ -74,8 +73,7 @@
     "node-pty": "^1.0.0",
     "pg": "^8.21.0",
     "sql.js": "^1.14.1",
-    "ssh2": "^1.17.0",
-    "ws": "^8.21.0"
+    "ssh2": "^1.17.0"
   },
   "devDependencies": {
     "@electron/rebuild": "^4.0.4",
@@ -118,7 +116,6 @@
     ],
     "files": [
       "main.js",
-      "remote.js",
       "preload.js",
       "logger.js",
       "errledger.js",

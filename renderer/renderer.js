@@ -27,7 +27,7 @@ import { el, icon, iconBtn, hydrateIcons, toast, makeModal, showConfirm, showPro
 import { initExtensions } from './modules/extensions.js';
 // initFiles — вивер+дерево мигрированы в отдельное окно (renderer/module-entry.js).
 
-const APP_VERSION = 'alpha v1.1.173';
+const APP_VERSION = 'alpha v1.1.175';
 const GUTTER = 5;
 // Системный терминал («Система · ~») мигрирован в отдельное окно (renderer/modules/scratch.js):
 // его id `__scratch__::tN` маршрутизируются main'ом в окно-владельца, в ядре их больше не обрабатываем.
@@ -460,247 +460,9 @@ function focusProject(id) {
   setActive(id);
 }
 
+
 // ---------------------------------------------------------------- OpenRouter chat UI
 // Вынесен в renderer/modules/openrouter.js (const Or — у блока состояния чата выше).
-// ---------------------------------------------------------------- remote pult modal
-function showRemote() {
-  closeMenus();
-  let timer = null;   // объявлен ДО makeModal: onClose-колбэк ниже гасит опрос статуса
-  const { m, close } = makeModal(`
-    <h2><span style="color:var(--green-bright)">📱</span> Удалённый пульт</h2>
-    <div class="about-desc">
-      Управляй терминалом и вкладками ПК с Android-планшета через интернет.
-      Укажи <b>хост релея</b> (свой self-hosted сервер), зарегистрируй на нём аккаунт
-      здесь, в редакторе, затем в приложении-пульте укажи тот же хост и войди тем же
-      логином и паролем. Свой релей можно поднять на VPS — инструкция в папке
-      <code>relay/</code> репозитория.
-    </div>
-    <div class="or-add" id="rmt-body"></div>
-    <div class="modal-actions"><button class="btn" id="rmt-close">Закрыть</button></div>`,
-    // onClose срабатывает на ЛЮБОМ пути закрытия (кнопка/Esc/фон) — иначе опрос статуса
-    // продолжал тикать после закрытия по Esc до следующего срабатывания
-    () => clearInterval(timer));
-  const realClose = () => { clearInterval(timer); close(); };
-  m.querySelector('#rmt-close').onclick = realClose;
-  const body = m.querySelector('#rmt-body');
-
-  function field(labelText, type) {
-    const f = el('div', 'field');
-    f.appendChild(el('label', '', labelText));
-    const inp = document.createElement('input');
-    inp.type = type; inp.autocomplete = 'off'; inp.spellcheck = false;
-    f.appendChild(inp);
-    return { f, inp };
-  }
-
-  let mode = null;      // 'auth' | 'account' — перестраиваем только при СМЕНЕ режима
-  let statusEl = null;  // строка статуса в режиме «вошли» — её обновляем по таймеру (без пересборки полей)
-
-  function statusText(st) { return st.connected ? '● На связи' : (st.enabled ? '○ Подключение…' : '○ Выключено'); }
-
-  function buildAuth(st) {
-    body.innerHTML = '';
-    const hostF = field('Хост релея', 'text');
-    hostF.inp.placeholder = 'relay.example.com';
-    hostF.inp.value = (st && st.host) || '';
-    const login = field('Логин', 'text');
-    const pass = field('Пароль', 'password');
-    const err = el('div', 'err');
-    const actions = el('div', 'modal-actions');
-    const reg = el('button', 'btn', 'Зарегистрироваться');
-    const inb = el('button', 'btn primary', 'Войти');
-    actions.appendChild(reg); actions.appendChild(inb);
-    body.appendChild(hostF.f); body.appendChild(login.f); body.appendChild(pass.f); body.appendChild(err); body.appendChild(actions);
-    const run = async (fn) => {
-      err.textContent = '';
-      const h = hostF.inp.value.trim(), l = login.inp.value.trim(), p = pass.inp.value;
-      if (!h) { err.textContent = 'Укажите хост релея'; return; }
-      if (l.length < 3 || p.length < 4) { err.textContent = 'Логин ≥3, пароль ≥4 символа'; return; }
-      reg.disabled = inb.disabled = true;
-      let res; try { res = await fn(l, p, h); } catch (_) { res = { ok: false, error: 'Нет связи с релеем' }; }
-      reg.disabled = inb.disabled = false;
-      if (res.ok) { toast('Пульт: вошли как ' + res.status.login); tick(); }
-      else err.textContent = res.error || 'Ошибка';
-    };
-    inb.onclick = () => run((l, p, h) => lite.remote.login(l, p, h));
-    reg.onclick = () => run((l, p, h) => lite.remote.register(l, p, h));
-    pass.inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') inb.click(); });
-    setTimeout(() => (hostF.inp.value ? login.inp : hostF.inp).focus(), 30);
-  }
-
-  function buildAccount(st) {
-    body.innerHTML = '';
-    const who = el('div', 'rmt-info');
-    who.appendChild(el('span', '', 'Вошли как: '));
-    who.appendChild(el('b', '', st.login));
-    statusEl = el('div', '', statusText(st));
-    statusEl.style.color = st.connected ? 'var(--green-bright)' : 'var(--warn)';
-    statusEl.style.margin = '8px 0';
-    const tgl = el('label', '');
-    tgl.style.cssText = 'display:flex;align-items:center;gap:8px;cursor:pointer;margin:8px 0';
-    const cb = document.createElement('input'); cb.type = 'checkbox'; cb.checked = st.enabled;
-    tgl.appendChild(cb); tgl.appendChild(el('span', '', 'Пульт включён'));
-    cb.onchange = async () => { await lite.remote.setEnabled(cb.checked); tick(); };
-    const hint = el('div', 'about-desc');
-    hint.appendChild(el('span', '', 'На планшете в приложении «LiteEditor Пульт» войди логином '));
-    hint.appendChild(el('b', '', st.login));
-    hint.appendChild(el('span', '', ' и тем же паролем. Открой здесь хотя бы один терминал, чтобы он появился на пульте.'));
-    // Безопасность: «выйти на всех устройствах» — на случай потери планшета. Снимает одобрение
-    // со всех пультов аккаунта (потребуют повторного одобрения); этот ПК остаётся в системе.
-    const sec = el('div', 'about-desc');
-    sec.style.marginTop = '6px';
-    sec.appendChild(el('span', '', 'Потеряли планшет с пультом? Отключите все устройства — свои переодобрите заново.'));
-    const revoke = el('button', 'btn', '⎋ Выйти на всех устройствах');
-    revoke.style.cssText = 'margin-top:6px;color:var(--danger);border-color:var(--danger)';
-    revoke.onclick = () => showConfirm(
-      'Выйти на всех устройствах?',
-      'Все одобренные пульты будут отключены и потребуют повторного одобрения на ПК. Используйте при потере устройства. Этот ПК останется в системе.',
-      'Выйти везде',
-      async () => {
-        const r = await lite.remote.revokeAllDevices();
-        toast(r && r.ok ? 'Все устройства отключены — переодобрите свои заново' : 'Ошибка: ' + ((r && r.error) || ''));
-      },
-    );
-    const actions = el('div', 'modal-actions');
-    const out = el('button', 'btn', 'Выйти');
-    out.onclick = async () => { await lite.remote.logout(); tick(); };
-    actions.appendChild(out);
-    body.appendChild(who); body.appendChild(statusEl); body.appendChild(tgl); body.appendChild(hint);
-    body.appendChild(sec); body.appendChild(revoke); body.appendChild(actions);
-  }
-
-  async function tick() {
-    if (!document.body.contains(body)) { clearInterval(timer); return; }
-    let st; try { st = await lite.remote.status(); } catch (_) { return; }
-    if (!document.body.contains(body)) return;
-    const want = st.loggedIn ? 'account' : 'auth';
-    if (want !== mode) {
-      mode = want;
-      statusEl = null;
-      if (want === 'auth') buildAuth(st); else buildAccount(st);
-    } else if (mode === 'account' && statusEl) {
-      // Тот же режим — НЕ пересобираем (иначе терялся бы фокус/ввод), только статус.
-      statusEl.textContent = statusText(st);
-      statusEl.style.color = st.connected ? 'var(--green-bright)' : 'var(--warn)';
-    }
-  }
-  timer = setInterval(tick, 2500);
-  tick();
-}
-
-// --- Подключённые пульты: бейдж у версии + модалка управления ------------------
-// Список живёт в main (remote.js считает устройства по peer/hello); сюда прилетает
-// push-событием remote:pults. «Отключить» = device id в блок-листе (стор pultBlocked)
-// + адресный kick — устройство не удаляется, доступ возвращается кнопкой.
-let pultsState = { list: [], blocked: [] };
-function updatePultBadge() {
-  const b = $('#pult-badge'); if (!b) return;
-  const n = (pultsState.list || []).length;
-  const blocked = (pultsState.blocked || []).length;
-  b.textContent = '📱 ' + n;
-  b.classList.toggle('on', n > 0);
-  b.hidden = n === 0 && blocked === 0;
-  b.title = n ? ('Подключено пультов: ' + n) : 'Пульты (есть отключённые устройства)';
-}
-async function refreshPults() {
-  try { const st = await lite.remote.pults(); if (st) pultsState = st; } catch (_) {}
-  updatePultBadge();
-}
-function showPults() {
-  // offPults/offSys присваиваются ниже; onClose сработает на ЛЮБОМ пути закрытия (кнопка/Esc/фон) → отписка гарантирована
-  let offPults = null, offSys = null;
-  const { m, close } = makeModal(`
-    <h2><span style="color:var(--green-bright)">📱</span> Пульты</h2>
-    <div class="about-desc">Устройства, подключённые к редактору. «Отключить» выключает доступ,
-      не удаляя устройство — доступ можно вернуть здесь же. Сисинфо и местоположение пульт
-      присылает по запросу (гео — с разрешения на устройстве).</div>
-    <div class="or-add" id="plt-body"></div>
-    <div class="modal-actions"><button class="btn" id="plt-close">Закрыть</button></div>`,
-    () => { try { offPults && offPults(); offSys && offSys(); } catch (_) {} });
-  const body = m.querySelector('#plt-body');
-  const sysBoxes = {};   // device → <pre> под ответ сисинфо/гео
-
-  function fmtSince(ts) { try { return new Date(ts).toLocaleTimeString(); } catch (_) { return ''; } }
-  function render() {
-    body.innerHTML = '';
-    const blocked = pultsState.blocked || [];
-    const online = pultsState.list || [];
-    if (!online.length && !blocked.length) { body.appendChild(el('div', 'about-desc', 'Сейчас ни один пульт не подключён.')); return; }
-    const row = (device, info, isOnline) => {
-      const r = el('div', '');
-      r.style.cssText = 'border:1px solid var(--border);border-radius:10px;padding:10px;margin:8px 0';
-      const head = el('div', '');
-      head.style.cssText = 'display:flex;align-items:center;gap:8px;flex-wrap:wrap';
-      const dot = el('span', '', isOnline ? '●' : '○');
-      dot.style.color = isOnline ? 'var(--green-bright)' : 'var(--text-mute)';
-      const nm = el('b', '', (info && info.name) || 'Пульт');
-      const meta = el('span', '', (info && info.ver ? 'v' + info.ver + ' · ' : '')
-        + String(device).slice(0, 10) + '…'
-        + (isOnline && info && info.since ? ' · на связи с ' + fmtSince(info.since) : ''));
-      meta.style.cssText = 'color:var(--text-mute);font-size:11px';
-      head.appendChild(dot); head.appendChild(nm); head.appendChild(meta);
-      const actions = el('div', '');
-      actions.style.cssText = 'display:flex;gap:6px;margin-top:8px;flex-wrap:wrap;align-items:center';
-      const isBlocked = blocked.includes(device);
-      if (isOnline) {
-        const ask = (what, label) => {
-          let pre = sysBoxes[device];
-          if (!pre) {
-            pre = document.createElement('pre');
-            pre.style.cssText = 'margin:8px 0 0;white-space:pre-wrap;word-break:break-word;font-size:11px;'
-              + 'max-height:240px;overflow:auto;border:1px solid var(--border);border-radius:8px;padding:8px;color:var(--text-mute)';
-            r.appendChild(pre);
-            sysBoxes[device] = pre;
-          }
-          pre.textContent = label + ': запрошено, ждём ответ пульта…';
-          lite.remote.pultSysInfo(device, what);
-        };
-        const si = el('button', 'btn', 'Сисинфо');
-        si.onclick = () => ask('info', 'Сисинфо');           // без запроса геолокации — на пульте не всплывёт пермишен
-        const ge = el('button', 'btn', 'Гео');
-        ge.onclick = () => ask('geo', 'Гео');
-        actions.appendChild(si); actions.appendChild(ge);
-      }
-      const tg = el('button', 'btn' + (isBlocked ? ' primary' : ''), isBlocked ? 'Вернуть доступ' : 'Отключить');
-      tg.onclick = async () => {
-        try {
-          const st = await (isBlocked ? lite.remote.pultUnblock(device) : lite.remote.pultBlock(device));
-          if (st) pultsState = st;
-        } catch (_) {}
-        updatePultBadge(); render();
-      };
-      actions.appendChild(tg);
-      if (isBlocked) {
-        const bb = el('span', '', 'доступ отключён');
-        bb.style.cssText = 'color:var(--warn);font-size:11px';
-        actions.appendChild(bb);
-      }
-      r.appendChild(head); r.appendChild(actions);
-      body.appendChild(r);
-    };
-    for (const p of online) row(p.device, p, true);
-    for (const d of blocked) { if (!online.some((p) => p.device === d)) row(d, null, false); }
-  }
-  // Живое обновление, пока модалка открыта (подключения/отключения и ответы сисинфо).
-  offPults = (lite.remote && lite.remote.onPults)
-    ? lite.remote.onPults((st) => { if (st) pultsState = st; updatePultBadge(); render(); }) : null;
-  offSys = (lite.remote && lite.remote.onSysInfo)
-    ? lite.remote.onSysInfo((msg) => {
-      const pre = sysBoxes[msg.device]; if (!pre) return;
-      let txt = '';
-      const loc = msg.loc;
-      if (loc && typeof loc.lat === 'number') {
-        txt += 'Гео: ' + loc.lat.toFixed(5) + ', ' + loc.lon.toFixed(5) + ' (±' + Math.round(loc.acc || 0) + ' м)\n'
-          + 'https://maps.google.com/?q=' + loc.lat + ',' + loc.lon + '\n\n';
-      } else if (loc && loc.error) {
-        txt += 'Гео: ' + loc.error + '\n\n';
-      }
-      pre.textContent = (txt + (msg.info || '')).trim() || 'Пульт прислал пустой ответ.';
-    }) : null;
-  m.querySelector('#plt-close').onclick = () => close();   // отписка — в onClose модалки (срабатывает и на Esc/фон)
-  render();
-  refreshPults().then(render).catch(() => {});
-}
 
 function toggleFavorite(id) {
   const p = projects.find((x) => x.id === id);
@@ -1414,79 +1176,6 @@ function showActiveTerminal() {
   for (const [sid, rec] of terms) rec.container.style.display = sid === asid ? 'block' : 'none';
   renderTabBar();
   refitActiveTerminal(true);
-  reportRemoteActive(asid);
-}
-// Сообщаем main, какая вкладка активна на десктопе → пульт синхронизирует выделение.
-let lastReportedActive;
-function reportRemoteActive(sid) {
-  if (sid === lastReportedActive) return;
-  lastReportedActive = sid;
-  try { lite.remote.activeChanged(sid || ''); } catch (_) {}
-}
-// Пульт выбрал вкладку → переключаем десктоп на неё (если такая сессия есть локально).
-function handleRemoteSelect(sid) {
-  if (!sid) return;
-  const rec = terms.get(sid);
-  if (!rec) return; // удалённо открытый/неизвестный терминал — десктоп не следует
-  const t = tabsByProj.get(rec.projId);
-  if (t) t.active = sid;
-  if (rec.projId !== activeId) doSetActive(rec.projId);
-  else { saveProjTabs(); showActiveTerminal(); }
-}
-// Пульт нажал «＋» у проекта → открываем настоящую вкладку на десктопе (= и на пульте).
-function handleRemoteOpen(projId) {
-  const proj = projects.find((p) => p.id === projId);
-  if (!proj) return;
-  // Если у проекта ещё НЕТ терминалов — doSetActive сам создаст «Терминал 1» (ensureProjectTabs).
-  // Только если терминалы уже были, «＋» с пульта открывает ДОПОЛНИТЕЛЬНУЮ вкладку. Иначе
-  // получалось 2 терминала сразу (авто-первый + addTab) и пульт зацикливался на переключении.
-  const hadTabs = tabsByProj.has(projId) && (tabsByProj.get(projId).sessions || []).length > 0;
-  doSetActive(projId);
-  if (hadTabs) addTab();
-}
-// Пульт прислал «Создать папку» → создаём её на ПК в рабочем каталоге и открываем
-// проектом (новая вкладка-терминал прилетит обратно на пульт через состояние).
-async function handleRemoteNewFolder(name) {
-  name = String(name || '').trim();
-  if (!name) return;
-  const parent = (settings && settings.workingDir) || lastParent || '';
-  if (!parent) { toast('Пульт: задай рабочий каталог в Настройках, чтобы создавать папки'); return; }
-  try {
-    const res = await lite.fs.mkdir(parent, name);
-    if (res && res.error) { toast('Пульт: ' + res.error); return; }
-    if (res && res.path) { openByPath(res.path, res.name); toast(`Папка «${res.name}» создана (с пульта)`); }
-  } catch (e) { toast('Пульт: не удалось создать папку'); }
-}
-// Пульт: «В терминал» из модалки «Задачи» — вставить текст в терминал проекта
-// (та же логика, что и кнопка «В терминал» в панели задач на ПК).
-function handleRemoteNoteToTerminal(projId, text) {
-  if (!text) return;
-  const proj = projects.find((x) => x.id === projId) || activeProject();
-  if (proj) sendNoteToTerminal(proj, text);
-}
-// Пульт просит одобрить устройство (pairing) → модалка с именем устройства и проверочным
-// кодом. Одобрять только своё устройство, у которого код на экране совпадает.
-function handleRemotePairRequest(info) {
-  info = info || {};
-  const device = info.device || '';
-  if (!device) return;
-  const name = info.name || 'Неизвестное устройство';
-  const code = info.code ? `\n\nКод на устройстве: ${info.code}` : '';
-  showConfirm(
-    `Подключить устройство «${name}»?`,
-    `Устройство запрашивает доступ к терминалу через пульт. Одобряйте ТОЛЬКО если это ваше устройство и код ниже совпадает с показанным на нём.${code}`,
-    '✓ Одобрить',
-    () => { try { lite.remote.pairApprove(device); toast(`Устройство «${name}» одобрено`); } catch (_) {} },
-    '✕ Отклонить',
-    () => { try { lite.remote.pairDeny(device); toast(`Устройство «${name}» отклонено`); } catch (_) {} },
-  );
-}
-// Пульт закрыл вкладку (×) → закрываем её на десктопе (closeTab работает по активному проекту).
-function handleRemoteClose(sid) {
-  const rec = terms.get(sid);
-  if (!rec) return;
-  if (rec.projId !== activeId) doSetActive(rec.projId);
-  closeTab(sid);
 }
 function refitActiveTerminal(focusIt) {
   try { Ext.refitTerminal(); } catch (_) {} // dev-терминал модуля в #ext-pane
@@ -1672,7 +1361,7 @@ function doSetActive(id) {
   activeId = id;
   try { lite.errors.setContext(proj.path); } catch (_) {} // тег проекта для новых ошибок в реестре
   // Перевешиваем вотчер ТОЛЬКО при смене корня — иначе повторная активация уже активного
-  // проекта (например, тап «+» с пульта зовёт doSetActive безусловно) плодила бы дубль fs.watch
+  // проекта (повторный вызов doSetActive на тот же проект) плодила бы дубль fs.watch
   // и дублирующиеся fs:changed (B6).
   if (watchedRoot !== proj.path) {
     if (watchedRoot) lite.fs.unwatch(watchedRoot);
@@ -1842,7 +1531,7 @@ function updateNotesBadge() {
   b.textContent = n > 99 ? '99+' : String(n);
   b.classList.toggle('show', n > 0);
 }
-// Список задач изменился (модуль/пульт) → пересчитать счётчик этого списка с диска и освежить бейдж.
+// Список задач изменился (окно «Задачи») → пересчитать счётчик этого списка с диска и освежить бейдж.
 async function refreshNotesCount(id) {
   if (!id) return;
   try {
@@ -1853,7 +1542,7 @@ async function refreshNotesCount(id) {
     if (id === activeId) updateNotesBadge();
   } catch (_) {}
 }
-// Напоминания изменились (Календарь/MCP/пульт) → пересчитать «требует внимания» этого источника, освежить бейдж.
+// Напоминания изменились (Календарь / MCP-сервер) → пересчитать «требует внимания» этого источника, освежить бейдж.
 async function refreshAgendaCount(id) {
   if (!id) return;
   try {
@@ -2103,8 +1792,6 @@ function buildSettingsMenu(dd) {
   dd.appendChild(menuRow('sliders', 'Настройки…', () => { closeMenus(); showSettings(); }));
   dd.appendChild(menuRow('grid', 'Палитра команд (Ctrl+K)', () => { closeMenus(); showPalette(); }));
   dd.appendChild(menuRow('search', 'Поиск в терминале (Ctrl+F)', () => { closeMenus(); openTermSearch(); }));
-  dd.appendChild(el('div', 'menu-sep'));
-  dd.appendChild(menuRow('globe', 'Пульт (Android)', () => { closeMenus(); showRemote(); }));
 }
 // «Модули» — функциональные панели справа от терминала (терминалы и OpenRouter-чат — НЕ модули).
 // Группировка: «Встроенные» и «Мои модули» — flyout-подменю (раскрываются вправо по наведению),
@@ -2784,14 +2471,6 @@ function showSettings() {
             <button class="btn" id="st-scan-add">＋ Добавить папку</button></div>
         </div>
       </section>
-      <section class="set-group">
-        <div class="set-group-h"><span class="set-ic">📱</span> Пульт</div>
-        <div class="set-group-body">
-          <div class="set-row col"><span>Доступ с пульта — папки, которые можно смотреть/скачивать с планшета (только чтение). «Стор» доступен всегда.</span>
-            <div id="st-shares" class="scan-list"></div>
-            <button class="btn" id="st-share-add">＋ Открыть папку пульту</button></div>
-        </div>
-      </section>
     </div>
     <div class="modal-actions"><button class="btn primary" id="st-ok">Готово</button></div>`);
   const notif = m.querySelector('#st-notif'); notif.checked = settings.notifications;
@@ -2882,25 +2561,6 @@ function showSettings() {
     });
   };
   renderScan();
-  // Доступ с пульта (shares) — список папок {path,name}; «Стор» неявно всегда доступен.
-  let shares = [...(STORE.shares || [])];
-  const sharesBox = m.querySelector('#st-shares');
-  const renderShares = () => {
-    sharesBox.innerHTML = '';
-    if (!shares.length) { sharesBox.appendChild(el('div', 'scan-empty', '— только «Стор» —')); return; }
-    shares.forEach((s, i) => {
-      const r = el('div', 'scan-item');
-      const path = el('span', 'scan-path', s.path); path.title = s.path;
-      const x = el('button', 'scan-del', '✕');
-      x.onclick = () => { shares.splice(i, 1); renderShares(); };
-      r.append(path, x); sharesBox.appendChild(r);
-    });
-  };
-  renderShares();
-  m.querySelector('#st-share-add').onclick = async () => {
-    const d = await lite.pickDir();
-    if (d && !shares.some((s) => s.path === d)) { shares.push({ path: d, name: d.split('/').filter(Boolean).pop() || d }); renderShares(); }
-  };
   m.querySelector('#st-wd-pick').onclick = async () => { const d = await lite.pickDir(); if (d) wd.value = d; };
   m.querySelector('#st-wd-clear').onclick = () => { wd.value = ''; };
   m.querySelector('#st-scan-add').onclick = async () => { const d = await lite.pickDir(); if (d && !scan.includes(d)) { scan.push(d); renderScan(); } };
@@ -2915,7 +2575,6 @@ function showSettings() {
     settings.scanDirs = scan;
     settings.shell = shellSel.value === '__custom__' ? shellPath.value.trim() : shellSel.value;
     settings.termPrefill = prefill.value.trim();   // пусто = автоввода нет
-    persist('shares', shares);   // доступ с пульта (main читает свежим при каждом запросе)
     saveSettings(); applyFontSize(); close();
     scanProjects(); // pick up newly-added scan dirs right away
   };
@@ -3205,28 +2864,10 @@ function init() {
     setProjState(id, 'quiet');
   });
   // RemoteHost — SSH-сессии (отдельный канал, не PTY): пишем вывод в соответствующий xterm.
-  // Пульт выбрал вкладку → синхронизируем активную на десктопе.
-  try { if (lite.remote && lite.remote.onSelect) lite.remote.onSelect((sid) => { try { handleRemoteSelect(sid); } catch (_) {} }); } catch (_) {}
-  // Пульт открыл терминал проекта → создаём вкладку на десктопе.
-  try { if (lite.remote && lite.remote.onOpenProject) lite.remote.onOpenProject((projId) => { try { handleRemoteOpen(projId); } catch (_) {} }); } catch (_) {}
-  // Пульт закрыл вкладку → закрываем на десктопе.
-  try { if (lite.remote && lite.remote.onCloseTab) lite.remote.onCloseTab((sid) => { try { handleRemoteClose(sid); } catch (_) {} }); } catch (_) {}
-  // Пульт: «Создать папку» → создаём на десктопе.
-  try { if (lite.remote && lite.remote.onNewFolder) lite.remote.onNewFolder((name) => { try { handleRemoteNewFolder(name); } catch (_) {} }); } catch (_) {}
-  try { if (lite.remote && lite.remote.onNoteToTerminal) lite.remote.onNoteToTerminal((projId, text) => { try { handleRemoteNoteToTerminal(projId, text); } catch (_) {} }); } catch (_) {}
-  try { if (lite.remote && lite.remote.onNotesChanged) lite.remote.onNotesChanged((id) => { try { lite.app.notesChanged(id); refreshNotesCount(id); } catch (_) {} }); } catch (_) {}
   // Окно «Задачи» изменило список → пересчитать счётчик и освежить бейдж активных задач на квикбаре.
   try { if (lite.app && lite.app.onNotesChanged) lite.app.onNotesChanged((id) => { try { refreshNotesCount(id); } catch (_) {} }); } catch (_) {}
   // Окно «Календарь» изменило напоминания → пересчитать «требует внимания» и освежить бейдж.
   try { if (lite.app && lite.app.onAgendaChanged) lite.app.onAgendaChanged((id) => { try { refreshAgendaCount(id); } catch (_) {} }); } catch (_) {}
-  // Пульт просит одобрить устройство (pairing) → модалка одобрения.
-  try { if (lite.remote && lite.remote.onPairRequest) lite.remote.onPairRequest((info) => { try { handleRemotePairRequest(info); } catch (_) {} }); } catch (_) {}
-  // Бейдж «подключённые пульты» у версии: живёт на push-событиях из main + стартовый снимок.
-  try {
-    if (lite.remote && lite.remote.onPults) lite.remote.onPults((st) => { try { pultsState = st || pultsState; updatePultBadge(); } catch (_) {} });
-    const pb = $('#pult-badge'); if (pb) pb.onclick = () => { try { showPults(); } catch (_) {} };
-    if (lite.remote && lite.remote.pults) setTimeout(() => { refreshPults().catch(() => {}); }, 1500);
-  } catch (_) {}
 
 
   // Live disk changes (fs:changed) теперь потребляет окно вивера (module-entry подписан на lite.fs.onChange).

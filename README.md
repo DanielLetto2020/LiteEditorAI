@@ -62,18 +62,7 @@ time never lands in your copy. Off by default — *Settings → Terminal*, or `C
 The clip above also shows the command palette (`Ctrl+K`) and the module catalog.
 [Full-size video](assets/screenshots/demo.mp4).
 
-### 2. Supervise from your phone
-
-The **Android remote** mirrors the live terminal of your PC session to a tablet or phone through a relay —
-in **full colour**, so the agent's diffs stay green and red. It brings its own on-screen keyboard,
-**pastes from the phone's clipboard straight into the PC terminal**, switches projects, shows project tasks
-and browses or downloads files from the PC.
-
-It streams the current screen and only what changed (mosh-style) instead of the whole scrollback, so
-reconnecting is near-instant and it stays comfortable on mobile data. Walk away from the desk, keep answering
-the agent from the couch, come back to the same session.
-
-### 3. See what the agent touched
+### 2. See what the agent touched
 
 ![Code and git in one window](assets/screenshots/workspace.png)
 
@@ -86,7 +75,7 @@ rollback** for everything the agent changed before you committed.
 Git lives in the same window: selective staging by checkbox, amend, commit / push / pull / fetch, stash,
 per-file history, cherry-pick / revert, three-pane conflict resolution, branch management.
 
-### 4. Keep the agent's context in order
+### 3. Keep the agent's context in order
 
 The **Context** module shows the project's `CLAUDE.md` as sections on a canvas: you see the token
 weight of every piece and of the whole file. Editing a section writes straight to the file, and the
@@ -177,24 +166,6 @@ along with the interface.
 
 ![Themes](assets/screenshots/themes.png)
 
-## Android remote
-
-1. Grab `liteeditor-pult-*.apk` from [Releases](https://github.com/DanielLetto2020/LiteEditorAI/releases) and
-   install it on Android (allow unknown sources).
-2. On the PC: menu **"Пульт"** → register an account (login / password).
-3. Sign in with the same account on the device.
-4. Menu → **"Connect this device"** → approve it on the PC (match the code). Done.
-
-Next to the version number in the editor there's a badge with the number of connected devices; a click opens
-the list, where each device can be queried for its info and location, or **cut off** (without deleting — access
-comes back with one button).
-
-Knowing the password alone grants nothing: the device must be **approved on the PC**. Brute-force protection,
-revocable sessions and a "sign out on all devices" button are built in.
-
-> The relay **can see the traffic** (it is not end-to-end encrypted) — keep that in mind for private code.
-> The remote is **alpha**.
-
 ## Keyboard
 
 | Keys | Action |
@@ -216,6 +187,11 @@ revocable sessions and a "sign out on all devices" button are built in.
 **Alpha**, actively developed. A project can keep as many terminal tabs as you need and their **names** survive
 a restart (the processes do not). The viewer opens one file at a time and skips files over 2 MB. It is a viewer
 with editing, not a replacement for your IDE's refactoring engine — that's on purpose.
+
+**Removed after v1.1.173: the Android remote and its relay.** The `.apk`, the PC-side relay client and the
+self-hosted relay under `relay/` are gone from the project. The last release that shipped them is
+[v1.1.173](https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.1.173) — grab it there, or restore
+the sources from that tag.
 
 Bugs and ideas → [Issues](https://github.com/DanielLetto2020/LiteEditorAI/issues).
 
