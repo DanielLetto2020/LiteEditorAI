@@ -280,6 +280,10 @@ function atomicWriteSync(file, data) {
   fs.writeFileSync(tmp, data);
   fs.renameSync(tmp, target);
 }
+// Суффикс временного соседа при записи файлов В ДЕРЕВЕ ПРОЕКТА (writeFileCrashSafe). Вотчер его
+// отфильтровывает: иначе каждое сохранение дёргало бы дерево лишним «изменился файл» на файл,
+// которого через миллисекунду уже нет.
+const WRITE_TMP_SUFFIX = '.lite-tmp';
 // Returns true on success. store:set is fire-and-forget (renderer updates its in-memory
 // snapshot before the write), so a swallowed failure = silent data loss after restart — we
 // log it; the boolean lets callers that DO care (import) detect a partial failure.
@@ -4291,6 +4295,7 @@ ipcMain.handle('fs:readDir', async (_e, dir) => {
     }));
     return out
       .filter((e) => !(e.dir && IGNORE_DIRS.has(e.name)))
+      .filter((e) => !(!e.dir && e.name.endsWith(WRITE_TMP_SUFFIX)))   // сосед атомарной записи — живёт миллисекунды
       .sort((a, b) => (a.dir === b.dir ? a.name.localeCompare(b.name) : a.dir ? -1 : 1));
   } catch (err) { return { error: String(err.message || err) }; }
 });
@@ -4303,10 +4308,38 @@ ipcMain.handle('fs:readFile', async (_e, file) => {
     return { content: await fs.promises.readFile(file, 'utf8') };
   } catch (err) { return { error: String(err.message || err) }; }
 });
+// Запись файла ЧЕЛОВЕКА: во временный файл-сосед, потом rename(2) поверх цели. rename атомарен в
+// пределах одной ФС, поэтому краш редактора, kill или выключение питания посреди записи больше не
+// оставляют обрезанный файл: на диске либо старая версия целиком, либо новая целиком. Обычный
+// writeFile сначала обнуляет файл ('w'), и вивер пишет так каждые 400 мс автосейва — окно потери
+// открыто постоянно.
+//   • Права цели сохраняем: иначе исполняемый скрипт после сохранения терял бы +x.
+//   • Симлинк резолвим (как в atomicWriteSync): rename поверх ссылки заменил бы саму ссылку файлом.
+//   • Каталог только на чтение (соседа не создать) — честный фолбэк на прямую запись, как было.
+//     На ENOSPC фолбэка НЕТ: там прямая запись как раз и обрезала бы файл.
+const WRITE_FALLBACK_CODES = new Set(['EACCES', 'EPERM', 'EROFS', 'EXDEV', 'ENOTDIR']);
+async function writeFileCrashSafe(file, content) {
+  let target = file;
+  try { if ((await fs.promises.lstat(file)).isSymbolicLink()) target = await fs.promises.realpath(file); } catch (_) {}
+  let mode; try { mode = (await fs.promises.stat(target)).mode & 0o777; } catch (_) {}
+  // Хвост уникален на вызов: два окна, сохраняющих ОДИН файл одновременно, иначе делили бы один
+  // и тот же временный файл и второй rename падал бы на пустом месте.
+  const tmp = path.join(path.dirname(target),
+    '.' + path.basename(target) + '.' + Math.random().toString(36).slice(2, 8) + WRITE_TMP_SUFFIX);
+  try {
+    await fs.promises.writeFile(tmp, content, mode == null ? 'utf8' : { encoding: 'utf8', mode });
+    if (mode != null) { try { await fs.promises.chmod(tmp, mode); } catch (_) {} }  // сосед от прошлого краха: { mode } его не переоткрывает
+    await fs.promises.rename(tmp, target);
+  } catch (e) {
+    try { await fs.promises.unlink(tmp); } catch (_) {}
+    if (!WRITE_FALLBACK_CODES.has(e && e.code)) throw e;
+    await fs.promises.writeFile(target, content, 'utf8');
+  }
+}
 ipcMain.handle('fs:writeFile', async (_e, { file, content }) => {
   try {
     await histSnapshotFromDisk(file, 'save');   // локальная история: состояние ДО записи (best-effort)
-    await fs.promises.writeFile(file, content, 'utf8');
+    await writeFileCrashSafe(file, content);
     // tmp-копия удалённого файла (открыт из «Удалённых хостов») → залить обратно на хост.
     // Локальная запись удалась в любом случае; упавшая заливка = честная ошибка сохранения
     // (вивер оставит dirty-точку и покажет тост), чтобы правка не «потерялась» молча.
@@ -4608,6 +4641,7 @@ ipcMain.on('fs:watch', (_e, root) => {
   watcher.on('change', (_type, filename) => {
     const rel = filename == null ? '' : String(filename);
     if (rel && isIgnoredPath(rel)) return;
+    if (rel.endsWith(WRITE_TMP_SUFFIX)) return;        // временный сосед атомарной записи — не наш файл
     if (rel) rec.pending.add(path.join(root, rel));
     clearTimeout(rec.timer);
     rec.timer = setTimeout(() => {
