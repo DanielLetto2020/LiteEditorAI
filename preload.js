@@ -81,10 +81,10 @@ contextBridge.exposeInMainWorld('lite', {
     onActiveProject: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('app:activeProject', h); return () => ipcRenderer.removeListener('app:activeProject', h); },
     settingsChanged: (s) => ipcRenderer.send('app:settingsChanged', s),
     onSettingsChanged: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('app:settingsChanged', h); return () => ipcRenderer.removeListener('app:settingsChanged', h); },
-    // Пульт изменил задачи (notes/<id>.json) → редактор ретранслирует окну модуля «Задачи».
+    // Задачи (notes/<id>.json) изменены извне → редактор ретранслирует окну модуля «Задачи».
     notesChanged: (id) => ipcRenderer.send('app:notesChanged', { id }),
     onNotesChanged: (cb) => { const h = (_e, p) => cb(p && p.id); ipcRenderer.on('app:notesChanged', h); return () => ipcRenderer.removeListener('app:notesChanged', h); },
-    // Календарь напоминаний (agenda/<id>.json) изменён (модуль/MCP/пульт) → редактор/окна модулей.
+    // Календарь напоминаний (agenda/<id>.json) изменён (модуль или MCP-сервер) → редактор/окна модулей.
     agendaChanged: (id) => ipcRenderer.send('app:agendaChanged', { id }),
     onAgendaChanged: (cb) => { const h = (_e, p) => cb(p && p.id); ipcRenderer.on('app:agendaChanged', h); return () => ipcRenderer.removeListener('app:agendaChanged', h); },
     // Клик по нативному уведомлению напоминания → окно «Задачи» переключается на вкладку «Календарь».
@@ -275,33 +275,6 @@ contextBridge.exposeInMainWorld('lite', {
     import: () => ipcRenderer.invoke('settings:import'),  // → { ok, file } | { canceled } | { error }
   },
 
-  // Удалённый пульт (Android): аккаунт логин/пароль вместо токена.
-  remote: {
-    status: () => ipcRenderer.invoke('remote:status'),
-    register: (login, password, host) => ipcRenderer.invoke('remote:register', { login, password, host }),
-    login: (login, password, host) => ipcRenderer.invoke('remote:login', { login, password, host }),
-    logout: () => ipcRenderer.invoke('remote:logout'),
-    revokeAllDevices: () => ipcRenderer.invoke('remote:revokeAllDevices'),   // «выйти на всех устройствах»
-    setEnabled: (enabled) => ipcRenderer.invoke('remote:setEnabled', { enabled }),
-    activeChanged: (sid) => ipcRenderer.send('remote:activeChanged', { sid }),               // десктоп → пульт: какая вкладка активна
-    onSelect: (cb) => { const h = (_e, p) => cb(p && p.sid); ipcRenderer.on('remote:select', h); return () => ipcRenderer.removeListener('remote:select', h); }, // пульт → десктоп: переключить вкладку
-    onOpenProject: (cb) => { const h = (_e, p) => cb(p && p.projId); ipcRenderer.on('remote:openProject', h); return () => ipcRenderer.removeListener('remote:openProject', h); }, // пульт → десктоп: открыть терминал проекта
-    onCloseTab: (cb) => { const h = (_e, p) => cb(p && p.sid); ipcRenderer.on('remote:closeTab', h); return () => ipcRenderer.removeListener('remote:closeTab', h); }, // пульт → десктоп: закрыть вкладку
-    onNewFolder: (cb) => { const h = (_e, p) => cb(p && p.name); ipcRenderer.on('remote:newFolder', h); return () => ipcRenderer.removeListener('remote:newFolder', h); }, // пульт → десктоп: создать папку
-    onNoteToTerminal: (cb) => { const h = (_e, p) => cb(p && p.projId, p && p.text); ipcRenderer.on('remote:noteToTerminal', h); return () => ipcRenderer.removeListener('remote:noteToTerminal', h); }, // пульт → десктоп: вставить задачу в терминал
-    onNotesChanged: (cb) => { const h = (_e, p) => cb(p && p.id); ipcRenderer.on('remote:notesChanged', h); return () => ipcRenderer.removeListener('remote:notesChanged', h); }, // пульт изменил задачи → освежить панель
-    // Pairing: пульт просит одобрить устройство → показать модалку; ответ — approve/deny.
-    onPairRequest: (cb) => { const h = (_e, p) => cb(p || {}); ipcRenderer.on('remote:pairRequest', h); return () => ipcRenderer.removeListener('remote:pairRequest', h); },
-    pairApprove: (device) => ipcRenderer.send('remote:pairApprove', { device }),
-    pairDeny: (device) => ipcRenderer.send('remote:pairDeny', { device }),
-    // Подключённые пульты: список/блок-лист (бейдж у версии + модалка «Пульты»).
-    pults: () => ipcRenderer.invoke('remote:pults'),
-    pultBlock: (device) => ipcRenderer.invoke('remote:pultBlock', { device }),
-    pultUnblock: (device) => ipcRenderer.invoke('remote:pultUnblock', { device }),
-    pultSysInfo: (device, what) => ipcRenderer.send('remote:pultSysInfo', { device, what }),   // what: 'info'|'geo'; ответ — событием onSysInfo
-    onPults: (cb) => { const h = (_e, p) => cb(p || {}); ipcRenderer.on('remote:pults', h); return () => ipcRenderer.removeListener('remote:pults', h); },
-    onSysInfo: (cb) => { const h = (_e, p) => cb(p || {}); ipcRenderer.on('remote:sysinfo', h); return () => ipcRenderer.removeListener('remote:sysinfo', h); },
-  },
 
   audit: {
     scan: (root, opts) => ipcRenderer.invoke('audit:scan', { root, opts }), // → агрегаты | { error }

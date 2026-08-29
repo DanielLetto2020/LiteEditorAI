@@ -31,7 +31,6 @@
   "mutate": [
     "lib/safe-name.js",
     "lib/sqlro.js",
-    "lib/sgrline.js",
     "lib/shell.js",
     "lib/portparse.js",
     "lib/dbdetect.js",

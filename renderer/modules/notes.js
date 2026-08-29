@@ -35,7 +35,7 @@ const escAttr = (s) => String(s == null ? '' : s).replace(/&/g, '&amp;').replace
 // markdown тела задачи (defense-in-depth поверх CSP: вырезаем активные узлы/обработчики; ссылки — наружу).
 // Парсим в ИНЕРТНЫЙ <template>: там разметка не «оживает» (ресурсы не запрашиваются, обработчики не
 // навешиваются), поэтому чистка гарантированно выполняется ДО попадания узлов в живой DOM. Текст задачи
-// приходит в том числе с пульта и от MCP-сервера, так что доверять ему нельзя.
+// приходит в том числе от MCP-сервера, так что доверять ему нельзя.
 function mdToSafeHtml(src) {
   const div = el('div', 'nt-md');
   const tpl = document.createElement('template');
@@ -688,9 +688,9 @@ export function initNotes(host) {
     importNotes,
     // вызывается ядром при смене активного проекта; для вкладки «Общие» список не зависит от проекта
     renderPanel: () => renderPanel(),
-    // список изменён извне (пульт записал notes/<id>.json) — перечитать, если открыт именно он
+    // список изменён извне (кто-то записал notes/<id>.json) — перечитать, если открыт именно он
     onExternalChange: (id) => { if (notesOpen && id === loadedId) { loadedId = null; renderPanel(); } },
-    // напоминания изменены извне (MCP/пульт записал agenda/<id>.json) — перечитать календарь, если он открыт
+    // напоминания изменены извне (MCP-сервер записал agenda/<id>.json) — перечитать календарь, если он открыт
     onAgendaExternalChange: () => { if (notesOpen && tab === 'calendar') agenda.reload(); },
     // клик по уведомлению → открыть окно на вкладке «Календарь»
     focusCalendar: () => {
