@@ -629,11 +629,14 @@ ipcMain.handle('agenda:mcpConnect', async (_e, { projId, projPath } = {}) => {
   const sp = agendaMcpServerPath();
   const args = ['mcp', 'add', 'lite-tasks', '--scope', 'local', '--', 'node', sp, '--project', String(projId || '__global__')];
   return await new Promise((resolve) => {
-    let done = false, stderr = '', stdout = '';
-    const finish = (r) => { if (!done) { done = true; resolve({ ...r, cmd: agendaMcpCommand(projId) }); } };
+    let done = false, stderr = '', stdout = '', to = null;
+    const finish = (r) => { if (!done) { done = true; clearTimeout(to); resolve({ ...r, cmd: agendaMcpCommand(projId) }); } };
     let cp;
     try { cp = spawn('claude', args, { cwd: projPath || os.homedir() }); }
     catch (e) { return finish({ ok: false, error: String(e.message || e) }); }
+    // Без таймаута зависший `claude mcp add` (спросил что-то в stdin и ждёт) держал бы промис
+    // IPC навсегда: кнопка в модалке крутилась бы вечно, процесс жил бы до выхода из редактора.
+    to = setTimeout(() => { try { cp.kill(); } catch (_) {} finish({ ok: false, error: 'таймаут: «claude mcp add» не ответил за 30 с' }); }, 30000);
     cp.stdout && cp.stdout.on('data', (d) => { stdout += d; });
     cp.stderr && cp.stderr.on('data', (d) => { stderr += d; });
     cp.on('error', (err) => finish({ ok: false, error: err.code === 'ENOENT' ? 'CLI «claude» не найден в PATH' : String(err.message || err) }));
