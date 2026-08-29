@@ -27,7 +27,7 @@ import { el, icon, iconBtn, hydrateIcons, toast, makeModal, showConfirm, showPro
 import { initExtensions } from './modules/extensions.js';
 // initFiles — вивер+дерево мигрированы в отдельное окно (renderer/module-entry.js).
 
-const APP_VERSION = 'alpha v1.1.156';
+const APP_VERSION = 'alpha v1.1.157';
 const GUTTER = 5;
 // Системный терминал («Система · ~») мигрирован в отдельное окно (renderer/modules/scratch.js):
 // его id `__scratch__::tN` маршрутизируются main'ом в окно-владельца, в ядре их больше не обрабатываем.
@@ -316,9 +316,13 @@ function showLinkDialog(p) {
       return;
     }
     const side = (s, name) => (s.exists ? `${name}: ${s.files} файлов, ${humanSize(s.bytes)}` : `${name}: проекта нет`);
-    what.innerHTML = `<b>${p.name}</b><br>${side(info.local, 'На ПК')}<br>${side(info.remote, 'На сервере')}`
-      + (info.differ ? `<br>Файлы различаются: ${info.differ} — спрошу, чью версию взять.` : '')
-      + '<br>Заменённое уедет в корзину, как при обычной сверке.';
+    // Собираем узлами, а не строкой HTML: имя проекта = имя ПАПКИ, и `<` или `&` в нём
+    // ломали разметку блока (а `<img onerror=…>` был бы и вовсе разметкой из имени файла).
+    const lines = [side(info.local, 'На ПК'), side(info.remote, 'На сервере')];
+    if (info.differ) lines.push(`Файлы различаются: ${info.differ} — спрошу, чью версию взять.`);
+    lines.push('Заменённое уедет в корзину, как при обычной сверке.');
+    what.replaceChildren(el('b', '', p.name));
+    for (const line of lines) { what.appendChild(el('br')); what.appendChild(document.createTextNode(line)); }
     go.disabled = false;
   })();
 }
