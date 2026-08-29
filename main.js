@@ -5688,7 +5688,14 @@ ipcMain.handle('git:log', async (_e, { root, limit } = {}) => {
 });
 ipcMain.handle('git:checkout', async (_e, { root, branch }) => gitRun(root, ['checkout', branch]));
 ipcMain.handle('git:fetch', async (_e, root) => gitRun(root, ['fetch', '--all', '--prune']));
-ipcMain.handle('git:discardFile', async (_e, { root, file }) => gitRun(root, ['checkout', '--', file]));
+// Откат правок — тоже перезапись файла рукой редактора, значит по контракту локальной истории
+// (см. histSnapshot) состояние ДО неё надо снять: `git checkout --` стирает несохранённую в
+// коммит работу насовсем, вернуть её больше неоткуда. Вотчер снимет уже ОТКАЧЕННОЕ содержимое —
+// поздно. Троттл истории (45 с) сам решит, нужен ли ещё один снимок.
+ipcMain.handle('git:discardFile', async (_e, { root, file }) => {
+  await histSnapshotFromDisk(path.isAbsolute(file) ? file : path.join(root, file), 'save');
+  return gitRun(root, ['checkout', '--', file]);
+});
 // Update a branch from its upstream WITHOUT checkout (fast-forward of the local ref).
 // Current branch can't be ff-fetched into → use pull --ff-only instead.
 ipcMain.handle('git:branchUpdate', async (_e, { root, branch, current }) => {
@@ -5805,7 +5812,17 @@ ipcMain.handle('git:pull', async (_e, root) => gitRun(root, ['pull', '--ff-only'
 // Stash including untracked (-u) so a quick "спрятать всё" doesn't leave new files behind.
 ipcMain.handle('git:stash', async (_e, root) => gitRun(root, ['stash', 'push', '-u']));
 // Revert tracked edits only ('checkout -- .'); untracked files are deliberately kept (no -fd clean).
-ipcMain.handle('git:discardAll', async (_e, root) => gitRun(root, ['checkout', '--', '.']));
+// «Откатить всё» — самая разрушительная кнопка в редакторе: снимаем историю по каждому
+// изменённому отслеживаемому файлу. Лимит — чтобы откат на тысяче файлов не встал колом.
+const DISCARD_HIST_CAP = 60;
+ipcMain.handle('git:discardAll', async (_e, root) => {
+  const out = await git(root, ['diff', '--name-only']);
+  if (out) {
+    for (const rel of out.split('\n').map((x) => x.trim()).filter(Boolean).slice(0, DISCARD_HIST_CAP))
+      await histSnapshotFromDisk(path.join(root, rel), 'save');
+  }
+  return gitRun(root, ['checkout', '--', '.']);
+});
 
 // C18: откатить один ханк правок агента — reverse-apply минимального патча к рабочему дереву.
 ipcMain.handle('git:revertHunk', async (_e, { root, patch } = {}) => {
