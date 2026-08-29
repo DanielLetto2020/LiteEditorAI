@@ -4223,5 +4223,7 @@
  "❯_ Спросить агента": "❯_ Ask the agent",
  "ошибка записи": "write error",
  "таймаут: «claude mcp add» не ответил за 30 с": "timeout: “claude mcp add” did not respond within 30 s",
- "Изменения применены в памяти, но НЕ записаны в файл базы: ": "Changes were applied in memory but NOT written to the database file: "
+ "Изменения применены в памяти, но НЕ записаны в файл базы: ": "Changes were applied in memory but NOT written to the database file: ",
+ "На ПК": "On this PC",
+ "На сервере": "On the server"
 }
