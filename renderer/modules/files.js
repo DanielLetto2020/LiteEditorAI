@@ -916,14 +916,37 @@ export function initFiles(host) {
   // Returns true when the file is safely on disk (or there was nothing to save), false on a
   // failed write. Callers that gate a destructive next step (guardDirty) must NOT proceed on
   // false, or the unsaved edits are lost.
+  // Запись идёт АСИНХРОННО, а автосейв срабатывает через 400 мс тишины — человек вполне успевает
+  // напечатать ещё, пока файл летит на диск (для файла с удалённого хоста запись идёт по sftp и
+  // длится секундами). Поэтому снимать «не сохранено» можно только с ТОГО текста, который реально
+  // ушёл на диск: иначе набранное за время записи считалось бы сохранённым и терялось молча —
+  // guardDirty пропустил бы закрытие окна без вопроса. Изменился док во время записи — пишем ещё раз.
+  let savingP = null;                                  // одна запись за раз: две параллельные гонялись бы за файл
   async function saveCurrent() {
     cancelAutosave();                                  // ручной/guardDirty save гасит pending-дебаунс автосейва
+    while (savingP) { try { await savingP; } catch (_) {} }
     if (!currentFile || !dirty) return true;
-    let res;
-    try { res = await lite.fs.writeFile(currentFile, editor.state.doc.toString()); }
-    catch (e) { res = { error: String(e) }; }
-    if (res && res.ok) { markDirty(false); hideReloadBar(); updateGitGutter(currentFile); refreshBlameIfOn(); return true; }
-    toast(`Не удалось сохранить: ${(res && res.error) || 'ошибка записи'}`, { kind: 'err', ttl: 6000 });
+    savingP = writeCurrentDoc();
+    try { return await savingP; } finally { savingP = null; }
+  }
+  async function writeCurrentDoc() {
+    const file = currentFile;
+    for (let pass = 0; pass < 3; pass++) {             // печатать без пауз три записи подряд человек не может
+      const text = editor.state.doc.toString();
+      let res;
+      try { res = await lite.fs.writeFile(file, text); }
+      catch (e) { res = { error: String(e) }; }
+      if (!res || !res.ok) {
+        toast(`Не удалось сохранить: ${(res && res.error) || 'ошибка записи'}`, { kind: 'err', ttl: 6000 });
+        return false;
+      }
+      if (currentFile !== file) return true;           // файл сменили под нами — дальше решает его собственный путь
+      if (editor.state.doc.toString() === text) {
+        markDirty(false); hideReloadBar(); updateGitGutter(file); refreshBlameIfOn();
+        return true;
+      }
+    }
+    scheduleAutosave();                                // не сошлось — оставляем dirty и дожмём следующим автосейвом
     return false;
   }
 
