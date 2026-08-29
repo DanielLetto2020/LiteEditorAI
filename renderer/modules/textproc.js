@@ -482,20 +482,24 @@ export function initTextProc(host) {
   }
   async function saveFile() {
     if (!currentFile) return saveFileAs();
-    const isHtml = /\.html?$/i.test(currentFile);
-    const content = isHtml ? htmlDocWrap(currentHtml()) : currentMarkdown();
-    const r = await lite.fs.writeFile(currentFile, content);
-    if (r && !r.error) {
+    const tabId = activeTabId, file = currentFile;
+    const isHtml = /\.html?$/i.test(file);
+    // Ровно та же осторожность, что в автосейве: снимаем «не сохранено» только с того текста,
+    // который реально ушёл на диск, и только со СВОЕЙ вкладки (см. комментарий в scheduleAutosave).
+    for (let pass = 0; pass < 3; pass++) {
+      const content = isHtml ? htmlDocWrap(currentHtml()) : currentMarkdown();
+      const r = await lite.fs.writeFile(file, content);
+      if (!r || r.error) { toast('Ошибка сохранения: ' + ((r && r.error) || 'ошибка записи'), { kind: 'err' }); return false; }
+      if (activeTabId !== tabId) return true;
+      if (content !== (isHtml ? htmlDocWrap(currentHtml()) : currentMarkdown())) continue; // печатали во время записи
       dirty = false;
-      if (typeof saveCurrentTabState === 'function') {
-        saveCurrentTabState();
-        if (typeof renderTabsUI === 'function') renderTabsUI();
-      }
+      saveCurrentTabState();
+      renderTabsUI();
       updateStatus('Сохранено · ' + new Date().toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }));
       toast('Файл сохранён');
       return true;
     }
-    toast('Ошибка сохранения: ' + (r && r.error), { kind: 'err' });
+    scheduleAutosave();
     return false;
   }
   async function saveFileAs() {
@@ -536,14 +540,20 @@ export function initTextProc(host) {
     clearTimeout(autosaveT);
     autosaveT = setTimeout(async () => {
       if (!currentFile || !dirty) return;
-      const isHtml = /\.html?$/i.test(currentFile);
+      const tabId = activeTabId, file = currentFile;
+      const isHtml = /\.html?$/i.test(file);
       const content = isHtml ? htmlDocWrap(currentHtml()) : currentMarkdown();
-      const r = await lite.fs.writeFile(currentFile, content);
-      if (r && !r.error) {
-        dirty = false;
-        saveCurrentTabState(); renderTabsUI();
-        updateStatus('Автосохранено · ' + new Date().toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }));
-      }
+      const r = await lite.fs.writeFile(file, content);
+      if (!r || r.error) return;
+      // Пока шла запись, человек мог печатать дальше или уйти на другую вкладку. `dirty` и
+      // saveCurrentTabState() относятся к АКТИВНОЙ вкладке — снимать флаг вслепую нельзя:
+      // на чужой вкладке это пометило бы её несохранённые правки сохранёнными (и closeTab
+      // закрыл бы её без вопроса), а на своей — потеряло бы набранное за время записи.
+      if (activeTabId !== tabId) return;               // ушли на другую вкладку — флаг снимет её собственное сохранение
+      if (content !== (isHtml ? htmlDocWrap(currentHtml()) : currentMarkdown())) { scheduleAutosave(); return; }
+      dirty = false;
+      saveCurrentTabState(); renderTabsUI();
+      updateStatus('Автосохранено · ' + new Date().toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }));
     }, 1500);
   }
   // Сохранить произвольную вкладку (в т.ч. фоновую) — для confirm'ов закрытия.
