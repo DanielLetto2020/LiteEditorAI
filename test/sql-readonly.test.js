@@ -1,9 +1,9 @@
 // Тест защитного фильтра «только чтение» (lib/db.js). Он стоит на двух путях: db:query для
 // соединения, помеченного readOnly, и db:queryRo для вкладки AI-DB. Ложное «да» = запрет обойдён;
 // у SQLite оно ещё и теряет данные (flushSqlite вызывается по !isReadOnlySql).
-// Запуск: node test/sql-readonly.test.js
+// Запуск: node test/sql-readonly.test.js (чистый node, без зависимостей — как весь npm test)
 const assert = require('assert');
-const { isReadOnlySql, stripSqlLiterals } = require('../lib/db')._test;
+const { isReadOnlySql, stripSqlLiterals } = require('../lib/sqlro');
 
 let passed = 0;
 const ro = (sql, want, msg) => { assert.strictEqual(isReadOnlySql(sql), want, msg + ' :: ' + sql); passed++; };

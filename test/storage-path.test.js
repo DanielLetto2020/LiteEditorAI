@@ -4,7 +4,7 @@
 // Запуск: node test/storage-path.test.js  (без зависимостей, чистый node).
 const assert = require('assert');
 const path = require('path');
-const { safeRelSegments } = require('../lib/storage')._test;
+const { safeRelSegments } = require('../lib/safe-name');
 
 let passed = 0;
 function ok(cond, msg) { assert.ok(cond, msg); passed++; }
