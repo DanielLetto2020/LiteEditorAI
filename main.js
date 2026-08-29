@@ -4570,7 +4570,7 @@ ipcMain.handle('files:replace', async (_e, { root, query, opts, replacement, tar
     if (!touched) continue;
     try {
       await histSnapshot(full, text, 'save');       // локальная история: состояние до замены
-      await fs.promises.writeFile(full, rows.join('\n'), 'utf8');
+      await writeFileCrashSafe(full, rows.join('\n'));   // как и вивер: обрыв не оставляет обрезанный файл
       files++; lines += touched;
     } catch (err) { return { error: String(err.message || err) + ' (' + t.file + ')', files, lines }; }
   }
