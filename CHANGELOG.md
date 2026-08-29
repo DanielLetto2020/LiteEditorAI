@@ -3,7 +3,7 @@
 Все заметные изменения LiteEditorAI. Формат — [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/),
 нумерация — [SemVer](https://semver.org/lang/ru/). Проект в стадии **alpha**.
 
-## [1.1.174] — 2026-08-30
+## [1.1.175] — 2026-08-30
 
 **Android-пульт и релей удалены из проекта.** Последняя версия, где они были, — **v1.1.173**:
 оттуда можно скачать APK или восстановить исходники из git по тегу.
@@ -24,6 +24,9 @@
 
 ### 🔧 Изменено
 - **В релизах теперь 6 ассетов вместо 7** — APK пульта больше не прикладывается.
+- **Конфигурация проверок догнала удаление:** синтаксический гейт CI больше не ищет `remote.js`,
+  из настроек линтера и проверки типов убраны правила для исчезнувших файлов, а из `package-lock.json`
+  ушли зависимости пульта.
 - Окружение терминала передаётся как есть: список «не протаскивать в PTY» существовал ради
   переменных релея и ушёл вместе с ними.
 - README (ru/en/zh) — разделы про пульт убраны, вместо них пометка, где взять последнюю версию
@@ -2549,7 +2552,7 @@ AGENTS.md как граф на канве), и **цветной пульт** —
 [1.0.97]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.0.97
 [1.0.96]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.0.96
 [1.1.123]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.1.123
-[1.1.174]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.1.174
+[1.1.175]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.1.175
 [1.1.173]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.1.173
 [1.1.136]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.1.136
 [1.1.135]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.1.135

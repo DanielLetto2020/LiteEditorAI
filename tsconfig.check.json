@@ -11,7 +11,7 @@
     "без него — сотни. Гейт, который нельзя сделать зелёным, отключают в первый же день, поэтому",
     "в проверку берутся только области, проходящие начисто.",
     "",
-    "СЕЙЧАС ПОД ПРОВЕРКОЙ: весь Node-слой — main.js, remote.js, preload.js, lib/**, scripts/**, test/**.",
+    "СЕЙЧАС ПОД ПРОВЕРКОЙ: весь Node-слой — main.js, preload.js, lib/**, scripts/**, test/**.",
     "ОСТАЛОСЬ (карта долга на 2026-07-27): renderer/** — ~279 ошибок в 32 файлах из 34. Починил файл —",
     "добавь его в include; проверка подтягивает и импорты, поэтому файл вводится вместе со своими",
     "зависимостями."
@@ -35,13 +35,11 @@
     "types/**/*.d.ts",
     "main.js",
     "preload.js",
-    "remote.js",
     "errledger.js",
     "logger.js"
   ],
   "exclude": [
     "node_modules",
-    "scripts/install-desktop.js",
-    "scripts/build-mobile.js"
+    "scripts/install-desktop.js"
   ]
 }
