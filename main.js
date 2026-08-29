@@ -5994,6 +5994,7 @@ ipcMain.handle('git:branchDiffWorktree', async (_e, { root, branch } = {}) => {
 // (rh:sockTunnel), все CLI-вызовы идут с DOCKER_HOST/CONTAINER_HOST=tcp://127.0.0.1:<port>.
 // Контекст один на процесс (окно «Контейнеры» одно на тип); opts.local=true обходит подмену.
 let containersRemote = null; // { rhId, name, tunId, port, cli, sockPath }
+let containersTunnelFix = null; // обещание переподнятия туннеля — чтобы параллельные опросы не плодили туннели
 function cRemoteCtx(cli, baseEnv) {
   if (!containersRemote) return { cli, env: undefined };
   const env = { ...(baseEnv || process.env) };
@@ -6222,9 +6223,18 @@ ipcMain.handle('containers:list', async (_e, { engine, light } = {}) => {
   // Удалённый контекст: SSH мог мигнуть и унести туннель (ssh.on('close') прибирает запись) —
   // самовосстановление на ближайшем полле, чтобы не заставлять пользователя перевыбирать хост.
   if (containersRemote && !rhApi.tunnelAlive(containersRemote.tunId)) {
-    const t = await rhApi.sockTunnel(containersRemote.rhId, containersRemote.sockPath, 'containers: ' + containersRemote.name);
-    if (t.ok) { containersRemote.tunId = t.tunId; containersRemote.port = t.port; }
-    else return { containers: { error: `SSH-туннель к «${containersRemote.name}» оборвался и не восстановился: ` + (t.error || '') } };
+    // Переподнимаем ОДИН раз на всех: список запрашивает и опрос (раз в 3 с), и кнопка «Обновить»,
+    // а коннект по SSH идёт секундами — без этой защёлки каждый вызов, пришедший за время
+    // переподключения, поднимал бы свой туннель. Запись хранит только последний, остальные
+    // оставались бы висеть навсегда: живое SSH-соединение и занятый локальный порт.
+    if (!containersTunnelFix) {
+      const rc = containersRemote;
+      containersTunnelFix = rhApi.sockTunnel(rc.rhId, rc.sockPath, 'containers: ' + rc.name)
+        .then((t) => { if (t.ok && containersRemote === rc) { rc.tunId = t.tunId; rc.port = t.port; } return t; })
+        .finally(() => { containersTunnelFix = null; });
+    }
+    const t = await containersTunnelFix;
+    if (!t.ok) return { containers: { error: `SSH-туннель к «${containersRemote.name}» оборвался и не восстановился: ` + (t.error || '') } };
   }
   // Light path = the live poll: only the fast, frequently-changing data (containers + pods). Skips the heavy
   // `system df` (storage scan, ~1s) and images/volumes so a 3s poll doesn't churn the disk. The renderer
