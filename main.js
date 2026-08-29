@@ -2935,7 +2935,7 @@ async function streamFileToPult(reqId, filePath, displayName) {
     }
     remote.send({ t: 'store:end', reqId });
   } catch (e) { remote.send({ t: 'store:err', reqId, error: 'read: ' + (e && e.message) }); }
-  finally { try { fs.closeSync(fd); } catch (_) {} }
+  finally { try { fs.closeSync(fd); } catch (_) {} storeCancelled.delete(reqId); } // отмена, пришедшая под конец, иначе осталась бы в множестве навсегда
 }
 function zipDirToPult(reqId, dirPath) {
   const tmp = path.join(os.tmpdir(), 'lite-store-' + Date.now() + '-' + Math.floor(Math.random() * 1e9) + '.zip');
@@ -3084,7 +3084,13 @@ function startRemotePult() {
       onStoreList: (reqId, p) => pultStoreList(reqId, p),
       onStoreGet: (reqId, p) => pultStoreGet(reqId, p),
       onStoreGetZip: (reqId, p) => pultStoreGet(reqId, p),
-      onStoreCancel: (reqId) => { storeCancelled.add(reqId); },
+      onStoreCancel: (reqId) => {
+        storeCancelled.add(reqId);
+        // Отмена может прийти на уже завершённую (или вовсе неизвестную) передачу — снимать такой
+        // id некому. Держим только окно последних отмен, иначе множество растёт от каждого
+        // сообщения пульта, а его содержимое мы не контролируем.
+        while (storeCancelled.size > 256) storeCancelled.delete(storeCancelled.values().next().value);
+      },
       // Задачи на пульте: тот же notes/<id>.json, что и панель «Задачи» в редакторе.
       onTasksGet: (reqId, id) => pultTasksGet(reqId, id),
       onTasksSet: (id, notes) => pultTasksSet(id, notes),
