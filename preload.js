@@ -70,7 +70,6 @@ contextBridge.exposeInMainWorld('lite', {
   // Окна модулей (v1.1+): открыть/сфокусировать, закрыть, подписка на набор открытых.
   module: {
     open: (modId) => ipcRenderer.send('module:open', { modId }),
-    close: (modId) => ipcRenderer.send('module:close', { modId }),
     onOpenSet: (cb) => { const h = (_e, p) => cb(p && p.ids || []); ipcRenderer.on('module:openSet', h); return () => ipcRenderer.removeListener('module:openSet', h); },
   },
 
@@ -186,9 +185,7 @@ contextBridge.exposeInMainWorld('lite', {
 
   // Обработка текста: дефолтная папка документов + прогон фрагмента через локального агента.
   tp: {
-    dir: () => ipcRenderer.invoke('tp:dir'),
     run: (opts) => ipcRenderer.send('tp:run', opts),
-    abort: (reqId) => ipcRenderer.send('tp:abort', { reqId }),
     onData: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('tp:data', h); return () => ipcRenderer.removeListener('tp:data', h); },
     onDone: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('tp:done', h); return () => ipcRenderer.removeListener('tp:done', h); },
     onError: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('tp:error', h); return () => ipcRenderer.removeListener('tp:error', h); },
@@ -567,7 +564,6 @@ contextBridge.exposeInMainWorld('lite', {
     test: (conn) => ipcRenderer.invoke('st:test', { conn }),
     buckets: (id) => ipcRenderer.invoke('st:buckets', { id }),
     ls: (id, bucket, prefix, token) => ipcRenderer.invoke('st:ls', { id, bucket, prefix, token }),
-    stat: (id, bucket, key) => ipcRenderer.invoke('st:stat', { id, bucket, key }),
     read: (id, bucket, key) => ipcRenderer.invoke('st:read', { id, bucket, key }),
     presign: (id, bucket, key, ttl, method) => ipcRenderer.invoke('st:presign', { id, bucket, key, ttl, method }),
     publicUrl: (id, bucket, key) => ipcRenderer.invoke('st:publicUrl', { id, bucket, key }),

@@ -838,8 +838,6 @@ ipcMain.on('openrouter:chatAbort', (e, { reqId } = {}) => {
 // ~/.LiteEditorAI/textproc/ (IO идёт через общие fs:* по абсолютным путям). Выделенный
 // фрагмент прогоняется через ЛОКАЛЬНОГО агента в headless-режиме — по подписке
 // пользователя, БЕЗ API-ключей (ключевая идея фичи).
-const tpDir = path.join(storeDir, 'textproc');
-ipcMain.handle('tp:dir', () => { try { fs.mkdirSync(tpDir, { recursive: true }); } catch (_) {} return tpDir; });
 // Обработка текста: нативные Открыть/Сохранить как (вместо браузерного File API/download — PR #6).
 // Родитель диалога — окно-отправитель (модульное окно doc), НЕ mainWindow; лимит — как у текстовых панелей.
 ipcMain.handle('tp:openFile', async (e) => {
@@ -921,10 +919,6 @@ ipcMain.on('tp:run', (e, { reqId, agent, prompt } = {}) => {
     else safeSend(sender, 'tp:error', { reqId, error: errOut.trim() || ('агент завершился с кодом ' + code) });
   });
   if (conf.via === 'stdin') { try { child.stdin.write(prompt || ''); child.stdin.end(); } catch (_) {} }
-});
-ipcMain.on('tp:abort', (_e, { reqId } = {}) => {
-  const c = tpReqs.get(reqId);
-  if (c) { tpReqs.delete(reqId); try { c.kill(); } catch (_) {} }
 });
 
 // ---------------------------------------------------------------- AI-DB (read-only SQL chat)
@@ -3312,7 +3306,6 @@ ipcMain.on('win:show', showWindow);
 
 // ── Окна модулей: open/close/реестр открытых ──────────────────────────────────────────
 ipcMain.on('module:open', (_e, { modId } = {}) => { if (modId) openModuleWindow(String(modId)); });
-ipcMain.on('module:close', (_e, { modId } = {}) => { const w = moduleWindows.get(String(modId)); if (w && !w.isDestroyed()) w.close(); });
 
 // ── Помодоро: пульт окна модуля управляет движком таймера в main ──────────────────────
 ipcMain.handle('pomodoro:start', (_e, { tech } = {}) => pomoStart(tech));
