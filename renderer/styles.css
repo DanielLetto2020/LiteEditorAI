@@ -2946,7 +2946,7 @@ body.resizing { cursor: col-resize; user-select: none; }
   radial-gradient(circle, var(--border-strong) 1px, transparent 1px) 0 0 / 26px 26px, var(--bg); }
 .ctx-world { position: absolute; left: 0; top: 0; width: 0; height: 0; transform-origin: 0 0; }
 
-.ctx-node { position: absolute; width: 260px; border-radius: 12px; background: var(--surface); border: 1px solid var(--border-strong); box-shadow: var(--card-shadow); user-select: none; cursor: grab; transition: border-color .12s, opacity .15s; }
+.ctx-node { position: absolute; width: 520px; border-radius: 12px; background: var(--surface); border: 1px solid var(--border-strong); box-shadow: var(--card-shadow); user-select: none; cursor: grab; transition: border-color .12s, opacity .15s; }
 .ctx-node:active { cursor: grabbing; }
 .ctx-node:hover { border-color: var(--border-accent); }
 .ctx-node.sel { border-color: var(--green); box-shadow: var(--card-shadow), 0 0 0 1.5px var(--border-accent); }
@@ -4279,6 +4279,13 @@ body.preview-full .prev-frame { width: 100%; height: 100%; }
 
 /* формулы (KaTeX): инлайн-спан и блочная формула с нумерацией/переключателем </> */
 .tp-formula-inline { display: inline-block; vertical-align: middle; margin: 0 2px; }
+.tp-frontmatter {
+  margin: 0 0 16px; padding: 10px 14px; border-radius: 10px;
+  border: 1px dashed var(--tp-formula-border); background: var(--tp-formula-bg);
+  font-family: var(--tp-mono); font-size: 12px; color: var(--tp-text-mute); overflow-x: auto;
+}
+.tp-frontmatter pre { margin: 0; white-space: pre; font: inherit; }
+
 .tp-formula-block {
   position: relative; margin: 16px 0; padding: 16px 44px; border-radius: 12px;
   border: 1px solid var(--tp-formula-border); background: var(--tp-formula-bg);
@@ -4863,6 +4870,11 @@ body.pomo-compact .pomo-btn { padding: 6px 11px; font-size: 12px; }
 /* Модалки канвы: тянутся за окном модуля. Правка раздела и история — 70 % ширины и высоты. */
 .ctx-modal-block { width: 80vw; max-width: 80vw; height: 82vh; max-height: 82vh; min-width: 560px; display: flex; flex-direction: column; }
 .ctx-modal-block .ctx-bl-grid { display: grid; grid-template-columns: 220px 1fr; gap: 12px; flex: 1 1 auto; min-height: 0; }
+.ctx-modal-block #cxm-ask { white-space: nowrap; }
+.ctx-modal-block .ctx-bl-ask { flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; padding: 0; margin-left: 4px;
+  border: none; border-radius: var(--radius); background: transparent; color: var(--text-mute); cursor: pointer; opacity: 0; transition: opacity .12s; }
+.ctx-modal-block .ctx-bl-item:hover .ctx-bl-ask { opacity: 1; }
+.ctx-modal-block .ctx-bl-ask:hover { background: var(--hover-2); color: var(--text); }
 .ctx-modal-block .ctx-bl-side { display: flex; flex-direction: column; min-height: 0; border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
 .ctx-bl-sidehead { padding: 7px 10px; font-size: 11px; font-weight: 600; color: var(--text-mute); text-transform: uppercase; letter-spacing: .04em; border-bottom: 1px solid var(--border); }
 .ctx-bl-list { flex: 1 1 auto; min-height: 0; overflow: auto; }

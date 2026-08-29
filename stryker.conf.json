@@ -7,13 +7,14 @@
     "command": "npm test"
   },
   "coverageAnalysis": "off",
-  "_comment_ignore": "Stryker копирует проект в песочницу целиком. Тестам нужны только lib/, test/ и манифест, поэтому исключаем всё остальное: иначе копируются мегабайты renderer/dist и android, а симлинки-каталоги .claude/rules/std-* роняют копирование с EISDIR.",
+  "_comment_ignore": "Stryker копирует проект в песочницу целиком. Тестам нужны только lib/, test/, манифест и корневой errledger.js (его проверяет test/errledger.test.js), поэтому исключаем всё остальное: иначе копируются мегабайты renderer/dist и android, а симлинки-каталоги .claude/rules/std-* роняют копирование с EISDIR. Появился тест, который тянет файл ВНЕ lib/ — добавь сюда исключение, иначе dry-run падает с «Cannot find module».",
   "ignorePatterns": [
     "**",
     "!lib/**",
     "!test/**",
     "!locales/**",
-    "!package.json"
+    "!package.json",
+    "!errledger.js"
   ],
   "reporters": [
     "html",
@@ -29,6 +30,7 @@
   },
   "mutate": [
     "lib/safe-name.js",
+    "lib/sqlro.js",
     "lib/sgrline.js",
     "lib/shell.js",
     "lib/portparse.js",

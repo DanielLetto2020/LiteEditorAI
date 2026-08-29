@@ -377,6 +377,8 @@
  "_… ещё {0} строк_": "_… {0} more rows_",
  "`add_reminder` (поставить напоминание с датой/сроком), `list_reminders` (посмотреть ближайшие сроки), ": "`add_reminder` (set a reminder with a date/deadline), `list_reminders` (see upcoming deadlines), ",
  "`complete_reminder` (отметить выполненным). Создавай напоминание, когда я прошу «напомнить», «не забыть» ": "`complete_reminder` (mark as done). Create a reminder whenever I ask to \"remind me\" or \"don't forget\" ",
+ "Автоввод в новом терминале": "Auto-typed command in a new terminal",
+ "Слово (или команда) само пишется в каждый новый терминал проекта — при открытии проекта и при создании вкладки — но без Enter: остаётся подтвердить или дописать. Пустое поле — терминал открывается пустым, как раньше.": "The word (or command) is typed into every new terminal of the project — when the project is opened and when a tab is created — but without Enter: you only confirm it or add to it. An empty field leaves the terminal empty, as before.",
  "ack {0}/с": "ack {0}/s",
  "ACL недоступны": "ACLs are unavailable",
  "ACL недоступны (публичность — политикой бакета)": "ACLs are unavailable (public access is governed by the bucket policy)",
@@ -4217,5 +4219,11 @@
  "правил": "rules",
  "правила": "rules",
  "правило": "rule",
- "Проект закрыт — записывать правила некуда": "The project is closed — there is nowhere to write the rules"
+ "Проект закрыт — записывать правила некуда": "The project is closed — there is nowhere to write the rules",
+ "❯_ Спросить агента": "❯_ Ask the agent",
+ "ошибка записи": "write error",
+ "таймаут: «claude mcp add» не ответил за 30 с": "timeout: “claude mcp add” did not respond within 30 s",
+ "Изменения применены в памяти, но НЕ записаны в файл базы: ": "Changes were applied in memory but NOT written to the database file: ",
+ "На ПК": "On this PC",
+ "На сервере": "On the server"
 }

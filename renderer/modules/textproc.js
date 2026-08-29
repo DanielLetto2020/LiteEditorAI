@@ -16,6 +16,10 @@ const $$ = (s) => Array.from(document.querySelectorAll(s));
 
 marked.setOptions({ breaks: true });
 
+// Один набор для ВСЕХ мест санитизации: атрибуты наших неразрушимых блоков (формулы, front matter)
+// должны переживать DOMPurify, иначе исходник из data-* теряется и обратная конвертация его не вернёт.
+const SANITIZE = { ADD_ATTR: ['contenteditable', 'data-tex', 'data-fm'] };
+
 // ---- Markdown ⇄ HTML (+ формулы) ----------------------------------------------------------
 const F_OPEN = '⟦', F_CLOSE = '⟧'; // ⟦ ⟧ — маловероятные в обычном тексте маркеры-плейсхолдеры
 const reEscape = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -53,11 +57,28 @@ function formulaInlineHtml(tex) {
     + renderFormulaHtml(tex, false) + '</span>';
 }
 
+// YAML front matter (`---` … `---` в самом начале файла) — НЕ markdown: marked видит в нём
+// горизонтальную линию и setext-заголовок, и после первого же сохранения шапка файла оказывалась
+// переписана как «## owner: ...». А front matter несут и правила проекта, и роли агентов в
+// .claude/agents/*.md, и заметки Obsidian. Поэтому вырезаем его до парсера и держим отдельным
+// нередактируемым блоком с исходником в data-fm — тем же приёмом, что и формулы.
+const FRONT_MATTER_RE = /^\uFEFF?---[ \t]*\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/;
+function splitFrontMatter(src) {
+  const text = String(src == null ? '' : src);
+  const m = FRONT_MATTER_RE.exec(text);
+  return m ? { fm: m[1], rest: text.slice(m[0].length) } : { fm: null, rest: text };
+}
+function frontMatterHtml(fm) {
+  return '<div class="tp-frontmatter" contenteditable="false" data-fm="' + escapeAttr(fm) + '">'
+    + '<pre>' + escapeHtml(fm) + '</pre></div>';
+}
+
 // Markdown-источник → HTML для «Разметки». Блочные/инлайн-формулы выносятся в плейсхолдеры до marked
 // (чтобы parser их не тронул), потом подставляются готовым KaTeX-рендером.
 function mdToHtml(src) {
-  const { text, blocks, inlines } = extractFormulas(src);
-  let html = marked.parse(text);
+  const { fm, rest } = splitFrontMatter(src);
+  const { text, blocks, inlines } = extractFormulas(rest);
+  let html = (fm == null ? '' : frontMatterHtml(fm)) + marked.parse(text);
   let n = 0;
   blocks.forEach((rawTex, i) => {
     let tex = rawTex.trim(), num;
@@ -71,13 +92,34 @@ function mdToHtml(src) {
   inlines.forEach((tex, i) => {
     html = html.split(F_OPEN + 'I' + i + F_CLOSE).join(formulaInlineHtml(tex.trim()));
   });
-  return DOMPurify.sanitize(html, { ADD_ATTR: ['contenteditable', 'data-tex'] });
+  return DOMPurify.sanitize(html, SANITIZE);
 }
 
-// HTML (из contenteditable) → Markdown-источник. Покрывает только то, что реально производит
-// наш тулбар (execCommand) + формулы — не претендует на полный конвертер произвольного HTML.
+// HTML (из contenteditable) → Markdown-источник.
+//
+// ВАЖНО про охват: сюда попадает не только то, что нарисовал наш тулбар, но и результат mdToHtml
+// от ЛЮБОГО .md-файла проекта (дерево слева открывает файлы редактора). А сохранение идёт через
+// эту функцию — в том числе автосейвом через 1.5 с после первой же правки. Поэтому конвертер
+// обязан покрывать всё, что marked производит из markdown: раньше ссылки, блоки кода, таблицы,
+// картинки, заголовки от H4, вложенность списков и `---` при первом же сохранении молча
+// превращались в плоский текст, и файл был испорчен без единого предупреждения.
 function htmlToMd(root) {
   const mdEscape = (t) => t.replace(/[\\`*_$]/g, '\\$&');
+  const attr = (n, a) => (n.getAttribute && n.getAttribute(a)) || '';
+  // Блочные теги: встретив их среди детей контейнера (contenteditable любит оборачивать в <div>),
+  // разбираем контейнер блоками, а не склеиваем всё в один абзац.
+  const BLOCK = new Set(['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'div', 'ul', 'ol', 'pre', 'table', 'blockquote', 'hr']);
+  const hasBlockChild = (n) => [...n.childNodes].some((c) => c.nodeType === Node.ELEMENT_NODE && BLOCK.has(c.tagName.toLowerCase()));
+  function codeBlockOf(n) {
+    const codeEl = n.tagName.toLowerCase() === 'code' ? n : n.querySelector('code');
+    const lang = (String((codeEl && codeEl.className) || '').match(/language-([\w+#.-]+)/) || ['', ''])[1];
+    const body = String((codeEl || n).textContent || '').replace(/\n+$/, '');
+    // Забор длиннее самой длинной серии обратных кавычек внутри: иначе блок, В КОТОРОМ показан
+    // markdown с ```, закрылся бы на первой же внутренней тройке и разорвал документ.
+    const longest = (body.match(/`{3,}/g) || []).reduce((m, x) => Math.max(m, x.length), 2);
+    const fence = '`'.repeat(longest + 1);
+    return fence + lang + '\n' + body + '\n' + fence + '\n\n';
+  }
   function inlineOf(node) {
     let s = '';
     node.childNodes.forEach((n) => { s += oneInline(n); });
@@ -86,37 +128,77 @@ function htmlToMd(root) {
   function oneInline(n) {
     if (n.nodeType === Node.TEXT_NODE) return mdEscape(n.textContent);
     if (n.nodeType !== Node.ELEMENT_NODE) return '';
+    if (n.classList.contains('tp-frontmatter')) return '---\n' + (n.dataset.fm || '') + '\n---\n\n';
     if (n.classList.contains('tp-formula-inline')) return '$' + (n.dataset.tex || '') + '$';
     if (n.classList.contains('tp-formula-block')) return '\n\n$$' + (n.dataset.tex || '') + '$$\n\n';
     switch (n.tagName.toLowerCase()) {
       case 'strong': case 'b': { const t = inlineOf(n); return t.trim() ? '**' + t + '**' : t; }
       case 'em': case 'i': { const t = inlineOf(n); return t.trim() ? '*' + t + '*' : t; }
       case 'u': { const t = inlineOf(n); return t.trim() ? '<u>' + t + '</u>' : t; }
+      case 'del': case 's': case 'strike': { const t = inlineOf(n); return t.trim() ? '~~' + t + '~~' : t; }
+      // Ссылка без href (якорь-заглушка) — просто текст, иначе получился бы «[текст]()».
+      case 'a': { const t = inlineOf(n) || mdEscape(attr(n, 'href')); const h = attr(n, 'href'); return h ? '[' + t + '](' + h + ')' : t; }
+      case 'img': return '![' + attr(n, 'alt') + '](' + attr(n, 'src') + ')';
       case 'code': return '`' + n.textContent + '`';
+      case 'pre': return '\n\n' + codeBlockOf(n);
+      case 'hr': return '\n\n---\n\n';
       case 'br': return '\n';
       default: return inlineOf(n);
     }
   }
-  function listOf(n, ordered) {
+  // Текст пункта отдельно от вложенных списков: иначе вложенность схлопывалась в один уровень.
+  function listOf(n, ordered, depth) {
+    const pad = '  '.repeat(depth || 0);
     let s = '', i = 1;
     n.childNodes.forEach((li) => {
       if (li.nodeType !== Node.ELEMENT_NODE || li.tagName.toLowerCase() !== 'li') return;
-      s += (ordered ? (i++ + '. ') : '- ') + inlineOf(li).trim() + '\n';
+      let inline = '', nested = '';
+      li.childNodes.forEach((c) => {
+        const tag = c.nodeType === Node.ELEMENT_NODE ? c.tagName.toLowerCase() : '';
+        if (tag === 'ul') nested += listOf(c, false, (depth || 0) + 1);
+        else if (tag === 'ol') nested += listOf(c, true, (depth || 0) + 1);
+        else inline += oneInline(c);
+      });
+      s += pad + (ordered ? (i++ + '. ') : '- ') + inline.trim() + '\n' + nested;
     });
+    return depth ? s : s + '\n';
+  }
+  function tableOf(n) {
+    const rows = [...n.querySelectorAll('tr')];
+    if (!rows.length) return '';
+    const cells = (tr) => [...tr.children].map((c) => inlineOf(c).replace(/\|/g, '\\|').replace(/\s*\n\s*/g, ' ').trim());
+    const head = cells(rows[0]);
+    let s = '| ' + head.join(' | ') + ' |\n|' + head.map(() => ' --- ').join('|') + '|\n';
+    for (const tr of rows.slice(1)) {
+      const c = cells(tr);
+      while (c.length < head.length) c.push('');
+      s += '| ' + c.join(' | ') + ' |\n';
+    }
     return s + '\n';
   }
   function blockOf(n) {
     if (n.nodeType === Node.TEXT_NODE) { const t = n.textContent.trim(); return t ? mdEscape(t) + '\n\n' : ''; }
     if (n.nodeType !== Node.ELEMENT_NODE) return '';
+    if (n.classList.contains('tp-frontmatter')) return '---\n' + (n.dataset.fm || '') + '\n---\n\n';
     if (n.classList.contains('tp-formula-block')) return '$$' + (n.dataset.tex || '') + '$$\n\n';
-    switch (n.tagName.toLowerCase()) {
-      case 'h1': return '# ' + inlineOf(n).trim() + '\n\n';
-      case 'h2': return '## ' + inlineOf(n).trim() + '\n\n';
-      case 'h3': return '### ' + inlineOf(n).trim() + '\n\n';
-      case 'ul': return listOf(n, false);
-      case 'ol': return listOf(n, true);
-      case 'blockquote': return inlineOf(n).trim().split('\n').map((l) => '> ' + l).join('\n') + '\n\n';
-      default: { const t = inlineOf(n).trim(); return t ? t + '\n\n' : ''; }
+    const tag = n.tagName.toLowerCase();
+    switch (tag) {
+      case 'h1': case 'h2': case 'h3': case 'h4': case 'h5': case 'h6':
+        return '#'.repeat(+tag[1]) + ' ' + inlineOf(n).trim() + '\n\n';
+      case 'ul': return listOf(n, false, 0);
+      case 'ol': return listOf(n, true, 0);
+      case 'pre': return codeBlockOf(n);
+      case 'table': return tableOf(n);
+      case 'hr': return '---\n\n';
+      case 'blockquote': {
+        const inner = hasBlockChild(n) ? [...n.childNodes].map(blockOf).join('').trim() : inlineOf(n).trim();
+        return inner.split('\n').map((l) => (l.trim() ? '> ' + l : '>')).join('\n') + '\n\n';
+      }
+      default: {
+        if (hasBlockChild(n)) { let s = ''; n.childNodes.forEach((c) => { s += blockOf(c); }); return s; }
+        const t = inlineOf(n).trim();
+        return t ? t + '\n\n' : '';
+      }
     }
   }
   let out = '';
@@ -203,7 +285,7 @@ export function initTextProc(host) {
   }
   function loadDocument(html) {
     mode = 'wysiwyg';
-    $('#doc-editor-wysiwyg').innerHTML = DOMPurify.sanitize(html, { ADD_ATTR: ['contenteditable', 'data-tex'] });
+    $('#doc-editor-wysiwyg').innerHTML = DOMPurify.sanitize(html, SANITIZE);
     $('#doc-editor-md').textContent = '';
     dirty = false;
     updateModeUI();
@@ -405,7 +487,7 @@ export function initTextProc(host) {
   function setMode(m) {
     if (m === mode) return;
     if (m === 'markdown') { const md = htmlToMd($('#doc-editor-wysiwyg')); $('#doc-editor-md').textContent = md; }
-    else { $('#doc-editor-wysiwyg').innerHTML = DOMPurify.sanitize(mdToHtml($('#doc-editor-md').textContent), { ADD_ATTR: ['contenteditable', 'data-tex'] }); }
+    else { $('#doc-editor-wysiwyg').innerHTML = DOMPurify.sanitize(mdToHtml($('#doc-editor-md').textContent), SANITIZE); }
     mode = m;
     updateModeUI();
   }
@@ -482,20 +564,24 @@ export function initTextProc(host) {
   }
   async function saveFile() {
     if (!currentFile) return saveFileAs();
-    const isHtml = /\.html?$/i.test(currentFile);
-    const content = isHtml ? htmlDocWrap(currentHtml()) : currentMarkdown();
-    const r = await lite.fs.writeFile(currentFile, content);
-    if (r && !r.error) {
+    const tabId = activeTabId, file = currentFile;
+    const isHtml = /\.html?$/i.test(file);
+    // Ровно та же осторожность, что в автосейве: снимаем «не сохранено» только с того текста,
+    // который реально ушёл на диск, и только со СВОЕЙ вкладки (см. комментарий в scheduleAutosave).
+    for (let pass = 0; pass < 3; pass++) {
+      const content = isHtml ? htmlDocWrap(currentHtml()) : currentMarkdown();
+      const r = await lite.fs.writeFile(file, content);
+      if (!r || r.error) { toast('Ошибка сохранения: ' + ((r && r.error) || 'ошибка записи'), { kind: 'err' }); return false; }
+      if (activeTabId !== tabId) return true;
+      if (content !== (isHtml ? htmlDocWrap(currentHtml()) : currentMarkdown())) continue; // печатали во время записи
       dirty = false;
-      if (typeof saveCurrentTabState === 'function') {
-        saveCurrentTabState();
-        if (typeof renderTabsUI === 'function') renderTabsUI();
-      }
+      saveCurrentTabState();
+      renderTabsUI();
       updateStatus('Сохранено · ' + new Date().toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }));
       toast('Файл сохранён');
       return true;
     }
-    toast('Ошибка сохранения: ' + (r && r.error), { kind: 'err' });
+    scheduleAutosave();
     return false;
   }
   async function saveFileAs() {
@@ -536,14 +622,20 @@ export function initTextProc(host) {
     clearTimeout(autosaveT);
     autosaveT = setTimeout(async () => {
       if (!currentFile || !dirty) return;
-      const isHtml = /\.html?$/i.test(currentFile);
+      const tabId = activeTabId, file = currentFile;
+      const isHtml = /\.html?$/i.test(file);
       const content = isHtml ? htmlDocWrap(currentHtml()) : currentMarkdown();
-      const r = await lite.fs.writeFile(currentFile, content);
-      if (r && !r.error) {
-        dirty = false;
-        saveCurrentTabState(); renderTabsUI();
-        updateStatus('Автосохранено · ' + new Date().toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }));
-      }
+      const r = await lite.fs.writeFile(file, content);
+      if (!r || r.error) return;
+      // Пока шла запись, человек мог печатать дальше или уйти на другую вкладку. `dirty` и
+      // saveCurrentTabState() относятся к АКТИВНОЙ вкладке — снимать флаг вслепую нельзя:
+      // на чужой вкладке это пометило бы её несохранённые правки сохранёнными (и closeTab
+      // закрыл бы её без вопроса), а на своей — потеряло бы набранное за время записи.
+      if (activeTabId !== tabId) return;               // ушли на другую вкладку — флаг снимет её собственное сохранение
+      if (content !== (isHtml ? htmlDocWrap(currentHtml()) : currentMarkdown())) { scheduleAutosave(); return; }
+      dirty = false;
+      saveCurrentTabState(); renderTabsUI();
+      updateStatus('Автосохранено · ' + new Date().toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }));
     }, 1500);
   }
   // Сохранить произвольную вкладку (в т.ч. фоновую) — для confirm'ов закрытия.
@@ -1059,6 +1151,11 @@ export function initTextProc(host) {
     }
   }
 
+  // Пути, которые СЕЙЧАС читаются с диска. Клик по файлу в дереве открывает вкладку, но между
+  // кликом и появлением вкладки идёт await: двойной клик (обычный жест в дереве файлов) успевал
+  // пройти проверку «уже открыт» дважды и заводил ДВЕ вкладки одного файла. Дальше правки в одной
+  // затирались сохранением другой — тихая потеря текста.
+  const openingFiles = new Set();
   async function openProjectFile(absPath) {
     // Check if already open
     let tab = openTabs.find(t => t.absPath === absPath);
@@ -1066,14 +1163,20 @@ export function initTextProc(host) {
       switchToTab(tab.id);
       return;
     }
-    
+    if (openingFiles.has(absPath)) return;
+    openingFiles.add(absPath);
+    try {
+      await openProjectFileInner(absPath);
+    } finally { openingFiles.delete(absPath); }
+  }
+  async function openProjectFileInner(absPath) {
     // Read file
     const r = await lite.fs.readFile(absPath);
     if (!r || r.error) {
       toast('Ошибка чтения файла', { kind: 'err' });
       return;
     }
-    
+
     // Create new tab
     const id = nextTabId++;
     const name = baseName(absPath);
@@ -1082,12 +1185,12 @@ export function initTextProc(host) {
     // разметку с onerror и т.п.); htmlToMd ждёт DOM-корень, не строку.
     let safeHtml = null, mdSrc = r.content;
     if (isHtml) {
-      safeHtml = DOMPurify.sanitize(r.content, { ADD_ATTR: ['contenteditable', 'data-tex'] });
+      safeHtml = DOMPurify.sanitize(r.content, SANITIZE);
       const root = document.createElement('div');
       root.innerHTML = safeHtml;
       mdSrc = htmlToMd(root);
     }
-    tab = {
+    const tab = {
       id,
       absPath,
       name,
@@ -1170,7 +1273,7 @@ export function initTextProc(host) {
     dirty = tab.dirty;
     
     // Load content without resetting mode (sanitize при каждой инъекции — как в setMode/loadDocument)
-    $('#doc-editor-wysiwyg').innerHTML = DOMPurify.sanitize(tab.html, { ADD_ATTR: ['contenteditable', 'data-tex'] });
+    $('#doc-editor-wysiwyg').innerHTML = DOMPurify.sanitize(tab.html, SANITIZE);
     $('#doc-editor-md').textContent = tab.md;
     updateModeUI();
     updateStatus(dirty ? 'Изменено' : (tab.absPath ? 'Открыт' : 'Новый файл'));

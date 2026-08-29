@@ -93,8 +93,6 @@ export function t(src, ...args) {
   return s;
 }
 
-export function getLocale() { return locale; }
-export function isTranslating() { return locale !== 'ru'; }
 
 // --------------------------------------------------------------- DOM-перевод
 const CYR = /[А-Яа-яЁё]/;

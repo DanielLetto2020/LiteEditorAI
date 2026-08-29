@@ -27,7 +27,7 @@ import { el, icon, iconBtn, hydrateIcons, toast, makeModal, showConfirm, showPro
 import { initExtensions } from './modules/extensions.js';
 // initFiles — вивер+дерево мигрированы в отдельное окно (renderer/module-entry.js).
 
-const APP_VERSION = 'alpha v1.1.136';
+const APP_VERSION = 'alpha v1.1.173';
 const GUTTER = 5;
 // Системный терминал («Система · ~») мигрирован в отдельное окно (renderer/modules/scratch.js):
 // его id `__scratch__::tN` маршрутизируются main'ом в окно-владельца, в ядре их больше не обрабатываем.
@@ -54,7 +54,7 @@ function persist(key, value) { STORE[key] = value; lite.store.set(key, value); }
 function projId(p) { let h = 5381; for (let i = 0; i < p.length; i++) h = ((h << 5) + h + p.charCodeAt(i)) >>> 0; return 'p' + h.toString(36); }
 
 // ---------------------------------------------------------------- settings (tiny on purpose)
-const DEFAULT_SETTINGS = { notifications: true, sound: false, idleMs: 1200, fontSize: 13, workingDir: '', scanDirs: [], theme: 'neumorphism', onboarded: false, shell: '', minimap: true, notesTab: 'project', frameOn: true, frameColor: 'green', framePulse: true, framePeriodS: 6, termTimeline: false };
+const DEFAULT_SETTINGS = { notifications: true, sound: false, idleMs: 1200, fontSize: 13, workingDir: '', scanDirs: [], theme: 'neumorphism', onboarded: false, shell: '', minimap: true, notesTab: 'project', frameOn: true, frameColor: 'green', framePulse: true, framePeriodS: 6, termTimeline: false, termPrefill: 'claude' };
 function loadSettings() { return { ...DEFAULT_SETTINGS, ...(STORE.settings || {}) }; }
 let settings = loadSettings();
 function saveSettings() { persist('settings', settings); }
@@ -316,9 +316,13 @@ function showLinkDialog(p) {
       return;
     }
     const side = (s, name) => (s.exists ? `${name}: ${s.files} файлов, ${humanSize(s.bytes)}` : `${name}: проекта нет`);
-    what.innerHTML = `<b>${p.name}</b><br>${side(info.local, 'На ПК')}<br>${side(info.remote, 'На сервере')}`
-      + (info.differ ? `<br>Файлы различаются: ${info.differ} — спрошу, чью версию взять.` : '')
-      + '<br>Заменённое уедет в корзину, как при обычной сверке.';
+    // Собираем узлами, а не строкой HTML: имя проекта = имя ПАПКИ, и `<` или `&` в нём
+    // ломали разметку блока (а `<img onerror=…>` был бы и вовсе разметкой из имени файла).
+    const lines = [side(info.local, 'На ПК'), side(info.remote, 'На сервере')];
+    if (info.differ) lines.push(`Файлы различаются: ${info.differ} — спрошу, чью версию взять.`);
+    lines.push('Заменённое уедет в корзину, как при обычной сверке.');
+    what.replaceChildren(el('b', '', p.name));
+    for (const line of lines) { what.appendChild(el('br')); what.appendChild(document.createTextNode(line)); }
     go.disabled = false;
   })();
 }
@@ -935,7 +939,7 @@ function doCloseProject(id) {
     for (const sid of tabs.sessions) {
       lite.pty.kill(sid);
       const rec = terms.get(sid);
-      if (rec) { clearTimeout(rec.idleTimer); try { rec.timeline.dispose(); } catch (_) {} try { rec.term.dispose(); } catch (_) {} rec.container.remove(); terms.delete(sid); }
+      if (rec) { clearTimeout(rec.idleTimer); clearTimeout(rec.prefillTimer); try { rec.timeline.dispose(); } catch (_) {} try { rec.term.dispose(); } catch (_) {} rec.container.remove(); terms.delete(sid); }
       projState.delete(sid);
     }
     tabsByProj.delete(id);
@@ -1179,7 +1183,7 @@ function buildXterm(container, id, { cwd, onInput, onKey } = {}) {
     if (e.ctrlKey && !e.shiftKey && !e.altKey && e.code === 'KeyC') return !copySelection(term); // copied → swallow; else SIGINT
     if (e.ctrlKey && !e.shiftKey && !e.altKey && e.code === 'KeyV') { e.preventDefault(); pasteInto(id); return false; } // preventDefault — иначе xterm вставит ещё раз нативно (дубль)
     // Ctrl+Enter — перенос строки в вводе (продолжение команды), а не выполнение: \ + CR для bash/zsh, LF для ConPTY/PSReadLine (Win)
-    if (e.ctrlKey && !e.shiftKey && !e.altKey && e.key === 'Enter') { lite.pty.write(id, lite.platform === 'win32' ? '\n' : '\\\r'); return false; }
+    if (e.ctrlKey && !e.shiftKey && !e.altKey && e.key === 'Enter') { cancelPrefill(id); lite.pty.write(id, lite.platform === 'win32' ? '\n' : '\\\r'); return false; }
     if (onKey && onKey(e) === false) return false;            // клавиши вызывающего (вкладки/поиск проекта)
     if (runGlobalHotkey(e)) { e.stopPropagation(); return false; } // глобальные хоткеи в фокусе терминала (B1)
     return true;
@@ -1195,13 +1199,40 @@ function applyTimeline() {
   refitActiveTerminal();
 }
 
+// ── Автоввод в новом терминале ────────────────────────────────────────────────
+// Настройка «Автоввод» (по умолчанию `claude`): в свежую сессию проекта пишем слово БЕЗ перевода
+// строки — команда стоит в строке ввода, человеку остаётся нажать Enter. Пустая настройка =
+// обычный пустой терминал, как раньше. Пишем не сразу: пока шелл поднимается, readline глотает
+// символы, а .bashrc успевает насыпать вывода — поэтому ждём первого вывода PTY и паузы в нём.
+const PREFILL_QUIET_MS = 150;    // тишина в выводе, после которой считаем, что промпт отрисован
+const PREFILL_MAX_WAIT = 1500;   // шелл не сказал ни байта — пишем всё равно
+function armPrefill(id, text) {
+  const rec = terms.get(id); if (!rec || !text) return;
+  rec.prefill = text;
+  rec.prefillTimer = setTimeout(() => firePrefill(id), PREFILL_MAX_WAIT);
+}
+function nudgePrefill(id) {   // пришёл вывод от шелла — отодвинуть запись до паузы
+  const rec = terms.get(id); if (!rec || !rec.prefill) return;
+  clearTimeout(rec.prefillTimer);
+  rec.prefillTimer = setTimeout(() => firePrefill(id), PREFILL_QUIET_MS);
+}
+function cancelPrefill(id) {  // человек начал печатать сам — не лезть ему в строку
+  const rec = terms.get(id); if (!rec || !rec.prefill) return;
+  clearTimeout(rec.prefillTimer); rec.prefill = '';
+}
+function firePrefill(id) {
+  const rec = terms.get(id); if (!rec || !rec.prefill) return;
+  const text = rec.prefill; rec.prefill = '';
+  rec.lastInputAt = Date.now(); // это ввод, пусть и наш: эхо не должно считаться работой агента
+  lite.pty.write(id, text);     // без \r — Enter жмёт человек
+}
 function createSession(proj, name, custom) {
   const id = proj.id + '::t' + (++sessionSeq);
   const container = el('div', 'term-instance');
   $('#terminals').appendChild(container);
   const { term, fit, search, timeline } = buildXterm(container, id, {
     cwd: proj.path,
-    onInput: () => { const r = terms.get(id); if (r) r.lastInputAt = Date.now(); },
+    onInput: () => { cancelPrefill(id); const r = terms.get(id); if (r) r.lastInputAt = Date.now(); },
     onKey: (e) => {
       if (e.ctrlKey && e.shiftKey && e.code === 'KeyT') { addTab(); return false; }
       if (e.ctrlKey && e.shiftKey && e.code === 'KeyW') { const s = activeSessionId(); if (s) closeTab(s); return false; }
@@ -1210,8 +1241,9 @@ function createSession(proj, name, custom) {
     },
   });
   term.registerLinkProvider(fileLinkProvider(term, proj.path));
-  const rec = { term, fit, search, timeline, container, projId: proj.id, name, customName: !!custom, idleTimer: null, sawBell: false, tail: '', busyStart: 0, lastInputAt: 0, activitySeq: 0 };
+  const rec = { term, fit, search, timeline, container, projId: proj.id, name, customName: !!custom, idleTimer: null, sawBell: false, tail: '', busyStart: 0, lastInputAt: 0, activitySeq: 0, prefill: '', prefillTimer: null };
   terms.set(id, rec);
+  armPrefill(id, (settings.termPrefill || '').trim()); // автоввод слова из настроек (по умолчанию `claude`)
   // Имя вкладки из заголовка терминала (OSC ]0;…): Claude/агент в промпте пишет туда
   // текущую задачу, шелл — user@host:cwd. Подхватываем как имя вкладки, пока пользователь
   // не переименовал вкладку руками (rec.customName). Один и тот же заголовок (bash каждый
@@ -1320,7 +1352,7 @@ function closeTab(sid) {
   const t = tabsByProj.get(activeId); if (!t || t.sessions.length <= 1) return; // keep ≥1 tab
   lite.pty.kill(sid);
   const rec = terms.get(sid);
-  if (rec) { clearTimeout(rec.idleTimer); try { rec.timeline.dispose(); } catch (_) {} try { rec.term.dispose(); } catch (_) {} rec.container.remove(); terms.delete(sid); }
+  if (rec) { clearTimeout(rec.idleTimer); clearTimeout(rec.prefillTimer); try { rec.timeline.dispose(); } catch (_) {} try { rec.term.dispose(); } catch (_) {} rec.container.remove(); terms.delete(sid); }
   projState.delete(sid);
   const i = t.sessions.indexOf(sid);
   t.sessions.splice(i, 1);
@@ -1367,7 +1399,7 @@ function adoptTermTitle(id, raw) {
 }
 async function pasteInto(id) {
   const text = await lite.readClipboard();
-  if (text) lite.pty.write(id, text);
+  if (text) { cancelPrefill(id); lite.pty.write(id, text); }
   // Reading the clipboard is async (IPC round-trip) and the right-click menu steals
   // focus — without this the terminal looks "frozen" until clicked. Refocus the xterm.
   const rec = isExtTerm(id) ? extTerms.get(id) : terms.get(id); // dev-терминал модуля живёт в extTerms
@@ -2733,6 +2765,9 @@ function showSettings() {
               <select id="st-shell"></select>
               <input type="text" id="st-shell-path" placeholder="путь к исполняемому файлу" spellcheck="false" style="display:none">
             </div></div>
+          <div class="set-row col"><span>Автоввод в новом терминале</span>
+            <input type="text" id="st-prefill" placeholder="claude" spellcheck="false"></div>
+          <div class="set-hint">Слово (или команда) само пишется в каждый новый терминал проекта — при открытии проекта и при создании вкладки — но без Enter: остаётся подтвердить или дописать. Пустое поле — терминал открывается пустым, как раньше.</div>
         </div>
       </section>
       <section class="set-group">
@@ -2831,6 +2866,7 @@ function showSettings() {
   shellPath.style.display = shellCustom ? '' : 'none';
   shellPath.value = shellCustom ? curShell : '';
   shellSel.addEventListener('change', () => { shellPath.style.display = shellSel.value === '__custom__' ? '' : 'none'; });
+  const prefill = m.querySelector('#st-prefill'); prefill.value = settings.termPrefill || '';
   const wd = m.querySelector('#st-wd'); wd.value = settings.workingDir || '';
   let scan = [...(settings.scanDirs || [])];
   const scanBox = m.querySelector('#st-scan');
@@ -2878,6 +2914,7 @@ function showSettings() {
     settings.workingDir = wd.value || '';
     settings.scanDirs = scan;
     settings.shell = shellSel.value === '__custom__' ? shellPath.value.trim() : shellSel.value;
+    settings.termPrefill = prefill.value.trim();   // пусто = автоввода нет
     persist('shares', shares);   // доступ с пульта (main читает свежим при каждом запросе)
     saveSettings(); applyFontSize(); close();
     scanProjects(); // pick up newly-added scan dirs right away
@@ -3158,12 +3195,13 @@ function init() {
     const rec = terms.get(id); // scratch-сессии маршрутизируются в своё окно (не приходят сюда)
     if (!rec) return;
     rec.term.write(data);
+    if (rec.prefill) nudgePrefill(id); // ждём паузы в выводе — тогда пишем автоввод
     markActivity(id, data);
   });
   lite.pty.onExit(({ id }) => {
     if (isExtTerm(id)) { const r = extTerms.get(id); if (r) r.term.write('\r\n\x1b[90m[шелл завершён]\x1b[0m\r\n'); return; }
     const rec = terms.get(id);
-    if (rec) rec.term.write('\r\n\x1b[90m[процесс завершён — закрой и переоткрой проект]\x1b[0m\r\n');
+    if (rec) { cancelPrefill(id); rec.term.write('\r\n\x1b[90m[процесс завершён — закрой и переоткрой проект]\x1b[0m\r\n'); }
     setProjState(id, 'quiet');
   });
   // RemoteHost — SSH-сессии (отдельный канал, не PTY): пишем вывод в соответствующий xterm.

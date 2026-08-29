@@ -233,7 +233,7 @@ try {
   const legacy = path.join(os.homedir(), '.LiteEditor');
   if (!fs.existsSync(storeDir) && fs.existsSync(legacy)) fs.cpSync(legacy, storeDir, { recursive: true });
 } catch (_) {}
-const STORE_KEYS = ['projects', 'settings', 'layout', 'recents', 'lastParent', 'categories', 'sectionOrder', 'favOrder', 'accordions', 'dismissed', 'uiState', 'projTabs', 'openrouter', 'remote', 'shares', 'pultBlocked', 'dockerUi', 'dbConnections', 'dbUi', 'rhConnections', 'rhUi', 'textproc', 'tpPrompts', 'extData', 'extEnabled', 'quickbar', 'seoTargets', 'seoSites', 'moduleWins', 'mwLeft', 'mwLogH', 'gitFav', 'commitDrafts', 'bookmarks', 'promptSnippets', 'pomodoro', 'pomodoroLog', 'dbaiProviders', 'sessionSnaps', 'siteMon', 'rmqConnections', 'rmqUi', 'kafkaConnections', 'kafkaUi', 'stConnections', 'stUi', 'jiraAccounts', 'jiraUi'];
+const STORE_KEYS = ['projects', 'settings', 'layout', 'recents', 'lastParent', 'categories', 'sectionOrder', 'favOrder', 'accordions', 'dismissed', 'projTabs', 'openrouter', 'remote', 'shares', 'pultBlocked', 'dockerUi', 'dbConnections', 'dbUi', 'rhConnections', 'rhUi', 'extData', 'extEnabled', 'quickbar', 'seoSites', 'moduleWins', 'mwLeft', 'mwLogH', 'gitFav', 'commitDrafts', 'bookmarks', 'promptSnippets', 'pomodoro', 'pomodoroLog', 'dbaiProviders', 'sessionSnaps', 'siteMon', 'rmqConnections', 'rmqUi', 'kafkaConnections', 'kafkaUi', 'stConnections', 'stUi', 'jiraAccounts', 'jiraUi'];
 // Папка-«стор» для шаринга с пультом (агент кладёт сюда файлы; в PTY доступна как $LITE_STORE).
 const pultStoreDir = path.join(storeDir, 'store');
 try { fs.mkdirSync(pultStoreDir, { recursive: true }); } catch (_) {}
@@ -270,14 +270,28 @@ function readStoreKey(key) {
 // half-written (corrupt) JSON — the original file stays intact and a stale .tmp is harmless
 // (overwritten next time). Without this, dying during the write of projects.json would lose
 // the entire project list on the next launch (JSON.parse throws → undefined).
+// Суффикс временного соседа при атомарной записи. Вотчер и листинг дерева его отфильтровывают:
+// иначе сохранение файла В ПРОЕКТЕ (через atomicWriteSync это, например, CLAUDE.md) дёргало бы
+// дерево лишним «изменился файл» на соседа, которого через миллисекунду уже нет.
+const WRITE_TMP_SUFFIX = '.lite-tmp';
 function atomicWriteSync(file, data) {
   // Пишем по РЕАЛЬНОМУ пути: rename поверх симлинка заменяет саму ссылку обычным файлом, и связь
   // с общим файлом-целью рвётся молча (CLAUDE.md или конфиг вполне держат симлинком на шаблон —
   // дальше правки уходили бы в копию, а общий файл больше не обновлялся).
   let target = file;
   try { if (fs.lstatSync(file).isSymbolicLink()) target = fs.realpathSync(file); } catch (_) {}
-  const tmp = target + '.tmp';
-  fs.writeFileSync(tmp, data);
+  // Права существующей цели переносим на нового соседа: rename кладёт на её место файл, созданный
+  // по umask, и цель с чувствительным содержимым (база KeePass, 0600) стала бы читаемой всем.
+  let mode; try { mode = fs.statSync(target).mode & 0o777; } catch (_) {}
+  // Имя соседа уникально по процессу. У приложения нет single-instance-лока: второй запущенный
+  // редактор пишет ТЕ ЖЕ файлы стора, и с общим `X.tmp` два процесса писали бы в один временный
+  // файл вперемешку, после чего один переименовывал бы мешанину поверх цели. Для projects.json
+  // это ровно та потеря всего списка проектов, ради предотвращения которой запись и делалась
+  // атомарной. Тот же приём уже применён в mcp/lite-agenda-server.js, который пишет agenda/*.json
+  // из отдельного процесса.
+  const tmp = target + '.' + process.pid + WRITE_TMP_SUFFIX;
+  fs.writeFileSync(tmp, data, mode == null ? undefined : { mode });
+  if (mode != null) { try { fs.chmodSync(tmp, mode); } catch (_) {} }  // tmp мог остаться от прошлого краха — { mode } его не переоткрывает
   fs.renameSync(tmp, target);
 }
 // Returns true on success. store:set is fire-and-forget (renderer updates its in-memory
@@ -460,7 +474,7 @@ ipcMain.handle('sync:link', async (_e, { path: projectPath, prefer } = {}) => {
     return await linkerModule().link(String(projectPath || ''), {
       prefer: prefer === 'local' || prefer === 'remote' ? prefer : null,
       onStep: (step) => {
-        if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('sync:linkStep', step);
+        sendTo(mainWindow, 'sync:linkStep', step);
       },
     });
   } catch (e) {
@@ -476,7 +490,7 @@ ipcMain.handle('errors:setStatus', (_e, { id, status, note, commit } = {}) => er
 ipcMain.handle('errors:clearResolved', () => errledger.clearResolved());
 ipcMain.handle('errors:setContext', (_e, projectPath) => { errledger.setContext(projectPath); return { ok: true }; });
 // Изменения реестра (новые ошибки, правки статуса, ВНЕШНИЕ правки агентом) → живой UI.
-errledger.onChange(() => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('errors:changed'); });
+errledger.onChange(() => { sendTo(mainWindow, 'errors:changed'); });
 errledger.watch();
 
 ipcMain.on('store:loadAll', (e) => {
@@ -537,8 +551,8 @@ function agendaAttentionCount(arr) {
 // Работает, пока редактор запущен (не демон). Гейт notifiedAt не даёт дублей/спама при рестарте.
 const AGENDA_REMIND_MS = { at: 0, '10m': 600000, '1h': 3600000, '1d': 86400000 };
 function agendaBroadcastChanged(id) {
-  for (const w of moduleWindows.values()) { if (w && !w.isDestroyed()) w.webContents.send('app:agendaChanged', { id }); }
-  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('app:agendaChanged', { id });
+  for (const w of moduleWindows.values()) { sendTo(w, 'app:agendaChanged', { id }); }
+  sendTo(mainWindow, 'app:agendaChanged', { id });
 }
 function agendaReminderTick() {
   let files;
@@ -584,7 +598,7 @@ function focusNotesCalendar() {
   openModuleWindow('notes');
   const w = moduleWindows.get('notes');
   if (!w || w.isDestroyed()) return;
-  const send = () => { try { if (!w.isDestroyed()) w.webContents.send('agenda:focus'); } catch (_) {} };
+  const send = () => { try { sendTo(w, 'agenda:focus'); } catch (_) {} };
   if (w.webContents.isLoading()) w.webContents.once('did-finish-load', () => setTimeout(send, 250));
   else send();
 }
@@ -621,11 +635,14 @@ ipcMain.handle('agenda:mcpConnect', async (_e, { projId, projPath } = {}) => {
   const sp = agendaMcpServerPath();
   const args = ['mcp', 'add', 'lite-tasks', '--scope', 'local', '--', 'node', sp, '--project', String(projId || '__global__')];
   return await new Promise((resolve) => {
-    let done = false, stderr = '', stdout = '';
-    const finish = (r) => { if (!done) { done = true; resolve({ ...r, cmd: agendaMcpCommand(projId) }); } };
+    let done = false, stderr = '', stdout = '', to = null;
+    const finish = (r) => { if (!done) { done = true; clearTimeout(to); resolve({ ...r, cmd: agendaMcpCommand(projId) }); } };
     let cp;
     try { cp = spawn('claude', args, { cwd: projPath || os.homedir() }); }
     catch (e) { return finish({ ok: false, error: String(e.message || e) }); }
+    // Без таймаута зависший `claude mcp add` (спросил что-то в stdin и ждёт) держал бы промис
+    // IPC навсегда: кнопка в модалке крутилась бы вечно, процесс жил бы до выхода из редактора.
+    to = setTimeout(() => { try { cp.kill(); } catch (_) {} finish({ ok: false, error: 'таймаут: «claude mcp add» не ответил за 30 с' }); }, 30000);
     cp.stdout && cp.stdout.on('data', (d) => { stdout += d; });
     cp.stderr && cp.stderr.on('data', (d) => { stderr += d; });
     cp.on('error', (err) => finish({ ok: false, error: err.code === 'ENOENT' ? 'CLI «claude» не найден в PATH' : String(err.message || err) }));
@@ -658,9 +675,21 @@ function orHeaders(key) {
     'X-Title': 'LiteEditorAI',
   };
 }
-function safeSend(sender, channel, payload) {
-  try { if (sender && !sender.isDestroyed()) sender.send(channel, payload); } catch (_) {}
+// Отправка в окно. isDestroyed() НЕДОСТАТОЧНО: между проверкой и send фрейм рендерера может быть
+// уже снесён (закрытие окна, перезагрузка, падение рендерера), и send бросает
+// «Render frame was disposed before WebFrameMain could be accessed». Это не теория: в логе
+// набегали сотни таких записей. Хуже шума то, что бросок рвал ЦИКЛ рассылки — окна модулей после
+// умирающего не получали сообщение вовсе, — и вылетал наружу из onData PTY.
+// Возвращает true, если сообщение ушло.
+function sendTo(target, channel, payload) {
+  try {
+    const wc = (target && target.webContents) ? target.webContents : target;
+    if (!wc || wc.isDestroyed()) return false;
+    wc.send(channel, payload);
+    return true;
+  } catch (_) { return false; }
 }
+function safeSend(sender, channel, payload) { return sendTo(sender, channel, payload); }
 function orChatFile(id) { return path.join(storeDir, 'orchats', String(id).replace(/[^\w.-]/g, '_') + '.json'); }
 ipcMain.handle('openrouter:histGet', (_e, id) => {
   try { return JSON.parse(fs.readFileSync(orChatFile(id), 'utf8')); } catch { return []; }
@@ -809,8 +838,6 @@ ipcMain.on('openrouter:chatAbort', (e, { reqId } = {}) => {
 // ~/.LiteEditorAI/textproc/ (IO идёт через общие fs:* по абсолютным путям). Выделенный
 // фрагмент прогоняется через ЛОКАЛЬНОГО агента в headless-режиме — по подписке
 // пользователя, БЕЗ API-ключей (ключевая идея фичи).
-const tpDir = path.join(storeDir, 'textproc');
-ipcMain.handle('tp:dir', () => { try { fs.mkdirSync(tpDir, { recursive: true }); } catch (_) {} return tpDir; });
 // Обработка текста: нативные Открыть/Сохранить как (вместо браузерного File API/download — PR #6).
 // Родитель диалога — окно-отправитель (модульное окно doc), НЕ mainWindow; лимит — как у текстовых панелей.
 ipcMain.handle('tp:openFile', async (e) => {
@@ -892,10 +919,6 @@ ipcMain.on('tp:run', (e, { reqId, agent, prompt } = {}) => {
     else safeSend(sender, 'tp:error', { reqId, error: errOut.trim() || ('агент завершился с кодом ' + code) });
   });
   if (conf.via === 'stdin') { try { child.stdin.write(prompt || ''); child.stdin.end(); } catch (_) {} }
-});
-ipcMain.on('tp:abort', (_e, { reqId } = {}) => {
-  const c = tpReqs.get(reqId);
-  if (c) { tpReqs.delete(reqId); try { c.kill(); } catch (_) {} }
 });
 
 // ---------------------------------------------------------------- AI-DB (read-only SQL chat)
@@ -2301,7 +2324,7 @@ ipcMain.handle('ext:scaffold', (_e, { id, name, desc } = {}) => {
 
 // ---------------------------------------------------------------- settings backup (export / import)
 // A single self-contained JSON snapshot of the editor's whole state: every store key
-// (projects+categories, settings, layout, recents, accordions, section order, uiState…),
+// (projects+categories, settings, layout, recents, accordions, section order…),
 // per-project notes, and the saved window geometry. Lets a user back up / move their setup.
 function readAllNotes() {
   const out = {};
@@ -2488,8 +2511,8 @@ function createWindow() {
   // Закрытие редактора закрывает все окна модулей (освобождение памяти). После этого
   // window-all-closed штатно убивает PTY/db/rh и завершает приложение.
   mainWindow.on('close', () => closeAllModuleWindows());
-  mainWindow.on('maximize', () => mainWindow.webContents.send('win:maximized', true));
-  mainWindow.on('unmaximize', () => mainWindow.webContents.send('win:maximized', false));
+  mainWindow.on('maximize', () => sendTo(mainWindow, 'win:maximized', true));
+  mainWindow.on('unmaximize', () => sendTo(mainWindow, 'win:maximized', false));
 
   mainWindow.webContents.on('before-input-event', (event, input) => {
     if (input.type !== 'keyDown') return;
@@ -2523,7 +2546,7 @@ function saveModuleBounds(modId, win) {
 }
 function broadcastModuleOpenSet() {
   const ids = [...moduleWindows.keys()];
-  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('module:openSet', { ids });
+  sendTo(mainWindow, 'module:openSet', { ids });
   // запоминаем набор открытых окон — чтобы переоткрыть его при следующем запуске редактора
   try { const all = readModuleWins(); all.__open = ids; writeStoreKey('moduleWins', all); } catch (_) {}
 }
@@ -2535,13 +2558,13 @@ function reopenSavedModuleWindows() {
   } catch (_) {}
 }
 function broadcastToModules(ch, payload) {
-  for (const w of moduleWindows.values()) { if (w && !w.isDestroyed()) w.webContents.send(ch, payload); }
+  for (const w of moduleWindows.values()) { sendTo(w, ch, payload); }
 }
 // Маршрут стрима к окну-владельцу сессии (fallback — главное окно редактора).
 function sendToOwner(sessionId, ch, payload) {
   const wc = ownerBySession.get(sessionId);
-  if (wc && !wc.isDestroyed()) { wc.send(ch, payload); return; }
-  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(ch, payload);
+  if (sendTo(wc, ch, payload)) return;          // владелец мог умереть — тогда падаем на окно редактора
+  sendTo(mainWindow, ch, payload);
 }
 // ── Навигация окон с мостом ───────────────────────────────────────────────────────────────────
 // preload применяется к КАЖДОМУ документу webContents, поэтому окно, ушедшее на внешний адрес,
@@ -2598,8 +2621,8 @@ function openModuleWindow(modId) {
   win.loadFile(path.join(__dirname, 'renderer', 'module.html'), { hash: modId });
   if (saved.maximized) win.maximize();
   win.once('ready-to-show', () => { if (!win.isDestroyed()) win.show(); });
-  win.on('maximize', () => { if (!win.isDestroyed()) win.webContents.send('win:maximized', true); });
-  win.on('unmaximize', () => { if (!win.isDestroyed()) win.webContents.send('win:maximized', false); });
+  win.on('maximize', () => { sendTo(win, 'win:maximized', true); });
+  win.on('unmaximize', () => { sendTo(win, 'win:maximized', false); });
   win.on('resize', debounce(() => saveModuleBounds(modId, win), 400));
   win.on('move', debounce(() => saveModuleBounds(modId, win), 400));
   // Закрытие окна модуля (верхняя ✕ / Alt+F4 / ОС) проходит через dirty-guard рендерера:
@@ -2609,7 +2632,7 @@ function openModuleWindow(modId) {
     saveModuleBounds(modId, win);
     if (win.__forceClose) return;
     e.preventDefault();
-    if (!win.isDestroyed()) win.webContents.send('win:closeRequest');
+    sendTo(win, 'win:closeRequest');
   });
   win.on('closed', () => {
     moduleWindows.delete(modId);
@@ -2622,6 +2645,20 @@ function openModuleWindow(modId) {
       for (const w of ctxOutWatchers.values()) { try { w.close(); } catch (_) {} } ctxOutWatchers.clear(); // окно «Контекст» закрылось без unwatch → не течём fs.watch (B2)
       // и обрываем анализ диалогов: без этого `claude -p` жил ещё до таймаута (5 мин), жёг токены и писал в мёртвый sender
       for (const c of ctxmineReqs.values()) { try { c.kill(); } catch (_) {} } ctxmineReqs.clear();
+    }
+    // То же и для остальных окон с агентами: закрыли окно — обрывай его запросы. Иначе `claude -p`
+    // (или HTTP-стрим OpenRouter) доживал до своего таймаута — 2–5 минут работы и токенов в никуда,
+    // а «Директор» ИИ-компании ещё и detached, то есть переживал бы окно гарантированно.
+    if (modId === 'doc') killReqMap(tpReqs);         // «Обработка текста»
+    if (modId === 'db') killReqMap(dbaiReqs);        // AI-DB (child ИЛИ ClientRequest — killReqMap разбирает оба)
+    if (modId === 'chat') killReqMap(orReqs);        // OpenRouter
+    if (modId === 'company') { for (const c of companyReqs.values()) { try { companyKill(c); } catch (_) {} } companyReqs.clear(); }
+    // «Контейнеры»: закрыть окно ✕ мимо closeDockerDetail() — и `logs -f` продолжал бы качать вывод
+    // мёртвому окну, а `exec -it` держал бы живую оболочку в контейнере до выхода из редактора.
+    // Тейлы rmq/kafka так уже умеют (sender.once('destroyed') в lib/), эти два — нет.
+    if (modId === 'docker') {
+      for (const cp of cLogProcs.values()) { try { cp.kill(); } catch (_) {} } cLogProcs.clear();
+      for (const p of cExecPtys.values()) { try { p.kill(); } catch (_) {} } cExecPtys.clear();
     }
     for (const [sid, wc] of ownerBySession) { try { if (wc.isDestroyed()) ownerBySession.delete(sid); } catch (_) { ownerBySession.delete(sid); } }
     broadcastModuleOpenSet();
@@ -2673,7 +2710,7 @@ function pomoSnapshot() {
 function pomoEmit() {
   const snap = pomoSnapshot();
   broadcastToModules('pomodoro:tick', snap);
-  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('pomodoro:tick', snap);
+  sendTo(mainWindow, 'pomodoro:tick', snap);
 }
 
 // Журнал завершённых помидоров (только main пишет; ключ отдельный от 'pomodoro', который пишет рендерер).
@@ -2706,7 +2743,7 @@ function pomoNotifyPhase(from, to) {
       }).show();
     } catch (_) {}
   }
-  if (cfg.soundOn !== false && mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('pomodoro:chime', { to });
+  if (cfg.soundOn !== false) sendTo(mainWindow, 'pomodoro:chime', { to });
 }
 // Оверлей отдыха в окне редактора: показываем на перерыве (если техника блокирует), иначе прячем.
 function pomoSyncOverlay() {
@@ -2913,7 +2950,7 @@ async function streamFileToPult(reqId, filePath, displayName) {
     }
     remote.send({ t: 'store:end', reqId });
   } catch (e) { remote.send({ t: 'store:err', reqId, error: 'read: ' + (e && e.message) }); }
-  finally { try { fs.closeSync(fd); } catch (_) {} }
+  finally { try { fs.closeSync(fd); } catch (_) {} storeCancelled.delete(reqId); } // отмена, пришедшая под конец, иначе осталась бы в множестве навсегда
 }
 function zipDirToPult(reqId, dirPath) {
   const tmp = path.join(os.tmpdir(), 'lite-store-' + Date.now() + '-' + Math.floor(Math.random() * 1e9) + '.zip');
@@ -2984,7 +3021,7 @@ function buildRemoteState() {
 // Открыть терминал для проекта по запросу с пульта → просим рендерер открыть
 // настоящую вкладку (как ＋ в редакторе), чтобы она появилась И на ПК, И на пульте.
 function remoteOpenProject(projId) {
-  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('remote:openProject', { projId });
+  sendTo(mainWindow, 'remote:openProject', { projId });
 }
 // История — ОКНОМ (ленивая подгрузка при скролле вверх на пульте): отдаём кусок
 // транскрипта ДО смещения before размером size; в begin/end кладём start/total,
@@ -3024,12 +3061,12 @@ function pultTasksSet(id, notes) {
     fs.mkdirSync(path.join(storeDir, 'notes'), { recursive: true });
     atomicWriteSync(notesPath(id), JSON.stringify(notes));
     // Освежить открытую в редакторе панель «Задачи», если она показывает этот же список.
-    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('remote:notesChanged', { id: String(id) });
+    sendTo(mainWindow, 'remote:notesChanged', { id: String(id) });
   } catch (e) { logger.log('warn', 'remote', 'pult tasks save failed: ' + (e && e.message)); }
 }
 // Пульт: вставить текст задачи в терминал проекта — переадресуем рендереру (как в панели «Задачи»).
 function pultNoteToTerminal(projId, text) {
-  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('remote:noteToTerminal', { projId, text });
+  sendTo(mainWindow, 'remote:noteToTerminal', { projId, text });
 }
 // Пульт: вставка из буфера обмена планшета в PTY (кнопка Ctrl+V). Семантика — как у
 // xterm.paste(): переводы строк → CR, и если приложение включило bracketed paste
@@ -3054,15 +3091,21 @@ function startRemotePult() {
       writeInput: (sid, data) => { const p = ptys.get(sid); if (p) p.write(data); },
       onPaste: (sid, text) => pultPasteToPty(sid, text),   // вставка из буфера планшета (bracketed paste, если TUI просил)
       openProject: remoteOpenProject,
-      onSelect: (sid) => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('remote:select', { sid }); },
-      onClose: (sid) => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('remote:closeTab', { sid }); },
-      onNewFolder: (name) => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('remote:newFolder', { name }); },
+      onSelect: (sid) => { sendTo(mainWindow, 'remote:select', { sid }); },
+      onClose: (sid) => { sendTo(mainWindow, 'remote:closeTab', { sid }); },
+      onNewFolder: (name) => { sendTo(mainWindow, 'remote:newFolder', { name }); },
       onRestartApp: () => { restartAppSafely(); },
       onHistoryGet: (reqId, sid, before, size) => remoteHistoryGet(reqId, sid, before, size),
       onStoreList: (reqId, p) => pultStoreList(reqId, p),
       onStoreGet: (reqId, p) => pultStoreGet(reqId, p),
       onStoreGetZip: (reqId, p) => pultStoreGet(reqId, p),
-      onStoreCancel: (reqId) => { storeCancelled.add(reqId); },
+      onStoreCancel: (reqId) => {
+        storeCancelled.add(reqId);
+        // Отмена может прийти на уже завершённую (или вовсе неизвестную) передачу — снимать такой
+        // id некому. Держим только окно последних отмен, иначе множество растёт от каждого
+        // сообщения пульта, а его содержимое мы не контролируем.
+        while (storeCancelled.size > 256) storeCancelled.delete(storeCancelled.values().next().value);
+      },
       // Задачи на пульте: тот же notes/<id>.json, что и панель «Задачи» в редакторе.
       onTasksGet: (reqId, id) => pultTasksGet(reqId, id),
       onTasksSet: (id, notes) => pultTasksSet(id, notes),
@@ -3070,11 +3113,11 @@ function startRemotePult() {
       // Пульт смотрит «проекцию экрана» и размером PTY не владеет — на presence только лог.
       onPultPresence: (connected) => { logger.log('info', 'remote', connected ? 'pult connected' : 'pult disconnected'); },
       // Пульт просит одобрить устройство → показать модалку в редакторе.
-      onPairRequest: (info) => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('remote:pairRequest', info); },
+      onPairRequest: (info) => { sendTo(mainWindow, 'remote:pairRequest', info); },
       // Учёт подключённых пультов (бейдж у версии) + блок-лист (доступ выключаем, не удаляя).
       isBlocked: (device) => getPultBlocked().includes(device),
-      onPultsChanged: (list) => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('remote:pults', { list, blocked: getPultBlocked() }); },
-      onSysInfo: (m) => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('remote:sysinfo', m); },
+      onPultsChanged: (list) => { sendTo(mainWindow, 'remote:pults', { list, blocked: getPultBlocked() }); },
+      onSysInfo: (m) => { sendTo(mainWindow, 'remote:sysinfo', m); },
     });
     const r = readStoreKey('remote') || {};
     if (r.token && r.host) {
@@ -3237,7 +3280,7 @@ ipcMain.handle('i18n:set', (_e, { code } = {}) => {
   st.lang = i18n.locale();
   writeStoreKey('settings', st);
   const payload = i18nPayload();
-  for (const w of BrowserWindow.getAllWindows()) { try { w.webContents.send('i18n:changed', payload); } catch (_) {} }
+  for (const w of BrowserWindow.getAllWindows()) sendTo(w, 'i18n:changed', payload);
   try { updateTrayTooltip(); } catch (_) {}
   return { ok: true, code: i18n.locale() };
 });
@@ -3263,8 +3306,6 @@ ipcMain.on('win:show', showWindow);
 
 // ── Окна модулей: open/close/реестр открытых ──────────────────────────────────────────
 ipcMain.on('module:open', (_e, { modId } = {}) => { if (modId) openModuleWindow(String(modId)); });
-ipcMain.on('module:close', (_e, { modId } = {}) => { const w = moduleWindows.get(String(modId)); if (w && !w.isDestroyed()) w.close(); });
-ipcMain.handle('module:openSet', () => ({ ids: [...moduleWindows.keys()] }));
 
 // ── Помодоро: пульт окна модуля управляет движком таймера в main ──────────────────────
 ipcMain.handle('pomodoro:start', (_e, { tech } = {}) => pomoStart(tech));
@@ -3311,17 +3352,17 @@ ipcMain.on('app:settingsChanged', (_e, s) => broadcastToModules('app:settingsCha
 // получил бы эхо своего же изменения и перезагрузил список после каждого клика) + в главное окно (для бейджа
 // счётчика активных задач на квикбаре). Отправитель сам уже знает об изменении и обновляет UI точечно.
 ipcMain.on('app:notesChanged', (e, { id } = {}) => {
-  for (const w of moduleWindows.values()) { if (w && !w.isDestroyed() && w.webContents !== e.sender) w.webContents.send('app:notesChanged', { id }); }
-  if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents !== e.sender) mainWindow.webContents.send('app:notesChanged', { id });
+  for (const w of moduleWindows.values()) { if (w && !w.isDestroyed() && w.webContents !== e.sender) sendTo(w, 'app:notesChanged', { id }); }
+  if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents !== e.sender) sendTo(mainWindow, 'app:notesChanged', { id });
 });
 // Напоминания изменились (Календарь / MCP / пульт) → тем же образом: окнам модулей + главному окну (бейдж).
 ipcMain.on('app:agendaChanged', (e, { id } = {}) => {
-  for (const w of moduleWindows.values()) { if (w && !w.isDestroyed() && w.webContents !== e.sender) w.webContents.send('app:agendaChanged', { id }); }
-  if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents !== e.sender) mainWindow.webContents.send('app:agendaChanged', { id });
+  for (const w of moduleWindows.values()) { if (w && !w.isDestroyed() && w.webContents !== e.sender) sendTo(w, 'app:agendaChanged', { id }); }
+  if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents !== e.sender) sendTo(mainWindow, 'app:agendaChanged', { id });
 });
 
 // ── Действия из окна модуля → переслать редактору (терминал) или окну вивера (файл/дерево) ──
-function forwardToEditor(ch, payload) { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(ch, payload); }
+function forwardToEditor(ch, payload) { sendTo(mainWindow, ch, payload); }
 // Вивер живёт в окне модуля «files». openInViewer/refreshTree маршрутизируем туда (открываем окно при
 // необходимости). Окно может быть не готово принять сообщение сразу после открытия → копим в очередь до
 // сигнала editor:viewerReady (его шлёт module-entry после подписки).
@@ -3333,7 +3374,7 @@ function docWindow() { const w = moduleWindows.get('doc'); return (w && !w.isDes
 function routeOpenInViewer(payload) {
   if (!filesWindow()) openModuleWindow('files'); // откроет окно (и переключит на активный проект)
   const w = filesWindow();
-  if (w && filesViewerReady) w.webContents.send('editor:openInViewer', payload);
+  if (w && filesViewerReady) sendTo(w, 'editor:openInViewer', payload);
   else pendingViewerOpens.push(payload); // флашнем по editor:viewerReady
 }
 ipcMain.on('editor:openInViewer', (_e, payload) => routeOpenInViewer(payload));
@@ -3386,18 +3427,18 @@ ipcMain.handle('rh:fsDownload', async (e, { id, path: p } = {}) => {
   saveState({ lastOpenDir: path.dirname(res.filePath) });
   return { ok: true, file: res.filePath };
 });
-ipcMain.on('editor:refreshTree', (_e, payload) => { const w = filesWindow(); if (w) w.webContents.send('editor:refreshTree', payload); });
+ipcMain.on('editor:refreshTree', (_e, payload) => { const w = filesWindow(); if (w) sendTo(w, 'editor:refreshTree', payload); });
 // «Git» из редактора: открыть окно вивера (если закрыто) и переключить его на секцию «Коммит».
 ipcMain.on('editor:focusGit', () => {
   if (!filesWindow()) openModuleWindow('files');
   const w = filesWindow();
-  if (w && filesViewerReady) { if (w.isMinimized()) w.restore(); w.focus(); w.webContents.send('editor:focusGit'); }
+  if (w && filesViewerReady) { if (w.isMinimized()) w.restore(); w.focus(); sendTo(w, 'editor:focusGit'); }
   else pendingFocusGit = true;
 });
 ipcMain.on('editor:viewerReady', () => {
   filesViewerReady = true;
-  while (pendingViewerOpens.length) { const p = pendingViewerOpens.shift(); const w = filesWindow(); if (w) w.webContents.send('editor:openInViewer', p); }
-  if (pendingFocusGit) { pendingFocusGit = false; const w = filesWindow(); if (w) { w.focus(); w.webContents.send('editor:focusGit'); } }
+  while (pendingViewerOpens.length) { const p = pendingViewerOpens.shift(); const w = filesWindow(); if (w) sendTo(w, 'editor:openInViewer', p); }
+  if (pendingFocusGit) { pendingFocusGit = false; const w = filesWindow(); if (w) { w.focus(); sendTo(w, 'editor:focusGit'); } }
 });
 // «Контейнеры» → «Базы данных»: открыть окно модуля БД с заготовкой подключения из контейнера.
 // Паттерн тот же, что у вивера выше: окно может быть не готово сразу → очередь до db:panelReady.
@@ -3408,14 +3449,14 @@ ipcMain.on('db:openFromContainer', (_e, payload) => {
   if (!payload || typeof payload !== 'object') return;
   if (!dbModWindow()) openModuleWindow('db');
   const w = dbModWindow();
-  if (w && dbPanelReady) { if (w.isMinimized()) w.restore(); w.focus(); w.webContents.send('db:openFromContainer', payload); }
+  if (w && dbPanelReady) { if (w.isMinimized()) w.restore(); w.focus(); sendTo(w, 'db:openFromContainer', payload); }
   else pendingDbOpens.push(payload);
 });
 ipcMain.on('db:panelReady', () => {
   dbPanelReady = true;
   const w = dbModWindow();
-  while (w && pendingDbOpens.length) { w.focus(); w.webContents.send('db:openFromContainer', pendingDbOpens.shift()); }
-  while (w && pendingDbSql.length) { w.focus(); w.webContents.send('db:openSql', pendingDbSql.shift()); }
+  while (w && pendingDbOpens.length) { w.focus(); sendTo(w, 'db:openFromContainer', pendingDbOpens.shift()); }
+  while (w && pendingDbSql.length) { w.focus(); sendTo(w, 'db:openSql', pendingDbSql.shift()); }
 });
 // Вивер → «Базы данных»: выполнить SQL на выбранном подключении (та же очередь до готовности окна).
 const pendingDbSql = [];
@@ -3423,7 +3464,7 @@ ipcMain.on('db:openSql', (_e, payload) => {
   if (!payload || typeof payload !== 'object') return;
   if (!dbModWindow()) openModuleWindow('db');
   const w = dbModWindow();
-  if (w && dbPanelReady) { if (w.isMinimized()) w.restore(); w.focus(); w.webContents.send('db:openSql', payload); }
+  if (w && dbPanelReady) { if (w.isMinimized()) w.restore(); w.focus(); sendTo(w, 'db:openSql', payload); }
   else pendingDbSql.push(payload);
 });
 // «Контейнеры» → «RabbitMQ»: тот же паттерн, что и с БД выше.
@@ -3434,7 +3475,7 @@ ipcMain.on('rmq:openFromContainer', (_e, payload) => {
   if (!payload || typeof payload !== 'object') return;
   if (!rmqModWindow()) openModuleWindow('rmq');
   const w = rmqModWindow();
-  if (w && rmqPanelReady) { if (w.isMinimized()) w.restore(); w.focus(); w.webContents.send('rmq:openFromContainer', payload); }
+  if (w && rmqPanelReady) { if (w.isMinimized()) w.restore(); w.focus(); sendTo(w, 'rmq:openFromContainer', payload); }
   else pendingRmqOpens.push(payload);
 });
 // «Контейнеры» → «Внешние хранилища» (MinIO): тот же паттерн, что и с БД/RabbitMQ.
@@ -3445,18 +3486,18 @@ ipcMain.on('st:openFromContainer', (_e, payload) => {
   if (!payload || typeof payload !== 'object') return;
   if (!stModWindow()) openModuleWindow('storage');
   const w = stModWindow();
-  if (w && stPanelReady) { if (w.isMinimized()) w.restore(); w.focus(); w.webContents.send('st:openFromContainer', payload); }
+  if (w && stPanelReady) { if (w.isMinimized()) w.restore(); w.focus(); sendTo(w, 'st:openFromContainer', payload); }
   else pendingStOpens.push(payload);
 });
 ipcMain.on('st:panelReady', () => {
   stPanelReady = true;
   const w = stModWindow();
-  while (w && pendingStOpens.length) { w.focus(); w.webContents.send('st:openFromContainer', pendingStOpens.shift()); }
+  while (w && pendingStOpens.length) { w.focus(); sendTo(w, 'st:openFromContainer', pendingStOpens.shift()); }
 });
 ipcMain.on('rmq:panelReady', () => {
   rmqPanelReady = true;
   const w = rmqModWindow();
-  while (w && pendingRmqOpens.length) { w.focus(); w.webContents.send('rmq:openFromContainer', pendingRmqOpens.shift()); }
+  while (w && pendingRmqOpens.length) { w.focus(); sendTo(w, 'rmq:openFromContainer', pendingRmqOpens.shift()); }
 });
 // «Контейнеры» → «Kafka»: тот же паттерн, что и с БД/RabbitMQ выше.
 let kafkaPanelReady = false;
@@ -3466,20 +3507,20 @@ ipcMain.on('kafka:openFromContainer', (_e, payload) => {
   if (!payload || typeof payload !== 'object') return;
   if (!kafkaModWindow()) openModuleWindow('kafka');
   const w = kafkaModWindow();
-  if (w && kafkaPanelReady) { if (w.isMinimized()) w.restore(); w.focus(); w.webContents.send('kafka:openFromContainer', payload); }
+  if (w && kafkaPanelReady) { if (w.isMinimized()) w.restore(); w.focus(); sendTo(w, 'kafka:openFromContainer', payload); }
   else pendingKafkaOpens.push(payload);
 });
 ipcMain.on('kafka:panelReady', () => {
   kafkaPanelReady = true;
   const w = kafkaModWindow();
-  while (w && pendingKafkaOpens.length) { w.focus(); w.webContents.send('kafka:openFromContainer', pendingKafkaOpens.shift()); }
+  while (w && pendingKafkaOpens.length) { w.focus(); sendTo(w, 'kafka:openFromContainer', pendingKafkaOpens.shift()); }
 });
 ipcMain.on('editor:sendToTerminal', (_e, payload) => forwardToEditor('editor:sendToTerminal', payload));
 // «Пропустить отдых» с оверлея в окне редактора → пропустить текущую фазу помодоро (движок в main).
 ipcMain.on('editor:pomodoroSkip', () => { if (POMO.running) pomoAdvance(); });
 ipcMain.on('editor:sendNoteToTerminal', (_e, payload) => forwardToEditor('editor:sendNoteToTerminal', payload));
 // Окно вивера (встроенный Git) попросило редактор перерисовать список проектов (git-бейджи после commit/checkout).
-ipcMain.on('editor:refreshProjects', () => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('editor:refreshProjects'); });
+ipcMain.on('editor:refreshProjects', () => { sendTo(mainWindow, 'editor:refreshProjects'); });
 
 // Reflect how many agents need attention on the tray tooltip (and macOS title).
 let trayAttention = 0;
@@ -3881,7 +3922,7 @@ ipcMain.handle('keepass:add', async (_e, { title, username, password, url, notes
     if (notes) en.fields.set('Notes', String(notes));
     try { fs.copyFileSync(kpDbFile, kpDbFile + '.lite-bak'); } catch (_) {} // best-effort бэкап
     const ab = await kpDb.save();
-    fs.writeFileSync(kpDbFile, Buffer.from(ab));
+    atomicWriteSync(kpDbFile, Buffer.from(ab));   // не обычный writeFile: обрыв посреди записи убил бы .kdbx целиком
     kpListEntries(); // перестроить карту id → entry (включая новую запись)
     return { ok: true };
   } catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
@@ -3895,7 +3936,7 @@ ipcMain.handle('keepass:add', async (_e, { title, username, password, url, notes
 let ssLast = Date.now();
 let ssActive = false;
 function ssConfig() { const s = readStoreKey('settings') || {}; return { on: s.screensaver !== false, mins: Math.max(1, Math.min(180, Number(s.screensaverMins) || 5)) }; }
-function ssSet(on) { ssActive = on; if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('screensaver:set', { on }); }
+function ssSet(on) { ssActive = on; sendTo(mainWindow, 'screensaver:set', { on }); }
 ipcMain.on('screensaver:activity', () => { ssLast = Date.now(); if (ssActive) ssSet(false); });
 const ssTimer = setInterval(() => {
   const { on, mins } = ssConfig();
@@ -4161,8 +4202,8 @@ function smPublic() { return smTargets.map((t) => ({ id: t.id, name: t.name, url
 function smPersist() { try { writeStoreKey('siteMon', smTargets.map(smTargetPersist)); } catch (_) {} }
 function smBroadcast() {
   const p = smPublic();
-  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('sitemon:update', p);
-  for (const w of moduleWindows.values()) { if (w && !w.isDestroyed()) w.webContents.send('sitemon:update', p); }
+  sendTo(mainWindow, 'sitemon:update', p);
+  for (const w of moduleWindows.values()) { sendTo(w, 'sitemon:update', p); }
 }
 function smMigrateOld(s) {
   const url = smNormUrl(s.url) || String(s.url || '');
@@ -4291,6 +4332,7 @@ ipcMain.handle('fs:readDir', async (_e, dir) => {
     }));
     return out
       .filter((e) => !(e.dir && IGNORE_DIRS.has(e.name)))
+      .filter((e) => !(!e.dir && e.name.endsWith(WRITE_TMP_SUFFIX)))   // сосед атомарной записи — живёт миллисекунды
       .sort((a, b) => (a.dir === b.dir ? a.name.localeCompare(b.name) : a.dir ? -1 : 1));
   } catch (err) { return { error: String(err.message || err) }; }
 });
@@ -4303,10 +4345,38 @@ ipcMain.handle('fs:readFile', async (_e, file) => {
     return { content: await fs.promises.readFile(file, 'utf8') };
   } catch (err) { return { error: String(err.message || err) }; }
 });
+// Запись файла ЧЕЛОВЕКА: во временный файл-сосед, потом rename(2) поверх цели. rename атомарен в
+// пределах одной ФС, поэтому краш редактора, kill или выключение питания посреди записи больше не
+// оставляют обрезанный файл: на диске либо старая версия целиком, либо новая целиком. Обычный
+// writeFile сначала обнуляет файл ('w'), и вивер пишет так каждые 400 мс автосейва — окно потери
+// открыто постоянно.
+//   • Права цели сохраняем: иначе исполняемый скрипт после сохранения терял бы +x.
+//   • Симлинк резолвим (как в atomicWriteSync): rename поверх ссылки заменил бы саму ссылку файлом.
+//   • Каталог только на чтение (соседа не создать) — честный фолбэк на прямую запись, как было.
+//     На ENOSPC фолбэка НЕТ: там прямая запись как раз и обрезала бы файл.
+const WRITE_FALLBACK_CODES = new Set(['EACCES', 'EPERM', 'EROFS', 'EXDEV', 'ENOTDIR']);
+async function writeFileCrashSafe(file, content) {
+  let target = file;
+  try { if ((await fs.promises.lstat(file)).isSymbolicLink()) target = await fs.promises.realpath(file); } catch (_) {}
+  let mode; try { mode = (await fs.promises.stat(target)).mode & 0o777; } catch (_) {}
+  // Хвост уникален на вызов: два окна, сохраняющих ОДИН файл одновременно, иначе делили бы один
+  // и тот же временный файл и второй rename падал бы на пустом месте.
+  const tmp = path.join(path.dirname(target),
+    '.' + path.basename(target) + '.' + Math.random().toString(36).slice(2, 8) + WRITE_TMP_SUFFIX);
+  try {
+    await fs.promises.writeFile(tmp, content, mode == null ? 'utf8' : { encoding: 'utf8', mode });
+    if (mode != null) { try { await fs.promises.chmod(tmp, mode); } catch (_) {} }  // сосед от прошлого краха: { mode } его не переоткрывает
+    await fs.promises.rename(tmp, target);
+  } catch (e) {
+    try { await fs.promises.unlink(tmp); } catch (_) {}
+    if (!WRITE_FALLBACK_CODES.has(e && e.code)) throw e;
+    await fs.promises.writeFile(target, content, 'utf8');
+  }
+}
 ipcMain.handle('fs:writeFile', async (_e, { file, content }) => {
   try {
     await histSnapshotFromDisk(file, 'save');   // локальная история: состояние ДО записи (best-effort)
-    await fs.promises.writeFile(file, content, 'utf8');
+    await writeFileCrashSafe(file, content);
     // tmp-копия удалённого файла (открыт из «Удалённых хостов») → залить обратно на хост.
     // Локальная запись удалась в любом случае; упавшая заливка = честная ошибка сохранения
     // (вивер оставит dirty-точку и покажет тост), чтобы правка не «потерялась» молча.
@@ -4511,7 +4581,7 @@ ipcMain.handle('files:replace', async (_e, { root, query, opts, replacement, tar
     if (!touched) continue;
     try {
       await histSnapshot(full, text, 'save');       // локальная история: состояние до замены
-      await fs.promises.writeFile(full, rows.join('\n'), 'utf8');
+      await writeFileCrashSafe(full, rows.join('\n'));   // как и вивер: обрыв не оставляет обрезанный файл
       files++; lines += touched;
     } catch (err) { return { error: String(err.message || err) + ' (' + t.file + ')', files, lines }; }
   }
@@ -4593,9 +4663,9 @@ ipcMain.handle('hist:read', async (_e, { file, name } = {}) => {
 const isIgnoredPath = (rel) => rel.split(/[\\/]/).some((seg) => IGNORE_DIRS.has(seg));
 // Сообщить окнам (редактор + вивер), что слежение за деревом отвалилось → ручной ⟳ (идея 11).
 function notifyWatchEnded(root) {
-  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('fs:watchEnded', { root });
-  const fw = filesWindow(); if (fw) fw.webContents.send('fs:watchEnded', { root });
-  const dw = docWindow(); if (dw) dw.webContents.send('fs:watchEnded', { root });
+  sendTo(mainWindow, 'fs:watchEnded', { root });
+  const fw = filesWindow(); if (fw) sendTo(fw, 'fs:watchEnded', { root });
+  const dw = docWindow(); if (dw) sendTo(dw, 'fs:watchEnded', { root });
 }
 ipcMain.on('fs:watch', (_e, root) => {
   if (!root || watchers.has(root) || !fs.existsSync(root)) return;
@@ -4608,13 +4678,14 @@ ipcMain.on('fs:watch', (_e, root) => {
   watcher.on('change', (_type, filename) => {
     const rel = filename == null ? '' : String(filename);
     if (rel && isIgnoredPath(rel)) return;
+    if (rel.endsWith(WRITE_TMP_SUFFIX)) return;        // временный сосед атомарной записи — не наш файл
     if (rel) rec.pending.add(path.join(root, rel));
     clearTimeout(rec.timer);
     rec.timer = setTimeout(() => {
       const files = [...rec.pending]; rec.pending.clear();
-      if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('fs:changed', { root, files });
-      const fw = filesWindow(); if (fw) fw.webContents.send('fs:changed', { root, files }); // окно вивера обновляет дерево/файл
-      const dw = docWindow(); if (dw) dw.webContents.send('fs:changed', { root, files }); // «Обработка текста»: сайдбар-дерево
+      sendTo(mainWindow, 'fs:changed', { root, files });
+      const fw = filesWindow(); if (fw) sendTo(fw, 'fs:changed', { root, files }); // окно вивера обновляет дерево/файл
+      const dw = docWindow(); if (dw) sendTo(dw, 'fs:changed', { root, files }); // «Обработка текста»: сайдбар-дерево
       // локальная история: внешняя правка (агент/git). Большая пачка = массовая операция — шум, пропускаем.
       if (files.length <= HIST_BATCH_CAP) for (const f of files) histSnapshotFromDisk(f, 'ext');
     }, 180);
@@ -4847,7 +4918,6 @@ ipcMain.handle('iterflow:deleteTask', ifWrap((_e, { id }) => iterflowApi.deleteT
 ipcMain.handle('iterflow:createNote', ifWrap((_e, { projectId, body }) => iterflowApi.createNote(projectId, body)));
 ipcMain.handle('iterflow:updateNote', ifWrap((_e, { noteId, body }) => iterflowApi.updateNote(noteId, body)));
 ipcMain.handle('iterflow:deleteNote', ifWrap((_e, { noteId }) => iterflowApi.deleteNote(noteId)));
-ipcMain.handle('iterflow:reorderNotes', ifWrap((_e, { projectId, ids }) => iterflowApi.reorderNotes(projectId, ids)));
 
 ipcMain.handle('audit:scan', async (_e, { root, opts }) => {
   if (!root || !fs.existsSync(root)) return { error: 'Нет каталога проекта' };
@@ -5627,7 +5697,14 @@ ipcMain.handle('git:log', async (_e, { root, limit } = {}) => {
 });
 ipcMain.handle('git:checkout', async (_e, { root, branch }) => gitRun(root, ['checkout', branch]));
 ipcMain.handle('git:fetch', async (_e, root) => gitRun(root, ['fetch', '--all', '--prune']));
-ipcMain.handle('git:discardFile', async (_e, { root, file }) => gitRun(root, ['checkout', '--', file]));
+// Откат правок — тоже перезапись файла рукой редактора, значит по контракту локальной истории
+// (см. histSnapshot) состояние ДО неё надо снять: `git checkout --` стирает несохранённую в
+// коммит работу насовсем, вернуть её больше неоткуда. Вотчер снимет уже ОТКАЧЕННОЕ содержимое —
+// поздно. Троттл истории (45 с) сам решит, нужен ли ещё один снимок.
+ipcMain.handle('git:discardFile', async (_e, { root, file }) => {
+  await histSnapshotFromDisk(path.isAbsolute(file) ? file : path.join(root, file), 'save');
+  return gitRun(root, ['checkout', '--', file]);
+});
 // Update a branch from its upstream WITHOUT checkout (fast-forward of the local ref).
 // Current branch can't be ff-fetched into → use pull --ff-only instead.
 ipcMain.handle('git:branchUpdate', async (_e, { root, branch, current }) => {
@@ -5744,7 +5821,17 @@ ipcMain.handle('git:pull', async (_e, root) => gitRun(root, ['pull', '--ff-only'
 // Stash including untracked (-u) so a quick "спрятать всё" doesn't leave new files behind.
 ipcMain.handle('git:stash', async (_e, root) => gitRun(root, ['stash', 'push', '-u']));
 // Revert tracked edits only ('checkout -- .'); untracked files are deliberately kept (no -fd clean).
-ipcMain.handle('git:discardAll', async (_e, root) => gitRun(root, ['checkout', '--', '.']));
+// «Откатить всё» — самая разрушительная кнопка в редакторе: снимаем историю по каждому
+// изменённому отслеживаемому файлу. Лимит — чтобы откат на тысяче файлов не встал колом.
+const DISCARD_HIST_CAP = 60;
+ipcMain.handle('git:discardAll', async (_e, root) => {
+  const out = await git(root, ['diff', '--name-only']);
+  if (out) {
+    for (const rel of out.split('\n').map((x) => x.trim()).filter(Boolean).slice(0, DISCARD_HIST_CAP))
+      await histSnapshotFromDisk(path.join(root, rel), 'save');
+  }
+  return gitRun(root, ['checkout', '--', '.']);
+});
 
 // C18: откатить один ханк правок агента — reverse-apply минимального патча к рабочему дереву.
 ipcMain.handle('git:revertHunk', async (_e, { root, patch } = {}) => {
@@ -5918,6 +6005,7 @@ ipcMain.handle('git:branchDiffWorktree', async (_e, { root, branch } = {}) => {
 // (rh:sockTunnel), все CLI-вызовы идут с DOCKER_HOST/CONTAINER_HOST=tcp://127.0.0.1:<port>.
 // Контекст один на процесс (окно «Контейнеры» одно на тип); opts.local=true обходит подмену.
 let containersRemote = null; // { rhId, name, tunId, port, cli, sockPath }
+let containersTunnelFix = null; // обещание переподнятия туннеля — чтобы параллельные опросы не плодили туннели
 function cRemoteCtx(cli, baseEnv) {
   if (!containersRemote) return { cli, env: undefined };
   const env = { ...(baseEnv || process.env) };
@@ -6146,9 +6234,18 @@ ipcMain.handle('containers:list', async (_e, { engine, light } = {}) => {
   // Удалённый контекст: SSH мог мигнуть и унести туннель (ssh.on('close') прибирает запись) —
   // самовосстановление на ближайшем полле, чтобы не заставлять пользователя перевыбирать хост.
   if (containersRemote && !rhApi.tunnelAlive(containersRemote.tunId)) {
-    const t = await rhApi.sockTunnel(containersRemote.rhId, containersRemote.sockPath, 'containers: ' + containersRemote.name);
-    if (t.ok) { containersRemote.tunId = t.tunId; containersRemote.port = t.port; }
-    else return { containers: { error: `SSH-туннель к «${containersRemote.name}» оборвался и не восстановился: ` + (t.error || '') } };
+    // Переподнимаем ОДИН раз на всех: список запрашивает и опрос (раз в 3 с), и кнопка «Обновить»,
+    // а коннект по SSH идёт секундами — без этой защёлки каждый вызов, пришедший за время
+    // переподключения, поднимал бы свой туннель. Запись хранит только последний, остальные
+    // оставались бы висеть навсегда: живое SSH-соединение и занятый локальный порт.
+    if (!containersTunnelFix) {
+      const rc = containersRemote;
+      containersTunnelFix = rhApi.sockTunnel(rc.rhId, rc.sockPath, 'containers: ' + rc.name)
+        .then((t) => { if (t.ok && containersRemote === rc) { rc.tunId = t.tunId; rc.port = t.port; } return t; })
+        .finally(() => { containersTunnelFix = null; });
+    }
+    const t = await containersTunnelFix;
+    if (!t.ok) return { containers: { error: `SSH-туннель к «${containersRemote.name}» оборвался и не восстановился: ` + (t.error || '') } };
   }
   // Light path = the live poll: only the fast, frequently-changing data (containers + pods). Skips the heavy
   // `system df` (storage scan, ~1s) and images/volumes so a 3s poll doesn't churn the disk. The renderer

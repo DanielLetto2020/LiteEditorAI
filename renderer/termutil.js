@@ -7,14 +7,26 @@ import { Unicode11Addon } from '@xterm/addon-unicode11';
 const lite = window.lite;
 
 // Real GPU (not swiftshader/llvmpipe/mesa-offscreen) → WebGL renderer is safe & smooth.
+// Ответ не меняется в пределах сессии, поэтому считаем его ОДИН раз, а контекст пробы сразу
+// отпускаем: живых WebGL-контекстов на вкладку немного (порядка 16), и xterm забирает свой на
+// КАЖДЫЙ терминал. Раньше проба выполнялась на каждое создание терминала и оставляла свой
+// контекст висеть до сборки мусора — десяток вкладок выедал лимит, браузер начинал гасить
+// самые старые контексты, и живые терминалы теряли WebGL-рендерер.
+let hwWebgl = null;
 export function isHardwareWebgl() {
+  if (hwWebgl !== null) return hwWebgl;
+  hwWebgl = false;
   try {
-    const gl = document.createElement('canvas').getContext('webgl2') || document.createElement('canvas').getContext('webgl');
-    if (!gl) return false;
-    const dbg = gl.getExtension('WEBGL_debug_renderer_info');
-    const r = dbg ? String(gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL)) : '';
-    return !/swiftshader|llvmpipe|software|mesa offscreen/i.test(r);
-  } catch (_) { return false; }
+    const canvas = document.createElement('canvas');
+    const gl = canvas.getContext('webgl2') || canvas.getContext('webgl');
+    if (gl) {
+      const dbg = gl.getExtension('WEBGL_debug_renderer_info');
+      const r = dbg ? String(gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL)) : '';
+      hwWebgl = !/swiftshader|llvmpipe|software|mesa offscreen/i.test(r);
+      try { const lose = gl.getExtension('WEBGL_lose_context'); if (lose) lose.loseContext(); } catch (_) {}
+    }
+  } catch (_) { hwWebgl = false; }
+  return hwWebgl;
 }
 
 // Fast xterm renderer: WebGL on real GPU (smooth scroll), else Canvas. Both beat the default DOM

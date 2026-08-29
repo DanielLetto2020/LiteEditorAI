@@ -58,21 +58,39 @@ function flush() {
   if (writeTimer) { clearTimeout(writeTimer); writeTimer = null; }
   try {
     const str = serialize();
-    const tmp = file + '.tmp';
+    // Имя уникально по процессу: errors.json пишет и редактор, и (по документированной схеме)
+    // агент из своего процесса — с общим `X.tmp` две записи слились бы в одну мешанину.
+    const tmp = file + '.' + process.pid + '.tmp';
     fs.writeFileSync(tmp, str);
     fs.renameSync(tmp, file);     // атомарно: читатель видит либо старое, либо новое
     lastWritten = str;
   } catch (_) {}
 }
-function scheduleWrite() {
+// Уведомление подписчиков — ТОЛЬКО когда изменилось то, что видно читателю (новая запись,
+// смена статуса, регрессия, срезка по лимиту). Голый count++ на уже известной сигнатуре на диск
+// уходит, а событие не поднимает.
+//
+// Почему это важно: единственный подписчик (main.js) шлёт «errors:changed» в окно редактора.
+// Если фрейм окна снесён, Electron сам пишет в консоль «Error sending from webFrameMain», логгер
+// превращает это в ERROR, ERROR попадает СЮДА — и через 700 мс событие уходит снова. Получался
+// вечный цикл: запись errors.json и строка в логе каждые 0.7 с до конца работы редактора.
+// Шапка модуля обещала «сам никогда не логирует → нет рекурсии», но рекурсия шла не через
+// логгер, а через колбэк наружу.
+let pendingNotify = false;
+function scheduleWrite(material) {
+  if (material) pendingNotify = true;
   if (writeTimer) return;
-  writeTimer = setTimeout(() => { writeTimer = null; flush(); fireChange(); }, WRITE_DEBOUNCE_MS);
+  writeTimer = setTimeout(() => {
+    writeTimer = null; flush();
+    if (pendingNotify) { pendingNotify = false; fireChange(); }
+  }, WRITE_DEBOUNCE_MS);
   if (writeTimer.unref) writeTimer.unref();
 }
 
+// Возвращает true, если что-то удалила (для читателя это видимое изменение).
 function enforceCap() {
   const ids = Object.keys(data.entries);
-  if (ids.length <= MAX_ENTRIES) return;
+  if (ids.length <= MAX_ENTRIES) return false;
   const arr = ids.map((id) => data.entries[id]).sort((a, b) => {
     const rank = (e) => (e.status === 'open' ? 1 : 0); // не-open кандидаты на удаление первыми
     if (rank(a) !== rank(b)) return rank(a) - rank(b);
@@ -80,6 +98,7 @@ function enforceCap() {
   });
   const over = ids.length - MAX_ENTRIES;
   for (let i = 0; i < over; i++) delete data.entries[arr[i].id];
+  return true;
 }
 
 // Вызывается из logger.write() на каждый warn/error/fatal. Дёшево и не бросает.
@@ -92,16 +111,19 @@ function record(rec = {}) {
   const id = idOf(sigOf(src, lvl, msg));
   const now = Date.now();
   let e = data.entries[id];
+  let material = false;                       // видимое читателю изменение, а не просто +1 к счётчику
   if (!e) {
     e = data.entries[id] = { id, sig: sigOf(src, lvl, msg), level: lvl, source: src, sample: msg.slice(0, 600),
       project: currentProject, firstSeen: now, lastSeen: now, count: 0, status: 'open',
       note: null, commit: null, resolvedAt: null, regressed: false };
+    material = true;
   }
+  if (e.level !== lvl) material = true;
   e.count++; e.lastSeen = now; e.sample = msg.slice(0, 600); e.level = lvl;
   if (currentProject) e.project = currentProject;
-  if (e.status === 'resolved') { e.status = 'open'; e.regressed = true; e.resolvedAt = null; } // регрессия
-  enforceCap();
-  scheduleWrite();
+  if (e.status === 'resolved') { e.status = 'open'; e.regressed = true; e.resolvedAt = null; material = true; } // регрессия
+  if (enforceCap()) material = true;
+  scheduleWrite(material);
 }
 
 function list() {

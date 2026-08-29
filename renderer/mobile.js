@@ -1862,7 +1862,6 @@ function start(config) {
   try {
     $('lg-go').onclick = submitAuth;
     $('lg-pass').addEventListener('keydown', (e) => { if (e.key === 'Enter') submitAuth(); });
-    const lo = $('logout'); if (lo) lo.onclick = logout;
     // Шапка: версия справа + меню (Аккаунт, Логи).
     const ver = $('top-ver'); if (ver) ver.textContent = window.PULT_VER || '';
     const lver = $('login-ver'); if (lver && window.PULT_VER) lver.textContent = 'пульт v' + window.PULT_VER;   // версия на экране входа из единого источника
