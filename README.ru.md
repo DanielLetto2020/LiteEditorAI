@@ -229,7 +229,7 @@ npm start          # сборка фронта + запуск
 Проект развивается в том числе благодаря сообществу — спасибо каждому, кто помогает.
 
 **За pull request'ы**
-- [@Ainour108](https://github.com/Ainour108) — редизайн модуля «Обработка текста»: сайдбар с деревом документов, вкладки, живой стриминг ответа агента, нативные диалоги файлов ([#6](https://github.com/DanielLetto2020/LiteEditorAI/pull/6))
+- [@Ainour108](https://github.com/Ainour108) — редизайн модуля «Обработка текста»: сайдбар с деревом документов, вкладки, живой стриминг ответа агента, нативные диалоги файлов ([#6](https://github.com/DanielLetto2020/LiteEditorAI/pull/6)), режим «Агент», скрепка-контекст, вкладка «Содержание», настраиваемый список агентов и починка масштаба страницы ([#10](https://github.com/DanielLetto2020/LiteEditorAI/pull/10))
 - [@anupamme](https://github.com/anupamme) — эндпоинт `/reports` релея переведён с секрета в строке запроса на заголовок `Authorization` ([#9](https://github.com/DanielLetto2020/LiteEditorAI/pull/9))
 
 **За баг-репорты**

@@ -227,7 +227,7 @@ interface into your language means editing a single JSON — no build, no code.
 The project grows in no small part thanks to the community — thank you to everyone who helps.
 
 **For pull requests**
-- [@Ainour108](https://github.com/Ainour108) — redesign of the "Text processing" module: document-tree sidebar, tabs, live streaming of the agent's answer, native file dialogs ([#6](https://github.com/DanielLetto2020/LiteEditorAI/pull/6))
+- [@Ainour108](https://github.com/Ainour108) — redesign of the "Text processing" module: document-tree sidebar, tabs, live streaming of the agent's answer, native file dialogs ([#6](https://github.com/DanielLetto2020/LiteEditorAI/pull/6)), the "Agent" mode, context paperclip, the "Outline" tab, a configurable agent list and page-zoom fixes ([#10](https://github.com/DanielLetto2020/LiteEditorAI/pull/10))
 - [@anupamme](https://github.com/anupamme) — the relay's `/reports` endpoint moved from a query-string secret to an `Authorization` header ([#9](https://github.com/DanielLetto2020/LiteEditorAI/pull/9))
 
 **For bug reports**
