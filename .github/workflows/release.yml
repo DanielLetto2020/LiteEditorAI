@@ -17,7 +17,7 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-            target: --linux deb
+            target: --linux deb tar.gz
           - os: windows-latest
             target: --win zip
           # macOS: ОДИН arm64-раннер (macos-14) собирает ОБЕ архитектуры — build.mac.target жёстко задаёт
@@ -61,6 +61,7 @@ jobs:
           body_path: RELEASE_NOTES.md        # тело релиза — из файла в репо (единый источник, см. CHANGELOG.md)
           files: |
             dist-release/*.deb
+            dist-release/*.tar.gz
             dist-release/*.zip
             dist-release/*.dmg
         env:

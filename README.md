@@ -95,10 +95,17 @@ Prebuilt binaries live on the [**Releases**](https://github.com/DanielLetto2020/
 
 | OS | How |
 |---|---|
-| **Ubuntu / Debian** (x64) | `sudo apt install ./LiteEditorAI_*.deb` |
+| **Ubuntu / Debian** (x64) | `sudo apt install ./LiteEditorAI_*.deb` — system-wide install; updates ask for the administrator password once. |
+| **Linux portable** (x64) | Download `LiteEditorAI-*-linux-x64.tar.gz`, unpack it anywhere in your home directory, run `liteeditor-ai`. No root, and **updates apply in one click**. |
 | **Windows** (x64) | Download `LiteEditorAI_*-win.zip`, unpack anywhere, run `LiteEditorAI.exe`. No installer. Unsigned, so SmartScreen may warn: *More info → Run anyway*. |
 | **macOS** (arm64 / x64) | Download the matching `.dmg` (`-arm64` for M1–M4, `-x64` for Intel) and drag the app to Applications. Ad-hoc build without an Apple signature, so on first launch: *System Settings → Privacy & Security → Open anyway* (or `xattr -dr com.apple.quarantine /Applications/LiteEditorAI.app`). |
 | **From source** | `npm install && npm start` (Node.js 22+) |
+
+**Updating is one click.** The editor checks GitHub Releases in the background, downloads the new version
+and shows a **Restart** badge in the title bar: press it and the editor closes and reopens already updated —
+no visit to the download page. The portable builds (Linux `tar.gz`, Windows `zip`, macOS `.app`) update
+without any password; the `.deb` install asks for the administrator password once, because it lives in a
+system directory. Update mode is in **Settings → Updates**.
 
 ## And 20+ tool modules, so you don't leave the workspace
 

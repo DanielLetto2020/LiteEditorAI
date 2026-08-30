@@ -26,6 +26,7 @@ const logger = require('./logger');
 const { safeChildName } = require('./lib/safe-name'); // анти-traversal для имён папок/файлов
 const { resolveShell: resolveShellPure } = require('./lib/shell'); // выбор оболочки терминала
 const syncmark = require('./lib/sync');   // метка «sync» в плашке: что домашняя машина держит в синхронизации с сервером
+const updater = require('./lib/updater');  // самообновление: проверка релиза, загрузка, подмена каталога
 
 app.setName('LiteEditorAI');
 app.setAppUserModelId('com.mletto.liteeditorai'); // Windows: имя/иконка/группировка в панели задач и уведомлениях
@@ -596,32 +597,151 @@ ipcMain.handle('openrouter:models', async (_e, { key } = {}) => {
     req.end();
   });
 });
-// Update check: query the GitHub Releases API for the latest published release
-// and return its tag/notes/url. Public repo → no token needed. The renderer
-// compares the tag with APP_VERSION and shows an «update available» badge next
-// to the version label. Never throws — resolves {error} so the UI degrades quietly.
-const GH_REPO = 'DanielLetto2020/LiteEditorAI';
+// ---------------------------------------------------------------- обновление приложения
+// Самообновление «как в мессенджере»: плашка в шапке → загрузка в фоне → «Перезапустить» →
+// приложение закрывается и открывается уже новой версией. Механика подмены каталога и выбора
+// файла релиза живёт в lib/updater.js (там же объяснено, почему не electron-updater).
+//
+// Здесь — только состояние процесса и его трансляция в окно: рендерер ничего не качает и не
+// распаковывает сам, он лишь показывает фазу. Состояние держим в main, потому что загрузка не
+// должна прерываться перезагрузкой рендерера (F5, падение фрейма) — файл в 150 МБ качается долго.
+// phase: idle | available | downloading | ready | installing
+let updState = { phase: 'idle', pct: 0 };
+let updAbort = null;   // { onAbort } — заполняет lib/updater при активной загрузке
+let updStaged = null;  // { tag, file, root } — что уже скачано и распаковано, готово к применению
+
+function updSet(patch) {
+  updState = { ...updState, ...patch };
+  // Плашка живёт в главном окне, но состояние шлём во все — окно модуля тоже может его показать.
+  sendTo(mainWindow, 'update:state', updState);
+  for (const w of moduleWindows.values()) sendTo(w, 'update:state', updState);
+}
+
+// Сведения об установке считаем один раз: тип дистрибутива и права на каталог за время работы
+// приложения не меняются (а если бы менялись — обновляться посреди этого всё равно нельзя).
+let updInstall = null;
+function updInstallInfo() {
+  if (!updInstall) {
+    updInstall = updater.describeInstall({
+      platform: process.platform, execPath: process.execPath, isPackaged: app.isPackaged,
+    });
+    logger.log('info', 'update', `установка: ${updInstall.kind}, самообновление: ${updInstall.canSelfUpdate ? 'да' : 'нет'}${updInstall.reason ? ' (' + updInstall.reason + ')' : ''}`);
+  }
+  return updInstall;
+}
+
+// Проверка обновления. Публичный репозиторий → токен не нужен. Никогда не бросает: отдаёт {error},
+// чтобы фоновая проверка при старте молча ничего не делала, когда сети нет.
 ipcMain.handle('update:check', async () => {
-  return await new Promise((resolve) => {
-    const req = https.request(
-      `https://api.github.com/repos/${GH_REPO}/releases/latest`,
-      { method: 'GET', headers: { 'User-Agent': 'LiteEditorAI', 'Accept': 'application/vnd.github+json' } },
-      (res) => {
-        let data = '';
-        res.on('data', (c) => { data += c; });
-        res.on('end', () => {
-          try {
-            const j = JSON.parse(data);
-            if (res.statusCode >= 400) return resolve({ error: j.message || ('HTTP ' + res.statusCode) });
-            resolve({ tag: j.tag_name || '', name: j.name || '', notes: j.body || '', url: j.html_url || '' });
-          } catch (_) { resolve({ error: 'Не удалось разобрать ответ GitHub' }); }
-        });
-      },
-    );
-    req.on('error', (e) => resolve({ error: String(e.message || e) }));
-    req.setTimeout(15000, () => { req.destroy(); resolve({ error: 'таймаут проверки обновления' }); });
-    req.end();
+  const r = await updater.fetchLatest();
+  if (r.error) return r;
+  const inst = updInstallInfo();
+  const newer = updater.verNewer(r.tag, app.getVersion());
+  const asset = newer ? updater.pickAsset(r.assets, { ...inst, platform: process.platform, arch: process.arch }) : null;
+  const out = {
+    tag: r.tag, name: r.name, notes: r.notes, url: r.url, newer,
+    install: { kind: inst.kind, canSelfUpdate: inst.canSelfUpdate, needsPassword: !!inst.needsPassword, reason: inst.reason || '' },
+    // Нет файла под эту платформу (релиз собрался частично) — предлагать «Обновить» нельзя,
+    // иначе кнопка молча ничего не сделает; UI отправит на страницу релиза.
+    asset: asset ? { name: asset.name, size: asset.size } : null,
+  };
+  if (newer) {
+    // Уже скачанное этой же версии переживает перезагрузку рендерера: не качаем 150 МБ заново.
+    if (updStaged && updStaged.tag === r.tag) updSet({ phase: 'ready', tag: r.tag, pct: 100 });
+    else if (updState.phase !== 'downloading') updSet({ phase: 'available', tag: r.tag, pct: 0 });
+  } else if (updState.phase === 'available') updSet({ phase: 'idle', pct: 0 });
+  return out;
+});
+
+ipcMain.handle('update:state', () => ({ ...updState, install: updInstallInfo() }));
+
+// Скачать и подготовить обновление. Возвращается сразу после ЗАВЕРШЕНИЯ загрузки (это долгая
+// операция, прогресс идёт событиями update:state).
+ipcMain.handle('update:download', async () => {
+  if (updState.phase === 'downloading') return { ok: false, error: 'загрузка уже идёт' };
+  const inst = updInstallInfo();
+  if (!inst.canSelfUpdate) return { ok: false, error: inst.reason || 'эта установка не умеет обновляться сама' };
+
+  const rel = await updater.fetchLatest();
+  if (rel.error) return { ok: false, error: rel.error };
+  if (!updater.verNewer(rel.tag, app.getVersion())) return { ok: false, error: 'у вас последняя версия' };
+  const asset = updater.pickAsset(rel.assets, { ...inst, platform: process.platform, arch: process.arch });
+  if (!asset) return { ok: false, error: 'в релизе нет файла для этой системы' };
+
+  const dir = path.join(updater.updatesDir(storeDir), rel.tag);
+  updAbort = {};
+  updSet({ phase: 'downloading', tag: rel.tag, pct: 0, size: asset.size });
+  logger.log('info', 'update', `загрузка ${asset.name} (${Math.round((asset.size || 0) / 1048576)} МБ)`);
+  const dl = await updater.download(asset, dir, {
+    signal: updAbort,
+    onProgress: (p) => updSet({ phase: 'downloading', pct: p.pct, loaded: p.loaded, size: p.total }),
   });
+  updAbort = null;
+  if (!dl.ok) {
+    updSet({ phase: 'available', pct: 0, error: dl.canceled ? '' : dl.error });
+    if (!dl.canceled) logger.log('error', 'update', 'загрузка не удалась: ' + dl.error);
+    return { ok: false, error: dl.error, canceled: dl.canceled };
+  }
+
+  // .deb ставится системным менеджером пакетов как есть — распаковывать нечего.
+  if (inst.kind === 'deb') {
+    updStaged = { tag: rel.tag, file: dl.file, root: null };
+    updSet({ phase: 'ready', tag: rel.tag, pct: 100 });
+    return { ok: true, tag: rel.tag, needsPassword: true };
+  }
+
+  updSet({ phase: 'downloading', pct: 100, unpacking: true });
+  const un = await updater.unpack(dl.file, path.join(dir, 'unpacked'), process.platform);
+  if (!un.ok) {
+    updSet({ phase: 'available', pct: 0, error: un.error });
+    logger.log('error', 'update', un.error);
+    return { ok: false, error: un.error };
+  }
+  updStaged = { tag: rel.tag, file: dl.file, root: un.root };
+  updSet({ phase: 'ready', tag: rel.tag, pct: 100 });
+  logger.log('info', 'update', `${rel.tag} готова к установке`);
+  return { ok: true, tag: rel.tag };
+});
+
+ipcMain.handle('update:cancel', () => {
+  if (updAbort && updAbort.onAbort) { try { updAbort.onAbort(); } catch (_) {} }
+  return { ok: true };
+});
+
+// Применить обновление и перезапуститься. После этого вызова приложение закрывается — ответ
+// рендерер получает только при неудаче.
+ipcMain.handle('update:install', async () => {
+  if (!updStaged) return { ok: false, error: 'обновление ещё не загружено' };
+  const inst = updInstallInfo();
+  updSet({ phase: 'installing' });
+
+  if (inst.kind === 'deb') {
+    const r = await updater.installDeb(updStaged.file);
+    if (!r.ok) { updSet({ phase: 'ready', error: r.canceled ? '' : r.error }); return r; }
+    logger.log('info', 'update', 'пакет установлен, перезапуск');
+    app.relaunch();
+    app.exit(0);
+    return { ok: true };
+  }
+
+  const script = process.platform === 'win32'
+    ? updater.winStager({ pid: process.pid, appDir: inst.appDir, newDir: updStaged.root, exec: process.execPath })
+    : updater.unixStager({
+      pid: process.pid, appDir: inst.appDir, newDir: updStaged.root, exec: process.execPath,
+      mac: process.platform === 'darwin',
+    });
+  try {
+    updater.launchStager(script, path.join(updater.updatesDir(storeDir), updStaged.tag), process.platform,
+      (e) => logger.log('error', 'update', 'стейджер не запустился: ' + String(e && e.message || e)));
+  } catch (e) {
+    updSet({ phase: 'ready', error: String(e.message || e) });
+    return { ok: false, error: String(e.message || e) };
+  }
+  logger.log('info', 'update', `стейджер запущен, выходим для подмены ${inst.appDir}`);
+  // Стейджер ждёт смерти этого процесса, поэтому выходим сразу и жёстко: обычный quit может
+  // упереться в диалог «сохранить файл?» и оставить стейджер крутиться впустую.
+  setTimeout(() => app.exit(0), 300);
+  return { ok: true };
 });
 // Key balance: GET /key → credit limit + usage (so the card can show «израсходовано / лимит»).
 ipcMain.handle('openrouter:keyInfo', async (_e, { key } = {}) => {
@@ -2725,6 +2845,9 @@ app.whenReady().then(() => {
   setTimeout(reopenSavedModuleWindows, 600);
   startAgendaReminders();  // напоминалки Календаря (дата-задачи)
   startAgendaWatch();      // подхват внешних записей напоминаний (MCP-сервер)
+  // Архивы обновлений (по 150 МБ) живут только до перезапуска: раз мы стартовали, скачанное
+  // либо уже применено, либо устарело — качать его повторно дешевле, чем копить на диске.
+  setTimeout(() => updater.cleanup(storeDir), 8000);
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });

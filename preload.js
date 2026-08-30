@@ -266,8 +266,15 @@ contextBridge.exposeInMainWorld('lite', {
     onOutputChanged: (cb) => { const h = (_e, d) => cb(d); ipcRenderer.on('ctx:outputChanged', h); return () => ipcRenderer.removeListener('ctx:outputChanged', h); },
   },
 
+  // Самообновление. Скачивание и подмена каталога живут в main (lib/updater.js) — рендерер только
+  // нажимает кнопки и отражает фазу: загрузка идёт долго и не должна зависеть от жизни фрейма.
   update: {
-    check: () => ipcRenderer.invoke('update:check'), // latest GitHub release → {tag,name,notes,url} | {error}
+    check: () => ipcRenderer.invoke('update:check'),      // → {tag,name,notes,url,newer,install,asset} | {error}
+    state: () => ipcRenderer.invoke('update:state'),      // текущая фаза (пережила перезагрузку рендерера)
+    download: () => ipcRenderer.invoke('update:download'),// скачать + распаковать → { ok, tag } | { ok:false, error }
+    cancel: () => ipcRenderer.invoke('update:cancel'),
+    install: () => ipcRenderer.invoke('update:install'),  // применить и перезапустить (ответа обычно нет — процесс выходит)
+    onState: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('update:state', h); return () => ipcRenderer.removeListener('update:state', h); },
   },
 
   settings: {
