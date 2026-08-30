@@ -168,6 +168,10 @@
             <span class="tp-pill-sep"></span>
             <button data-cmd="toggleColumns" class="tp-pill-btn" title="Две колонки" data-icon="columns-2"></button>
             <button data-cmd="insertTable" class="tp-pill-btn" title="Вставить таблицу" data-icon="table-insert"></button>
+            <div class="tp-dropdown tp-pill-more" id="doc-pill-more" hidden>
+              <button class="tp-dd-btn" title="Ещё инструменты"><span data-icon="dots-h"></span></button>
+              <div class="tp-dd-menu tp-pill-overflow" id="doc-pill-overflow" hidden></div>
+            </div>
           </div>
 
           <!-- workspace -->
@@ -185,6 +189,12 @@
                 <span class="tp-seg-thumb"></span>
                 <button data-tab="ai" class="tp-tab active"><span data-icon="sparkles"></span>AI-обработка</button>
                 <button data-tab="edit" class="tp-tab"><span data-icon="pencil"></span>Редактирование</button>
+                <button data-tab="outline" class="tp-tab"><span data-icon="list-tree"></span>Содержание</button>
+              </div>
+
+              <!-- OUTLINE TAB: навигация по заголовкам документа -->
+              <div id="doc-panel-outline" class="tp-panel-outline" hidden>
+                <div id="doc-outline" class="tp-outline"></div>
               </div>
 
               <!-- EDIT TAB: draggable cards -->
@@ -283,6 +293,15 @@
                     <span class="tp-seg-thumb"></span>
                     <!-- filled by JS -->
                   </div>
+                  <button id="doc-ai-agents-cfg" class="tp-icon-btn sm" title="Настроить агентов" data-icon="sliders"></button>
+                </div>
+                <div class="tp-ai-row">
+                  <span class="tp-label">Режим</span>
+                  <div id="doc-ai-mode" class="tp-segment sm">
+                    <span class="tp-seg-thumb"></span>
+                    <button data-aimode="chat" class="tp-seg-btn active">Ассистент</button>
+                    <button data-aimode="agent" class="tp-seg-btn">Агент</button>
+                  </div>
                 </div>
                 <div class="tp-ai-block">
                   <div class="tp-label">Роль агента</div>
@@ -295,6 +314,7 @@
                 <div id="doc-ai-chat-log" class="tp-chat-log"><!-- chat history --></div>
                 <div class="tp-chat-input-row">
                   <div class="tp-chat-input-box">
+                    <button id="doc-ai-attach" class="tp-chat-attach on" title="Приложить документ к сообщению" data-icon="paperclip"></button>
                     <textarea id="doc-ai-chat-input" rows="1" placeholder="Что сделать с текстом?"></textarea>
                     <button id="doc-ai-chat-send" class="tp-chat-send" data-icon="send"></button>
                   </div>

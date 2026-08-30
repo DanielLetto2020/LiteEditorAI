@@ -185,10 +185,13 @@ contextBridge.exposeInMainWorld('lite', {
 
   // Обработка текста: дефолтная папка документов + прогон фрагмента через локального агента.
   tp: {
-    run: (opts) => ipcRenderer.send('tp:run', opts),
+    run: (opts) => ipcRenderer.send('tp:run', opts),   // {reqId, agent, prompt, mode:'chat'|'agent', cwd}
+    cancel: (reqId) => ipcRenderer.send('tp:cancel', { reqId }),
     onData: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('tp:data', h); return () => ipcRenderer.removeListener('tp:data', h); },
     onDone: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('tp:done', h); return () => ipcRenderer.removeListener('tp:done', h); },
     onError: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('tp:error', h); return () => ipcRenderer.removeListener('tp:error', h); },
+    agents: () => ipcRenderer.invoke('tp:agents'),                   // → {ok,list:[{id,label}],file,raw}
+    saveAgents: (text) => ipcRenderer.invoke('tp:saveAgents', { text }), // → {ok,list}|{ok:false,error}
     openFile: () => ipcRenderer.invoke('tp:openFile'),               // → {ok,file,name,content}|{canceled}|{ok:false,error}
     saveFileAs: (opts) => ipcRenderer.invoke('tp:saveFileAs', opts), // {content,name,ext} → {ok,file,name}|{canceled}|{ok:false,error}
   },

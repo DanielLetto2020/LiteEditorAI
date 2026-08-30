@@ -4424,6 +4424,63 @@ body.preview-full .prev-frame { width: 100%; height: 100%; }
   width: 32px; height: 32px; flex: none; border-radius: 10px; border: none; background: var(--tp-accent); color: #fff;
   cursor: pointer; display: inline-flex; align-items: center; justify-content: center; box-shadow: 0 3px 10px rgba(10,132,255,.4);
 }
+/* галочка «открывать при запуске» на плитке встроенного модуля */
+.bim-tile { position: relative; }
+.bim-auto {
+  position: absolute; top: 8px; right: 8px; width: 20px; height: 20px; padding: 0; border-radius: 6px;
+  border: 1px solid var(--border); background: var(--surface-2); color: transparent; cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center; opacity: 0; transition: opacity .12s;
+}
+.bim-tile:hover .bim-auto, .bim-auto.on { opacity: 1; }
+.bim-auto.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+/* ---- редактор списка агентов (модалка) ---- */
+.tp-agents-hint { line-height: 1.45; margin-bottom: 10px; }
+.tp-agents-json {
+  width: 100%; box-sizing: border-box; resize: vertical; font-family: var(--mono, monospace); font-size: 12.5px;
+  line-height: 1.5; padding: 10px; border-radius: 10px; border: 1px solid var(--border);
+  background: var(--surface-2); color: var(--text);
+}
+.tp-agents-file { margin: 8px 0 2px; font-size: 11.5px; color: var(--text-dim); word-break: break-all; }
+
+/* ---- тулбар: перенос лишних кнопок в «⋯» ---- */
+.tp-pill { overflow: hidden; max-width: 100%; }
+.tp-pill > * { flex: none; }                 /* без сжатия — иначе иконки наезжают вместо переноса */
+.tp-pill-more[hidden] { display: none !important; }
+.tp-pill-overflow { display: flex; flex-wrap: wrap; gap: 4px; max-width: 232px; padding: 6px; }
+.tp-pill-overflow .tp-pill-sep { width: 100%; height: 1px; margin: 2px 0; }
+.tp-pill-overflow .tp-dropdown { width: 100%; }
+.tp-pill-overflow .tp-dd-btn { width: 100%; justify-content: space-between; }
+
+/* ---- вкладка «Содержание»: навигация по заголовкам ---- */
+.tp-panel-outline { flex: 1; min-height: 0; overflow: auto; padding: 4px 2px 10px; }
+.tp-outline { display: flex; flex-direction: column; gap: 1px; }
+.tp-outline-item {
+  text-align: left; background: transparent; border: none; color: var(--tp-text); cursor: pointer;
+  font: inherit; font-size: 12.5px; line-height: 1.35; padding: 6px 8px; border-radius: 8px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.tp-outline-item:hover { background: var(--tp-hover); }
+.tp-outline-item.lvl0 { font-weight: 600; }
+.tp-outline-item.lvl1 { padding-left: 20px; }
+.tp-outline-item.lvl2 { padding-left: 32px; color: var(--tp-text-3); }
+.tp-outline-item.lvl3 { padding-left: 44px; color: var(--tp-text-3); font-size: 12px; }
+.tp-outline-empty { padding: 10px 8px; color: var(--tp-text-3); font-size: 12.5px; line-height: 1.45; }
+.tp-panel-outline[hidden] { display: none !important; }
+
+/* пузырь-ошибка агента: видно, что это не ответ (и «Заменить» у него нет) */
+.tp-bubble.tp-bubble-err { border: 1px solid var(--tp-danger-border, rgba(255,69,58,.35)); background: rgba(255,69,58,.08); white-space: pre-wrap; }
+
+/* кнопка отправки в состоянии «агент работает» — это «Стоп», и он должен читаться как стоп */
+.tp-chat-send.stopping { background: var(--tp-danger, #ff453a); box-shadow: 0 3px 10px rgba(255,69,58,.4); }
+
+/* скрепка: приложен ли документ к следующему сообщению (снятая = обычный разговор) */
+.tp-chat-attach {
+  width: 30px; height: 30px; flex: none; border-radius: 9px; border: 1px solid transparent; background: transparent;
+  color: var(--tp-text-3); cursor: pointer; display: inline-flex; align-items: center; justify-content: center;
+}
+.tp-chat-attach:hover { background: var(--tp-hover); color: var(--tp-text); }
+.tp-chat-attach.on { background: rgba(10,132,255,.12); border-color: rgba(10,132,255,.35); color: var(--tp-accent); }
 
 /* model list cost/size chips */
 .chat-model-row .cm-meta { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
@@ -5127,10 +5184,7 @@ body.mw-doc .modal label { color: #1a1a1c !important; }
   border: 1px solid var(--tp-border);
   padding: 8px 12px;
 }
-.tp-page {
-  transition: transform 0.2s ease;
-  transform-origin: top center;
-}
+/* масштаб — через CSS zoom (см. applyZoom): transform: scale() не менял раскладку и ломал скролл */
 
 /* --- Custom Glassmorphic Dropdowns --- */
 .tp-dropdown {

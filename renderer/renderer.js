@@ -27,7 +27,7 @@ import { el, icon, iconBtn, hydrateIcons, toast, makeModal, showConfirm, showPro
 import { initExtensions } from './modules/extensions.js';
 // initFiles — вивер+дерево мигрированы в отдельное окно (renderer/module-entry.js).
 
-const APP_VERSION = 'alpha v1.1.176';
+const APP_VERSION = 'alpha v1.1.189';
 const GUTTER = 5;
 // Системный терминал («Система · ~») мигрирован в отдельное окно (renderer/modules/scratch.js):
 // его id `__scratch__::tN` маршрутизируются main'ом в окно-владельца, в ядре их больше не обрабатываем.
@@ -1895,6 +1895,23 @@ function showBuiltinModules() {
       t.appendChild(el('span', 'bim-desc', mod.desc));
       t.title = mod.title + ' — ' + mod.desc;
       t.addEventListener('click', () => { close(); openModule(mod.id); });
+      // Галочка «открывать при старте»: у каждого своя пара-тройка постоянно нужных окон, и
+      // открывать их руками после каждого запуска — лишний ритуал (идея PR #10).
+      const chk = el('button', 'bim-auto');
+      chk.type = 'button';
+      chk.title = 'Открывать при запуске редактора';
+      chk.appendChild(icon('check', 13));
+      if ((settings.autoLaunchMods || []).includes(mod.id)) chk.classList.add('on');
+      chk.addEventListener('click', (e) => {
+        e.stopPropagation();                       // клик по галочке не должен открывать модуль
+        const on = !chk.classList.contains('on');
+        chk.classList.toggle('on', on);
+        const cur = new Set(settings.autoLaunchMods || []);
+        if (on) cur.add(mod.id); else cur.delete(mod.id);
+        settings.autoLaunchMods = [...cur];
+        saveSettings();
+      });
+      t.appendChild(chk);
       grid.appendChild(t);
       tiles.push({ el: t, sec, text: (mod.title + ' ' + mod.desc).toLowerCase() });
     }
@@ -3144,6 +3161,16 @@ function init() {
   window.addEventListener('focus', checkProjectsExistence); // re-check when returning to the app
 
   if (!settings.onboarded) setTimeout(showOnboarding, 200); // first-run welcome
+  autoLaunchModules();
+}
+
+// Открыть окна модулей, отмеченных галочкой в списке встроенных. С задержкой — стартовать
+// одновременно с главным окном незачем, оно должно отрисоваться первым. Повторный openModule
+// безопасен: на тип модуля окно одно, уже восстановленное просто получит фокус.
+function autoLaunchModules() {
+  const ids = (settings.autoLaunchMods || []).filter((id) => WINDOW_MODULES.has(id));
+  if (!ids.length) return;
+  setTimeout(() => { ids.forEach((id, i) => setTimeout(() => { try { openModule(id); } catch (_) {} }, i * 120)); }, 600);
 }
 
 function cycleProject(dir) {

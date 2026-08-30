@@ -9,16 +9,19 @@ import { marked } from 'marked';
 import katex from 'katex/dist/katex.mjs';
 import 'katex/dist/katex.min.css';
 import DOMPurify from 'dompurify';
-import { baseName } from '../ui.js';
+import { baseName, makeModal, icon } from '../ui.js';
 
 const $ = (s) => document.querySelector(s);
+// Строка с подстановкой: в словаре живёт ШАБЛОН («… {0} …»), значения вставляем после перевода —
+// иначе экстрактор растаскивает фразу на обрывки, которые нечем переводить.
+const tf = (tpl, ...vals) => String(tpl).replace(/\{(\d+)\}/g, (_, i) => String(vals[+i] == null ? '' : vals[+i]));
 const $$ = (s) => Array.from(document.querySelectorAll(s));
 
 marked.setOptions({ breaks: true });
 
 // Один набор для ВСЕХ мест санитизации: атрибуты наших неразрушимых блоков (формулы, front matter)
 // должны переживать DOMPurify, иначе исходник из data-* теряется и обратная конвертация его не вернёт.
-const SANITIZE = { ADD_ATTR: ['contenteditable', 'data-tex', 'data-fm'] };
+const SANITIZE = { ADD_ATTR: ['contenteditable', 'data-tex', 'data-delim', 'data-fm'] };
 
 // ---- Markdown ⇄ HTML (+ формулы) ----------------------------------------------------------
 const F_OPEN = '⟦', F_CLOSE = '⟧'; // ⟦ ⟧ — маловероятные в обычном тексте маркеры-плейсхолдеры
@@ -26,14 +29,26 @@ const reEscape = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const escapeHtml = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 const escapeAttr = (s) => escapeHtml(s).replace(/"/g, '&quot;');
 
+// Разделители формул. Кроме долларов принимаем \[…\] и \(…\): именно так формулы выдают
+// нейросети, и вставленный из чата текст раньше оставался сырым LaTeX. Тип разделителя запоминаем
+// (delim) и возвращаем при обратной конвертации — иначе первое же автосохранение переписало бы
+// \[…\] в $$…$$ по всему чужому файлу.
 function extractFormulas(src) {
   const blocks = [], inlines = [];
   let text = String(src || '').replace(/(?<!\\)\$\$([\s\S]+?)(?<!\\)\$\$/g, (_, tex) => {
-    const i = blocks.length; blocks.push(tex);
+    const i = blocks.length; blocks.push({ tex, delim: 'dollar' });
     return F_OPEN + 'B' + i + F_CLOSE;
   });
+  text = text.replace(/\\\[([\s\S]+?)\\\]/g, (_, tex) => {
+    const i = blocks.length; blocks.push({ tex, delim: 'bracket' });
+    return F_OPEN + 'B' + i + F_CLOSE;
+  });
+  text = text.replace(/\\\(([\s\S]+?)\\\)/g, (_, tex) => {
+    const i = inlines.length; inlines.push({ tex, delim: 'paren' });
+    return F_OPEN + 'I' + i + F_CLOSE;
+  });
   text = text.replace(/(?<!\\)\$([^\n$]+?)(?<!\\)\$/g, (_, tex) => {
-    const i = inlines.length; inlines.push(tex);
+    const i = inlines.length; inlines.push({ tex, delim: 'dollar' });
     return F_OPEN + 'I' + i + F_CLOSE;
   });
   return { text, blocks, inlines };
@@ -44,16 +59,18 @@ function renderFormulaHtml(tex, displayMode) {
   catch (_) { return '<span class="tp-formula-err">ошибка в формуле</span>'; }
 }
 
-function formulaBlockHtml(tex, num) {
-  return '<div class="tp-formula-block" contenteditable="false" data-tex="' + escapeAttr(tex) + '">'
+function formulaBlockHtml(tex, num, delim) {
+  return '<div class="tp-formula-block" contenteditable="false" data-tex="' + escapeAttr(tex) + '"'
+    + (delim && delim !== 'dollar' ? ' data-delim="' + escapeAttr(delim) + '"' : '') + '>'
     + '<div class="tp-formula-render">' + renderFormulaHtml(tex, true) + '</div>'
     + '<div class="tp-formula-src"><pre>' + escapeHtml(tex) + '</pre></div>'
     + '<span class="tp-formula-num">(' + escapeHtml(num) + ')</span>'
     + '<button type="button" class="tp-formula-toggle" title="Показать/скрыть LaTeX">&lt;/&gt;</button>'
     + '</div>';
 }
-function formulaInlineHtml(tex) {
-  return '<span class="tp-formula-inline" contenteditable="false" data-tex="' + escapeAttr(tex) + '">'
+function formulaInlineHtml(tex, delim) {
+  return '<span class="tp-formula-inline" contenteditable="false" data-tex="' + escapeAttr(tex) + '"'
+    + (delim && delim !== 'dollar' ? ' data-delim="' + escapeAttr(delim) + '"' : '') + '>'
     + renderFormulaHtml(tex, false) + '</span>';
 }
 
@@ -80,17 +97,17 @@ function mdToHtml(src) {
   const { text, blocks, inlines } = extractFormulas(rest);
   let html = (fm == null ? '' : frontMatterHtml(fm)) + marked.parse(text);
   let n = 0;
-  blocks.forEach((rawTex, i) => {
-    let tex = rawTex.trim(), num;
+  blocks.forEach((b, i) => {
+    let tex = b.tex.trim(), num;
     const m = tex.match(/\\tag\{([^}]*)\}/);
     if (m) { num = m[1]; tex = tex.replace(/\\tag\{[^}]*\}/, '').trim(); }
     else { n++; num = String(n); }
     const token = F_OPEN + 'B' + i + F_CLOSE;
     const wrapped = new RegExp('<p>\\s*' + reEscape(token) + '\\s*</p>|' + reEscape(token));
-    html = html.replace(wrapped, formulaBlockHtml(tex, num));
+    html = html.replace(wrapped, formulaBlockHtml(tex, num, b.delim));
   });
-  inlines.forEach((tex, i) => {
-    html = html.split(F_OPEN + 'I' + i + F_CLOSE).join(formulaInlineHtml(tex.trim()));
+  inlines.forEach((f, i) => {
+    html = html.split(F_OPEN + 'I' + i + F_CLOSE).join(formulaInlineHtml(f.tex.trim(), f.delim));
   });
   return DOMPurify.sanitize(html, SANITIZE);
 }
@@ -103,6 +120,16 @@ function mdToHtml(src) {
 // обязан покрывать всё, что marked производит из markdown: раньше ссылки, блоки кода, таблицы,
 // картинки, заголовки от H4, вложенность списков и `---` при первом же сохранении молча
 // превращались в плоский текст, и файл был испорчен без единого предупреждения.
+// Формула → исходный вид: тем же разделителем, каким пришла (см. extractFormulas).
+function wrapBlock(n) {
+  const tex = n.dataset.tex || '';
+  return n.dataset.delim === 'bracket' ? ('\\[' + tex + '\\]') : ('$$' + tex + '$$');
+}
+function wrapInline(n) {
+  const tex = n.dataset.tex || '';
+  return n.dataset.delim === 'paren' ? ('\\(' + tex + '\\)') : ('$' + tex + '$');
+}
+
 function htmlToMd(root) {
   const mdEscape = (t) => t.replace(/[\\`*_$]/g, '\\$&');
   const attr = (n, a) => (n.getAttribute && n.getAttribute(a)) || '';
@@ -129,8 +156,8 @@ function htmlToMd(root) {
     if (n.nodeType === Node.TEXT_NODE) return mdEscape(n.textContent);
     if (n.nodeType !== Node.ELEMENT_NODE) return '';
     if (n.classList.contains('tp-frontmatter')) return '---\n' + (n.dataset.fm || '') + '\n---\n\n';
-    if (n.classList.contains('tp-formula-inline')) return '$' + (n.dataset.tex || '') + '$';
-    if (n.classList.contains('tp-formula-block')) return '\n\n$$' + (n.dataset.tex || '') + '$$\n\n';
+    if (n.classList.contains('tp-formula-inline')) return wrapInline(n);
+    if (n.classList.contains('tp-formula-block')) return '\n\n' + wrapBlock(n) + '\n\n';
     switch (n.tagName.toLowerCase()) {
       case 'strong': case 'b': { const t = inlineOf(n); return t.trim() ? '**' + t + '**' : t; }
       case 'em': case 'i': { const t = inlineOf(n); return t.trim() ? '*' + t + '*' : t; }
@@ -180,7 +207,12 @@ function htmlToMd(root) {
     if (n.nodeType === Node.TEXT_NODE) { const t = n.textContent.trim(); return t ? mdEscape(t) + '\n\n' : ''; }
     if (n.nodeType !== Node.ELEMENT_NODE) return '';
     if (n.classList.contains('tp-frontmatter')) return '---\n' + (n.dataset.fm || '') + '\n---\n\n';
-    if (n.classList.contains('tp-formula-block')) return '$$' + (n.dataset.tex || '') + '$$\n\n';
+    if (n.classList.contains('tp-formula-block')) return wrapBlock(n) + '\n\n';
+    // Инлайн-формула может оказаться и прямым ребёнком корня: блочная формула внутри абзаца
+    // разрывает <p> (div в p недопустим), и хвост абзаца вываливается наружу. Без этой ветки
+    // span уходил в default → inlineOf → и формула превращалась в текст KaTeX-рендера
+    // («xix\_ixi») — молчаливая потеря содержимого при первом же сохранении.
+    if (n.classList.contains('tp-formula-inline')) return wrapInline(n);
     const tag = n.tagName.toLowerCase();
     switch (tag) {
       case 'h1': case 'h2': case 'h3': case 'h4': case 'h5': case 'h6':
@@ -219,10 +251,19 @@ export function initTextProc(host) {
   let activeTabId = null;
   let nextTabId = 1;
   let activeProj = null;
-  let chatAgent = ['claude', 'codex', 'gemini'].includes(settings.tpAgent) ? settings.tpAgent : 'claude';
+  // Список агентов задаёт main (встроенные + ~/.LiteEditorAI/tpAgents.json) — тут только выбранный id.
+  let agentList = [{ id: 'claude', label: 'Claude' }, { id: 'codex', label: 'Codex' }, { id: 'gemini', label: 'Gemini' }];
+  let chatAgent = settings.tpAgent || 'claude';
+  // Режим работы с ИИ. 'chat' — агент отвечает текстом, файлы правит редактор (как было всегда).
+  // 'agent' — CLI запускается с авто-одобрением и правит файл на диске сам. Второй режим НЕ
+  // сохраняется между запусками: включать его должно быть осознанным действием каждый раз.
+  let aiMode = 'chat';
   let chatRole = 'Без роли';
   let chatLog = [];
   let aiSeq = 0;
+  // Скрепка: прикладывать ли документ к сообщению. Раньше документ уходил агенту ВСЕГДА, и
+  // спросить «а как правильно пишется?» было нельзя — на любую фразу приходил переписанный текст.
+  let attachCtx = settings.tpAttach !== false;
   let treeSortMode = 'az';
   
   function fileBadge(name) {
@@ -258,6 +299,7 @@ export function initTextProc(host) {
   function htmlDocWrap(inner) { return '<!doctype html><html><head><meta charset="utf-8"></head><body>' + inner + '</body></html>'; }
   function markDirty() {
     dirty = true;
+    scheduleOutline();
     if (typeof saveCurrentTabState === 'function') { saveCurrentTabState(); if (typeof renderTabsUI === 'function') renderTabsUI(); }
     scheduleAutosave();
   }
@@ -319,7 +361,9 @@ export function initTextProc(host) {
       btn.onclick = (e) => {
         e.stopPropagation();
         const wasHidden = menu.hidden;
-        $$('.tp-dd-menu').forEach(m => m.hidden = true);
+        // Закрываем чужие меню, но НЕ те, внутри которых сами лежим: выпадашки масштаба/интервала
+        // могут быть перенесены в «⋯», и закрытие предка спрятало бы их вместе с собой.
+        $$('.tp-dd-menu').forEach((m) => { if (!m.contains(dd)) m.hidden = true; });
         menu.hidden = !wasHidden;
       };
       dd.querySelectorAll('.tp-dd-item').forEach(item => {
@@ -330,13 +374,7 @@ export function initTextProc(host) {
           item.classList.add('active');
           btn.querySelector('span:first-child').textContent = item.textContent;
           if (dd.id === 'doc-zoom-dd') {
-            const val = parseFloat(item.dataset.val) || 1;
-            const page = document.querySelector('.tp-page');
-            if (page) {
-              page.style.transform = `scale(${val})`;
-              page.style.transformOrigin = 'top center';
-            }
-            window.tpCurrentZoom = val;
+            applyZoom(parseFloat(item.dataset.val) || 1);
           } else if (dd.id === 'doc-lineheight-dd') {
             const val = parseFloat(item.dataset.val) || 1.6;
             const doc = document.querySelector('.tp-doc');
@@ -357,31 +395,22 @@ export function initTextProc(host) {
       }
     });
 
-    // Touchpad Pinch-to-Zoom
-    window.tpCurrentZoom = window.tpCurrentZoom || 1;
+    // Масштаб: колесо с Ctrl (и пинч тачпада — он приходит тем же событием) + Ctrl +/−/0.
     const workspace = document.querySelector('.tp-workspace');
     if (workspace) {
       workspace.addEventListener('wheel', (e) => {
-        if (e.ctrlKey) {
-          e.preventDefault();
-          const zoomSpeed = 0.01;
-          window.tpCurrentZoom -= e.deltaY * zoomSpeed;
-          window.tpCurrentZoom = Math.max(0.25, Math.min(window.tpCurrentZoom, 3.0));
-          
-          const page = document.querySelector('.tp-page');
-          if (page) {
-            page.style.transform = `scale(${window.tpCurrentZoom})`;
-            page.style.transformOrigin = 'top center';
-          }
-          
-          const zoomBtn = document.querySelector('#doc-zoom-dd .tp-dd-btn span:first-child');
-          if (zoomBtn) {
-            zoomBtn.textContent = Math.round(window.tpCurrentZoom * 100) + '%';
-          }
-          document.querySelectorAll('#doc-zoom-dd .tp-dd-item').forEach(i => i.classList.remove('active'));
-        }
+        if (!e.ctrlKey) return;
+        e.preventDefault();
+        applyZoom(curZoom - e.deltaY * 0.01);
       }, { passive: false });
     }
+    document.addEventListener('keydown', (e) => {
+      if (!(e.ctrlKey || e.metaKey)) return;
+      if (e.key === '=' || e.key === '+') { e.preventDefault(); applyZoom(curZoom + 0.1); }
+      else if (e.key === '-') { e.preventDefault(); applyZoom(curZoom - 0.1); }
+      else if (e.key === '0') { e.preventDefault(); applyZoom(1); }
+    });
+    applyZoom(curZoom); // восстановить сохранённый масштаб
 
     $$('[data-color]').forEach((node) => {
       node.onclick = (e) => { e.preventDefault(); execCmd('foreColor', node.dataset.color); };
@@ -393,9 +422,13 @@ export function initTextProc(host) {
     $('#doc-undo-btn').onclick = () => { getActiveEditor().focus(); document.execCommand('undo'); };
     $('#doc-redo-btn').onclick = () => { getActiveEditor().focus(); document.execCommand('redo'); };
 
-    renderModels();
+    loadAgents();
     renderRoles();
     renderSymbols();
+    const agentsBtn = $('#doc-ai-agents-cfg');
+    if (agentsBtn) agentsBtn.onclick = showAgentsEditor;
+    $$('#doc-ai-mode .tp-seg-btn[data-aimode]').forEach((b) => { b.onclick = () => requestAiMode(b.dataset.aimode); });
+    updateAiModeUI();
 
     const fi = $('#doc-formula-input');
     fi.oninput = renderFormulaCardPreview;
@@ -408,8 +441,14 @@ export function initTextProc(host) {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') { e.preventDefault(); saveFile(); }
     });
 
-    $('#doc-ai-chat-send').onclick = sendChat;
+    $('#doc-ai-chat-send').onclick = () => { if (busyReq) { lite.tp.cancel(busyReq); return; } sendChat(); };
     $('#doc-ai-chat-input').onkeydown = (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendChat(); } };
+    const attachBtn = $('#doc-ai-attach');
+    if (attachBtn) attachBtn.onclick = () => {
+      attachCtx = !attachCtx;
+      settings.tpAttach = attachCtx; saveSettings();
+      updateAttachUI();
+    };
 
     $('#doc-editor-wysiwyg').addEventListener('input', markDirty);
     $('#doc-editor-md').addEventListener('input', markDirty);
@@ -418,12 +457,78 @@ export function initTextProc(host) {
       if (btn) { e.preventDefault(); btn.parentElement.classList.toggle('show-src'); }
     });
 
+    setupPillOverflow();
     applyCardOrder();
     setupCardsDnD();
     updateModeUI();
     setTab('ai');
     updateStatus('Новый файл');
     renderChatLog();
+    updateAttachUI();
+  }
+
+  // Скрепка: вид кнопки + подсказка контекста. Держим в одном месте — состояние читают оба.
+  function updateAttachUI() {
+    const btn = $('#doc-ai-attach');
+    if (btn) {
+      btn.classList.toggle('on', attachCtx);
+      btn.title = attachCtx ? 'Документ приложен — снять' : 'Приложить документ к сообщению';
+    }
+    const ta = $('#doc-ai-chat-input');
+    if (ta) ta.placeholder = attachCtx ? 'Что сделать с текстом?' : 'Спросить агента (без документа)';
+    updateCtxIndicator();
+  }
+
+  // ---- Масштаб страницы -----------------------------------------------------------------------
+  // Раньше страница масштабировалась через transform: scale(). Визуально это работает, но раскладку
+  // НЕ меняет: .tp-canvas продолжает считать страницу прежнего размера, поэтому при увеличении низ
+  // документа было не доскроллить, а при уменьшении оставалась пустая полоса; в разделённом окне
+  // отмасштабированный слой ещё и наезжал на инспектор (жалоба из PR #10). CSS-свойство zoom в
+  // Chromium (а у нас только он) пересчитывает раскладку по-настоящему — скролл и попадание курсора
+  // остаются честными.
+  const ZOOM_MIN = 0.25, ZOOM_MAX = 3;
+  let curZoom = (() => { const v = parseFloat(settings.tpZoom); return v >= ZOOM_MIN && v <= ZOOM_MAX ? v : 1; })();
+  function applyZoom(val) {
+    curZoom = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, Math.round(val * 100) / 100));
+    const page = document.querySelector('.tp-page');
+    if (page) page.style.zoom = String(curZoom);
+    const label = document.querySelector('#doc-zoom-dd .tp-dd-btn span:first-child');
+    if (label) label.textContent = Math.round(curZoom * 100) + '%';
+    document.querySelectorAll('#doc-zoom-dd .tp-dd-item').forEach((i) => {
+      i.classList.toggle('active', Math.abs(parseFloat(i.dataset.val) - curZoom) < 0.001);
+    });
+    settings.tpZoom = curZoom; saveSettings();
+  }
+
+  // ---- Тулбар: лишние кнопки уезжают в «⋯» -----------------------------------------------------
+  // Пилл форматирования — flex фиксированной высоты: в узком окне кнопки сжимались и наезжали друг
+  // на друга (жалоба из PR #10). Переносим хвост в выпадающее меню, а не сжимаем. Узлы ИМЕННО
+  // переносим (appendChild), а не клонируем — обработчики висят на самих кнопках.
+  let pillOrder = null;
+  function refitPill() {
+    const pill = $('#doc-format-pill');
+    const more = $('#doc-pill-more');
+    const menu = $('#doc-pill-overflow');
+    if (!pill || !more || !menu) return;
+    if (!pillOrder) pillOrder = Array.from(pill.children).filter((n) => n !== more);
+    pillOrder.forEach((n) => pill.insertBefore(n, more)); // всё обратно в исходном порядке
+    more.hidden = true;
+    menu.hidden = true;
+    const fits = () => pill.scrollWidth <= pill.clientWidth + 1;
+    if (fits()) return;
+    more.hidden = false;
+    for (let i = pillOrder.length - 1; i >= 0 && !fits(); i--) menu.insertBefore(pillOrder[i], menu.firstChild);
+    // Ведущий разделитель в меню — мусор: убираем, пока он первый.
+    while (menu.firstChild && menu.firstChild.classList && menu.firstChild.classList.contains('tp-pill-sep')) {
+      pill.insertBefore(menu.firstChild, more);
+    }
+  }
+  function setupPillOverflow() {
+    const pill = $('#doc-format-pill');
+    if (!pill || typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(() => refitPill());
+    ro.observe(pill.parentElement || pill);
+    refitPill();
   }
 
   // ---- Drag-and-drop порядка карточек (персистится в settings) ----
@@ -490,6 +595,7 @@ export function initTextProc(host) {
     else { $('#doc-editor-wysiwyg').innerHTML = DOMPurify.sanitize(mdToHtml($('#doc-editor-md').textContent), SANITIZE); }
     mode = m;
     updateModeUI();
+    if (activeInspectorTab === 'outline') renderOutline();
   }
   function updateModeUI() {
     let activeBtn = null;
@@ -512,6 +618,76 @@ export function initTextProc(host) {
     updateThumb($('#doc-inspector-tabs'), activeBtn);
     $('#doc-panel-edit').hidden = t !== 'edit';
     $('#doc-panel-ai').hidden = t !== 'ai';
+    const outline = $('#doc-panel-outline');
+    if (outline) outline.hidden = t !== 'outline';
+    activeInspectorTab = t;
+    if (t === 'outline') renderOutline();
+  }
+
+  // ---- Содержание: навигация по заголовкам документа ------------------------------------------
+  // Работает в обоих режимах: в «Разметке» — по элементам h1…h6, в «Markdown» — по строкам вида
+  // «## Заголовок» (там DOM плоский, элементов заголовков просто нет).
+  let activeInspectorTab = 'ai';
+  let outlineT = null;
+  function collectHeadings() {
+    if (mode === 'markdown') {
+      const src = $('#doc-editor-md').textContent || '';
+      const out = [];
+      let pos = 0, fence = false;
+      for (const line of src.split('\n')) {
+        if (/^\s*(```|~~~)/.test(line)) fence = !fence;   // «#» внутри блока кода — не заголовок
+        const m = !fence && /^(#{1,6})\s+(.+?)\s*#*\s*$/.exec(line);
+        if (m) out.push({ level: m[1].length, text: m[2], pos });
+        pos += line.length + 1;
+      }
+      return out;
+    }
+    return Array.from($('#doc-editor-wysiwyg').querySelectorAll('h1,h2,h3,h4,h5,h6'))
+      .map((node) => ({ level: +node.tagName[1], text: (node.textContent || '').trim(), node }))
+      .filter((h) => h.text);
+  }
+  function gotoHeading(h) {
+    if (mode === 'markdown') {
+      // Скролл к строке: ставим Range на позицию заголовка в текстовом узле редактора.
+      const ed = $('#doc-editor-md');
+      const tn = ed.firstChild;
+      if (!tn || tn.nodeType !== Node.TEXT_NODE) { ed.scrollIntoView({ block: 'start' }); return; }
+      const r = document.createRange();
+      const at = Math.min(h.pos, tn.length);
+      r.setStart(tn, at); r.setEnd(tn, Math.min(at + 1, tn.length));
+      const sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(r);
+      const rect = r.getBoundingClientRect();
+      const canvas = document.querySelector('.tp-canvas');
+      if (canvas && rect.height) canvas.scrollTop += rect.top - canvas.getBoundingClientRect().top - 80;
+      ed.focus();
+      return;
+    }
+    if (h.node) h.node.scrollIntoView({ block: 'start', behavior: 'smooth' });
+  }
+  function renderOutline() {
+    const box = $('#doc-outline');
+    if (!box) return;
+    const items = collectHeadings();
+    box.innerHTML = '';
+    if (!items.length) {
+      box.appendChild(el('div', 'tp-outline-empty', 'Заголовков нет. Разметьте текст: «# Заголовок», «## Подзаголовок».'));
+      return;
+    }
+    const min = Math.min(...items.map((h) => h.level));
+    items.forEach((h) => {
+      const row = el('button', 'tp-outline-item lvl' + Math.min(h.level - min, 3), h.text);
+      row.type = 'button';
+      row.title = h.text;
+      row.onclick = () => gotoHeading(h);
+      box.appendChild(row);
+    });
+  }
+  // Содержание живое: правки заголовков видны без переключения вкладок (но перерисовываем
+  // только когда вкладка открыта — на каждый набранный символ строить список незачем).
+  function scheduleOutline() {
+    if (activeInspectorTab !== 'outline') return;
+    clearTimeout(outlineT);
+    outlineT = setTimeout(renderOutline, 400);
   }
 
   function execCmd(cmd, val = null) {
@@ -709,9 +885,23 @@ export function initTextProc(host) {
     chatLog.forEach((m) => {
       const w = el('div', 'tp-msg ' + m.role);
       if (m.reqId) w.dataset.req = m.reqId; // якорь для in-place стриминга (tp:data)
-      const b = el('div', 'tp-bubble');
+      const b = el('div', 'tp-bubble' + (m.failed ? ' tp-bubble-err' : ''));
       b.textContent = m.busy ? (m.text + ' ⏳') : m.text;
-      if (m.role === 'agent' && !m.busy) {
+      // Команда входа — отдельной кнопкой: набирать её из текста ошибки руками неудобно.
+      if (m.loginCmd) {
+        const acts = el('div', 'tp-bubble-actions');
+        const copyBtn = el('button', 'tp-bubble-replace', 'Скопировать команду входа');
+        copyBtn.title = m.loginCmd;
+        copyBtn.type = 'button';
+        copyBtn.onclick = async () => {
+          try { await navigator.clipboard.writeText(m.loginCmd); toast('Команда скопирована ✓'); }
+          catch (e) { toast('Не удалось скопировать команду', { kind: 'err' }); }
+        };
+        acts.appendChild(copyBtn);
+        b.appendChild(acts);
+      }
+      // «Заменить» — только у настоящего ответа: ошибку агента вставлять в документ незачем.
+      if (m.role === 'agent' && !m.busy && !m.failed) {
         const acts = el('div', 'tp-bubble-actions');
         const replaceBtn = el('button', 'tp-bubble-replace', 'Заменить');
         replaceBtn.type = 'button';
@@ -753,52 +943,199 @@ export function initTextProc(host) {
       parts.push(`Действуй в роли: ${chatRole}`);
     }
     parts.push(instruction);
-    parts.push('Ниже — ' + (sel.whole ? 'весь документ (Markdown)' : 'фрагмент текста') + '. Верни ТОЛЬКО итоговый текст для замены: без пояснений, без приветствий.');
-    parts.push('===ФРАГМЕНТ===\n' + sel.text + '\n===КОНЕЦ===');
+    // Скрепка снята — это просто вопрос. Без фрагмента требование «верни ТОЛЬКО текст замены»
+    // бессмысленно и вредно: агент отвечал бы переписанным пустым местом вместо ответа.
+    if (sel) {
+      parts.push('Ниже — ' + (sel.whole ? 'весь документ (Markdown)' : 'фрагмент текста') + '. Верни ТОЛЬКО итоговый текст для замены: без пояснений, без приветствий.');
+      parts.push('===ФРАГМЕНТ===\n' + sel.text + '\n===КОНЕЦ===');
+    }
     return parts.join('\n\n');
+  }
+  // Перечитать документ с диска: после агент-режима файл на диске новее того, что в окне.
+  async function reloadFromDisk() {
+    if (!currentFile) return;
+    const r = await lite.fs.readFile(currentFile);
+    if (!r || r.error) { toast(tf('Агент отработал, но файл не перечитать: {0}', (r && r.error) || '—'), { kind: 'err' }); return; }
+    const tab = openTabs.find((t) => t.id === activeTabId);
+    const html = mdToHtml(r.content);
+    $('#doc-editor-wysiwyg').innerHTML = DOMPurify.sanitize(html, SANITIZE);
+    $('#doc-editor-md').textContent = r.content;
+    if (tab) { tab.html = html; tab.md = r.content; tab.dirty = false; }
+    dirty = false;
+    renderTabsUI();
+    updateStatus(tf('Обновлён агентом · {0}', new Date().toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })));
+    if (activeInspectorTab === 'outline') renderOutline();
+  }
+  // Промпт агент-режима: файл он открывает сам, поэтому в тексте — путь и задача, без «верни текст».
+  function composeAgentPrompt(instruction) {
+    return [
+      'Файл: ' + currentFile,
+      instruction,
+      'Внеси правки прямо в этот файл. Не создавай копий и не трогай другие файлы без необходимости.',
+    ].join('\n\n');
   }
   async function sendChat() {
     const ta = $('#doc-ai-chat-input');
     const instruction = ta.value.trim();
     if (!instruction) return;
-    const sel = selForChat();
+    const agentMode = aiMode === 'agent';
+    if (agentMode) {
+      if (!currentFile) { toast('Агент-режим работает с файлом на диске — сохраните документ', { kind: 'warn' }); return; }
+      // Сохраняем ПЕРЕД запуском: иначе агент правит одну версию файла, а окно держит другую.
+      if (dirty && !(await saveFile())) { toast('Файл не сохранён — агент не запущен', { kind: 'err' }); return; }
+    }
+    const sel = (!agentMode && attachCtx) ? selForChat() : null;
     ta.value = '';
     chatLog.push({ role: 'user', text: instruction });
-    const am = { role: 'agent', text: '', busy: true, reqId: 'tpq' + (++aiSeq) };
+    const am = { role: 'agent', text: '', busy: true, reqId: 'tpq' + (++aiSeq), agentMode };
     chatLog.push(am);
     while (chatLog.length > 200) chatLog.shift(); // кап истории: чат не растёт бесконечно
     renderChatLog();
+    updateSendButton();
     const offData = lite.tp.onData(({ reqId: r, chunk }) => { if (r !== am.reqId) return; am.text += chunk; updateStreamBubble(am); });
-    const offDone = lite.tp.onDone(({ reqId: r, text }) => { if (r !== am.reqId) return; am.busy = false; am.text = text || ''; cleanup(); renderChatLog(); });
-    const offErr = lite.tp.onError(({ reqId: r, error }) => { if (r !== am.reqId) return; am.busy = false; am.text = 'Ошибка: ' + String(error); cleanup(); renderChatLog(); });
-    const cleanup = () => { try { offData(); offDone(); offErr(); } catch (_) {} };
-    
-    const prompt = await composePrompt(sel, instruction);
-    lite.tp.run({ reqId: am.reqId, agent: chatAgent, prompt });
+    const offDone = lite.tp.onDone(async ({ reqId: r, text }) => {
+      if (r !== am.reqId) return;
+      am.busy = false; am.text = text || '';
+      cleanup(); renderChatLog();
+      if (agentMode) await reloadFromDisk();
+    });
+    const offErr = lite.tp.onError(({ reqId: r, error, authRequired, loginCmd }) => {
+      if (r !== am.reqId) return;
+      am.busy = false; am.failed = true;
+      am.text = authRequired ? String(error) : ('Ошибка: ' + String(error));
+      if (authRequired && loginCmd) am.loginCmd = loginCmd;
+      cleanup(); renderChatLog();
+      // Агент мог успеть что-то записать до остановки — показываем актуальный файл, а не старый.
+      if (agentMode) reloadFromDisk();
+    });
+    const cleanup = () => { busyReq = null; updateSendButton(); try { offData(); offDone(); offErr(); } catch (_) {} };
+
+    busyReq = am.reqId;
+    const prompt = agentMode ? composeAgentPrompt(instruction) : await composePrompt(sel, instruction);
+    lite.tp.run({ reqId: am.reqId, agent: chatAgent, prompt, mode: agentMode ? 'agent' : 'chat', cwd: agentMode ? dirOf(currentFile) : undefined });
+  }
+  // Пока агент работает, кнопка отправки становится «Стоп»: до сих пор запущенный процесс нельзя
+  // было прервать ничем, кроме таймаута, — а в агент-режиме он всё это время правит файлы.
+  let busyReq = null;
+  function updateSendButton() {
+    const btn = $('#doc-ai-chat-send');
+    if (!btn) return;
+    const busy = !!busyReq;
+    btn.classList.toggle('stopping', busy);
+    btn.title = busy ? 'Остановить агента' : 'Отправить';
+    btn.dataset.icon = busy ? 'stop' : 'send';
+    btn.innerHTML = '';
+    btn.appendChild(icon(busy ? 'stop' : 'send', 16));
+  }
+  // Перечень моделей — из main: встроенные + пользовательские (tpAgents.json). Поэтому строим
+  // сегмент заново на каждый renderModels: список может поменяться после правки настроек.
+  async function loadAgents() {
+    try {
+      const r = await lite.tp.agents();
+      if (r && r.ok && Array.isArray(r.list) && r.list.length) agentList = r.list;
+    } catch (_) { /* остаёмся на встроенном списке */ }
+    if (!agentList.some((a) => a.id === chatAgent)) chatAgent = agentList[0].id;
+    renderModels();
   }
   function renderModels() {
     const box = $('#doc-ai-models');
-    // в разметке уже лежит .tp-seg-thumb → children.length===0 не срабатывало никогда, кнопки моделей не строились
-    if (!box.querySelector('.tp-seg-btn')) {
-      box.innerHTML = '<span class="tp-seg-thumb"></span>';
-      [['claude', 'Claude'], ['codex', 'Codex'], ['gemini', 'Gemini']].forEach(([id, lbl]) => {
-        const btn = el('button', 'tp-seg-btn', lbl);
-        btn.type = 'button';
-        btn.dataset.id = id;
-        btn.onclick = () => { chatAgent = id; settings.tpAgent = id; saveSettings(); renderModels(); };
-        box.appendChild(btn);
-      });
-    }
-    
+    if (!box) return;
+    box.innerHTML = '<span class="tp-seg-thumb"></span>';
     let activeBtn = null;
-    box.querySelectorAll('.tp-seg-btn').forEach(btn => {
-      const isActive = chatAgent === btn.dataset.id;
-      btn.className = 'tp-seg-btn' + (isActive ? ' active' : '');
-      if (isActive) activeBtn = btn;
+    agentList.forEach((a) => {
+      const btn = el('button', 'tp-seg-btn' + (chatAgent === a.id ? ' active' : ''), a.label || a.id);
+      btn.type = 'button';
+      btn.dataset.id = a.id;
+      btn.onclick = () => { chatAgent = a.id; settings.tpAgent = a.id; saveSettings(); renderModels(); };
+      box.appendChild(btn);
+      if (chatAgent === a.id) activeBtn = btn;
     });
-    
     // Need a tiny delay for layout to calculate offsetWidth if first time rendering
     requestAnimationFrame(() => updateThumb(box, activeBtn));
+  }
+
+  // ---- Режим «Агент»: CLI правит файл сам ------------------------------------------------------
+  // Плата за автономность — отсутствие подтверждений: агент применяет правки без спроса. Поэтому
+  // режим включается только осознанно и только там, где есть что править: документ должен лежать
+  // на диске (каталог файла станет рабочим), а перед запуском он принудительно сохраняется —
+  // иначе агент правит одну версию, а окно держит другую, и любое автосохранение затрёт чужую работу.
+  function updateAiModeUI() {
+    let activeBtn = null;
+    $$('#doc-ai-mode .tp-seg-btn[data-aimode]').forEach((b) => {
+      const on = b.dataset.aimode === aiMode;
+      b.classList.toggle('active', on);
+      if (on) activeBtn = b;
+    });
+    updateThumb($('#doc-ai-mode'), activeBtn);
+    const ta = $('#doc-ai-chat-input');
+    if (ta && aiMode === 'agent') ta.placeholder = 'Что поручить агенту? Он изменит файл сам';
+    else updateAttachUI();
+  }
+  function setAiMode(m) { aiMode = m; updateAiModeUI(); }
+  async function requestAiMode(m) {
+    if (m === aiMode) return;
+    if (m !== 'agent') { setAiMode('chat'); return; }
+    if (!currentFile) {
+      toast('Агент-режим работает с файлом на диске — сохраните документ', { kind: 'warn' });
+      updateAiModeUI();
+      return;
+    }
+    const agent = agentList.find((a) => a.id === chatAgent);
+    if (agent && agent.canAgent === false) {
+      toast(tf('У агента «{0}» не задан режим правки файлов', agent.label || agent.id), { kind: 'warn' });
+      updateAiModeUI();
+      return;
+    }
+    const dir = dirOf(currentFile);
+    const underGit = await isUnderGit(dir);
+    const text = underGit
+      ? tf('Агент будет сам изменять файлы в каталоге {0} — без подтверждения каждой правки. Каталог под git, правки можно откатить.', dir)
+      : tf('Агент будет сам изменять файлы в каталоге {0} — без подтверждения каждой правки. Каталог НЕ под git, откатить правки будет нечем.', dir);
+    showConfirm(
+      'Включить режим «Агент»?', text,
+      'Включить', () => setAiMode('agent'),
+      'Отмена', () => updateAiModeUI(),
+    );
+  }
+  function dirOf(p) {
+    const s = String(p || '');
+    const i = Math.max(s.lastIndexOf('/'), s.lastIndexOf('\\'));
+    return i > 0 ? s.slice(0, i) : s;
+  }
+  async function isUnderGit(dir) {
+    try { const r = await lite.git.info(dir); return !!(r && !r.error && r.branch); }
+    catch (_) { return false; }
+  }
+
+  // Редактор списка агентов: сам файл tpAgents.json, а не отдельная форма на каждое поле —
+  // набор ключей у CLI разный, и форма устарела бы с первой же новой утилитой.
+  const AGENTS_HINT = 'Массив записей. Поля: id (обязательно), label, cmd, args (массив), via ("arg" — промпт последним аргументом, "stdin" — на вход), pty (true для CLI, требующих TTY), hidden (true — убрать встроенного из списка). Пустой файл = только встроенные.';
+  async function showAgentsEditor() {
+    let raw = '', file = '';
+    try { const r = await lite.tp.agents(); if (r && r.ok) { raw = r.raw || ''; file = r.file || ''; } }
+    catch (_) { /* редактируем с нуля */ }
+    const { m, close } = makeModal(`
+      <h2 class="cm-title">Агенты</h2>
+      <div class="about-desc tp-agents-hint"></div>
+      <textarea id="tp-agents-json" class="tp-agents-json" spellcheck="false" rows="12"></textarea>
+      <div class="tp-agents-file"></div>
+      <div class="modal-actions">
+        <button id="tp-agents-cancel" class="btn">Отмена</button>
+        <button id="tp-agents-save" class="btn primary">Сохранить</button>
+      </div>`);
+    m.querySelector('.tp-agents-hint').textContent = AGENTS_HINT;
+    m.querySelector('.tp-agents-file').textContent = file;
+    const ta = m.querySelector('#tp-agents-json');
+    ta.value = raw || JSON.stringify([{ id: 'agy', label: 'Antigravity', cmd: 'agy', args: ['-p'], via: 'arg', pty: true }], null, 2);
+    ta.focus();
+    m.querySelector('#tp-agents-cancel').onclick = close;
+    m.querySelector('#tp-agents-save').onclick = async () => {
+      const r = await lite.tp.saveAgents(ta.value);
+      if (!r || !r.ok) { toast((r && r.error) || 'Не удалось сохранить', { kind: 'err' }); return; }
+      close();
+      await loadAgents();
+      toast('Список агентов обновлён');
+    };
   }
   async function loadRoles() {
     if (!activeProj) return;
@@ -907,11 +1244,15 @@ export function initTextProc(host) {
     });
   }
 
-  // Контекст для AI-панели: выделенный в документе фрагмент
-  document.addEventListener('selectionchange', () => {
-    if (!docOpen) return;
+  // Контекст для AI-панели: что именно уйдёт агенту при следующем сообщении.
+  function updateCtxIndicator() {
     const ctxText = $('#doc-ai-ctx-text');
     if (!ctxText) return;
+    if (!attachCtx) {
+      ctxText.textContent = 'Документ не приложен — обычный разговор. Скрепка слева от поля ввода прикладывает текст.';
+      ctxText.classList.remove('filled');
+      return;
+    }
     const sel = window.getSelection();
     if (sel && !sel.isCollapsed && getActiveEditor().contains(sel.anchorNode)) {
       const text = sel.toString();
@@ -919,7 +1260,8 @@ export function initTextProc(host) {
     }
     ctxText.textContent = 'Выделите фрагмент в документе — он попадёт сюда. Ответ можно вставить кнопкой «Заменить».';
     ctxText.classList.remove('filled');
-  });
+  }
+  document.addEventListener('selectionchange', () => { if (docOpen) updateCtxIndicator(); });
 
   // ---- Interface for Main ----
   function setDocOpen(open, opts = {}) {
@@ -1277,7 +1619,8 @@ export function initTextProc(host) {
     $('#doc-editor-md').textContent = tab.md;
     updateModeUI();
     updateStatus(dirty ? 'Изменено' : (tab.absPath ? 'Открыт' : 'Новый файл'));
-    
+    if (activeInspectorTab === 'outline') renderOutline();
+
     renderTabsUI();
   }
 

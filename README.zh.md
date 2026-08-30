@@ -191,7 +191,7 @@ npm start          # 打包前端并启动
 这个项目在很大程度上是靠社区长起来的 —— 感谢每一位帮过忙的人。
 
 **Pull request**
-- [@Ainour108](https://github.com/Ainour108) —— 重新设计「文本处理」模块：文档树侧边栏、标签页、智能体回答的实时流式显示、原生文件对话框（[#6](https://github.com/DanielLetto2020/LiteEditorAI/pull/6)）
+- [@Ainour108](https://github.com/Ainour108) —— 重新设计「文本处理」模块：文档树侧边栏、标签页、智能体回答的实时流式显示、原生文件对话框（[#6](https://github.com/DanielLetto2020/LiteEditorAI/pull/6)）、「智能体」模式、上下文回形针、「目录」标签页、可配置的智能体列表以及页面缩放修复（[#10](https://github.com/DanielLetto2020/LiteEditorAI/pull/10)）
 - [@anupamme](https://github.com/anupamme) —— 中继服务器的 `/reports` 端点从查询串密钥改为 `Authorization` 头（[#9](https://github.com/DanielLetto2020/LiteEditorAI/pull/9)）
 
 **缺陷报告**

@@ -871,31 +871,191 @@ ipcMain.handle('tp:saveFileAs', async (e, { content, name, ext } = {}) => {
 
 // Как звать CLI в неинтерактивном режиме и куда подавать промпт (stdin/arg).
 // gemini — официальный Gemini CLI из PATH (идея из PR #6; там был захардкожен macOS-путь Antigravity).
-const TP_AGENTS = {
-  claude: { cmd: 'claude', args: ['-p', '--output-format', 'text'], via: 'stdin' },
-  codex: { cmd: 'codex', args: ['exec'], via: 'arg' },
-  gemini: { cmd: 'gemini', args: ['-p'], via: 'arg' },
+// agentArgs — как звать ту же утилиту в АГЕНТ-режиме: она правит файлы сама, поэтому нужен флаг
+// авто-одобрения (подтверждать в неинтерактивном прогоне некому). Флаги сверены по --help
+// соответствующих CLI; при смене версий сверить заново.
+const TP_BUILTIN_AGENTS = {
+  claude: { label: 'Claude', cmd: 'claude', args: ['-p', '--output-format', 'text'], via: 'stdin', agentArgs: ['--permission-mode', 'acceptEdits', '-p'] },
+  codex: { label: 'Codex', cmd: 'codex', args: ['exec'], via: 'arg', agentArgs: ['exec', '--full-auto'] },
+  gemini: { label: 'Gemini', cmd: 'gemini', args: ['-p'], via: 'arg', agentArgs: ['--yolo', '-p'] },
 };
+// Список агентов расширяется файлом ~/.LiteEditorAI/tpAgents.json — по записи на утилиту:
+//   [{ "id":"agy", "label":"Antigravity", "cmd":"agy", "args":["-p"], "via":"arg", "pty":true }]
+// Запись с существующим id ПЕРЕОПРЕДЕЛЯЕТ встроенную, а "hidden": true убирает её из выбора.
+// Так и добавление новой утилиты (просьба из PR #10 — Antigravity), и удаление разонравившейся
+// (там же — «вырезать Gemini») решаются пользователем, без правки кода под каждую CLI.
+const TP_AGENTS_FILE = () => path.join(storeDir, 'tpAgents.json');
+function tpUserAgents() {
+  try {
+    const raw = fs.readFileSync(TP_AGENTS_FILE(), 'utf8');
+    const arr = JSON.parse(raw);
+    return Array.isArray(arr) ? arr : [];
+  } catch (_) { return []; }   // нет файла или битый JSON — работаем на встроенных
+}
+// id → конфиг запуска. Пользовательские поля берём выборочно: массив args приводим к строкам,
+// via/pty нормализуем, посторонние ключи из файла в spawn не утекают.
+function tpAgents() {
+  const out = {};
+  for (const [id, c] of Object.entries(TP_BUILTIN_AGENTS)) out[id] = { id, ...c };
+  for (const u of tpUserAgents()) {
+    const id = String((u && u.id) || '').trim();
+    if (!id) continue;
+    if (u.hidden) { delete out[id]; continue; }
+    const base = out[id] || {};
+    const cmd = String(u.cmd || base.cmd || '').trim();
+    if (!cmd) continue;
+    out[id] = {
+      id,
+      label: String(u.label || base.label || id),
+      cmd,
+      args: Array.isArray(u.args) ? u.args.map((a) => String(a)) : (base.args || []),
+      via: u.via === 'stdin' ? 'stdin' : (u.via === 'arg' ? 'arg' : (base.via || 'arg')),
+      pty: u.pty === undefined ? !!base.pty : !!u.pty,
+      agentArgs: Array.isArray(u.agentArgs) ? u.agentArgs.map((a) => String(a)) : base.agentArgs,
+    };
+  }
+  return out;
+}
+// Фронту — только то, что нужно для выбора модели (без внутренностей запуска).
+ipcMain.handle('tp:agents', () => ({
+  ok: true,
+  list: Object.values(tpAgents()).map((a) => ({ id: a.id, label: a.label, canAgent: Array.isArray(a.agentArgs) && a.agentArgs.length > 0 })),
+  file: TP_AGENTS_FILE(),
+  raw: (() => { try { return fs.readFileSync(TP_AGENTS_FILE(), 'utf8'); } catch (_) { return ''; } })(),
+}));
+ipcMain.handle('tp:saveAgents', (_e, { text } = {}) => {
+  const src = String(text == null ? '' : text).trim();
+  if (!src) { try { fs.unlinkSync(TP_AGENTS_FILE()); } catch (_) {} return { ok: true, list: Object.values(tpAgents()).map((a) => ({ id: a.id, label: a.label, canAgent: Array.isArray(a.agentArgs) && a.agentArgs.length > 0 })) }; }
+  let arr;
+  try { arr = JSON.parse(src); } catch (e2) { return { ok: false, error: i18n.t('Список агентов — не JSON: {0}', String(e2.message || e2)) }; }
+  if (!Array.isArray(arr)) return { ok: false, error: 'Ожидается массив записей [{ id, cmd, … }]' };
+  for (const u of arr) {
+    if (!u || typeof u !== 'object') return { ok: false, error: i18n.t('Каждая запись — объект { id, cmd, … }') };
+    if (!String(u.id || '').trim()) return { ok: false, error: i18n.t('У записи нет поля id') };
+    if (!u.hidden && !String(u.cmd || '').trim() && !TP_BUILTIN_AGENTS[u.id]) return { ok: false, error: i18n.t('У записи «{0}» нет команды (cmd)', u.id) };
+    if (u.args !== undefined && !Array.isArray(u.args)) return { ok: false, error: i18n.t('Поле args у записи «{0}» должно быть массивом', u.id) };
+  }
+  ensureStoreDir();
+  try { atomicWriteSync(TP_AGENTS_FILE(), JSON.stringify(arr, null, 2)); }
+  catch (e2) { return { ok: false, error: String(e2.message || e2) }; }
+  const list = Object.values(tpAgents()).map((a) => ({ id: a.id, label: a.label, canAgent: Array.isArray(a.agentArgs) && a.agentArgs.length > 0 }));
+  if (!list.length) return { ok: false, error: 'Так не остаётся ни одного агента — верните хотя бы одного' };
+  return { ok: true, list };
+});
 // GUI-сессия часто не видит ~/.local/bin и nvm-bin → дополняем PATH, чтобы claude/codex нашлись.
+// Запущенное из меню/Dock приложение наследует минимальный PATH: nvm, Homebrew и npm-global в нём
+// отсутствуют, и агент «не найден», хотя в терминале работает (та же беда, из-за которой лаунчер
+// прописывает каталог node — см. CLAUDE.md). Спрашиваем PATH у логин-шелла ОДИН раз.
+// В PR #10 это делалось execFileSync прямо в tpEnv(): main-процесс вставал на время запуска шелла,
+// а интерактивный rc (спиннеры, менеджеры версий, ожидание ввода) мог подвесить редактор совсем.
+// Поэтому: асинхронно, в фоне после старта, с таймаутом и stdin из /dev/null; до готовности
+// работаем на прежнем PATH — первый запрос просто не получит расширения.
+let loginPath = '';        // '' = ещё не знаем или не вышло
+let loginPathTried = false;
+function probeLoginPath() {
+  if (loginPathTried || process.platform === 'win32') return;
+  loginPathTried = true;
+  const shell = process.env.SHELL || '/bin/bash';
+  // -lic: rc-файлы (nvm живёт в .bashrc/.zshrc) читаются только интерактивным шеллом.
+  const probe = execFile(shell, ['-lic', 'printf "%s" "$PATH"'], { timeout: 3000, killSignal: 'SIGKILL', encoding: 'utf8' }, (err, stdout) => {
+    if (err) { logger.log('warn', 'tp', `не удалось прочитать PATH логин-шелла: ${err.message || err}`); return; }
+    // Интерактивный шелл мог что-то напечатать от себя — PATH идёт последней непустой строкой.
+    const line = String(stdout || '').trim().split('\n').filter(Boolean).pop() || '';
+    if (line.includes(path.sep)) loginPath = line;
+  });
+  // Закрываем шеллу stdin: интерактивный rc, решивший что-то спросить, иначе ждал бы ввода до таймаута.
+  try { probe.stdin.end(); } catch (_) {}
+}
 function tpEnv() {
   const sep = process.platform === 'win32' ? ';' : ':';
-  const extra = [path.join(os.homedir(), '.local', 'bin'), path.dirname(process.execPath)];
+  const extra = [
+    loginPath,
+    ...(process.platform === 'darwin' ? ['/opt/homebrew/bin', '/usr/local/bin'] : []),
+    path.join(os.homedir(), '.local', 'bin'),
+    path.dirname(process.execPath),
+  ].filter(Boolean);
   return { ...process.env, PATH: extra.join(sep) + sep + (process.env.PATH || '') };
 }
+// ---- Единый разбор «агент не авторизован» ---------------------------------------------------
+// CLI-агенты запускаются неинтерактивно: свой запрос логина показать нам они не могут, и он
+// приходит обычным текстом в stdout/stderr. В чате это выглядело как ОТВЕТ агента (а с кнопкой
+// «Заменить» его ещё и предлагалось вставить в документ). Ловим типовые формулировки известных
+// утилит и возвращаем фронту готовую подсказку с командой входа. Идея — PR #10 (@Ainour108).
+const TP_LOGIN_CMD = {
+  claude: 'claude',      // внутри сессии: /login
+  codex: 'codex login',
+  gemini: 'gemini',      // мастер входа на первом экране
+};
+const TP_AUTH_RE = [
+  /\bnot logged ?in\b/i,
+  /\bauthentication required\b/i,
+  /\bplease (?:run )?(?:\/)?login\b/i,
+  /\byou (?:must|need to) (?:log ?in|sign ?in|authenticate)\b/i,
+  /\bsign in with google\b/i,
+  /\bunauthorized\b/i,
+  /\b401\b[^\n]{0,40}\b(?:unauthorized|auth)/i,
+  /\b(?:invalid|missing|expired)\s+(?:api\s*key|credentials?|token)\b/i,
+  /\bsession (?:has )?expired\b/i,
+];
+// → { authRequired, loginCmd, error } если текст похож на отказ по авторизации, иначе null.
+function tpAuthProblem(cmd, text) {
+  const s = String(text || '');
+  if (!s.trim()) return null;
+  if (!TP_AUTH_RE.some((re) => re.test(s))) return null;
+  const loginCmd = TP_LOGIN_CMD[cmd] || cmd;
+  // Одной строкой-шаблоном, а не конкатенацией: иначе экстрактор растащит фразу на обрывки
+  // («Агент «», «» не авторизован…»), и перевести её было бы нечем.
+  return {
+    authRequired: true,
+    loginCmd,
+    error: i18n.t('Агент «{0}» не авторизован. Выполните в терминале: {1} — войдите в аккаунт и повторите запрос.\n\nОтвет агента:\n{2}',
+      cmd, loginCmd, s.trim().slice(0, 600)),
+  };
+}
+
 const tpReqs = new Map(); // reqId -> ChildProcess
 // Живой стриминг ответа в чат (tp:data, идея из PR #6), но через spawn как раньше — БЕЗ PTY:
 // под PTY stderr сливается в stdout, CLI видит TTY (спиннеры/контрол-коды), терминал эхоит промпт,
 // а \x04 не является EOF под ConPTY (Windows зависал бы до таймаута). stdout чист — стримим как есть.
-ipcMain.on('tp:run', (e, { reqId, agent, prompt } = {}) => {
+// Агент-режим: та же утилита, но с флагом авто-одобрения и рабочим каталогом = папка документа.
+// Она правит файлы САМА, поэтому:
+//  · cwd обязателен и проверяется здесь (без него — отказ). Никакого os.homedir() по умолчанию:
+//    промах рабочим каталогом означал бы автономные правки во всём домашнем каталоге;
+//  · промпт всегда идёт аргументом (у агентных вызовов свой набор флагов, via не применяется).
+function tpAgentRun(sender, { reqId, conf, prompt, cwd }) {
+  if (!Array.isArray(conf.agentArgs) || !conf.agentArgs.length) {
+    safeSend(sender, 'tp:error', { reqId, error: i18n.t('У агента «{0}» не задан режим правки файлов (agentArgs)', conf.id) });
+    return null;
+  }
+  let stat = null;
+  try { stat = fs.statSync(String(cwd || '')); } catch (_) { /* ниже */ }
+  if (!stat || !stat.isDirectory()) {
+    safeSend(sender, 'tp:error', { reqId, error: i18n.t('Агент-режим требует каталог документа: сохраните файл на диск') });
+    return null;
+  }
+  return { args: [...conf.agentArgs, prompt || ''], cwd, viaStdin: false };
+}
+
+ipcMain.on('tp:run', (e, { reqId, agent, prompt, mode, cwd } = {}) => {
   const sender = e.sender;
-  const conf = TP_AGENTS[agent] || TP_AGENTS.claude;
-  const args = conf.via === 'arg' ? [...conf.args, prompt || ''] : [...conf.args];
+  const all = tpAgents();
+  const conf = all[agent] || all.claude || Object.values(all)[0];
+  if (!conf) { safeSend(sender, 'tp:error', { reqId, error: i18n.t('не настроено ни одного агента') }); return; }
+  let plan;
+  if (mode === 'agent') {
+    plan = tpAgentRun(sender, { reqId, conf, prompt, cwd });
+    if (!plan) return;                       // причина уже отправлена
+  } else {
+    plan = { args: conf.via === 'arg' ? [...conf.args, prompt || ''] : [...conf.args], cwd: os.homedir(), viaStdin: conf.via === 'stdin' };
+  }
+  const args = plan.args;
   let child;
-  try { child = spawn(conf.cmd, args, { cwd: os.homedir(), env: tpEnv() }); }
+  try { child = spawn(conf.cmd, args, { cwd: plan.cwd, env: tpEnv() }); }
   catch (err) { safeSend(sender, 'tp:error', { reqId, error: 'не запустить «' + conf.cmd + '»: ' + (err.message || err) }); return; }
   tpReqs.set(reqId, child);
   let out = '', errOut = '';
-  const to = setTimeout(() => { if (tpReqs.has(reqId)) { tpReqs.delete(reqId); try { child.kill(); } catch (_) {} safeSend(sender, 'tp:error', { reqId, error: 'таймаут (агент не ответил вовремя)' }); } }, 240000);
+  // Агент-режим обходит файлы и правит их — 4 минут ему мало; чат отвечает одним куском.
+  const to = setTimeout(() => { if (tpReqs.has(reqId)) { tpReqs.delete(reqId); try { child.kill(); } catch (_) {} safeSend(sender, 'tp:error', { reqId, error: i18n.t('таймаут (агент не ответил вовремя)') }); } }, mode === 'agent' ? 900000 : 240000);
   child.stdout.on('data', (c) => { const chunk = c.toString('utf8'); out += chunk; safeSend(sender, 'tp:data', { reqId, chunk }); });
   child.stderr.on('data', (c) => { errOut += c.toString('utf8'); });
   child.on('error', (err) => {
@@ -905,10 +1065,28 @@ ipcMain.on('tp:run', (e, { reqId, agent, prompt } = {}) => {
   child.on('close', (code) => {
     if (!tpReqs.has(reqId)) return; tpReqs.delete(reqId); clearTimeout(to);
     const text = out.trim();
+    // Отказ по авторизации приходит обычным текстом и выглядел бы как ответ агента — ловим раньше.
+    // Но модуль обработки ТЕКСТА: агента вполне могут попросить написать раздел про логин, и в
+    // удачном длинном ответе «not logged in» — цитата, а не отказ. Поэтому разбираем только то,
+    // что на удачный ответ не похоже: ненулевой код или короткий вывод.
+    const auth = (code !== 0 || text.length < 400) ? tpAuthProblem(conf.cmd, text + '\n' + errOut) : null;
+    if (auth) { safeSend(sender, 'tp:error', { reqId, ...auth }); return; }
     if (text) safeSend(sender, 'tp:done', { reqId, text }); // непустой вывод = результат (даже при ненулевом коде)
     else safeSend(sender, 'tp:error', { reqId, error: errOut.trim() || ('агент завершился с кодом ' + code) });
   });
-  if (conf.via === 'stdin') { try { child.stdin.write(prompt || ''); child.stdin.end(); } catch (_) {} }
+  if (plan.viaStdin) { try { child.stdin.write(prompt || ''); child.stdin.end(); } catch (_) {} }
+});
+
+// Остановить работающего агента. В агент-режиме это не удобство, а необходимость: до сих пор
+// запущенный процесс нельзя было прервать ничем, кроме таймаута, — а он в это время правит файлы.
+// Бьём ровно по своему процессу (никаких групп и шаблонов имён), с добиванием, если не внял.
+ipcMain.on('tp:cancel', (e, { reqId } = {}) => {
+  const child = tpReqs.get(reqId);
+  if (!child) return;
+  tpReqs.delete(reqId);
+  try { child.kill('SIGTERM'); } catch (_) {}
+  setTimeout(() => { try { if (child.exitCode === null && !child.killed) child.kill('SIGKILL'); } catch (_) {} }, 3000);
+  safeSend(e.sender, 'tp:error', { reqId, error: i18n.t('Остановлено') });
 });
 
 // ---------------------------------------------------------------- AI-DB (read-only SQL chat)
@@ -2837,7 +3015,22 @@ app.whenReady().then(() => {
   } catch (_) {}
   const gpu = !(process.env.LITE_NO_GPU === '1' || process.env.LITE_SOFTWARE_RENDER === '1');
   logger.log('info', 'app', `ready — electron ${process.versions.electron}, chrome ${process.versions.chrome}, node ${process.versions.node}, gpu=${gpu}`);
-  Menu.setApplicationMenu(null); // we draw our own menu in the custom titlebar
+  probeLoginPath(); // фоном: PATH логин-шелла для CLI-агентов «Обработки текста»
+  // Своё меню мы рисуем в титлбаре, поэтому системное не нужно — но на macOS оно ещё и держит
+  // системные ускорители: без меню в приложении не работают Cmd+C/V/X/A и Cmd+Q, а About/Hide
+  // недоступны совсем. Поэтому там ставим минимальное меню из ролей (идея PR #10), на остальных
+  // платформах — как было, без меню.
+  Menu.setApplicationMenu(process.platform === 'darwin' ? Menu.buildFromTemplate([
+    { role: 'appMenu' },
+    { label: i18n.t('Правка'), submenu: [
+      { role: 'undo' }, { role: 'redo' }, { type: 'separator' },
+      { role: 'cut' }, { role: 'copy' }, { role: 'paste' }, { role: 'selectAll' },
+    ] },
+    { label: i18n.t('Окно'), submenu: [
+      { role: 'minimize' }, { role: 'zoom' }, { type: 'separator' },
+      { role: 'togglefullscreen' }, { type: 'separator' }, { role: 'close' },
+    ] },
+  ]) : null);
   createWindow();
   createTray();
   // Переоткрыть окна модулей, открытые в прошлой сессии (проектозависимые подхватят активный
