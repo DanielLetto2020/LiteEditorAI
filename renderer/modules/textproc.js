@@ -9,7 +9,7 @@ import { marked } from 'marked';
 import katex from 'katex/dist/katex.mjs';
 import 'katex/dist/katex.min.css';
 import DOMPurify from 'dompurify';
-import { baseName } from '../ui.js';
+import { baseName, makeModal } from '../ui.js';
 
 const $ = (s) => document.querySelector(s);
 const $$ = (s) => Array.from(document.querySelectorAll(s));
@@ -243,7 +243,9 @@ export function initTextProc(host) {
   let activeTabId = null;
   let nextTabId = 1;
   let activeProj = null;
-  let chatAgent = ['claude', 'codex', 'gemini'].includes(settings.tpAgent) ? settings.tpAgent : 'claude';
+  // Список агентов задаёт main (встроенные + ~/.LiteEditorAI/tpAgents.json) — тут только выбранный id.
+  let agentList = [{ id: 'claude', label: 'Claude' }, { id: 'codex', label: 'Codex' }, { id: 'gemini', label: 'Gemini' }];
+  let chatAgent = settings.tpAgent || 'claude';
   let chatRole = 'Без роли';
   let chatLog = [];
   let aiSeq = 0;
@@ -408,9 +410,11 @@ export function initTextProc(host) {
     $('#doc-undo-btn').onclick = () => { getActiveEditor().focus(); document.execCommand('undo'); };
     $('#doc-redo-btn').onclick = () => { getActiveEditor().focus(); document.execCommand('redo'); };
 
-    renderModels();
+    loadAgents();
     renderRoles();
     renderSymbols();
+    const agentsBtn = $('#doc-ai-agents-cfg');
+    if (agentsBtn) agentsBtn.onclick = showAgentsEditor;
 
     const fi = $('#doc-formula-input');
     fi.oninput = renderFormulaCardPreview;
@@ -958,29 +962,62 @@ export function initTextProc(host) {
     const prompt = await composePrompt(sel, instruction);
     lite.tp.run({ reqId: am.reqId, agent: chatAgent, prompt });
   }
+  // Перечень моделей — из main: встроенные + пользовательские (tpAgents.json). Поэтому строим
+  // сегмент заново на каждый renderModels: список может поменяться после правки настроек.
+  async function loadAgents() {
+    try {
+      const r = await lite.tp.agents();
+      if (r && r.ok && Array.isArray(r.list) && r.list.length) agentList = r.list;
+    } catch (_) { /* остаёмся на встроенном списке */ }
+    if (!agentList.some((a) => a.id === chatAgent)) chatAgent = agentList[0].id;
+    renderModels();
+  }
   function renderModels() {
     const box = $('#doc-ai-models');
-    // в разметке уже лежит .tp-seg-thumb → children.length===0 не срабатывало никогда, кнопки моделей не строились
-    if (!box.querySelector('.tp-seg-btn')) {
-      box.innerHTML = '<span class="tp-seg-thumb"></span>';
-      [['claude', 'Claude'], ['codex', 'Codex'], ['gemini', 'Gemini']].forEach(([id, lbl]) => {
-        const btn = el('button', 'tp-seg-btn', lbl);
-        btn.type = 'button';
-        btn.dataset.id = id;
-        btn.onclick = () => { chatAgent = id; settings.tpAgent = id; saveSettings(); renderModels(); };
-        box.appendChild(btn);
-      });
-    }
-    
+    if (!box) return;
+    box.innerHTML = '<span class="tp-seg-thumb"></span>';
     let activeBtn = null;
-    box.querySelectorAll('.tp-seg-btn').forEach(btn => {
-      const isActive = chatAgent === btn.dataset.id;
-      btn.className = 'tp-seg-btn' + (isActive ? ' active' : '');
-      if (isActive) activeBtn = btn;
+    agentList.forEach((a) => {
+      const btn = el('button', 'tp-seg-btn' + (chatAgent === a.id ? ' active' : ''), a.label || a.id);
+      btn.type = 'button';
+      btn.dataset.id = a.id;
+      btn.onclick = () => { chatAgent = a.id; settings.tpAgent = a.id; saveSettings(); renderModels(); };
+      box.appendChild(btn);
+      if (chatAgent === a.id) activeBtn = btn;
     });
-    
     // Need a tiny delay for layout to calculate offsetWidth if first time rendering
     requestAnimationFrame(() => updateThumb(box, activeBtn));
+  }
+
+  // Редактор списка агентов: сам файл tpAgents.json, а не отдельная форма на каждое поле —
+  // набор ключей у CLI разный, и форма устарела бы с первой же новой утилитой.
+  const AGENTS_HINT = 'Массив записей. Поля: id (обязательно), label, cmd, args (массив), via ("arg" — промпт последним аргументом, "stdin" — на вход), pty (true для CLI, требующих TTY), hidden (true — убрать встроенного из списка). Пустой файл = только встроенные.';
+  async function showAgentsEditor() {
+    let raw = '', file = '';
+    try { const r = await lite.tp.agents(); if (r && r.ok) { raw = r.raw || ''; file = r.file || ''; } }
+    catch (_) { /* редактируем с нуля */ }
+    const { m, close } = makeModal(`
+      <h2 class="cm-title">Агенты</h2>
+      <div class="about-desc tp-agents-hint"></div>
+      <textarea id="tp-agents-json" class="tp-agents-json" spellcheck="false" rows="12"></textarea>
+      <div class="tp-agents-file"></div>
+      <div class="modal-actions">
+        <button id="tp-agents-cancel" class="btn">Отмена</button>
+        <button id="tp-agents-save" class="btn primary">Сохранить</button>
+      </div>`);
+    m.querySelector('.tp-agents-hint').textContent = AGENTS_HINT;
+    m.querySelector('.tp-agents-file').textContent = file;
+    const ta = m.querySelector('#tp-agents-json');
+    ta.value = raw || JSON.stringify([{ id: 'agy', label: 'Antigravity', cmd: 'agy', args: ['-p'], via: 'arg', pty: true }], null, 2);
+    ta.focus();
+    m.querySelector('#tp-agents-cancel').onclick = close;
+    m.querySelector('#tp-agents-save').onclick = async () => {
+      const r = await lite.tp.saveAgents(ta.value);
+      if (!r || !r.ok) { toast((r && r.error) || 'Не удалось сохранить', { kind: 'err' }); return; }
+      close();
+      await loadAgents();
+      toast('Список агентов обновлён');
+    };
   }
   async function loadRoles() {
     if (!activeProj) return;

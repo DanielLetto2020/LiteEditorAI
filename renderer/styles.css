@@ -4424,6 +4424,15 @@ body.preview-full .prev-frame { width: 100%; height: 100%; }
   width: 32px; height: 32px; flex: none; border-radius: 10px; border: none; background: var(--tp-accent); color: #fff;
   cursor: pointer; display: inline-flex; align-items: center; justify-content: center; box-shadow: 0 3px 10px rgba(10,132,255,.4);
 }
+/* ---- редактор списка агентов (модалка) ---- */
+.tp-agents-hint { line-height: 1.45; margin-bottom: 10px; }
+.tp-agents-json {
+  width: 100%; box-sizing: border-box; resize: vertical; font-family: var(--mono, monospace); font-size: 12.5px;
+  line-height: 1.5; padding: 10px; border-radius: 10px; border: 1px solid var(--border);
+  background: var(--surface-2); color: var(--text);
+}
+.tp-agents-file { margin: 8px 0 2px; font-size: 11.5px; color: var(--text-dim); word-break: break-all; }
+
 /* ---- тулбар: перенос лишних кнопок в «⋯» ---- */
 .tp-pill { overflow: hidden; max-width: 100%; }
 .tp-pill > * { flex: none; }                 /* без сжатия — иначе иконки наезжают вместо переноса */

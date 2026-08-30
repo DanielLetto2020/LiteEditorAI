@@ -871,11 +871,73 @@ ipcMain.handle('tp:saveFileAs', async (e, { content, name, ext } = {}) => {
 
 // Как звать CLI в неинтерактивном режиме и куда подавать промпт (stdin/arg).
 // gemini — официальный Gemini CLI из PATH (идея из PR #6; там был захардкожен macOS-путь Antigravity).
-const TP_AGENTS = {
-  claude: { cmd: 'claude', args: ['-p', '--output-format', 'text'], via: 'stdin' },
-  codex: { cmd: 'codex', args: ['exec'], via: 'arg' },
-  gemini: { cmd: 'gemini', args: ['-p'], via: 'arg' },
+const TP_BUILTIN_AGENTS = {
+  claude: { label: 'Claude', cmd: 'claude', args: ['-p', '--output-format', 'text'], via: 'stdin' },
+  codex: { label: 'Codex', cmd: 'codex', args: ['exec'], via: 'arg' },
+  gemini: { label: 'Gemini', cmd: 'gemini', args: ['-p'], via: 'arg' },
 };
+// Список агентов расширяется файлом ~/.LiteEditorAI/tpAgents.json — по записи на утилиту:
+//   [{ "id":"agy", "label":"Antigravity", "cmd":"agy", "args":["-p"], "via":"arg", "pty":true }]
+// Запись с существующим id ПЕРЕОПРЕДЕЛЯЕТ встроенную, а "hidden": true убирает её из выбора.
+// Так и добавление новой утилиты (просьба из PR #10 — Antigravity), и удаление разонравившейся
+// (там же — «вырезать Gemini») решаются пользователем, без правки кода под каждую CLI.
+const TP_AGENTS_FILE = () => path.join(storeDir, 'tpAgents.json');
+function tpUserAgents() {
+  try {
+    const raw = fs.readFileSync(TP_AGENTS_FILE(), 'utf8');
+    const arr = JSON.parse(raw);
+    return Array.isArray(arr) ? arr : [];
+  } catch (_) { return []; }   // нет файла или битый JSON — работаем на встроенных
+}
+// id → конфиг запуска. Пользовательские поля берём выборочно: массив args приводим к строкам,
+// via/pty нормализуем, посторонние ключи из файла в spawn не утекают.
+function tpAgents() {
+  const out = {};
+  for (const [id, c] of Object.entries(TP_BUILTIN_AGENTS)) out[id] = { id, ...c };
+  for (const u of tpUserAgents()) {
+    const id = String((u && u.id) || '').trim();
+    if (!id) continue;
+    if (u.hidden) { delete out[id]; continue; }
+    const base = out[id] || {};
+    const cmd = String(u.cmd || base.cmd || '').trim();
+    if (!cmd) continue;
+    out[id] = {
+      id,
+      label: String(u.label || base.label || id),
+      cmd,
+      args: Array.isArray(u.args) ? u.args.map((a) => String(a)) : (base.args || []),
+      via: u.via === 'stdin' ? 'stdin' : (u.via === 'arg' ? 'arg' : (base.via || 'arg')),
+      pty: u.pty === undefined ? !!base.pty : !!u.pty,
+    };
+  }
+  return out;
+}
+// Фронту — только то, что нужно для выбора модели (без внутренностей запуска).
+ipcMain.handle('tp:agents', () => ({
+  ok: true,
+  list: Object.values(tpAgents()).map((a) => ({ id: a.id, label: a.label })),
+  file: TP_AGENTS_FILE(),
+  raw: (() => { try { return fs.readFileSync(TP_AGENTS_FILE(), 'utf8'); } catch (_) { return ''; } })(),
+}));
+ipcMain.handle('tp:saveAgents', (_e, { text } = {}) => {
+  const src = String(text == null ? '' : text).trim();
+  if (!src) { try { fs.unlinkSync(TP_AGENTS_FILE()); } catch (_) {} return { ok: true, list: Object.values(tpAgents()).map((a) => ({ id: a.id, label: a.label })) }; }
+  let arr;
+  try { arr = JSON.parse(src); } catch (e2) { return { ok: false, error: i18n.t('Список агентов — не JSON: {0}', String(e2.message || e2)) }; }
+  if (!Array.isArray(arr)) return { ok: false, error: 'Ожидается массив записей [{ id, cmd, … }]' };
+  for (const u of arr) {
+    if (!u || typeof u !== 'object') return { ok: false, error: i18n.t('Каждая запись — объект { id, cmd, … }') };
+    if (!String(u.id || '').trim()) return { ok: false, error: i18n.t('У записи нет поля id') };
+    if (!u.hidden && !String(u.cmd || '').trim() && !TP_BUILTIN_AGENTS[u.id]) return { ok: false, error: i18n.t('У записи «{0}» нет команды (cmd)', u.id) };
+    if (u.args !== undefined && !Array.isArray(u.args)) return { ok: false, error: i18n.t('Поле args у записи «{0}» должно быть массивом', u.id) };
+  }
+  ensureStoreDir();
+  try { atomicWriteSync(TP_AGENTS_FILE(), JSON.stringify(arr, null, 2)); }
+  catch (e2) { return { ok: false, error: String(e2.message || e2) }; }
+  const list = Object.values(tpAgents()).map((a) => ({ id: a.id, label: a.label }));
+  if (!list.length) return { ok: false, error: 'Так не остаётся ни одного агента — верните хотя бы одного' };
+  return { ok: true, list };
+});
 // GUI-сессия часто не видит ~/.local/bin и nvm-bin → дополняем PATH, чтобы claude/codex нашлись.
 function tpEnv() {
   const sep = process.platform === 'win32' ? ';' : ':';
@@ -925,7 +987,9 @@ const tpReqs = new Map(); // reqId -> ChildProcess
 // а \x04 не является EOF под ConPTY (Windows зависал бы до таймаута). stdout чист — стримим как есть.
 ipcMain.on('tp:run', (e, { reqId, agent, prompt } = {}) => {
   const sender = e.sender;
-  const conf = TP_AGENTS[agent] || TP_AGENTS.claude;
+  const all = tpAgents();
+  const conf = all[agent] || all.claude || Object.values(all)[0];
+  if (!conf) { safeSend(sender, 'tp:error', { reqId, error: 'не настроено ни одного агента' }); return; }
   const args = conf.via === 'arg' ? [...conf.args, prompt || ''] : [...conf.args];
   let child;
   try { child = spawn(conf.cmd, args, { cwd: os.homedir(), env: tpEnv() }); }

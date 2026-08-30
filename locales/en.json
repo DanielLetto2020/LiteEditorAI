@@ -4143,5 +4143,17 @@
  "Скопировать команду входа": "Copy the sign-in command",
  "Заголовков нет. Разметьте текст: «# Заголовок», «## Подзаголовок».": "No headings yet. Mark the text up: \"# Heading\", \"## Subheading\".",
  "Содержание": "Outline",
- "Ещё инструменты": "More tools"
+ "Ещё инструменты": "More tools",
+ "Агенты": "Agents",
+ "Каждая запись — объект { id, cmd, … }": "Every entry must be an object { id, cmd, … }",
+ "Массив записей. Поля: id (обязательно), label, cmd, args (массив), via (\"arg\" — промпт последним аргументом, \"stdin\" — на вход), pty (true для CLI, требующих TTY), hidden (true — убрать встроенного из списка). Пустой файл = только встроенные.": "An array of entries. Fields: id (required), label, cmd, args (array), via (\"arg\" — prompt as the last argument, \"stdin\" — on standard input), pty (true for CLIs that need a TTY), hidden (true — remove a built-in one from the list). An empty file means built-ins only.",
+ "Настроить агентов": "Configure agents",
+ "не настроено ни одного агента": "no agents configured",
+ "Ожидается массив записей [{ id, cmd, … }]": "An array of entries [{ id, cmd, … }] is expected",
+ "Поле args у записи «{0}» должно быть массивом": "The args field of entry \"{0}\" must be an array",
+ "Список агентов — не JSON: {0}": "The agent list is not valid JSON: {0}",
+ "Список агентов обновлён": "Agent list updated",
+ "Так не остаётся ни одного агента — верните хотя бы одного": "That leaves no agents at all — bring at least one back",
+ "У записи «{0}» нет команды (cmd)": "Entry \"{0}\" has no command (cmd)",
+ "У записи нет поля id": "An entry has no id field"
 }
