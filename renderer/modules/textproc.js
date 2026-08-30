@@ -208,6 +208,11 @@ function htmlToMd(root) {
     if (n.nodeType !== Node.ELEMENT_NODE) return '';
     if (n.classList.contains('tp-frontmatter')) return '---\n' + (n.dataset.fm || '') + '\n---\n\n';
     if (n.classList.contains('tp-formula-block')) return wrapBlock(n) + '\n\n';
+    // Инлайн-формула может оказаться и прямым ребёнком корня: блочная формула внутри абзаца
+    // разрывает <p> (div в p недопустим), и хвост абзаца вываливается наружу. Без этой ветки
+    // span уходил в default → inlineOf → и формула превращалась в текст KaTeX-рендера
+    // («xix\_ixi») — молчаливая потеря содержимого при первом же сохранении.
+    if (n.classList.contains('tp-formula-inline')) return wrapInline(n);
     const tag = n.tagName.toLowerCase();
     switch (tag) {
       case 'h1': case 'h2': case 'h3': case 'h4': case 'h5': case 'h6':
