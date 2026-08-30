@@ -4424,6 +4424,22 @@ body.preview-full .prev-frame { width: 100%; height: 100%; }
   width: 32px; height: 32px; flex: none; border-radius: 10px; border: none; background: var(--tp-accent); color: #fff;
   cursor: pointer; display: inline-flex; align-items: center; justify-content: center; box-shadow: 0 3px 10px rgba(10,132,255,.4);
 }
+/* ---- вкладка «Содержание»: навигация по заголовкам ---- */
+.tp-panel-outline { flex: 1; min-height: 0; overflow: auto; padding: 4px 2px 10px; }
+.tp-outline { display: flex; flex-direction: column; gap: 1px; }
+.tp-outline-item {
+  text-align: left; background: transparent; border: none; color: var(--tp-text); cursor: pointer;
+  font: inherit; font-size: 12.5px; line-height: 1.35; padding: 6px 8px; border-radius: 8px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.tp-outline-item:hover { background: var(--tp-hover); }
+.tp-outline-item.lvl0 { font-weight: 600; }
+.tp-outline-item.lvl1 { padding-left: 20px; }
+.tp-outline-item.lvl2 { padding-left: 32px; color: var(--tp-text-3); }
+.tp-outline-item.lvl3 { padding-left: 44px; color: var(--tp-text-3); font-size: 12px; }
+.tp-outline-empty { padding: 10px 8px; color: var(--tp-text-3); font-size: 12.5px; line-height: 1.45; }
+.tp-panel-outline[hidden] { display: none !important; }
+
 /* пузырь-ошибка агента: видно, что это не ответ (и «Заменить» у него нет) */
 .tp-bubble.tp-bubble-err { border: 1px solid var(--tp-danger-border, rgba(255,69,58,.35)); background: rgba(255,69,58,.08); white-space: pre-wrap; }
 

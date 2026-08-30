@@ -261,6 +261,7 @@ export function initTextProc(host) {
   function htmlDocWrap(inner) { return '<!doctype html><html><head><meta charset="utf-8"></head><body>' + inner + '</body></html>'; }
   function markDirty() {
     dirty = true;
+    scheduleOutline();
     if (typeof saveCurrentTabState === 'function') { saveCurrentTabState(); if (typeof renderTabsUI === 'function') renderTabsUI(); }
     scheduleAutosave();
   }
@@ -512,6 +513,7 @@ export function initTextProc(host) {
     else { $('#doc-editor-wysiwyg').innerHTML = DOMPurify.sanitize(mdToHtml($('#doc-editor-md').textContent), SANITIZE); }
     mode = m;
     updateModeUI();
+    if (activeInspectorTab === 'outline') renderOutline();
   }
   function updateModeUI() {
     let activeBtn = null;
@@ -534,6 +536,76 @@ export function initTextProc(host) {
     updateThumb($('#doc-inspector-tabs'), activeBtn);
     $('#doc-panel-edit').hidden = t !== 'edit';
     $('#doc-panel-ai').hidden = t !== 'ai';
+    const outline = $('#doc-panel-outline');
+    if (outline) outline.hidden = t !== 'outline';
+    activeInspectorTab = t;
+    if (t === 'outline') renderOutline();
+  }
+
+  // ---- Содержание: навигация по заголовкам документа ------------------------------------------
+  // Работает в обоих режимах: в «Разметке» — по элементам h1…h6, в «Markdown» — по строкам вида
+  // «## Заголовок» (там DOM плоский, элементов заголовков просто нет).
+  let activeInspectorTab = 'ai';
+  let outlineT = null;
+  function collectHeadings() {
+    if (mode === 'markdown') {
+      const src = $('#doc-editor-md').textContent || '';
+      const out = [];
+      let pos = 0, fence = false;
+      for (const line of src.split('\n')) {
+        if (/^\s*(```|~~~)/.test(line)) fence = !fence;   // «#» внутри блока кода — не заголовок
+        const m = !fence && /^(#{1,6})\s+(.+?)\s*#*\s*$/.exec(line);
+        if (m) out.push({ level: m[1].length, text: m[2], pos });
+        pos += line.length + 1;
+      }
+      return out;
+    }
+    return Array.from($('#doc-editor-wysiwyg').querySelectorAll('h1,h2,h3,h4,h5,h6'))
+      .map((node) => ({ level: +node.tagName[1], text: (node.textContent || '').trim(), node }))
+      .filter((h) => h.text);
+  }
+  function gotoHeading(h) {
+    if (mode === 'markdown') {
+      // Скролл к строке: ставим Range на позицию заголовка в текстовом узле редактора.
+      const ed = $('#doc-editor-md');
+      const tn = ed.firstChild;
+      if (!tn || tn.nodeType !== Node.TEXT_NODE) { ed.scrollIntoView({ block: 'start' }); return; }
+      const r = document.createRange();
+      const at = Math.min(h.pos, tn.length);
+      r.setStart(tn, at); r.setEnd(tn, Math.min(at + 1, tn.length));
+      const sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(r);
+      const rect = r.getBoundingClientRect();
+      const canvas = document.querySelector('.tp-canvas');
+      if (canvas && rect.height) canvas.scrollTop += rect.top - canvas.getBoundingClientRect().top - 80;
+      ed.focus();
+      return;
+    }
+    if (h.node) h.node.scrollIntoView({ block: 'start', behavior: 'smooth' });
+  }
+  function renderOutline() {
+    const box = $('#doc-outline');
+    if (!box) return;
+    const items = collectHeadings();
+    box.innerHTML = '';
+    if (!items.length) {
+      box.appendChild(el('div', 'tp-outline-empty', 'Заголовков нет. Разметьте текст: «# Заголовок», «## Подзаголовок».'));
+      return;
+    }
+    const min = Math.min(...items.map((h) => h.level));
+    items.forEach((h) => {
+      const row = el('button', 'tp-outline-item lvl' + Math.min(h.level - min, 3), h.text);
+      row.type = 'button';
+      row.title = h.text;
+      row.onclick = () => gotoHeading(h);
+      box.appendChild(row);
+    });
+  }
+  // Содержание живое: правки заголовков видны без переключения вкладок (но перерисовываем
+  // только когда вкладка открыта — на каждый набранный символ строить список незачем).
+  function scheduleOutline() {
+    if (activeInspectorTab !== 'outline') return;
+    clearTimeout(outlineT);
+    outlineT = setTimeout(renderOutline, 400);
   }
 
   function execCmd(cmd, val = null) {
@@ -1328,7 +1400,8 @@ export function initTextProc(host) {
     $('#doc-editor-md').textContent = tab.md;
     updateModeUI();
     updateStatus(dirty ? 'Изменено' : (tab.absPath ? 'Открыт' : 'Новый файл'));
-    
+    if (activeInspectorTab === 'outline') renderOutline();
+
     renderTabsUI();
   }
 
