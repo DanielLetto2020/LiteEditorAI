@@ -18,7 +18,7 @@ marked.setOptions({ breaks: true });
 
 // Один набор для ВСЕХ мест санитизации: атрибуты наших неразрушимых блоков (формулы, front matter)
 // должны переживать DOMPurify, иначе исходник из data-* теряется и обратная конвертация его не вернёт.
-const SANITIZE = { ADD_ATTR: ['contenteditable', 'data-tex', 'data-fm'] };
+const SANITIZE = { ADD_ATTR: ['contenteditable', 'data-tex', 'data-delim', 'data-fm'] };
 
 // ---- Markdown ⇄ HTML (+ формулы) ----------------------------------------------------------
 const F_OPEN = '⟦', F_CLOSE = '⟧'; // ⟦ ⟧ — маловероятные в обычном тексте маркеры-плейсхолдеры
@@ -26,14 +26,26 @@ const reEscape = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const escapeHtml = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 const escapeAttr = (s) => escapeHtml(s).replace(/"/g, '&quot;');
 
+// Разделители формул. Кроме долларов принимаем \[…\] и \(…\): именно так формулы выдают
+// нейросети, и вставленный из чата текст раньше оставался сырым LaTeX. Тип разделителя запоминаем
+// (delim) и возвращаем при обратной конвертации — иначе первое же автосохранение переписало бы
+// \[…\] в $$…$$ по всему чужому файлу.
 function extractFormulas(src) {
   const blocks = [], inlines = [];
   let text = String(src || '').replace(/(?<!\\)\$\$([\s\S]+?)(?<!\\)\$\$/g, (_, tex) => {
-    const i = blocks.length; blocks.push(tex);
+    const i = blocks.length; blocks.push({ tex, delim: 'dollar' });
     return F_OPEN + 'B' + i + F_CLOSE;
   });
+  text = text.replace(/\\\[([\s\S]+?)\\\]/g, (_, tex) => {
+    const i = blocks.length; blocks.push({ tex, delim: 'bracket' });
+    return F_OPEN + 'B' + i + F_CLOSE;
+  });
+  text = text.replace(/\\\(([\s\S]+?)\\\)/g, (_, tex) => {
+    const i = inlines.length; inlines.push({ tex, delim: 'paren' });
+    return F_OPEN + 'I' + i + F_CLOSE;
+  });
   text = text.replace(/(?<!\\)\$([^\n$]+?)(?<!\\)\$/g, (_, tex) => {
-    const i = inlines.length; inlines.push(tex);
+    const i = inlines.length; inlines.push({ tex, delim: 'dollar' });
     return F_OPEN + 'I' + i + F_CLOSE;
   });
   return { text, blocks, inlines };
@@ -44,16 +56,18 @@ function renderFormulaHtml(tex, displayMode) {
   catch (_) { return '<span class="tp-formula-err">ошибка в формуле</span>'; }
 }
 
-function formulaBlockHtml(tex, num) {
-  return '<div class="tp-formula-block" contenteditable="false" data-tex="' + escapeAttr(tex) + '">'
+function formulaBlockHtml(tex, num, delim) {
+  return '<div class="tp-formula-block" contenteditable="false" data-tex="' + escapeAttr(tex) + '"'
+    + (delim && delim !== 'dollar' ? ' data-delim="' + escapeAttr(delim) + '"' : '') + '>'
     + '<div class="tp-formula-render">' + renderFormulaHtml(tex, true) + '</div>'
     + '<div class="tp-formula-src"><pre>' + escapeHtml(tex) + '</pre></div>'
     + '<span class="tp-formula-num">(' + escapeHtml(num) + ')</span>'
     + '<button type="button" class="tp-formula-toggle" title="Показать/скрыть LaTeX">&lt;/&gt;</button>'
     + '</div>';
 }
-function formulaInlineHtml(tex) {
-  return '<span class="tp-formula-inline" contenteditable="false" data-tex="' + escapeAttr(tex) + '">'
+function formulaInlineHtml(tex, delim) {
+  return '<span class="tp-formula-inline" contenteditable="false" data-tex="' + escapeAttr(tex) + '"'
+    + (delim && delim !== 'dollar' ? ' data-delim="' + escapeAttr(delim) + '"' : '') + '>'
     + renderFormulaHtml(tex, false) + '</span>';
 }
 
@@ -80,17 +94,17 @@ function mdToHtml(src) {
   const { text, blocks, inlines } = extractFormulas(rest);
   let html = (fm == null ? '' : frontMatterHtml(fm)) + marked.parse(text);
   let n = 0;
-  blocks.forEach((rawTex, i) => {
-    let tex = rawTex.trim(), num;
+  blocks.forEach((b, i) => {
+    let tex = b.tex.trim(), num;
     const m = tex.match(/\\tag\{([^}]*)\}/);
     if (m) { num = m[1]; tex = tex.replace(/\\tag\{[^}]*\}/, '').trim(); }
     else { n++; num = String(n); }
     const token = F_OPEN + 'B' + i + F_CLOSE;
     const wrapped = new RegExp('<p>\\s*' + reEscape(token) + '\\s*</p>|' + reEscape(token));
-    html = html.replace(wrapped, formulaBlockHtml(tex, num));
+    html = html.replace(wrapped, formulaBlockHtml(tex, num, b.delim));
   });
-  inlines.forEach((tex, i) => {
-    html = html.split(F_OPEN + 'I' + i + F_CLOSE).join(formulaInlineHtml(tex.trim()));
+  inlines.forEach((f, i) => {
+    html = html.split(F_OPEN + 'I' + i + F_CLOSE).join(formulaInlineHtml(f.tex.trim(), f.delim));
   });
   return DOMPurify.sanitize(html, SANITIZE);
 }
@@ -103,6 +117,16 @@ function mdToHtml(src) {
 // обязан покрывать всё, что marked производит из markdown: раньше ссылки, блоки кода, таблицы,
 // картинки, заголовки от H4, вложенность списков и `---` при первом же сохранении молча
 // превращались в плоский текст, и файл был испорчен без единого предупреждения.
+// Формула → исходный вид: тем же разделителем, каким пришла (см. extractFormulas).
+function wrapBlock(n) {
+  const tex = n.dataset.tex || '';
+  return n.dataset.delim === 'bracket' ? ('\\[' + tex + '\\]') : ('$$' + tex + '$$');
+}
+function wrapInline(n) {
+  const tex = n.dataset.tex || '';
+  return n.dataset.delim === 'paren' ? ('\\(' + tex + '\\)') : ('$' + tex + '$');
+}
+
 function htmlToMd(root) {
   const mdEscape = (t) => t.replace(/[\\`*_$]/g, '\\$&');
   const attr = (n, a) => (n.getAttribute && n.getAttribute(a)) || '';
@@ -129,8 +153,8 @@ function htmlToMd(root) {
     if (n.nodeType === Node.TEXT_NODE) return mdEscape(n.textContent);
     if (n.nodeType !== Node.ELEMENT_NODE) return '';
     if (n.classList.contains('tp-frontmatter')) return '---\n' + (n.dataset.fm || '') + '\n---\n\n';
-    if (n.classList.contains('tp-formula-inline')) return '$' + (n.dataset.tex || '') + '$';
-    if (n.classList.contains('tp-formula-block')) return '\n\n$$' + (n.dataset.tex || '') + '$$\n\n';
+    if (n.classList.contains('tp-formula-inline')) return wrapInline(n);
+    if (n.classList.contains('tp-formula-block')) return '\n\n' + wrapBlock(n) + '\n\n';
     switch (n.tagName.toLowerCase()) {
       case 'strong': case 'b': { const t = inlineOf(n); return t.trim() ? '**' + t + '**' : t; }
       case 'em': case 'i': { const t = inlineOf(n); return t.trim() ? '*' + t + '*' : t; }
@@ -180,7 +204,7 @@ function htmlToMd(root) {
     if (n.nodeType === Node.TEXT_NODE) { const t = n.textContent.trim(); return t ? mdEscape(t) + '\n\n' : ''; }
     if (n.nodeType !== Node.ELEMENT_NODE) return '';
     if (n.classList.contains('tp-frontmatter')) return '---\n' + (n.dataset.fm || '') + '\n---\n\n';
-    if (n.classList.contains('tp-formula-block')) return '$$' + (n.dataset.tex || '') + '$$\n\n';
+    if (n.classList.contains('tp-formula-block')) return wrapBlock(n) + '\n\n';
     const tag = n.tagName.toLowerCase();
     switch (tag) {
       case 'h1': case 'h2': case 'h3': case 'h4': case 'h5': case 'h6':
