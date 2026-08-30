@@ -4424,6 +4424,15 @@ body.preview-full .prev-frame { width: 100%; height: 100%; }
   width: 32px; height: 32px; flex: none; border-radius: 10px; border: none; background: var(--tp-accent); color: #fff;
   cursor: pointer; display: inline-flex; align-items: center; justify-content: center; box-shadow: 0 3px 10px rgba(10,132,255,.4);
 }
+/* ---- тулбар: перенос лишних кнопок в «⋯» ---- */
+.tp-pill { overflow: hidden; max-width: 100%; }
+.tp-pill > * { flex: none; }                 /* без сжатия — иначе иконки наезжают вместо переноса */
+.tp-pill-more[hidden] { display: none !important; }
+.tp-pill-overflow { display: flex; flex-wrap: wrap; gap: 4px; max-width: 232px; padding: 6px; }
+.tp-pill-overflow .tp-pill-sep { width: 100%; height: 1px; margin: 2px 0; }
+.tp-pill-overflow .tp-dropdown { width: 100%; }
+.tp-pill-overflow .tp-dd-btn { width: 100%; justify-content: space-between; }
+
 /* ---- вкладка «Содержание»: навигация по заголовкам ---- */
 .tp-panel-outline { flex: 1; min-height: 0; overflow: auto; padding: 4px 2px 10px; }
 .tp-outline { display: flex; flex-direction: column; gap: 1px; }

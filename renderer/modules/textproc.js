@@ -323,7 +323,9 @@ export function initTextProc(host) {
       btn.onclick = (e) => {
         e.stopPropagation();
         const wasHidden = menu.hidden;
-        $$('.tp-dd-menu').forEach(m => m.hidden = true);
+        // Закрываем чужие меню, но НЕ те, внутри которых сами лежим: выпадашки масштаба/интервала
+        // могут быть перенесены в «⋯», и закрытие предка спрятало бы их вместе с собой.
+        $$('.tp-dd-menu').forEach((m) => { if (!m.contains(dd)) m.hidden = true; });
         menu.hidden = !wasHidden;
       };
       dd.querySelectorAll('.tp-dd-item').forEach(item => {
@@ -428,6 +430,7 @@ export function initTextProc(host) {
       if (btn) { e.preventDefault(); btn.parentElement.classList.toggle('show-src'); }
     });
 
+    setupPillOverflow();
     applyCardOrder();
     setupCardsDnD();
     updateModeUI();
@@ -447,6 +450,37 @@ export function initTextProc(host) {
     const ta = $('#doc-ai-chat-input');
     if (ta) ta.placeholder = attachCtx ? 'Что сделать с текстом?' : 'Спросить агента (без документа)';
     updateCtxIndicator();
+  }
+
+  // ---- Тулбар: лишние кнопки уезжают в «⋯» -----------------------------------------------------
+  // Пилл форматирования — flex фиксированной высоты: в узком окне кнопки сжимались и наезжали друг
+  // на друга (жалоба из PR #10). Переносим хвост в выпадающее меню, а не сжимаем. Узлы ИМЕННО
+  // переносим (appendChild), а не клонируем — обработчики висят на самих кнопках.
+  let pillOrder = null;
+  function refitPill() {
+    const pill = $('#doc-format-pill');
+    const more = $('#doc-pill-more');
+    const menu = $('#doc-pill-overflow');
+    if (!pill || !more || !menu) return;
+    if (!pillOrder) pillOrder = Array.from(pill.children).filter((n) => n !== more);
+    pillOrder.forEach((n) => pill.insertBefore(n, more)); // всё обратно в исходном порядке
+    more.hidden = true;
+    menu.hidden = true;
+    const fits = () => pill.scrollWidth <= pill.clientWidth + 1;
+    if (fits()) return;
+    more.hidden = false;
+    for (let i = pillOrder.length - 1; i >= 0 && !fits(); i--) menu.insertBefore(pillOrder[i], menu.firstChild);
+    // Ведущий разделитель в меню — мусор: убираем, пока он первый.
+    while (menu.firstChild && menu.firstChild.classList && menu.firstChild.classList.contains('tp-pill-sep')) {
+      pill.insertBefore(menu.firstChild, more);
+    }
+  }
+  function setupPillOverflow() {
+    const pill = $('#doc-format-pill');
+    if (!pill || typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(() => refitPill());
+    ro.observe(pill.parentElement || pill);
+    refitPill();
   }
 
   // ---- Drag-and-drop порядка карточек (персистится в settings) ----

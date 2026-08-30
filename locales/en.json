@@ -4142,5 +4142,6 @@
  "Не удалось скопировать команду": "Could not copy the command",
  "Скопировать команду входа": "Copy the sign-in command",
  "Заголовков нет. Разметьте текст: «# Заголовок», «## Подзаголовок».": "No headings yet. Mark the text up: \"# Heading\", \"## Subheading\".",
- "Содержание": "Outline"
+ "Содержание": "Outline",
+ "Ещё инструменты": "More tools"
 }
