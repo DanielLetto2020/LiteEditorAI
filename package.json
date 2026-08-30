@@ -1,6 +1,6 @@
 {
   "name": "liteeditor-ai",
-  "version": "1.1.175-alpha",
+  "version": "1.1.176-alpha",
   "description": "Lightweight editor for working with AI coding agents in the terminal",
   "main": "main.js",
   "author": "Максим Кузьминский <i@m-letto.ru>",
@@ -11,7 +11,7 @@
     "url": "https://github.com/DanielLetto2020/LiteEditorAI.git"
   },
   "scripts": {
-    "test": "node test/safe-name.test.js && node test/shell.test.js && node test/portparse.test.js && node test/dbdetect.test.js && node test/fsmeta.test.js && node test/i18n.test.js && node test/sync.test.js && node test/storage-path.test.js && node test/sql-readonly.test.js && node test/errledger.test.js",
+    "test": "node test/safe-name.test.js && node test/shell.test.js && node test/portparse.test.js && node test/dbdetect.test.js && node test/fsmeta.test.js && node test/i18n.test.js && node test/sync.test.js && node test/storage-path.test.js && node test/sql-readonly.test.js && node test/errledger.test.js && node test/updater.test.js",
     "lint": "eslint .",
     "typecheck": "tsc -p tsconfig.check.json",
     "mutation": "node scripts/stryker-gate.js",
@@ -22,7 +22,7 @@
     "postinstall": "electron-rebuild -f -o node-pty || echo 'node-pty rebuild skipped — run: npm run rebuild'",
     "gen-icons": "node scripts/gen-icons.js",
     "install-desktop": "node scripts/install-desktop.js",
-    "dist:linux": "node build.js && electron-builder --linux deb",
+    "dist:linux": "node build.js && electron-builder --linux deb tar.gz",
     "dist:win": "node build.js && electron-builder --win zip",
     "dist:mac": "node build.js && electron-builder --mac",
     "release": "node scripts/release.js"
@@ -135,8 +135,10 @@
     ],
     "linux": {
       "target": [
-        "deb"
+        "deb",
+        "tar.gz"
       ],
+      "artifactName": "${productName}-${version}-linux-${arch}.${ext}",
       "category": "Development",
       "icon": "assets/icon.png",
       "maintainer": "Максим Кузьминский <i@m-letto.ru>",
@@ -148,6 +150,9 @@
           "StartupWMClass": "liteeditor-ai"
         }
       }
+    },
+    "deb": {
+      "artifactName": "${name}_${version}_${arch}.${ext}"
     },
     "win": {
       "target": [

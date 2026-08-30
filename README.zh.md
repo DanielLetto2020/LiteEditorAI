@@ -82,10 +82,15 @@ Git 就在同一个窗口里：用复选框选择性暂存、amend、commit / pu
 
 | 系统 | 怎么装 |
 |---|---|
-| **Ubuntu / Debian**（x64） | `sudo apt install ./LiteEditorAI_*.deb` |
+| **Ubuntu / Debian**（x64） | `sudo apt install ./LiteEditorAI_*.deb` — 系统级安装；更新时会询问一次管理员密码。 |
+| **Linux 便携版**（x64） | 下载 `LiteEditorAI-*-linux-x64.tar.gz`，解压到主目录任意位置，运行 `liteeditor-ai`。无需 root，**更新一键完成**。 |
 | **Windows**（x64） | 下载 `LiteEditorAI_*-win.zip`，解压到任意目录，运行 `LiteEditorAI.exe`。无需安装。程序未签名，SmartScreen 可能提示：*更多信息 → 仍要运行*。 |
 | **macOS**（arm64 / x64） | 下载对应的 `.dmg`（Apple 芯片选 `-arm64`，Intel 选 `-x64`），把应用拖进「应用程序」。这是未经 Apple 签名的 ad-hoc 构建，首次启动时：*系统设置 → 隐私与安全性 → 仍要打开*（或执行 `xattr -dr com.apple.quarantine /Applications/LiteEditorAI.app`）。 |
 | **从源码运行** | `npm install && npm start`（需要 Node.js 22+） |
+
+**一键更新。** 编辑器会在后台检查 GitHub 发布页，下载新版本，并在标题栏显示 **「重启」** 提示条：
+点击后编辑器关闭并以新版本重新打开，无需前往下载页面。便携版（Linux `tar.gz`、Windows `zip`、
+macOS `.app`）更新无需密码；`.deb` 安装则会询问一次管理员密码。更新方式见 **设置 → 更新**。
 
 ## 还有 20 多个工具模块，让你不必离开工作台
 

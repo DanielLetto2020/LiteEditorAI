@@ -1,5 +1,6 @@
 {
   "$schema": "./node_modules/@stryker-mutator/core/schema/stryker-schema.json",
+  "_comment_updater": "lib/updater.js мутируется ДИАПАЗОНАМИ СТРОК: сеть и запуск процессов (fetchLatest, download, run, installDeb) юнит-тестом не покрыть без моков, и все мутанты там выживают, обрушивая общий балл. Покрытое: версии/классификация/выбор ассета (32-146), распаковка и поиск корня (273-323), стейджеры (324-401), каталог загрузок и уборка (416-425). ⚠️ Правишь updater.js — сверь диапазоны, они съезжают вместе со строками.",
   "_comment": "Мутационное тестирование. Тесты проекта — чистый node+assert без фреймворка, поэтому раннер command (npm test). Мутируем только модули, у которых есть тесты: мутанты в непокрытом коде выживают все и превращают метрику в шум. Появился тест на новый модуль lib/* — допиши файл в mutate.",
   "packageManager": "npm",
   "testRunner": "command",
@@ -36,7 +37,11 @@
     "lib/dbdetect.js",
     "lib/fsmeta.js",
     "lib/i18n.js",
-    "lib/sync.js"
+    "lib/sync.js",
+    "lib/updater.js:32-146",
+    "lib/updater.js:273-323",
+    "lib/updater.js:324-401",
+    "lib/updater.js:416-425"
   ],
   "_comment_thresholds": "break: null — прогон намеренно не падает сам. Планку держит храповик std-gauntlet (.claude/.ratchet.json): ухудшать нельзя, улучшать не обязательно. high/low влияют только на цвет отчёта.",
   "thresholds": {

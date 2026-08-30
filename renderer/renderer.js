@@ -27,7 +27,7 @@ import { el, icon, iconBtn, hydrateIcons, toast, makeModal, showConfirm, showPro
 import { initExtensions } from './modules/extensions.js';
 // initFiles — вивер+дерево мигрированы в отдельное окно (renderer/module-entry.js).
 
-const APP_VERSION = 'alpha v1.1.175';
+const APP_VERSION = 'alpha v1.1.176';
 const GUTTER = 5;
 // Системный терминал («Система · ~») мигрирован в отдельное окно (renderer/modules/scratch.js):
 // его id `__scratch__::tN` маршрутизируются main'ом в окно-владельца, в ядре их больше не обрабатываем.
@@ -2163,12 +2163,21 @@ function showAbout() {
     const r = await checkForUpdate({ manual: true });
     btn.disabled = false;
     if (r && r.error) setSt('— не удалось проверить', 'err');
-    else if (verNewer(r.tag, APP_VERSION)) {
+    else if (r.newer) {
       // Build with DOM methods (tag comes from the API) — no innerHTML.
       setSt('— доступна ', 'has');
-      const dl = el('a', null, (r.tag || 'новая версия') + ' (скачать)');
+      const self = r.install && r.install.canSelfUpdate && r.asset;
+      const dl = el('a', null, (r.tag || 'новая версия') + (self ? ' (обновить)' : ' (скачать)'));
       dl.href = '#';
-      dl.onclick = (ev) => { ev.preventDefault(); lite.openExternal(r.url || 'https://github.com/DanielLetto2020/LiteEditorAI/releases/latest'); };
+      dl.onclick = async (ev) => {
+        ev.preventDefault();
+        if (!self) return lite.openExternal(r.url || RELEASES_URL);
+        // Уже скачано в фоне — сразу к перезапуску; иначе качаем и предлагаем перезапуск по готовности.
+        if (updPhase.phase === 'ready') return confirmAndInstall();
+        setSt('— загружаю…');
+        const d = await startUpdateDownload({ manual: true });
+        if (d && d.ok) { close(); confirmAndInstall(); } else setSt('— не удалось загрузить', 'err');
+      };
       st.appendChild(dl);
     } else setSt('— у вас последняя версия', 'ok');
   };
@@ -2417,6 +2426,18 @@ function showSettings() {
         </div>
       </section>
       <section class="set-group">
+        <div class="set-group-h"><span class="set-ic">⬆️</span> Обновления</div>
+        <div class="set-group-body">
+          <label class="set-row"><span>Как обновляться</span><select id="st-upd">
+            <option value="auto">Скачивать в фоне и предлагать перезапуск</option>
+            <option value="notify">Только сообщать о новой версии</option>
+            <option value="off">Не проверять</option>
+          </select></label>
+          <div class="set-hint" id="st-upd-hint">Проверяю тип установки…</div>
+          <div class="set-row"><span>Проверить прямо сейчас</span><button class="btn tiny" id="st-upd-check" type="button">Проверить</button></div>
+        </div>
+      </section>
+      <section class="set-group">
         <div class="set-group-h"><span class="set-ic">🎨</span> Внешний вид</div>
         <div class="set-group-body">
           <label class="set-row"><span>Язык интерфейса</span><select id="st-lang"></select></label>
@@ -2474,6 +2495,31 @@ function showSettings() {
     </div>
     <div class="modal-actions"><button class="btn primary" id="st-ok">Готово</button></div>`);
   const notif = m.querySelector('#st-notif'); notif.checked = settings.notifications;
+  // Обновления. Подсказка объясняет ровно то, что пользователю нужно знать заранее: спросят ли
+  // пароль и почему кнопка «Обновить» может не появиться.
+  const updSel = m.querySelector('#st-upd');
+  updSel.value = updMode();
+  updSel.addEventListener('change', () => {
+    settings.updateMode = updSel.value; saveSettings();
+    if (updSel.value !== 'off') checkForUpdate().catch(() => {});
+  });
+  const updHint = m.querySelector('#st-upd-hint');
+  const UPD_HINTS = {
+    portable: 'Портативная установка — обновление скачивается и применяется в один клик, без пароля: редактор закроется и откроется новой версией.',
+    mac: 'Приложение обновляется подменой бандла .app и перезапускается само.',
+    deb: 'Установлено пакетом .deb в системный каталог, поэтому обновление ставится от имени root — система один раз спросит пароль. Портативная сборка (tar.gz со страницы релизов) обновляется без пароля.',
+    dev: 'Запуск из исходников: обновляйтесь через git pull — плашка о новой версии останется, кнопка обновления не появится.',
+  };
+  lite.update.state().then((st) => {
+    const inst = (st && st.install) || {};
+    let txt = UPD_HINTS[inst.kind] || '';
+    if (inst.kind !== 'dev' && !inst.canSelfUpdate) txt = 'Обновиться на месте не выйдет: ' + (inst.reason || 'каталог приложения защищён от записи') + '. Плашка отправит на страницу загрузки.';
+    updHint.textContent = txt;
+  }).catch(() => { updHint.textContent = ''; });
+  m.querySelector('#st-upd-check').onclick = async (e) => {
+    const btn = e.currentTarget; btn.disabled = true;
+    try { await checkForUpdate({ manual: true }); } finally { btn.disabled = false; }
+  };
   const sound = m.querySelector('#st-sound'); sound.checked = settings.sound;
   const idle = m.querySelector('#st-idle'); idle.value = settings.idleMs;
   const font = m.querySelector('#st-font'); font.value = settings.fontSize;
@@ -2672,42 +2718,122 @@ function toggleSingle() {
   refitActiveTerminal();
 }
 
-// ---------------------------------------------------------------- update check
-// Pull a version triple out of «alpha v1.0.97» or a tag «v1.0.97-alpha».
-function parseVer(s) {
-  const m = String(s || '').match(/(\d+)\.(\d+)\.(\d+)/);
-  return m ? [+m[1], +m[2], +m[3]] : [0, 0, 0];
+// ---------------------------------------------------------------- обновление приложения
+// Плашка в шапке — это одна кнопка, меняющая смысл по фазе:
+//   «↑ v1.1.176» → нажали → «↓ 42 %» (идёт загрузка, повторное нажатие отменяет)
+//   → «⟳ Перезапустить» → нажали → приложение закрылось и открылось новой версией.
+// Сама загрузка и подмена файлов живут в main (lib/updater.js): переживают перезагрузку рендерера.
+const RELEASES_URL = 'https://github.com/DanielLetto2020/LiteEditorAI/releases/latest';
+let updateInfo = null;                   // {tag,url,notes,newer,install,asset} последней проверки
+let updPhase = { phase: 'idle', pct: 0 };
+let updBusy = false;                     // нажатие уже обрабатывается — не плодить параллельные загрузки
+
+// Как обновляться: 'auto' — качать сразу, как нашли (по умолчанию, «как в мессенджере»),
+// 'notify' — только показать плашку, качать по нажатию, 'off' — не проверять вовсе.
+function updMode() { return settings.updateMode || 'auto'; }
+
+// Плашка рисуется ТОЛЬКО из этих двух источников — фазы из main и результата проверки.
+function renderUpdateBadge() {
+  const b = $('#update-badge');
+  if (!b) return;
+  const inst = (updateInfo && updateInfo.install) || {};
+  const tag = updPhase.tag || (updateInfo && updateInfo.tag) || '';
+  const set = (cls, text, title) => {
+    b.hidden = false;
+    b.className = 'update-badge' + (cls ? ' ' + cls : '');
+    b.textContent = text;
+    b.title = title;
+  };
+  if (updPhase.phase === 'downloading') {
+    const pct = Math.max(0, Math.min(100, updPhase.pct || 0));
+    // Прогресс показываем заливкой самой плашки — отдельная полоска в шапке не поместится.
+    b.style.setProperty('--upd-pct', pct + '%');
+    set('busy', updPhase.unpacking ? 'распаковка…' : '↓ ' + pct + ' %',
+      'Загружается ' + (tag || 'обновление') + ' — нажмите, чтобы отменить');
+    return;
+  }
+  b.style.removeProperty('--upd-pct');
+  if (updPhase.phase === 'installing') { set('busy', 'обновляю…', 'Идёт установка обновления'); return; }
+  if (updPhase.phase === 'ready') {
+    set('ready', '⟳ Перезапустить', 'Обновление ' + (tag || '') + ' загружено — нажмите, чтобы перезапуститься на новой версии');
+    return;
+  }
+  if (!updateInfo || !updateInfo.newer) { b.hidden = true; return; }
+  if (inst.canSelfUpdate && updateInfo.asset) {
+    set('', '↑ ' + (tag || 'обновление'),
+      'Доступна ' + tag + ' — нажмите, чтобы обновиться' + (inst.needsPassword ? ' (потребуется пароль администратора)' : ''));
+  } else {
+    // Сами обновиться не можем (запуск из исходников, нет прав, нет файла под систему) — честно
+    // отправляем на страницу релиза, а не показываем кнопку, которая ничего не сделает.
+    set('', '↑ ' + (tag || 'обновление'), 'Доступна ' + tag + ' — открыть страницу загрузки' + (inst.reason ? ' (' + inst.reason + ')' : ''));
+  }
 }
-function verNewer(a, b) { // is version a strictly newer than b?
-  const x = parseVer(a), y = parseVer(b);
-  for (let i = 0; i < 3; i++) { if (x[i] !== y[i]) return x[i] > y[i]; }
-  return false;
+
+// Единственный обработчик нажатия на плашку: что делать — решает фаза.
+async function onUpdateBadgeClick() {
+  if (updBusy) return;
+  const inst = (updateInfo && updateInfo.install) || {};
+  if (updPhase.phase === 'downloading') { lite.update.cancel(); return; }
+  if (updPhase.phase === 'installing') return;
+  if (updPhase.phase === 'ready') { confirmAndInstall(); return; }
+  if (!inst.canSelfUpdate || !(updateInfo && updateInfo.asset)) {
+    lite.openExternal((updateInfo && updateInfo.url) || RELEASES_URL);
+    return;
+  }
+  updBusy = true;
+  try { await startUpdateDownload({ manual: true }); } finally { updBusy = false; }
 }
-let updateInfo = null; // {tag,url,notes,name} when a newer release exists
-// Ask main to fetch the latest GitHub release and compare with APP_VERSION.
-// Silent on failure / when up to date (so a startup auto-check never nags);
-// `manual` = user pressed «Проверить обновление» → toast the result either way.
+
+// Скачать обновление. Тихо при автозагрузке: фоновая закачка не должна сыпать тостами.
+async function startUpdateDownload({ manual = false } = {}) {
+  let r;
+  try { r = await lite.update.download(); } catch (e) { r = { ok: false, error: String((e && e.message) || e) }; }
+  if (r && r.ok) {
+    if (!manual) toast('Обновление ' + (r.tag || '') + ' загружено — нажмите «Перезапустить» в шапке', { ttl: 7000 });
+    return r;
+  }
+  if (r && r.canceled) return r;
+  if (manual) toast('Не удалось загрузить обновление: ' + ((r && r.error) || 'неизвестная ошибка'), { kind: 'err' });
+  return r;
+}
+
+// Перезапуск с подтверждением. Спрашиваем ВСЕГДА: в терминалах живут агенты и запущенные команды,
+// а обновление их закроет — терять чужую работу молча нельзя.
+function confirmAndInstall() {
+  const inst = (updateInfo && updateInfo.install) || {};
+  const extra = inst.needsPassword
+    ? ' Система спросит пароль администратора — пакет ставится от root.'
+    : '';
+  showConfirm(
+    'Перезапустить на новой версии?',
+    'Редактор закроется и откроется обновлённым. Терминалы и запущенные в них процессы будут завершены — сохраните работу.' + extra,
+    'Перезапустить',
+    async () => {
+      const r = await lite.update.install();
+      // Успех обычно не возвращается: процесс уже вышел. Ответ приходит только при неудаче.
+      if (r && r.ok === false && !r.canceled) toast('Обновление не установилось: ' + (r.error || ''), { kind: 'err' });
+    },
+  );
+}
+
+// Проверка обновления. Молчит при неудаче и при свежей версии — фоновая проверка не должна
+// дёргать пользователя; `manual` = нажали кнопку в «О программе», там результат нужен всегда.
 async function checkForUpdate({ manual = false } = {}) {
+  if (!manual && updMode() === 'off') return { error: 'проверка выключена' };
   let r;
   try { r = await lite.update.check(); } catch (_) { r = { error: 'нет связи' }; }
   if (!r || r.error) {
     if (manual) toast('Не удалось проверить обновление: ' + ((r && r.error) || 'нет связи'), { kind: 'err' });
     return r || { error: 'нет связи' };
   }
-  if (verNewer(r.tag, APP_VERSION)) {
-    updateInfo = r;
-    const b = $('#update-badge');
-    if (b) {
-      b.hidden = false;
-      b.textContent = '↑ ' + (r.tag || 'обновление');
-      b.title = 'Доступна ' + (r.tag || 'новая версия') + ' — открыть страницу загрузки';
-      b.onclick = () => lite.openExternal(r.url || 'https://github.com/DanielLetto2020/LiteEditorAI/releases/latest');
-    }
-    if (manual) toast('Доступна новая версия ' + r.tag, { ttl: 5000 });
-  } else {
-    updateInfo = null;
-    const b = $('#update-badge'); if (b) b.hidden = true;
-    if (manual) toast('У вас последняя версия');
+  updateInfo = r.newer ? r : null;
+  renderUpdateBadge();
+  if (manual) toast(r.newer ? 'Доступна новая версия ' + r.tag : 'У вас последняя версия', { ttl: r.newer ? 5000 : 3000 });
+  // Автозагрузка: качаем сразу, чтобы к моменту, когда пользователь захочет обновиться, оставалось
+  // только нажать «Перезапустить» (тот самый сценарий «как в мессенджере»).
+  if (r.newer && updMode() === 'auto' && r.install && r.install.canSelfUpdate && r.asset
+      && updPhase.phase !== 'downloading' && updPhase.phase !== 'ready') {
+    startUpdateDownload({ manual: false }).catch(() => {});
   }
   return r;
 }
@@ -2845,9 +2971,15 @@ function init() {
   });
   try { lite.log('info', `UI ${APP_VERSION} started`); } catch (_) {}
 
-  // Auto-check for a newer release shortly after startup (non-blocking, silent on
-  // failure). The badge next to the version lights up if one is available.
+  // Обновления: фаза приходит из main (загрузка живёт там и переживает перезагрузку рендерера),
+  // плашка — одна кнопка на все состояния.
+  { const b = $('#update-badge'); if (b) b.onclick = onUpdateBadgeClick; }
+  lite.update.onState((st) => { updPhase = st || { phase: 'idle' }; renderUpdateBadge(); });
+  lite.update.state().then((st) => { if (st) { updPhase = st; renderUpdateBadge(); } }).catch(() => {});
+  // Первая проверка — вскоре после старта (молча, если сети нет), дальше раз в 3 часа: редактор
+  // держат открытым сутками, и без периодической проверки о новой версии узнают через неделю.
   setTimeout(() => { checkForUpdate().catch(() => {}); }, 3000);
+  setInterval(() => { checkForUpdate().catch(() => {}); }, 3 * 60 * 60 * 1000);
 
   lite.pty.onData(({ id, data }) => {
     if (isExtTerm(id)) { const r = extTerms.get(id); if (r) r.term.write(data); return; }
