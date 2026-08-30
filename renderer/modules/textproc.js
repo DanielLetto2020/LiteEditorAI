@@ -9,9 +9,12 @@ import { marked } from 'marked';
 import katex from 'katex/dist/katex.mjs';
 import 'katex/dist/katex.min.css';
 import DOMPurify from 'dompurify';
-import { baseName, makeModal } from '../ui.js';
+import { baseName, makeModal, icon } from '../ui.js';
 
 const $ = (s) => document.querySelector(s);
+// Строка с подстановкой: в словаре живёт ШАБЛОН («… {0} …»), значения вставляем после перевода —
+// иначе экстрактор растаскивает фразу на обрывки, которые нечем переводить.
+const tf = (tpl, ...vals) => String(tpl).replace(/\{(\d+)\}/g, (_, i) => String(vals[+i] == null ? '' : vals[+i]));
 const $$ = (s) => Array.from(document.querySelectorAll(s));
 
 marked.setOptions({ breaks: true });
@@ -246,6 +249,10 @@ export function initTextProc(host) {
   // Список агентов задаёт main (встроенные + ~/.LiteEditorAI/tpAgents.json) — тут только выбранный id.
   let agentList = [{ id: 'claude', label: 'Claude' }, { id: 'codex', label: 'Codex' }, { id: 'gemini', label: 'Gemini' }];
   let chatAgent = settings.tpAgent || 'claude';
+  // Режим работы с ИИ. 'chat' — агент отвечает текстом, файлы правит редактор (как было всегда).
+  // 'agent' — CLI запускается с авто-одобрением и правит файл на диске сам. Второй режим НЕ
+  // сохраняется между запусками: включать его должно быть осознанным действием каждый раз.
+  let aiMode = 'chat';
   let chatRole = 'Без роли';
   let chatLog = [];
   let aiSeq = 0;
@@ -415,6 +422,8 @@ export function initTextProc(host) {
     renderSymbols();
     const agentsBtn = $('#doc-ai-agents-cfg');
     if (agentsBtn) agentsBtn.onclick = showAgentsEditor;
+    $$('#doc-ai-mode .tp-seg-btn[data-aimode]').forEach((b) => { b.onclick = () => requestAiMode(b.dataset.aimode); });
+    updateAiModeUI();
 
     const fi = $('#doc-formula-input');
     fi.oninput = renderFormulaCardPreview;
@@ -427,7 +436,7 @@ export function initTextProc(host) {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') { e.preventDefault(); saveFile(); }
     });
 
-    $('#doc-ai-chat-send').onclick = sendChat;
+    $('#doc-ai-chat-send').onclick = () => { if (busyReq) { lite.tp.cancel(busyReq); return; } sendChat(); };
     $('#doc-ai-chat-input').onkeydown = (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendChat(); } };
     const attachBtn = $('#doc-ai-attach');
     if (attachBtn) attachBtn.onclick = () => {
@@ -937,30 +946,81 @@ export function initTextProc(host) {
     }
     return parts.join('\n\n');
   }
+  // Перечитать документ с диска: после агент-режима файл на диске новее того, что в окне.
+  async function reloadFromDisk() {
+    if (!currentFile) return;
+    const r = await lite.fs.readFile(currentFile);
+    if (!r || r.error) { toast(tf('Агент отработал, но файл не перечитать: {0}', (r && r.error) || '—'), { kind: 'err' }); return; }
+    const tab = openTabs.find((t) => t.id === activeTabId);
+    const html = mdToHtml(r.content);
+    $('#doc-editor-wysiwyg').innerHTML = DOMPurify.sanitize(html, SANITIZE);
+    $('#doc-editor-md').textContent = r.content;
+    if (tab) { tab.html = html; tab.md = r.content; tab.dirty = false; }
+    dirty = false;
+    renderTabsUI();
+    updateStatus(tf('Обновлён агентом · {0}', new Date().toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })));
+    if (activeInspectorTab === 'outline') renderOutline();
+  }
+  // Промпт агент-режима: файл он открывает сам, поэтому в тексте — путь и задача, без «верни текст».
+  function composeAgentPrompt(instruction) {
+    return [
+      'Файл: ' + currentFile,
+      instruction,
+      'Внеси правки прямо в этот файл. Не создавай копий и не трогай другие файлы без необходимости.',
+    ].join('\n\n');
+  }
   async function sendChat() {
     const ta = $('#doc-ai-chat-input');
     const instruction = ta.value.trim();
     if (!instruction) return;
-    const sel = attachCtx ? selForChat() : null;
+    const agentMode = aiMode === 'agent';
+    if (agentMode) {
+      if (!currentFile) { toast('Агент-режим работает с файлом на диске — сохраните документ', { kind: 'warn' }); return; }
+      // Сохраняем ПЕРЕД запуском: иначе агент правит одну версию файла, а окно держит другую.
+      if (dirty && !(await saveFile())) { toast('Файл не сохранён — агент не запущен', { kind: 'err' }); return; }
+    }
+    const sel = (!agentMode && attachCtx) ? selForChat() : null;
     ta.value = '';
     chatLog.push({ role: 'user', text: instruction });
-    const am = { role: 'agent', text: '', busy: true, reqId: 'tpq' + (++aiSeq) };
+    const am = { role: 'agent', text: '', busy: true, reqId: 'tpq' + (++aiSeq), agentMode };
     chatLog.push(am);
     while (chatLog.length > 200) chatLog.shift(); // кап истории: чат не растёт бесконечно
     renderChatLog();
+    updateSendButton();
     const offData = lite.tp.onData(({ reqId: r, chunk }) => { if (r !== am.reqId) return; am.text += chunk; updateStreamBubble(am); });
-    const offDone = lite.tp.onDone(({ reqId: r, text }) => { if (r !== am.reqId) return; am.busy = false; am.text = text || ''; cleanup(); renderChatLog(); });
+    const offDone = lite.tp.onDone(async ({ reqId: r, text }) => {
+      if (r !== am.reqId) return;
+      am.busy = false; am.text = text || '';
+      cleanup(); renderChatLog();
+      if (agentMode) await reloadFromDisk();
+    });
     const offErr = lite.tp.onError(({ reqId: r, error, authRequired, loginCmd }) => {
       if (r !== am.reqId) return;
       am.busy = false; am.failed = true;
       am.text = authRequired ? String(error) : ('Ошибка: ' + String(error));
       if (authRequired && loginCmd) am.loginCmd = loginCmd;
       cleanup(); renderChatLog();
+      // Агент мог успеть что-то записать до остановки — показываем актуальный файл, а не старый.
+      if (agentMode) reloadFromDisk();
     });
-    const cleanup = () => { try { offData(); offDone(); offErr(); } catch (_) {} };
-    
-    const prompt = await composePrompt(sel, instruction);
-    lite.tp.run({ reqId: am.reqId, agent: chatAgent, prompt });
+    const cleanup = () => { busyReq = null; updateSendButton(); try { offData(); offDone(); offErr(); } catch (_) {} };
+
+    busyReq = am.reqId;
+    const prompt = agentMode ? composeAgentPrompt(instruction) : await composePrompt(sel, instruction);
+    lite.tp.run({ reqId: am.reqId, agent: chatAgent, prompt, mode: agentMode ? 'agent' : 'chat', cwd: agentMode ? dirOf(currentFile) : undefined });
+  }
+  // Пока агент работает, кнопка отправки становится «Стоп»: до сих пор запущенный процесс нельзя
+  // было прервать ничем, кроме таймаута, — а в агент-режиме он всё это время правит файлы.
+  let busyReq = null;
+  function updateSendButton() {
+    const btn = $('#doc-ai-chat-send');
+    if (!btn) return;
+    const busy = !!busyReq;
+    btn.classList.toggle('stopping', busy);
+    btn.title = busy ? 'Остановить агента' : 'Отправить';
+    btn.dataset.icon = busy ? 'stop' : 'send';
+    btn.innerHTML = '';
+    btn.appendChild(icon(busy ? 'stop' : 'send', 16));
   }
   // Перечень моделей — из main: встроенные + пользовательские (tpAgents.json). Поэтому строим
   // сегмент заново на каждый renderModels: список может поменяться после правки настроек.
@@ -987,6 +1047,59 @@ export function initTextProc(host) {
     });
     // Need a tiny delay for layout to calculate offsetWidth if first time rendering
     requestAnimationFrame(() => updateThumb(box, activeBtn));
+  }
+
+  // ---- Режим «Агент»: CLI правит файл сам ------------------------------------------------------
+  // Плата за автономность — отсутствие подтверждений: агент применяет правки без спроса. Поэтому
+  // режим включается только осознанно и только там, где есть что править: документ должен лежать
+  // на диске (каталог файла станет рабочим), а перед запуском он принудительно сохраняется —
+  // иначе агент правит одну версию, а окно держит другую, и любое автосохранение затрёт чужую работу.
+  function updateAiModeUI() {
+    let activeBtn = null;
+    $$('#doc-ai-mode .tp-seg-btn[data-aimode]').forEach((b) => {
+      const on = b.dataset.aimode === aiMode;
+      b.classList.toggle('active', on);
+      if (on) activeBtn = b;
+    });
+    updateThumb($('#doc-ai-mode'), activeBtn);
+    const ta = $('#doc-ai-chat-input');
+    if (ta && aiMode === 'agent') ta.placeholder = 'Что поручить агенту? Он изменит файл сам';
+    else updateAttachUI();
+  }
+  function setAiMode(m) { aiMode = m; updateAiModeUI(); }
+  async function requestAiMode(m) {
+    if (m === aiMode) return;
+    if (m !== 'agent') { setAiMode('chat'); return; }
+    if (!currentFile) {
+      toast('Агент-режим работает с файлом на диске — сохраните документ', { kind: 'warn' });
+      updateAiModeUI();
+      return;
+    }
+    const agent = agentList.find((a) => a.id === chatAgent);
+    if (agent && agent.canAgent === false) {
+      toast(tf('У агента «{0}» не задан режим правки файлов', agent.label || agent.id), { kind: 'warn' });
+      updateAiModeUI();
+      return;
+    }
+    const dir = dirOf(currentFile);
+    const underGit = await isUnderGit(dir);
+    const text = underGit
+      ? tf('Агент будет сам изменять файлы в каталоге {0} — без подтверждения каждой правки. Каталог под git, правки можно откатить.', dir)
+      : tf('Агент будет сам изменять файлы в каталоге {0} — без подтверждения каждой правки. Каталог НЕ под git, откатить правки будет нечем.', dir);
+    showConfirm(
+      'Включить режим «Агент»?', text,
+      'Включить', () => setAiMode('agent'),
+      'Отмена', () => updateAiModeUI(),
+    );
+  }
+  function dirOf(p) {
+    const s = String(p || '');
+    const i = Math.max(s.lastIndexOf('/'), s.lastIndexOf('\\'));
+    return i > 0 ? s.slice(0, i) : s;
+  }
+  async function isUnderGit(dir) {
+    try { const r = await lite.git.info(dir); return !!(r && !r.error && r.branch); }
+    catch (_) { return false; }
   }
 
   // Редактор списка агентов: сам файл tpAgents.json, а не отдельная форма на каждое поле —

@@ -871,10 +871,13 @@ ipcMain.handle('tp:saveFileAs', async (e, { content, name, ext } = {}) => {
 
 // Как звать CLI в неинтерактивном режиме и куда подавать промпт (stdin/arg).
 // gemini — официальный Gemini CLI из PATH (идея из PR #6; там был захардкожен macOS-путь Antigravity).
+// agentArgs — как звать ту же утилиту в АГЕНТ-режиме: она правит файлы сама, поэтому нужен флаг
+// авто-одобрения (подтверждать в неинтерактивном прогоне некому). Флаги сверены по --help
+// соответствующих CLI; при смене версий сверить заново.
 const TP_BUILTIN_AGENTS = {
-  claude: { label: 'Claude', cmd: 'claude', args: ['-p', '--output-format', 'text'], via: 'stdin' },
-  codex: { label: 'Codex', cmd: 'codex', args: ['exec'], via: 'arg' },
-  gemini: { label: 'Gemini', cmd: 'gemini', args: ['-p'], via: 'arg' },
+  claude: { label: 'Claude', cmd: 'claude', args: ['-p', '--output-format', 'text'], via: 'stdin', agentArgs: ['--permission-mode', 'acceptEdits', '-p'] },
+  codex: { label: 'Codex', cmd: 'codex', args: ['exec'], via: 'arg', agentArgs: ['exec', '--full-auto'] },
+  gemini: { label: 'Gemini', cmd: 'gemini', args: ['-p'], via: 'arg', agentArgs: ['--yolo', '-p'] },
 };
 // Список агентов расширяется файлом ~/.LiteEditorAI/tpAgents.json — по записи на утилиту:
 //   [{ "id":"agy", "label":"Antigravity", "cmd":"agy", "args":["-p"], "via":"arg", "pty":true }]
@@ -908,6 +911,7 @@ function tpAgents() {
       args: Array.isArray(u.args) ? u.args.map((a) => String(a)) : (base.args || []),
       via: u.via === 'stdin' ? 'stdin' : (u.via === 'arg' ? 'arg' : (base.via || 'arg')),
       pty: u.pty === undefined ? !!base.pty : !!u.pty,
+      agentArgs: Array.isArray(u.agentArgs) ? u.agentArgs.map((a) => String(a)) : base.agentArgs,
     };
   }
   return out;
@@ -915,13 +919,13 @@ function tpAgents() {
 // Фронту — только то, что нужно для выбора модели (без внутренностей запуска).
 ipcMain.handle('tp:agents', () => ({
   ok: true,
-  list: Object.values(tpAgents()).map((a) => ({ id: a.id, label: a.label })),
+  list: Object.values(tpAgents()).map((a) => ({ id: a.id, label: a.label, canAgent: Array.isArray(a.agentArgs) && a.agentArgs.length > 0 })),
   file: TP_AGENTS_FILE(),
   raw: (() => { try { return fs.readFileSync(TP_AGENTS_FILE(), 'utf8'); } catch (_) { return ''; } })(),
 }));
 ipcMain.handle('tp:saveAgents', (_e, { text } = {}) => {
   const src = String(text == null ? '' : text).trim();
-  if (!src) { try { fs.unlinkSync(TP_AGENTS_FILE()); } catch (_) {} return { ok: true, list: Object.values(tpAgents()).map((a) => ({ id: a.id, label: a.label })) }; }
+  if (!src) { try { fs.unlinkSync(TP_AGENTS_FILE()); } catch (_) {} return { ok: true, list: Object.values(tpAgents()).map((a) => ({ id: a.id, label: a.label, canAgent: Array.isArray(a.agentArgs) && a.agentArgs.length > 0 })) }; }
   let arr;
   try { arr = JSON.parse(src); } catch (e2) { return { ok: false, error: i18n.t('Список агентов — не JSON: {0}', String(e2.message || e2)) }; }
   if (!Array.isArray(arr)) return { ok: false, error: 'Ожидается массив записей [{ id, cmd, … }]' };
@@ -934,7 +938,7 @@ ipcMain.handle('tp:saveAgents', (_e, { text } = {}) => {
   ensureStoreDir();
   try { atomicWriteSync(TP_AGENTS_FILE(), JSON.stringify(arr, null, 2)); }
   catch (e2) { return { ok: false, error: String(e2.message || e2) }; }
-  const list = Object.values(tpAgents()).map((a) => ({ id: a.id, label: a.label }));
+  const list = Object.values(tpAgents()).map((a) => ({ id: a.id, label: a.label, canAgent: Array.isArray(a.agentArgs) && a.agentArgs.length > 0 }));
   if (!list.length) return { ok: false, error: 'Так не остаётся ни одного агента — верните хотя бы одного' };
   return { ok: true, list };
 });
@@ -953,12 +957,14 @@ function probeLoginPath() {
   loginPathTried = true;
   const shell = process.env.SHELL || '/bin/bash';
   // -lic: rc-файлы (nvm живёт в .bashrc/.zshrc) читаются только интерактивным шеллом.
-  execFile(shell, ['-lic', 'printf "%s" "$PATH"'], { timeout: 3000, killSignal: 'SIGKILL', stdio: ['ignore', 'pipe', 'ignore'], encoding: 'utf8' }, (err, stdout) => {
+  const probe = execFile(shell, ['-lic', 'printf "%s" "$PATH"'], { timeout: 3000, killSignal: 'SIGKILL', encoding: 'utf8' }, (err, stdout) => {
     if (err) { logger.log('warn', 'tp', `не удалось прочитать PATH логин-шелла: ${err.message || err}`); return; }
     // Интерактивный шелл мог что-то напечатать от себя — PATH идёт последней непустой строкой.
     const line = String(stdout || '').trim().split('\n').filter(Boolean).pop() || '';
     if (line.includes(path.sep)) loginPath = line;
   });
+  // Закрываем шеллу stdin: интерактивный rc, решивший что-то спросить, иначе ждал бы ввода до таймаута.
+  try { probe.stdin.end(); } catch (_) {}
 }
 function tpEnv() {
   const sep = process.platform === 'win32' ? ';' : ':';
@@ -1011,18 +1017,45 @@ const tpReqs = new Map(); // reqId -> ChildProcess
 // Живой стриминг ответа в чат (tp:data, идея из PR #6), но через spawn как раньше — БЕЗ PTY:
 // под PTY stderr сливается в stdout, CLI видит TTY (спиннеры/контрол-коды), терминал эхоит промпт,
 // а \x04 не является EOF под ConPTY (Windows зависал бы до таймаута). stdout чист — стримим как есть.
-ipcMain.on('tp:run', (e, { reqId, agent, prompt } = {}) => {
+// Агент-режим: та же утилита, но с флагом авто-одобрения и рабочим каталогом = папка документа.
+// Она правит файлы САМА, поэтому:
+//  · cwd обязателен и проверяется здесь (без него — отказ). Никакого os.homedir() по умолчанию:
+//    промах рабочим каталогом означал бы автономные правки во всём домашнем каталоге;
+//  · промпт всегда идёт аргументом (у агентных вызовов свой набор флагов, via не применяется).
+function tpAgentRun(sender, { reqId, conf, prompt, cwd }) {
+  if (!Array.isArray(conf.agentArgs) || !conf.agentArgs.length) {
+    safeSend(sender, 'tp:error', { reqId, error: i18n.t('У агента «{0}» не задан режим правки файлов (agentArgs)', conf.id) });
+    return null;
+  }
+  let stat = null;
+  try { stat = fs.statSync(String(cwd || '')); } catch (_) { /* ниже */ }
+  if (!stat || !stat.isDirectory()) {
+    safeSend(sender, 'tp:error', { reqId, error: i18n.t('Агент-режим требует каталог документа: сохраните файл на диск') });
+    return null;
+  }
+  return { args: [...conf.agentArgs, prompt || ''], cwd, viaStdin: false };
+}
+
+ipcMain.on('tp:run', (e, { reqId, agent, prompt, mode, cwd } = {}) => {
   const sender = e.sender;
   const all = tpAgents();
   const conf = all[agent] || all.claude || Object.values(all)[0];
-  if (!conf) { safeSend(sender, 'tp:error', { reqId, error: 'не настроено ни одного агента' }); return; }
-  const args = conf.via === 'arg' ? [...conf.args, prompt || ''] : [...conf.args];
+  if (!conf) { safeSend(sender, 'tp:error', { reqId, error: i18n.t('не настроено ни одного агента') }); return; }
+  let plan;
+  if (mode === 'agent') {
+    plan = tpAgentRun(sender, { reqId, conf, prompt, cwd });
+    if (!plan) return;                       // причина уже отправлена
+  } else {
+    plan = { args: conf.via === 'arg' ? [...conf.args, prompt || ''] : [...conf.args], cwd: os.homedir(), viaStdin: conf.via === 'stdin' };
+  }
+  const args = plan.args;
   let child;
-  try { child = spawn(conf.cmd, args, { cwd: os.homedir(), env: tpEnv() }); }
+  try { child = spawn(conf.cmd, args, { cwd: plan.cwd, env: tpEnv() }); }
   catch (err) { safeSend(sender, 'tp:error', { reqId, error: 'не запустить «' + conf.cmd + '»: ' + (err.message || err) }); return; }
   tpReqs.set(reqId, child);
   let out = '', errOut = '';
-  const to = setTimeout(() => { if (tpReqs.has(reqId)) { tpReqs.delete(reqId); try { child.kill(); } catch (_) {} safeSend(sender, 'tp:error', { reqId, error: 'таймаут (агент не ответил вовремя)' }); } }, 240000);
+  // Агент-режим обходит файлы и правит их — 4 минут ему мало; чат отвечает одним куском.
+  const to = setTimeout(() => { if (tpReqs.has(reqId)) { tpReqs.delete(reqId); try { child.kill(); } catch (_) {} safeSend(sender, 'tp:error', { reqId, error: i18n.t('таймаут (агент не ответил вовремя)') }); } }, mode === 'agent' ? 900000 : 240000);
   child.stdout.on('data', (c) => { const chunk = c.toString('utf8'); out += chunk; safeSend(sender, 'tp:data', { reqId, chunk }); });
   child.stderr.on('data', (c) => { errOut += c.toString('utf8'); });
   child.on('error', (err) => {
@@ -1041,7 +1074,19 @@ ipcMain.on('tp:run', (e, { reqId, agent, prompt } = {}) => {
     if (text) safeSend(sender, 'tp:done', { reqId, text }); // непустой вывод = результат (даже при ненулевом коде)
     else safeSend(sender, 'tp:error', { reqId, error: errOut.trim() || ('агент завершился с кодом ' + code) });
   });
-  if (conf.via === 'stdin') { try { child.stdin.write(prompt || ''); child.stdin.end(); } catch (_) {} }
+  if (plan.viaStdin) { try { child.stdin.write(prompt || ''); child.stdin.end(); } catch (_) {} }
+});
+
+// Остановить работающего агента. В агент-режиме это не удобство, а необходимость: до сих пор
+// запущенный процесс нельзя было прервать ничем, кроме таймаута, — а он в это время правит файлы.
+// Бьём ровно по своему процессу (никаких групп и шаблонов имён), с добиванием, если не внял.
+ipcMain.on('tp:cancel', (e, { reqId } = {}) => {
+  const child = tpReqs.get(reqId);
+  if (!child) return;
+  tpReqs.delete(reqId);
+  try { child.kill('SIGTERM'); } catch (_) {}
+  setTimeout(() => { try { if (child.exitCode === null && !child.killed) child.kill('SIGKILL'); } catch (_) {} }, 3000);
+  safeSend(e.sender, 'tp:error', { reqId, error: i18n.t('Остановлено') });
 });
 
 // ---------------------------------------------------------------- AI-DB (read-only SQL chat)

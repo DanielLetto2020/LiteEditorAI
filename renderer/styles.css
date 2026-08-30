@@ -4471,6 +4471,9 @@ body.preview-full .prev-frame { width: 100%; height: 100%; }
 /* пузырь-ошибка агента: видно, что это не ответ (и «Заменить» у него нет) */
 .tp-bubble.tp-bubble-err { border: 1px solid var(--tp-danger-border, rgba(255,69,58,.35)); background: rgba(255,69,58,.08); white-space: pre-wrap; }
 
+/* кнопка отправки в состоянии «агент работает» — это «Стоп», и он должен читаться как стоп */
+.tp-chat-send.stopping { background: var(--tp-danger, #ff453a); box-shadow: 0 3px 10px rgba(255,69,58,.4); }
+
 /* скрепка: приложен ли документ к следующему сообщению (снятая = обычный разговор) */
 .tp-chat-attach {
   width: 30px; height: 30px; flex: none; border-radius: 9px; border: 1px solid transparent; background: transparent;

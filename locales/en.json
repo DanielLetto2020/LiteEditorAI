@@ -4158,5 +4158,20 @@
  "У записи нет поля id": "An entry has no id field",
  "не удалось прочитать PATH логин-шелла: {0}": "could not read the login shell PATH: {0}",
  "Открывать при запуске редактора": "Open when the editor starts",
- "Окно": "Window"
+ "Окно": "Window",
+ "Агент будет сам изменять файлы в каталоге {0} — без подтверждения каждой правки. Каталог НЕ под git, откатить правки будет нечем.": "The agent will change files in {0} on its own — without confirming each edit. The folder is NOT under git, so there will be nothing to roll back with.",
+ "Агент будет сам изменять файлы в каталоге {0} — без подтверждения каждой правки. Каталог под git, правки можно откатить.": "The agent will change files in {0} on its own — without confirming each edit. The folder is under git, so the edits can be rolled back.",
+ "Агент отработал, но файл не перечитать: {0}": "The agent finished, but the file could not be re-read: {0}",
+ "Агент-режим работает с файлом на диске — сохраните документ": "Agent mode needs a file on disk — save the document first",
+ "Агент-режим требует каталог документа: сохраните файл на диск": "Agent mode requires the document's folder: save the file to disk",
+ "Включить режим «Агент»?": "Enable Agent mode?",
+ "Внеси правки прямо в этот файл. Не создавай копий и не трогай другие файлы без необходимости.": "Edit this file in place. Do not create copies and do not touch other files unless necessary.",
+ "Обновлён агентом · {0}": "Updated by the agent · {0}",
+ "Остановить агента": "Stop the agent",
+ "Остановлено": "Stopped",
+ "Режим": "Mode",
+ "У агента «{0}» не задан режим правки файлов": "Agent \"{0}\" has no file-editing mode configured",
+ "У агента «{0}» не задан режим правки файлов (agentArgs)": "Agent \"{0}\" has no file-editing mode configured (agentArgs)",
+ "Файл не сохранён — агент не запущен": "The file was not saved — the agent was not started",
+ "Что поручить агенту? Он изменит файл сам": "What should the agent do? It will change the file itself"
 }
