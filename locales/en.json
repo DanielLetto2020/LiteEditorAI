@@ -4136,5 +4136,9 @@
  "Документ приложен — снять": "Document attached — detach",
  "Приложить документ к сообщению": "Attach the document to the message",
  "Спросить агента (без документа)": "Ask the agent (without the document)",
- "стейджер не запустился: ": "stager failed to start: "
+ "стейджер не запустился: ": "stager failed to start: ",
+ "Агент «{0}» не авторизован. Выполните в терминале: {1} — войдите в аккаунт и повторите запрос.\n\nОтвет агента:\n{2}": "Agent \"{0}\" is not authorized. Run in a terminal: {1} — sign in to your account and repeat the request.\n\nAgent output:\n{2}",
+ "Команда скопирована ✓": "Command copied ✓",
+ "Не удалось скопировать команду": "Could not copy the command",
+ "Скопировать команду входа": "Copy the sign-in command"
 }

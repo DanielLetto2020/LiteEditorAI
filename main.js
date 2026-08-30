@@ -882,6 +882,43 @@ function tpEnv() {
   const extra = [path.join(os.homedir(), '.local', 'bin'), path.dirname(process.execPath)];
   return { ...process.env, PATH: extra.join(sep) + sep + (process.env.PATH || '') };
 }
+// ---- Единый разбор «агент не авторизован» ---------------------------------------------------
+// CLI-агенты запускаются неинтерактивно: свой запрос логина показать нам они не могут, и он
+// приходит обычным текстом в stdout/stderr. В чате это выглядело как ОТВЕТ агента (а с кнопкой
+// «Заменить» его ещё и предлагалось вставить в документ). Ловим типовые формулировки известных
+// утилит и возвращаем фронту готовую подсказку с командой входа. Идея — PR #10 (@Ainour108).
+const TP_LOGIN_CMD = {
+  claude: 'claude',      // внутри сессии: /login
+  codex: 'codex login',
+  gemini: 'gemini',      // мастер входа на первом экране
+};
+const TP_AUTH_RE = [
+  /\bnot logged ?in\b/i,
+  /\bauthentication required\b/i,
+  /\bplease (?:run )?(?:\/)?login\b/i,
+  /\byou (?:must|need to) (?:log ?in|sign ?in|authenticate)\b/i,
+  /\bsign in with google\b/i,
+  /\bunauthorized\b/i,
+  /\b401\b[^\n]{0,40}\b(?:unauthorized|auth)/i,
+  /\b(?:invalid|missing|expired)\s+(?:api\s*key|credentials?|token)\b/i,
+  /\bsession (?:has )?expired\b/i,
+];
+// → { authRequired, loginCmd, error } если текст похож на отказ по авторизации, иначе null.
+function tpAuthProblem(cmd, text) {
+  const s = String(text || '');
+  if (!s.trim()) return null;
+  if (!TP_AUTH_RE.some((re) => re.test(s))) return null;
+  const loginCmd = TP_LOGIN_CMD[cmd] || cmd;
+  // Одной строкой-шаблоном, а не конкатенацией: иначе экстрактор растащит фразу на обрывки
+  // («Агент «», «» не авторизован…»), и перевести её было бы нечем.
+  return {
+    authRequired: true,
+    loginCmd,
+    error: i18n.t('Агент «{0}» не авторизован. Выполните в терминале: {1} — войдите в аккаунт и повторите запрос.\n\nОтвет агента:\n{2}',
+      cmd, loginCmd, s.trim().slice(0, 600)),
+  };
+}
+
 const tpReqs = new Map(); // reqId -> ChildProcess
 // Живой стриминг ответа в чат (tp:data, идея из PR #6), но через spawn как раньше — БЕЗ PTY:
 // под PTY stderr сливается в stdout, CLI видит TTY (спиннеры/контрол-коды), терминал эхоит промпт,
@@ -905,6 +942,12 @@ ipcMain.on('tp:run', (e, { reqId, agent, prompt } = {}) => {
   child.on('close', (code) => {
     if (!tpReqs.has(reqId)) return; tpReqs.delete(reqId); clearTimeout(to);
     const text = out.trim();
+    // Отказ по авторизации приходит обычным текстом и выглядел бы как ответ агента — ловим раньше.
+    // Но модуль обработки ТЕКСТА: агента вполне могут попросить написать раздел про логин, и в
+    // удачном длинном ответе «not logged in» — цитата, а не отказ. Поэтому разбираем только то,
+    // что на удачный ответ не похоже: ненулевой код или короткий вывод.
+    const auth = (code !== 0 || text.length < 400) ? tpAuthProblem(conf.cmd, text + '\n' + errOut) : null;
+    if (auth) { safeSend(sender, 'tp:error', { reqId, ...auth }); return; }
     if (text) safeSend(sender, 'tp:done', { reqId, text }); // непустой вывод = результат (даже при ненулевом коде)
     else safeSend(sender, 'tp:error', { reqId, error: errOut.trim() || ('агент завершился с кодом ' + code) });
   });

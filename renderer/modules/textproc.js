@@ -731,9 +731,23 @@ export function initTextProc(host) {
     chatLog.forEach((m) => {
       const w = el('div', 'tp-msg ' + m.role);
       if (m.reqId) w.dataset.req = m.reqId; // якорь для in-place стриминга (tp:data)
-      const b = el('div', 'tp-bubble');
+      const b = el('div', 'tp-bubble' + (m.failed ? ' tp-bubble-err' : ''));
       b.textContent = m.busy ? (m.text + ' ⏳') : m.text;
-      if (m.role === 'agent' && !m.busy) {
+      // Команда входа — отдельной кнопкой: набирать её из текста ошибки руками неудобно.
+      if (m.loginCmd) {
+        const acts = el('div', 'tp-bubble-actions');
+        const copyBtn = el('button', 'tp-bubble-replace', 'Скопировать команду входа');
+        copyBtn.title = m.loginCmd;
+        copyBtn.type = 'button';
+        copyBtn.onclick = async () => {
+          try { await navigator.clipboard.writeText(m.loginCmd); toast('Команда скопирована ✓'); }
+          catch (e) { toast('Не удалось скопировать команду', { kind: 'err' }); }
+        };
+        acts.appendChild(copyBtn);
+        b.appendChild(acts);
+      }
+      // «Заменить» — только у настоящего ответа: ошибку агента вставлять в документ незачем.
+      if (m.role === 'agent' && !m.busy && !m.failed) {
         const acts = el('div', 'tp-bubble-actions');
         const replaceBtn = el('button', 'tp-bubble-replace', 'Заменить');
         replaceBtn.type = 'button';
@@ -796,7 +810,13 @@ export function initTextProc(host) {
     renderChatLog();
     const offData = lite.tp.onData(({ reqId: r, chunk }) => { if (r !== am.reqId) return; am.text += chunk; updateStreamBubble(am); });
     const offDone = lite.tp.onDone(({ reqId: r, text }) => { if (r !== am.reqId) return; am.busy = false; am.text = text || ''; cleanup(); renderChatLog(); });
-    const offErr = lite.tp.onError(({ reqId: r, error }) => { if (r !== am.reqId) return; am.busy = false; am.text = 'Ошибка: ' + String(error); cleanup(); renderChatLog(); });
+    const offErr = lite.tp.onError(({ reqId: r, error, authRequired, loginCmd }) => {
+      if (r !== am.reqId) return;
+      am.busy = false; am.failed = true;
+      am.text = authRequired ? String(error) : ('Ошибка: ' + String(error));
+      if (authRequired && loginCmd) am.loginCmd = loginCmd;
+      cleanup(); renderChatLog();
+    });
     const cleanup = () => { try { offData(); offDone(); offErr(); } catch (_) {} };
     
     const prompt = await composePrompt(sel, instruction);

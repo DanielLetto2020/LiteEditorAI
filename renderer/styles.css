@@ -4424,6 +4424,9 @@ body.preview-full .prev-frame { width: 100%; height: 100%; }
   width: 32px; height: 32px; flex: none; border-radius: 10px; border: none; background: var(--tp-accent); color: #fff;
   cursor: pointer; display: inline-flex; align-items: center; justify-content: center; box-shadow: 0 3px 10px rgba(10,132,255,.4);
 }
+/* пузырь-ошибка агента: видно, что это не ответ (и «Заменить» у него нет) */
+.tp-bubble.tp-bubble-err { border: 1px solid var(--tp-danger-border, rgba(255,69,58,.35)); background: rgba(255,69,58,.08); white-space: pre-wrap; }
+
 /* скрепка: приложен ли документ к следующему сообщению (снятая = обычный разговор) */
 .tp-chat-attach {
   width: 30px; height: 30px; flex: none; border-radius: 9px; border: 1px solid transparent; background: transparent;
