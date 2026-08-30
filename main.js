@@ -939,9 +939,35 @@ ipcMain.handle('tp:saveAgents', (_e, { text } = {}) => {
   return { ok: true, list };
 });
 // GUI-сессия часто не видит ~/.local/bin и nvm-bin → дополняем PATH, чтобы claude/codex нашлись.
+// Запущенное из меню/Dock приложение наследует минимальный PATH: nvm, Homebrew и npm-global в нём
+// отсутствуют, и агент «не найден», хотя в терминале работает (та же беда, из-за которой лаунчер
+// прописывает каталог node — см. CLAUDE.md). Спрашиваем PATH у логин-шелла ОДИН раз.
+// В PR #10 это делалось execFileSync прямо в tpEnv(): main-процесс вставал на время запуска шелла,
+// а интерактивный rc (спиннеры, менеджеры версий, ожидание ввода) мог подвесить редактор совсем.
+// Поэтому: асинхронно, в фоне после старта, с таймаутом и stdin из /dev/null; до готовности
+// работаем на прежнем PATH — первый запрос просто не получит расширения.
+let loginPath = '';        // '' = ещё не знаем или не вышло
+let loginPathTried = false;
+function probeLoginPath() {
+  if (loginPathTried || process.platform === 'win32') return;
+  loginPathTried = true;
+  const shell = process.env.SHELL || '/bin/bash';
+  // -lic: rc-файлы (nvm живёт в .bashrc/.zshrc) читаются только интерактивным шеллом.
+  execFile(shell, ['-lic', 'printf "%s" "$PATH"'], { timeout: 3000, killSignal: 'SIGKILL', stdio: ['ignore', 'pipe', 'ignore'], encoding: 'utf8' }, (err, stdout) => {
+    if (err) { logger.log('warn', 'tp', `не удалось прочитать PATH логин-шелла: ${err.message || err}`); return; }
+    // Интерактивный шелл мог что-то напечатать от себя — PATH идёт последней непустой строкой.
+    const line = String(stdout || '').trim().split('\n').filter(Boolean).pop() || '';
+    if (line.includes(path.sep)) loginPath = line;
+  });
+}
 function tpEnv() {
   const sep = process.platform === 'win32' ? ';' : ':';
-  const extra = [path.join(os.homedir(), '.local', 'bin'), path.dirname(process.execPath)];
+  const extra = [
+    loginPath,
+    ...(process.platform === 'darwin' ? ['/opt/homebrew/bin', '/usr/local/bin'] : []),
+    path.join(os.homedir(), '.local', 'bin'),
+    path.dirname(process.execPath),
+  ].filter(Boolean);
   return { ...process.env, PATH: extra.join(sep) + sep + (process.env.PATH || '') };
 }
 // ---- Единый разбор «агент не авторизован» ---------------------------------------------------
@@ -2944,6 +2970,7 @@ app.whenReady().then(() => {
   } catch (_) {}
   const gpu = !(process.env.LITE_NO_GPU === '1' || process.env.LITE_SOFTWARE_RENDER === '1');
   logger.log('info', 'app', `ready — electron ${process.versions.electron}, chrome ${process.versions.chrome}, node ${process.versions.node}, gpu=${gpu}`);
+  probeLoginPath(); // фоном: PATH логин-шелла для CLI-агентов «Обработки текста»
   Menu.setApplicationMenu(null); // we draw our own menu in the custom titlebar
   createWindow();
   createTray();
