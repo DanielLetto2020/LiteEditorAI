@@ -223,6 +223,9 @@ export function initTextProc(host) {
   let chatRole = 'Без роли';
   let chatLog = [];
   let aiSeq = 0;
+  // Скрепка: прикладывать ли документ к сообщению. Раньше документ уходил агенту ВСЕГДА, и
+  // спросить «а как правильно пишется?» было нельзя — на любую фразу приходил переписанный текст.
+  let attachCtx = settings.tpAttach !== false;
   let treeSortMode = 'az';
   
   function fileBadge(name) {
@@ -410,6 +413,12 @@ export function initTextProc(host) {
 
     $('#doc-ai-chat-send').onclick = sendChat;
     $('#doc-ai-chat-input').onkeydown = (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendChat(); } };
+    const attachBtn = $('#doc-ai-attach');
+    if (attachBtn) attachBtn.onclick = () => {
+      attachCtx = !attachCtx;
+      settings.tpAttach = attachCtx; saveSettings();
+      updateAttachUI();
+    };
 
     $('#doc-editor-wysiwyg').addEventListener('input', markDirty);
     $('#doc-editor-md').addEventListener('input', markDirty);
@@ -424,6 +433,19 @@ export function initTextProc(host) {
     setTab('ai');
     updateStatus('Новый файл');
     renderChatLog();
+    updateAttachUI();
+  }
+
+  // Скрепка: вид кнопки + подсказка контекста. Держим в одном месте — состояние читают оба.
+  function updateAttachUI() {
+    const btn = $('#doc-ai-attach');
+    if (btn) {
+      btn.classList.toggle('on', attachCtx);
+      btn.title = attachCtx ? 'Документ приложен — снять' : 'Приложить документ к сообщению';
+    }
+    const ta = $('#doc-ai-chat-input');
+    if (ta) ta.placeholder = attachCtx ? 'Что сделать с текстом?' : 'Спросить агента (без документа)';
+    updateCtxIndicator();
   }
 
   // ---- Drag-and-drop порядка карточек (персистится в settings) ----
@@ -753,15 +775,19 @@ export function initTextProc(host) {
       parts.push(`Действуй в роли: ${chatRole}`);
     }
     parts.push(instruction);
-    parts.push('Ниже — ' + (sel.whole ? 'весь документ (Markdown)' : 'фрагмент текста') + '. Верни ТОЛЬКО итоговый текст для замены: без пояснений, без приветствий.');
-    parts.push('===ФРАГМЕНТ===\n' + sel.text + '\n===КОНЕЦ===');
+    // Скрепка снята — это просто вопрос. Без фрагмента требование «верни ТОЛЬКО текст замены»
+    // бессмысленно и вредно: агент отвечал бы переписанным пустым местом вместо ответа.
+    if (sel) {
+      parts.push('Ниже — ' + (sel.whole ? 'весь документ (Markdown)' : 'фрагмент текста') + '. Верни ТОЛЬКО итоговый текст для замены: без пояснений, без приветствий.');
+      parts.push('===ФРАГМЕНТ===\n' + sel.text + '\n===КОНЕЦ===');
+    }
     return parts.join('\n\n');
   }
   async function sendChat() {
     const ta = $('#doc-ai-chat-input');
     const instruction = ta.value.trim();
     if (!instruction) return;
-    const sel = selForChat();
+    const sel = attachCtx ? selForChat() : null;
     ta.value = '';
     chatLog.push({ role: 'user', text: instruction });
     const am = { role: 'agent', text: '', busy: true, reqId: 'tpq' + (++aiSeq) };
@@ -907,11 +933,15 @@ export function initTextProc(host) {
     });
   }
 
-  // Контекст для AI-панели: выделенный в документе фрагмент
-  document.addEventListener('selectionchange', () => {
-    if (!docOpen) return;
+  // Контекст для AI-панели: что именно уйдёт агенту при следующем сообщении.
+  function updateCtxIndicator() {
     const ctxText = $('#doc-ai-ctx-text');
     if (!ctxText) return;
+    if (!attachCtx) {
+      ctxText.textContent = 'Документ не приложен — обычный разговор. Скрепка слева от поля ввода прикладывает текст.';
+      ctxText.classList.remove('filled');
+      return;
+    }
     const sel = window.getSelection();
     if (sel && !sel.isCollapsed && getActiveEditor().contains(sel.anchorNode)) {
       const text = sel.toString();
@@ -919,7 +949,8 @@ export function initTextProc(host) {
     }
     ctxText.textContent = 'Выделите фрагмент в документе — он попадёт сюда. Ответ можно вставить кнопкой «Заменить».';
     ctxText.classList.remove('filled');
-  });
+  }
+  document.addEventListener('selectionchange', () => { if (docOpen) updateCtxIndicator(); });
 
   // ---- Interface for Main ----
   function setDocOpen(open, opts = {}) {

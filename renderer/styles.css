@@ -4424,6 +4424,13 @@ body.preview-full .prev-frame { width: 100%; height: 100%; }
   width: 32px; height: 32px; flex: none; border-radius: 10px; border: none; background: var(--tp-accent); color: #fff;
   cursor: pointer; display: inline-flex; align-items: center; justify-content: center; box-shadow: 0 3px 10px rgba(10,132,255,.4);
 }
+/* скрепка: приложен ли документ к следующему сообщению (снятая = обычный разговор) */
+.tp-chat-attach {
+  width: 30px; height: 30px; flex: none; border-radius: 9px; border: 1px solid transparent; background: transparent;
+  color: var(--tp-text-3); cursor: pointer; display: inline-flex; align-items: center; justify-content: center;
+}
+.tp-chat-attach:hover { background: var(--tp-hover); color: var(--tp-text); }
+.tp-chat-attach.on { background: rgba(10,132,255,.12); border-color: rgba(10,132,255,.35); color: var(--tp-accent); }
 
 /* model list cost/size chips */
 .chat-model-row .cm-meta { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }

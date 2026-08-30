@@ -4131,5 +4131,10 @@
  "таймаут: «claude mcp add» не ответил за 30 с": "timeout: “claude mcp add” did not respond within 30 s",
  "Изменения применены в памяти, но НЕ записаны в файл базы: ": "Changes were applied in memory but NOT written to the database file: ",
  "На ПК": "On this PC",
- "На сервере": "On the server"
+ "На сервере": "On the server",
+ "Документ не приложен — обычный разговор. Скрепка слева от поля ввода прикладывает текст.": "Document not attached — plain conversation. The paperclip left of the input attaches the text.",
+ "Документ приложен — снять": "Document attached — detach",
+ "Приложить документ к сообщению": "Attach the document to the message",
+ "Спросить агента (без документа)": "Ask the agent (without the document)",
+ "стейджер не запустился: ": "stager failed to start: "
 }
