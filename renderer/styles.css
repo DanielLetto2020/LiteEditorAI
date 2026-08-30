@@ -4424,6 +4424,16 @@ body.preview-full .prev-frame { width: 100%; height: 100%; }
   width: 32px; height: 32px; flex: none; border-radius: 10px; border: none; background: var(--tp-accent); color: #fff;
   cursor: pointer; display: inline-flex; align-items: center; justify-content: center; box-shadow: 0 3px 10px rgba(10,132,255,.4);
 }
+/* галочка «открывать при запуске» на плитке встроенного модуля */
+.bim-tile { position: relative; }
+.bim-auto {
+  position: absolute; top: 8px; right: 8px; width: 20px; height: 20px; padding: 0; border-radius: 6px;
+  border: 1px solid var(--border); background: var(--surface-2); color: transparent; cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center; opacity: 0; transition: opacity .12s;
+}
+.bim-tile:hover .bim-auto, .bim-auto.on { opacity: 1; }
+.bim-auto.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+
 /* ---- редактор списка агентов (модалка) ---- */
 .tp-agents-hint { line-height: 1.45; margin-bottom: 10px; }
 .tp-agents-json {
