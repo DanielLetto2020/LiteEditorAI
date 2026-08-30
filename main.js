@@ -2971,7 +2971,21 @@ app.whenReady().then(() => {
   const gpu = !(process.env.LITE_NO_GPU === '1' || process.env.LITE_SOFTWARE_RENDER === '1');
   logger.log('info', 'app', `ready — electron ${process.versions.electron}, chrome ${process.versions.chrome}, node ${process.versions.node}, gpu=${gpu}`);
   probeLoginPath(); // фоном: PATH логин-шелла для CLI-агентов «Обработки текста»
-  Menu.setApplicationMenu(null); // we draw our own menu in the custom titlebar
+  // Своё меню мы рисуем в титлбаре, поэтому системное не нужно — но на macOS оно ещё и держит
+  // системные ускорители: без меню в приложении не работают Cmd+C/V/X/A и Cmd+Q, а About/Hide
+  // недоступны совсем. Поэтому там ставим минимальное меню из ролей (идея PR #10), на остальных
+  // платформах — как было, без меню.
+  Menu.setApplicationMenu(process.platform === 'darwin' ? Menu.buildFromTemplate([
+    { role: 'appMenu' },
+    { label: i18n.t('Правка'), submenu: [
+      { role: 'undo' }, { role: 'redo' }, { type: 'separator' },
+      { role: 'cut' }, { role: 'copy' }, { role: 'paste' }, { role: 'selectAll' },
+    ] },
+    { label: i18n.t('Окно'), submenu: [
+      { role: 'minimize' }, { role: 'zoom' }, { type: 'separator' },
+      { role: 'togglefullscreen' }, { type: 'separator' }, { role: 'close' },
+    ] },
+  ]) : null);
   createWindow();
   createTray();
   // Переоткрыть окна модулей, открытые в прошлой сессии (проектозависимые подхватят активный

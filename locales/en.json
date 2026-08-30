@@ -4157,5 +4157,6 @@
  "У записи «{0}» нет команды (cmd)": "Entry \"{0}\" has no command (cmd)",
  "У записи нет поля id": "An entry has no id field",
  "не удалось прочитать PATH логин-шелла: {0}": "could not read the login shell PATH: {0}",
- "Открывать при запуске редактора": "Open when the editor starts"
+ "Открывать при запуске редактора": "Open when the editor starts",
+ "Окно": "Window"
 }
