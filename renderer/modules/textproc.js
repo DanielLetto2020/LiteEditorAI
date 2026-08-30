@@ -336,13 +336,7 @@ export function initTextProc(host) {
           item.classList.add('active');
           btn.querySelector('span:first-child').textContent = item.textContent;
           if (dd.id === 'doc-zoom-dd') {
-            const val = parseFloat(item.dataset.val) || 1;
-            const page = document.querySelector('.tp-page');
-            if (page) {
-              page.style.transform = `scale(${val})`;
-              page.style.transformOrigin = 'top center';
-            }
-            window.tpCurrentZoom = val;
+            applyZoom(parseFloat(item.dataset.val) || 1);
           } else if (dd.id === 'doc-lineheight-dd') {
             const val = parseFloat(item.dataset.val) || 1.6;
             const doc = document.querySelector('.tp-doc');
@@ -363,31 +357,22 @@ export function initTextProc(host) {
       }
     });
 
-    // Touchpad Pinch-to-Zoom
-    window.tpCurrentZoom = window.tpCurrentZoom || 1;
+    // Масштаб: колесо с Ctrl (и пинч тачпада — он приходит тем же событием) + Ctrl +/−/0.
     const workspace = document.querySelector('.tp-workspace');
     if (workspace) {
       workspace.addEventListener('wheel', (e) => {
-        if (e.ctrlKey) {
-          e.preventDefault();
-          const zoomSpeed = 0.01;
-          window.tpCurrentZoom -= e.deltaY * zoomSpeed;
-          window.tpCurrentZoom = Math.max(0.25, Math.min(window.tpCurrentZoom, 3.0));
-          
-          const page = document.querySelector('.tp-page');
-          if (page) {
-            page.style.transform = `scale(${window.tpCurrentZoom})`;
-            page.style.transformOrigin = 'top center';
-          }
-          
-          const zoomBtn = document.querySelector('#doc-zoom-dd .tp-dd-btn span:first-child');
-          if (zoomBtn) {
-            zoomBtn.textContent = Math.round(window.tpCurrentZoom * 100) + '%';
-          }
-          document.querySelectorAll('#doc-zoom-dd .tp-dd-item').forEach(i => i.classList.remove('active'));
-        }
+        if (!e.ctrlKey) return;
+        e.preventDefault();
+        applyZoom(curZoom - e.deltaY * 0.01);
       }, { passive: false });
     }
+    document.addEventListener('keydown', (e) => {
+      if (!(e.ctrlKey || e.metaKey)) return;
+      if (e.key === '=' || e.key === '+') { e.preventDefault(); applyZoom(curZoom + 0.1); }
+      else if (e.key === '-') { e.preventDefault(); applyZoom(curZoom - 0.1); }
+      else if (e.key === '0') { e.preventDefault(); applyZoom(1); }
+    });
+    applyZoom(curZoom); // восстановить сохранённый масштаб
 
     $$('[data-color]').forEach((node) => {
       node.onclick = (e) => { e.preventDefault(); execCmd('foreColor', node.dataset.color); };
@@ -450,6 +435,27 @@ export function initTextProc(host) {
     const ta = $('#doc-ai-chat-input');
     if (ta) ta.placeholder = attachCtx ? 'Что сделать с текстом?' : 'Спросить агента (без документа)';
     updateCtxIndicator();
+  }
+
+  // ---- Масштаб страницы -----------------------------------------------------------------------
+  // Раньше страница масштабировалась через transform: scale(). Визуально это работает, но раскладку
+  // НЕ меняет: .tp-canvas продолжает считать страницу прежнего размера, поэтому при увеличении низ
+  // документа было не доскроллить, а при уменьшении оставалась пустая полоса; в разделённом окне
+  // отмасштабированный слой ещё и наезжал на инспектор (жалоба из PR #10). CSS-свойство zoom в
+  // Chromium (а у нас только он) пересчитывает раскладку по-настоящему — скролл и попадание курсора
+  // остаются честными.
+  const ZOOM_MIN = 0.25, ZOOM_MAX = 3;
+  let curZoom = (() => { const v = parseFloat(settings.tpZoom); return v >= ZOOM_MIN && v <= ZOOM_MAX ? v : 1; })();
+  function applyZoom(val) {
+    curZoom = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, Math.round(val * 100) / 100));
+    const page = document.querySelector('.tp-page');
+    if (page) page.style.zoom = String(curZoom);
+    const label = document.querySelector('#doc-zoom-dd .tp-dd-btn span:first-child');
+    if (label) label.textContent = Math.round(curZoom * 100) + '%';
+    document.querySelectorAll('#doc-zoom-dd .tp-dd-item').forEach((i) => {
+      i.classList.toggle('active', Math.abs(parseFloat(i.dataset.val) - curZoom) < 0.001);
+    });
+    settings.tpZoom = curZoom; saveSettings();
   }
 
   // ---- Тулбар: лишние кнопки уезжают в «⋯» -----------------------------------------------------

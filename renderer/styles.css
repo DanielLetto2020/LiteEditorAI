@@ -5162,10 +5162,7 @@ body.mw-doc .modal label { color: #1a1a1c !important; }
   border: 1px solid var(--tp-border);
   padding: 8px 12px;
 }
-.tp-page {
-  transition: transform 0.2s ease;
-  transform-origin: top center;
-}
+/* масштаб — через CSS zoom (см. applyZoom): transform: scale() не менял раскладку и ломал скролл */
 
 /* --- Custom Glassmorphic Dropdowns --- */
 .tp-dropdown {
