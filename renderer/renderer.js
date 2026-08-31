@@ -24,10 +24,11 @@ import { el, icon, iconBtn, hydrateIcons, toast, makeModal, showConfirm, showPro
 // initRh — модуль «Удалённые хосты» мигрирован в отдельное окно (renderer/module-entry.js).
 // initNotes / initAudit / initSeo / initTools / initIterflow — модули мигрированы в отдельные окна (renderer/module-entry.js).
 // initOpenRouter — чат мигрирован в отдельное окно (renderer/module-entry.js).
+import { openGlobalSearch } from './gsearch.js';
 import { initExtensions } from './modules/extensions.js';
 // initFiles — вивер+дерево мигрированы в отдельное окно (renderer/module-entry.js).
 
-const APP_VERSION = 'alpha v1.1.189';
+const APP_VERSION = 'alpha v1.1.190';
 const GUTTER = 5;
 // Системный терминал («Система · ~») мигрирован в отдельное окно (renderer/modules/scratch.js):
 // его id `__scratch__::tN` маршрутизируются main'ом в окно-владельца, в ядре их больше не обрабатываем.
@@ -128,6 +129,15 @@ function pushRecent(p) {
 // ---------------------------------------------------------------- projects column
 const UNCATEGORIZED = 'Все';
 const FAV_KEY = '__fav';
+// Фильтр списка проектов (поле над списком). Пустая строка = фильтра нет. Токены ищутся И-условием
+// по «имя + путь», поэтому «lite web» находит LiteWebEditor, а «home lite» — его же по пути.
+// Пока фильтр активен, секции показываются РАЗВЁРНУТЫМИ: свёрнутая категория прятала бы находки.
+let projFilter = '';
+function matchesFilter(p) {
+  if (!projFilter) return true;
+  const hay = ((p.name || '') + ' ' + (p.path || '')).toLowerCase();
+  return projFilter.split(/\s+/).filter(Boolean).every((tok) => hay.includes(tok));
+}
 const ARCHIVE = 'Архив'; // спец-категория: всегда последняя, без перестановки стрелками, свёрнута по дефолту
 function loadCategories() { return Array.isArray(STORE.categories) ? STORE.categories : []; }
 function saveCategories(c) { persist('categories', c); }
@@ -171,12 +181,15 @@ function effectiveOrder() {
 function buildSections() {
   const cats = loadCategories();
   const favs = sortFavs(projects.filter((p) => p.favorite));
-  return effectiveOrder().map((key) => {
+  const secs = effectiveOrder().map((key) => {
     if (key === FAV_KEY) return favs.length ? { key, label: 'Избранное', list: favs, pinned: true } : null;
     if (key === UNCATEGORIZED) return { key, label: UNCATEGORIZED, pinned: false, list: projects.filter((p) => !p.favorite && !cats.includes(p.category)) };
     if (key === ARCHIVE) { const list = projects.filter((p) => !p.favorite && p.category === ARCHIVE); return list.length ? { key, label: 'Архив', list, pinned: false } : null; }
     return { key, label: key, pinned: false, list: projects.filter((p) => !p.favorite && p.category === key) };
   }).filter(Boolean);
+  if (!projFilter) return secs;
+  // под фильтром пустая категория — шум: показываем только секции, где что-то нашлось
+  return secs.map((s) => ({ ...s, list: s.list.filter(matchesFilter) })).filter((s) => s.list.length);
 }
 function moveSection(key, dir) {
   if (key === ARCHIVE) return;            // Архив зафиксирован последним
@@ -332,6 +345,7 @@ function renderProjects() {
   box.innerHTML = '';
   const sections = buildSections();
   sections.forEach((s, i) => box.appendChild(renderSection(s, i, sections)));
+  if (projFilter && !sections.length) box.appendChild(el('div', 'proj-empty', 'Ничего не найдено'));
   // OpenRouter (ключи) и «Обработка текста» (документы) больше НЕ в сайдбаре — их списки живут
   // вкладками внутри своих панелей правого слота (открываются через квикбар/меню «Модули»).
   renderMiniRail();
@@ -342,7 +356,7 @@ function renderSection(s, index, sections) {
   const total = sections.length;
   const { label, key, list, pinned } = s;
   const sec = el('div', 'pgroup' + (pinned ? ' pinned' : ''));
-  const collapsed = isCollapsed(key);
+  const collapsed = projFilter ? false : isCollapsed(key);   // под фильтром секции всегда раскрыты
   const head = el('div', 'pgroup-head');
   const chev = el('span', 'pgroup-chev');
   chev.appendChild(icon(collapsed ? 'chevron-right' : 'chevron-down', 15));
@@ -891,7 +905,7 @@ const HOTKEYS = [
   { test: (e) => e.code === 'Equal' || e.code === 'NumpadAdd',      run: () => bumpFont(1) },
   { test: (e) => e.code === 'Minus' || e.code === 'NumpadSubtract', run: () => bumpFont(-1) },
   { test: (e) => e.code === 'Tab',                                  run: (e) => cycleProject(e.shiftKey ? -1 : 1) },
-  { test: (e) => e.code === 'KeyF' && e.shiftKey,                   run: () => showGlobalSearch() }, // Ctrl+Shift+F — поиск по всем сессиям (идея 9)
+  { test: (e) => e.code === 'KeyF' && e.shiftKey,                   run: () => showGlobalSearch() }, // Ctrl+Shift+F — «Найти во всех проектах» (файлы + терминалы)
   { test: (e) => /^Digit[1-9]$/.test(e.code) && !e.shiftKey,        run: (e) => { const p = projects[+e.code.slice(5) - 1]; if (p) setActive(p.id); } },
 ];
 // Поле ввода, где Ctrl-комбо должны доставаться самому полю (модалки, палитра, формы), — но НЕ
@@ -1281,12 +1295,10 @@ function runTermSearch(dir) {
   if (dir < 0) rec.search.findPrevious(q, opts); else rec.search.findNext(q, opts);
 }
 
-// ── Глобальный поиск по выводу ВСЕХ открытых сессий (идея 9) ───────────────────
+// ── Сканер буферов открытых сессий (режим «В терминалах» глобального поиска, идея 9) ──
 // Когда параллельно работают несколько агентов, важно быстро найти «где это проскочило».
-// Сканируем scrollback каждого терминала (read-only, PTY не трогаем), показываем совпадения
-// сгруппированно по сессии; клик переключает на сессию и подсвечивает строку.
+// Читаем scrollback каждого терминала (read-only, PTY не трогаем); выдачу рисует gsearch.js.
 const GS_PER_SESSION = 60;   // потолок совпадений на одну сессию
-const GS_TOTAL = 400;        // общий потолок строк в выдаче
 function scanTermBuffer(term, q) {
   const out = [];
   try {
@@ -1307,44 +1319,22 @@ function jumpToSession(projId, sid) {
   if (t && t.sessions.includes(sid)) { t.active = sid; saveProjTabs(); }
   showActiveTerminal();
 }
-function showGlobalSearch() {
-  let timer = null;   // объявлен ДО makeModal: onClose гасит отложенный поиск (иначе он бил по снятому DOM)
-  const { m, close } = makeModal(`
-    <h2>🔎 Поиск по всем терминалам</h2>
-    <input type="text" id="gs-q" placeholder="искать в выводе всех открытых сессий…" spellcheck="false" autocomplete="off">
-    <div id="gs-results" class="gs-results"></div>`,
-  () => clearTimeout(timer));
-  const input = m.querySelector('#gs-q');
-  const box = m.querySelector('#gs-results');
-  const run = () => {
-    const q = input.value.trim();
-    box.innerHTML = '';
-    if (q.length < 2) { box.appendChild(el('div', 'gs-empty', 'Введите минимум 2 символа')); return; }
-    let total = 0;
-    for (const [sid, rec] of terms) {
-      if (total >= GS_TOTAL) break;
-      const hits = scanTermBuffer(rec.term, q);
-      if (!hits.length) continue;
-      const proj = projects.find((p) => p.id === rec.projId);
-      box.appendChild(el('div', 'gs-group', `${proj ? proj.name : '—'} · ${rec.name} — совпадений: ${hits.length}`));
-      for (const h of hits) {
-        if (total >= GS_TOTAL) break;
-        const row = el('div', 'gs-hit');
-        row.appendChild(el('span', 'gs-ln', String(h.y)));
-        row.appendChild(el('span', 'gs-text', h.text));
-        row.onclick = () => {
-          jumpToSession(rec.projId, sid);
-          requestAnimationFrame(() => { try { rec.term.scrollToLine(Math.max(0, h.y - 2)); rec.search.findNext(q); } catch (_) {} });
-          close();
-        };
-        box.appendChild(row); total++;
-      }
-    }
-    if (!total) box.appendChild(el('div', 'gs-empty', 'Ничего не найдено в открытых сессиях'));
-  };
-  input.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(run, 160); });
-  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { clearTimeout(timer); run(); } });
-  setTimeout(() => input.focus(), 30);
+// Окно «Найти во всех проектах» (renderer/gsearch.js): содержимое и имена файлов через стриминговый
+// бэкенд gsearch:*, плюс прежний поиск по буферам открытых терминалов — теперь один из его режимов.
+function showGlobalSearch(initial = {}) {
+  openGlobalSearch({
+    lite,
+    projects: () => projects,
+    activeId: () => activeId,
+    setActive,
+    openInViewer: (p, line) => lite.editorBus.openInViewer(p, line),
+    terms: () => terms,
+    jumpToSession,
+    scanTermBuffer,
+    categories: () => loadCategories().filter((c) => c !== ARCHIVE),
+    STORE,
+    persist,
+  }, initial);
 }
 
 // guardDirty (защита несохранённых правок вивера при переключении) переехал в files.js → Files.guardDirty.
@@ -2660,7 +2650,8 @@ function paletteActions() {
   acts.push({ label: 'Jira — свои задачи из нескольких аккаунтов', run: () => openModule('jira') });
   acts.push({ label: 'Режим «один терминал»', run: toggleSingle });
   acts.push({ label: 'Поиск в терминале', hint: 'Ctrl+F', run: openTermSearch });
-  acts.push({ label: 'Поиск по всем терминалам', hint: 'Ctrl+Shift+F', run: showGlobalSearch });
+  acts.push({ label: 'Найти во всех проектах — файлы и терминалы', hint: 'Ctrl+Shift+F', run: () => showGlobalSearch() });
+  acts.push({ label: 'Поиск по всем терминалам', run: () => showGlobalSearch({ mode: 'terms' }) });
   acts.push({ label: 'Очистить терминал', run: () => clearTerminal() });
   acts.push({ label: 'Шкала времени слева — вкл/выкл', hint: settings.termTimeline === true ? 'сейчас включена' : 'сейчас выключена', run: () => { settings.termTimeline = settings.termTimeline !== true; saveSettings(); applyTimeline(); } });
   acts.push({ label: 'Перезапустить терминал', run: () => restartTerminal() });
@@ -3024,6 +3015,24 @@ function init() {
   // событие и редактору, и окну вивера. В самом редакторе вивера/дерева больше нет — подписку убрали.
 
   $('#btn-single').addEventListener('click', toggleSingle);
+
+  // ── Фильтр списка проектов + вход в глобальный поиск ──────────────────────────────
+  {
+    const q = $('#proj-filter'), clr = $('#proj-filter-clear');
+    const apply = () => {
+      projFilter = q.value.trim().toLowerCase();
+      clr.classList.toggle('hidden', !projFilter);
+      renderProjects();
+    };
+    q.addEventListener('input', apply);
+    q.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') { q.value = ''; apply(); q.blur(); }
+      // Enter — открыть первый найденный проект: фильтр работает и как быстрый переключатель
+      if (e.key === 'Enter') { const first = buildSections()[0]; if (first && first.list[0]) setActive(first.list[0].id); }
+    });
+    clr.addEventListener('click', () => { q.value = ''; apply(); q.focus(); });
+    $('#proj-find').addEventListener('click', () => showGlobalSearch({ query: q.value.trim() }));
+  }
 
   // ── Заставка «матрица» (скринсейвер) ───────────────────────────────────────────────
   // Полноэкранный canvas-«дождь» зелёных глифов. Кнопка в шапке (вкл/выкл вручную) +
