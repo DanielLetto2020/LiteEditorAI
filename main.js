@@ -129,7 +129,7 @@ try {
   const legacy = path.join(os.homedir(), '.LiteEditor');
   if (!fs.existsSync(storeDir) && fs.existsSync(legacy)) fs.cpSync(legacy, storeDir, { recursive: true });
 } catch (_) {}
-const STORE_KEYS = ['projects', 'settings', 'layout', 'recents', 'lastParent', 'categories', 'sectionOrder', 'favOrder', 'accordions', 'dismissed', 'projTabs', 'openrouter', 'dockerUi', 'dbConnections', 'dbUi', 'rhConnections', 'rhUi', 'extData', 'extEnabled', 'quickbar', 'seoSites', 'moduleWins', 'mwLeft', 'mwLogH', 'gitFav', 'commitDrafts', 'bookmarks', 'promptSnippets', 'pomodoro', 'pomodoroLog', 'dbaiProviders', 'sessionSnaps', 'siteMon', 'rmqConnections', 'rmqUi', 'kafkaConnections', 'kafkaUi', 'stConnections', 'stUi', 'jiraAccounts', 'jiraUi', 'gsearch', 'gsearchHist'];
+const STORE_KEYS = ['projects', 'settings', 'layout', 'recents', 'lastParent', 'categories', 'sectionOrder', 'favOrder', 'accordions', 'dismissed', 'projTabs', 'openrouter', 'dockerUi', 'dbConnections', 'dbUi', 'rhConnections', 'rhUi', 'extData', 'extEnabled', 'quickbar', 'seoSites', 'moduleWins', 'mwLeft', 'mwLogH', 'gitFav', 'commitDrafts', 'bookmarks', 'promptSnippets', 'pomodoro', 'pomodoroLog', 'dbaiProviders', 'sessionSnaps', 'siteMon', 'rmqConnections', 'rmqUi', 'kafkaConnections', 'kafkaUi', 'stConnections', 'stUi', 'jiraAccounts', 'jiraUi', 'gsearch', 'gsearchHist', 'voice', 'voiceClips'];
 function ensureStoreDir() { try { fs.mkdirSync(storeDir, { recursive: true }); } catch (_) {} }
 function storeFile(key) { return path.join(storeDir, String(key).replace(/[^\w.-]/g, '_') + '.json'); }
 function readStoreKey(key) {
@@ -6421,9 +6421,8 @@ ipcMain.handle('clipboard:read', () => clipboard.readText());
 // буфером обмена (события «буфер изменился» в Electron нет, поэтому опрос — и только пока окно
 // модуля просит) и маршрут «Озвучить» из контекстного меню терминала.
 function ttsSettings() { return readStoreKey('settings') || {}; }
-ipcMain.handle('tts:state', () => ttsBackend.state(ttsSettings()));
+ipcMain.handle('tts:state', (_e, opts = {}) => ttsBackend.state(ttsSettings(), { fresh: !!opts.fresh }));
 ipcMain.handle('tts:warmup', () => ttsBackend.warmup(ttsSettings()));      // поднять сайдкар заранее
-ipcMain.handle('tts:voices', () => ttsBackend.voices(ttsSettings()));
 // Одна фраза → WAV-байтами в рендерер (там играет через WebAudio: <audio src="blob:"> режет CSP).
 ipcMain.handle('tts:speak', async (_e, { text, voice, rate } = {}) => {
   const r = await ttsBackend.speak(ttsSettings(), { text, voice, rate });
@@ -6453,20 +6452,27 @@ const CLIP_POLL_MS = 500;
 let clipTimer = null, clipOwner = null, clipLast = '', clipSelLast = '', clipWantSel = false;
 function clipStop() { if (clipTimer) { clearInterval(clipTimer); clipTimer = null; } clipOwner = null; }
 function clipRead(type) { try { return clipboard.readText(type) || ''; } catch (_) { return ''; } }
+// Сравниваем и запоминаем не сам текст, а его отпечаток: в буфере может лежать многомегабайтный
+// лог, и держать его копию в памяти main (да ещё сверять целиком дважды в секунду) незачем.
+function clipMark(t) { return t.length + ':' + crypto.createHash('sha1').update(t).digest('hex'); }
 function clipTick() {
   if (!clipOwner || clipOwner.isDestroyed()) { clipStop(); return; }
   const t = clipRead();
-  if (t && t !== clipLast) { clipLast = t; safeSend(clipOwner, 'tts:clip', { text: t, source: 'clipboard' }); }
+  const mark = t ? clipMark(t) : '';
+  if (t && mark !== clipLast) { clipLast = mark; safeSend(clipOwner, 'tts:clip', { text: t, source: 'clipboard' }); }
   if (!clipWantSel) return;
   const s = clipRead('selection');
-  if (s && s !== clipSelLast && s !== clipLast) { clipSelLast = s; safeSend(clipOwner, 'tts:clip', { text: s, source: 'selection' }); }
+  const sMark = s ? clipMark(s) : '';
+  if (s && sMark !== clipSelLast && sMark !== clipLast) { clipSelLast = sMark; safeSend(clipOwner, 'tts:clip', { text: s, source: 'selection' }); }
 }
 ipcMain.on('tts:clipWatch', (e, opts = {}) => {
   clipWantSel = !!opts.selection;
   if (!opts.on) { clipStop(); return; }
   clipOwner = e.sender;
-  clipLast = clipRead();            // текущее содержимое не считаем «новым копированием»
-  clipSelLast = clipWantSel ? clipRead('selection') : '';
+  const cur = clipRead();
+  clipLast = cur ? clipMark(cur) : '';   // текущее содержимое не считаем «новым копированием»
+  const curSel = clipWantSel ? clipRead('selection') : '';
+  clipSelLast = curSel ? clipMark(curSel) : '';
   if (!clipTimer) clipTimer = setInterval(clipTick, CLIP_POLL_MS);
 });
 
@@ -6480,7 +6486,10 @@ ipcMain.on('voice:open', (_e, payload) => {
   if (!voiceModWindow()) openModuleWindow('voice');
   const w = voiceModWindow();
   if (w && voicePanelReady) { if (w.isMinimized()) w.restore(); w.focus(); sendTo(w, 'voice:open', payload); }
-  else pendingVoiceOpens.push(payload);
+  else {
+    pendingVoiceOpens.push(payload);
+    while (pendingVoiceOpens.length > 10) pendingVoiceOpens.shift(); // окно могло не открыться — очередь не копим
+  }
 });
 ipcMain.on('voice:panelReady', () => {
   voicePanelReady = true;

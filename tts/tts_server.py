@@ -10,7 +10,6 @@
 # в ответе — только путь и длительность. Кэшем и именами файлов распоряжается вызывающая сторона.
 #
 #   {"id":1,"op":"ping"}                                  → {"id":1,"ok":true,"loaded":false}
-#   {"id":2,"op":"voices"}                                → {"id":2,"ok":true,"voices":[...]}
 #   {"id":3,"op":"speak","text":"…","voice":"xenia",
 #    "rate":"medium","out":"/tmp/x.wav"}                  → {"id":3,"ok":true,"file":"…","dur":3.6}
 #   {"id":4,"op":"quit"}                                  → процесс завершается
@@ -20,6 +19,7 @@
 
 import argparse
 import json
+import os
 import sys
 import time
 import wave
@@ -65,11 +65,23 @@ def esc(text):
 
 
 def write_wav(path, samples):
-    with wave.open(str(path), 'wb') as w:
-        w.setnchannels(1)
-        w.setsampwidth(2)
-        w.setframerate(SAMPLE_RATE)
-        w.writeframes(samples.tobytes())
+    # Пишем в сосед .part и переименовываем: rename(2) атомарен в пределах ФС, поэтому файл в
+    # кэше либо целый, либо его нет. Прямая запись оставляла обрезанный WAV, который потом
+    # отдавался как готовая фраза (кэш проверяет только наличие файла).
+    tmp = str(path) + '.part'
+    try:
+        with wave.open(tmp, 'wb') as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(SAMPLE_RATE)
+            w.writeframes(samples.tobytes())
+        os.replace(tmp, str(path))
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def synth(text, voice, rate, out):
@@ -90,8 +102,6 @@ def handle(req):
     op = req.get('op')
     if op == 'ping':
         return {'ok': True, 'loaded': model is not None, 'voices': voices()}
-    if op == 'voices':
-        return {'ok': True, 'voices': voices()}
     if op == 'speak':
         text = (req.get('text') or '').strip()
         if not text:

@@ -4286,5 +4286,10 @@
  "нечего произносить": "nothing to pronounce",
  "Озвучка: {0} {1} не прочитано — {2}": "Voice: {0} {1} not read — {2}",
  "Пропущено {0} {1}: произносить нечего": "Skipped {0} {1}: nothing to pronounce",
- "пустая фраза": "empty sentence"
+ "пустая фраза": "empty sentence",
+ "загрузка модели уже идёт": "the model is already downloading",
+ "загрузка оборвалась: {0} из {1} байт": "download interrupted: {0} of {1} bytes",
+ "соединение прервано": "connection interrupted",
+ "файл модели подозрительно мал — загрузка не удалась": "the model file is suspiciously small — the download failed",
+ "Фрагмент обрезан до {0} тыс. знаков — озвучен будет только он": "The fragment was cut to {0}k characters — only that part will be read"
 }

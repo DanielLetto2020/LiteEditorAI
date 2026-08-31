@@ -36,6 +36,7 @@ const VOICE_LABEL = {
 };
 const MAX_CLIPS = 200;              // история копирований
 const MAX_CLIP_CHARS = 100000;      // защита от «скопировал весь лог»
+const MAX_HISTORY_CHARS = 4000000;  // потолок на всю историю: файл состояния не должен пухнуть
 const MAX_SENTENCE = 350;           // длиннее — режем по запятым: иначе долгая пауза перед стартом
 
 // ── чистка текста ─────────────────────────────────────────────────────────────────────────────
@@ -137,12 +138,39 @@ export function initVoice(host) {
       autoPlay: state.autoPlay, clean: state.clean,
     });
   }
-  function saveClips() { host.persist('voiceClips', state.clips.slice(0, MAX_CLIPS)); }
+  // Лимит режет только незакреплённые записи: закреплённое человек оставил намеренно, терять его
+  // при сохранении нельзя. Дополнительно держим потолок по объёму — иначе десяток «скопировал весь
+  // лог» раздувает файл истории на десятки мегабайт.
+  function trimClips(list) {
+    const pinned = list.filter((c) => c.pinned);
+    const rest = list.filter((c) => !c.pinned).slice(0, Math.max(0, MAX_CLIPS - pinned.length));
+    const kept = new Set(rest);
+    const out = list.filter((c) => c.pinned || kept.has(c));
+    let bytes = 0;
+    return out.filter((c, i) => {
+      bytes += (c.text || '').length;
+      return i === 0 || c.pinned || bytes <= MAX_HISTORY_CHARS;   // свежую запись не выбрасываем никогда
+    });
+  }
+  function saveClips() {
+    state.clips = trimClips(state.clips);
+    // Открытая запись могла не пережить обрезку — тогда возвращаем её в историю, иначе
+    // дальнейшая правка сохранялась бы в никуда: клипа с таким id уже нет.
+    if (state.activeId && !state.clips.some((c) => c.id === state.activeId)) {
+      const ta = $('#voice-text');
+      const text = ta ? ta.value : '';
+      if (text.trim()) {
+        state.clips.unshift({ id: state.activeId, text, at: Date.now(), src: 'edit', pinned: false });
+        state.clips = trimClips(state.clips);
+      } else state.activeId = null;
+    }
+    host.persist('voiceClips', state.clips);
+  }
   function voice() { return settings.ttsVoice || 'xenia'; }
   function rate() { return settings.ttsRate || 'medium'; }
 
   // ---------------- плеер ----------------
-  const player = { list: [], i: 0, playing: false, paused: false, src: null, gen: 0, guard: null, bufs: new Map() };
+  const player = { list: [], i: 0, playing: false, paused: false, src: null, gen: 0, endCurrent: null, bufs: new Map(), pending: new Map() };
   let audioCtx = null;
   function ac() {
     if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
@@ -153,18 +181,27 @@ export function initVoice(host) {
     if (wav instanceof ArrayBuffer) return wav;
     return wav.buffer.slice(wav.byteOffset, wav.byteOffset + wav.byteLength); // Buffer из IPC
   }
-  async function bufferFor(idx) {
-    if (player.bufs.has(idx)) return player.bufs.get(idx);
+  function bufferFor(idx) {
+    if (player.bufs.has(idx)) return Promise.resolve(player.bufs.get(idx));
+    // Запоминаем сам ЗАПРОС, а не только результат: иначе предзагрузка следующей фразы и
+    // дошедший до неё цикл синтезировали одно и то же двумя параллельными вызовами.
+    const inFlight = player.pending.get(idx);
+    if (inFlight) return inFlight;
     const s = player.list[idx];
-    if (!s) return null;
-    const r = await lite.tts.speak(s.text, voice(), rate());
-    if (r && r.skipped) { player.bufs.set(idx, null); return null; }  // произносить нечего (номер строки, голая пунктуация)
-    if (!r || r.ok !== true) throw new Error((r && r.error) || 'синтез не удался');
-    const buf = await ac().decodeAudioData(toArrayBuffer(r.wav));
-    player.bufs.set(idx, buf);
-    // Буферы прочитанных фраз не держим: минута речи — это мегабайты, а длинный текст читают целиком.
-    for (const k of player.bufs.keys()) if (k < idx - 1) player.bufs.delete(k);
-    return buf;
+    if (!s) return Promise.resolve(null);
+    const job = (async () => {
+      const r = await lite.tts.speak(s.text, voice(), rate());
+      if (r && r.skipped) { player.bufs.set(idx, null); return null; }  // произносить нечего (номер строки, голая пунктуация)
+      if (!r || r.ok !== true) throw new Error((r && r.error) || 'синтез не удался');
+      const buf = await ac().decodeAudioData(toArrayBuffer(r.wav));
+      player.bufs.set(idx, buf);
+      // Буферы прочитанных фраз не держим: минута речи — это мегабайты, а длинный текст читают целиком.
+      for (const k of player.bufs.keys()) if (k < idx - 1) player.bufs.delete(k);
+      return buf;
+    })();
+    player.pending.set(idx, job);
+    job.catch(() => {}).then(() => { if (player.pending.get(idx) === job) player.pending.delete(idx); });
+    return job;
   }
   function prefetch(idx) { if (player.list[idx] && !player.bufs.has(idx)) bufferFor(idx).catch(() => {}); }
   function playBuffer(buf) {
@@ -180,7 +217,7 @@ export function initVoice(host) {
         if (done) return;
         done = true;
         if (guard) { clearInterval(guard); guard = null; }
-        player.guard = null;
+        if (player.endCurrent === finish) player.endCurrent = null;
         if (player.src === src) player.src = null;
         resolve();
       };
@@ -191,7 +228,9 @@ export function initVoice(host) {
       // на паузе они стоят, поэтому пауза страховку не будит.
       const endsAt = ctx.currentTime + buf.duration;
       guard = setInterval(() => { if (ctx.currentTime > endsAt + 2) finish(); }, 500);
-      player.guard = () => { if (guard) { clearInterval(guard); guard = null; } };
+      // Стоп и перемотка обязаны ЗАВЕРШИТЬ этот промис, а не просто погасить звук: иначе цикл
+      // чтения остаётся висеть на await вместе со всеми своими буферами.
+      player.endCurrent = finish;
     });
   }
   async function runFrom(startIdx) {
@@ -223,6 +262,7 @@ export function initVoice(host) {
     player.playing = false;
     player.src = null;
     highlight(-1);
+    setMode('edit');   // дочитали до конца — текст снова редактируемый, иначе он «залипал» в режиме чтения
     updatePlayer();
     reportSkips(skipped, failures);
   }
@@ -240,8 +280,8 @@ export function initVoice(host) {
     player.playing = false; player.paused = false;
     const src = player.src;
     player.src = null;
-    if (player.guard) { player.guard(); player.guard = null; }
     if (src) { try { src.onended = null; src.stop(); } catch (_) {} }
+    if (player.endCurrent) { const f = player.endCurrent; player.endCurrent = null; f(); }
     if (audioCtx && audioCtx.state === 'suspended') { try { audioCtx.resume(); } catch (_) {} }
     highlight(-1);
     setMode('edit');
@@ -254,15 +294,20 @@ export function initVoice(host) {
     updatePlayer();
   }
   // Старт: если в тексте выделен кусок — читаем только фразы, попавшие в выделение.
+  let engineAsking = false;
   function play() {
     if (!engine.ready) {
       // Состояние движка могло ещё не приехать (окно только что открылось) — спросим и повторим,
-      // и только на реальном «движка нет» покажем настройки.
+      // и только на реальном «движка нет» покажем настройки. Повторные нажатия, пока идёт
+      // проверка, игнорируем: иначе несколько ответов запускали чтение и тут же ставили паузу.
+      if (engineAsking) return;
+      engineAsking = true;
       refreshEngine().then(() => {
+        engineAsking = false;
         renderToolbar();
         if (engine.ready) play();
         else openSettings();
-      });
+      }).catch(() => { engineAsking = false; });
       return;
     }
     if (player.playing) { togglePause(); return; }
@@ -275,6 +320,7 @@ export function initVoice(host) {
     const sel = selectionRange(ta);
     player.list = all;
     player.bufs.clear();
+    player.pending.clear();
     let from = 0;
     if (sel) {
       const idx = all.findIndex((s) => s.end > sel.start && s.start < sel.end);
@@ -328,8 +374,8 @@ export function initVoice(host) {
     player.gen++;
     const src = player.src;
     player.src = null;
-    if (player.guard) { player.guard(); player.guard = null; }
     if (src) { try { src.onended = null; src.stop(); } catch (_) {} }
+    if (player.endCurrent) { const f = player.endCurrent; player.endCurrent = null; f(); }
     player.paused = false;
     if (audioCtx && audioCtx.state === 'suspended') { try { audioCtx.resume(); } catch (_) {} }
   }
@@ -351,7 +397,11 @@ export function initVoice(host) {
     return line.length > 90 ? line.slice(0, 90) + '…' : line;
   }
   function addClip(raw, opts = {}) {
-    const src = String(raw == null ? '' : raw).slice(0, MAX_CLIP_CHARS);
+    const whole = String(raw == null ? '' : raw);
+    const src = whole.slice(0, MAX_CLIP_CHARS);
+    if (whole.length > MAX_CLIP_CHARS) {
+      toast(`Фрагмент обрезан до ${Math.round(MAX_CLIP_CHARS / 1000)} тыс. знаков — озвучен будет только он`, { kind: 'warn', ttl: 7000 });
+    }
     const text = state.clean ? cleanText(src) : src.trim();
     if (!text) return null;
     const same = state.clips.find((c) => c.text === text);
@@ -360,12 +410,13 @@ export function initVoice(host) {
       state.clips = [same, ...state.clips.filter((c) => c !== same)];
     } else {
       state.clips.unshift({ id: 'c' + Date.now() + Math.random().toString(36).slice(2, 6), text, at: Date.now(), src: opts.source || 'clipboard', pinned: false });
-      const pinned = state.clips.filter((c) => c.pinned);
-      const rest = state.clips.filter((c) => !c.pinned).slice(0, MAX_CLIPS - pinned.length);
-      state.clips = state.clips.filter((c) => c.pinned || rest.includes(c));
     }
-    saveClips();
     const clip = state.clips[0];
+    saveClips();   // сам подрежет историю, сохранив закреплённое
+    // Во время чтения документ не подменяем: случайное копирование обрывало озвучку на середине.
+    // Новый фрагмент просто появляется в истории; «Читать сразу» и «Озвучить» из терминала — это
+    // явная команда читать, там подмена нужна (opts.force).
+    if (player.playing && !opts.force) { renderList(); return clip; }
     loadClip(clip.id, { keepScroll: true });
     renderList();
     return clip;
@@ -373,6 +424,7 @@ export function initVoice(host) {
   function loadClip(id, opts = {}) {
     const clip = state.clips.find((c) => c.id === id);
     if (!clip) return;
+    if (state.activeId && state.activeId !== id) saveActiveText();  // правка в поле ждала автосохранения — забираем её сейчас
     state.activeId = id;
     stopPlayback();
     const ta = $('#voice-text');
@@ -392,6 +444,7 @@ export function initVoice(host) {
   function renderList() {
     const box = $('#voice-list');
     if (!box) return;
+    const keepScroll = box.scrollTop;   // список перерисовывается и при автосохранении правки
     box.innerHTML = '';
     const q = state.filter.trim().toLowerCase();
     const items = state.clips.filter((c) => !q || c.text.toLowerCase().includes(q));
@@ -399,6 +452,7 @@ export function initVoice(host) {
       box.appendChild(el('div', 'voice-empty', state.clips.length
         ? 'Ничего не найдено'
         : 'История пуста. Скопируйте текст — он появится здесь.'));
+      box.scrollTop = 0;
       return;
     }
     const pinned = items.filter((c) => c.pinned), rest = items.filter((c) => !c.pinned);
@@ -430,6 +484,7 @@ export function initVoice(host) {
         box.appendChild(card);
       }
     }
+    box.scrollTop = keepScroll;
   }
 
   // ---------------- шапка и плеер ----------------
@@ -459,7 +514,7 @@ export function initVoice(host) {
       vsel.appendChild(o);
     }
     vsel.title = 'Голос диктора';
-    vsel.onchange = () => { settings.ttsVoice = vsel.value; host.saveSettings(); player.bufs.clear(); renderToolbar(); };
+    vsel.onchange = () => { settings.ttsVoice = vsel.value; host.saveSettings(); player.bufs.clear(); player.pending.clear(); renderToolbar(); };
     bar.appendChild(vsel);
 
     const rsel = el('select', 'voice-select voice-select-rate');
@@ -470,7 +525,7 @@ export function initVoice(host) {
       rsel.appendChild(o);
     }
     rsel.title = 'Темп речи';
-    rsel.onchange = () => { settings.ttsRate = rsel.value; host.saveSettings(); player.bufs.clear(); };
+    rsel.onchange = () => { settings.ttsRate = rsel.value; host.saveSettings(); player.bufs.clear(); player.pending.clear(); };
     bar.appendChild(rsel);
 
     bar.appendChild(toggle('Перехват буфера', 'Скопированный текст сразу попадает сюда', state.watch, (v) => {
@@ -584,19 +639,19 @@ export function initVoice(host) {
       const r = await lite.tts.pick('model');
       if (r && r.ok) md.value = r.path;
     };
-    const apply = async () => {
+    const apply = async (fresh) => {
       settings.ttsPython = py.value.trim();
       settings.ttsModel = md.value.trim();
       host.saveSettings();
-      await refreshEngine();
+      await refreshEngine(fresh);
       paint();
       renderToolbar();
     };
     m.querySelector('#vs-check').onclick = async () => {
-      await apply();
+      await apply(true);   // человек мог доустановить torch — спрашиваем заново, а не из памяти
       toast(engine.ready ? 'Движок готов' : `Движок не готов: ${engine.error || 'проверьте пути'}`, { kind: engine.ready ? 'ok' : 'err' });
     };
-    m.querySelector('#vs-save').onclick = async () => { await apply(); close(); };
+    m.querySelector('#vs-save').onclick = async () => { await apply(true); close(); };
     const dl = m.querySelector('#vs-dl'), dlStatus = m.querySelector('#vs-dl-status');
     dl.onclick = async () => {
       dl.disabled = true;
@@ -617,9 +672,9 @@ export function initVoice(host) {
     };
   }
 
-  async function refreshEngine() {
+  async function refreshEngine(fresh) {
     try {
-      const s = await lite.tts.state();
+      const s = await lite.tts.state(fresh);
       engine = s || engine;
       engine.ready = !!(s && s.ready);
     } catch (e) {
@@ -634,13 +689,13 @@ export function initVoice(host) {
   }
   function onClip({ text, source }) {
     if (!text || !state.watch) return;
-    const clip = addClip(text, { source });
+    const clip = addClip(text, { source, force: state.autoPlay });
     if (clip && state.autoPlay) setTimeout(play, 60);
   }
   // Текст из контекстного меню терминала («Озвучить») — приходит через main.
   function onExternalText({ text }) {
     if (!text) return;
-    const clip = addClip(text, { source: 'terminal' });
+    const clip = addClip(text, { source: 'terminal', force: true });
     if (clip) setTimeout(play, 120);   // «Озвучить» из меню терминала — команда читать, а не просто положить текст
   }
 
@@ -660,6 +715,7 @@ export function initVoice(host) {
       ta.selectionStart = ta.selectionEnd = pos + 1;
     }
     saveActiveText();
+    recountSentences();
   }
 
   // ---------------- панель ----------------
@@ -715,8 +771,14 @@ export function initVoice(host) {
   function clearHistory() {
     showConfirm('Очистить историю', 'Удалить все незакреплённые записи из истории копирований?', 'Очистить', () => {
       state.clips = state.clips.filter((c) => c.pinned);
-      if (!state.clips.find((c) => c.id === state.activeId)) state.activeId = null;
-      saveClips();
+      if (!state.clips.find((c) => c.id === state.activeId)) {
+        state.activeId = null;
+        const ta = $('#voice-text');
+        if (ta) ta.value = '';       // иначе в поле остался бы текст записи, которой уже нет
+        stopPlayback();
+        recountSentences();
+      }
+      host.persist('voiceClips', state.clips);   // без saveClips: он вернул бы удалённую запись обратно
       renderList();
     });
   }
@@ -729,7 +791,19 @@ export function initVoice(host) {
     openSettings,
     clearHistory,
     onExternalText,
-    // окно закрывается — снять слежение и оборвать звук
-    confirmClose: (proceed) => { try { stopPlayback(); if (unsubClip) unsubClip(); if (unsubOpen) unsubOpen(); lite.tts.clipWatch(false); } catch (_) {} proceed(); },
+    // Окно закрывается: забрать правку, дописать историю синхронно (обычная запись — send,
+    // она могла не долететь до закрытия), снять слежение и оборвать звук.
+    confirmClose: (proceed) => {
+      try {
+        saveActiveText();
+        state.clips = trimClips(state.clips);
+        try { lite.store.setSync('voiceClips', state.clips); } catch (_) { host.persist('voiceClips', state.clips); }
+        stopPlayback();
+        if (unsubClip) unsubClip();
+        if (unsubOpen) unsubOpen();
+        lite.tts.clipWatch(false);
+      } catch (_) {}
+      proceed();
+    },
   };
 }

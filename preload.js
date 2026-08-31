@@ -577,9 +577,8 @@ contextBridge.exposeInMainWorld('lite', {
   // «Озвучка»: синтез речи python-сайдкаром (lib/tts.js), слежение за буфером обмена и приём
   // текста из контекстного меню терминала. Аудио приходит WAV-байтами — играет WebAudio в модуле.
   tts: {
-    state: () => ipcRenderer.invoke('tts:state'),                                  // движок найден? какие голоса?
+    state: (fresh) => ipcRenderer.invoke('tts:state', { fresh: !!fresh }),   // fresh — перепроверить интерпретатор, не верить прошлому ответу                                  // движок найден? какие голоса?
     warmup: () => ipcRenderer.invoke('tts:warmup'),                                // поднять сайдкар заранее
-    voices: () => ipcRenderer.invoke('tts:voices'),
     speak: (text, voice, rate) => ipcRenderer.invoke('tts:speak', { text, voice, rate }), // → {ok,wav,dur}|{ok:false,error}
     pick: (what) => ipcRenderer.invoke('tts:pick', what),                          // 'python' | 'model' → диалог выбора файла
     downloadModel: () => ipcRenderer.invoke('tts:downloadModel'),                  // 39 МБ, по явной кнопке
