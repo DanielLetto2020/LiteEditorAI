@@ -4279,5 +4279,8 @@
  "Читать сразу": "立即朗读",
  "Ctrl+Enter — озвучить · Ctrl+U — ударение · Esc — стоп": "Ctrl+Enter — 朗读 · Ctrl+U — 重音 · Esc — 停止",
  "Python с torch": "装有 torch 的 Python",
- "python: {0}\nмодель: {1}": "python：{0}\n模型：{1}"
+ "python: {0}\nмодель: {1}": "python：{0}\n模型：{1}",
+ "Нет модели голоса": "没有音色模型",
+ "Нет Python с torch": "没有装 torch 的 Python",
+ "система": "系统"
 }

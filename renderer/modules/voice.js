@@ -406,7 +406,10 @@ export function initVoice(host) {
     const eng = el('button', 'voice-engine' + (engine.ready ? ' is-ok' : ' is-off'));
     eng.type = 'button';
     eng.appendChild(el('span', 'voice-dotmark'));
-    eng.appendChild(el('span', null, engine.ready ? `Голос: ${shortVoice(voice())}` : 'Движок не настроен'));
+    const lack = engine.missing === 'model' ? 'Нет модели голоса'
+      : engine.missing === 'python' ? 'Нет Python с torch'
+        : 'Движок не настроен';
+    eng.appendChild(el('span', null, engine.ready ? `Голос: ${shortVoice(voice())}` : lack));
     eng.title = engine.ready
       ? `python: ${engine.python}\nмодель: ${engine.model}`
       : (engine.error || 'Нажмите, чтобы указать движок синтеза');

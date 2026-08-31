@@ -4279,5 +4279,8 @@
  "Читать сразу": "Read immediately",
  "Ctrl+Enter — озвучить · Ctrl+U — ударение · Esc — стоп": "Ctrl+Enter — read · Ctrl+U — stress mark · Esc — stop",
  "Python с torch": "Python with torch",
- "python: {0}\nмодель: {1}": "python: {0}\nmodel: {1}"
+ "python: {0}\nмодель: {1}": "python: {0}\nmodel: {1}",
+ "Нет модели голоса": "No voice model",
+ "Нет Python с torch": "No Python with torch",
+ "система": "system"
 }
