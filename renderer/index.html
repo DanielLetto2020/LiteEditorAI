@@ -41,7 +41,16 @@
       <aside id="mini-rail"></aside>
 
       <aside id="sidebar">
-        <div class="pane-head">ПРОЕКТЫ</div>
+        <div class="pane-head">
+          <span class="ph-title">ПРОЕКТЫ</span>
+          <button id="proj-find" class="icon-btn" title="Поиск по всем проектам (Ctrl+Shift+F)" data-icon="search" data-icon-size="15"></button>
+        </div>
+        <!-- фильтр списка проектов: сужает карточки по имени и пути, секции без совпадений скрываются -->
+        <div class="proj-filter">
+          <span class="pf-ic" data-icon="search" data-icon-size="13"></span>
+          <input type="text" id="proj-filter" placeholder="фильтр проектов…" spellcheck="false" autocomplete="off">
+          <button id="proj-filter-clear" class="pf-clear hidden" title="Сбросить фильтр" data-icon="x" data-icon-size="12"></button>
+        </div>
         <div id="projects"></div>
       </aside>
       <div class="gutter" data-resize="sidebar"></div>

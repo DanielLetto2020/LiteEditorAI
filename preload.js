@@ -683,4 +683,12 @@ contextBridge.exposeInMainWorld('lite', {
     histList: (file) => ipcRenderer.invoke('hist:list', file),
     histRead: (file, name) => ipcRenderer.invoke('hist:read', { file, name }),
   },
+  // Поиск по всем проектам (Ctrl+Shift+F): start отвечает сразу, результат течёт событиями.
+  gsearch: {
+    start: (runId, query, opts, roots) => ipcRenderer.invoke('gsearch:start', { runId, query, opts, roots }),
+    cancel: (runId) => ipcRenderer.invoke('gsearch:cancel', { runId }),
+    onHit: (cb) => { const h = (_e, p) => cb(p || {}); ipcRenderer.on('gsearch:hit', h); return () => ipcRenderer.removeListener('gsearch:hit', h); },
+    onProgress: (cb) => { const h = (_e, p) => cb(p || {}); ipcRenderer.on('gsearch:progress', h); return () => ipcRenderer.removeListener('gsearch:progress', h); },
+    onDone: (cb) => { const h = (_e, p) => cb(p || {}); ipcRenderer.on('gsearch:done', h); return () => ipcRenderer.removeListener('gsearch:done', h); },
+  },
 });

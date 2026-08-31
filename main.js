@@ -128,7 +128,7 @@ try {
   const legacy = path.join(os.homedir(), '.LiteEditor');
   if (!fs.existsSync(storeDir) && fs.existsSync(legacy)) fs.cpSync(legacy, storeDir, { recursive: true });
 } catch (_) {}
-const STORE_KEYS = ['projects', 'settings', 'layout', 'recents', 'lastParent', 'categories', 'sectionOrder', 'favOrder', 'accordions', 'dismissed', 'projTabs', 'openrouter', 'dockerUi', 'dbConnections', 'dbUi', 'rhConnections', 'rhUi', 'extData', 'extEnabled', 'quickbar', 'seoSites', 'moduleWins', 'mwLeft', 'mwLogH', 'gitFav', 'commitDrafts', 'bookmarks', 'promptSnippets', 'pomodoro', 'pomodoroLog', 'dbaiProviders', 'sessionSnaps', 'siteMon', 'rmqConnections', 'rmqUi', 'kafkaConnections', 'kafkaUi', 'stConnections', 'stUi', 'jiraAccounts', 'jiraUi'];
+const STORE_KEYS = ['projects', 'settings', 'layout', 'recents', 'lastParent', 'categories', 'sectionOrder', 'favOrder', 'accordions', 'dismissed', 'projTabs', 'openrouter', 'dockerUi', 'dbConnections', 'dbUi', 'rhConnections', 'rhUi', 'extData', 'extEnabled', 'quickbar', 'seoSites', 'moduleWins', 'mwLeft', 'mwLogH', 'gitFav', 'commitDrafts', 'bookmarks', 'promptSnippets', 'pomodoro', 'pomodoroLog', 'dbaiProviders', 'sessionSnaps', 'siteMon', 'rmqConnections', 'rmqUi', 'kafkaConnections', 'kafkaUi', 'stConnections', 'stUi', 'jiraAccounts', 'jiraUi', 'gsearch', 'gsearchHist'];
 function ensureStoreDir() { try { fs.mkdirSync(storeDir, { recursive: true }); } catch (_) {} }
 function storeFile(key) { return path.join(storeDir, String(key).replace(/[^\w.-]/g, '_') + '.json'); }
 function readStoreKey(key) {
@@ -4387,6 +4387,128 @@ ipcMain.handle('files:diffPair', async (_e, { a, b } = {}) => {
       (_err, stdout) => resolve(stdout || ''));
   });
   return { diff: out };
+});
+
+// ---------------------------------------------------------------- глобальный поиск по всем проектам
+// Стриминговый брат files:search: тот же обход (IGNORE_DIRS, пропуск бинарей), но по N корням сразу
+// и с выдачей ПАЧКАМИ — окно рисует первые попадания через доли секунды, а не ждёт обхода двадцати
+// проектов. Запрос живёт под своим runId: gsearch:cancel и закрытие окна его гасят (флаг проверяется
+// и в stop() обхода, и перед каждой отправкой).
+const GSX_TOTAL_CAP = 5000;                 // общий потолок совпадений на запрос
+const GSX_PER_FILE_CAP = 50;                // на файл: один минифицированный бандл не съест всю выдачу
+const GSX_FILE_MAX = 2 * 1024 * 1024;       // крупнее — не грепаем (данные/бандлы)
+const GSX_FLUSH_HITS = 200;                 // пачка совпадений…
+const GSX_FLUSH_MS = 120;                   // …либо столько миллисекунд — что раньше
+const GSX_TEXT_MAX = 260;                   // сколько символов строки отдаём в выдачу
+const gsxRuns = new Map();                  // runId → { cancelled }
+
+// Маска вида "*.js, src/**" → предикат по относительному пути. Маска со слэшем меряется по всему
+// пути, без слэша — по имени файла (так человек и думает, печатая «*.md»). «**» ходит через границы
+// папок, одиночная «*» — только внутри сегмента.
+function gsxMaskPred(raw) {
+  const parts = String(raw || '').split(',').map((s) => s.trim()).filter(Boolean);
+  if (!parts.length) return null;
+  const res = [];
+  for (const p of parts) {
+    let body = '';
+    for (let i = 0; i < p.length; i++) {
+      const ch = p[i];
+      if (ch === '*') { if (p[i + 1] === '*') { body += '.*'; i++; } else body += '[^/]*'; }
+      else if (ch === '?') body += '.';
+      else if ('.+^${}()|[]\\'.includes(ch)) body += '\\' + ch;
+      else body += ch;
+    }
+    try { res.push({ re: new RegExp('^' + body + '$', 'i'), full: p.includes('/') }); } catch (_) { /* мусорная маска — игнор */ }
+  }
+  if (!res.length) return null;
+  return (rel) => {
+    const name = rel.split('/').pop();
+    return res.some((r) => r.re.test(r.full ? rel : name));
+  };
+}
+ipcMain.handle('gsearch:cancel', (_e, { runId } = {}) => {
+  const run = gsxRuns.get(String(runId));
+  if (run) run.cancelled = true;
+  return { ok: true };
+});
+ipcMain.handle('gsearch:start', (e, { runId, query, opts, roots } = {}) => {
+  const id = String(runId || '');
+  const o = opts || {};
+  const mode = (o.mode === 'names' || o.mode === 'both') ? o.mode : 'content';
+  if (!id || !query || !Array.isArray(roots) || !roots.length) return { ok: false, error: 'нет запроса или области поиска' };
+  let re;
+  try {
+    let src = o.regex ? String(query) : String(query).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    if (o.wholeWord) src = '\\b(?:' + src + ')\\b';
+    re = new RegExp(src, o.caseSensitive ? 'g' : 'gi');
+  } catch { return { ok: false, error: 'некорректное регулярное выражение' }; }
+  const incl = gsxMaskPred(o.include);
+  const excl = gsxMaskPred(o.exclude);
+  const run = { cancelled: false };
+  gsxRuns.set(id, run);
+  // Обход идёт ФОНОМ: invoke отвечает сразу, результат течёт событиями. Иначе окно ждало бы конца
+  // обхода всех проектов, чтобы показать первую строку.
+  (async () => {
+    const started = Date.now();
+    let total = 0, files = 0, scanned = 0, capped = false, error = '';
+    let batch = [], lastFlush = 0;
+    const flush = (force) => {
+      if (!batch.length || run.cancelled) return;
+      if (!force && batch.length < GSX_FLUSH_HITS && Date.now() - lastFlush < GSX_FLUSH_MS) return;
+      const hits = batch; batch = [];
+      lastFlush = Date.now();
+      safeSend(e.sender, 'gsearch:hit', { runId: id, hits });
+    };
+    try {
+      for (const r of roots) {
+        if (run.cancelled || capped) break;
+        const root = r && r.path ? String(r.path) : '';
+        if (!root) continue;
+        try { if (!(await fs.promises.stat(root)).isDirectory()) continue; } catch { continue; } // папка удалена — просто пропускаем
+        safeSend(e.sender, 'gsearch:progress', { runId: id, rootId: r.id, name: r.name, total, scanned });
+        await walkProjectFiles(root, async (full) => {
+          if (run.cancelled || total >= GSX_TOTAL_CAP) return;
+          const rel = path.relative(root, full).split(path.sep).join('/');
+          if (incl && !incl(rel)) return;
+          if (excl && excl(rel)) return;
+          scanned++;
+          if (scanned % 500 === 0) safeSend(e.sender, 'gsearch:progress', { runId: id, rootId: r.id, name: r.name, total, scanned });
+          let fileHits = 0;
+          if (mode === 'names' || mode === 'both') {
+            re.lastIndex = 0;
+            const m = re.exec(rel);
+            if (m) { batch.push({ rootId: r.id, file: rel, line: 0, text: rel, mcol: m.index, len: m[0].length }); total++; fileHits++; }
+          }
+          if (mode === 'content' || mode === 'both') {
+            let stat; try { stat = await fs.promises.stat(full); } catch { if (fileHits) { files++; flush(); } return; }
+            if (!stat.size || stat.size > GSX_FILE_MAX) { if (fileHits) { files++; flush(); } return; }
+            let raw; try { raw = await fs.promises.readFile(full); } catch { if (fileHits) { files++; flush(); } return; }
+            const probe = Math.min(raw.length, 8192);
+            for (let i = 0; i < probe; i++) if (raw[i] === 0) { if (fileHits) { files++; flush(); } return; }  // NUL → бинарь
+            const rows = raw.toString('utf8').split('\n');
+            let perFile = 0;
+            for (let i = 0; i < rows.length && total < GSX_TOTAL_CAP && perFile < GSX_PER_FILE_CAP; i++) {
+              re.lastIndex = 0;
+              const m = re.exec(rows[i]);
+              if (!m) continue;
+              // окно вокруг совпадения: обрезка «с начала строки» прятала бы находку в длинной строке
+              const from = Math.max(0, m.index - 60);
+              const text = (from ? '…' : '') + rows[i].slice(from, from + GSX_TEXT_MAX);
+              batch.push({ rootId: r.id, file: rel, line: i + 1, text, mcol: m.index - from + (from ? 1 : 0), len: m[0].length });
+              total++; perFile++; fileHits++;
+            }
+          }
+          if (fileHits) files++;
+          if (total >= GSX_TOTAL_CAP) capped = true;
+          flush();
+        }, () => run.cancelled || total >= GSX_TOTAL_CAP);
+      }
+    } catch (err) { error = String((err && err.message) || err); }
+    flush(true);
+    gsxRuns.delete(id);
+    safeSend(e.sender, 'gsearch:done', { runId: id, total, files, scanned, capped, error, cancelled: run.cancelled, ms: Date.now() - started });
+  })();
+  return { ok: true, runId: id };
 });
 
 // ---------------------------------------------------------------- локальная история файлов (PhpStorm Local History)
