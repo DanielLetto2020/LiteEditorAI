@@ -3,6 +3,14 @@
 Все заметные изменения LiteEditorAI. Формат — [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/),
 нумерация — [SemVer](https://semver.org/lang/ru/). Проект в стадии **alpha**.
 
+## [1.1.195] — 2026-09-01
+
+### 🐛 Исправлено
+- **«Озвучка» в установленной сборке не находила свой движок.** Скрипт-сайдкар лежит внутри архива
+  `app.asar`, а запускает его внешний процесс Python, который из архива читать не умеет — модуль
+  сообщал об ошибке при первой же попытке прочитать текст. Теперь путь ведёт в распакованную копию.
+  (Из репозитория — `npm start` — всё работало и раньше, поэтому в 1.1.194 это не заметили.)
+
 ## [1.1.194] — 2026-09-01
 
 **Ответы агента можно слушать.** Длинные ответы в терминале утомительно читать глазами: хочется
@@ -2696,6 +2704,7 @@ AGENTS.md как граф на канве), и **цветной пульт** —
 [1.0.97]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.0.97
 [1.0.96]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.0.96
 [1.1.123]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.1.123
+[1.1.195]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.1.195
 [1.1.194]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.1.194
 [1.1.190]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.1.190
 [1.1.189]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.1.189
