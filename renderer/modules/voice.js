@@ -142,7 +142,7 @@ export function initVoice(host) {
   function rate() { return settings.ttsRate || 'medium'; }
 
   // ---------------- плеер ----------------
-  const player = { list: [], i: 0, playing: false, paused: false, src: null, gen: 0, bufs: new Map() };
+  const player = { list: [], i: 0, playing: false, paused: false, src: null, gen: 0, guard: null, bufs: new Map() };
   let audioCtx = null;
   function ac() {
     if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
@@ -158,24 +158,46 @@ export function initVoice(host) {
     const s = player.list[idx];
     if (!s) return null;
     const r = await lite.tts.speak(s.text, voice(), rate());
+    if (r && r.skipped) { player.bufs.set(idx, null); return null; }  // произносить нечего (номер строки, голая пунктуация)
     if (!r || r.ok !== true) throw new Error((r && r.error) || 'синтез не удался');
     const buf = await ac().decodeAudioData(toArrayBuffer(r.wav));
     player.bufs.set(idx, buf);
+    // Буферы прочитанных фраз не держим: минута речи — это мегабайты, а длинный текст читают целиком.
+    for (const k of player.bufs.keys()) if (k < idx - 1) player.bufs.delete(k);
     return buf;
   }
   function prefetch(idx) { if (player.list[idx] && !player.bufs.has(idx)) bufferFor(idx).catch(() => {}); }
   function playBuffer(buf) {
     return new Promise((resolve) => {
-      const src = ac().createBufferSource();
+      const ctx = ac();
+      const src = ctx.createBufferSource();
       src.buffer = buf;
-      src.connect(ac().destination);
+      src.connect(ctx.destination);
       player.src = src;
-      src.onended = () => { if (player.src === src) player.src = null; resolve(); };
+      let done = false;
+      let guard = null;
+      const finish = () => {
+        if (done) return;
+        done = true;
+        if (guard) { clearInterval(guard); guard = null; }
+        player.guard = null;
+        if (player.src === src) player.src = null;
+        resolve();
+      };
+      src.onended = finish;
       src.start();
+      // Страховка от зависшего чтения: если `ended` не придёт (сменилось звуковое устройство,
+      // окно усыпили), цикл не должен встать навсегда. Сверяемся с часами самого контекста —
+      // на паузе они стоят, поэтому пауза страховку не будит.
+      const endsAt = ctx.currentTime + buf.duration;
+      guard = setInterval(() => { if (ctx.currentTime > endsAt + 2) finish(); }, 500);
+      player.guard = () => { if (guard) { clearInterval(guard); guard = null; } };
     });
   }
   async function runFrom(startIdx) {
     const gen = ++player.gen;
+    let skipped = 0;
+    const failures = [];
     player.playing = true; player.paused = false;
     try { await ac().resume(); } catch (_) {}
     setMode('read');
@@ -184,16 +206,17 @@ export function initVoice(host) {
       player.i = i;
       highlight(i);
       updatePlayer();
-      let buf;
+      let buf = null;
       try { buf = await bufferFor(i); }
       catch (e) {
         if (gen !== player.gen) return;
-        toast(`Озвучка: ${(e && e.message) || e}`, { kind: 'err', ttl: 7000 });
-        stopPlayback();
-        return;
+        // Раньше любая осечка на одной фразе останавливала чтение всего текста — человек слышал
+        // три строки и тишину. Теперь фраза пропускается, а сводка уходит в конце.
+        failures.push((e && e.message) || String(e));
       }
-      if (gen !== player.gen || !buf) return;
+      if (gen !== player.gen) return;
       prefetch(i + 1);              // следующая фраза синтезируется, пока звучит текущая
+      if (!buf) { skipped++; continue; }
       await playBuffer(buf);
       if (gen !== player.gen) return;
     }
@@ -201,12 +224,23 @@ export function initVoice(host) {
     player.src = null;
     highlight(-1);
     updatePlayer();
+    reportSkips(skipped, failures);
+  }
+  // Одна сводка в конце вместо тоста на каждой фразе.
+  function reportSkips(skipped, failures) {
+    if (!skipped) return;
+    if (failures.length) {
+      toast(`Озвучка: ${failures.length} ${plural(failures.length, 'фраза', 'фразы', 'фраз')} не прочитано — ${failures[0]}`, { kind: 'err', ttl: 8000 });
+      return;
+    }
+    toast(`Пропущено ${skipped} ${plural(skipped, 'фраза', 'фразы', 'фраз')}: произносить нечего`, { kind: 'warn', ttl: 5000 });
   }
   function stopPlayback() {
     player.gen++;
     player.playing = false; player.paused = false;
     const src = player.src;
     player.src = null;
+    if (player.guard) { player.guard(); player.guard = null; }
     if (src) { try { src.onended = null; src.stop(); } catch (_) {} }
     if (audioCtx && audioCtx.state === 'suspended') { try { audioCtx.resume(); } catch (_) {} }
     highlight(-1);
@@ -294,6 +328,7 @@ export function initVoice(host) {
     player.gen++;
     const src = player.src;
     player.src = null;
+    if (player.guard) { player.guard(); player.guard = null; }
     if (src) { try { src.onended = null; src.stop(); } catch (_) {} }
     player.paused = false;
     if (audioCtx && audioCtx.state === 'suspended') { try { audioCtx.resume(); } catch (_) {} }
@@ -500,7 +535,14 @@ export function initVoice(host) {
     }
 
     bar.appendChild(el('div', 'voice-spacer'));
-    if (player.playing) bar.appendChild(el('span', 'voice-progress', `Фраза ${player.i + 1} из ${player.list.length}`));
+    if (player.playing) {
+      // Паузу видно только по подписи кнопки — этого мало: со стороны это выглядит как «замолчало
+      // само на середине». Поэтому состояние написано прямо в строке прогресса.
+      const prog = el('span', 'voice-progress' + (player.paused ? ' is-paused' : ''),
+        `Фраза ${player.i + 1} из ${player.list.length}`);
+      if (player.paused) prog.appendChild(el('span', null, ' · пауза')); // отдельным узлом: строка-шаблон остаётся общей для словаря
+      bar.appendChild(prog);
+    }
     else if (sentCount > 0) bar.appendChild(el('span', 'voice-progress', `${sentCount} ${plural(sentCount, 'фраза', 'фразы', 'фраз')}`));
     bar.appendChild(el('span', 'voice-hint', 'Ctrl+Enter — озвучить · Ctrl+U — ударение · Esc — стоп'));
   }

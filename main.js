@@ -6428,6 +6428,7 @@ ipcMain.handle('tts:voices', () => ttsBackend.voices(ttsSettings()));
 ipcMain.handle('tts:speak', async (_e, { text, voice, rate } = {}) => {
   const r = await ttsBackend.speak(ttsSettings(), { text, voice, rate });
   if (!r || r.ok !== true) return r || { ok: false, error: 'синтез не удался' };
+  if (r.skipped) return { ok: true, skipped: true, reason: r.reason || '' };   // произносить нечего — плеер идёт дальше
   try { return { ok: true, wav: fs.readFileSync(r.file), dur: r.dur || 0, cached: !!r.cached }; }
   catch (e) { return { ok: false, error: `не прочитать аудио: ${(e && e.message) || e}` }; }
 });

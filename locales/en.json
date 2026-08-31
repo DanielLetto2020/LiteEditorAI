@@ -4282,5 +4282,9 @@
  "python: {0}\nмодель: {1}": "python: {0}\nmodel: {1}",
  "Нет модели голоса": "No voice model",
  "Нет Python с torch": "No Python with torch",
- "система": "system"
+ "система": "system",
+ "нечего произносить": "nothing to pronounce",
+ "Озвучка: {0} {1} не прочитано — {2}": "Voice: {0} {1} not read — {2}",
+ "Пропущено {0} {1}: произносить нечего": "Skipped {0} {1}: nothing to pronounce",
+ "пустая фраза": "empty sentence"
 }

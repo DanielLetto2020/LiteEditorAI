@@ -137,6 +137,12 @@ def main():
             break
         try:
             res = handle(req)
+        except ValueError as e:
+            # Silero кидает пустой ValueError на тексте, где нечего произносить (нет кириллицы).
+            # Вызывающая сторона такие фразы отсеивает заранее, но подстраховываемся и здесь —
+            # с внятным текстом, иначе в логе редактора видно только «ValueError: ».
+            log('ValueError: %r' % (str(e),))
+            res = {'ok': False, 'error': str(e) or 'движок не смог произнести эту фразу'}
         except Exception as e:  # noqa: BLE001 — любая ошибка синтеза уходит наверх текстом
             log('%s: %s' % (type(e).__name__, e))
             res = {'ok': False, 'error': '%s: %s' % (type(e).__name__, e)}
