@@ -8,7 +8,7 @@
 //
 // Файл лежит рядом с ui.js/codeedit.js как общий хелпер ядра (сайдбар проектов и его поиск — часть
 // ядра, а не модуль-окно), но связи с renderer.js не имеет: всё, что нужно, приходит в host.
-import { el, icon, iconBtn, hydrateIcons, makeModal, toast, baseName } from './ui.js';
+import { el, icon, hydrateIcons, makeModal, toast, baseName } from './ui.js';
 
 const MODES = [
   { id: 'content', label: 'В содержимом' },

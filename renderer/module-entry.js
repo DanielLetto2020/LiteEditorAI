@@ -22,6 +22,7 @@ import { initMonitor } from './modules/monitor.js';
 import { initKeepass } from './modules/keepass.js';
 import { initSitemon } from './modules/sitemon.js';
 import { initPomodoro } from './modules/pomodoro.js';
+import { initVoice } from './modules/voice.js';
 import { initCompany } from './modules/company.js';
 import { initNotes } from './modules/notes.js';
 import { initDb } from './modules/db.js';
@@ -103,6 +104,15 @@ const MODULES = {
   pomodoro: {
     title: 'Помодоро', init: initPomodoro, project: false,
     wire: (mod) => { bind('#pomodoro-min', () => mod.toggleCompact()); },
+  },
+  // «Озвучка»: текст из буфера обмена читается голосом. Окно самостоятельное (озвучивают что
+  // угодно, не только активный проект); wire принимает текст из контекстного меню терминала.
+  voice: {
+    title: 'Озвучка', init: initVoice, project: false,
+    wire: (mod) => {
+      bind('#voice-engine-btn', () => mod.openSettings());
+      bind('#voice-clear', () => mod.clearHistory());
+    },
   },
   company: {
     title: 'ИИ компания', init: initCompany, project: true,

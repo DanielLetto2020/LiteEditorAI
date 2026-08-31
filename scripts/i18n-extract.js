@@ -27,7 +27,9 @@ const CYR = /[А-Яа-яЁё]/;
 
 const INCLUDE_DIRS = ['renderer', 'lib'];
 const INCLUDE_FILES = ['main.js', 'preload.js', 'errledger.js'];
-const SKIP_RE = /^(test|tmp|scripts|android|relay|mcp|module-kit|node_modules|dist|dist-release|release|assets|locales)[\\/]|[\\/]dist[\\/]/;
+// lib/ttsnorm.js — не интерфейс, а словари для синтезатора речи (числительные, транслитерация
+// латиницы). Переводить их нельзя: это то, что произносит русский голос, а не то, что видит глаз.
+const SKIP_RE = /^(test|tmp|scripts|android|relay|mcp|module-kit|node_modules|dist|dist-release|release|assets|locales)[\\/]|[\\/]dist[\\/]|^lib[\\/]ttsnorm\.js$/;
 
 // ------------------------------------------------------------------ сканер JS
 // Один проход по символам: различает код, строки, шаблоны, regex-литералы и

@@ -9,6 +9,7 @@ const rmqBackend = require('./lib/rmq');
 const kafkaBackend = require('./lib/kafka');
 const storageBackend = require('./lib/storage');
 const jiraBackend = require('./lib/jira');
+const ttsBackend = require('./lib/tts');   // «Озвучка»: python-сайдкар синтеза речи + кэш фраз
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
@@ -128,7 +129,7 @@ try {
   const legacy = path.join(os.homedir(), '.LiteEditor');
   if (!fs.existsSync(storeDir) && fs.existsSync(legacy)) fs.cpSync(legacy, storeDir, { recursive: true });
 } catch (_) {}
-const STORE_KEYS = ['projects', 'settings', 'layout', 'recents', 'lastParent', 'categories', 'sectionOrder', 'favOrder', 'accordions', 'dismissed', 'projTabs', 'openrouter', 'dockerUi', 'dbConnections', 'dbUi', 'rhConnections', 'rhUi', 'extData', 'extEnabled', 'quickbar', 'seoSites', 'moduleWins', 'mwLeft', 'mwLogH', 'gitFav', 'commitDrafts', 'bookmarks', 'promptSnippets', 'pomodoro', 'pomodoroLog', 'dbaiProviders', 'sessionSnaps', 'siteMon', 'rmqConnections', 'rmqUi', 'kafkaConnections', 'kafkaUi', 'stConnections', 'stUi', 'jiraAccounts', 'jiraUi', 'gsearch', 'gsearchHist'];
+const STORE_KEYS = ['projects', 'settings', 'layout', 'recents', 'lastParent', 'categories', 'sectionOrder', 'favOrder', 'accordions', 'dismissed', 'projTabs', 'openrouter', 'dockerUi', 'dbConnections', 'dbUi', 'rhConnections', 'rhUi', 'extData', 'extEnabled', 'quickbar', 'seoSites', 'moduleWins', 'mwLeft', 'mwLogH', 'gitFav', 'commitDrafts', 'bookmarks', 'promptSnippets', 'pomodoro', 'pomodoroLog', 'dbaiProviders', 'sessionSnaps', 'siteMon', 'rmqConnections', 'rmqUi', 'kafkaConnections', 'kafkaUi', 'stConnections', 'stUi', 'jiraAccounts', 'jiraUi', 'gsearch', 'gsearchHist', 'voice', 'voiceClips'];
 function ensureStoreDir() { try { fs.mkdirSync(storeDir, { recursive: true }); } catch (_) {} }
 function storeFile(key) { return path.join(storeDir, String(key).replace(/[^\w.-]/g, '_') + '.json'); }
 function readStoreKey(key) {
@@ -260,6 +261,8 @@ const logsDir = path.join(storeDir, 'logs');
 const errledger = require('./errledger');
 errledger.init(storeDir);
 logger.init(logsDir);
+// Движок озвучки: каталог движка/кэша фраз внутри ~/.LiteEditorAI, ошибки сайдкара — в общий лог.
+ttsBackend.configure({ dir: path.join(storeDir, 'tts'), log: (lvl, src, msg) => logger.log(lvl, src, msg) });
 ipcMain.on('log:renderer', (_e, { level, args } = {}) => logger.renderer(level, ...(Array.isArray(args) ? args : [args])));
 
 // Logs viewer (in-app, menu "Логи"). Only the app's own log files are listed/readable.
@@ -2809,6 +2812,7 @@ function openModuleWindow(modId) {
     if (modId === 'rmq') rmqPanelReady = false;      // аналогично для окна RabbitMQ
     if (modId === 'kafka') kafkaPanelReady = false;  // аналогично для окна Kafka
     if (modId === 'storage') stPanelReady = false;   // аналогично для окна «Внешние хранилища»
+    if (modId === 'voice') { voicePanelReady = false; clipStop(); ttsBackend.stop(); } // «Озвучка»: снять слежение за буфером и погасить сайдкар (torch держит сотни мегабайт)
     if (modId === 'ctx') {
       for (const w of ctxOutWatchers.values()) { try { w.close(); } catch (_) {} } ctxOutWatchers.clear(); // окно «Контекст» закрылось без unwatch → не течём fs.watch (B2)
       // и обрываем анализ диалогов: без этого `claude -p` жил ещё до таймаута (5 мин), жёг токены и писал в мёртвый sender
@@ -3066,6 +3070,7 @@ app.on('window-all-closed', () => {
   for (const w of ctxOutWatchers.values()) { try { w.close(); } catch (_) {} } // fs.watch выходных файлов «Контекста» (B2)
   ctxOutWatchers.clear();
   if (pomoTimer) { clearInterval(pomoTimer); pomoTimer = null; }
+  clipStop(); try { ttsBackend.stop(); } catch (_) {} // сайдкар озвучки не должен пережить редактор
   if (process.platform !== 'darwin') app.quit();
 });
 
@@ -6410,3 +6415,84 @@ ipcMain.handle('shell:copyFile', (_e, target) => {
 });
 ipcMain.on('clipboard:write', (_e, text) => clipboard.writeText(String(text == null ? '' : text)));
 ipcMain.handle('clipboard:read', () => clipboard.readText());
+
+// ---------------------------------------------------------------- «Озвучка» (модуль voice)
+// Синтез живёт в отдельном python-процессе (lib/tts.js). Здесь — мост в окно модуля, слежение за
+// буфером обмена (события «буфер изменился» в Electron нет, поэтому опрос — и только пока окно
+// модуля просит) и маршрут «Озвучить» из контекстного меню терминала.
+function ttsSettings() { return readStoreKey('settings') || {}; }
+ipcMain.handle('tts:state', (_e, opts = {}) => ttsBackend.state(ttsSettings(), { fresh: !!opts.fresh }));
+ipcMain.handle('tts:warmup', () => ttsBackend.warmup(ttsSettings()));      // поднять сайдкар заранее
+// Одна фраза → WAV-байтами в рендерер (там играет через WebAudio: <audio src="blob:"> режет CSP).
+ipcMain.handle('tts:speak', async (_e, { text, voice, rate } = {}) => {
+  const r = await ttsBackend.speak(ttsSettings(), { text, voice, rate });
+  if (!r || r.ok !== true) return r || { ok: false, error: 'синтез не удался' };
+  if (r.skipped) return { ok: true, skipped: true, reason: r.reason || '' };   // произносить нечего — плеер идёт дальше
+  try { return { ok: true, wav: fs.readFileSync(r.file), dur: r.dur || 0, cached: !!r.cached }; }
+  catch (e) { return { ok: false, error: `не прочитать аудио: ${(e && e.message) || e}` }; }
+});
+// Выбор движка руками: интерпретатор с torch и файл модели. Путь пишет в settings сам модуль.
+ipcMain.handle('tts:pick', async (e, what) => {
+  const win = senderWin(e) || mainWindow;
+  const r = what === 'model'
+    ? await dialog.showOpenDialog(win, {
+      title: 'Файл модели голоса (v4_ru.pt)', properties: ['openFile'],
+      filters: [{ name: 'Модель Silero', extensions: ['pt'] }],
+    })
+    : await dialog.showOpenDialog(win, { title: 'Интерпретатор Python с torch', properties: ['openFile'] });
+  if (r.canceled || !r.filePaths.length) return { canceled: true };
+  return { ok: true, path: r.filePaths[0] };
+});
+ipcMain.handle('tts:downloadModel', async (e) => ttsBackend.downloadModel((p) => safeSend(e.sender, 'tts:downloadProgress', p)));
+
+// Слежение за буфером обмена. Опрос идёт только пока открытое окно модуля его просило; владелец
+// умер (окно закрыли) — слежение снимается само. selection — это X11 PRIMARY (выделение мышью,
+// без Ctrl+C), включается отдельно: канал удобный, но шумный.
+const CLIP_POLL_MS = 500;
+let clipTimer = null, clipOwner = null, clipLast = '', clipSelLast = '', clipWantSel = false;
+function clipStop() { if (clipTimer) { clearInterval(clipTimer); clipTimer = null; } clipOwner = null; }
+function clipRead(type) { try { return clipboard.readText(type) || ''; } catch (_) { return ''; } }
+// Сравниваем и запоминаем не сам текст, а его отпечаток: в буфере может лежать многомегабайтный
+// лог, и держать его копию в памяти main (да ещё сверять целиком дважды в секунду) незачем.
+function clipMark(t) { return t.length + ':' + crypto.createHash('sha1').update(t).digest('hex'); }
+function clipTick() {
+  if (!clipOwner || clipOwner.isDestroyed()) { clipStop(); return; }
+  const t = clipRead();
+  const mark = t ? clipMark(t) : '';
+  if (t && mark !== clipLast) { clipLast = mark; safeSend(clipOwner, 'tts:clip', { text: t, source: 'clipboard' }); }
+  if (!clipWantSel) return;
+  const s = clipRead('selection');
+  const sMark = s ? clipMark(s) : '';
+  if (s && sMark !== clipSelLast && sMark !== clipLast) { clipSelLast = sMark; safeSend(clipOwner, 'tts:clip', { text: s, source: 'selection' }); }
+}
+ipcMain.on('tts:clipWatch', (e, opts = {}) => {
+  clipWantSel = !!opts.selection;
+  if (!opts.on) { clipStop(); return; }
+  clipOwner = e.sender;
+  const cur = clipRead();
+  clipLast = cur ? clipMark(cur) : '';   // текущее содержимое не считаем «новым копированием»
+  const curSel = clipWantSel ? clipRead('selection') : '';
+  clipSelLast = curSel ? clipMark(curSel) : '';
+  if (!clipTimer) clipTimer = setInterval(clipTick, CLIP_POLL_MS);
+});
+
+// «Озвучить» из контекстного меню терминала → окно модуля (тот же паттерн очереди, что у БД:
+// окно может быть ещё не готово принять текст).
+let voicePanelReady = false;
+const pendingVoiceOpens = [];
+function voiceModWindow() { const w = moduleWindows.get('voice'); return (w && !w.isDestroyed()) ? w : null; }
+ipcMain.on('voice:open', (_e, payload) => {
+  if (!payload || typeof payload !== 'object' || !payload.text) return;
+  if (!voiceModWindow()) openModuleWindow('voice');
+  const w = voiceModWindow();
+  if (w && voicePanelReady) { if (w.isMinimized()) w.restore(); w.focus(); sendTo(w, 'voice:open', payload); }
+  else {
+    pendingVoiceOpens.push(payload);
+    while (pendingVoiceOpens.length > 10) pendingVoiceOpens.shift(); // окно могло не открыться — очередь не копим
+  }
+});
+ipcMain.on('voice:panelReady', () => {
+  voicePanelReady = true;
+  const w = voiceModWindow();
+  while (w && pendingVoiceOpens.length) { w.focus(); sendTo(w, 'voice:open', pendingVoiceOpens.shift()); }
+});

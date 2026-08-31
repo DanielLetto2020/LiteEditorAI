@@ -545,6 +545,33 @@
         <div id="pomodoro-body" class="pomodoro-body"></div>
       </section>
 
+      <!-- Voice module: буфер обмена → правка → живой русский голос (python-сайдкар Silero) -->
+      <div id="gutter-voice" class="gutter hidden" data-resize="voice"></div>
+      <section id="voice-pane" class="hidden">
+        <div class="pane-head">
+          <span>Озвучка</span>
+          <div class="drag-space-static"></div>
+          <button id="voice-engine-btn" class="icon-btn" title="Движок озвучки: python с torch и модель голоса" data-icon="sliders"></button>
+          <button id="voice-clear" class="icon-btn" title="Очистить историю копирований" data-icon="eraser"></button>
+        </div>
+        <div id="voice-body" class="voice-body">
+          <aside class="voice-side">
+            <div class="voice-side-head">
+              <input id="voice-filter" type="text" placeholder="Поиск в истории…">
+            </div>
+            <div id="voice-list" class="voice-list" data-no-i18n></div>
+          </aside>
+          <div class="voice-main">
+            <div id="voice-toolbar" class="voice-toolbar"></div>
+            <div class="voice-doc">
+              <textarea id="voice-text" spellcheck="false" placeholder="Скопируйте текст — он попадёт сюда. Здесь его можно поправить перед чтением, а выделенный кусок озвучить отдельно."></textarea>
+              <div id="voice-read" class="voice-read hidden" data-no-i18n></div>
+            </div>
+            <div id="voice-player" class="voice-player"></div>
+          </div>
+        </div>
+      </section>
+
       <!-- IterFlow module: таск-трекер исполнителя (отдельный продукт через /api/editor/*) -->
       <div id="gutter-iterflow" class="gutter hidden" data-resize="iterflow"></div>
       <section id="iterflow-pane" class="hidden">

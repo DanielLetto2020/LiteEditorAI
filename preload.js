@@ -574,6 +574,22 @@ contextBridge.exposeInMainWorld('lite', {
     panelReady: () => ipcRenderer.send('st:panelReady'),
   },
   // Kafka module — cluster profiles + kafkajs admin/consumer/producer (lib/kafka.js).
+  // «Озвучка»: синтез речи python-сайдкаром (lib/tts.js), слежение за буфером обмена и приём
+  // текста из контекстного меню терминала. Аудио приходит WAV-байтами — играет WebAudio в модуле.
+  tts: {
+    state: (fresh) => ipcRenderer.invoke('tts:state', { fresh: !!fresh }),   // fresh — перепроверить интерпретатор, не верить прошлому ответу                                  // движок найден? какие голоса?
+    warmup: () => ipcRenderer.invoke('tts:warmup'),                                // поднять сайдкар заранее
+    speak: (text, voice, rate) => ipcRenderer.invoke('tts:speak', { text, voice, rate }), // → {ok,wav,dur}|{ok:false,error}
+    pick: (what) => ipcRenderer.invoke('tts:pick', what),                          // 'python' | 'model' → диалог выбора файла
+    downloadModel: () => ipcRenderer.invoke('tts:downloadModel'),                  // 39 МБ, по явной кнопке
+    onDownloadProgress: (cb) => { const h = (_e, p) => cb(p || {}); ipcRenderer.on('tts:downloadProgress', h); return () => ipcRenderer.removeListener('tts:downloadProgress', h); },
+    clipWatch: (on, selection) => ipcRenderer.send('tts:clipWatch', { on, selection }), // слежение за буфером (только пока окно открыто)
+    onClip: (cb) => { const h = (_e, p) => cb(p || {}); ipcRenderer.on('tts:clip', h); return () => ipcRenderer.removeListener('tts:clip', h); },
+    openFromEditor: (text) => ipcRenderer.send('voice:open', { text }),            // «Озвучить» из меню терминала
+    onOpenText: (cb) => { const h = (_e, p) => cb(p || {}); ipcRenderer.on('voice:open', h); return () => ipcRenderer.removeListener('voice:open', h); },
+    panelReady: () => ipcRenderer.send('voice:panelReady'),                        // флаш отложенных voice:open из main
+  },
+
   kafka: {
     list: () => ipcRenderer.invoke('kafka:list'),
     save: (conn) => ipcRenderer.invoke('kafka:save', { conn }),

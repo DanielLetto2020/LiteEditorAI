@@ -1,6 +1,6 @@
 {
   "name": "liteeditor-ai",
-  "version": "1.1.190-alpha",
+  "version": "1.1.194-alpha",
   "description": "Lightweight editor for working with AI coding agents in the terminal",
   "main": "main.js",
   "author": "Максим Кузьминский <i@m-letto.ru>",
@@ -11,7 +11,7 @@
     "url": "https://github.com/DanielLetto2020/LiteEditorAI.git"
   },
   "scripts": {
-    "test": "node test/safe-name.test.js && node test/shell.test.js && node test/portparse.test.js && node test/dbdetect.test.js && node test/fsmeta.test.js && node test/i18n.test.js && node test/sync.test.js && node test/storage-path.test.js && node test/sql-readonly.test.js && node test/errledger.test.js && node test/updater.test.js",
+    "test": "node test/safe-name.test.js && node test/shell.test.js && node test/portparse.test.js && node test/dbdetect.test.js && node test/fsmeta.test.js && node test/i18n.test.js && node test/sync.test.js && node test/storage-path.test.js && node test/sql-readonly.test.js && node test/errledger.test.js && node test/updater.test.js && node test/ttsnorm.test.js && node test/tts-download.test.js",
     "lint": "eslint .",
     "typecheck": "tsc -p tsconfig.check.json",
     "mutation": "node scripts/stryker-gate.js",
@@ -112,7 +112,8 @@
     "asarUnpack": [
       "**/node_modules/node-pty/**",
       "**/node_modules/sql.js/dist/sql-wasm.wasm",
-      "mcp/**"
+      "mcp/**",
+      "tts/**"
     ],
     "files": [
       "main.js",
@@ -122,6 +123,7 @@
       "lib/**",
       "locales/**",
       "mcp/**",
+      "tts/**",
       "package.json",
       "renderer/index.html",
       "renderer/module.html",

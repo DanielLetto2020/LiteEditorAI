@@ -28,7 +28,7 @@ import { openGlobalSearch } from './gsearch.js';
 import { initExtensions } from './modules/extensions.js';
 // initFiles — вивер+дерево мигрированы в отдельное окно (renderer/module-entry.js).
 
-const APP_VERSION = 'alpha v1.1.190';
+const APP_VERSION = 'alpha v1.1.194';
 const GUTTER = 5;
 // Системный терминал («Система · ~») мигрирован в отдельное окно (renderer/modules/scratch.js):
 // его id `__scratch__::tN` маршрутизируются main'ом в окно-владельца, в ядре их больше не обрабатываем.
@@ -1389,7 +1389,7 @@ const panels = new Map(); // id -> { isOpen(), setOpen(open, opts) }
 // Правый слот редактора теперь держит только «Мои модули» (ext); всё остальное — отдельные окна.
 const PANEL_ORDER = [];
 // Модули, мигрированные в отдельные окна (открываются через lite.module.open, не как панель правого слота).
-const WINDOW_MODULES = new Set(['tools', 'iterflow', 'seo', 'audit', 'company', 'notes', 'db', 'rmq', 'kafka', 'chat', 'doc', 'docker', 'rh', 'ctx', 'scratch', 'files', 'pomodoro', 'monitor', 'keepass', 'sitemon', 'storage', 'jira']);
+const WINDOW_MODULES = new Set(['tools', 'iterflow', 'seo', 'audit', 'company', 'notes', 'db', 'rmq', 'kafka', 'chat', 'doc', 'docker', 'rh', 'ctx', 'scratch', 'files', 'pomodoro', 'monitor', 'keepass', 'sitemon', 'storage', 'jira', 'voice']);
 function registerPanel(id, api) { panels.set(id, api); }
 function closeOtherPanels(selfId) {
   for (const id of PANEL_ORDER) {
@@ -1464,6 +1464,7 @@ const QUICK_BUILTIN = [
   { id: 'chat',    icon: 'chat',     label: 'OpenRouter — чат по своим API-ключам' },
   { id: 'doc',     icon: 'note',     label: 'Обработка текста — документы + AI-правки' },
   { id: 'pomodoro', icon: 'clock',   label: 'Помодоро — таймер работы/отдыха с блокировкой' },
+  { id: 'voice',   icon: 'volume',   label: 'Озвучка — читать скопированный текст голосом' },
   { id: 'scratch', icon: 'terminal', label: 'Системный терминал (вне проектов)' },
 ];
 function quickAllModules() {
@@ -1848,6 +1849,7 @@ const BUILTIN_MODS = [
   { id: 'tools',    icon: 'wrench',   title: 'Инструменты',        desc: 'base64, JSON/YAML, хэши, JWT, regex, diff' },
   { id: 'chat',     icon: 'chat',     title: 'OpenRouter',         desc: 'чат по своим API-ключам' },
   { id: 'pomodoro', icon: 'clock',    title: 'Помодоро',           desc: 'таймер работы/отдыха с блокировкой' },
+  { id: 'voice',    icon: 'volume',   title: 'Озвучка',            desc: 'текст из буфера обмена — живым голосом' },
   { id: 'scratch',  icon: 'terminal', title: 'Системный терминал', desc: 'шелл вне проектов' },
   { id: 'monitor',  icon: 'graph',    title: 'Монитор ресурсов',   desc: 'память/CPU редактора и агентов' },
   { id: 'keepass',  icon: 'key',      title: 'Сейф паролей',       desc: 'KeePass .kdbx: пароли и токены' },
@@ -2127,6 +2129,11 @@ function showTermMenu(x, y, term, sid) {
     if (term.clearSelection) term.clearSelection();
   } : null, hasSel ? '' : 'disabled'));
   dd.appendChild(menuRow('clipboard', 'Вставить', () => { closeMenus(); pasteInto(sid); }));
+  // «Озвучить» — выделенный кусок вывода уезжает в окно модуля «Озвучка» (main откроет его, если закрыто).
+  dd.appendChild(menuRow('volume', 'Озвучить', hasSel ? () => {
+    closeMenus();
+    lite.tts.openFromEditor(term.getSelection());
+  } : null, hasSel ? '' : 'disabled'));
   dd.appendChild(el('div', 'menu-sep'));
   addPromptsItem(dd, sid);
   dd.appendChild(el('div', 'menu-sep'));
@@ -2647,6 +2654,7 @@ function paletteActions() {
   acts.push({ label: 'Задачи — заметки проекта', run: () => openModule('notes') });
   acts.push({ label: 'ИИ компания — команда агентов над проектом', run: () => openModule('company') });
   acts.push({ label: 'Помодоро — таймер работы/отдыха', run: () => openModule('pomodoro') });
+  acts.push({ label: 'Озвучка — читать скопированный текст голосом', run: () => openModule('voice') });
   acts.push({ label: 'Jira — свои задачи из нескольких аккаунтов', run: () => openModule('jira') });
   acts.push({ label: 'Режим «один терминал»', run: toggleSingle });
   acts.push({ label: 'Поиск в терминале', hint: 'Ctrl+F', run: openTermSearch });
