@@ -4293,5 +4293,8 @@
  "не найдена модель голоса ({0}) — скачайте её или укажите путь": "voice model ({0}) not found — download it or set the path",
  "Скачать модель (145 МБ)": "Download the model (145 MB)",
  "Ctrl+Enter — озвучить и пауза · Ctrl+U — ударение · Esc — стоп": "Ctrl+Enter — speak and pause · Ctrl+U — stress · Esc — stop",
- "python: {0}\nмодель: {1}\nчастота: {2} кГц": "python: {0}\nmodel: {1}\nsample rate: {2} kHz"
+ "python: {0}\nмодель: {1}\nчастота: {2} кГц": "python: {0}\nmodel: {1}\nsample rate: {2} kHz",
+ "каталог проекта удалён или переехал": "project directory was deleted or moved",
+ "слежение за {0} остановлено: {1}": "stopped watching {0}: {1}",
+ "слишком много каталогов для слежения: больше {0}": "too many directories to watch: more than {0}"
 }
