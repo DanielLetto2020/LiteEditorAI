@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "ai-tasks": {
+      "type": "http",
+      "url": "http://localhost:3100/mcp",
+      "headers": {
+        "Authorization": "Bearer ${AI_TASKS_TOKEN}"
+      }
+    }
+  }
+}

@@ -11,7 +11,9 @@ const os = require('os');
 const path = require('path');
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lite-tts-dl-'));
-const dest = path.join(dir, 'v4_ru.pt');
+// Имя берём у самого модуля: версия модели меняется (v4 → v5), и тест не должен падать из-за
+// переименования — он про загрузчик, а не про конкретный файл.
+const dest = path.join(dir, require('../lib/tts.js').MODEL_FILE);
 const BODY = Buffer.alloc(2 * 1024 * 1024, 7);   // «модель» на 2 МБ
 let checks = 0;
 const ok = (cond, what) => { assert.ok(cond, what); checks++; };

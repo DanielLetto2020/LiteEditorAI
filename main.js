@@ -28,6 +28,7 @@ const { safeChildName } = require('./lib/safe-name'); // анти-traversal дл
 const { resolveShell: resolveShellPure } = require('./lib/shell'); // выбор оболочки терминала
 const syncmark = require('./lib/sync');   // метка «sync» в плашке: что домашняя машина держит в синхронизации с сервером
 const updater = require('./lib/updater');  // самообновление: проверка релиза, загрузка, подмена каталога
+const { watchTree } = require('./lib/tree-watch'); // слежение за деревом проекта (на Linux — по наблюдению на каталог)
 
 app.setName('LiteEditorAI');
 app.setAppUserModelId('com.mletto.liteeditorai'); // Windows: имя/иконка/группировка в панели задач и уведомлениях
@@ -115,6 +116,7 @@ function foregroundKind(shellPid) {
 const IGNORE_DIRS = new Set([
   '.git', 'node_modules', '__pycache__', '.venv', 'venv',
   'dist', 'build', '.next', 'target', '.cache', '.idea',
+  'vendor', '.nuxt', '.output', // зависимости PHP/Go и сборка Nuxt — десятки тысяч файлов, которые не правят руками
 ]);
 const MAX_VIEW_BYTES = 2 * 1024 * 1024;
 const IMPORT_MAX_BYTES = 64 * 1024 * 1024; // settings backup gate — small in practice, blocks pathological files
@@ -4585,14 +4587,25 @@ function notifyWatchEnded(root) {
   const fw = filesWindow(); if (fw) sendTo(fw, 'fs:watchEnded', { root });
   const dw = docWindow(); if (dw) sendTo(dw, 'fs:watchEnded', { root });
 }
+// Потолок каталогов под слежением за одним проектом (Linux: одно inotify-наблюдение на каталог).
+// Лимит inotify общий на пользователя (часто 65 536): огромное дерево не должно отнимать его у других
+// программ — выше потолка слежение заканчивается, в UI ручной ⟳.
+const WATCH_MAX_DIRS = 10000;
+// info, а не warn: warn попадает в реестр ошибок, а упёрся в лимит — это свойство проекта, не сбой.
+const logWatchEnded = (root, err) => logger.log('info', 'watch', `слежение за ${root} остановлено: ${(err && err.message) || err}`);
 ipcMain.on('fs:watch', (_e, root) => {
   if (!root || watchers.has(root) || !fs.existsSync(root)) return;
   let watcher;
   try {
-    watcher = fs.watch(root, { recursive: true });
-  } catch (_) { notifyWatchEnded(root); return; } // inotify limits / unsupported — degrade to manual refresh
+    watcher = watchTree(root, { ignore: IGNORE_DIRS, maxDirs: WATCH_MAX_DIRS });
+  } catch (err) { logWatchEnded(root, err); notifyWatchEnded(root); return; } // inotify limits / unsupported — degrade to manual refresh
   const rec = { watcher, timer: null, pending: new Set() };
-  watcher.on('error', () => { try { watcher.close(); } catch (_) {} watchers.delete(root); notifyWatchEnded(root); }); // рантайм-ошибка (B7/идея 11)
+  watcher.on('error', (err) => { // рантайм-ошибка или потолок каталогов (B7/идея 11)
+    logWatchEnded(root, err);
+    try { watcher.close(); } catch (_) {}
+    if (watchers.get(root) === rec) watchers.delete(root);
+    notifyWatchEnded(root);
+  });
   watcher.on('change', (_type, filename) => {
     const rel = filename == null ? '' : String(filename);
     if (rel && isIgnoredPath(rel)) return;
