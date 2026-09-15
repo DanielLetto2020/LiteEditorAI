@@ -125,7 +125,10 @@ export function initVoice(host) {
   const state = {
     clips: Array.isArray(host.STORE && host.STORE.voiceClips) ? host.STORE.voiceClips : [],
     activeId: null,
-    watch: persisted.watch !== false,          // перехват буфера — смысл модуля, по умолчанию вкл
+    // Перехват буфера ловит копирование во ВСЕЙ системе, а не только в редакторе, и человек
+    // получает в историю всё подряд. Обычный вход — «Озвучить» в контекстном меню терминала,
+    // поэтому по умолчанию слежение выключено; кому удобнее буфером — включает тумблером.
+    watch: persisted.watch === true,
     watchSelection: !!persisted.watchSelection, // X11 PRIMARY (выделение мышью) — шумно, по умолчанию выкл
     autoPlay: !!persisted.autoPlay,            // «Читать сразу» — по умолчанию выкл
     clean: persisted.clean !== false,          // чистка терминального мусора
@@ -170,7 +173,9 @@ export function initVoice(host) {
   function rate() { return settings.ttsRate || 'medium'; }
 
   // ---------------- плеер ----------------
-  const player = { list: [], i: 0, playing: false, paused: false, src: null, gen: 0, endCurrent: null, bufs: new Map(), pending: new Map() };
+  // audioGen — поколение ПАРАМЕТРОВ синтеза (голос, темп). Просто очистить bufs мало: запрос,
+  // ушедший до смены темпа, вернётся позже и запишет в кэш фразу, наговорённую прежним голосом.
+  const player = { list: [], i: 0, playing: false, paused: false, src: null, gen: 0, audioGen: 0, endCurrent: null, bufs: new Map(), pending: new Map() };
   let audioCtx = null;
   function ac() {
     if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
@@ -189,11 +194,14 @@ export function initVoice(host) {
     if (inFlight) return inFlight;
     const s = player.list[idx];
     if (!s) return Promise.resolve(null);
+    const myGen = player.audioGen;
     const job = (async () => {
       const r = await lite.tts.speak(s.text, voice(), rate());
+      if (myGen !== player.audioGen) return null;   // пока синтезировали, сменили голос или темп
       if (r && r.skipped) { player.bufs.set(idx, null); return null; }  // произносить нечего (номер строки, голая пунктуация)
       if (!r || r.ok !== true) throw new Error((r && r.error) || 'синтез не удался');
       const buf = await ac().decodeAudioData(toArrayBuffer(r.wav));
+      if (myGen !== player.audioGen) return null;
       player.bufs.set(idx, buf);
       // Буферы прочитанных фраз не держим: минута речи — это мегабайты, а длинный текст читают целиком.
       for (const k of player.bufs.keys()) if (k < idx - 1) player.bufs.delete(k);
@@ -293,6 +301,26 @@ export function initVoice(host) {
     else { try { ac().suspend(); } catch (_) {} player.paused = true; }
     updatePlayer();
   }
+  // Сменили голос или темп — всё уже синтезированное обесценилось. Если в этот момент идёт
+  // чтение, продолжаем с ТЕКУЩЕЙ фразы новым голосом: молча дочитывать прежним нельзя (человек
+  // ровно для того и нажал), а начинать с начала — потерять место в длинном тексте.
+  function applyVoiceParams() {
+    player.bufs.clear();
+    player.pending.clear();
+    player.audioGen++;
+    if (!player.playing) return;
+    const from = player.i;
+    stopHighlightOnly();
+    runFrom(from);
+  }
+
+  // Ctrl+Enter: во время чтения — пауза/продолжение, иначе старт. У кнопок роли разделены (см.
+  // updatePlayer), а у клавиши совмещены: жать её человек будет не глядя.
+  function playOrPause() {
+    if (player.playing) { togglePause(); return; }
+    play();
+  }
+
   // Старт: если в тексте выделен кусок — читаем только фразы, попавшие в выделение.
   let engineAsking = false;
   function play() {
@@ -310,7 +338,9 @@ export function initVoice(host) {
       }).catch(() => { engineAsking = false; });
       return;
     }
-    if (player.playing) { togglePause(); return; }
+    // Повторное «Озвучить» во время чтения — команда начать заново, а не пауза: пауза теперь
+    // живёт отдельной кнопкой, и совмещать роли незачем.
+    if (player.playing) stopPlayback();
     const ta = $('#voice-text');
     if (!ta) return;
     const text = ta.value;
@@ -500,9 +530,11 @@ export function initVoice(host) {
       : engine.missing === 'python' ? 'Нет Python с torch'
         : 'Движок не настроен';
     eng.appendChild(el('span', null, engine.ready ? `Голос: ${shortVoice(voice())}` : lack));
-    eng.title = engine.ready
-      ? `python: ${engine.python}\nмодель: ${engine.model}`
-      : (engine.error || 'Нажмите, чтобы указать движок синтеза');
+    eng.title = !engine.ready
+      ? (engine.error || 'Нажмите, чтобы указать движок синтеза')
+      : engine.sampleRate
+        ? `python: ${engine.python}\nмодель: ${engine.model}\nчастота: ${Math.round(engine.sampleRate / 1000)} кГц`
+        : `python: ${engine.python}\nмодель: ${engine.model}`;
     eng.onclick = openSettings;
     bar.appendChild(eng);
 
@@ -514,21 +546,28 @@ export function initVoice(host) {
       vsel.appendChild(o);
     }
     vsel.title = 'Голос диктора';
-    vsel.onchange = () => { settings.ttsVoice = vsel.value; host.saveSettings(); player.bufs.clear(); player.pending.clear(); renderToolbar(); };
+    vsel.onchange = () => { settings.ttsVoice = vsel.value; host.saveSettings(); renderToolbar(); applyVoiceParams(); };
     bar.appendChild(vsel);
 
-    const rsel = el('select', 'voice-select voice-select-rate');
+    // Темп — ряд кнопок, а не выпадашка: в него метят на ходу, часто и не глядя, а список
+    // требует раскрыть, прицелиться и попасть.
+    const rates = el('div', 'voice-rates');
+    rates.title = 'Темп речи';
     for (const r of RATES) {
-      const o = el('option', null, r.label);
-      o.value = r.v;
-      if (r.v === rate()) o.selected = true;
-      rsel.appendChild(o);
+      const b = el('button', 'voice-rate' + (r.v === rate() ? ' is-on' : ''), r.label);
+      b.type = 'button';
+      b.onclick = () => {
+        if (settings.ttsRate === r.v) return;
+        settings.ttsRate = r.v;
+        host.saveSettings();
+        renderToolbar();
+        applyVoiceParams();
+      };
+      rates.appendChild(b);
     }
-    rsel.title = 'Темп речи';
-    rsel.onchange = () => { settings.ttsRate = rsel.value; host.saveSettings(); player.bufs.clear(); player.pending.clear(); };
-    bar.appendChild(rsel);
+    bar.appendChild(rates);
 
-    bar.appendChild(toggle('Перехват буфера', 'Скопированный текст сразу попадает сюда', state.watch, (v) => {
+    bar.appendChild(toggle('Перехват буфера', 'Ловить копирование во всей системе, не только в редакторе', state.watch, (v) => {
       state.watch = v; saveState(); applyWatch();
     }));
     bar.appendChild(toggle('Читать сразу', 'Новый текст из буфера озвучивается без нажатия кнопки', state.autoPlay, (v) => {
@@ -564,14 +603,23 @@ export function initVoice(host) {
     const ta = $('#voice-text');
     const hasSel = ta ? !!selectionRange(ta) : false;
 
+    // Роли разделены: «Озвучить» всегда начинает, пауза живёт своей кнопкой. Раньше это была
+    // одна кнопка на две роли, и после паузы человек попадал в «начать заново», сам того не желая.
     const main = el('button', 'btn primary voice-play');
     main.type = 'button';
-    main.appendChild(icon(player.playing && !player.paused ? 'pause' : 'play', 16));
-    main.appendChild(el('span', null, player.playing
-      ? (player.paused ? 'Продолжить' : 'Пауза')
-      : (hasSel ? 'Озвучить выделенное' : 'Озвучить')));
+    main.appendChild(icon('play', 16));
+    main.appendChild(el('span', null, hasSel ? 'Озвучить выделенное' : 'Озвучить'));
     main.onclick = play;
     bar.appendChild(main);
+
+    if (player.playing) {
+      const hold = el('button', 'btn voice-hold' + (player.paused ? ' is-paused' : ''));
+      hold.type = 'button';
+      hold.appendChild(icon(player.paused ? 'play' : 'pause', 16));
+      hold.appendChild(el('span', null, player.paused ? 'Продолжить' : 'Пауза'));
+      hold.onclick = togglePause;
+      bar.appendChild(hold);
+    }
 
     const stop = el('button', 'btn voice-stop');
     stop.type = 'button';
@@ -599,21 +647,21 @@ export function initVoice(host) {
       bar.appendChild(prog);
     }
     else if (sentCount > 0) bar.appendChild(el('span', 'voice-progress', `${sentCount} ${plural(sentCount, 'фраза', 'фразы', 'фраз')}`));
-    bar.appendChild(el('span', 'voice-hint', 'Ctrl+Enter — озвучить · Ctrl+U — ударение · Esc — стоп'));
+    bar.appendChild(el('span', 'voice-hint', 'Ctrl+Enter — озвучить и пауза · Ctrl+U — ударение · Esc — стоп'));
   }
 
   // ---------------- настройка движка ----------------
   function openSettings() {
     const { m, close } = makeModal(`
       <h2>Движок озвучки</h2>
-      <p class="voice-modal-note">Голос синтезирует Silero v4_ru в отдельном процессе Python: нужен интерпретатор с установленным torch и файл модели (39 МБ). В поставку редактора движок не входит.</p>
+      <p class="voice-modal-note">Голос синтезирует Silero в отдельном процессе Python: нужен интерпретатор с установленным torch и файл модели (145 МБ). В поставку редактора движок не входит.</p>
       <label class="voice-lbl">Python с torch</label>
       <div class="voice-path-row"><input id="vs-py" type="text" placeholder="python3"><button class="btn" id="vs-py-pick">Выбрать…</button></div>
       <div class="voice-path-hint" id="vs-py-hint"></div>
       <label class="voice-lbl">Модель голоса (v4_ru.pt)</label>
       <div class="voice-path-row"><input id="vs-model" type="text" placeholder="~/.LiteEditorAI/tts/v4_ru.pt"><button class="btn" id="vs-model-pick">Выбрать…</button></div>
       <div class="voice-path-hint" id="vs-model-hint"></div>
-      <div class="voice-dl"><button class="btn" id="vs-dl">Скачать модель (39 МБ)</button><span id="vs-dl-status"></span></div>
+      <div class="voice-dl"><button class="btn" id="vs-dl">Скачать модель (145 МБ)</button><span id="vs-dl-status"></span></div>
       <div class="modal-actions">
         <button class="btn" id="vs-check">Проверить</button>
         <button class="btn primary" id="vs-save">Сохранить</button>
@@ -627,7 +675,11 @@ export function initVoice(host) {
         ? `найден: ${engine.python}${engine.torch ? ' · torch ' + engine.torch : ''}${engine.pythonSource ? ' (' + engine.pythonSource + ')' : ''}`
         : (engine.error || 'не найден — укажите путь к интерпретатору, где стоит torch');
       pyHint.classList.toggle('is-bad', !engine.python);
-      mdHint.textContent = engine.model ? `найдена: ${engine.model}` : 'не найдена — скачайте кнопкой ниже или укажите путь';
+      mdHint.textContent = !engine.model
+        ? 'не найдена — скачайте кнопкой ниже или укажите путь'
+        : engine.omographs
+          ? `найдена: ${engine.model} · ударения в омографах ставятся сами`
+          : `найдена: ${engine.model}`;
       mdHint.classList.toggle('is-bad', !engine.model);
     };
     paint();
@@ -701,7 +753,8 @@ export function initVoice(host) {
 
   // ---------------- ударение ----------------
   // Silero читает `+` перед гласной как ударение: «з+амок» ≠ «зам+ок». Ctrl+U ставит его
-  // в позицию курсора, повторное нажатие на том же месте — убирает.
+  // в позицию курсора, повторное нажатие на том же месте — убирает. В v5 омографы движок
+  // расставляет сам, поэтому руками правят лишь то, где он ошибся, — а не каждое слово.
   function toggleAccent() {
     const ta = $('#voice-text');
     if (!ta || state.mode !== 'edit') return;
@@ -749,7 +802,7 @@ export function initVoice(host) {
       if (q) q.addEventListener('input', () => { state.filter = q.value; renderList(); });
       document.addEventListener('keydown', (e) => {
         if (!paneOpen) return;
-        if (e.ctrlKey && e.key === 'Enter') { e.preventDefault(); play(); return; }
+        if (e.ctrlKey && e.key === 'Enter') { e.preventDefault(); playOrPause(); return; }
         if (e.ctrlKey && (e.key === 'u' || e.key === 'U')) { e.preventDefault(); toggleAccent(); return; }
         if (e.key === 'Escape' && player.playing) { e.preventDefault(); stopPlayback(); }
       });

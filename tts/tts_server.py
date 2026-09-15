@@ -10,6 +10,7 @@
 # в ответе — только путь и длительность. Кэшем и именами файлов распоряжается вызывающая сторона.
 #
 #   {"id":1,"op":"ping"}                                  → {"id":1,"ok":true,"loaded":false}
+#                                                         (+ sampleRate и omographs — что умеет модель)
 #   {"id":3,"op":"speak","text":"…","voice":"xenia",
 #    "rate":"medium","out":"/tmp/x.wav"}                  → {"id":3,"ok":true,"file":"…","dur":3.6}
 #   {"id":4,"op":"quit"}                                  → процесс завершается
@@ -18,21 +19,31 @@
 # Диагностика идёт в stderr, его пишет в лог main.
 
 import argparse
+import inspect
 import json
 import os
 import sys
 import time
 import wave
 
-SAMPLE_RATE = 24000
+# Частота выбирается по модели: v5 синтезирует 48 кГц честно, v4 умеет только 24 кГц и всё, что
+# выше, просто интерполирует — файл вдвое тяжелее, звук тот же. Значение уезжает в hello/ping.
+SR_MODERN = 48000
+SR_LEGACY = 24000
+SAMPLE_RATE = SR_LEGACY
 # Silero принимает только эти ступени темпа (числовые проценты мапятся на них же).
 RATES = ('x-slow', 'slow', 'medium', 'fast', 'x-fast')
-# Известный список дикторов v4_ru — ответ на `voices` до загрузки модели (39 МБ грузить ради
-# списка незачем). После загрузки список берётся у самой модели.
+# Известный список дикторов русской модели — ответ на `voices` до загрузки (сотню мегабайт
+# грузить ради списка незачем). После загрузки список берётся у самой модели; в v4 и v5 он один
+# и тот же.
 DEFAULT_VOICES = ['aidar', 'baya', 'kseniya', 'xenia', 'eugene']
 
 model = None
 model_path = None
+# Какие именованные аргументы принимает apply_tts ИМЕННО этой модели. v5 добавила ударения в
+# омографах и силу интонации, а v4 на них падает TypeError — поэтому подмешиваем по факту, а не
+# по имени файла: имя пользователь волен поменять, а сигнатура не врёт.
+caps = set()
 
 
 def log(*a):
@@ -40,14 +51,20 @@ def log(*a):
 
 
 def load_model():
-    global model
+    global model, caps, SAMPLE_RATE
     if model is not None:
         return model
     import torch  # импорт тут, а не сверху: `ping`/`voices` должны отвечать и без torch
     t0 = time.time()
     model = torch.package.PackageImporter(model_path).load_pickle('tts_models', 'model')
     model.to('cpu')
-    log('model loaded in %.2f s: %s' % (time.time() - t0, model_path))
+    try:
+        caps = set(inspect.signature(model.apply_tts).parameters)
+    except (TypeError, ValueError):
+        caps = set()
+    SAMPLE_RATE = SR_MODERN if 'put_stress_homo' in caps else SR_LEGACY
+    log('model loaded in %.2f s: %s (sr=%d, omographs=%s)'
+        % (time.time() - t0, model_path, SAMPLE_RATE, 'put_stress_homo' in caps))
     return model
 
 
@@ -87,6 +104,12 @@ def write_wav(path, samples):
 def synth(text, voice, rate, out):
     m = load_model()
     kw = dict(speaker=voice, sample_rate=SAMPLE_RATE, put_accent=True, put_yo=True)
+    # v5: ударения в омографах ставятся сами («з+амок» ≠ «зам+ок»), человеку не надо жать Ctrl+U
+    # на каждом. У v4 этих аргументов нет вовсе — передать их значит уронить синтез.
+    if 'put_stress_homo' in caps:
+        kw['put_stress_homo'] = True
+    if 'put_yo_homo' in caps:
+        kw['put_yo_homo'] = True
     # Темп меняем через SSML — он растягивает речь, не трогая высоту голоса (playbackRate в плеере
     # так не умеет: там вместе со скоростью уезжает тембр).
     if rate and rate != 'medium':
@@ -101,7 +124,8 @@ def synth(text, voice, rate, out):
 def handle(req):
     op = req.get('op')
     if op == 'ping':
-        return {'ok': True, 'loaded': model is not None, 'voices': voices()}
+        return {'ok': True, 'loaded': model is not None, 'voices': voices(),
+                'sampleRate': SAMPLE_RATE, 'omographs': 'put_stress_homo' in caps}
     if op == 'speak':
         text = (req.get('text') or '').strip()
         if not text:
@@ -124,7 +148,7 @@ def handle(req):
 def main():
     global model_path
     ap = argparse.ArgumentParser()
-    ap.add_argument('--model', required=True, help='путь к v4_ru.pt (torch.package)')
+    ap.add_argument('--model', required=True, help='путь к модели ru (torch.package): v5_5_ru.pt, v4_ru.pt…')
     ap.add_argument('--preload', action='store_true', help='загрузить модель сразу, не ждать первого speak')
     args = ap.parse_args()
     model_path = args.model
@@ -133,7 +157,8 @@ def main():
             load_model()
         except Exception as e:  # noqa: BLE001 — упасть тут нельзя, ответ об ошибке нужен вызывающему
             log('preload failed: %s: %s' % (type(e).__name__, e))
-    print(json.dumps({'op': 'hello', 'ok': True, 'voices': voices()}), flush=True)
+    print(json.dumps({'op': 'hello', 'ok': True, 'voices': voices(),
+                      'sampleRate': SAMPLE_RATE, 'omographs': 'put_stress_homo' in caps}), flush=True)
     for line in sys.stdin:
         line = line.strip()
         if not line:
