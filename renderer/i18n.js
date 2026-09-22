@@ -185,8 +185,17 @@ export function observe(root = document.documentElement) {
     applying = true;
     try {
       // только верхние узлы батча: вложенные обойдёт их предок
-      const tops = roots.filter((n) => n.isConnected !== false &&
-        !roots.some((o) => o !== n && o.nodeType === Node.ELEMENT_NODE && o.contains && o.contains(n)));
+      // Верхние узлы пачки: узел, чей предок тоже в пачке, переведёт проход по предку. Подъём по
+      // родителям с проверкой в Set — O(n·глубина); прежний roots.some(contains) был O(n²) и на
+      // пачке из тысячи строк таблицы давал миллион проверок.
+      const inBatch = new Set(roots);
+      const tops = [];
+      for (const n of inBatch) {
+        if (n.isConnected === false) continue;
+        let p = n.parentNode, covered = false;
+        while (p) { if (inBatch.has(p)) { covered = true; break; } p = p.parentNode; }
+        if (!covered) tops.push(n);
+      }
       for (const n of tops) {
         if (n.nodeType === Node.TEXT_NODE) translateText(n);
         else if (n.nodeType === Node.ELEMENT_NODE) { applying = false; translate(n); applying = true; }
@@ -202,6 +211,10 @@ export function observe(root = document.documentElement) {
     stats.records += records.length;
     for (const r of records) {
       if (r.type === 'childList') {
+        // Терминалы и редактор кода не переводим — их мутации (строки DOM-рендерера xterm, правки
+        // CodeMirror) отсекаем сразу, не копя в очереди.
+        const host = r.target && r.target.nodeType === Node.ELEMENT_NODE ? r.target : null;
+        if (host && host.closest && host.closest(SKIP_SEL)) continue;
         for (const n of r.addedNodes) queued.push(n);
       } else if (r.type === 'attributes' && r.target && r.target.nodeType === Node.ELEMENT_NODE) {
         if (!(r.target.closest && r.target.closest(SKIP_SEL))) { applying = true; try { translateAttrs(r.target); } finally { applying = false; } }

@@ -47,7 +47,8 @@ cd "${root}" || exit 1
 LOGDIR="$HOME/.LiteEditorAI/logs"; mkdir -p "$LOGDIR"
 exec >> "$LOGDIR/launch-$(date +%F).log" 2>&1
 echo "=== launch $(date '+%F %T') ==="
-node build.js || echo "[build.js упал — открываю прошлую сборку]"
+# --if-changed: исходники не менялись с прошлой сборки — не пересобираем (быстрее старт).
+node build.js --if-changed || echo "[build.js упал — открываю прошлую сборку]"
 # --class совпадает с WM_CLASS (= package.json name) и StartupWMClass в .desktop. Electron 42
 # его игнорирует и берёт WM_CLASS из name, но держим в согласии на случай других окружений.
 exec "${electronBin}" --no-sandbox --class=${WM_CLASS} . "$@"
