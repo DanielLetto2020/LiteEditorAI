@@ -15,7 +15,8 @@
     "!test/**",
     "!locales/**",
     "!package.json",
-    "!errledger.js"
+    "!errledger.js",
+    "!renderer/settings-sync.js"
   ],
   "reporters": [
     "html",
