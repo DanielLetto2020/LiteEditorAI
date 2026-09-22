@@ -20,6 +20,10 @@ const ok = (c, m) => { assert.ok(c, m); passed++; };
 const root = path.join(__dirname, '..');
 const electron = path.join(root, 'node_modules', 'electron', 'dist', 'electron');
 const has = (cmd) => spawnSync('sh', ['-c', `command -v ${cmd}`]).status === 0;
+// Под Stryker (npm run mutation) logger.js не мутируется, а запуск Electron на каждого мутанта только
+// удлинял бы CI (и logger.js в песочницу Stryker не копируется).
+// Песочницу узнаём по пути: переменные окружения Stryker в начальный прогон не попадают.
+if (__dirname.includes('.stryker-tmp') || process.env.STRYKER_MUTATOR_WORKER) { console.log('logger: пропущен под Stryker'); process.exit(0); }
 if (process.platform !== 'linux' || !fs.existsSync('/dev/full') || !fs.existsSync(electron) || !has('xvfb-run')) {
   console.log('logger: пропущен — нужен Linux с /dev/full, xvfb-run и установленным electron');
   process.exit(0);

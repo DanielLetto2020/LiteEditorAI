@@ -11,6 +11,10 @@ const ok = (c, m) => { assert.ok(c, m); passed++; };
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
 if (process.platform !== 'linux') { console.log('proctree: пропущен — только Linux'); process.exit(0); }
+// Под Stryker (мутационное тестирование, npm run mutation) весь набор тестов гоняется на каждого
+// мутанта, а lib/proctree.js не мутируется: тест с настоящим терминалом (~3 с) там только удлинял бы CI.
+// Песочницу узнаём по пути: переменные окружения Stryker в начальный прогон не попадают.
+if (__dirname.includes('.stryker-tmp') || process.env.STRYKER_MUTATOR_WORKER) { console.log('proctree: пропущен под Stryker'); process.exit(0); }
 
 // Процесс по ppid, найденный полным обходом — независимая проверка обхода через children.
 function kidsByScan(pid) { return pt.allPids().filter((p) => { const st = pt.readProcStat(p); return st && st.ppid === pid; }); }
