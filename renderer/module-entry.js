@@ -4,9 +4,10 @@
 // right-slot machinery (growBy / closeOtherPanels / refit / saveUiState) is neutralised and
 // the pane fills the whole window. Editor-facing actions are forwarded to the main window.
 import {
-  el, icon, iconBtn, toast, makeModal, showConfirm, showPrompt, hydrateIcons, setErrorSink, applyLayoutSwap, ICONS,
+  el, icon, iconBtn, toast, makeModal, showConfirm, showPrompt, hydrateIcons, setErrorSink, applyLayoutSwap, ICONS, preloadHighlighter,
 } from './ui.js';
 import { initI18n } from './i18n.js';
+import { syncSettings } from './settings-sync.js';
 import { createCodeEditor } from './codeedit.js';
 import { termThemeFor } from './themes.js';
 import { applyFrame } from './frame.js';
@@ -14,29 +15,35 @@ import { loadFastRenderer, applyUnicode11, copySelection } from './termutil.js';
 import '@xterm/xterm/css/xterm.css';
 import 'highlight.js/styles/atom-one-dark.css';
 
-import { initTools } from './modules/tools.js';
-import { initIterflow } from './modules/iterflow.js';
-import { initSeo } from './modules/seo.js';
-import { initAudit } from './modules/audit.js';
-import { initMonitor } from './modules/monitor.js';
-import { initKeepass } from './modules/keepass.js';
-import { initSitemon } from './modules/sitemon.js';
-import { initPomodoro } from './modules/pomodoro.js';
-import { initVoice } from './modules/voice.js';
-import { initCompany } from './modules/company.js';
-import { initNotes } from './modules/notes.js';
-import { initDb } from './modules/db.js';
-import { initRmq } from './modules/rmq.js';
-import { initStorage } from './modules/storage.js';
-import { initKafka } from './modules/kafka.js';
-import { initJira } from './modules/jira.js';
-import { initOpenRouter } from './modules/openrouter.js';
-import { initTextProc } from './modules/textproc.js';
-import { initContainers } from './modules/containers.js';
-import { initRh } from './modules/remotehost.js';
-import { initCtx } from './modules/contextgraph.js';
-import { initScratch } from './modules/scratch.js';
-import { initFiles } from './modules/files.js';
+// CSS модулей подключаем здесь, в оболочке: при разбиении на чанки стили лениво загруженного модуля
+// попали бы в отдельный CSS-файл, который никто не подключит. katex — стили формул «Обработки текста».
+import 'katex/dist/katex.min.css';
+
+// Модули грузятся лениво: окно берёт только СВОЙ модуль (id — из #hash), а не все 22 сразу
+// (build.js: ESM + splitting). Загрузчик отдаёт init-функцию модуля.
+const initTools = () => import('./modules/tools.js').then((m) => m.initTools);
+const initIterflow = () => import('./modules/iterflow.js').then((m) => m.initIterflow);
+const initSeo = () => import('./modules/seo.js').then((m) => m.initSeo);
+const initAudit = () => import('./modules/audit.js').then((m) => m.initAudit);
+const initMonitor = () => import('./modules/monitor.js').then((m) => m.initMonitor);
+const initKeepass = () => import('./modules/keepass.js').then((m) => m.initKeepass);
+const initSitemon = () => import('./modules/sitemon.js').then((m) => m.initSitemon);
+const initPomodoro = () => import('./modules/pomodoro.js').then((m) => m.initPomodoro);
+const initVoice = () => import('./modules/voice.js').then((m) => m.initVoice);
+const initCompany = () => import('./modules/company.js').then((m) => m.initCompany);
+const initNotes = () => import('./modules/notes.js').then((m) => m.initNotes);
+const initDb = () => import('./modules/db.js').then((m) => m.initDb);
+const initRmq = () => import('./modules/rmq.js').then((m) => m.initRmq);
+const initStorage = () => import('./modules/storage.js').then((m) => m.initStorage);
+const initKafka = () => import('./modules/kafka.js').then((m) => m.initKafka);
+const initJira = () => import('./modules/jira.js').then((m) => m.initJira);
+const initOpenRouter = () => import('./modules/openrouter.js').then((m) => m.initOpenRouter);
+const initTextProc = () => import('./modules/textproc.js').then((m) => m.initTextProc);
+const initContainers = () => import('./modules/containers.js').then((m) => m.initContainers);
+const initRh = () => import('./modules/remotehost.js').then((m) => m.initRh);
+const initCtx = () => import('./modules/contextgraph.js').then((m) => m.initCtx);
+const initScratch = () => import('./modules/scratch.js').then((m) => m.initScratch);
+const initFiles = () => import('./modules/files.js').then((m) => m.initFiles);
 
 const lite = window.lite;
 const $ = (s) => document.querySelector(s);
@@ -76,50 +83,50 @@ for (const ev of ['mousemove', 'mousedown', 'keydown', 'wheel', 'touchstart']) w
 // Registry of window-hosted modules. `project:true` → re-render on active-project change.
 // `wire(mod)` binds the pane-head buttons (the #<id>-close button is wired generically).
 const MODULES = {
-  tools: { title: 'Инструменты', init: initTools, project: false },
+  tools: { title: 'Инструменты', load: initTools, project: false, highlight: true }, // highlight — диффы с подсветкой (renderDiffInto)
   iterflow: {
-    title: 'IterFlow', init: initIterflow, project: false,
+    title: 'IterFlow', load: initIterflow, project: false,
     wire: (mod) => { bind('#iterflow-site', () => mod.openSite()); bind('#iterflow-refresh', () => mod.refresh()); bind('#iterflow-logout', () => mod.logout()); },
   },
   seo: {
-    title: 'WEB/SEO аудит', init: initSeo, project: false,
+    title: 'WEB/SEO аудит', load: initSeo, project: false,
     wire: (mod) => { bind('#seo-rescan', () => mod.rescan()); },
   },
   audit: {
-    title: 'Аудит проекта', init: initAudit, project: true,
+    title: 'Аудит проекта', load: initAudit, project: true,
     wire: (mod) => { bind('#audit-rescan', () => mod.rescan()); },
   },
   monitor: {
-    title: 'Монитор ресурсов', init: initMonitor, project: false,
+    title: 'Монитор ресурсов', load: initMonitor, project: false,
     wire: (mod) => { bind('#monitor-copy', () => mod.copySnapshot()); },
   },
   keepass: {
-    title: 'Сейф паролей', init: initKeepass, project: false,
+    title: 'Сейф паролей', load: initKeepass, project: false,
     wire: (mod) => { bind('#keepass-open', () => mod.openFile()); bind('#keepass-lock', () => mod.lock()); },
   },
   sitemon: {
-    title: 'Мониторинг сайтов', init: initSitemon, project: false,
+    title: 'Мониторинг сайтов', load: initSitemon, project: false,
     wire: (mod) => { bind('#sitemon-add', () => mod.addSite()); bind('#sitemon-check', () => mod.checkAll()); },
   },
   pomodoro: {
-    title: 'Помодоро', init: initPomodoro, project: false,
+    title: 'Помодоро', load: initPomodoro, project: false,
     wire: (mod) => { bind('#pomodoro-min', () => mod.toggleCompact()); },
   },
   // «Озвучка»: текст из буфера обмена читается голосом. Окно самостоятельное (озвучивают что
   // угодно, не только активный проект); wire принимает текст из контекстного меню терминала.
   voice: {
-    title: 'Озвучка', init: initVoice, project: false,
+    title: 'Озвучка', load: initVoice, project: false,
     wire: (mod) => {
       bind('#voice-engine-btn', () => mod.openSettings());
       bind('#voice-clear', () => mod.clearHistory());
     },
   },
   company: {
-    title: 'ИИ компания', init: initCompany, project: true,
+    title: 'ИИ компания', load: initCompany, project: true,
     wire: (mod) => { bind('#company-settings', () => mod.openSettings()); },
   },
   notes: {
-    title: 'Задачи', init: initNotes, project: true,
+    title: 'Задачи', load: initNotes, project: true,
     wire: (mod) => {
       bind('#notes-export', () => mod.exportMenu());
       bind('#notes-import', () => mod.importNotes());
@@ -132,7 +139,7 @@ const MODULES = {
     },
   },
   db: {
-    title: 'Базы данных', init: initDb, project: false,
+    title: 'Базы данных', load: initDb, project: false,
     wire: (mod) => {
       bind('#db-refresh', () => mod.refresh());
       // «Контейнеры» → БД: заготовка подключения из контейнера (маршрут через main, очередь до готовности)
@@ -145,7 +152,7 @@ const MODULES = {
   // «Внешние хранилища» (S3): главные вкладки «Проект/Общие» → project:true (перечитка при
   // смене активного проекта редактора); без проекта живёт вкладка «Общие» (allowEmpty).
   storage: {
-    title: 'Внешние хранилища', init: initStorage, project: true,
+    title: 'Внешние хранилища', load: initStorage, project: true,
     wire: (mod) => {
       bind('#storage-add', () => mod.addConnection());
       bind('#storage-refresh', () => mod.refresh());
@@ -155,7 +162,7 @@ const MODULES = {
     },
   },
   rmq: {
-    title: 'RabbitMQ', init: initRmq, project: false,
+    title: 'RabbitMQ', load: initRmq, project: false,
     wire: (mod) => {
       bind('#rmq-refresh', () => mod.refresh());
       // «Контейнеры» → RabbitMQ: заготовка профиля из контейнера (маршрут через main, очередь до готовности)
@@ -164,7 +171,7 @@ const MODULES = {
     },
   },
   kafka: {
-    title: 'Kafka', init: initKafka, project: false,
+    title: 'Kafka', load: initKafka, project: false,
     wire: (mod) => {
       bind('#kafka-refresh', () => mod.refresh());
       // «Контейнеры» → Kafka: заготовка профиля из контейнера (маршрут через main, очередь до готовности)
@@ -175,18 +182,18 @@ const MODULES = {
   // «Jira» — трекер чужих задач: аккаунтов может быть несколько (работа/личный/клиентский),
   // поэтому окно самостоятельное и от активного проекта редактора не зависит.
   jira: {
-    title: 'Jira', init: initJira, project: false,
+    title: 'Jira', load: initJira, project: false,
     wire: (mod) => { bind('#jira-refresh', () => mod.refresh()); },
   },
   chat: {
-    title: 'OpenRouter', init: initOpenRouter, project: false,
+    title: 'OpenRouter', load: initOpenRouter, project: false,
     // чат сам вешает слушатели панели и стрима (bindControls биндит #chat-keys/модель/сессии).
     wire: (mod) => { try { mod.bindControls(); mod.bindStream(); } catch (_) {} },
   },
   // «Обработка текста» (Obsidian-редизайн, PR #6): сайдбар — дерево документов АКТИВНОГО проекта
   // редактора, поэтому project:true; дерево рендерится при старте, смене проекта и правках на диске.
   doc: {
-    title: 'Обработка текста', init: initTextProc, project: true,
+    title: 'Обработка текста', load: initTextProc, project: true,
     wire: (mod) => {
       if (activeProj) { try { mod.renderTree(activeProj); } catch (_) {} }
       lite.app.onActiveProject((p) => { try { if (p) mod.renderTree(p); } catch (_) {} });
@@ -194,11 +201,11 @@ const MODULES = {
     },
   },
   docker: {
-    title: 'Контейнеры', init: initContainers, project: false,
+    title: 'Контейнеры', load: initContainers, project: false,
     wire: (mod) => { bind('#docker-refresh', () => mod.refresh()); },
   },
   rh: {
-    title: 'Удалённые хосты', init: initRh, project: false,
+    title: 'Удалённые хосты', load: initRh, project: false,
     wire: (mod) => {
       mod.bindEvents(); // поток данных/закрытие SSH-сессий → xterm-вкладки
       bind('#rh-refresh', () => mod.renderPanel());
@@ -207,16 +214,16 @@ const MODULES = {
   },
   // ctx даёт confirmClose() (заглушка: канва пишет файл сразу) — закрытие окна
   // спрашивает его перед закрытием; свои кнопки канвы биндит сам в initCtx.
-  ctx: { title: 'Контекст', init: initCtx, project: true },
+  ctx: { title: 'Контекст', load: initCtx, project: true },
   scratch: {
-    title: 'Система · ~', init: initScratch, project: false,
+    title: 'Система · ~', load: initScratch, project: false,
     wire: (mod) => { bind('#scratch-restart', () => mod.restart()); },
   },
   // Вивер кода + дерево файлов (проектозависимое окно: следует за активным проектом редактора).
   // Кнопки #viewer-*/#tree-* и контекст-меню дерева вешает сам модуль (Files.mount); тут — только
   // приём действий от других модулей-окон (открыть файл / обновить дерево) и сигнал готовности.
   files: {
-    title: 'Проект', init: initFiles, project: true,
+    title: 'Проект', load: initFiles, project: true,
     wire: (mod) => {
       lite.editorBus.onOpenInViewer((abs, line) => { try { mod.openFile(abs, line); } catch (_) {} });
       lite.editorBus.onFocusGit(() => { try { mod.focusGit(); } catch (_) {} }); // «Git» из редактора → секция «Коммит»
@@ -241,7 +248,11 @@ applyTheme(settings.theme);
 applyFrame(settings); // рамка окна — та же, что у редактора (настройки → «Рамка окна»)
 
 function persist(key, value) { STORE[key] = value; lite.store.set(key, value); }
-function saveSettings() { lite.store.set('settings', settings); lite.app.settingsChanged(settings); }
+// settings — только изменённые поля; чужие изменения (другие окна, смена языка) вливаются в этот же
+// объект и применяются живьём (renderer/settings-sync.js). Раньше окно писало свою копию целиком и
+// рассылало её остальным — устаревшие поля затирали чужие правки.
+const settingsSync = syncSettings(lite, settings, { base: STORE.settings, onRemote: () => applyLiveSettings() });
+function saveSettings() { settingsSync.save(); }
 
 // Surface module errors to the main-process log (mirrors the editor's error sink).
 setErrorSink((msg) => { try { lite.log('error', '[module:' + modId + ']', msg); } catch (_) {} });
@@ -261,6 +272,14 @@ window.addEventListener('unhandledrejection', (e) => {
 
 let activeProj = null;   // cached active project of the editor (for project-dependent modules)
 let mod = null;          // the initialised module instance
+
+// Применить настройки живьём: тема окна, рамка, xterm-терминалы модуля (если он их рисует).
+function applyLiveSettings() {
+  applyTheme(settings.theme);
+  applyFrame(settings);
+  try { mod && mod.applyTermTheme && mod.applyTermTheme(); } catch (_) {}
+  try { mod && mod.applyFontSize && mod.applyFontSize(); } catch (_) {}
+}
 
 // Window-mode host: right-slot callbacks become no-ops; editor actions are forwarded.
 const layoutProxy = new Proxy({}, { get: () => 480 });
@@ -285,7 +304,7 @@ function buildHost() {
   };
 }
 
-function boot() {
+async function boot() {
   if (!def) {
     // Удалённый/устаревший модуль (например, старое окно 'git' из персиста __open после слияния с вивером)
     // — не показываем стрелую заглушку, а тихо закрываем окно; набор открытых окон self-heal'ится.
@@ -309,15 +328,40 @@ function boot() {
   lite.app.onSettingsChanged((s) => {
     if (!s) return;
     Object.assign(settings, s);
-    applyTheme(settings.theme);
-    applyFrame(settings);
-    try { mod && mod.applyTermTheme && mod.applyTermTheme(); } catch (_) {}
-    try { mod && mod.applyFontSize && mod.applyFontSize(); } catch (_) {}
+    applyLiveSettings();
   });
 
+  // Закрытие окна (единственная ✕ в шапке окна / Alt+F4 / ОС) идёт через dirty-guard модуля:
+  // main гасит первое закрытие и шлёт win:closeRequest; модуль с несохранёнными данными
+  // (ctx/files) спрашивает подтверждение, остальные закрываются сразу. proceed() = «закрывай».
+  // Вешаем до загрузки модуля: закрытие, пока модуль грузится, просто закрывает окно.
+  lite.win.onCloseRequest(() => {
+    const proceed = () => lite.win.confirmClose();
+    try {
+      if (mod && typeof mod.confirmClose === 'function') mod.confirmClose(proceed);
+      else proceed();
+    } catch (_) { proceed(); }
+  });
+  // project-dependent modules re-render when the editor switches projects (подписка — тоже до
+  // загрузки, чтобы смена проекта во время загрузки не потерялась)
+  if (def.project) {
+    lite.app.onActiveProject((p) => {
+      activeProj = p || null;
+      if (mod) { try { mod.setOpen(true, { grow: false, allowEmpty: true }); } catch (_) {} }
+    });
+  }
+
   // init the module; the pane is always visible in a window (open with grow:false)
-  mod = def.init(buildHost());
+  let init;
+  try { init = await moduleLoading; }
+  catch (e) {
+    try { lite.log('error', '[module:' + modId + '] load', String((e && e.stack) || e)); } catch (_) {}
+    toast('Не удалось загрузить модуль: ' + ((e && e.message) || e), { kind: 'err', ttl: 8000 });
+    return;
+  }
+  mod = init(buildHost());
   mod.setOpen(true, { grow: false, allowEmpty: true });
+  if (def.highlight) preloadHighlighter();   // подсветка кода грузится лениво — прогреть в простое
 
   // окно изменило размер → подогнать встроенные терминалы модуля (контейнеры exec / SSH-сессии)
   let rezT;
@@ -330,27 +374,12 @@ function boot() {
     }, 80);
   });
 
-  // Закрытие окна (единственная ✕ в шапке окна / Alt+F4 / ОС) идёт через dirty-guard модуля:
-  // main гасит первое закрытие и шлёт win:closeRequest; модуль с несохранёнными данными
-  // (ctx/files) спрашивает подтверждение, остальные закрываются сразу. proceed() = «закрывай».
-  lite.win.onCloseRequest(() => {
-    const proceed = () => lite.win.confirmClose();
-    try {
-      if (mod && typeof mod.confirmClose === 'function') mod.confirmClose(proceed);
-      else proceed();
-    } catch (_) { proceed(); }
-  });
   if (def.wire) { try { def.wire(mod); } catch (e) { try { lite.log('error', '[module:' + modId + '] wire', String(e)); } catch (_) {} } }
-
-  // project-dependent modules re-render when the editor switches projects
-  if (def.project) {
-    lite.app.onActiveProject((p) => {
-      activeProj = p || null;
-      try { mod.setOpen(true, { grow: false, allowEmpty: true }); } catch (_) {}
-    });
-  }
 }
 
 // fetch the editor's current project first, then boot
 initI18n();   // язык окна модуля — тот же, что у редактора (словарь синхронно из main)
+// Код модуля начинает грузиться сразу, параллельно с запросом активного проекта.
+const moduleLoading = def ? def.load() : Promise.resolve(null);
+moduleLoading.catch(() => {});   // ошибку разберёт boot; здесь — только чтобы не было unhandledrejection
 lite.app.getActiveProject().then((p) => { activeProj = p || null; boot(); }).catch(() => boot());

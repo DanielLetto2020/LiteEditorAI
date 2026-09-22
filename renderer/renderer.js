@@ -11,9 +11,10 @@ import '@xterm/xterm/css/xterm.css';
 // CodeMirror/marked/showMinimap/codeedit — переехали в окно вивера (renderer/modules/files.js).
 // В ядре остались только терминал (xterm) + темы/термутилы.
 import { initI18n, t as tt } from './i18n.js';
+import { syncSettings } from './settings-sync.js';
 import { THEMES, TERM_THEME, DEFAULT_THEME } from './themes.js';
 import { FRAME_COLORS, frameConf, applyFrame } from './frame.js';
-import { loadFastRenderer, applyUnicode11, copySelection } from './termutil.js';
+import { prepareRenderer, activateRenderer, releaseRenderer, applyUnicode11, copySelection, ptyResizer } from './termutil.js';
 import { attachTimeline } from './termtimeline.js';
 // initTextProc — «Обработка текста» мигрирована в отдельное окно (renderer/module-entry.js).
 import { el, icon, iconBtn, hydrateIcons, toast, makeModal, showConfirm, showPrompt, baseName, ICONS, setErrorSink, syncMark } from './ui.js';
@@ -28,7 +29,7 @@ import { openGlobalSearch } from './gsearch.js';
 import { initExtensions } from './modules/extensions.js';
 // initFiles — вивер+дерево мигрированы в отдельное окно (renderer/module-entry.js).
 
-const APP_VERSION = 'alpha v1.1.197';
+const APP_VERSION = 'alpha v1.1.198';
 const GUTTER = 5;
 // Системный терминал («Система · ~») мигрирован в отдельное окно (renderer/modules/scratch.js):
 // его id `__scratch__::tN` маршрутизируются main'ом в окно-владельца, в ядре их больше не обрабатываем.
@@ -58,7 +59,10 @@ function projId(p) { let h = 5381; for (let i = 0; i < p.length; i++) h = ((h <<
 const DEFAULT_SETTINGS = { notifications: true, sound: false, idleMs: 1200, fontSize: 13, workingDir: '', scanDirs: [], theme: 'neumorphism', onboarded: false, shell: '', minimap: true, notesTab: 'project', frameOn: true, frameColor: 'green', framePulse: true, framePeriodS: 6, termTimeline: false, termPrefill: 'claude' };
 function loadSettings() { return { ...DEFAULT_SETTINGS, ...(STORE.settings || {}) }; }
 let settings = loadSettings();
-function saveSettings() { persist('settings', settings); }
+// Пишем только изменённые поля, чужие изменения (окна модулей, смена языка) вливаются в settings —
+// см. renderer/settings-sync.js. base = то, что на диске: первый save запишет и дефолты, как раньше.
+const settingsSync = syncSettings(lite, settings, { base: STORE.settings });
+function saveSettings() { STORE.settings = settings; settingsSync.save(); }
 
 // ---------------------------------------------------------------- state
 let projects = [];
@@ -74,6 +78,10 @@ let activeId = null;
 const terms = new Map();          // sessionId -> { term, fit, search, container, projId, name, ... }
 const tabsByProj = new Map();     // projId -> { sessions: [sessionId...], active: sessionId }
 let sessionSeq = 0;
+// Метка этой загрузки страницы в id сессий. После перезагрузки окна (падение рендерера, импорт
+// настроек) нумерация вкладок начинается заново, и без метки новая вкладка получила бы id ещё живого
+// шелла старой страницы — возможно, чужого проекта (pty:create отвечает existed и цепляет его).
+const BOOT_ID = Date.now().toString(36);
 const projState = new Map(); // sessionId -> 'quiet' | 'busy' | 'waiting'
 const missing = new Set();   // ids of projects whose folder no longer exists on disk
 // Состояние вивера+дерева (expandedDirs/gitFiles/currentFile/dirty/…) живёт в отдельном ОКНЕ —
@@ -715,7 +723,7 @@ function doCloseProject(id) {
     for (const sid of tabs.sessions) {
       lite.pty.kill(sid);
       const rec = terms.get(sid);
-      if (rec) { clearTimeout(rec.idleTimer); clearTimeout(rec.prefillTimer); try { rec.timeline.dispose(); } catch (_) {} try { rec.term.dispose(); } catch (_) {} rec.container.remove(); terms.delete(sid); }
+      if (rec) { clearTimeout(rec.idleTimer); clearTimeout(rec.prefillTimer); releaseRenderer(rec.term); try { rec.timeline.dispose(); } catch (_) {} try { rec.term.dispose(); } catch (_) {} rec.container.remove(); terms.delete(sid); }
       projState.delete(sid);
     }
     tabsByProj.delete(id);
@@ -735,12 +743,20 @@ function doCloseProject(id) {
 }
 
 // Flag projects whose folder was deleted on disk so the user can close them.
+// Один запрос на все пути (раньше — по IPC на проект, подряд) и перерисовка только если набор
+// пропавших изменился: проверка идёт на каждый возврат фокуса в окно, а полная перерисовка списка
+// гасит наведение и открытые меню (refreshSynced ради этого тоже перерисовывает лишь по изменению).
 async function checkProjectsExistence() {
-  for (const p of projects) {
-    if (await lite.fs.exists(p.path)) missing.delete(p.id);
-    else missing.add(p.id);
-  }
-  renderProjects();
+  const list = projects.slice();
+  let exists;
+  try { exists = await lite.fs.existsMany(list.map((p) => p.path)); } catch (_) { return; }
+  if (!Array.isArray(exists)) return;
+  let changed = false;
+  list.forEach((p, i) => {
+    const gone = !exists[i];
+    if (gone !== missing.has(p.id)) { changed = true; if (gone) missing.add(p.id); else missing.delete(p.id); }
+  });
+  if (changed) renderProjects();
 }
 
 // ---------------------------------------------------------------- activity indicator
@@ -756,7 +772,12 @@ const stripAnsi = (str) => str.replace(ANSI_RE, '');
 // (ESC ] 0 ; title BEL) — which bash/zsh/Claude emit on every prompt. Strip OSC
 // first, then a leftover BEL is a genuine bell.
 const OSC_RE = /\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g;
-const hasRealBell = (s) => s.replace(OSC_RE, '').includes('\x07');
+// Быстрый путь: в подавляющем большинстве кусков BEL нет вовсе — не гоняем replace по всему куску.
+const hasRealBell = (s) => s.indexOf('\x07') !== -1 && s.replace(OSC_RE, '').includes('\x07');
+// От куска для rec.tail нужен только конец (хвост держим 400 видимых символов, эвристика смотрит
+// последнюю строку): чистим ANSI не во всём куске, а в последних TAIL_SRC символах. Склеенный
+// вывод приходит пачками до 64 КБ — без этого regex бегал бы по каждой пачке целиком.
+const TAIL_SRC = 8192;
 
 function setProjState(sid, state) {
   projState.set(sid, state);
@@ -774,7 +795,8 @@ function markActivity(id, data) {
   // that's not the agent working, so don't spin on it.
   const echoLike = !bell && data && data.length <= 8 && (Date.now() - (rec.lastInputAt || 0)) < 250;
   if (echoLike) return;
-  rec.tail = stripAnsi((rec.tail || '') + (data || '')).slice(-400);
+  const src = data || '';
+  rec.tail = stripAnsi((rec.tail || '') + (src.length > TAIL_SRC ? src.slice(-TAIL_SRC) : src)).slice(-400);
   rec.activitySeq = (rec.activitySeq || 0) + 1; // lets a pending settle detect that new output arrived
   if (projState.get(id) !== 'busy') { rec.busyStart = Date.now(); setProjState(id, 'busy'); }
   clearTimeout(rec.idleTimer);
@@ -821,11 +843,12 @@ function notifyAgent(id, state) {
   } catch (_) {}
 }
 // Count of agents waiting on input → titlebar badge + tray tooltip.
+let trayAttentionSent = -1;   // что последним ушло в трей: шлём только при смене числа
 function updateAttention() {
   const n = [...projState.values()].filter((s) => s === 'waiting').length;
   const badge = $('#attention-badge');
   if (badge) { badge.textContent = String(n); badge.classList.toggle('show', n > 0); }
-  lite.tray.update(n);
+  if (n !== trayAttentionSent) { trayAttentionSent = n; lite.tray.update(n); }
 }
 
 // ---------------------------------------------------------------- terminals
@@ -940,18 +963,21 @@ function buildXterm(container, id, { cwd, onInput, onKey } = {}) {
   term.loadAddon(new WebLinksAddon((_e, uri) => lite.openExternal(uri)));
   applyUnicode11(term);
   term.open(container);
-  loadFastRenderer(term);
+  prepareRenderer(term);   // WebGL — при показе (activateRenderer), держится у последних показанных
   // Шкала времени слева — подключается ДО первого fit(): она забирает ширину у области вывода,
   // и cols должны считаться уже с её учётом, иначе первый же resize уедет на несколько колонок.
+  // Размер PTY — через ptyResizer (termutil.js): серия ресайзов при перетаскивании разделителя
+  // уходит программе одним SIGWINCH, а не десятками перерисовок в секунду.
+  const syncPty = ptyResizer(id, term);
   const timeline = attachTimeline(term, container, {
     enabled: settings.termTimeline === true,
     fontSize: settings.fontSize,
-    onGeometry: () => requestAnimationFrame(() => { try { fit.fit(); lite.pty.resize(id, term.cols, term.rows); } catch (_) {} }),
+    onGeometry: () => requestAnimationFrame(() => { try { fit.fit(); syncPty(); } catch (_) {} }),
   });
   fit.fit();
   lite.pty.create({ id, cwd, cols: term.cols, rows: term.rows });
   term.onData((data) => { timeline.markInput(data); if (onInput) onInput(data); lite.pty.write(id, data); });
-  term.onResize(({ cols, rows }) => lite.pty.resize(id, cols, rows));
+  term.onResize(syncPty);
   term.attachCustomKeyEventHandler((e) => {
     if (e.type !== 'keydown') return true;
     // Match by physical key (e.code), NOT e.key — so Ctrl+C/V etc. work in ANY keyboard
@@ -965,7 +991,7 @@ function buildXterm(container, id, { cwd, onInput, onKey } = {}) {
     return true;
   });
   container.addEventListener('contextmenu', (e) => { e.preventDefault(); showTermMenu(e.clientX, e.clientY, term, id); });
-  return { term, fit, search, timeline };
+  return { term, fit, search, timeline, syncPty };
 }
 // Вкл/выкл шкалы времени во ВСЕХ живых терминалах (настройка применяется на лету, без перезапуска).
 function applyTimeline() {
@@ -1003,10 +1029,10 @@ function firePrefill(id) {
   lite.pty.write(id, text);     // без \r — Enter жмёт человек
 }
 function createSession(proj, name, custom) {
-  const id = proj.id + '::t' + (++sessionSeq);
+  const id = proj.id + '::t' + (++sessionSeq) + '.' + BOOT_ID;
   const container = el('div', 'term-instance');
   $('#terminals').appendChild(container);
-  const { term, fit, search, timeline } = buildXterm(container, id, {
+  const { term, fit, search, timeline, syncPty } = buildXterm(container, id, {
     cwd: proj.path,
     onInput: () => { cancelPrefill(id); const r = terms.get(id); if (r) r.lastInputAt = Date.now(); },
     onKey: (e) => {
@@ -1017,7 +1043,7 @@ function createSession(proj, name, custom) {
     },
   });
   term.registerLinkProvider(fileLinkProvider(term, proj.path));
-  const rec = { term, fit, search, timeline, container, projId: proj.id, name, customName: !!custom, idleTimer: null, sawBell: false, tail: '', busyStart: 0, lastInputAt: 0, activitySeq: 0, prefill: '', prefillTimer: null };
+  const rec = { term, fit, search, timeline, syncPty, container, projId: proj.id, name, customName: !!custom, idleTimer: null, sawBell: false, tail: '', busyStart: 0, lastInputAt: 0, activitySeq: 0, prefill: '', prefillTimer: null };
   terms.set(id, rec);
   armPrefill(id, (settings.termPrefill || '').trim()); // автоввод слова из настроек (по умолчанию `claude`)
   // Имя вкладки из заголовка терминала (OSC ]0;…): Claude/агент в промпте пишет туда
@@ -1128,7 +1154,7 @@ function closeTab(sid) {
   const t = tabsByProj.get(activeId); if (!t || t.sessions.length <= 1) return; // keep ≥1 tab
   lite.pty.kill(sid);
   const rec = terms.get(sid);
-  if (rec) { clearTimeout(rec.idleTimer); clearTimeout(rec.prefillTimer); try { rec.timeline.dispose(); } catch (_) {} try { rec.term.dispose(); } catch (_) {} rec.container.remove(); terms.delete(sid); }
+  if (rec) { clearTimeout(rec.idleTimer); clearTimeout(rec.prefillTimer); releaseRenderer(rec.term); try { rec.timeline.dispose(); } catch (_) {} try { rec.term.dispose(); } catch (_) {} rec.container.remove(); terms.delete(sid); }
   projState.delete(sid);
   const i = t.sessions.indexOf(sid);
   t.sessions.splice(i, 1);
@@ -1171,7 +1197,27 @@ function adoptTermTitle(id, raw) {
   if (name === rec.name && rec.autoTitled) return;
   rec.name = name;
   rec.autoTitled = true;
-  renderTabBar();
+  updateTabName(id);
+}
+// Точечное обновление одной вкладки вместо пересборки всей панели: агенты пишут заголовок часто,
+// а renderTabBar пересоздаёт все вкладки и дважды заставляет браузер пересчитать раскладку. Вкладка
+// фонового проекта на экране не видна — её имя подхватит следующий renderTabBar при переключении.
+function updateTabName(sid) {
+  const rec = terms.get(sid);
+  const t = tabsByProj.get(activeId);
+  if (!rec || !t || !t.sessions.includes(sid)) return;
+  const tab = [...document.querySelectorAll('#term-tabs .tab')].find((x) => x.dataset.sid === sid);
+  if (!tab) { renderTabBar(); return; }
+  tab.classList.toggle('wide', !!rec.autoTitled);
+  const span = tab.querySelector('.tab-name');
+  if (span && span.textContent !== rec.name) span.textContent = rec.name;
+  scheduleTabScroll();
+}
+// Стрелки прокрутки панели вкладок зависят от ширины вкладок — пересчитываем раз в кадр, не на каждое имя.
+let tabScrollRaf = 0;
+function scheduleTabScroll() {
+  if (tabScrollRaf) return;
+  tabScrollRaf = requestAnimationFrame(() => { tabScrollRaf = 0; updateTabScroll(); });
 }
 async function pasteInto(id) {
   const text = await lite.readClipboard();
@@ -1188,6 +1234,8 @@ function showActiveTerminal() {
   const asid = activeSessionId();
   $('#empty-hint').style.display = activeId ? 'none' : 'flex';
   for (const [sid, rec] of terms) rec.container.style.display = sid === asid ? 'block' : 'none';
+  const shown = asid && terms.get(asid);
+  if (shown) activateRenderer(shown.term);
   renderTabBar();
   refitActiveTerminal(true);
 }
@@ -1197,7 +1245,7 @@ function refitActiveTerminal(focusIt) {
   const rec = asid ? terms.get(asid) : null;
   if (!rec) return;
   requestAnimationFrame(() => {
-    try { rec.fit.fit(); lite.pty.resize(asid, rec.term.cols, rec.term.rows); if (focusIt) rec.term.focus(); } catch (_) {}
+    try { rec.fit.fit(); rec.syncPty(); if (focusIt) rec.term.focus(); } catch (_) {}
   });
 }
 // ⚠ id из контекстного меню терминала может быть и dev-терминалом модуля (`__extterm__::tN`) —
@@ -1236,17 +1284,18 @@ function restartExtTerminal(id) {
 // Терминал dev-папки модуля: PTY+xterm в переданном контейнере (живёт в #ext-pane).
 // Возвращает handle для extensions.js; xterm в код модуля не утекает (правило изоляции).
 function createExtTerminal(container, cwd) {
-  const id = EXT_TERM_ID + '::t' + (++extTermSeq);
+  const id = EXT_TERM_ID + '::t' + (++extTermSeq) + '.' + BOOT_ID;
   // Без onKey: у dev-терминала модуля нет вкладок, а Ctrl+F открыл бы поиск ЧУЖОГО
   // (активного проектного) терминала — поэтому поиск здесь не перехватываем (как было).
-  const { term, fit, search, timeline } = buildXterm(container, id, { cwd });
+  const { term, fit, search, timeline, syncPty } = buildXterm(container, id, { cwd });
   extTerms.set(id, { term, fit, search, timeline, container, cwd }); // cwd — для «Перезапустить» из контекст-меню
+  activateRenderer(term);   // dev-терминал модуля виден сразу, в панели «Мои модули»
   return {
     id,
     write: (s) => lite.pty.write(id, s),
     focus: () => { try { term.focus(); } catch (_) {} },
-    refit: () => requestAnimationFrame(() => { try { fit.fit(); lite.pty.resize(id, term.cols, term.rows); } catch (_) {} }),
-    dispose: () => { lite.pty.kill(id); try { timeline.dispose(); } catch (_) {} try { term.dispose(); } catch (_) {} extTerms.delete(id); },
+    refit: () => requestAnimationFrame(() => { try { fit.fit(); syncPty(); } catch (_) {} }),
+    dispose: () => { lite.pty.kill(id); releaseRenderer(term); try { timeline.dispose(); } catch (_) {} try { term.dispose(); } catch (_) {} extTerms.delete(id); },
   };
 }
 
@@ -3008,7 +3057,8 @@ function init() {
   lite.pty.onExit(({ id }) => {
     if (isExtTerm(id)) { const r = extTerms.get(id); if (r) r.term.write('\r\n\x1b[90m[шелл завершён]\x1b[0m\r\n'); return; }
     const rec = terms.get(id);
-    if (rec) { cancelPrefill(id); rec.term.write('\r\n\x1b[90m[процесс завершён — закрой и переоткрой проект]\x1b[0m\r\n'); }
+    if (!rec) return;   // сессия прежней загрузки окна (или уже закрытая вкладка) — не наша
+    cancelPrefill(id); rec.term.write('\r\n\x1b[90m[процесс завершён — закрой и переоткрой проект]\x1b[0m\r\n');
     setProjState(id, 'quiet');
   });
   // RemoteHost — SSH-сессии (отдельный канал, не PTY): пишем вывод в соответствующий xterm.

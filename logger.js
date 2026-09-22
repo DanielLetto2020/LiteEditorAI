@@ -20,6 +20,14 @@ const PRUNE_INTERVAL_MS = 6 * 60 * 60 * 1000; // перепрунинг кажд
 const FILE_RE = /^(lite|launch)-\d{4}-\d{2}-\d{2}\.log$/;
 
 let logDir = null;
+let dirReady = false;   // каталог логов уже создан — mkdir не на каждую строку
+
+// Предохранители от петель записи. 17–23.07.2026 диск заполнился: файл лога и перенаправленный
+// лаунчером stderr отвечали ENOSPC, и логгер 2,6 млн раз писал об ошибке записи — каждой такой
+// записью порождая следующую (механика — у guardStdStreams). Сбойный канал теперь отдыхает.
+const PAUSE_MS = 60 * 1000;
+let fileOffUntil = 0;   // файл лога не трогаем до этого момента
+let stdOffUntil = 0;    // запасной stderr — тоже
 
 function pad(n, w = 2) { return String(n).padStart(w, '0'); }
 function dayStamp(d = new Date()) { return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; }
@@ -45,14 +53,54 @@ function write(level, src, parts) {
   if (lvl === 'warn' || lvl === 'error' || lvl === 'fatal') {
     try { errledger.record({ level: lvl, source: src, message: body }); } catch (_) {}
   }
-  if (logDir) {
-    try { fs.mkdirSync(logDir, { recursive: true }); fs.appendFileSync(logPath(), line); }
-    // If the log dir is unwritable at runtime, don't silently lose crash diagnostics —
-    // emit to stderr (the raw launcher capture). NOT console.error: wrapConsole() routes
-    // that back through write(), which would recurse on the same failure.
-    catch (e) { try { process.stderr.write(`[logger] write failed (${e && e.message}); line: ${line}`); } catch (_) {} }
+  if (!logDir) return line;
+  const now = Date.now();
+  let note = '';
+  if (now >= fileOffUntil) {
+    try {
+      if (!dirReady) { fs.mkdirSync(logDir, { recursive: true }); dirReady = true; }
+      fs.appendFileSync(logPath(), line);
+      return line;
+    } catch (e) {
+      dirReady = false;
+      fileOffUntil = now + PAUSE_MS;
+      note = `[logger] write failed (${e && e.message}); file log paused for ${PAUSE_MS / 1000}s\n`;
+    }
+  }
+  // Файл недоступен — не теряем диагностику: пишем в stderr (сырой лог лаунчера). NOT console.error:
+  // wrapConsole() вернул бы строку сюда же, в тот же сбой. Ошибка stderr приходит событием и
+  // выключает его на паузу (слушатель в guardStdStreams); синхронный бросок — так же.
+  if (now >= stdOffUntil) {
+    try { process.stderr.write(note + line); } catch (_) { stdOffUntil = now + PAUSE_MS; }
   }
   return line;
+}
+
+// Слушатели 'error' на stdout/stderr. В главном процессе Electron stderr после ошибки записи НЕ
+// разрушается: каждая следующая запись снова поднимает 'error' на следующем тике. Без слушателя
+// это uncaughtException → обработчик ниже пишет fatal → файл не пишется → stderr → снова 'error'.
+// Проверено в test/logger.test.js: одно исключение превращалось в ~15 000 в секунду.
+function guardStdStreams() {
+  for (const s of [process.stdout, process.stderr]) {
+    try {
+      if (s && typeof s.on === 'function') s.on('error', () => { if (s === process.stderr) stdOffUntil = Date.now() + PAUSE_MS; });
+    } catch (_) {}
+  }
+}
+
+// Одна и та же беда на каждом тике не должна превращаться в миллионы строк: одинаковые исключения
+// пишем не чаще раза в секунду, число пропущенных — отдельной строкой info (в реестр ошибок она
+// не идёт и сигнатуру записи не меняет).
+function repeatGate(label, level) {
+  let lastSig = '', lastAt = 0, skipped = 0;
+  return (err) => {
+    const sig = String((err && err.stack) || err).slice(0, 2000);
+    const now = Date.now();
+    if (sig === lastSig && now - lastAt < 1000) { skipped++; return; }
+    if (skipped) write('info', 'main', [`${label}: предыдущее повторилось ещё ${skipped} раз`]);
+    lastSig = sig; lastAt = now; skipped = 0;
+    write(level, 'main', [label, err]);
+  };
 }
 
 // Drop log files older than the retention window (by mtime, robust to clock skew),
@@ -101,8 +149,9 @@ function init(dir) {
   // таймер не держит процесс живым и не мешает выходу.
   try { const t = setInterval(prune, PRUNE_INTERVAL_MS); if (t.unref) t.unref(); } catch (_) {}
   wrapConsole();
-  process.on('uncaughtException', (err) => write('fatal', 'main', ['uncaughtException', err]));
-  process.on('unhandledRejection', (reason) => write('error', 'main', ['unhandledRejection', reason]));
+  guardStdStreams();
+  process.on('uncaughtException', repeatGate('uncaughtException', 'fatal'));
+  process.on('unhandledRejection', repeatGate('unhandledRejection', 'error'));
   write('info', 'logger', [`started → ${logPath()} (retention ${RETENTION_DAYS}d)`]);
   return module.exports;
 }

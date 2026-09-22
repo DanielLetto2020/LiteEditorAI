@@ -29,9 +29,27 @@ const { resolveShell: resolveShellPure } = require('./lib/shell'); // выбор
 const syncmark = require('./lib/sync');   // метка «sync» в плашке: что домашняя машина держит в синхронизации с сервером
 const updater = require('./lib/updater');  // самообновление: проверка релиза, загрузка, подмена каталога
 const { watchTree } = require('./lib/tree-watch'); // слежение за деревом проекта (на Linux — по наблюдению на каталог)
+const { createHistory } = require('./lib/history'); // локальная история файлов: снимки, троттл, срок и объём
+const { createBatcher } = require('./lib/ptybatch'); // склейка вывода PTY перед отправкой в окно
+const { foregroundKind } = require('./lib/proctree'); // индикатор активности: состояние группы переднего плана
 
 app.setName('LiteEditorAI');
 app.setAppUserModelId('com.mletto.liteeditorai'); // Windows: имя/иконка/группировка в панели задач и уведомлениях
+
+// Один экземпляр на пользователя. Второй запуск (повторный клик по ярлыку) поднимал полный второй
+// редактор: свои PTY для тех же проектов, и оба перезаписывали projects.json, projTabs.json и
+// settings.json целиком — побеждала последняя запись. Теперь второй процесс отдаёт фокус первому
+// и выходит сразу, ДО любых чтений и записей стора. Лок привязан к каталогу userData, поэтому
+// изолированные прогоны с другим HOME (smoke, тесты) живому редактору не мешают. Апдейтер и
+// app.relaunch() ждут смерти старого процесса — лок к тому моменту свободен.
+if (!app.requestSingleInstanceLock()) {
+  // process.exit, а не app.quit/app.exit: те выходят через цикл событий, и остальной код файла
+  // (стор, логгер, таймеры, whenReady) успел бы выполниться. Первому экземпляру сообщение
+  // second-instance уже доставлено внутри requestSingleInstanceLock.
+  process.exit(0);
+} else {
+  app.on('second-instance', () => { try { showWindow(); } catch (_) {} });
+}
 
 // Capture native (C++) crashes — e.g. a GPU/renderer process abort, which on
 // Linux shows up as "trap int3" in dmesg and closes the app with no dialog.
@@ -66,7 +84,7 @@ const watchers = new Map(); // project root path -> { watcher, timer, pending:Se
 // Выбор оболочки терминала. Чистая логика — в lib/shell.js (тестируется); здесь тонкая обёртка:
 // читает settings.shell из стора и инжектит платформу/env/проверку существования. { file, args }.
 function resolveShell() {
-  const selected = ((readStoreKey('settings') || {}).shell) || '';
+  const selected = (readSettingsCached().shell) || '';
   return resolveShellPure({
     platform: process.platform,
     selected,
@@ -82,36 +100,7 @@ function resolveShell() {
 //   'running' — a foreground program is actively computing
 //   'waiting' — a foreground program is alive but sleeping (waiting on your input)
 //   null      — unknown (non-Linux / error) → caller falls back to text heuristics
-const SHELLS = new Set(['bash', 'zsh', 'sh', 'fish', 'dash', 'ash', 'tcsh', 'csh', 'ksh', '-bash', '-zsh', '-sh']);
-function readProcStat(pid) {
-  try {
-    const data = fs.readFileSync(`/proc/${pid}/stat`, 'utf8');
-    const r = data.lastIndexOf(')');
-    const comm = data.slice(data.indexOf('(') + 1, r);
-    const rest = data.slice(r + 2).split(' '); // state ppid pgrp session tty_nr tpgid ...
-    return { comm, state: rest[0], pgrp: +rest[2], tpgid: +rest[5] };
-  } catch (_) { return null; }
-}
-function foregroundKind(shellPid) {
-  if (process.platform !== 'linux' || !shellPid) return null;
-  const sh = readProcStat(shellPid);
-  if (!sh || !(sh.tpgid > 0)) return null;
-  if (sh.tpgid === sh.pgrp) return 'shell';            // shell's own group is foreground
-  const leader = readProcStat(sh.tpgid);
-  if (leader && SHELLS.has(leader.comm)) return 'shell'; // a nested shell sitting at its prompt
-  let alive = false, running = false;
-  try {
-    for (const ent of fs.readdirSync('/proc')) {
-      if (ent.charCodeAt(0) < 48 || ent.charCodeAt(0) > 57) continue; // numeric pids only ('0'..'9' = 48..57)
-      const st = readProcStat(ent);
-      if (!st || st.pgrp !== sh.tpgid) continue;
-      alive = true;
-      if (st.state === 'R' || st.state === 'D') running = true;
-    }
-  } catch (_) { return null; }
-  if (!alive) return 'shell';
-  return running ? 'running' : 'waiting';
-}
+// Реализация — lib/proctree.js: обходит только потомков шелла, а не весь /proc.
 
 const IGNORE_DIRS = new Set([
   '.git', 'node_modules', '__pycache__', '.venv', 'venv',
@@ -171,6 +160,15 @@ function atomicWriteSync(file, data) {
 // Returns true on success. store:set is fire-and-forget (renderer updates its in-memory
 // snapshot before the write), so a swallowed failure = silent data loss after restart — we
 // log it; the boolean lets callers that DO care (import) detect a partial failure.
+// settings читают периодически (заставка — раз в 5 с) и на каждый запуск шелла. Перечитываем файл
+// только если он изменился (mtime) — так видны и внешние правки, и не гоняется JSON.parse впустую.
+let settingsCache = { mtime: -1, value: undefined };
+function readSettingsCached() {
+  let mtime;
+  try { mtime = fs.statSync(storeFile('settings')).mtimeMs; } catch (_) { return {}; }
+  if (mtime !== settingsCache.mtime) settingsCache = { mtime, value: readStoreKey('settings') };
+  return settingsCache.value || {};
+}
 function writeStoreKey(key, value) {
   ensureStoreDir();
   try { atomicWriteSync(storeFile(key), JSON.stringify(value)); return true; }
@@ -392,6 +390,24 @@ ipcMain.on('store:loadAll', (e) => {
   e.returnValue = o; // synchronous: renderer loads the snapshot once at startup
 });
 ipcMain.on('store:set', (_e, { key, value }) => { if (STORE_KEYS.includes(key)) writeStoreKey(key, value); });
+// settings пишут несколько окон, поэтому для него — патч по полям, а не объект целиком: иначе
+// побеждала последняя запись из устаревшей копии окна (renderer/settings-sync.js). Вливаем патч
+// в файл и рассылаем его остальным окнам — они применят его к своему объекту.
+const PATCH_KEYS = new Set(['settings']);
+function broadcastStoreChange(msg, exceptWc) {
+  for (const w of BrowserWindow.getAllWindows()) { if (!exceptWc || w.webContents !== exceptWc) sendTo(w, 'store:changed', msg); }
+}
+function patchStoreKey(key, set, unset, exceptWc) {
+  const cur = readStoreKey(key);
+  const next = (cur && typeof cur === 'object' && !Array.isArray(cur)) ? cur : {};
+  const s = (set && typeof set === 'object') ? set : {};
+  const u = Array.isArray(unset) ? unset.map(String) : [];
+  for (const k of Object.keys(s)) next[k] = s[k];
+  for (const k of u) delete next[k];
+  writeStoreKey(key, next);
+  broadcastStoreChange({ key, set: s, unset: u }, exceptWc);
+}
+ipcMain.on('store:patch', (e, { key, set, unset } = {}) => { if (PATCH_KEYS.has(key)) patchStoreKey(key, set, unset, e.sender); });
 // Синхронный вариант — для записи на beforeunload (снимки сессий, идея 7): обычный send может
 // не успеть флашнуться до сноса рендерера, sendSync гарантирует запись до выхода.
 ipcMain.on('store:setSync', (e, { key, value } = {}) => { if (STORE_KEYS.includes(key)) writeStoreKey(key, value); e.returnValue = true; });
@@ -2617,11 +2633,16 @@ ipcMain.handle('settings:import', async () => {
 
 // ---------------------------------------------------------------- window state
 const stateFile = path.join(storeDir, 'window-state.json');
+// window-state.json пишет только main — держим копию в памяти, а не перечитываем файл перед
+// каждой записью (move/resize окна).
+let winStateMem = null;
 function loadState() {
-  try { return JSON.parse(fs.readFileSync(stateFile, 'utf8')); } catch { return {}; }
+  if (!winStateMem) { try { winStateMem = JSON.parse(fs.readFileSync(stateFile, 'utf8')) || {}; } catch { winStateMem = {}; } }
+  return winStateMem;
 }
 function saveState(partial) {
-  try { atomicWriteSync(stateFile, JSON.stringify({ ...loadState(), ...partial })); } catch (_) {}
+  winStateMem = { ...loadState(), ...partial };
+  try { atomicWriteSync(stateFile, JSON.stringify(winStateMem)); } catch (_) {}
 }
 function debounce(fn, ms) {
   let t;
@@ -2656,8 +2677,16 @@ function createWindow() {
 
   // Renderer death is the most likely "silent close": log reason + exitCode so
   // a recurrence is diagnosable (e.g. reason:'crashed'/'oom' vs a GPU abort).
-  mainWindow.webContents.on('render-process-gone', (_e, d) =>
-    logger.log('fatal', 'render-process-gone', JSON.stringify(d)));
+  mainWindow.webContents.on('render-process-gone', (_e, d) => {
+    logger.log('fatal', 'render-process-gone', JSON.stringify(d));
+    recoverMainRenderer(d && d.reason);
+  });
+  // Окно редактора начинает загружать страницу заново (перезагрузка после падения, импорт настроек):
+  // терминалы старой страницы гасим — их xterm уже нет, а живой шелл без окна либо висит сиротой
+  // до выхода, либо цепляется к вкладке новой страницы с совпавшим id (в том числе чужого проекта).
+  mainWindow.webContents.on('did-start-navigation', (ev) => {
+    if (ev && ev.isMainFrame && !ev.isSameDocument) killPtysOwnedBy(mainWindow.webContents);
+  });
   mainWindow.webContents.on('unresponsive', () => logger.log('warn', 'window', 'renderer unresponsive'));
   mainWindow.webContents.on('responsive', () => logger.log('info', 'window', 'renderer responsive'));
   mainWindow.webContents.on('console-message', (e) => {
@@ -2692,6 +2721,47 @@ function createWindow() {
     if (input.key === 'F12') mainWindow.webContents.toggleDevTools();
     if (input.key === 'F11') mainWindow.setFullScreen(!mainWindow.isFullScreen());
   });
+}
+
+// Падение рендерера окна редактора: раньше окно оставалось белым, агенты работали невидимо,
+// а выход был один — перезапуск всего приложения. Теперь окно перезагружается само; терминалы
+// упавшей страницы гасятся (переподхват живых PTY новой страницей — отдельная задача). Если окно
+// падает снова и снова (сбой при старте страницы), автоперезагрузку прекращаем и спрашиваем.
+const RENDER_CRASH_WINDOW_MS = 60000;
+const RENDER_CRASH_MAX = 3;
+let renderCrashes = [];
+function killPtysOwnedBy(wc) {
+  for (const [id, p] of [...ptys]) {
+    if (ownerBySession.get(id) !== wc) continue;
+    try { p.kill(); } catch (_) {}
+    ptys.delete(id);
+    ownerBySession.delete(id);
+  }
+}
+function recoverMainRenderer(reason) {
+  if (!mainWindow || mainWindow.isDestroyed() || reason === 'clean-exit') return;
+  const wc = mainWindow.webContents;
+  killPtysOwnedBy(wc);
+  const now = Date.now();
+  renderCrashes = renderCrashes.filter((t) => now - t < RENDER_CRASH_WINDOW_MS);
+  renderCrashes.push(now);
+  if (renderCrashes.length <= RENDER_CRASH_MAX) {
+    logger.log('warn', 'window', `окно редактора упало (${reason}) — перезагружаю`);
+    try { wc.reload(); } catch (_) {}
+    return;
+  }
+  logger.log('error', 'window', `окно редактора упало ${renderCrashes.length} раз за минуту — автоперезагрузка остановлена`);
+  dialog.showMessageBox(mainWindow, {
+    type: 'error',
+    title: 'LiteEditorAI',
+    message: i18n.t('Окно редактора падает снова и снова'),
+    detail: i18n.t('Терминалы этого окна остановлены. Подробности — в журнале: ~/.LiteEditorAI/logs.'),
+    buttons: [i18n.t('Перезагрузить окно'), i18n.t('Закрыть редактор')],
+    defaultId: 0, cancelId: 1, noLink: true,
+  }).then(({ response }) => {
+    if (response === 0) { renderCrashes = []; if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.reload(); }
+    else app.quit();
+  }).catch(() => {});
 }
 
 function showWindow() {
@@ -2998,11 +3068,7 @@ function createTray() {
   try {
     tray = new Tray(nativeImage.createFromPath(iconPng).resize({ width: 18, height: 18 }));
     tray.setToolTip('LiteEditorAI');
-    tray.setContextMenu(Menu.buildFromTemplate([
-      { label: i18n.t('Показать LiteEditor'), click: showWindow },
-      { type: 'separator' },
-      { label: i18n.t('Выход'), click: () => app.quit() },
-    ]));
+    tray.setContextMenu(trayMenu());
     tray.on('click', showWindow);
   } catch (_) { tray = null; }
 }
@@ -3089,12 +3155,12 @@ ipcMain.handle('i18n:set', (_e, { code } = {}) => {
   const known = i18n.available().some((l) => l.code === String(code || '').toLowerCase());
   if (!known) return { ok: false, error: 'Неизвестный язык' };
   i18n.setLocale(code);
-  const st = readStoreKey('settings') || {};
-  st.lang = i18n.locale();
-  writeStoreKey('settings', st);
+  // Патчем и с рассылкой: копии settings в окнах должны узнать новый lang, иначе следующий
+  // saveSettings любого окна вернул бы старый язык (так и было: язык → тема → перезапуск = русский).
+  patchStoreKey('settings', { lang: i18n.locale() }, [], null);
   const payload = i18nPayload();
   for (const w of BrowserWindow.getAllWindows()) sendTo(w, 'i18n:changed', payload);
-  try { updateTrayTooltip(); } catch (_) {}
+  try { setTrayMenu(); updateTrayTooltip(); } catch (_) {}   // пункты меню и подсказка — на новом языке
   return { ok: true, code: i18n.locale() };
 });
 ipcMain.handle('i18n:openUserDir', async () => {
@@ -3336,20 +3402,26 @@ ipcMain.on('editor:sendNoteToTerminal', (_e, payload) => forwardToEditor('editor
 ipcMain.on('editor:refreshProjects', () => { sendTo(mainWindow, 'editor:refreshProjects'); });
 
 // Reflect how many agents need attention on the tray tooltip (and macOS title).
+// Меню трея статичное — ставим его только при создании трея и смене языка (setTrayMenu).
+// Раньше оно пересобиралось на каждый tray:update, то есть на каждую смену состояния любого
+// терминала; на Linux это ещё и повторная публикация меню по DBus (StatusNotifier).
 let trayAttention = 0;
+function trayMenu() {
+  return Menu.buildFromTemplate([
+    { label: i18n.t('Показать LiteEditor'), click: showWindow },
+    { type: 'separator' },
+    { label: i18n.t('Выход'), click: () => app.quit() },
+  ]);
+}
+function setTrayMenu() { if (tray) { try { tray.setContextMenu(trayMenu()); } catch (_) {} } }
 function updateTrayTooltip() {
   if (!tray) return;
   tray.setToolTip(trayAttention > 0 ? `LiteEditorAI — ${i18n.t('{0} ждут ответа', trayAttention)}` : 'LiteEditorAI');
-  try {
-    tray.setContextMenu(Menu.buildFromTemplate([
-      { label: i18n.t('Показать LiteEditor'), click: showWindow },
-      { type: 'separator' },
-      { label: i18n.t('Выход'), click: () => app.quit() },
-    ]));
-  } catch (_) {}
 }
 ipcMain.on('tray:update', (_e, { attention } = {}) => {
-  trayAttention = attention || 0;
+  const n = attention || 0;
+  if (n === trayAttention) return;   // рендерер шлёт на смене числа, но старое окно может слать чаще
+  trayAttention = n;
   updateTrayTooltip();
   if (process.platform === 'darwin' && app.dock) app.setBadgeCount(trayAttention);
 });
@@ -3461,8 +3533,12 @@ function spawnPtyFor(id, cwd, cols, rows, owner) {
     return { error: String(err.message || err) };
   }
   logger.log('info', 'pty', `spawned pid=${proc.pid}`);
-  proc.onData((data) => sendToOwner(id, 'pty:data', { id, data }));   // окну-владельцу (редактор/scratch-окно)
+  // Вывод — окну-владельцу (редактор/scratch-окно), склеенный: после тишины кусок уходит сразу,
+  // под потоком — пачкой раз в 5 мс (lib/ptybatch.js). Хвост досылается перед pty:exit.
+  const out = createBatcher((data) => sendToOwner(id, 'pty:data', { id, data }));
+  proc.onData((data) => out.push(data));
   proc.onExit(() => {
+    out.flush();
     if (ptys.get(id) && ptys.get(id) !== proc) return; // replaced by a restart — suppress stale exit
     ptys.delete(id);
     sendToOwner(id, 'pty:exit', { id });
@@ -3733,7 +3809,7 @@ ipcMain.handle('keepass:add', async (_e, { title, username, password, url, notes
 // (вкл, по умолчанию ДА) + settings.screensaverMins (минуты, по умолчанию 5).
 let ssLast = Date.now();
 let ssActive = false;
-function ssConfig() { const s = readStoreKey('settings') || {}; return { on: s.screensaver !== false, mins: Math.max(1, Math.min(180, Number(s.screensaverMins) || 5)) }; }
+function ssConfig() { const s = readSettingsCached(); return { on: s.screensaver !== false, mins: Math.max(1, Math.min(180, Number(s.screensaverMins) || 5)) }; }
 function ssSet(on) { ssActive = on; sendTo(mainWindow, 'screensaver:set', { on }); }
 ipcMain.on('screensaver:activity', () => { ssLast = Date.now(); if (ssActive) ssSet(false); });
 const ssTimer = setInterval(() => {
@@ -4195,7 +4271,11 @@ ipcMain.handle('fs:mkdir', async (_e, { parent, name }) => {
     return { path: full, name: safe };
   } catch (err) { return { error: String(err.message || err) }; }
 });
-ipcMain.handle('fs:exists', (_e, p) => { try { return fs.existsSync(p); } catch { return false; } });
+// Асинхронно: синхронный stat на отвалившемся sshfs/NFS подвесил бы весь главный процесс.
+const pathExists = (p) => fs.promises.access(String(p)).then(() => true, () => false);
+ipcMain.handle('fs:exists', (_e, p) => (p ? pathExists(p) : false));
+// Пачкой — для проверки всех проектов на возврат фокуса (один IPC вместо запроса на проект).
+ipcMain.handle('fs:existsMany', (_e, paths) => (Array.isArray(paths) ? Promise.all(paths.map((p) => (p ? pathExists(p) : false))) : []));
 
 // create a file or directory inside parent
 ipcMain.handle('fs:create', async (_e, { parent, name, dir }) => {
@@ -4519,61 +4599,27 @@ ipcMain.handle('gsearch:start', (e, { runId, query, opts, roots } = {}) => {
 });
 
 // ---------------------------------------------------------------- локальная история файлов (PhpStorm Local History)
-// Снапшоты текстовых файлов в ~/.LiteEditorAI/history/<sha1(absPath)>/<ts>-<tag>.snap.
-// Точки съёма: fs:writeFile — состояние ДО записи (tag 'save', правка из вивера/замены по проекту);
-// вотчер проекта — состояние ПОСЛЕ внешнего изменения (tag 'ext' — агент/git/другой редактор).
-// Best-effort: любая ошибка истории молча глотается, работе редактора не мешает.
-const HIST_DIR = path.join(storeDir, 'history');
-const HIST_MAX_PER_FILE = 25;                   // ротация: столько версий держим на файл
-const HIST_MAX_BYTES = MAX_VIEW_BYTES;          // крупнее лимита вивера — не снапшотим
-const HIST_MIN_GAP_MS = { save: 45000, ext: 15000 }; // троттл на файл: серия автосейвов ≠ серия версий
+// Снапшоты текстовых файлов в ~/.LiteEditorAI/history/<sha1(absPath)>/<ts>-<tag>.snap — логика в
+// lib/history.js. Точки съёма: fs:writeFile — состояние ДО записи (tag 'save'); вотчер проекта —
+// состояние ПОСЛЕ внешнего изменения (tag 'ext'). Best-effort: ошибки истории работе не мешают.
 const HIST_BATCH_CAP = 20;                      // пачка вотчера крупнее — массовая операция (checkout/npm), шум
-const histKey = (absFile) => crypto.createHash('sha1').update(String(absFile)).digest('hex').slice(0, 20);
-const HIST_NAME_RE = /^(\d{10,16})-(save|ext)\.snap$/;
-async function histSnapshot(absFile, content, tag) {
-  try {
-    if (typeof content !== 'string' || Buffer.byteLength(content) > HIST_MAX_BYTES || content.includes('\0')) return;
-    const dir = path.join(HIST_DIR, histKey(absFile));
-    await fs.promises.mkdir(dir, { recursive: true });
-    const names = (await fs.promises.readdir(dir)).filter((n) => HIST_NAME_RE.test(n)).sort();
-    if (names.length) {
-      const last = names[names.length - 1];
-      const m = HIST_NAME_RE.exec(last);
-      // дедуп по содержимому + троттл по времени (свежий снапшот уже есть — серию не плодим)
-      if (Date.now() - Number(m[1]) < (HIST_MIN_GAP_MS[tag] || 15000)) return;
-      const prev = await fs.promises.readFile(path.join(dir, last), 'utf8');
-      if (prev === content) return;
-    }
-    await fs.promises.writeFile(path.join(dir, `${Date.now()}-${tag}.snap`), content, 'utf8');
-    fs.promises.writeFile(path.join(dir, 'meta.json'), JSON.stringify({ file: absFile }), 'utf8').catch(() => {});
-    const all = (await fs.promises.readdir(dir)).filter((n) => HIST_NAME_RE.test(n)).sort();
-    for (const n of all.slice(0, Math.max(0, all.length - HIST_MAX_PER_FILE)))
-      fs.promises.unlink(path.join(dir, n)).catch(() => {});
-  } catch (_) { /* история — best-effort */ }
+const history = createHistory({ dir: path.join(storeDir, 'history'), maxBytes: MAX_VIEW_BYTES });
+const histSnapshot = (absFile, content, tag) => history.snapshot(absFile, content, tag);
+const histSnapshotFromDisk = (absFile, tag) => history.snapshotFromDisk(absFile, tag);
+// Общий срок и объём истории: через минуту после старта (не мешать подъёму окон) и раз в сутки.
+function historyPrune() {
+  history.prune().then((r) => {
+    if (r.removed) logger.log('info', 'history', `чистка: удалено каталогов ${r.removed} из ${r.dirs}, освобождено ${Math.round(r.freedBytes / 1048576)} МБ, осталось ${Math.round(r.keptBytes / 1048576)} МБ`);
+  }, (e) => logger.log('info', 'history', 'чистка не удалась: ' + ((e && e.message) || e)));
 }
-// Снапшот текущего состояния файла на диске (для внешних изменений из вотчера).
-async function histSnapshotFromDisk(absFile, tag) {
-  try {
-    const st = await fs.promises.stat(absFile);
-    if (!st.isFile() || st.size > HIST_MAX_BYTES) return;
-    await histSnapshot(absFile, await fs.promises.readFile(absFile, 'utf8'), tag);
-  } catch (_) { /* удалён/не читается — пропускаем */ }
-}
+{ const t1 = setTimeout(historyPrune, 60000); if (t1.unref) t1.unref(); }
+{ const t2 = setInterval(historyPrune, 24 * 3600000); if (t2.unref) t2.unref(); }
 ipcMain.handle('hist:list', async (_e, file) => {
-  try {
-    const dir = path.join(HIST_DIR, histKey(file));
-    const names = (await fs.promises.readdir(dir)).filter((n) => HIST_NAME_RE.test(n)).sort().reverse();
-    const items = await Promise.all(names.map(async (n) => {
-      const m = HIST_NAME_RE.exec(n);
-      let size = 0; try { size = (await fs.promises.stat(path.join(dir, n))).size; } catch (_) {}
-      return { name: n, ts: Number(m[1]), tag: m[2], size };
-    }));
-    return { ok: true, items };
-  } catch (_) { return { ok: true, items: [] }; } // истории ещё нет — пустой список, не ошибка
+  try { return { ok: true, items: await history.list(file) }; }
+  catch (_) { return { ok: true, items: [] }; } // истории ещё нет — пустой список, не ошибка
 });
 ipcMain.handle('hist:read', async (_e, { file, name } = {}) => {
-  if (!HIST_NAME_RE.test(String(name || ''))) return { error: 'bad name' }; // защита от traversal
-  try { return { ok: true, content: await fs.promises.readFile(path.join(HIST_DIR, histKey(file), name), 'utf8') }; }
+  try { return { ok: true, content: await history.read(file, name) }; }
   catch (err) { return { error: String(err.message || err) }; }
 });
 
@@ -4582,8 +4628,8 @@ ipcMain.handle('hist:read', async (_e, { file, name } = {}) => {
 // tree and the open file refresh live while an agent edits things in the terminal.
 const isIgnoredPath = (rel) => rel.split(/[\\/]/).some((seg) => IGNORE_DIRS.has(seg));
 // Сообщить окнам (редактор + вивер), что слежение за деревом отвалилось → ручной ⟳ (идея 11).
+// Окно редактора fs:changed/fs:watchEnded не слушает (дерево и вивер живут в окне «Проект») — ему не шлём.
 function notifyWatchEnded(root) {
-  sendTo(mainWindow, 'fs:watchEnded', { root });
   const fw = filesWindow(); if (fw) sendTo(fw, 'fs:watchEnded', { root });
   const dw = docWindow(); if (dw) sendTo(dw, 'fs:watchEnded', { root });
 }
@@ -4593,14 +4639,28 @@ function notifyWatchEnded(root) {
 const WATCH_MAX_DIRS = 10000;
 // info, а не warn: warn попадает в реестр ошибок, а упёрся в лимит — это свойство проекта, не сбой.
 const logWatchEnded = (root, err) => logger.log('info', 'watch', `слежение за ${root} остановлено: ${(err && err.message) || err}`);
+// Корень, упёршийся в потолок (свой ELIMIT или ENOSPC ядра), помним WATCH_GIVEUP_MS: иначе каждое
+// переключение на такой проект заново обходило 10 000 каталогов, ставило и снимало 10 000
+// наблюдений (22.09.2026: 55 раз за день на kudatut-v2 — 15 тысяч временных каталогов Infection).
+// Через срок пробуем снова: каталоги могли вычистить.
+const WATCH_GIVEUP_MS = 10 * 60 * 1000;
+const watchGaveUp = new Map(); // root -> момент отказа
+const isLimitErr = (err) => !!err && (err.code === 'ELIMIT' || err.code === 'ENOSPC');
 ipcMain.on('fs:watch', (_e, root) => {
   if (!root || watchers.has(root) || !fs.existsSync(root)) return;
+  const gaveUp = watchGaveUp.get(root);
+  if (gaveUp && Date.now() - gaveUp < WATCH_GIVEUP_MS) { notifyWatchEnded(root); return; }
+  watchGaveUp.delete(root);
   let watcher;
   try {
     watcher = watchTree(root, { ignore: IGNORE_DIRS, maxDirs: WATCH_MAX_DIRS });
-  } catch (err) { logWatchEnded(root, err); notifyWatchEnded(root); return; } // inotify limits / unsupported — degrade to manual refresh
+  } catch (err) { // inotify limits / unsupported — degrade to manual refresh
+    if (isLimitErr(err)) watchGaveUp.set(root, Date.now());
+    logWatchEnded(root, err); notifyWatchEnded(root); return;
+  }
   const rec = { watcher, timer: null, pending: new Set() };
   watcher.on('error', (err) => { // рантайм-ошибка или потолок каталогов (B7/идея 11)
+    if (isLimitErr(err)) watchGaveUp.set(root, Date.now());
     logWatchEnded(root, err);
     try { watcher.close(); } catch (_) {}
     if (watchers.get(root) === rec) watchers.delete(root);
@@ -4614,7 +4674,6 @@ ipcMain.on('fs:watch', (_e, root) => {
     clearTimeout(rec.timer);
     rec.timer = setTimeout(() => {
       const files = [...rec.pending]; rec.pending.clear();
-      sendTo(mainWindow, 'fs:changed', { root, files });
       const fw = filesWindow(); if (fw) sendTo(fw, 'fs:changed', { root, files }); // окно вивера обновляет дерево/файл
       const dw = docWindow(); if (dw) sendTo(dw, 'fs:changed', { root, files }); // «Обработка текста»: сайдбар-дерево
       // локальная история: внешняя правка (агент/git). Большая пачка = массовая операция — шум, пропускаем.
@@ -6433,7 +6492,7 @@ ipcMain.handle('clipboard:read', () => clipboard.readText());
 // Синтез живёт в отдельном python-процессе (lib/tts.js). Здесь — мост в окно модуля, слежение за
 // буфером обмена (события «буфер изменился» в Electron нет, поэтому опрос — и только пока окно
 // модуля просит) и маршрут «Озвучить» из контекстного меню терминала.
-function ttsSettings() { return readStoreKey('settings') || {}; }
+function ttsSettings() { return readSettingsCached(); }
 ipcMain.handle('tts:state', (_e, opts = {}) => ttsBackend.state(ttsSettings(), { fresh: !!opts.fresh }));
 ipcMain.handle('tts:warmup', () => ttsBackend.warmup(ttsSettings()));      // поднять сайдкар заранее
 // Одна фраза → WAV-байтами в рендерер (там играет через WebAudio: <audio src="blob:"> режет CSP).

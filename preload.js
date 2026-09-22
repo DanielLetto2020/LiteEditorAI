@@ -137,6 +137,10 @@ contextBridge.exposeInMainWorld('lite', {
     loadAll: () => ipcRenderer.sendSync('store:loadAll'),       // sync snapshot at startup
     set: (key, value) => ipcRenderer.send('store:set', { key, value }),
     setSync: (key, value) => ipcRenderer.sendSync('store:setSync', { key, value }), // гарантированная запись (beforeunload)
+    // Общий ключ settings пишут несколько окон: только изменённые поля (renderer/settings-sync.js),
+    // main вливает их в файл и рассылает остальным окнам событием store:changed.
+    patch: (key, set, unset) => ipcRenderer.send('store:patch', { key, set, unset }),
+    onChanged: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('store:changed', h); return () => ipcRenderer.removeListener('store:changed', h); },
     notesGet: (id) => ipcRenderer.invoke('store:notesGet', id),
     notesSet: (id, notes) => ipcRenderer.invoke('store:notesSet', { id, notes }),
     agendaGet: (id) => ipcRenderer.invoke('store:agendaGet', id),               // Календарь: напоминания источника
@@ -671,6 +675,7 @@ contextBridge.exposeInMainWorld('lite', {
     writeFile: (file, content) => ipcRenderer.invoke('fs:writeFile', { file, content }),
     mkdir: (parent, name) => ipcRenderer.invoke('fs:mkdir', { parent, name }),
     exists: (p) => ipcRenderer.invoke('fs:exists', p),
+    existsMany: (paths) => ipcRenderer.invoke('fs:existsMany', paths), // → [bool] в том же порядке
     create: (parent, name, dir) => ipcRenderer.invoke('fs:create', { parent, name, dir }),
     rename: (from, to) => ipcRenderer.invoke('fs:rename', { from, to }),
     move: (src, destDir) => ipcRenderer.invoke('fs:move', { src, destDir }),

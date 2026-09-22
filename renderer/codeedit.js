@@ -11,10 +11,9 @@ import { languages as LANG_REGISTRY } from '@codemirror/language-data';
 
 // Полный реестр языков CodeMirror (@codemirror/language-data): PHP, Go, Rust, YAML, Shell и
 // сотни других через lezer-пакеты + legacy-modes. Дескрипторы матчатся по имени файла
-// (расширения + спец-имена вроде Dockerfile). ⚠️ Весь языковой корпус инлайнится esbuild'ом в
-// module-bundle (iife без code-splitting): import() лишь откладывает ПОСТРОЕНИЕ LanguageSupport
-// (резолв — следующий микротаск), а не загрузку кода — это осознанный трейдофф ради подсветки
-// любых файлов офлайн.
+// (расширения + спец-имена вроде Dockerfile). Сборка — ESM с разбиением на чанки (build.js):
+// грамматика языка лежит в своём чанке рядом с бандлом и грузится import() при первом открытии
+// файла этого языка — локально, без сети, так что подсветка любых файлов офлайн сохраняется.
 const langCache = new Map();                    // desc.name -> LanguageSupport
 function langDescFor(file) {
   const base = String(file || '').split(/[\\/]/).pop() || '';

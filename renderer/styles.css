@@ -375,9 +375,15 @@ body.viewer-zen #vcs-topbar { display: none !important; }
 .pind.quiet { background: var(--green); box-shadow: 0 0 7px var(--accent-glow); }
 .pind.busy { background: transparent; border: 2px solid rgba(224,175,104,0.3); border-top-color: var(--warn); animation: pind-spin 0.7s linear infinite; }
 /* waiting = quiet but looks like it wants input from you (amber pulse) */
-.pind.waiting { background: var(--warn); box-shadow: 0 0 0 0 rgba(224,175,104,0.7); animation: pind-pulse 1.3s ease-out infinite; }
+/* Пульс — кольцо-псевдоэлемент на transform/opacity (их анимирует композитор). Раньше анимировался
+   box-shadow — перерисовка на каждом кадре, пока агент ждёт ответа, а ждать он может часами. */
+.pind.waiting { position: relative; background: var(--warn); }
+.pind.waiting::after {
+  content: ''; position: absolute; inset: 0; border-radius: 50%; pointer-events: none;
+  background: var(--warn); opacity: .7; animation: pind-pulse 1.3s ease-out infinite;
+}
 @keyframes pind-spin { to { transform: rotate(360deg); } }
-@keyframes pind-pulse { 70% { box-shadow: 0 0 0 7px rgba(224,175,104,0); } 100% { box-shadow: 0 0 0 0 rgba(224,175,104,0); } }
+@keyframes pind-pulse { 70% { transform: scale(2.4); opacity: 0; } 100% { transform: scale(1); opacity: 0; } }
 
 /* card being dragged (DnD-сортировка внутри «Избранного») */
 .card.dragging { opacity: .4; }
@@ -5274,12 +5280,18 @@ body.win-frame::after {
   content: ''; position: fixed; inset: 0; pointer-events: none; z-index: 99999;
   border: 1px solid var(--frame-c1);
 }
-body.win-frame.win-frame-pulse::after {
+/* Пульсация c1→c2→c1 — наложением второго бордера цвета c2 с анимацией opacity. Раньше анимировался
+   сам border-color: это перерисовка слоя на каждом кадре, во всех окнах и бесконечно. opacity
+   анимирует композитор, без работы основного потока; линейное смешение двух цветов то же. */
+body.win-frame.win-frame-pulse::before {
+  content: ''; position: fixed; inset: 0; pointer-events: none; z-index: 100000;
+  border: 1px solid var(--frame-c2);
+  opacity: 0;
   animation: win-frame-pulse var(--frame-period, 6s) ease-in-out infinite;
 }
 @keyframes win-frame-pulse {
-  0%, 100% { border-color: var(--frame-c1); }
-  50%      { border-color: var(--frame-c2); }
+  0%, 100% { opacity: 0; }
+  50%      { opacity: 1; }
 }
 /* сватчи выбора цвета рамки в настройках */
 .frame-swatches { display: flex; gap: 7px; flex-wrap: wrap; padding: 2px 0; }

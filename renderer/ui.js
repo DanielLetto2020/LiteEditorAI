@@ -2,7 +2,6 @@
 // No imports from renderer.js (keeps the dependency graph a DAG: ui.js ← modules ← core).
 // Everything here is pure DOM: no core state, no window.lite calls.
 
-import hljs from 'highlight.js/lib/common';
 // Единые точки вывода текста (тосты, confirm/prompt) переводят свои аргументы сами —
 // поэтому сообщения всех модулей локализуются без правок в самих модулях.
 import { t } from './i18n.js';
@@ -27,9 +26,23 @@ function langForName(s) {
   const m = name.match(/\.([a-zA-Z0-9]+)$/);
   return (m && DIFF_LANGS[m[1].toLowerCase()]) || null;
 }
+// highlight.js (~390 КБ с набором common) грузится лениво: в окне редактора он нужен только диффам,
+// а раньше разбирался при каждом старте каждого окна. Загрузка стартует в простое после запуска
+// (preloadHighlighter) или при первой нужде; пока не загружен — код без подсветки, и renderDiffInto
+// перерисует дифф, когда подсветка приедет.
+let hljs = null;
+let hljsLoading = null;
+function loadHighlighter() {
+  if (!hljsLoading) hljsLoading = import('highlight.js/lib/common').then((m) => { hljs = m.default; return hljs; });
+  return hljsLoading;
+}
+export function preloadHighlighter() {
+  const go = () => { loadHighlighter().catch(() => {}); };
+  if (typeof requestIdleCallback === 'function') requestIdleCallback(go, { timeout: 5000 }); else setTimeout(go, 2000);
+}
 // Подсветить кусок кода (sanitized HTML от hljs); при неизвестном языке/ошибке вернуть null.
 function highlightCode(text, lang) {
-  if (!lang || !text || !hljs.getLanguage(lang)) return null;
+  if (!lang || !text || !hljs || !hljs.getLanguage(lang)) return null;
   try { return hljs.highlight(text, { language: lang, ignoreIllegals: true }).value; }
   catch (_) { return null; }
 }
@@ -242,6 +255,12 @@ export function toast(msg, opts = {}) {
 // Render a unified diff string into a container, line-classed like the viewer's diff.
 // fileName (optional) задаёт язык подсветки; иначе берётся из строки '+++ ' в диффе.
 export function renderDiffInto(view, text, fileName) {
+  // Подсветка ещё не загружена — рисуем без неё и перерисовываем тот же дифф, когда загрузится
+  // (если в этом контейнере к тому времени не нарисовали другой).
+  if (!hljs) {
+    const token = view.__diffToken = {};
+    loadHighlighter().then(() => { if (view.__diffToken === token && view.isConnected) renderDiffInto(view, text, fileName); }, () => {});
+  } else view.__diffToken = null;
   view.innerHTML = '';
   if (!text || !text.trim()) { view.appendChild(el('div', 'diff-empty', 'Нет изменений относительно HEAD.')); return; }
   let lang = fileName ? langForName(fileName) : null;

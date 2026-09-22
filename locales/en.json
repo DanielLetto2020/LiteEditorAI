@@ -4296,5 +4296,14 @@
  "python: {0}\nмодель: {1}\nчастота: {2} кГц": "python: {0}\nmodel: {1}\nsample rate: {2} kHz",
  "каталог проекта удалён или переехал": "project directory was deleted or moved",
  "слежение за {0} остановлено: {1}": "stopped watching {0}: {1}",
- "слишком много каталогов для слежения: больше {0}": "too many directories to watch: more than {0}"
+ "слишком много каталогов для слежения: больше {0}": "too many directories to watch: more than {0}",
+ "Закрыть редактор": "Close the editor",
+ "Не удалось загрузить модуль: ": "Failed to load the module: ",
+ "Окно редактора падает снова и снова": "The editor window keeps crashing",
+ "окно редактора упало ({0}) — перезагружаю": "editor window crashed ({0}) — reloading",
+ "окно редактора упало {0} раз за минуту — автоперезагрузка остановлена": "editor window crashed {0} times in a minute — auto-reload stopped",
+ "Перезагрузить окно": "Reload window",
+ "Терминалы этого окна остановлены. Подробности — в журнале: ~/.LiteEditorAI/logs.": "This window's terminals have been stopped. Details are in the log: ~/.LiteEditorAI/logs.",
+ "чистка не удалась: ": "cleanup failed: ",
+ "чистка: удалено каталогов {0} из {1}, освобождено {2} МБ, осталось {3} МБ": "cleanup: removed {0} of {1} directories, freed {2} MB, {3} MB left"
 }
