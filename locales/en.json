@@ -4498,5 +4498,7 @@
  "Следить за релизами": "Watch releases",
  "Утилита синхронизации на обеих машинах.": "The sync utility on both machines.",
  "Утилиты пока нет в открытом доступе: сейчас синхронизация — внутренний инструмент автора. Когда её опубликуют, здесь появится подключение по шагам.": "The utility is not public yet: for now sync is the author's internal tool. Once it is published, this window will walk you through the setup step by step.",
- "Что для неё нужно": "What it needs"
+ "Что для неё нужно": "What it needs",
+ "[терминал подхвачен после перезагрузки окна — прежний вывод не сохранился]": "[terminal reattached after the window reloaded — earlier output was not kept]",
+ "терминал {0} никто не забрал после перезагрузки окна — остановлен": "terminal {0} was not reclaimed after the window reloaded — stopped"
 }

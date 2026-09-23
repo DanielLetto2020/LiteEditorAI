@@ -2682,10 +2682,10 @@ function createWindow() {
     recoverMainRenderer(d && d.reason);
   });
   // Окно редактора начинает загружать страницу заново (перезагрузка после падения, импорт настроек):
-  // терминалы старой страницы гасим — их xterm уже нет, а живой шелл без окна либо висит сиротой
-  // до выхода, либо цепляется к вкладке новой страницы с совпавшим id (в том числе чужого проекта).
+  // терминалы старой страницы не гасим — агенты в них продолжают работать, а новая страница забирает
+  // их по id (pty:adoptable → pty:create с тем же id). Кого не забрали за ORPHAN_TTL_MS — гасим.
   mainWindow.webContents.on('did-start-navigation', (ev) => {
-    if (ev && ev.isMainFrame && !ev.isSameDocument) killPtysOwnedBy(mainWindow.webContents);
+    if (ev && ev.isMainFrame && !ev.isSameDocument) orphanPtysOf(mainWindow.webContents);
   });
   mainWindow.webContents.on('unresponsive', () => logger.log('warn', 'window', 'renderer unresponsive'));
   mainWindow.webContents.on('responsive', () => logger.log('info', 'window', 'renderer responsive'));
@@ -2724,9 +2724,9 @@ function createWindow() {
 }
 
 // Падение рендерера окна редактора: раньше окно оставалось белым, агенты работали невидимо,
-// а выход был один — перезапуск всего приложения. Теперь окно перезагружается само; терминалы
-// упавшей страницы гасятся (переподхват живых PTY новой страницей — отдельная задача). Если окно
-// падает снова и снова (сбой при старте страницы), автоперезагрузку прекращаем и спрашиваем.
+// а выход был один — перезапуск всего приложения. Теперь окно перезагружается само, а терминалы
+// упавшей страницы переживают перезагрузку: новая страница забирает их по id. Если окно падает
+// снова и снова (сбой при старте страницы), автоперезагрузку прекращаем, терминалы гасим и спрашиваем.
 const RENDER_CRASH_WINDOW_MS = 60000;
 const RENDER_CRASH_MAX = 3;
 let renderCrashes = [];
@@ -2736,12 +2736,32 @@ function killPtysOwnedBy(wc) {
     try { p.kill(); } catch (_) {}
     ptys.delete(id);
     ownerBySession.delete(id);
+    dropOrphan(id);
+  }
+}
+// Терминалы, чья страница ушла (перезагрузка, падение): живут ORPHAN_TTL_MS, пока новая страница их не
+// заберёт. Незабранные гасятся — иначе шелл висел бы сиротой до выхода из редактора.
+const ORPHAN_TTL_MS = 90000;
+const orphanPtys = new Map(); // id → таймер гашения
+function dropOrphan(id) { const t = orphanPtys.get(id); if (t) { clearTimeout(t); orphanPtys.delete(id); } }
+function orphanPtysOf(wc) {
+  for (const [id] of ptys) {
+    if (ownerBySession.get(id) !== wc || orphanPtys.has(id)) continue;
+    orphanPtys.set(id, setTimeout(() => {
+      orphanPtys.delete(id);
+      const p = ptys.get(id);
+      if (!p) return;
+      try { p.kill(); } catch (_) {}
+      ptys.delete(id);
+      ownerBySession.delete(id);
+      logger.log('info', 'pty', `терминал ${id} никто не забрал после перезагрузки окна — остановлен`);
+    }, ORPHAN_TTL_MS));
   }
 }
 function recoverMainRenderer(reason) {
   if (!mainWindow || mainWindow.isDestroyed() || reason === 'clean-exit') return;
   const wc = mainWindow.webContents;
-  killPtysOwnedBy(wc);
+  orphanPtysOf(wc);
   const now = Date.now();
   renderCrashes = renderCrashes.filter((t) => now - t < RENDER_CRASH_WINDOW_MS);
   renderCrashes.push(now);
@@ -2751,6 +2771,7 @@ function recoverMainRenderer(reason) {
     return;
   }
   logger.log('error', 'window', `окно редактора упало ${renderCrashes.length} раз за минуту — автоперезагрузка остановлена`);
+  killPtysOwnedBy(wc);
   dialog.showMessageBox(mainWindow, {
     type: 'error',
     title: 'LiteEditorAI',
@@ -3543,16 +3564,18 @@ function spawnPtyFor(id, cwd, cols, rows, owner) {
     ptys.delete(id);
     sendToOwner(id, 'pty:exit', { id });
     ownerBySession.delete(id); // сессия закрылась — не копим мёртвые id в карте маршрутизации (B4-LOW)
+    dropOrphan(id);
   });
   ptys.set(id, proc);
   return { ok: true };
 }
 ipcMain.handle('pty:create', (e, { id, cwd, cols, rows }) => {
-  if (ptys.has(id)) { ownerBySession.set(id, e.sender); return { ok: true, existed: true }; }
+  if (ptys.has(id)) { dropOrphan(id); ownerBySession.set(id, e.sender); return { ok: true, existed: true }; }
   return spawnPtyFor(id, cwd, cols, rows, e.sender);
 });
 // Kill the existing PTY (if any) and start a fresh one in the same cwd.
 ipcMain.handle('pty:restart', (e, { id, cwd, cols, rows }) => {
+  dropOrphan(id);
   const old = ptys.get(id);
   if (old) { try { old.kill(); } catch (_) {} ptys.delete(id); }
   return spawnPtyFor(id, cwd, cols, rows, e.sender);
@@ -3563,9 +3586,12 @@ ipcMain.on('pty:resize', (_e, { id, cols, rows }) => {
   if (p && cols > 0 && rows > 0) { try { p.resize(cols, rows); } catch (_) {} }
 });
 ipcMain.on('pty:kill', (_e, { id }) => {
+  dropOrphan(id);
   const p = ptys.get(id);
   if (p) { try { p.kill(); } catch (_) {} ptys.delete(id); }
 });
+// Терминалы этого окна, пережившие перезагрузку страницы: новая страница забирает их по id.
+ipcMain.handle('pty:adoptable', (e) => [...orphanPtys.keys()].filter((id) => ptys.has(id) && ownerBySession.get(id) === e.sender));
 // 'shell' | 'running' | 'waiting' | null — see foregroundKind().
 ipcMain.handle('pty:foregroundState', (_e, { id }) => {
   const p = ptys.get(id);

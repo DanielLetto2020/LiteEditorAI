@@ -652,6 +652,7 @@ contextBridge.exposeInMainWorld('lite', {
   },
 
   pty: {
+    adoptable: () => ipcRenderer.invoke('pty:adoptable'), // терминалы, пережившие перезагрузку окна
     create: (opts) => ipcRenderer.invoke('pty:create', opts),
     write: (id, data) => ipcRenderer.send('pty:write', { id, data }),
     resize: (id, cols, rows) => ipcRenderer.send('pty:resize', { id, cols, rows }),

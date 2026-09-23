@@ -29,7 +29,7 @@ import { openGlobalSearch } from './gsearch.js';
 import { initExtensions } from './modules/extensions.js';
 // initFiles — вивер+дерево мигрированы в отдельное окно (renderer/module-entry.js).
 
-const APP_VERSION = 'alpha v1.1.200';
+const APP_VERSION = 'alpha v1.1.201';
 const GUTTER = 8; // зазор между карточками окна — он же разделитель, за который тянется ширина
 // Системный терминал («Система · ~») мигрирован в отдельное окно (renderer/modules/scratch.js):
 // его id `__scratch__::tN` маршрутизируются main'ом в окно-владельца, в ядре их больше не обрабатываем.
@@ -78,6 +78,8 @@ let activeId = null;
 const terms = new Map();          // sessionId -> { term, fit, search, container, projId, name, ... }
 const tabsByProj = new Map();     // projId -> { sessions: [sessionId...], active: sessionId }
 let sessionSeq = 0;
+// Терминалы прежней страницы, пережившие перезагрузку окна (pty:adoptable): projId → [sessionId…] по порядку вкладок.
+const adoptPtys = new Map();
 // Метка этой загрузки страницы в id сессий. После перезагрузки окна (падение рендерера, импорт
 // настроек) нумерация вкладок начинается заново, и без метки новая вкладка получила бы id ещё живого
 // шелла старой страницы — возможно, чужого проекта (pty:create отвечает existed и цепляет его).
@@ -1170,8 +1172,9 @@ function firePrefill(id) {
   rec.lastInputAt = Date.now(); // это ввод, пусть и наш: эхо не должно считаться работой агента
   lite.pty.write(id, text);     // без \r — Enter жмёт человек
 }
-function createSession(proj, name, custom) {
-  const id = proj.id + '::t' + (++sessionSeq) + '.' + BOOT_ID;
+// adoptId — живой терминал прежней страницы (пережил перезагрузку окна): вкладка садится на него.
+function createSession(proj, name, custom, adoptId) {
+  const id = adoptId || (proj.id + '::t' + (++sessionSeq) + '.' + BOOT_ID);
   const container = el('div', 'term-instance');
   $('#terminals').appendChild(container);
   const { term, fit, search, timeline, syncPty } = buildXterm(container, id, {
@@ -1185,9 +1188,14 @@ function createSession(proj, name, custom) {
     },
   });
   term.registerLinkProvider(fileLinkProvider(term, proj.path));
-  const rec = { term, fit, search, timeline, syncPty, container, projId: proj.id, name, customName: !!custom, idleTimer: null, sawBell: false, tail: '', busyStart: 0, lastInputAt: 0, activitySeq: 0, prefill: '', prefillTimer: null };
+  const rec = { term, fit, search, timeline, syncPty, container, projId: proj.id, name, customName: !!custom, idleTimer: null, sawBell: false, tail: '', busyStart: 0, lastInputAt: 0, activitySeq: 0, prefill: '', prefillTimer: null, redraw: !!adoptId };
   terms.set(id, rec);
-  armPrefill(id, (settings.termPrefill || '').trim()); // автоввод слова из настроек (по умолчанию `claude`)
+  if (adoptId) {
+    // прокрутка прежней страницы пропала вместе с ней; программу в терминале попросим перерисоваться при показе
+    term.write('\x1b[90m' + tt('[терминал подхвачен после перезагрузки окна — прежний вывод не сохранился]') + '\x1b[0m\r\n');
+  } else {
+    armPrefill(id, (settings.termPrefill || '').trim()); // автоввод слова из настроек (по умолчанию `claude`)
+  }
   // Имя вкладки из заголовка терминала (OSC ]0;…): Claude/агент в промпте пишет туда
   // текущую задачу, шелл — user@host:cwd. Подхватываем как имя вкладки, пока пользователь
   // не переименовал вкладку руками (rec.customName). Один и тот же заголовок (bash каждый
@@ -1203,7 +1211,14 @@ function ensureProjectTabs(proj) {
   const saved = (STORE.projTabs || {})[proj.id];
   const names = saved && Array.isArray(saved.names) && saved.names.length ? saved.names : ['Терминал 1'];
   const custom = saved && Array.isArray(saved.custom) ? saved.custom : []; // какие имена задал пользователь руками — их заголовок терминала не перебивает
-  names.forEach((n, i) => createSession(proj, n, custom[i])); // только имена вкладок; история до перезапуска НЕ восстанавливается
+  const adopted = adoptPtys.get(proj.id);
+  if (adopted && adopted.length) {
+    // окно перезагрузилось, а терминалы проекта живы: вкладки садятся на них в прежнем порядке
+    adoptPtys.delete(proj.id);
+    adopted.forEach((id, i) => createSession(proj, names[i] || tt('Терминал {0}', i + 1), custom[i], id));
+  } else {
+    names.forEach((n, i) => createSession(proj, n, custom[i])); // только имена вкладок; история до перезапуска НЕ восстанавливается
+  }
   const t = tabsByProj.get(proj.id);
   const ai = saved && Number.isInteger(saved.active) ? saved.active : 0;
   t.active = t.sessions[Math.max(0, Math.min(ai, t.sessions.length - 1))] || t.sessions[0];
@@ -1388,6 +1403,13 @@ function refitActiveTerminal(focusIt) {
   if (!rec) return;
   requestAnimationFrame(() => {
     try { rec.fit.fit(); rec.syncPty(); if (focusIt) rec.term.focus(); } catch (_) {}
+    if (rec.redraw) {
+      // подхваченный терминал: размер мог не измениться, и программа не узнает, что экран пуст, —
+      // качнём ширину на колонку, это SIGWINCH, и агент (Claude Code и т. п.) перерисуется
+      rec.redraw = false;
+      const { cols, rows } = rec.term;
+      if (cols > 2) { lite.pty.resize(asid, cols - 1, rows); setTimeout(() => lite.pty.resize(asid, cols, rows), 120); }
+    }
   });
 }
 // ⚠ id из контекстного меню терминала может быть и dev-терминалом модуля (`__extterm__::tN`) —
@@ -1540,6 +1562,7 @@ function doSetActive(id) {
   const proj = projects.find((p) => p.id === id);
   if (!proj) return;
   activeId = id;
+  try { sessionStorage.setItem('lite.activeProject', id); } catch (_) {} // переживает перезагрузку окна (не перезапуск)
   try { lite.errors.setContext(proj.path); } catch (_) {} // тег проекта для новых ошибок в реестре
   // Перевешиваем вотчер ТОЛЬКО при смене корня — иначе повторная активация уже активного
   // проекта (повторный вызов doSetActive на тот же проект) плодила бы дубль fs.watch
@@ -3777,8 +3800,32 @@ function init() {
   // Конфиг синхронизации меняется руками и редко — раз в полминуты достаточно.
   refreshSynced();
   setInterval(refreshSynced, 30000);
-  if (projects.length) setActive(projects[0].id);
-  else showActiveTerminal();
+  // Окно перезагрузилось (падение, импорт настроек), а терминалы прежней страницы живы — забираем их:
+  // агенты продолжают работать. Терминалы закрытых с тех пор проектов гасим.
+  lite.pty.adoptable().catch(() => []).then((ids) => {
+    for (const id of (Array.isArray(ids) ? ids : [])) {
+      const pid = String(id).split('::')[0];
+      if (!projects.some((p) => p.id === pid)) { lite.pty.kill(id); continue; }
+      if (!adoptPtys.has(pid)) adoptPtys.set(pid, []);
+      adoptPtys.get(pid).push(id);
+    }
+    const tabNo = (id) => { const m = /::t(\d+)\./.exec(id); return m ? +m[1] : 0; };
+    for (const list of adoptPtys.values()) list.sort((a, b) => tabNo(a) - tabNo(b));
+    let first = projects.length ? projects[0].id : null;
+    if (adoptPtys.size) {
+      let last = null;
+      try { last = sessionStorage.getItem('lite.activeProject'); } catch (_) {}
+      if (last && projects.some((p) => p.id === last)) first = last;       // вернуться туда, где были до перезагрузки
+    }
+    // вкладки всех подхваченных проектов — до выбора активного: showActiveTerminal спрячет лишние,
+    // иначе они остались бы видны и просвечивали сквозь прозрачный фон активного
+    for (const pid of [...adoptPtys.keys()]) {
+      const p = projects.find((x) => x.id === pid);
+      if (p) ensureProjectTabs(p);
+    }
+    if (first) setActive(first);
+    else showActiveTerminal();
+  });
 
   // Набор открытых окон модулей (включая вивер) восстанавливает main (moduleWins.__open) при старте —
   // правому слоту редактора восстанавливать больше нечего (там остались только «Мои модули» по запросу).
