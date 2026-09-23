@@ -1,6 +1,6 @@
 {
   "name": "liteeditor-ai",
-  "version": "1.1.198-alpha",
+  "version": "1.1.199-alpha",
   "description": "Lightweight editor for working with AI coding agents in the terminal",
   "main": "main.js",
   "author": "Максим Кузьминский <i@m-letto.ru>",
@@ -63,13 +63,13 @@
     "chart.js": "^4.5.1",
     "dompurify": "^3.4.12",
     "highlight.js": "^11.11.1",
-    "js-yaml": "^4.3.0",
+    "js-yaml": "^4.3.2",
     "kafkajs": "^2.2.4",
     "katex": "^0.16.21",
     "kdbxweb": "^2.1.1",
     "marked": "^18.0.4",
     "mathjax-full": "^3.2.1",
-    "mysql2": "^3.22.4",
+    "mysql2": "^3.24.4",
     "node-pty": "^1.0.0",
     "pg": "^8.21.0",
     "sql.js": "^1.14.1",
@@ -85,7 +85,7 @@
     "esbuild": "^0.28.1",
     "eslint": "^10.8.0",
     "globals": "^17.8.0",
-    "sharp": "^0.35.3",
+    "sharp": "^0.35.4",
     "typescript": "^7.0.2"
   },
   "overrides": {
@@ -95,10 +95,14 @@
     "node-gyp": {
       "undici": "^6.27.0"
     },
-    "@xmldom/xmldom": "0.8.13",
+    "@xmldom/xmldom": "0.8.15",
     "brace-expansion": "^5.0.8",
     "tar": "^7.5.22",
-    "qs": "^6.15.3"
+    "qs": "^6.16.0",
+    "speech-rule-engine": {
+      "@xmldom/xmldom": "0.9.12"
+    },
+    "fflate": "0.7.5"
   },
   "build": {
     "appId": "com.mletto.liteeditorai",

@@ -9,7 +9,7 @@ import {
 import { initI18n } from './i18n.js';
 import { syncSettings } from './settings-sync.js';
 import { createCodeEditor } from './codeedit.js';
-import { termThemeFor } from './themes.js';
+import { termThemeFor, applyLook } from './themes.js';
 import { applyFrame } from './frame.js';
 import { loadFastRenderer, applyUnicode11, copySelection } from './termutil.js';
 import '@xterm/xterm/css/xterm.css';
@@ -243,8 +243,9 @@ const def = MODULES[modId];
 // Store snapshot + settings/theme (each window loads its own; writes go to the shared main store).
 const STORE = lite.store.loadAll() || {};
 let settings = STORE.settings || {};
-function applyTheme(name) { document.body.dataset.theme = name || 'neumorphism'; }
-applyTheme(settings.theme);
+// Тема одна («Графит»), палитра — из settings.look (общая с редактором, приходит живьём через settings-sync).
+function applyTheme() { applyLook(settings); }
+applyTheme();
 applyFrame(settings); // рамка окна — та же, что у редактора (настройки → «Рамка окна»)
 
 function persist(key, value) { STORE[key] = value; lite.store.set(key, value); }
@@ -275,7 +276,7 @@ let mod = null;          // the initialised module instance
 
 // Применить настройки живьём: тема окна, рамка, xterm-терминалы модуля (если он их рисует).
 function applyLiveSettings() {
-  applyTheme(settings.theme);
+  applyTheme();
   applyFrame(settings);
   try { mod && mod.applyTermTheme && mod.applyTermTheme(); } catch (_) {}
   try { mod && mod.applyFontSize && mod.applyFontSize(); } catch (_) {}
@@ -287,7 +288,7 @@ function buildHost() {
   return {
     el, icon, iconBtn, makeModal, showConfirm, showPrompt, toast, applyLayoutSwap,
     createCodeEditor, // языковая поддержка — модули импортируют languageFor/ensureLanguage из codeedit.js напрямую
-    termTheme: () => termThemeFor(settings.theme), applyUnicode11, loadFastRenderer, copySelection,
+    termTheme: () => termThemeFor(settings), applyUnicode11, loadFastRenderer, copySelection,
     STORE, persist, settings, saveSettings,
     layout: layoutProxy, GUTTER: 0,
     saveUiState: () => {}, refitActiveTerminal: () => {}, closeOtherPanels: () => {}, renderProjects: () => {},

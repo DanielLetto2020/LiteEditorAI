@@ -12,12 +12,12 @@ import '@xterm/xterm/css/xterm.css';
 // В ядре остались только терминал (xterm) + темы/термутилы.
 import { initI18n, t as tt } from './i18n.js';
 import { syncSettings } from './settings-sync.js';
-import { THEMES, TERM_THEME, DEFAULT_THEME } from './themes.js';
+import { applyLook, termThemeFor, lookOf, lookTokens, LOOK_DEFAULT, LOOK_BASE_NAMES, LOOK_STATUS_NAMES, LOOK_TOKEN_NAMES, THEME_NAME } from './themes.js';
 import { FRAME_COLORS, frameConf, applyFrame } from './frame.js';
 import { prepareRenderer, activateRenderer, releaseRenderer, applyUnicode11, copySelection, ptyResizer } from './termutil.js';
 import { attachTimeline } from './termtimeline.js';
 // initTextProc — «Обработка текста» мигрирована в отдельное окно (renderer/module-entry.js).
-import { el, icon, iconBtn, hydrateIcons, toast, makeModal, showConfirm, showPrompt, baseName, ICONS, setErrorSink, syncMark } from './ui.js';
+import { el, icon, iconBtn, hydrateIcons, toast, makeModal, showConfirm, showPrompt, baseName, ICONS, setErrorSink } from './ui.js';
 // initGit — модуль «Git» мигрирован в отдельное окно (renderer/module-entry.js).
 // initCtx — модуль «Контекст» мигрирован в отдельное окно (renderer/module-entry.js).
 // initContainers — модуль «Контейнеры» мигрирован в отдельное окно (renderer/module-entry.js).
@@ -29,8 +29,8 @@ import { openGlobalSearch } from './gsearch.js';
 import { initExtensions } from './modules/extensions.js';
 // initFiles — вивер+дерево мигрированы в отдельное окно (renderer/module-entry.js).
 
-const APP_VERSION = 'alpha v1.1.198';
-const GUTTER = 5;
+const APP_VERSION = 'alpha v1.1.199';
+const GUTTER = 8; // зазор между карточками окна — он же разделитель, за который тянется ширина
 // Системный терминал («Система · ~») мигрирован в отдельное окно (renderer/modules/scratch.js):
 // его id `__scratch__::tN` маршрутизируются main'ом в окно-владельца, в ядре их больше не обрабатываем.
 
@@ -56,7 +56,7 @@ function persist(key, value) { STORE[key] = value; lite.store.set(key, value); }
 function projId(p) { let h = 5381; for (let i = 0; i < p.length; i++) h = ((h << 5) + h + p.charCodeAt(i)) >>> 0; return 'p' + h.toString(36); }
 
 // ---------------------------------------------------------------- settings (tiny on purpose)
-const DEFAULT_SETTINGS = { notifications: true, sound: false, idleMs: 1200, fontSize: 13, workingDir: '', scanDirs: [], theme: 'neumorphism', onboarded: false, shell: '', minimap: true, notesTab: 'project', frameOn: true, frameColor: 'green', framePulse: true, framePeriodS: 6, termTimeline: false, termPrefill: 'claude' };
+const DEFAULT_SETTINGS = { notifications: true, sound: false, idleMs: 1200, fontSize: 13, workingDir: '', scanDirs: [], onboarded: false, shell: '', minimap: true, notesTab: 'project', frameOn: true, frameColor: 'green', framePulse: true, framePeriodS: 6, termTimeline: false, termPrefill: 'claude' };
 function loadSettings() { return { ...DEFAULT_SETTINGS, ...(STORE.settings || {}) }; }
 let settings = loadSettings();
 // Пишем только изменённые поля, чужие изменения (окна модулей, смена языка) вливаются в settings —
@@ -70,9 +70,9 @@ let projects = [];
 // в плашке появляется метка «sync». Держим множеством, потому что makeCard —
 // синхронный, а ответ главного процесса приходит обещанием.
 let syncedPaths = new Set();
-// Есть ли синхронизация на этой машине вообще. У чужого пользователя её нет —
-// и метки в карточках не появляются: обещать механизм, которого не существует,
-// хуже, чем промолчать.
+// Есть ли синхронизация на этой машине вообще. В публичной сборке её нет (утилита приватная):
+// облачко тогда серое и открывает честное объяснение (showSyncInfo), а не подключение —
+// редактор сам ни с каким сервером не соединяется.
 let syncAvailable = false;
 let activeId = null;
 const terms = new Map();          // sessionId -> { term, fit, search, container, projId, name, ... }
@@ -98,21 +98,18 @@ const isExtTerm = (id) => typeof id === 'string' && id.startsWith(EXT_TERM_ID);
 const extTerms = new Map(); // ptyId -> { term, fit, search, container }
 let extTermSeq = 0;
 
-const DEFAULT_LAYOUT = { sidebar: 240, viewer: 520, tree: 240, scratch: 420, ctx: 740, docker: 460, db: 560, rh: 520, ext: 420, notes: 480, audit: 460, iterflow: 480, seo: 480, tools: 560, chat: 600, doc: 640 };
+const DEFAULT_LAYOUT = { sidebar: 300, viewer: 520, tree: 240, scratch: 420, ctx: 740, docker: 460, db: 560, rh: 520, ext: 420, notes: 480, audit: 460, iterflow: 480, seo: 480, tools: 560, chat: 600, doc: 640 };
 let layout = loadLayout();
 let lastParent = STORE.lastParent || '';
 
-// TERM_THEME/THEMES/DEFAULT_THEME вынесены в renderer/themes.js (общий реестр редактора и окон модулей).
-function termTheme() {
-  const t = THEMES[settings.theme] || THEMES[DEFAULT_THEME];
-  return { ...TERM_THEME, ...t.term };
-}
+// Тема одна — «Графит», палитра настраивается (settings.look → renderer/themes.js, общая с окнами модулей).
+// Терминалы окна редактора стоят на полупрозрачном фоне окна — их собственный фон прозрачный.
+function termTheme() { return termThemeFor(settings, { glass: true }); }
 function applyTheme() {
-  const name = THEMES[settings.theme] ? settings.theme : DEFAULT_THEME;
-  document.body.dataset.theme = name; // always set; index.html ships data-theme too so there's no flash
+  applyLook(settings);
   for (const rec of terms.values()) { try { rec.term.options.theme = termTheme(); } catch (_) {} }
   for (const rec of extTerms.values()) { try { rec.term.options.theme = termTheme(); } catch (_) {} }
-  try { Ext.notifyTheme(name); } catch (_) {} // пользовательские модули: ctx.theme.onChange
+  try { Ext.notifyTheme(THEME_NAME); } catch (_) {} // пользовательские модули: ctx.theme.onChange
   try { lite.app.settingsChanged(settings); } catch (_) {} // окна модулей: применить тему/настройки
 }
 
@@ -123,7 +120,9 @@ function saveProjects() { persist('projects', projects); }
 function loadProjectsFromDisk() { return Array.isArray(STORE.projects) ? STORE.projects : []; }
 function loadLayout() { return { ...DEFAULT_LAYOUT, ...(STORE.layout || {}) }; }
 function saveLayout() { persist('layout', layout); }
+const SIDEBAR_MIN = 240, SIDEBAR_MAX = 480; // уже 240 не влезают кнопки боковой карточки
 function applyLayout() {
+  layout.sidebar = Math.max(SIDEBAR_MIN, Math.min(SIDEBAR_MAX, +layout.sidebar || DEFAULT_LAYOUT.sidebar));
   $('#sidebar').style.flexBasis = layout.sidebar + 'px';
   // вивер/дерево живут в своём окне — в редакторе этих панелей больше нет.
   $('#ext-pane').style.flexBasis = layout.ext + 'px';
@@ -236,116 +235,214 @@ const LINK_TITLES = {
   transfer: 'Первая передача файлов',
   done: 'Запись в настройки синхронизации',
 };
-const LINK_MARKS = { run: '·', ok: '✓', bad: '✕', ask: '?' };
+const LINK_ORDER = ['link', 'project', 'transfer', 'done'];
 
+// Русское согласование числа: 1 файл · 2 файла · 5 файлов.
+function plural(n, one, few, many) {
+  const a = Math.abs(n) % 100, b = a % 10;
+  if (a > 10 && a < 20) return many;
+  if (b === 1) return one;
+  return b > 1 && b < 5 ? few : many;
+}
 function humanSize(bytes) {
   if (!bytes) return '0 МБ';
   const mb = bytes / 1048576;
   return mb >= 1024 ? `${(mb / 1024).toFixed(1)} ГБ` : `${mb.toFixed(mb < 10 ? 1 : 0)} МБ`;
 }
 
-function showLinkDialog(p) {
+// Окно синхронизации ПК ↔ сервер: одно на оба состояния.
+//  · проект не синхронизируется — осмотр обеих сторон до согласия → «Подключить» → шаги процедуры
+//    (scripts/server-sync/lite-sync-link.js, события sync:linkStep) → при расхождении вопрос, чью версию взять;
+//  · уже синхронизируется — состояние сторон и расхождений (тот же осмотр), без кнопок, которых нет в процедуре.
+// Всё собирается узлами, а не строкой HTML: имя проекта = имя ПАПКИ, и `<`/`&` в нём ломали бы разметку.
+// Синхронизации на этой машине нет (публичная сборка): что это, что нужно и почему подключить пока нельзя.
+function showSyncInfo(p) {
   const { m, close } = makeModal(`
-    <h2 class="cm-title">Подключить к синхронизации</h2>
-    <div class="about-desc" id="lk-what">Смотрю, что есть на обеих сторонах…</div>
-    <ol class="lk-steps" id="lk-steps" style="display:none"></ol>
-    <div class="lk-ask" id="lk-ask" style="display:none"></div>
-    <div class="lk-msg" id="lk-msg"></div>
-    <div class="modal-actions">
-      <button class="btn" id="lk-cancel">Отмена</button>
-      <button class="btn primary" id="lk-go" disabled>Подключить</button>
-    </div>`);
-  const what = m.querySelector('#lk-what');
-  const stepsBox = m.querySelector('#lk-steps');
-  const askBox = m.querySelector('#lk-ask');
-  const msg = m.querySelector('#lk-msg');
-  const go = m.querySelector('#lk-go');
-  const steps = [];
-  let stopListen = null;
-  const say = (text, kind = '') => { msg.textContent = text; msg.className = `lk-msg${kind ? ' ' + kind : ''}`; };
+    <div class="sy-head"><span class="sy-ic"></span><div class="sy-t"><b>Синхронизация с сервером</b><span></span></div><button class="icon-btn" id="sy-x" title="Закрыть" aria-label="Закрыть"></button></div>
+    <div class="sy-body">
+      <div class="sy-lead">Синхронизация держит папку проекта одинаковой на этом компьютере и на вашем сервере: агент на сервере продолжает там, где остановился агент на ПК, и наоборот. Заменённые файлы не пропадают, а уезжают в корзину.</div>
+      <div class="sy-h">Что для неё нужно</div>
+      <ul class="sy-list">
+        <li data-ic="server"><div><b>Свой сервер с доступом по SSH-ключу.</b> <span>По паролю синхронизация не работает.</span></div></li>
+        <li data-ic="folder"><div><b>Один и тот же путь к проекту</b> <span>на компьютере и на сервере.</span></div></li>
+        <li data-ic="refresh"><div><b>Утилита синхронизации на обеих машинах.</b> <span>Она ставится отдельно от редактора.</span></div></li>
+      </ul>
+    </div>
+    <div class="modal-actions"><button class="btn" id="sy-rel">Следить за релизами</button><span class="grow"></span><button class="btn primary" id="sy-ok">Понятно</button></div>`);
+  m.classList.add('sync-modal');
+  m.querySelector('.sy-ic').appendChild(icon('cloud', 21));
+  m.querySelector('.sy-t span').textContent = p.path;
+  m.querySelector('#sy-x').appendChild(icon('x', 16));
+  m.querySelector('#sy-x').onclick = close;
+  m.querySelector('#sy-ok').onclick = close;
+  m.querySelector('#sy-rel').prepend(icon('github', 14));
+  m.querySelector('#sy-rel').onclick = () => lite.openExternal(RELEASES_URL.replace(/\/latest$/, ''));
+  m.querySelectorAll('.sy-list li').forEach((li) => li.prepend(icon(li.dataset.ic, 15)));
+  const note = (kind, glyph, text) => { const n = el('div', 'sy-note ' + kind); n.append(icon(glyph, 15), el('div', null, text)); return n; };
+  const body = m.querySelector('.sy-body');
+  body.appendChild(note('warn', 'info', 'Утилиты пока нет в открытом доступе: сейчас синхронизация — внутренний инструмент автора. Когда её опубликуют, здесь появится подключение по шагам.'));
+  body.appendChild(note('good', 'check', 'Редактор сам ни с каким сервером не соединяется: пока синхронизация не настроена, файлы проекта никуда не уходят.'));
+}
 
-  const drawSteps = () => {
-    if (!steps.length) return;
-    stepsBox.style.display = '';
-    stepsBox.innerHTML = '';
-    for (const step of steps) {
-      const li = el('li', step.state || '');
-      li.appendChild(el('span', 'mark', LINK_MARKS[step.state] || '·'));
-      li.appendChild(el('span', 'title', LINK_TITLES[step.key] || step.key));
-      if (step.text) li.appendChild(el('span', 'what', `— ${step.text}`));
-      stepsBox.appendChild(li);
-    }
+function showSyncDialog(p) {
+  if (!syncAvailable) { showSyncInfo(p); return; }
+  let stopListen = null;
+  const { m, close } = makeModal(`
+    <div class="sy-head"><span class="sy-ic"></span><div class="sy-t"><b></b><span></span></div><button class="icon-btn" id="sy-x" title="Закрыть" aria-label="Закрыть"></button></div>
+    <div class="sy-body"></div>
+    <div class="modal-actions"></div>`, () => { if (stopListen) { stopListen(); stopListen = null; } });
+  m.classList.add('sync-modal');
+  const head = m.querySelector('.sy-ic'), title = m.querySelector('.sy-t b'), body = m.querySelector('.sy-body'), foot = m.querySelector('.modal-actions');
+  head.appendChild(icon('cloud', 21));
+  m.querySelector('.sy-t span').textContent = p.path;
+  { const x = m.querySelector('#sy-x'); x.appendChild(icon('x', 16)); x.onclick = close; }
+  const btn = (text, cls, onClick, glyph) => {
+    const b = el('button', 'btn' + (cls ? ' ' + cls : ''));
+    if (glyph) b.appendChild(icon(glyph, 14));
+    b.appendChild(el('span', null, text));
+    if (onClick) b.onclick = onClick;
+    return b;
+  };
+  const note = (kind, glyph, ...lines) => {
+    const n = el('div', 'sy-note ' + kind);
+    n.appendChild(icon(glyph, 15));
+    const t = el('div');
+    lines.forEach((ln, i) => { if (i) t.appendChild(el('br')); t.appendChild(typeof ln === 'string' ? el('span', null, ln) : ln); });
+    n.appendChild(t);
+    return n;
+  };
+  const side = (label, glyph, s, emptyHint) => {
+    const box = el('div', 'sy-side');
+    const h = el('div', 'h'); h.append(icon(glyph, 14), el('span', null, label));
+    box.appendChild(h);
+    if (s && s.exists) {
+      const n = s.files || 0;
+      const v = el('div', 'v'); v.append(el('span', null, n.toLocaleString('ru-RU')), document.createTextNode(' '), el('span', null, plural(n, 'файл', 'файла', 'файлов')));
+      box.append(v, el('div', 's', humanSize(s.bytes)));
+    } else box.append(el('div', 'v none', 'проекта нет'), el('div', 's', emptyHint || ''));
+    return box;
+  };
+  const sides = (info) => {
+    const g = el('div', 'sy-sides');
+    const mid = el('div', 'sy-mid'); mid.appendChild(icon('swap', 18));
+    g.append(side('На ПК', 'laptop', info.local), mid, side('На сервере', 'server', info.remote, 'создам при подключении'));
+    return g;
+  };
+  const skeleton = (text) => { const s = el('div', 'sy-skel'); s.append(el('span', 'sy-spin'), el('span', null, text)); body.replaceChildren(s); };
+  const inspect = async () => {
+    try { return await lite.sync.inspect(p.path); } catch (e) { return { ok: false, reason: String(e.message || e) }; }
+  };
+  const setLinkedLook = (on) => {
+    head.classList.toggle('on', on);
+    title.textContent = on ? 'Синхронизируется с сервером' : 'Подключить к синхронизации';
   };
 
+  // ---- уже синхронизируется: состояние сторон
+  const showLinked = async () => {
+    setLinkedLook(true);
+    skeleton('Сверяю обе стороны…');
+    foot.replaceChildren(el('span', 'grow'), btn('Готово', 'primary', close));
+    const info = await inspect();
+    if (!m.isConnected) return;
+    if (!info || !info.ok) {
+      body.replaceChildren(note('bad', 'warning', 'Сервер сейчас недоступен — состояние не проверить.', info?.reason || ''));
+    } else {
+      body.replaceChildren(sides(info));
+      if (info.differ) body.appendChild(note('warn', 'warning', `Сейчас различаются файлы: ${info.differ}.`, 'Демон синхронизации сведёт их при следующей сверке.'));
+      else body.appendChild(note('good', 'check', 'Расхождений нет.'));
+      body.appendChild(note('info', 'info', 'Файлы сверяются сами при изменениях. Заменённое уезжает в корзину, а не пропадает.'));
+    }
+    foot.replaceChildren(btn('Проверить ещё раз', '', showLinked, 'refresh'), el('span', 'grow'), btn('Готово', 'primary', close));
+  };
+
+  // ---- подключение: осмотр до согласия → шаги → (вопрос о расхождении) → готово
+  const steps = LINK_ORDER.map((key) => ({ key, state: 'wait', text: '' }));
+  let stepsBox = null;
+  const drawSteps = () => {
+    if (!stepsBox || !stepsBox.isConnected) { stepsBox = el('ol', 'lk-steps'); body.replaceChildren(stepsBox); }
+    stepsBox.replaceChildren();
+    steps.forEach((s, i) => {
+      const li = el('li', s.state);
+      const mark = el('span', 'mark');
+      if (s.state === 'run') mark.appendChild(el('span', 'sy-spin'));
+      else if (s.state === 'ok') mark.appendChild(icon('check', 13));
+      else if (s.state === 'bad') mark.appendChild(icon('x', 12));
+      else mark.textContent = s.state === 'ask' ? '?' : String(i + 1);
+      const sc = el('div', 'sc');
+      sc.appendChild(el('div', 'title', LINK_TITLES[s.key] || s.key));
+      if (s.text) sc.appendChild(el('div', 'what', s.text));
+      li.append(mark, sc);
+      stepsBox.appendChild(li);
+    });
+  };
   const takeStep = (step) => {
-    const at = steps.findIndex((x) => x.key === step.key);
-    if (at >= 0) steps[at] = step; else steps.push(step);
+    if (!step || !step.key) return;
+    const s = steps.find((x) => x.key === step.key);
+    if (s) { s.state = step.state || 'run'; s.text = step.text || ''; } else steps.push({ key: step.key, state: step.state || 'run', text: step.text || '' });
     drawSteps();
   };
-
   // Файлы разошлись — спрашиваем, чью сторону взять: молча затирать нельзя.
   const askPrefer = (result) => {
-    askBox.style.display = '';
-    askBox.innerHTML = '';
-    askBox.appendChild(el('div', null, `Файлы различаются: ${result.report?.differ || 0}. Чью версию взять за верную?`));
+    const ask = el('div', 'lk-ask');
+    const differ = result.report?.differ || 0;
+    ask.appendChild(el('div', 'q', `Файлы различаются: ${differ}. Чью версию взять за верную?`));
     const examples = result.report?.differExamples || [];
-    if (examples.length) askBox.appendChild(el('div', 'files', examples.slice(0, 6).join(', ')));
-    const row = el('div', 'row');
-    for (const [label, prefer] of [['Взять версию ПК', 'local'], ['Взять версию сервера', 'remote']]) {
-      const b = el('button', 'btn', label);
-      b.addEventListener('click', () => { askBox.style.display = 'none'; run(prefer); });
-      row.appendChild(b);
+    if (examples.length) { const f = el('div', 'files'); for (const x of examples.slice(0, 6)) f.appendChild(el('code', null, x)); ask.appendChild(f); }
+    const opts = el('div', 'lk-opts');
+    for (const [label, hint, glyph, prefer] of [
+      ['Версия ПК', 'На сервер уедут файлы с этого компьютера', 'laptop', 'local'],
+      ['Версия сервера', 'На ПК придут файлы с сервера', 'server', 'remote'],
+    ]) {
+      const b = el('button', 'lk-opt');
+      const bt = el('b'); bt.append(icon(glyph, 15), el('span', null, label));
+      b.append(bt, el('span', null, hint));
+      b.onclick = () => { ask.remove(); run(prefer); };
+      opts.appendChild(b);
     }
-    askBox.appendChild(row);
+    ask.appendChild(opts);
+    body.appendChild(ask);
+    foot.replaceChildren(el('span', 'grow'), btn('Отмена', '', close), btn('Нужно ваше решение', 'primary', null));
+    foot.lastChild.disabled = true;
   };
-
   const run = async (prefer = null) => {
-    go.disabled = true;
-    go.textContent = 'Подключаю…';
-    say(prefer ? 'Продолжаю с выбранной стороной…' : 'Идёт подключение…');
-    steps.length = 0;
+    const go = btn('Подключаю…', 'primary', null); go.disabled = true;
+    foot.replaceChildren(el('span', 'grow'), go);
+    for (const s of steps) if (!prefer || s.key !== 'link') { s.state = 'wait'; s.text = ''; }
     drawSteps();
-    stopListen = window.lite?.sync?.onLinkStep?.(takeStep) || null;
+    stopListen = lite.sync.onLinkStep?.(takeStep) || null;
     let result;
-    try { result = await window.lite.sync.link(p.path, prefer); } catch (e) { result = { ok: false, reason: String(e.message || e) }; }
+    try { result = await lite.sync.link(p.path, prefer); } catch (e) { result = { ok: false, reason: String(e.message || e) }; }
     if (stopListen) { stopListen(); stopListen = null; }
-
-    if (result.need === 'prefer') { say('Нужно ваше решение.'); askPrefer(result); return; }
+    if (!m.isConnected) { if (result && result.ok) refreshSynced(); return; }
+    if (result.need === 'prefer') { askPrefer(result); return; }
     if (result.ok) {
-      say('Готово: проект синхронизируется.', 'good');
-      go.textContent = 'Закрыть';
-      go.disabled = false;
-      go.onclick = close;
+      setLinkedLook(true);
+      body.appendChild(note('good', 'check', 'Готово: проект синхронизируется.'));
+      foot.replaceChildren(el('span', 'grow'), btn('Закрыть', 'primary', close));
       refreshSynced();
       return;
     }
-    say(result.reason || 'Подключить не удалось.', 'bad');
-    go.textContent = 'Повторить';
+    body.appendChild(note('bad', 'warning', result.reason || 'Подключить не удалось.'));
+    foot.replaceChildren(el('span', 'grow'), btn('Отмена', '', close), btn('Повторить', 'primary', () => run(prefer)));
+  };
+  const showConnect = async () => {
+    setLinkedLook(false);
+    skeleton('Смотрю, что есть на обеих сторонах…');
+    const go = btn('Подключить', 'primary', () => run(null)); go.disabled = true;
+    foot.replaceChildren(el('span', 'grow'), btn('Отмена', '', close), go);
+    const info = await inspect();
+    if (!m.isConnected) return;
+    if (!info || !info.ok) {
+      body.replaceChildren(note('bad', 'warning', 'Подключение сейчас невозможно.', info?.reason || 'не удалось осмотреть проект'));
+      return;
+    }
+    body.replaceChildren(sides(info));
+    if (info.differ) body.appendChild(note('warn', 'warning', `Файлы различаются: ${info.differ} — перед передачей спрошу, чью версию взять.`));
+    body.appendChild(note('info', 'info', 'Заменённое уедет в корзину, как при обычной сверке.'));
     go.disabled = false;
   };
 
-  m.querySelector('#lk-cancel').addEventListener('click', close);
-  go.addEventListener('click', () => run(null));
-
-  // Осмотр до согласия: размер обеих сторон и предупреждение о расхождении.
-  (async () => {
-    let info;
-    try { info = await window.lite.sync.inspect(p.path); } catch (e) { info = { ok: false, reason: String(e.message || e) }; }
-    if (!info || !info.ok) {
-      what.textContent = `${p.name}: подключение сейчас невозможно.`;
-      say(info?.reason || 'не удалось осмотреть проект', 'bad');
-      return;
-    }
-    const side = (s, name) => (s.exists ? `${name}: ${s.files} файлов, ${humanSize(s.bytes)}` : `${name}: проекта нет`);
-    // Собираем узлами, а не строкой HTML: имя проекта = имя ПАПКИ, и `<` или `&` в нём
-    // ломали разметку блока (а `<img onerror=…>` был бы и вовсе разметкой из имени файла).
-    const lines = [side(info.local, 'На ПК'), side(info.remote, 'На сервере')];
-    if (info.differ) lines.push(`Файлы различаются: ${info.differ} — спрошу, чью версию взять.`);
-    lines.push('Заменённое уедет в корзину, как при обычной сверке.');
-    what.replaceChildren(el('b', '', p.name));
-    for (const line of lines) { what.appendChild(el('br')); what.appendChild(document.createTextNode(line)); }
-    go.disabled = false;
-  })();
+  if (syncedPaths.has(p.path)) showLinked(); else showConnect();
 }
 
 function renderProjects() {
@@ -354,46 +451,47 @@ function renderProjects() {
   const sections = buildSections();
   sections.forEach((s, i) => box.appendChild(renderSection(s, i, sections)));
   if (projFilter && !sections.length) box.appendChild(el('div', 'proj-empty', 'Ничего не найдено'));
-  // OpenRouter (ключи) и «Обработка текста» (документы) больше НЕ в сайдбаре — их списки живут
-  // вкладками внутри своих панелей правого слота (открываются через квикбар/меню «Модули»).
   renderMiniRail();
+  renderChips();
 }
-// OpenRouter section — fixed group (no reorder arrows), like a special category.
-// Cards here aren't real projects: deletion lives only in the OpenRouter modal.
+// Заголовок группы: имя · (✎ ↑ ↓ по наведению) · число · стрелка. Инструменты стоят в раскладке
+// всегда и только проявляются, поэтому заголовок не прыгает при наведении.
 function renderSection(s, index, sections) {
   const total = sections.length;
   const { label, key, list, pinned } = s;
-  const sec = el('div', 'pgroup' + (pinned ? ' pinned' : ''));
   const collapsed = projFilter ? false : isCollapsed(key);   // под фильтром секции всегда раскрыты
+  const sec = el('div', 'pgroup' + (pinned ? ' pinned' : '') + (collapsed ? ' closed' : '') + (list.length ? '' : ' empty'));
   const head = el('div', 'pgroup-head');
-  const chev = el('span', 'pgroup-chev');
-  chev.appendChild(icon(collapsed ? 'chevron-right' : 'chevron-down', 15));
-  head.appendChild(chev);
   head.appendChild(el('span', 'pgroup-name', label));
-  head.appendChild(el('span', 'pgroup-count', String(list.length)));
   const tools = el('div', 'pgroup-tools');
   const isCustomCat = key !== FAV_KEY && key !== UNCATEGORIZED && key !== ARCHIVE;
   if (isCustomCat) { // видимая кнопка переименования (плюс ПКМ-меню)
-    const ren = iconBtn('pgroup-arrow', 'pencil', 'Переименовать категорию');
+    const ren = iconBtn('pgroup-arrow', 'pencil', 'Переименовать категорию', 12);
     ren.addEventListener('click', (e) => { e.stopPropagation(); renameCategory(key); });
     tools.appendChild(ren);
   }
-  const nextIsArchive = sections[index + 1] && sections[index + 1].key === ARCHIVE;
-  const up = iconBtn('pgroup-arrow', 'chevron-up', 'Выше'); up.disabled = index === 0 || key === ARCHIVE;
-  const down = iconBtn('pgroup-arrow', 'chevron-down', 'Ниже'); down.disabled = index === total - 1 || key === ARCHIVE || nextIsArchive;
-  up.addEventListener('click', (e) => { e.stopPropagation(); moveSection(key, -1); });
-  down.addEventListener('click', (e) => { e.stopPropagation(); moveSection(key, +1); });
-  tools.appendChild(up); tools.appendChild(down);
+  if (key !== ARCHIVE) {
+    const nextIsArchive = sections[index + 1] && sections[index + 1].key === ARCHIVE;
+    const up = iconBtn('pgroup-arrow', 'chevron-up', 'Выше', 12); up.disabled = index === 0;
+    const down = iconBtn('pgroup-arrow', 'chevron-down', 'Ниже', 12); down.disabled = index === total - 1 || nextIsArchive;
+    up.addEventListener('click', (e) => { e.stopPropagation(); moveSection(key, -1); });
+    down.addEventListener('click', (e) => { e.stopPropagation(); moveSection(key, +1); });
+    tools.append(up, down);
+  }
   head.appendChild(tools);
+  head.appendChild(el('span', 'pgroup-count', String(list.length)));
+  const chev = el('span', 'pgroup-chev');
+  chev.appendChild(icon('chevron-down', 12));
+  head.appendChild(chev);
   const body = el('div', 'pgroup-body');
   if (collapsed) body.style.display = 'none';
   head.addEventListener('click', () => {
+    if (projFilter) return;
     const now = !isCollapsed(key); setCollapsed(key, now);
-    body.style.display = now ? 'none' : 'block';
-    chev.replaceChildren(icon(now ? 'chevron-right' : 'chevron-down', 15));
+    body.style.display = now ? 'none' : '';
+    sec.classList.toggle('closed', now);
   });
-  if (key !== FAV_KEY && key !== UNCATEGORIZED && key !== ARCHIVE) // custom categories can be renamed/deleted (Архив — нет)
-    head.addEventListener('contextmenu', (e) => { e.preventDefault(); showCategoryMenu(e.clientX, e.clientY, key); });
+  if (isCustomCat) head.addEventListener('contextmenu', (e) => { e.preventDefault(); showCategoryMenu(e.clientX, e.clientY, key); });
   for (const p of list) {
     const c = makeCard(p);
     if (key === FAV_KEY) enableFavDnD(c, body);
@@ -435,46 +533,48 @@ function enableFavDnD(card, body) {
     body.addEventListener('drop', (e) => { if (favDragCard) e.preventDefault(); });
   }
 }
+// Строка проекта: индикатор · облачко синхронизации · имя · (★ ⋮ — по наведению и у активного).
+// Путь — в подсказке имени и в чипе папки под терминалом.
 function makeCard(p) {
+  const gone = missing.has(p.id);
   const card = el('div', 'card');
   card.dataset.id = p.id;
   if (p.id === activeId) card.classList.add('active');
-  if (missing.has(p.id)) card.classList.add('missing');
-  if (p.accent) { card.classList.add('accented'); card.style.setProperty('--card-accent', p.accent); } // весь бордер + усиленная левая полоса
+  if (gone) card.classList.add('missing');
+  if (p.accent) { card.classList.add('accented'); card.style.setProperty('--card-accent', p.accent); }
+  card.title = gone ? `Папка не найдена: ${p.path}` : p.path;
 
-  const head = el('div', 'card-head');
-  const ind = el('span', 'pind ' + projAggState(p.id));
-  ind.dataset.id = p.id;
-  ind.title = 'Спиннер — работает · янтарный — ждёт ответа · точка — готов';
-  const title = el('span', 'card-title', p.name);
-  title.title = p.path;
-  const star = iconBtn('card-star' + (p.favorite ? ' on' : ''), 'star', p.favorite ? 'Убрать из избранного' : 'В избранное', 15);
-  star.addEventListener('click', (e) => { e.stopPropagation(); toggleFavorite(p.id); });
-  // Вивер/Git/задачи и пр. модули — в квикбаре под терминалом; на карточке только ★ и ⋮ (всегда видимы).
-  const kebab = iconBtn('card-kebab', 'dots-v', 'Меню проекта', 18);
-  kebab.addEventListener('click', (e) => { e.stopPropagation(); showCardMenu(e.clientX, e.clientY, p); });
-  const acts = el('div', 'card-acts');
-  if (syncAvailable) {
-    const linked = syncedPaths.has(p.path);
-    const mark = syncMark(12, linked ? 'Синхронизируется с сервером' : 'Не синхронизируется — нажмите, чтобы подключить');
-    mark.classList.add(linked ? 'on' : 'off');
-    if (!linked) mark.addEventListener('click', (e) => { e.stopPropagation(); showLinkDialog(p); });
-    acts.appendChild(mark);
-  }
-  acts.append(star, kebab);
-  const tail = el('div', 'card-tail');
-  tail.append(acts);
-  head.append(ind, title, tail);
-  card.appendChild(head);
-
-  // путь не дублируем на карточке — он в тултипе имени и в ⋮-меню («Копировать путь»)
-  if (missing.has(p.id)) {
-    const w = el('div', 'card-missing'); w.appendChild(icon('warning', 13)); w.appendChild(el('span', null, 'папка удалена — закрой проект'));
+  if (gone) {
+    const w = el('span', 'card-warn'); w.appendChild(icon('warning', 14));
     card.appendChild(w);
+  } else {
+    const ind = el('span', 'pind ' + projAggState(p.id));
+    ind.dataset.id = p.id;
+    card.appendChild(ind);
   }
+  // Облачко: зелёное — проект синхронизируется; серое — нет (или синхронизации на машине нет вовсе —
+  // тогда клик объясняет, что это и что для неё нужно).
+  if (!gone) {
+    const linked = syncAvailable && syncedPaths.has(p.path);
+    const tip = linked ? 'Синхронизируется с сервером' : syncAvailable ? 'Не синхронизируется — нажмите, чтобы подключить' : 'Синхронизация с сервером — что это и как подключить';
+    const cl = iconBtn('card-sync' + (linked ? ' on' : ''), 'cloud', tip, 14);
+    cl.addEventListener('click', (e) => { e.stopPropagation(); showSyncDialog(p); });
+    card.appendChild(cl);
+  }
+  card.appendChild(el('span', 'card-title', p.name));
+  const acts = el('div', 'card-acts');
+  if (!gone) {
+    const star = iconBtn('card-star' + (p.favorite ? ' on' : ''), 'star', p.favorite ? 'Убрать из избранного' : 'В избранное', 14);
+    star.addEventListener('click', (e) => { e.stopPropagation(); toggleFavorite(p.id); });
+    acts.appendChild(star);
+  }
+  const kebab = iconBtn('card-kebab', 'dots-v', 'Меню проекта', 16);
+  kebab.addEventListener('click', (e) => { e.stopPropagation(); const r = kebab.getBoundingClientRect(); showCardMenu(r.left, r.bottom + 4, p, card); });
+  acts.appendChild(kebab);
+  card.appendChild(acts);
 
   card.addEventListener('click', () => focusProject(p.id));
-  card.addEventListener('contextmenu', (e) => { e.preventDefault(); showCardMenu(e.clientX, e.clientY, p); });
+  card.addEventListener('contextmenu', (e) => { e.preventDefault(); showCardMenu(e.clientX, e.clientY, p, card); });
   return card;
 }
 // Клик по карточке проекта → выбрать его (чат/документ теперь живут отдельной панелью справа).
@@ -512,12 +612,13 @@ function archiveProject(id) {
   moveToCategory(id, ARCHIVE);
 }
 
-// kebab/right-click project menu (two pages: actions ↔ move-to-category)
-function showCardMenu(x, y, p) {
+// kebab/right-click project menu (pages: actions ↔ color ↔ move-to-category)
+function showCardMenu(x, y, p, card) {
   closeMenus();
   const dd = el('div', 'menu-dropdown');
-  dd.style.minWidth = '210px';
+  dd.style.minWidth = '230px';
   dd.addEventListener('click', (e) => e.stopPropagation());
+  if (card) { card.classList.add('menu-open'); menuAnchor = card; }
   buildCardMenuMain(dd, p);
   placeMenu(dd, x, y);
 }
@@ -526,6 +627,11 @@ function buildCardMenuMain(dd, p) {
   dd.appendChild(menuRow('folder', 'Открыть в проводнике', () => { closeMenus(); lite.openInFileManager(p.path); }));
   dd.appendChild(menuRow('copy', 'Копировать путь', () => { closeMenus(); lite.copyText(p.path); toast('Путь скопирован'); }));
   dd.appendChild(menuRow('star', p.favorite ? 'Убрать из избранного' : 'В избранное', () => { closeMenus(); toggleFavorite(p.id); }));
+  if (!missing.has(p.id)) {
+    const row = menuRow('cloud', 'Синхронизация…', () => { closeMenus(); showSyncDialog(p); });
+    row.appendChild(el('span', 'menu-desc', !syncAvailable ? 'не подключена' : syncedPaths.has(p.path) ? 'включена' : 'выключена'));
+    dd.appendChild(row);
+  }
   dd.appendChild(el('div', 'menu-sep'));
   dd.appendChild(menuRow('pencil', 'Переименовать проект…', () => { closeMenus(); renameProject(p.id); }));
   dd.appendChild(menuRow('palette', 'Цвет проекта…', () => buildCardMenuColor(dd, p)));
@@ -604,7 +710,7 @@ function buildCardMenuMove(dd, p) {
 }
 function showCreateCategory(id) {
   const { m, close } = makeModal(`
-    <h2>✚ Новая категория</h2>
+    <h2>Новая категория</h2>
     <div class="field"><input type="text" id="nc-name" placeholder="Название категории" autocomplete="off" spellcheck="false"></div>
     <div class="modal-actions"><button class="btn" id="nc-cancel">Отмена</button><button class="btn primary" id="nc-ok">Создать</button></div>`);
   const inp = m.querySelector('#nc-name');
@@ -615,7 +721,7 @@ function showCreateCategory(id) {
     if (!name || name === UNCATEGORIZED || name === ARCHIVE) { close(); return; }
     const cats = loadCategories();
     if (!cats.includes(name)) { cats.push(name); saveCategories(cats); }
-    moveToCategory(id, name);
+    if (id) moveToCategory(id, name); else renderProjects();   // из «Ещё» — просто новая пустая категория
     close();
   };
   m.querySelector('#nc-ok').onclick = ok;
@@ -665,21 +771,51 @@ function sendNoteToTerminal(p, text) {
   if (sid) lite.pty.write(sid, text); // no trailing newline — review, then press Enter yourself
 }
 
-// Compact project switcher for single-terminal mode: indicator + name, click switches.
+// Режим «один терминал»: карточка проектов сжимается в узкий рельс — буквы проектов со статусом,
+// снизу «Ещё», оформление и настройки. Порядок — как в списке (избранное, категории, «Все»).
+function initials(name) {
+  const w = String(name || '?').split(/[\s._-]+/).filter(Boolean);
+  return ((w[0] || '?')[0] + (w[1] ? w[1][0] : (w[0] || '').slice(1, 2))).toUpperCase();
+}
 function renderMiniRail() {
   const rail = $('#mini-rail');
+  if (!rail) return;
   rail.innerHTML = '';
-  for (const p of projects) {
-    const btn = el('button', 'rail-btn');
-    if (p.id === activeId) btn.classList.add('active');
+  rail.appendChild(el('span', 'rail-mark'));
+  const expand = iconBtn('icon-btn', 'panel-left', 'Развернуть проекты (Ctrl+\\)', 17);
+  expand.addEventListener('click', toggleSingle);
+  rail.append(expand, el('span', 'rail-sep'));
+  const list = el('div', 'rail-list');
+  const seen = new Set();
+  const keepFilter = projFilter; projFilter = '';          // рельс показывает все проекты, а не только найденные фильтром
+  const sections = buildSections(); projFilter = keepFilter;
+  for (const s of sections) for (const p of s.list) {
+    if (seen.has(p.id)) continue;
+    seen.add(p.id);
+    const st = projAggState(p.id);
+    const btn = el('button', 'rail-btn' + (p.id === activeId ? ' active' : '') + (missing.has(p.id) ? ' missing' : ''), initials(p.name));
     btn.title = p.name;
-    const ind = el('span', 'pind ' + projAggState(p.id));
-    ind.dataset.id = p.id;
-    btn.appendChild(ind);
-    btn.appendChild(el('span', 'rail-name', p.name));
+    btn.setAttribute('data-no-i18n', '');
+    if (p.accent) btn.style.color = p.accent;
+    if (st !== 'idle') {
+      const badge = el('span', 'rail-st');
+      const ind = el('span', 'pind ' + st); ind.dataset.id = p.id;
+      badge.appendChild(ind);
+      btn.appendChild(badge);
+    }
     btn.addEventListener('click', () => setActive(p.id));
-    rail.appendChild(btn);
+    btn.addEventListener('contextmenu', (e) => { e.preventDefault(); showCardMenu(e.clientX, e.clientY, p); });
+    list.appendChild(btn);
   }
+  rail.appendChild(list);
+  const more = iconBtn('icon-btn', 'dots-h', 'Ещё', 16);
+  more.addEventListener('click', (e) => { e.stopPropagation(); showMoreMenu(more); });
+  const look = iconBtn('icon-btn', 'palette', 'Оформление: цвета и размеры', 16);
+  look.id = 'rail-look';
+  look.addEventListener('click', (e) => { e.stopPropagation(); showLookPanel(look); });
+  const gear = iconBtn('icon-btn', 'gear', 'Настройки', 16);
+  gear.addEventListener('click', () => showSettings());
+  rail.append(more, look, gear);
 }
 
 async function openProjectDialog() {
@@ -847,7 +983,10 @@ let trayAttentionSent = -1;   // что последним ушло в трей:
 function updateAttention() {
   const n = [...projState.values()].filter((s) => s === 'waiting').length;
   const badge = $('#attention-badge');
-  if (badge) { badge.textContent = String(n); badge.classList.toggle('show', n > 0); }
+  if (badge) {
+    badge.replaceChildren(icon('bell', 13), el('span', null, String(n)), el('span', null, n === 1 ? 'ждёт ответа' : 'ждут ответа'));
+    badge.classList.toggle('show', n > 0);
+  }
   if (n !== trayAttentionSent) { trayAttentionSent = n; lite.tray.update(n); }
 }
 
@@ -897,6 +1036,7 @@ function activeSessionId() { const t = tabsByProj.get(activeId); return t ? t.ac
 function projSessions(projId) { const t = tabsByProj.get(projId); return t ? t.sessions : []; }
 function projAggState(projId) {
   const ss = projSessions(projId).map((s) => projState.get(s));
+  if (!ss.length) return 'idle';   // терминал проекта ещё не поднимали в этом запуске
   return ss.includes('busy') ? 'busy' : ss.includes('waiting') ? 'waiting' : 'quiet';
 }
 function refreshProjIndicator(projId) {
@@ -955,6 +1095,7 @@ function buildXterm(container, id, { cwd, onInput, onKey } = {}) {
   const term = new Terminal({
     fontFamily: '"JetBrains Mono", "Fira Code", "Cascadia Code", Consolas, monospace',
     fontSize: settings.fontSize, cursorBlink: true, allowProposedApi: true, theme: termTheme(), scrollback: 5000,
+    allowTransparency: true, // фон терминала прозрачный — виден полупрозрачный фон окна (задаётся только при создании)
   });
   const fit = new FitAddon();
   const search = new SearchAddon();
@@ -996,6 +1137,7 @@ function buildXterm(container, id, { cwd, onInput, onKey } = {}) {
 // Вкл/выкл шкалы времени во ВСЕХ живых терминалах (настройка применяется на лету, без перезапуска).
 function applyTimeline() {
   const on = settings.termTimeline === true;
+  { const tl = $('#term-timeline'); if (tl) { tl.classList.toggle('on', on); tl.title = on ? 'Скрыть шкалу времени' : 'Шкала времени слева'; } }
   for (const rec of terms.values()) { try { rec.timeline.setEnabled(on); } catch (_) {} }
   for (const rec of extTerms.values()) { try { rec.timeline.setEnabled(on); } catch (_) {} }
   refitActiveTerminal();
@@ -1068,13 +1210,13 @@ function ensureProjectTabs(proj) {
   saveProjTabs();
 }
 function renderTabBar() {
-  const header = $('#term-header');
   const bar = $('#term-tabs');
   if (!bar) return;
   bar.innerHTML = '';
   const t = tabsByProj.get(activeId);
-  if (!activeId || !t || !t.sessions.length) { if (header) header.style.display = 'none'; return; }
-  if (header) header.style.display = 'flex';
+  // шапка видна всегда (в ней кнопки окна и за неё тянут окно); без проекта нет только вкладок и «+»
+  $('#term-tab-add').classList.toggle('hidden', !activeId || !t);
+  if (!activeId || !t || !t.sessions.length) { updateTabScroll(); return; }
   t.sessions.forEach((sid) => {
     const rec = terms.get(sid); if (!rec) return;
     const tab = el('div', 'tab' + (sid === t.active ? ' active' : '') + (rec.autoTitled ? ' wide' : ''));
@@ -1414,6 +1556,7 @@ function doSetActive(id) {
   try { Ext.notifyActiveProject(activeId); } catch (_) {} // пользовательские модули: ctx.projects.onChange
   pushActiveProject(proj); // окна модулей (git/ctx/notes/audit): следовать за активным проектом редактора
   updateNotesBadge();      // бейдж задач — под новый активный проект
+  refreshGitChip(0);       // чип ветки под терминалом — под новый активный проект
 }
 // Сообщить окнам модулей о текущем активном проекте (кэшируется в main, рассылается окнам).
 function pushActiveProject(proj) {
@@ -1471,7 +1614,7 @@ const Ext = initExtensions({
   STORE, persist, layout, GUTTER, refitActiveTerminal, closeOtherPanels,
   getProjects: () => projects.map((p) => ({ id: p.id, name: p.name, path: p.path })),
   getActiveId: () => activeId,
-  getTheme: () => (THEMES[settings.theme] ? settings.theme : DEFAULT_THEME),
+  getTheme: () => THEME_NAME,
   closeMenus: () => closeMenus(),
   menuRow: (glyph, text, onClick, cls) => menuRow(glyph, text, onClick, cls),
   moduleRow: (glyph, title, desc, onClick) => moduleRow(glyph, title, desc, onClick),
@@ -1594,61 +1737,59 @@ async function refreshAgendaCount(id) {
     if (id === activeId || id === '__global__') updateNotesBadge();
   } catch (_) {}
 }
+// Настройка быстрой панели: «На панели» (порядок стрелками, убрать, разделители) и «Добавить».
+// Операции по ИНДЕКСУ: разделителей может быть несколько — двигать/удалять по значению нельзя.
 function showPanelSetup() {
+  closeMenus();
   const { m, close } = makeModal(`
-    <h2>Настройка панели</h2>
-    <div class="qb-hint">Клик по модулю слева выносит его кнопку на панель под терминалом,
-      клик справа — убирает. «Разделитель │» можно добавлять сколько угодно и ставить в любое место.
-      Стрелки ▲▼ меняют порядок.</div>
-    <div class="qb-cols">
-      <div class="qb-col"><div class="qb-col-title">Все модули</div><div class="qb-list" id="qb-all"></div></div>
-      <div class="qb-col"><div class="qb-col-title">На панели</div><div class="qb-list" id="qb-sel"></div></div>
-    </div>
-    <div class="modal-actions"><button class="btn primary" id="qb-ok">Готово</button></div>`);
-  m.style.width = '560px';
-  const allBox = m.querySelector('#qb-all');
-  const selBox = m.querySelector('#qb-sel');
+    <div class="mhead"><div><div class="mt">Быстрая панель</div><div class="ms">Иконки модулей под терминалом: состав, порядок, разделители</div></div><span class="grow"></span><button class="icon-btn" id="qb-x" title="Закрыть" aria-label="Закрыть"></button></div>
+    <div class="qb-list" id="qb-list"></div>
+    <div class="modal-actions"><button class="btn" id="qb-sep"></button><span class="grow"></span><button class="btn primary" id="qb-ok">Готово</button></div>`);
+  m.classList.add('qb-modal');
+  m.querySelector('#qb-x').appendChild(icon('x', 16));
+  m.querySelector('#qb-x').onclick = close;
+  m.querySelector('#qb-ok').onclick = close;
+  { const s = m.querySelector('#qb-sep'); s.append(icon('plus', 14), el('span', null, 'Разделитель')); }
+  const box = m.querySelector('#qb-list');
   const save = (ids) => { persist('quickbar', ids); renderQuickbar(); };
-  const SEP_MOD = { id: QUICK_SEP, label: 'Разделитель' };
-  const mkItem = (mod, onClick) => {
-    const row = el('div', 'qb-item' + (mod.id === QUICK_SEP ? ' qb-item-sep' : ''));
-    const ic = el('span', 'qb-ic');
-    if (mod.id === QUICK_SEP) ic.textContent = '│'; else ic.appendChild(icon(mod.icon, 16));
-    row.appendChild(ic);
-    row.appendChild(el('span', 'qb-name', mod.label));
-    row.onclick = onClick;
-    return row;
-  };
+  const gt = (glyph, title, fn, disabled) => { const b = iconBtn('gt', glyph, title, 13); b.disabled = !!disabled; b.onclick = (e) => { e.stopPropagation(); fn(); }; return b; };
+  // подписи — из каталога встроенных модулей (название и описание раздельно); свои модули — по имени
+  const names = (mod) => { const b = BUILTIN_MODS.find((x) => x.id === mod.id); return b ? [b.title, b.desc] : [mod.label, 'мой модуль']; };
   const render = () => {
     const mods = quickAllModules();
     const byId = new Map(mods.map((x) => [x.id, x]));
-    // в выбранном держим и разделители ('|'), и существующие модули (пропавшие — отсеиваем)
     const sel = (Array.isArray(STORE.quickbar) ? STORE.quickbar : []).filter((id) => id === QUICK_SEP || byId.has(id));
-    allBox.innerHTML = ''; selBox.innerHTML = '';
-    const free = mods.filter((x) => !sel.includes(x.id));
-    for (const mod of free) allBox.appendChild(mkItem(mod, () => { save([...sel, mod.id]); render(); }));
-    // разделитель всегда доступен — добавляем в конец (потом двигаем стрелками куда нужно)
-    allBox.appendChild(mkItem(SEP_MOD, () => { save([...sel, QUICK_SEP]); render(); }));
-    if (!sel.length) selBox.appendChild(el('div', 'qb-empty', '— пусто, панель скрыта —'));
-    // операции по ИНДЕКСУ (разделителей может быть несколько — удалять/двигать по значению нельзя)
+    box.replaceChildren();
+    const h1 = el('div', 'qb-sec'); h1.append(el('b', null, 'На панели'), el('span', null, String(sel.filter((x) => x !== QUICK_SEP).length)));
+    box.appendChild(h1);
+    if (!sel.length) box.appendChild(el('div', 'pinfo', 'Пусто — панель скрыта. Добавьте модули ниже.'));
     sel.forEach((id, i) => {
-      const mod = id === QUICK_SEP ? SEP_MOD : byId.get(id);
-      const row = mkItem(mod, () => { const ids = sel.slice(); ids.splice(i, 1); save(ids); render(); });
-      const move = (d) => (e) => {
-        e.stopPropagation();
-        const j = i + d;
-        if (j < 0 || j >= sel.length) return;
-        const ids = sel.slice(); [ids[i], ids[j]] = [ids[j], ids[i]];
-        save(ids); render();
-      };
-      const up = el('button', 'qb-mv', '▲'); up.title = 'Левее на панели'; up.onclick = move(-1); up.disabled = i === 0;
-      const dn = el('button', 'qb-mv', '▼'); dn.title = 'Правее на панели'; dn.onclick = move(1); dn.disabled = i === sel.length - 1;
-      row.appendChild(up); row.appendChild(dn);
-      selBox.appendChild(row);
+      const row = el('div', 'qrow');
+      if (id === QUICK_SEP) row.append(el('span', 'qsep-l'), el('span', 'qt dim2', 'разделитель'));
+      else { const mod = byId.get(id); const ri = el('span', 'ri'); ri.appendChild(icon(mod.icon, 16)); row.append(ri, el('span', 'qt', names(mod)[0])); }
+      const move = (d) => { const ids = sel.slice(); [ids[i], ids[i + d]] = [ids[i + d], ids[i]]; save(ids); render(); };
+      row.append(
+        gt('chevron-up', 'Левее на панели', () => move(-1), i === 0),
+        gt('chevron-down', 'Правее на панели', () => move(1), i === sel.length - 1),
+        gt('x', 'Убрать с панели', () => { const ids = sel.slice(); ids.splice(i, 1); save(ids); render(); }),
+      );
+      box.appendChild(row);
     });
+    const free = mods.filter((x) => !sel.includes(x.id));
+    if (free.length) box.appendChild(el('div', 'qb-sec', 'Добавить'));
+    for (const mod of free) {
+      const row = el('div', 'qrow add');
+      const ri = el('span', 'ri'); ri.appendChild(icon(mod.icon, 16));
+      const [name, desc] = names(mod);
+      row.append(ri, el('span', 'qt', name), el('span', 'qd', desc));
+      const plus = el('span', 'gt'); plus.appendChild(icon('plus', 13));
+      row.appendChild(plus);
+      row.onclick = () => { save([...sel, mod.id]); render(); };
+      box.appendChild(row);
+    }
   };
+  m.querySelector('#qb-sep').onclick = () => { const ids = (Array.isArray(STORE.quickbar) ? STORE.quickbar : []).slice(); ids.push(QUICK_SEP); save(ids); render(); };
   render();
-  m.querySelector('#qb-ok').onclick = close;
 }
 renderQuickbar(); // стартовая отрисовка (пользовательские модули доедут через modsChanged после скана)
 
@@ -1693,6 +1834,31 @@ function initGutters() {
   });
 }
 
+// ---------------------------------------------------------------- оболочка: боковая карточка и нижняя полоса
+// Кнопки, которые живут в index.html постоянно (не перерисовываются): навигация и подвал боковой
+// карточки, чипы активного проекта, «+» быстрой панели, плашка кнопок терминала, пустой экран.
+let matrixCtl = null;   // заставка «матрица»: собирается в init(), запускается и из «Ещё»/настроек
+function startMatrix() { if (matrixCtl) matrixCtl.start(); }
+function initShell() {
+  const stop = (fn) => (e) => { e.stopPropagation(); fn(e.currentTarget); };
+  $('#nav-modules').addEventListener('click', () => showModulesCatalog());
+  $('#nav-more').addEventListener('click', stop((b) => showMoreMenu(b)));
+  $('#app-ver').addEventListener('click', () => showAbout());
+  $('#btn-github').addEventListener('click', openRepo);
+  $('#btn-look').addEventListener('click', stop((b) => showLookPanel(b)));
+  $('#btn-settings').addEventListener('click', () => showSettings());
+  $('#chip-folder').addEventListener('click', stop((b) => showFolderMenu(b)));
+  $('#chip-branch').addEventListener('click', stop((b) => showBranchMenu(b)));
+  $('#chip-sync').addEventListener('click', () => { const p = activeProject(); if (p) showSyncDialog(p); });
+  $('#qb-more').addEventListener('click', () => showModulesCatalog());
+  const tl = $('#term-timeline');
+  const markTl = () => { const on = settings.termTimeline === true; tl.classList.toggle('on', on); tl.title = on ? 'Скрыть шкалу времени' : 'Шкала времени слева'; };
+  markTl();
+  tl.addEventListener('click', () => { settings.termTimeline = settings.termTimeline !== true; saveSettings(); applyTimeline(); markTl(); });
+  $('#term-find').addEventListener('click', () => openTermSearch());
+  $('#empty-open').addEventListener('click', () => openProjectDialog());
+}
+
 // ---------------------------------------------------------------- window controls
 function initWindowControls() {
   $('#win-min').onclick = () => lite.win.minimize();
@@ -1700,59 +1866,72 @@ function initWindowControls() {
   $('#win-close').onclick = () => lite.win.close(); // fullscreen — по F11 (кнопку убрали, стандартные 3 кнопки)
   lite.win.onMaximizeChange((v) => $('#app').classList.toggle('is-max', !!v));
   lite.win.isMaximized().then((v) => $('#app').classList.toggle('is-max', !!v));
-  $('#topbar').addEventListener('dblclick', (e) => {
-    if (e.target.closest('button, #menubar, .win-tools')) return;
-    lite.win.maximizeToggle();
-  });
+  // двойной клик по пустому месту шапки или бренда — развернуть/свернуть окно, как по заголовку
+  for (const sel of ['#term-header', '.side-brand']) {
+    $(sel).addEventListener('dblclick', (e) => {
+      if (e.target.closest('button, .tab, .win-tools')) return;
+      lite.win.maximizeToggle();
+    });
+  }
 }
 
 // ---------------------------------------------------------------- menu
-let openMenuName = null;
-function initMenubar() {
-  document.querySelectorAll('.menu-item').forEach((btn) => {
-    btn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      const name = btn.dataset.menu;
-      if (openMenuName === name) { closeMenus(); return; }
-      openTopMenu(name, btn);
-    });
-  });
+// Меню верхней строки больше нет: «Ещё» (выезжает вбок от боковой карточки), «Модули» (каталог плитками),
+// шестерёнка (настройки) и палитра (оформление) — в боковой карточке. Все выпадашки живут в #menu-layer.
+let menuAnchor = null;   // кнопка/строка, от которой открыто меню: подсвечена, повторный клик закрывает
+function initMenus() {
   document.addEventListener('click', closeMenus);
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeMenus(); });
+  window.addEventListener('resize', closeMenus);
 }
 function closeMenus() {
   $('#menu-layer').innerHTML = '';
-  document.querySelectorAll('.menu-item.open').forEach((b) => b.classList.remove('open'));
-  openMenuName = null;
+  if (menuAnchor) { menuAnchor.classList.remove('on', 'menu-open'); menuAnchor = null; }
+}
+// Открыть меню от кнопки. Второй клик по той же кнопке — закрыть (вернёт false).
+function menuFrom(anchor) {
+  if (menuAnchor === anchor && $('#menu-layer').firstChild) { closeMenus(); return false; }
+  closeMenus();
+  menuAnchor = anchor;
+  anchor.classList.add('on');
+  return true;
 }
 function placeMenu(dd, x, y) {
   $('#menu-layer').appendChild(dd);
   dd.style.left = x + 'px';
   dd.style.top = y + 'px';
   const r = dd.getBoundingClientRect();
-  if (r.right > window.innerWidth - 8) dd.style.left = (window.innerWidth - 8 - r.width) + 'px';
-  if (r.bottom > window.innerHeight - 8) dd.style.top = (window.innerHeight - 8 - r.height) + 'px';
+  if (r.right > window.innerWidth - 8) dd.style.left = Math.max(8, window.innerWidth - 8 - r.width) + 'px';
+  if (r.bottom > window.innerHeight - 8) dd.style.top = Math.max(8, window.innerHeight - 8 - r.height) + 'px';
 }
-function openTopMenu(name, btn) {
-  closeMenus();
-  if (name === 'about') { showAbout(); return; }
-  openMenuName = name;
-  btn.classList.add('open');
-  const dd = el('div', 'menu-dropdown');
-  if (name === 'file') buildFileMenu(dd);
-  else if (name === 'settings') buildSettingsMenu(dd);
-  else if (name === 'modules') buildModulesMenu(dd);
-  dd.addEventListener('click', (e) => e.stopPropagation());
-  const r = btn.getBoundingClientRect();
-  placeMenu(dd, r.left, r.bottom + 4);
+// Меню над кнопкой нижней полосы: открывается вверх, левым краем по кнопке.
+function placeMenuAbove(dd, anchor, alignRight) {
+  $('#menu-layer').appendChild(dd);
+  const r = anchor.getBoundingClientRect(), w = dd.offsetWidth, h = dd.offsetHeight;
+  const x = alignRight ? r.right - w : r.left;
+  dd.style.left = Math.max(8, Math.min(x, window.innerWidth - w - 8)) + 'px';
+  dd.style.top = Math.max(8, r.top - h - 6) + 'px';
+}
+// Меню под кнопкой шапки (помодоро, бейдж): правым краем по кнопке.
+function placeMenuBelow(dd, anchor) {
+  $('#menu-layer').appendChild(dd);
+  const r = anchor.getBoundingClientRect(), w = dd.offsetWidth;
+  dd.style.left = Math.max(8, Math.min(r.right - w, window.innerWidth - w - 8)) + 'px';
+  dd.style.top = (r.bottom + 6) + 'px';
 }
 // `glyph` is an ICONS name (rendered as SVG); a non-icon string falls back to text; falsy → empty slot.
-function menuRow(glyph, text, onClick, cls) {
+// opts: kbd — сочетание справа, desc — приглушённая подпись справа, badge — плашка, ext — стрелка «наружу».
+function menuRow(glyph, text, onClick, cls, opts = {}) {
   const row = el('div', 'menu-row' + (cls ? ' ' + cls : ''));
   const ic = el('span', 'menu-ic');
   if (glyph && ICONS[glyph]) ic.appendChild(icon(glyph, 16));
   else if (glyph) ic.textContent = glyph;
   row.appendChild(ic); row.appendChild(el('span', null, text));
+  if (opts.kbd) row.appendChild(el('span', 'menu-kbd', opts.kbd));
+  if (opts.desc) { const d = el('span', 'menu-desc', opts.desc); d.title = opts.desc; row.appendChild(d); }
+  if (opts.badge) row.appendChild(el('span', 'menu-badge', opts.badge));
+  if (opts.ext) { const e = el('span', 'menu-ext'); e.appendChild(icon('external-link', 13)); row.appendChild(e); }
+  if (opts.title) row.title = opts.title;
   if (onClick) row.addEventListener('click', onClick);
   return row;
 }
@@ -1799,82 +1978,85 @@ async function importSettings() {
       setTimeout(() => location.reload(), r.partial ? 1500 : 700);
     });
 }
-function buildFileMenu(dd) {
-  dd.appendChild(menuRow('folder', 'Открыть папку', () => { closeMenus(); openProjectDialog(); }));
-  dd.appendChild(menuRow('plus', 'Создать папку…', () => { closeMenus(); showCreateFolder(); }));
-  dd.appendChild(el('div', 'menu-sep'));
-  dd.appendChild(menuRow('download', 'Экспорт настроек…', exportSettings));
-  dd.appendChild(menuRow('upload', 'Импорт настроек…', importSettings));
-  dd.appendChild(menuRow('clipboard', 'Логи…', () => { closeMenus(); showLogs(); }));
-  dd.appendChild(el('div', 'menu-sep'));
-  dd.appendChild(el('div', 'menu-label', 'Ранее открытые'));
+const REPO_URL = 'https://github.com/DanielLetto2020/LiteEditorAI';
+function openRepo() { lite.openExternal(REPO_URL); }
+
+// «Ещё» — всё меню редактора, которого нет в боковой карточке: выезжает вбок от карточки, три колонки
+// (Файл · Ранее открытые · Мои модули | Вид и инструменты · Справка | все встроенные модули).
+function showMoreMenu(anchor) {
+  if (!menuFrom(anchor)) return;
+  const dd = el('div', 'menu-dropdown more-fly');
+  dd.addEventListener('click', (e) => e.stopPropagation());
+  const grid = el('div', 'fly-grid');
+  const c0 = el('div', 'fly-sec'), c1 = el('div', 'fly-sec'), c2 = el('div', 'fly-sec mods');
+  grid.append(c0, c1, c2);
+  dd.appendChild(grid);
+  const T = (col, text) => col.appendChild(el('div', 'fly-t', text));
+  const go = (fn) => () => { closeMenus(); fn(); };
+
+  T(c0, 'Файл');
+  c0.appendChild(menuRow('folder', 'Открыть папку…', go(openProjectDialog)));
+  c0.appendChild(menuRow('folder-plus', 'Создать папку…', go(showCreateFolder)));
+  c0.appendChild(menuRow('plus', 'Новая категория…', go(() => showCreateCategory(null))));
+  c0.appendChild(menuRow('download', 'Экспорт настроек…', exportSettings));
+  c0.appendChild(menuRow('upload', 'Импорт настроек…', importSettings));
+  c0.appendChild(menuRow('clipboard', 'Логи…', go(showLogs)));
+  T(c0, 'Ранее открытые');
   const recents = loadRecents();
-  const list = el('div', 'recents');
-  if (!recents.length) {
-    list.appendChild(el('div', 'menu-row disabled', '— пусто —'));
-  } else {
-    for (const r of recents) {
-      const row = el('div', 'recent-row');
+  if (!recents.length) c0.appendChild(menuRow(null, '— пусто —', null, 'disabled'));
+  else {
+    const list = el('div', 'recents');
+    for (const r of recents.slice(0, 8)) {
+      const row = menuRow(null, r.name, go(() => openByPath(r.path, r.name)), 'recent', { desc: shortPath(r.path) });
       row.title = r.path;
-      row.appendChild(el('div', 'recent-name', r.name));
-      row.appendChild(el('div', 'recent-path', r.path));
-      row.addEventListener('click', () => { closeMenus(); openByPath(r.path, r.name); });
       list.appendChild(row);
     }
+    c0.appendChild(list);
+    c0.appendChild(menuRow('trash', 'Очистить список', () => { persist('recents', []); closeMenus(); }, 'muted'));
   }
-  dd.appendChild(list);
-  if (recents.length) {
-    dd.appendChild(el('div', 'menu-sep'));
-    dd.appendChild(menuRow('trash', 'Очистить список', () => { persist('recents', []); closeMenus(); }));
-  }
-}
-function buildSettingsMenu(dd) {
-  dd.appendChild(menuRow('sliders', 'Настройки…', () => { closeMenus(); showSettings(); }));
-  dd.appendChild(menuRow('grid', 'Палитра команд (Ctrl+K)', () => { closeMenus(); showPalette(); }));
-  dd.appendChild(menuRow('search', 'Поиск в терминале (Ctrl+F)', () => { closeMenus(); openTermSearch(); }));
-}
-// «Модули» — функциональные панели справа от терминала (терминалы и OpenRouter-чат — НЕ модули).
-// Группировка: «Встроенные» и «Мои модули» — flyout-подменю (раскрываются вправо по наведению),
-// «Настройка панели» — отдельный пункт. Так верхнее меню остаётся коротким и растёт вглубь.
-function buildModulesMenu(dd) {
-  let openSub = null, openParent = null, closeT = null;
-  const closeSub = () => {
-    if (openSub) { openSub.remove(); openSub = null; }
-    if (openParent) { openParent.classList.remove('sub-open'); openParent = null; }
-  };
-  const schedClose = () => { clearTimeout(closeT); closeT = setTimeout(closeSub, 240); };
-  // Пункт-флайаут: двухстрочный заголовок + стрелка; подменю строится `build(sub)` по наведению.
-  const flyout = (glyph, title, desc, build) => {
-    const row = moduleRow(glyph, title, desc, null);
-    row.classList.add('menu-flyout');
-    const arr = el('span', 'menu-arrow'); arr.appendChild(icon('chevron-right', 15)); row.appendChild(arr);
-    const open = () => {
-      clearTimeout(closeT);
-      if (openParent === row) return;
-      closeSub();
-      const sub = el('div', 'menu-dropdown menu-sub');
-      build(sub);
-      sub.addEventListener('click', (e) => e.stopPropagation());
-      sub.addEventListener('mouseenter', () => clearTimeout(closeT));
-      sub.addEventListener('mouseleave', schedClose);
-      $('#menu-layer').appendChild(sub);
-      const rr = row.getBoundingClientRect();
-      sub.style.top = rr.top + 'px';
-      sub.style.left = (rr.right - 4) + 'px';
-      const sr = sub.getBoundingClientRect();
-      if (sr.right > window.innerWidth - 8) sub.style.left = Math.max(8, rr.left - sr.width + 4) + 'px'; // не влезло вправо → влево
-      if (sr.bottom > window.innerHeight - 8) sub.style.top = Math.max(8, window.innerHeight - 8 - sr.height) + 'px';
-      openSub = sub; openParent = row; row.classList.add('sub-open');
-    };
-    row.addEventListener('mouseenter', open);
-    row.addEventListener('mouseleave', schedClose);
-    dd.appendChild(row);
-  };
+  T(c0, 'Мои модули');
+  Ext.buildMenuSection(c0, { bare: true, compact: true });
 
-  dd.appendChild(moduleRow('grid', 'Встроенные', 'все модули редактора плитками', () => { closeMenus(); showBuiltinModules(); }));
-  flyout('layers', 'Мои модули', 'пользовательские плагины', (sub) => Ext.buildMenuSection(sub, { bare: true }));
-  dd.appendChild(el('div', 'menu-sep'));
-  dd.appendChild(moduleRow('sliders', 'Настройка панели', 'быстрый доступ под терминалом', () => { closeMenus(); showPanelSetup(); }));
+  T(c1, 'Вид и инструменты');
+  c1.appendChild(menuRow('panel-left', 'Один терминал', go(toggleSingle), '', { kbd: 'Ctrl+\\' }));
+  c1.appendChild(menuRow('cmd', 'Палитра команд', go(showPalette), '', { kbd: 'Ctrl+K' }));
+  c1.appendChild(menuRow('search', 'Поиск в терминале', go(openTermSearch), '', { kbd: 'Ctrl+F' }));
+  c1.appendChild(menuRow('search', 'Найти во всех проектах', go(() => showGlobalSearch())));
+  c1.appendChild(menuRow('sliders', 'Быстрая панель…', go(showPanelSetup)));
+  c1.appendChild(menuRow('palette', 'Оформление…', () => { closeMenus(); showLookPanel($('#app').classList.contains('single') ? $('#rail-look') : $('#btn-look')); }));
+  c1.appendChild(menuRow('sparkles', 'Заставка «матрица»', go(() => startMatrix())));
+  T(c1, 'Справка');
+  if (updateInfo && updateInfo.newer) c1.appendChild(menuRow('download', `Обновить до ${updateInfo.tag || 'новой версии'}`, go(onUpdateBadgeClick), '', { badge: 'новая' }));
+  else c1.appendChild(menuRow('refresh', 'Проверить обновления', go(() => checkForUpdate({ manual: true }))));
+  c1.appendChild(menuRow('github', 'Репозиторий на GitHub', go(openRepo), '', { ext: true }));
+  c1.appendChild(menuRow('info', 'О программе', go(showAbout)));
+  c1.appendChild(menuRow('play', 'Приветствие', go(showOnboarding)));
+  c1.appendChild(el('div', 'menu-sep'));
+  c1.appendChild(menuRow('gear', 'Настройки…', go(() => showSettings())));
+
+  // все встроенные модули — двумя столбиками, чтобы меню не вырастало во весь экран
+  const mg = el('div', 'fly-mgrid');
+  c2.appendChild(mg);
+  const modRow = (mod) => {
+    const open = openModuleIds.has(mod.id);
+    const row = menuRow(mod.icon, mod.title, go(() => openModule(mod.id)), open ? 'mopen' : '');
+    row.title = mod.desc;
+    mg.appendChild(row);
+  };
+  mg.appendChild(el('div', 'fly-t span', 'Модули · для проекта'));
+  BUILTIN_MODS.filter((x) => x.project).forEach(modRow);
+  mg.appendChild(el('div', 'fly-t span', 'Модули · самостоятельные'));
+  BUILTIN_MODS.filter((x) => !x.project).forEach(modRow);
+  const all = menuRow('grid', 'Все модули плитками…', go(() => showModulesCatalog()));
+  all.classList.add('span');
+  mg.appendChild(all);
+
+  // выезжает вбок от боковой карточки (или от рельса в режиме «один терминал»), верхом по кнопке
+  $('#menu-layer').appendChild(dd);
+  const side = $('#sidebar').getBoundingClientRect(), ar = anchor.getBoundingClientRect();
+  const w = dd.offsetWidth, h = dd.offsetHeight;
+  dd.style.left = Math.max(8, Math.min(side.right + 8, window.innerWidth - w - 8)) + 'px';
+  dd.style.top = Math.max(8, Math.min(ar.top - 8, window.innerHeight - h - 8)) + 'px';
 }
 
 // Каталог встроенных модулей для модалки «Встроенные»: project:true — окно следует за активным
@@ -1904,82 +2086,418 @@ const BUILTIN_MODS = [
   { id: 'keepass',  icon: 'key',      title: 'Сейф паролей',       desc: 'KeePass .kdbx: пароли и токены' },
   { id: 'sitemon',  icon: 'globe',    title: 'Мониторинг сайтов',  desc: 'доступность сайтов + уведомления' },
 ];
-// Модалка «Встроенные модули»: плитки с живым фильтром, две секции — «следуют за проектом»
-// и «самостоятельные». Открытие модуля — клик по плитке (тот же openModule, что квикбар/меню).
-function showBuiltinModules() {
-  const { m, close } = makeModal('');
+// Каталог модулей («Модули» в боковой карточке): плитки с живым поиском и вкладками
+// «Все · Для проекта · Самостоятельные · Мои модули». На плитке — «на быструю панель» и «открывать при запуске».
+// Стрелки выбирают плитку, Enter открывает. Открытие — тот же openModule, что у квикбара и меню.
+function showModulesCatalog(start = 'all') {
+  closeMenus();
+  const { m, close } = makeModal(`
+    <div class="mhead"><div><div class="mt">Модули</div><div class="ms">Каждый встроенный модуль открывается своим окном; свои модули — панелью справа</div></div><span class="grow"></span><button class="icon-btn" id="mc-x" title="Закрыть" aria-label="Закрыть"></button></div>
+    <div class="msearch"><span class="mc-sic"></span><input type="text" id="mc-q" placeholder="Поиск модуля…" autocomplete="off" spellcheck="false"></div>
+    <div class="mtabs" id="mc-tabs"></div>
+    <div class="bim-body" id="mc-body"></div>
+    <div class="mhint"><span><kbd>↑</kbd><kbd>↓</kbd><kbd>←</kbd><kbd>→</kbd> выбор</span><span><kbd>Enter</kbd> открыть</span><span><kbd>Esc</kbd> закрыть</span></div>`);
   m.classList.add('bim-modal');
-  const head = el('div', 'bim-head');
-  head.appendChild(el('h2', null, 'Встроенные модули'));
-  head.appendChild(el('span', 'bim-count', String(BUILTIN_MODS.length)));
-  const searchWrap = el('div', 'bim-search');
-  searchWrap.appendChild(icon('search', 15));
-  const q = el('input');
-  q.type = 'text';
-  q.placeholder = 'Поиск модуля…';
-  searchWrap.appendChild(q);
-  const body = el('div', 'bim-body');
-  const tiles = []; // { el, sec, text }
-  const section = (label, hint, mods) => {
-    const sec = el('div', 'bim-sec');
-    const st = el('div', 'bim-sec-title');
-    st.appendChild(el('span', null, label));
-    st.appendChild(el('span', 'bim-sec-hint', hint));
-    const grid = el('div', 'bim-grid');
-    for (const mod of mods) {
-      const t = el('button', 'bim-tile');
-      t.type = 'button';
-      const chip = el('span', 'bim-chip');
-      chip.appendChild(icon(mod.icon, 18));
-      t.appendChild(chip);
-      t.appendChild(el('span', 'bim-title', mod.title));
-      t.appendChild(el('span', 'bim-desc', mod.desc));
-      t.title = mod.title + ' — ' + mod.desc;
-      t.addEventListener('click', () => { close(); openModule(mod.id); });
-      // Галочка «открывать при старте»: у каждого своя пара-тройка постоянно нужных окон, и
-      // открывать их руками после каждого запуска — лишний ритуал (идея PR #10).
-      const chk = el('button', 'bim-auto');
-      chk.type = 'button';
-      chk.title = 'Открывать при запуске редактора';
-      chk.appendChild(icon('check', 13));
-      if ((settings.autoLaunchMods || []).includes(mod.id)) chk.classList.add('on');
-      chk.addEventListener('click', (e) => {
-        e.stopPropagation();                       // клик по галочке не должен открывать модуль
-        const on = !chk.classList.contains('on');
-        chk.classList.toggle('on', on);
-        const cur = new Set(settings.autoLaunchMods || []);
-        if (on) cur.add(mod.id); else cur.delete(mod.id);
-        settings.autoLaunchMods = [...cur];
-        saveSettings();
-      });
-      t.appendChild(chk);
-      grid.appendChild(t);
-      tiles.push({ el: t, sec, text: (mod.title + ' ' + mod.desc).toLowerCase() });
+  m.querySelector('#mc-x').appendChild(icon('x', 16));
+  m.querySelector('#mc-x').onclick = close;
+  m.querySelector('.mc-sic').appendChild(icon('search', 16));
+  const q = m.querySelector('#mc-q'), tabsBox = m.querySelector('#mc-tabs'), body = m.querySelector('#mc-body');
+  let tab = start, hl = 0, tiles = [];
+  const quick = () => (Array.isArray(STORE.quickbar) ? STORE.quickbar : []);
+  const userMods = () => Ext.list().filter((x) => x.ok).map((x) => ({ id: 'ext:' + x.id, extId: x.id, icon: 'layers', title: x.name, desc: 'мой модуль · панель справа', user: true }));
+  const TABS = [
+    ['all', 'Все', () => BUILTIN_MODS.length + userMods().length],
+    ['project', 'Для проекта', () => BUILTIN_MODS.filter((x) => x.project).length],
+    ['self', 'Самостоятельные', () => BUILTIN_MODS.filter((x) => !x.project).length],
+    ['mine', 'Мои модули', () => userMods().length],
+  ];
+  const drawTabs = () => {
+    tabsBox.replaceChildren();
+    for (const [key, label, count] of TABS) {
+      const b = el('button', 'mtab' + (tab === key ? ' on' : ''));
+      b.append(el('span', null, label), el('span', 'n', String(count())));
+      b.onclick = () => { tab = key; hl = 0; drawTabs(); draw(); q.focus(); };
+      tabsBox.appendChild(b);
     }
-    sec.append(st, grid);
-    body.appendChild(sec);
+    tabsBox.appendChild(el('span', 'grow'));
+    const setup = el('button', 'btn sm');
+    setup.append(icon('sliders', 14), el('span', null, 'Быстрая панель…'));
+    setup.onclick = () => { close(); showPanelSetup(); };
+    tabsBox.appendChild(setup);
   };
-  section('Следуют за проектом', 'окно привязано к активному проекту редактора',
-    BUILTIN_MODS.filter((x) => x.project));
-  section('Самостоятельные', 'не зависят от открытых проектов',
-    BUILTIN_MODS.filter((x) => !x.project));
-  const empty = el('div', 'bim-empty', 'Ничего не найдено');
-  empty.hidden = true;
-  body.appendChild(empty);
-  q.addEventListener('input', () => {
-    const needle = q.value.trim().toLowerCase();
-    let shown = 0;
-    for (const t of tiles) {
-      const hit = !needle || t.text.includes(needle);
-      t.el.hidden = !hit;
-      if (hit) shown++;
+  const toggleQuick = (id) => {
+    const cur = quick().slice();
+    const i = cur.indexOf(id);
+    if (i >= 0) cur.splice(i, 1); else cur.push(id);
+    persist('quickbar', cur); renderQuickbar();
+  };
+  const toggleAuto = (id) => {
+    const cur = new Set(settings.autoLaunchMods || []);
+    if (cur.has(id)) cur.delete(id); else cur.add(id);
+    settings.autoLaunchMods = [...cur]; saveSettings();
+  };
+  const openMod = (mod) => { close(); if (mod.user) Ext.quickOpen(mod.extId); else openModule(mod.id); };
+  const tile = (mod) => {
+    const t = el('button', 'bim-tile');
+    t.type = 'button';
+    const chip = el('span', 'bim-chip'); chip.appendChild(icon(mod.icon, 18));
+    t.append(chip, el('span', 'bim-title', mod.title), el('span', 'bim-desc', mod.desc));
+    if (openModuleIds.has(mod.id)) t.appendChild(el('span', 'bim-tag', 'окно открыто'));
+    const btns = el('span', 'bim-btns');
+    const pin = iconBtn('bim-x' + (quick().includes(mod.id) ? ' on' : ''), 'pin', quick().includes(mod.id) ? 'Убрать с быстрой панели' : 'На быструю панель', 14);
+    pin.onclick = (e) => { e.stopPropagation(); toggleQuick(mod.id); draw(); };
+    btns.appendChild(pin);
+    if (!mod.user) {
+      const auto = (settings.autoLaunchMods || []).includes(mod.id);
+      const a = iconBtn('bim-x' + (auto ? ' on' : ''), 'power', auto ? 'Не открывать при запуске' : 'Открывать при запуске редактора', 14);
+      a.onclick = (e) => { e.stopPropagation(); toggleAuto(mod.id); draw(); };
+      btns.appendChild(a);
     }
-    for (const sec of new Set(tiles.map((t) => t.sec)))
-      sec.hidden = !tiles.some((t) => t.sec === sec && !t.el.hidden);
-    empty.hidden = shown > 0;
+    t.appendChild(btns);
+    t.title = mod.title + ' — ' + mod.desc;
+    t.addEventListener('click', () => openMod(mod));
+    return t;
+  };
+  const draw = () => {
+    const needle = q.value.trim().toLowerCase();
+    // ищем и по исходной строке, и по переводу: в интерфейсе названия уже на выбранном языке
+    const hit = (x) => !needle || [x.title, x.desc, tt(x.title), tt(x.desc)].join(' ').toLowerCase().includes(needle);
+    const groups = [];
+    if (tab === 'all' || tab === 'project') groups.push(['Следуют за проектом', 'окно привязано к активному проекту редактора', BUILTIN_MODS.filter((x) => x.project && hit(x))]);
+    if (tab === 'all' || tab === 'self') groups.push(['Самостоятельные', 'не зависят от открытых проектов', BUILTIN_MODS.filter((x) => !x.project && hit(x))]);
+    if (tab === 'all' || tab === 'mine') groups.push(['Мои модули', 'пользовательские плагины из папки модулей', userMods().filter(hit)]);
+    body.replaceChildren();
+    tiles = [];
+    for (const [label, hint, mods] of groups) {
+      if (!mods.length && !(tab === 'mine' && label === 'Мои модули')) continue;
+      const st = el('div', 'bim-sec-title');
+      st.append(el('b', null, label), el('span', null, hint));
+      const grid = el('div', 'bim-grid');
+      for (const mod of mods) { const t = tile(mod); tiles.push({ el: t, mod }); grid.appendChild(t); }
+      if (label === 'Мои модули' && !needle) {
+        const nw = el('button', 'bim-tile new');
+        const chip = el('span', 'bim-chip'); chip.appendChild(icon('plus', 18));
+        nw.append(chip, el('span', 'bim-title', 'Создать модуль'), el('span', 'bim-desc', 'мастер с заготовкой и подсказками для агента'));
+        nw.onclick = () => { close(); Ext.openWizard(); };
+        grid.appendChild(nw);
+      }
+      body.append(st, grid);
+    }
+    if (!tiles.length && !(tab === 'mine' && !needle)) body.appendChild(el('div', 'bim-empty', 'Ничего не найдено'));
+    hl = Math.max(0, Math.min(hl, tiles.length - 1));
+    tiles.forEach((x, i) => x.el.classList.toggle('hl', i === hl));
+  };
+  const cols = () => { const g = body.querySelector('.bim-grid'); return g ? getComputedStyle(g).gridTemplateColumns.split(' ').length : 4; };
+  q.addEventListener('input', () => { hl = 0; draw(); });
+  q.addEventListener('keydown', (e) => {
+    const step = { ArrowRight: 1, ArrowLeft: -1, ArrowDown: cols(), ArrowUp: -cols() }[e.key];
+    if (step) { e.preventDefault(); hl = Math.max(0, Math.min(tiles.length - 1, hl + step)); tiles.forEach((x, i) => x.el.classList.toggle('hl', i === hl)); if (tiles[hl]) tiles[hl].el.scrollIntoView({ block: 'nearest' }); }
+    else if (e.key === 'Enter') { e.preventDefault(); if (tiles[hl]) openMod(tiles[hl].mod); }
   });
-  m.append(head, searchWrap, body);
-  q.focus();
+  drawTabs(); draw();
+  setTimeout(() => q.focus(), 30);
+}
+
+// ---------------------------------------------------------------- оформление (цвета и размеры)
+// Тема одна — «Графит»; палитру пользователь настраивает сам. Хранится в settings.look (общая с окнами
+// модулей), ширина боковой карточки — в layout.sidebar, шрифт терминала — settings.fontSize.
+// Правка применяется сразу; запись и рассылка окнам модулей — с задержкой, чтобы ползунок не гонял IPC.
+const LOOK_ACCENTS = ['#3ecf8e', '#5b9cff', '#3dc8dc', '#a98cf0', '#e06fae', '#e0af68', '#d97757'];
+let lookSaveT = null;
+function lookLive() {
+  applyLook(settings);
+  for (const rec of terms.values()) { try { rec.term.options.theme = termTheme(); } catch (_) {} }
+  for (const rec of extTerms.values()) { try { rec.term.options.theme = termTheme(); } catch (_) {} }
+  clearTimeout(lookSaveT);
+  lookSaveT = setTimeout(() => { saveSettings(); applyTheme(); }, 250);
+}
+function editLook(fn) {
+  const l = lookOf(settings);
+  const cur = { accent: l.accent, r: l.r, row: l.row, alpha: l.alpha, base: { ...l.base }, status: { ...l.status }, over: { ...l.over } };
+  fn(cur);
+  settings.look = cur;
+  lookLive();
+}
+function showLookPanel(anchor) {
+  if (!anchor || !menuFrom(anchor)) return;
+  const dd = el('div', 'menu-dropdown look-pop');
+  dd.addEventListener('click', (e) => e.stopPropagation());
+  dd.addEventListener('mousedown', (e) => e.stopPropagation());
+  let advOpen = false;
+  const HEX = /^#[0-9a-f]{6}$/i;
+  const crow = (grp, key, label, value, auto) => {
+    const row = el('div', 'crow'); row.dataset.row = grp + ':' + key;
+    const cl = el('span', 'cl', label);
+    if (auto) cl.appendChild(el('small', null, 'авто'));
+    const sw = el('label', 'csw'); sw.style.background = value;
+    const ci = el('input'); ci.type = 'color'; ci.value = value; ci.dataset.grp = grp; ci.dataset.tok = key; ci.setAttribute('aria-label', label);
+    sw.appendChild(ci);
+    const hx = el('input', 'chex' + (auto ? ' auto' : '')); hx.value = value; hx.maxLength = 7; hx.spellcheck = false; hx.dataset.grp = grp; hx.dataset.hex = key;
+    hx.setAttribute('aria-label', label);
+    row.append(cl, sw, hx);
+    return row;
+  };
+  const setColor = (grp, key, v) => editLook((l) => {
+    if (grp === 'base') l.base[key] = v;
+    else if (grp === 'status') l.status[key] = v;
+    else if (grp === 'over') l.over[key] = v;
+    else l.accent = v;
+  });
+  // обновить значения на месте, не пересобирая панель (иначе закроется системный выбор цвета)
+  const refresh = () => {
+    const l = lookOf(settings), tok = lookTokens(l);
+    dd.querySelectorAll('.crow').forEach((r) => {
+      const [grp, k] = r.dataset.row.split(':');
+      const v = grp === 'base' ? l.base[k] : grp === 'status' ? l.status[k] : tok[k];
+      const sw = r.querySelector('.csw'), ci = r.querySelector('input[type=color]'), hx = r.querySelector('.chex');
+      if (!HEX.test(v)) return;
+      sw.style.background = v;
+      if (ci.value !== v) ci.value = v;
+      if (document.activeElement !== hx) hx.value = v;
+    });
+    dd.querySelectorAll('.lk-sw').forEach((b) => b.classList.toggle('on', b.dataset.acc === l.accent));
+  };
+  const RANGES = [
+    ['alpha', 'Непрозрачность фона', 60, 100, 1, '%', () => lookOf(settings).alpha, (v) => editLook((l) => { l.alpha = v; })],
+    ['r', 'Скругление', 4, 22, 1, 'px', () => lookOf(settings).r, (v) => editLook((l) => { l.r = v; })],
+    ['side', 'Ширина панели', 240, 440, 2, 'px', () => layout.sidebar, (v) => { layout.sidebar = v; applyLayout(); refitActiveTerminal(); clearTimeout(lookSaveT); lookSaveT = setTimeout(saveLayout, 250); }],
+    ['row', 'Строка проекта', 28, 42, 1, 'px', () => lookOf(settings).row, (v) => editLook((l) => { l.row = v; })],
+    ['font', 'Шрифт терминала', 9, 24, 1, 'px', () => settings.fontSize, (v) => { settings.fontSize = v; applyFontSize(); clearTimeout(lookSaveT); lookSaveT = setTimeout(saveSettings, 250); }],
+  ];
+  const draw = () => {
+    const l = lookOf(settings), tok = lookTokens(l);
+    dd.replaceChildren();
+    const h = el('div', 'look-h');
+    h.appendChild(el('b', null, 'Оформление'));
+    const reset = el('button', 'lk-link', 'Сбросить');
+    reset.onclick = () => {
+      delete settings.look; settings.fontSize = DEFAULT_SETTINGS.fontSize; applyFontSize();
+      layout.sidebar = DEFAULT_LAYOUT.sidebar; applyLayout(); saveLayout(); refitActiveTerminal();
+      lookLive(); draw(); toast('Оформление сброшено к «Графиту»');
+    };
+    const x = iconBtn('icon-btn', 'x', 'Закрыть', 15); x.onclick = closeMenus;
+    h.append(reset, x);
+    dd.appendChild(h);
+    // акцент
+    const s1 = el('div', 'look-s'); s1.appendChild(el('div', 'look-t', 'Акцент'));
+    const acc = el('div', 'lk-acc');
+    for (const c of LOOK_ACCENTS) {
+      const b = el('button', 'lk-sw' + (l.accent === c ? ' on' : '')); b.dataset.acc = c; b.style.background = c; b.title = c;
+      b.onclick = () => { setColor('accent', 'accent', c); refresh(); };
+      acc.appendChild(b);
+    }
+    const own = el('label', 'csw'); own.style.background = l.accent; own.title = 'Свой цвет';
+    const oi = el('input'); oi.type = 'color'; oi.value = l.accent; oi.dataset.grp = 'accent'; oi.dataset.tok = 'accent';
+    own.appendChild(oi); acc.appendChild(own);
+    s1.appendChild(acc); dd.appendChild(s1);
+    // основные цвета и состояния
+    const s2 = el('div', 'look-s'); s2.appendChild(el('div', 'look-t', 'Основные цвета'));
+    for (const [k, n] of Object.entries(LOOK_BASE_NAMES)) s2.appendChild(crow('base', k, n, l.base[k]));
+    dd.appendChild(s2);
+    const s3 = el('div', 'look-s'); s3.appendChild(el('div', 'look-t', 'Состояния'));
+    for (const [k, n] of Object.entries(LOOK_STATUS_NAMES)) s3.appendChild(crow('status', k, n, l.status[k]));
+    dd.appendChild(s3);
+    // форма и размеры
+    const s4 = el('div', 'look-s'); s4.appendChild(el('div', 'look-t', 'Форма и размеры'));
+    for (const [, n, a, b, step, unit, get, set] of RANGES) {
+      const row = el('div', 'lrng');
+      const inp = el('input'); inp.type = 'range'; inp.min = a; inp.max = b; inp.step = step; inp.value = get(); inp.setAttribute('aria-label', n);
+      const val = el('span', 'val', get() + unit);
+      inp.addEventListener('input', () => { const v = +inp.value; set(v); val.textContent = v + unit; });
+      row.append(el('span', null, n), inp, val);
+      s4.appendChild(row);
+    }
+    dd.appendChild(s4);
+    // все цвета: выведенные токены, любой можно задать руками («авто» — рассчитан из основных)
+    const adv = el('details', 'look-s'); adv.open = advOpen;
+    const sum = el('summary', 'look-t');
+    sum.append(el('span', null, 'Все цвета'), el('span', null, '· ' + Object.keys(LOOK_TOKEN_NAMES).length));
+    const chv = el('span', 'chv'); chv.appendChild(icon('chevron-down', 12)); sum.appendChild(chv);
+    adv.appendChild(sum);
+    adv.addEventListener('toggle', () => { advOpen = adv.open; });
+    for (const [k, n] of Object.entries(LOOK_TOKEN_NAMES)) {
+      const ownTok = k in l.over;
+      const row = crow('over', k, n, HEX.test(tok[k]) ? tok[k] : '#000000', !ownTok);
+      const un = iconBtn('cx' + (ownTok ? '' : ' hid'), 'x', 'Вернуть рассчитанный', 12);
+      un.onclick = () => { editLook((ll) => { delete ll.over[k]; }); draw(); };
+      row.appendChild(un);
+      adv.appendChild(row);
+    }
+    dd.appendChild(adv);
+    // обмен темой: JSON в буфер и обратно
+    const f = el('div', 'look-f');
+    const cp = el('button', 'btn'); cp.append(icon('copy', 14), el('span', null, 'Скопировать тему'));
+    cp.onclick = () => {
+      const lk = lookOf(settings);
+      lite.copyText(JSON.stringify({ liteTheme: 1, ...lk, side: layout.sidebar, font: settings.fontSize }));
+      toast('Тема скопирована — её можно передать и вставить');
+    };
+    const ps = el('button', 'btn'); ps.append(icon('clipboard', 14), el('span', null, 'Вставить'));
+    ps.onclick = async () => {
+      let raw = '';
+      try { raw = await lite.readClipboard(); } catch (_) {}
+      let o = null;
+      try { o = JSON.parse(String(raw || '').trim()); } catch (_) {}
+      if (!o || typeof o !== 'object' || (!o.base && !o.accent)) { toast('В буфере обмена нет темы — сначала скопируйте её', { kind: 'warn' }); return; }
+      settings.look = { accent: o.accent, r: o.r, row: o.row, alpha: o.alpha, base: o.base, status: o.status, over: o.over };
+      settings.look = lookOf(settings);                                   // проверка значений: мусор отбрасывается
+      if (Number.isFinite(+o.side)) { layout.sidebar = +o.side; applyLayout(); saveLayout(); }
+      if (Number.isFinite(+o.font)) { settings.fontSize = Math.max(9, Math.min(24, +o.font)); applyFontSize(); }
+      lookLive(); draw(); refitActiveTerminal();
+      toast('Тема применена');
+    };
+    f.append(cp, ps);
+    dd.appendChild(f);
+  };
+  dd.addEventListener('input', (e) => {
+    const t = e.target;
+    if (t.dataset.tok) { setColor(t.dataset.grp, t.dataset.tok, t.value.toLowerCase()); refresh(); markOwn(t); }
+    else if (t.dataset.hex) { const v = t.value.trim(); if (HEX.test(v)) { setColor(t.dataset.grp, t.dataset.hex, v.toLowerCase()); refresh(); markOwn(t); } }
+  });
+  // токен из «Все цвета» задан руками — снять пометку «авто» и показать крестик сброса
+  const markOwn = (t) => {
+    if (t.dataset.grp !== 'over') return;
+    const r = t.closest('.crow'); if (!r) return;
+    const sm = r.querySelector('small'); if (sm) sm.remove();
+    r.querySelector('.chex').classList.remove('auto');
+    const cx = r.querySelector('.cx'); if (cx) cx.classList.remove('hid');
+  };
+  draw();
+  // выезжает вбок от боковой карточки (рельса), низом по кнопке
+  $('#menu-layer').appendChild(dd);
+  const side = $('#sidebar').getBoundingClientRect(), ar = anchor.getBoundingClientRect();
+  dd.style.left = Math.max(8, Math.min(side.right + 8, window.innerWidth - dd.offsetWidth - 8)) + 'px';
+  dd.style.top = 'auto';
+  dd.style.bottom = Math.max(8, window.innerHeight - ar.bottom - 4) + 'px';
+}
+
+// ---------------------------------------------------------------- нижняя полоса: чипы активного проекта
+// Папка (меню: «Проект», проводник, путь) · ветка git с числом изменений (поповер со списком) ·
+// синхронизация (только где она есть). Git спрашиваем лениво и с задержкой: на смене проекта, на
+// изменениях файлов и при возврате в окно.
+let gitChip = { projId: null, repo: false, branch: '', ahead: 0, behind: 0, files: [] };
+let gitChipT = null, gitChipSeq = 0;
+// Домашний каталог в чипе — «~»: путь короче, а полный — в подсказке и в меню чипа.
+function shortPath(p) {
+  const s = String(p), home = String(lite.homeDir || '').replace(/[\\/]+$/, '');
+  if (home && (s === home || s.startsWith(home + '/') || s.startsWith(home + '\\'))) return '~' + s.slice(home.length);
+  return s.replace(/^\/(?:home|Users)\/[^/]+(?=\/|$)/, '~').replace(/^[A-Za-z]:\\Users\\[^\\]+(?=\\|$)/, '~');
+}
+function renderChips() {
+  const p = activeProject();
+  const fb = $('#chip-folder'), bb = $('#chip-branch'), sb = $('#chip-sync');
+  if (!fb) return;
+  fb.classList.toggle('hidden', !p);
+  if (!p) { bb.classList.add('hidden'); sb.classList.add('hidden'); return; }
+  fb.replaceChildren(icon('folder', 14), el('span', 'ct', shortPath(p.path)));
+  fb.title = p.path;
+  fb.setAttribute('data-no-i18n', '');
+  const g = gitChip.projId === p.id ? gitChip : null;
+  bb.classList.toggle('hidden', !(g && g.repo));
+  if (g && g.repo) {
+    const n = g.files.length;
+    bb.replaceChildren(icon('git', 14), el('span', 'ct', g.branch));
+    if (n) bb.appendChild(el('span', 'cn', '· ' + n));
+    bb.setAttribute('data-no-i18n', '');
+    bb.title = n ? `Git: ветка ${g.branch}, изменено файлов: ${n}` : `Git: ветка ${g.branch}, изменений нет`;
+  }
+  sb.classList.toggle('hidden', !syncAvailable || missing.has(p.id));
+  if (syncAvailable) {
+    const on = syncedPaths.has(p.path);
+    sb.classList.toggle('off', !on);
+    sb.replaceChildren(el('span', 'sdot'), el('span', 'ct', on ? 'Синхронизирован' : 'Без синхронизации'));
+    sb.title = on ? 'Синхронизируется с сервером — подробности' : 'Не синхронизируется — нажмите, чтобы подключить';
+  }
+}
+function refreshGitChip(delay = 400) {
+  clearTimeout(gitChipT);
+  gitChipT = setTimeout(async () => {
+    const p = activeProject();
+    if (!p || missing.has(p.id)) { gitChip = { projId: p ? p.id : null, repo: false, branch: '', files: [] }; renderChips(); return; }
+    const seq = ++gitChipSeq;
+    let info, st;
+    try { [info, st] = await Promise.all([lite.git.info(p.path), lite.git.status(p.path)]); } catch (_) { info = null; }
+    if (seq !== gitChipSeq) return;          // пока ждали, проект сменился — ответ устарел
+    if (!info || !info.repo) { gitChip = { projId: p.id, repo: false, branch: '', files: [] }; renderChips(); return; }
+    const base = p.path.replace(/[\\/]+$/, '');
+    const files = Object.entries((st && st.files) || {}).map(([abs, code]) => ({ abs, code, rel: abs.startsWith(base) ? abs.slice(base.length + 1) : abs }));
+    gitChip = { projId: p.id, repo: true, branch: info.branch || 'HEAD', ahead: info.ahead || 0, behind: info.behind || 0, files };
+    renderChips();
+  }, delay);
+}
+function showFolderMenu(anchor) {
+  const p = activeProject();
+  if (!p || !menuFrom(anchor)) return;
+  const dd = el('div', 'menu-dropdown');
+  dd.style.minWidth = '260px';
+  dd.addEventListener('click', (e) => e.stopPropagation());
+  const info = el('div', 'pinfo'); info.appendChild(el('code', null, p.path));
+  dd.appendChild(info);
+  dd.appendChild(el('div', 'menu-sep'));
+  dd.appendChild(menuRow('eye', 'Открыть «Проект»', () => { closeMenus(); openModule('files'); }, '', { desc: 'вивер и дерево' }));
+  dd.appendChild(menuRow('folder', 'Открыть в проводнике', () => { closeMenus(); lite.openInFileManager(p.path); }));
+  dd.appendChild(menuRow('copy', 'Копировать путь', () => { closeMenus(); lite.copyText(p.path); toast('Путь скопирован'); }));
+  dd.appendChild(menuRow('terminal', 'Новая вкладка терминала', () => { closeMenus(); addTab(); }, '', { kbd: 'Ctrl⇧T' }));
+  placeMenuAbove(dd, anchor);
+}
+const GIT_KIND = { M: 'M', A: 'A', D: 'D', R: 'R', C: 'C', U: 'U', '??': '?', '?': '?' };
+function showBranchMenu(anchor) {
+  const p = activeProject();
+  if (!p || !menuFrom(anchor)) return;
+  const g = gitChip.projId === p.id ? gitChip : null;
+  const dd = el('div', 'menu-dropdown branch-pop');
+  dd.addEventListener('click', (e) => e.stopPropagation());
+  const lbl = el('div', 'menu-label');
+  lbl.append(el('span', null, 'Изменения'), document.createTextNode(' · '), el('span', null, g ? g.branch : '…'));
+  lbl.lastChild.setAttribute('data-no-i18n', '');
+  if (g && (g.ahead || g.behind)) lbl.appendChild(document.createTextNode(`  ↑${g.ahead} ↓${g.behind}`));
+  dd.appendChild(lbl);
+  const files = g ? g.files : [];
+  if (!files.length) dd.appendChild(el('div', 'pinfo', 'Чисто — изменений нет.'));
+  else {
+    const list = el('div', 'recents');
+    for (const f of files.slice(0, 40)) {
+      const row = el('div', 'chg');
+      const k = GIT_KIND[f.code] || f.code.slice(0, 1) || '?';
+      row.append(el('span', 'k' + (k === 'A' || k === '?' ? ' a' : k === 'D' ? ' d' : ''), k), el('span', 'f', f.rel));
+      row.title = f.rel;
+      row.setAttribute('data-no-i18n', '');
+      row.onclick = () => { closeMenus(); if (k !== 'D') lite.editorBus.openInViewer(f.abs, 0); };
+      list.appendChild(row);
+    }
+    dd.appendChild(list);
+    if (files.length > 40) dd.appendChild(el('div', 'pinfo', `и ещё ${files.length - 40}`));
+  }
+  const btns = el('div', 'pbtns');
+  const gitBtn = el('button', 'btn'); gitBtn.append(icon('git', 14), el('span', null, 'Открыть Git'));
+  gitBtn.onclick = () => { closeMenus(); openModule('git'); };
+  const upd = el('button', 'btn'); upd.append(icon('refresh', 14), el('span', null, 'Обновить'));
+  upd.onclick = () => { closeMenus(); refreshGitChip(0); };
+  btns.append(gitBtn, upd);
+  dd.appendChild(btns);
+  placeMenuAbove(dd, anchor);
+}
+
+// ---------------------------------------------------------------- шапка: бейдж «ждёт ответа» и помодоро
+function showPomoMenu(anchor) {
+  const s = pomoLast;
+  if (!s || !s.running || !menuFrom(anchor)) return;
+  const dd = el('div', 'menu-dropdown');
+  dd.style.minWidth = '260px';
+  dd.addEventListener('click', (e) => e.stopPropagation());
+  const brk = s.phase === 'short' || s.phase === 'long';
+  const info = el('div', 'pinfo');
+  info.append(el('b', null, (brk ? (s.phase === 'long' ? 'Длинный перерыв' : 'Короткий перерыв') : 'Работа') + ' · ' + fmtRest(s.remaining)));
+  if (s.tech && s.tech.name) { info.appendChild(el('br')); info.appendChild(el('span', null, s.tech.name)); }
+  dd.appendChild(info);
+  const canSkip = !(s.tech && s.tech.allowSkip === false);
+  dd.appendChild(menuRow(s.paused ? 'play' : 'pause', s.paused ? 'Продолжить' : 'Пауза', () => { closeMenus(); (s.paused ? lite.pomodoro.resume() : lite.pomodoro.pause()).catch(() => {}); }));
+  if (!brk) dd.appendChild(menuRow('clock', 'Перерыв сейчас', () => { closeMenus(); lite.pomodoro.skip().catch(() => {}); }));
+  else if (canSkip) dd.appendChild(menuRow('skip', 'Пропустить перерыв', () => { closeMenus(); lite.pomodoro.skip().catch(() => {}); }));
+  dd.appendChild(menuRow('stop', 'Остановить', () => { closeMenus(); lite.pomodoro.stop().catch(() => {}); }));
+  dd.appendChild(el('div', 'menu-sep'));
+  dd.appendChild(menuRow('clock', 'Открыть модуль «Помодоро»', () => { closeMenus(); openModule('pomodoro'); }));
+  placeMenuBelow(dd, anchor);
 }
 
 // ---------------------------------------------------------------- заготовленные промпты
@@ -2102,7 +2620,7 @@ function openPromptsManager(projId) {
   };
   const commit = () => { syncFromDom(); persistNow(); };
   const { m, close } = makeModal(`
-    <h2>💬 Заготовленные промпты</h2>
+    <h2>Заготовленные промпты</h2>
     <div class="pm-hint">Доступны по правому клику в терминале → «Промпты». Клик по карточке вставляет текст в активный терминал <b>без запуска</b>. Слева — промпты этого проекта, справа — общие для всех проектов.</div>
     <div class="pm-cols">
       <div class="pm-col">
@@ -2197,8 +2715,9 @@ function showTermMenu(x, y, term, sid) {
 function showAbout() {
   closeMenus();
   const { m, close } = makeModal(`
-    <h2><span style="color:var(--green-bright)">▍</span>LiteEditorAI</h2>
-    <div class="about-desc">
+    <div class="about-logo"><span class="about-mark"></span><span>LiteEditor</span></div>
+    <div class="about-ver" data-no-i18n>${APP_VERSION}</div> <span id="ab-upd-status" class="about-upd"></span>
+    <div class="about-desc" style="margin-top:14px;text-align:left">
       Когда код всё чаще пишет агент, а не ты сам, привычный редактор встаёт с ног на голову:
       в центре уже не файл, а разговор. LiteEditor построен вокруг этого — главный здесь
       твой терминал с агентом, а просмотр кода, дерево и git живут рядом и прячутся одной
@@ -2209,14 +2728,16 @@ function showAbout() {
       Маленький проект для себя и тех, кто проводит день в диалоге с ИИ и хочет, чтобы вокруг
       этого диалога было спокойно и удобно.
     </div>
-    <div class="about-ver">${APP_VERSION} <span id="ab-upd-status" class="about-upd"></span></div>
-    <div class="about-meta">Максим&nbsp;Кузьминский · <a href="#" id="ab-src">исходники на GitHub</a></div>
+    <div class="about-meta">Максим Кузьминский · Electron · xterm.js · node-pty · CodeMirror</div>
     <div class="modal-actions">
       <button class="btn" id="ab-check">Проверить обновление</button>
+      <button class="btn" id="ab-src">GitHub</button>
       <button class="btn primary" id="ab-ok">Ок</button>
     </div>`);
+  m.classList.add('about-modal');
   m.querySelector('#ab-ok').onclick = close;
-  m.querySelector('#ab-src').onclick = (e) => { e.preventDefault(); lite.openExternal('https://github.com/DanielLetto2020/LiteEditorAI'); };
+  m.querySelector('#ab-src').prepend(icon('github', 14));
+  m.querySelector('#ab-src').onclick = openRepo;
   const st = m.querySelector('#ab-upd-status');
   const setSt = (txt, cls) => { if (st) { st.textContent = txt; st.className = 'about-upd' + (cls ? ' ' + cls : ''); } };
   // Reflect a known result immediately; otherwise prompt to check.
@@ -2247,7 +2768,7 @@ function showAbout() {
 }
 function showCreateFolder() {
   const { m, close } = makeModal(`
-    <h2>✚ Создать папку</h2>
+    <h2>Создать папку</h2>
     <div class="field"><label>Название папки</label>
       <input type="text" id="cf-name" placeholder="my-project" autocomplete="off" spellcheck="false"></div>
     <div class="field"><label>Где создать</label>
@@ -2292,7 +2813,7 @@ function showLogs() {
   closeMenus();
   let unsub = null;
   const { m } = makeModal(`
-    <h2>🗒 Логи приложения</h2>
+    <h2>Логи приложения</h2>
     <div class="logs-tabs">
       <button class="logs-tab active" data-tab="stream">Поток</button>
       <button class="logs-tab" data-tab="errors">Ошибки <span class="logs-tabcount" id="logs-errcount"></span></button>
@@ -2476,217 +2997,230 @@ function showLogs() {
 }
 
 // ---------------------------------------------------------------- settings panel (small on purpose)
-function showSettings() {
+// Настройки: разделы слева, содержимое справа. Всё применяется сразу (без «Сохранить»): переключатели,
+// списки и числа пишутся по изменению. Цвета и размеры — в панели «Оформление» (кнопка-палитра).
+const SET_SECTIONS = [
+  ['look', 'palette', 'Внешний вид'],
+  ['term', 'terminal', 'Терминал'],
+  ['notif', 'bell', 'Уведомления'],
+  ['upd', 'refresh', 'Обновления'],
+  ['proj', 'folder', 'Проекты и папки'],
+  ['ss', 'sparkles', 'Заставка'],
+];
+function showSettings(start = 'look') {
+  closeMenus();
   const { m, close } = makeModal(`
-    <h2>🎚 Настройки</h2>
-    <div class="set-groups">
-      <section class="set-group">
-        <div class="set-group-h"><span class="set-ic">🔔</span> Уведомления</div>
-        <div class="set-group-body">
-          <label class="set-row"><span>Уведомления о завершении агента</span><input type="checkbox" id="st-notif"></label>
-          <label class="set-row"><span>Звук уведомлений</span><input type="checkbox" id="st-sound"></label>
-          <label class="set-row"><span>Тишина до «готов», мс</span><input type="number" id="st-idle" min="300" max="6000" step="100"></label>
-        </div>
-      </section>
-      <section class="set-group">
-        <div class="set-group-h"><span class="set-ic">⬆️</span> Обновления</div>
-        <div class="set-group-body">
-          <label class="set-row"><span>Как обновляться</span><select id="st-upd">
-            <option value="auto">Скачивать в фоне и предлагать перезапуск</option>
-            <option value="notify">Только сообщать о новой версии</option>
-            <option value="off">Не проверять</option>
-          </select></label>
-          <div class="set-hint" id="st-upd-hint">Проверяю тип установки…</div>
-          <div class="set-row"><span>Проверить прямо сейчас</span><button class="btn tiny" id="st-upd-check" type="button">Проверить</button></div>
-        </div>
-      </section>
-      <section class="set-group">
-        <div class="set-group-h"><span class="set-ic">🎨</span> Внешний вид</div>
-        <div class="set-group-body">
-          <label class="set-row"><span>Язык интерфейса</span><select id="st-lang"></select></label>
-          <div class="set-hint">Языки — подключаемые файлы <code>locales/&lt;код&gt;.json</code>. Свой язык или правки к готовому положите в папку пользовательских локалей — она перекрывает встроенные. <button class="btn tiny" id="st-lang-dir" type="button">Открыть папку языков</button></div>
-          <label class="set-row"><span>Тема</span><select id="st-theme"></select></label>
-          <label class="set-row"><span>Размер шрифта</span><input type="number" id="st-font" min="9" max="24"></label>
-        </div>
-      </section>
-      <section class="set-group">
-        <div class="set-group-h"><span class="set-ic">🟢</span> Рамка окна</div>
-        <div class="set-group-body">
-          <label class="set-row"><span>Тонкая рамка по краю окна (и окон модулей)</span><input type="checkbox" id="st-frame"></label>
-          <div class="set-row col"><span>Цвет рамки</span><div id="st-frame-colors" class="frame-swatches"></div></div>
-          <label class="set-row"><span>Пульсация — мягкое «дыхание» от тёмного оттенка к чуть ярче и обратно</span><input type="checkbox" id="st-frame-pulse"></label>
-          <label class="set-row"><span>Период пульсации, сек</span><input type="number" id="st-frame-period" min="2" max="30" step="1"></label>
-        </div>
-      </section>
-      <section class="set-group">
-        <div class="set-group-h"><span class="set-ic">🟩</span> Заставка «матрица»</div>
-        <div class="set-group-body">
-          <label class="set-row"><span>Запускать по бездействию</span><input type="checkbox" id="st-ss"></label>
-          <label class="set-row"><span>Порог простоя, мин</span><input type="number" id="st-ss-min" min="1" max="180" step="1"></label>
-          <div class="set-hint">Кнопка «матрица» в шапке запускает заставку вручную в любой момент. Выход — клик, движение мыши или Esc.</div>
-        </div>
-      </section>
-      <section class="set-group">
-        <div class="set-group-h"><span class="set-ic">🖥️</span> Терминал</div>
-        <div class="set-group-body">
-          <label class="set-row"><span>Шкала времени слева</span><input type="checkbox" id="st-timeline"></label>
-          <div class="set-hint">Узкая полоса вдоль терминала с засечками времени: когда отправлена команда, когда вывод возобновился после паузы, смена минуты. Едет вместе с текстом при прокрутке и не попадает в копирование.</div>
-          <div class="set-row col"><span>Оболочка терминала — применяется к новым терминалам (старые — ⟳)</span>
-            <div class="path-pick">
-              <select id="st-shell"></select>
-              <input type="text" id="st-shell-path" placeholder="путь к исполняемому файлу" spellcheck="false" style="display:none">
-            </div></div>
-          <div class="set-row col"><span>Автоввод в новом терминале</span>
-            <input type="text" id="st-prefill" placeholder="claude" spellcheck="false"></div>
-          <div class="set-hint">Слово (или команда) само пишется в каждый новый терминал проекта — при открытии проекта и при создании вкладки — но без Enter: остаётся подтвердить или дописать. Пустое поле — терминал открывается пустым, как раньше.</div>
-        </div>
-      </section>
-      <section class="set-group">
-        <div class="set-group-h"><span class="set-ic">📁</span> Проекты и папки</div>
-        <div class="set-group-body">
-          <div class="set-row col"><span>Рабочая папка — куда создаются новые проекты</span>
-            <div class="path-pick">
-              <input type="text" id="st-wd" readonly placeholder="не задана">
-              <button class="btn" id="st-wd-pick">Выбрать</button>
-              <button class="btn" id="st-wd-clear" title="Очистить">✕</button>
-            </div></div>
-          <div class="set-row col"><span>Папки для скана — их подпапки добавляются как проекты при запуске</span>
-            <div id="st-scan" class="scan-list"></div>
-            <button class="btn" id="st-scan-add">＋ Добавить папку</button></div>
-        </div>
-      </section>
-    </div>
-    <div class="modal-actions"><button class="btn primary" id="st-ok">Готово</button></div>`);
-  const notif = m.querySelector('#st-notif'); notif.checked = settings.notifications;
-  // Обновления. Подсказка объясняет ровно то, что пользователю нужно знать заранее: спросят ли
-  // пароль и почему кнопка «Обновить» может не появиться.
-  const updSel = m.querySelector('#st-upd');
-  updSel.value = updMode();
-  updSel.addEventListener('change', () => {
-    settings.updateMode = updSel.value; saveSettings();
-    if (updSel.value !== 'off') checkForUpdate().catch(() => {});
-  });
-  const updHint = m.querySelector('#st-upd-hint');
-  const UPD_HINTS = {
-    portable: 'Портативная установка — обновление скачивается и применяется в один клик, без пароля: редактор закроется и откроется новой версией.',
-    mac: 'Приложение обновляется подменой бандла .app и перезапускается само.',
-    deb: 'Установлено пакетом .deb в системный каталог, поэтому обновление ставится от имени root — система один раз спросит пароль. Портативная сборка (tar.gz со страницы релизов) обновляется без пароля.',
-    dev: 'Запуск из исходников: обновляйтесь через git pull — плашка о новой версии останется, кнопка обновления не появится.',
+    <aside class="snav"><div class="st-title">Настройки</div><div class="snav-list"></div><span class="grow"></span><div class="sver"></div></aside>
+    <section class="scontent"><div class="shead"><h3></h3><button class="icon-btn" id="st-x" title="Закрыть" aria-label="Закрыть"></button></div><div class="sbody"></div>
+      <div class="sfoot"><button class="btn primary" id="st-ok">Готово</button></div></section>`, () => { scanProjects(); });
+  m.classList.add('settings-modal');
+  m.querySelector('.sver').textContent = 'LiteEditor ' + APP_VERSION;
+  m.querySelector('.sver').setAttribute('data-no-i18n', '');
+  m.querySelector('#st-x').appendChild(icon('x', 16));
+  m.querySelector('#st-x').onclick = close;
+  m.querySelector('#st-ok').onclick = close;
+  const nav = m.querySelector('.snav-list'), body = m.querySelector('.sbody'), h3 = m.querySelector('.shead h3');
+  let cur = SET_SECTIONS.some((x) => x[0] === start) ? start : 'look';
+
+  // ---- строительные блоки
+  const row = (label, desc, ctl, cls) => {
+    const r = el('div', 'srow' + (cls ? ' ' + cls : ''));
+    const sl = el('div', 'sl'); sl.appendChild(el('b', null, label));
+    if (desc) sl.appendChild(typeof desc === 'string' ? el('span', null, desc) : desc);
+    r.appendChild(sl);
+    if (ctl) r.appendChild(ctl);
+    return r;
   };
-  lite.update.state().then((st) => {
-    const inst = (st && st.install) || {};
-    let txt = UPD_HINTS[inst.kind] || '';
-    if (inst.kind !== 'dev' && !inst.canSelfUpdate) txt = 'Обновиться на месте не выйдет: ' + (inst.reason || 'каталог приложения защищён от записи') + '. Плашка отправит на страницу загрузки.';
-    updHint.textContent = txt;
-  }).catch(() => { updHint.textContent = ''; });
-  m.querySelector('#st-upd-check').onclick = async (e) => {
-    const btn = e.currentTarget; btn.disabled = true;
-    try { await checkForUpdate({ manual: true }); } finally { btn.disabled = false; }
+  const toggle = (on, onChange) => {
+    const b = el('button', 'sw-t' + (on ? ' on' : ''));
+    b.setAttribute('role', 'switch'); b.setAttribute('aria-checked', String(!!on)); b.setAttribute('aria-label', 'Переключить');
+    b.onclick = () => { const v = !b.classList.contains('on'); b.classList.toggle('on', v); b.setAttribute('aria-checked', String(v)); onChange(v); };
+    return b;
   };
-  const sound = m.querySelector('#st-sound'); sound.checked = settings.sound;
-  const idle = m.querySelector('#st-idle'); idle.value = settings.idleMs;
-  const font = m.querySelector('#st-font'); font.value = settings.fontSize;
-  const ssOn = m.querySelector('#st-ss'); ssOn.checked = settings.screensaver !== false;
-  const ssMin = m.querySelector('#st-ss-min'); ssMin.value = settings.screensaverMins || 5;
-  // Язык интерфейса: список собирает main (встроенные locales/ + пользовательские ~/.LiteEditorAI/locales/).
-  const langSel = m.querySelector('#st-lang');
-  lite.i18n.list().then(({ current, list }) => {
-    langSel.innerHTML = '';
-    for (const l of (list || [])) {
-      const o = document.createElement('option');
-      o.value = l.code;
-      o.textContent = l.nativeName + (l.nativeName === l.name ? '' : ` · ${l.name}`) + (l.builtin ? '' : ' (свой)');
-      langSel.appendChild(o);
+  const select = (opts, value, onChange) => {
+    const s = el('select', 'set-sel');
+    for (const [v, t] of opts) { const o = el('option', null, t); o.value = v; s.appendChild(o); }
+    s.value = value;
+    s.addEventListener('change', () => onChange(s.value));
+    return s;
+  };
+  const number = (value, min, max, step, onChange) => {
+    const n = el('input', 'set-num'); n.type = 'number'; n.min = min; n.max = max; n.step = step; n.value = value;
+    n.addEventListener('change', () => { const v = Math.max(min, Math.min(max, Number(n.value) || min)); n.value = v; onChange(v); });
+    return n;
+  };
+  const button = (text, glyph, onClick, cls) => {
+    const b = el('button', 'btn' + (cls ? ' ' + cls : ''));
+    if (glyph) b.appendChild(icon(glyph, 14));
+    b.appendChild(el('span', null, text));
+    b.onclick = onClick;
+    return b;
+  };
+  const save = () => saveSettings();
+
+  const PAGES = {
+    look() {
+      const lang = select([[settings.lang || 'ru', '…']], settings.lang || 'ru', async (v) => {
+        const r = await lite.i18n.set(v);        // main разошлёт словарь во все окна — перевод применится на лету
+        if (r && r.error) toast(r.error, { kind: 'err' });
+      });
+      lite.i18n.list().then(({ current, list }) => {
+        lang.replaceChildren();
+        for (const l of (list || [])) {
+          const o = el('option', null, l.nativeName + (l.nativeName === l.name ? '' : ` · ${l.name}`) + (l.builtin ? '' : ' (свой)'));
+          o.value = l.code; lang.appendChild(o);
+        }
+        lang.value = current || 'ru';
+      }).catch(() => {});
+      const ld = el('span');
+      ld.append(el('span', null, 'Языки — подключаемые файлы locales/<код>.json; свои кладутся в папку пользовательских локалей и перекрывают встроенные.'), el('br'));
+      const dirLink = el('button', 'addlink', 'Открыть папку языков');
+      dirLink.style.marginTop = '6px';
+      dirLink.onclick = async () => { const r = await lite.i18n.openUserDir(); if (r && r.error) toast(r.error, { kind: 'err' }); };
+      ld.appendChild(dirLink);
+      body.appendChild(row('Язык интерфейса', ld, lang));
+      body.appendChild(row('Цвета и размеры', 'Фон, панели, текст, акцент, состояния, скругление, ширина панели, шрифт терминала — всё настраивается.',
+        button('Настроить…', 'palette', () => { close(); showLookPanel($('#app').classList.contains('single') ? $('#rail-look') : $('#btn-look')); })));
+      body.appendChild(row('Размер шрифта терминала', 'На ходу — Ctrl + «+» / «−».', number(settings.fontSize, 9, 24, 1, (v) => { settings.fontSize = v; save(); applyFontSize(); })));
+      // Рамка окна — живой предпросмотр: применяется сразу и уезжает в окна модулей (шина settingsChanged).
+      const frameLive = () => { save(); applyFrame(settings); try { lite.app.settingsChanged(settings); } catch (_) {} };
+      const fc = frameConf(settings);
+      const subs = [];
+      const sub = (r) => { r.classList.add('sub'); if (!fc.on) r.classList.add('off'); subs.push(r); return r; };
+      body.appendChild(row('Рамка окна', 'Тонкая рамка по краю окна редактора и окон модулей.', toggle(fc.on, (v) => {
+        settings.frameOn = v; frameLive(); subs.forEach((r) => r.classList.toggle('off', !v));
+      })));
+      const sw = el('div', 'frame-swatches');
+      const drawSw = () => {
+        sw.replaceChildren();
+        const sel = frameConf(settings).color;
+        for (const [key, c] of Object.entries(FRAME_COLORS)) {
+          const b = el('button', 'frame-sw' + (key === sel ? ' on' : ''));
+          b.type = 'button'; b.title = c.label;
+          b.style.background = `linear-gradient(135deg, ${c.c1}, ${c.c2})`;
+          b.onclick = () => { settings.frameColor = key; frameLive(); drawSw(); };
+          sw.appendChild(b);
+        }
+      };
+      drawSw();
+      body.appendChild(sub(row('Цвет рамки', '', sw)));
+      body.appendChild(sub(row('Пульсация', 'Мягкое «дыхание» от тёмного оттенка к чуть ярче и обратно.', toggle(fc.pulse, (v) => { settings.framePulse = v; frameLive(); }))));
+      body.appendChild(sub(row('Период пульсации, сек', '', number(fc.periodS, 2, 30, 1, (v) => { settings.framePeriodS = v; frameLive(); }))));
+    },
+    term() {
+      const pre = el('input', 'set-txt mono'); pre.style.width = '220px'; pre.placeholder = 'claude'; pre.spellcheck = false; pre.value = settings.termPrefill || '';
+      pre.addEventListener('change', () => { settings.termPrefill = pre.value.trim(); save(); });
+      body.appendChild(row('Автоввод в новом терминале', 'Слово или команда само пишется в каждый новый терминал проекта — при открытии проекта и новой вкладке, но без Enter. Пусто — терминал открывается пустым.', pre));
+      // Оболочка — платформо-зависимо (Windows: PowerShell/cmd/свой; Linux: bash/свой).
+      const isWin = (lite.platform === 'win32');
+      const presets = isWin ? ['', 'cmd'] : [''];
+      const curShell = settings.shell || '';
+      const custom = curShell && !presets.includes(curShell);
+      const path = el('input', 'set-txt mono'); path.placeholder = 'путь к исполняемому файлу'; path.spellcheck = false; path.value = custom ? curShell : '';
+      const shell = select(isWin ? [['', 'PowerShell (по умолчанию)'], ['cmd', 'cmd'], ['__custom__', 'Свой путь…']] : [['', 'bash (по умолчанию)'], ['__custom__', 'Свой путь…']],
+        custom ? '__custom__' : curShell, (v) => {
+          pathRow.style.display = v === '__custom__' ? '' : 'none';
+          if (v !== '__custom__') { settings.shell = v; save(); } else if (path.value.trim()) { settings.shell = path.value.trim(); save(); }
+        });
+      path.addEventListener('change', () => { settings.shell = path.value.trim(); save(); });
+      body.appendChild(row('Оболочка', 'Применяется к новым терминалам; открытые — после перезапуска (⟳).', shell));
+      const pathRow = row('Путь к оболочке', '', path, 'sub');
+      pathRow.style.display = custom ? '' : 'none';
+      body.appendChild(pathRow);
+      body.appendChild(row('Шкала времени слева', 'Узкая полоса вдоль терминала: когда отправлена команда, когда вывод возобновился после паузы, смена минуты. Едет вместе с текстом и не попадает в копирование.',
+        toggle(settings.termTimeline === true, (v) => { settings.termTimeline = v; save(); applyTimeline(); })));
+    },
+    notif() {
+      const subs = [];
+      body.appendChild(row('Уведомления о завершении агента', 'Системное уведомление, когда агент закончил или ждёт ответа, а вы смотрите в другое место.',
+        toggle(settings.notifications, (v) => { settings.notifications = v; save(); subs.forEach((r) => r.classList.toggle('off', !v)); })));
+      const snd = row('Звук уведомлений', '', toggle(settings.sound, (v) => { settings.sound = v; save(); }), 'sub' + (settings.notifications ? '' : ' off'));
+      subs.push(snd); body.appendChild(snd);
+      body.appendChild(row('Тишина до «готов», мс', 'Сколько терминал должен молчать, чтобы агент считался закончившим.',
+        number(settings.idleMs, 300, 6000, 100, (v) => { settings.idleMs = v; save(); })));
+    },
+    upd() {
+      body.appendChild(row('Как обновляться', '', select([
+        ['auto', 'Скачивать в фоне и предлагать перезапуск'], ['notify', 'Только сообщать о новой версии'], ['off', 'Не проверять'],
+      ], updMode(), (v) => { settings.updateMode = v; save(); if (v !== 'off') checkForUpdate().catch(() => {}); })));
+      // Подсказка объясняет то, что нужно знать заранее: спросят ли пароль и почему кнопки обновления может не быть.
+      const box = el('div', 'sbox', 'Проверяю тип установки…');
+      const wrap = el('div', 'srow col'); wrap.appendChild(box); body.appendChild(wrap);
+      const UPD_HINTS = {
+        portable: 'Портативная установка — обновление скачивается и применяется в один клик, без пароля: редактор закроется и откроется новой версией.',
+        mac: 'Приложение обновляется подменой бандла .app и перезапускается само.',
+        deb: 'Установлено пакетом .deb в системный каталог, поэтому обновление ставится от имени root — система один раз спросит пароль. Портативная сборка (tar.gz со страницы релизов) обновляется без пароля.',
+        dev: 'Запуск из исходников: обновляйтесь через git pull — о новой версии редактор сообщит, кнопки обновления не будет.',
+      };
+      lite.update.state().then((st) => {
+        const inst = (st && st.install) || {};
+        let txt = UPD_HINTS[inst.kind] || '';
+        if (inst.kind !== 'dev' && inst.kind && !inst.canSelfUpdate) txt = `Обновиться на месте не выйдет: ${inst.reason || 'каталог приложения защищён от записи'}. Кнопка отправит на страницу загрузки.`;
+        box.replaceChildren(el('span', null, txt || ''));
+        box.appendChild(el('br'));
+        box.appendChild(el('span', null, updateInfo && updateInfo.newer ? `Сейчас ${APP_VERSION}, доступна ${updateInfo.tag}.` : `Сейчас ${APP_VERSION}.`));
+      }).catch(() => { box.textContent = ''; });
+      const newer = updateInfo && updateInfo.newer;
+      body.appendChild(row(newer ? 'Доступна новая версия' : 'Проверить прямо сейчас', '', button(newer ? 'Обновить' : 'Проверить', newer ? 'download' : 'refresh', async (e) => {
+        const b = e.currentTarget;
+        if (newer) { close(); onUpdateBadgeClick(); return; }
+        b.disabled = true;
+        try { await checkForUpdate({ manual: true }); } finally { b.disabled = false; }
+        if (cur === 'upd') draw();
+      })));
+    },
+    proj() {
+      const wd = el('input', 'set-txt mono'); wd.readOnly = true; wd.placeholder = 'не задана'; wd.value = settings.workingDir || '';
+      const pr = el('div', 'pathrow');
+      pr.append(wd,
+        button('Выбрать', null, async () => { const d = await lite.pickDir(); if (d) { wd.value = d; settings.workingDir = d; save(); } }),
+        button('', 'x', () => { wd.value = ''; settings.workingDir = ''; save(); }));
+      pr.lastChild.title = 'Очистить';
+      const r1 = row('Рабочая папка', 'Куда создаются новые проекты («Создать папку…»).', null, 'col'); r1.appendChild(pr);
+      body.appendChild(r1);
+      const list = el('div', 'scan');
+      const drawScan = () => {
+        list.replaceChildren();
+        const dirs = settings.scanDirs || [];
+        if (!dirs.length) list.appendChild(el('div', 'scan-empty', '— пусто —'));
+        dirs.forEach((d, i) => {
+          const it = el('div', 'scan-i');
+          const sp = el('span', null, d); sp.title = d; sp.setAttribute('data-no-i18n', '');
+          const x = iconBtn('icon-btn', 'x', 'Убрать', 14);
+          x.onclick = () => { settings.scanDirs = dirs.filter((_, j) => j !== i); save(); drawScan(); };
+          it.append(sp, x); list.appendChild(it);
+        });
+      };
+      drawScan();
+      const add = el('button', 'addlink'); add.append(icon('plus', 14), el('span', null, 'Добавить папку'));
+      add.onclick = async () => { const d = await lite.pickDir(); if (d && !(settings.scanDirs || []).includes(d)) { settings.scanDirs = [...(settings.scanDirs || []), d]; save(); drawScan(); } };
+      const r2 = row('Папки для скана', 'Их подпапки добавляются как проекты при запуске (и сразу после закрытия настроек).', null, 'col');
+      r2.append(list, add);
+      body.appendChild(r2);
+    },
+    ss() {
+      const subs = [];
+      body.appendChild(row('Запускать по бездействию', 'Выход — клик, движение мыши или Esc.', toggle(settings.screensaver !== false, (v) => {
+        settings.screensaver = v; save(); subs.forEach((r) => r.classList.toggle('off', !v));
+      })));
+      const mins = row('Порог простоя, мин', '', number(settings.screensaverMins || 5, 1, 180, 1, (v) => { settings.screensaverMins = v; save(); }), 'sub' + (settings.screensaver !== false ? '' : ' off'));
+      subs.push(mins); body.appendChild(mins);
+      body.appendChild(row('Показать сейчас', 'Та же заставка вручную — кнопка в шапке и пункт в «Ещё».', button('Запустить', 'sparkles', () => { close(); startMatrix(); })));
+    },
+  };
+  const draw = () => {
+    nav.replaceChildren();
+    for (const [key, glyph, label] of SET_SECTIONS) {
+      const b = el('button', key === cur ? 'on' : '');
+      b.append(icon(glyph, 16), el('span', null, label));
+      b.onclick = () => { cur = key; draw(); };
+      nav.appendChild(b);
     }
-    langSel.value = current || 'ru';
-  }).catch(() => {});
-  langSel.addEventListener('change', async () => {
-    const r = await lite.i18n.set(langSel.value);        // main разошлёт словарь во все окна — перевод применится на лету
-    if (r && r.error) toast(r.error, { kind: 'err' });
-  });
-  m.querySelector('#st-lang-dir').onclick = async () => {
-    const r = await lite.i18n.openUserDir();
-    if (r && r.error) toast(r.error, { kind: 'err' });
+    h3.textContent = SET_SECTIONS.find((x) => x[0] === cur)[2];
+    body.replaceChildren();
+    PAGES[cur]();
   };
-  const themeSel = m.querySelector('#st-theme');
-  for (const [key, th] of Object.entries(THEMES)) { const o = document.createElement('option'); o.value = key; o.textContent = th.label; themeSel.appendChild(o); }
-  themeSel.value = THEMES[settings.theme] ? settings.theme : DEFAULT_THEME;
-  themeSel.addEventListener('change', () => { settings.theme = themeSel.value; saveSettings(); applyTheme(); }); // live preview
-  // Рамка окна — живой предпросмотр: применяется сразу и уезжает в окна модулей (шина settingsChanged).
-  const frameLive = () => { saveSettings(); applyFrame(settings); try { lite.app.settingsChanged(settings); } catch (_) {} };
-  const frameOn = m.querySelector('#st-frame'); frameOn.checked = frameConf(settings).on;
-  const framePulse = m.querySelector('#st-frame-pulse'); framePulse.checked = frameConf(settings).pulse;
-  const framePeriod = m.querySelector('#st-frame-period'); framePeriod.value = frameConf(settings).periodS;
-  const frameSwBox = m.querySelector('#st-frame-colors');
-  const renderFrameSwatches = () => {
-    frameSwBox.innerHTML = '';
-    const cur = frameConf(settings).color;
-    for (const [key, c] of Object.entries(FRAME_COLORS)) {
-      const b = el('button', 'frame-sw' + (key === cur ? ' sel' : ''));
-      b.type = 'button'; b.title = c.label;
-      b.style.background = `linear-gradient(135deg, ${c.c1}, ${c.c2})`;
-      b.onclick = () => { settings.frameColor = key; frameLive(); renderFrameSwatches(); };
-      frameSwBox.appendChild(b);
-    }
-  };
-  renderFrameSwatches();
-  frameOn.addEventListener('change', () => { settings.frameOn = frameOn.checked; frameLive(); });
-  framePulse.addEventListener('change', () => { settings.framePulse = framePulse.checked; frameLive(); });
-  framePeriod.addEventListener('change', () => {
-    settings.framePeriodS = Math.max(2, Math.min(30, parseInt(framePeriod.value, 10) || 6));
-    framePeriod.value = settings.framePeriodS; frameLive();
-  });
-  // Шкала времени — живой предпросмотр: видно сразу, без «Готово» (как тема и рамка).
-  const tline = m.querySelector('#st-timeline'); tline.checked = settings.termTimeline === true;
-  tline.addEventListener('change', () => { settings.termTimeline = tline.checked; saveSettings(); applyTimeline(); });
-  // Выбор оболочки терминала — платформо-зависимо (Windows: PowerShell/cmd/свой; Linux: bash/свой).
-  const shellSel = m.querySelector('#st-shell');
-  const shellPath = m.querySelector('#st-shell-path');
-  const isWin = (lite.platform === 'win32');
-  const shellOpts = isWin
-    ? [['', 'PowerShell (по умолчанию)'], ['cmd', 'cmd'], ['__custom__', 'Свой путь…']]
-    : [['', 'bash (по умолчанию)'], ['__custom__', 'Свой путь…']];
-  for (const [v, t] of shellOpts) { const o = document.createElement('option'); o.value = v; o.textContent = t; shellSel.appendChild(o); }
-  const shellPresets = isWin ? ['', 'cmd'] : [''];
-  const curShell = settings.shell || '';
-  const shellCustom = curShell && !shellPresets.includes(curShell);
-  shellSel.value = shellCustom ? '__custom__' : curShell;
-  shellPath.style.display = shellCustom ? '' : 'none';
-  shellPath.value = shellCustom ? curShell : '';
-  shellSel.addEventListener('change', () => { shellPath.style.display = shellSel.value === '__custom__' ? '' : 'none'; });
-  const prefill = m.querySelector('#st-prefill'); prefill.value = settings.termPrefill || '';
-  const wd = m.querySelector('#st-wd'); wd.value = settings.workingDir || '';
-  let scan = [...(settings.scanDirs || [])];
-  const scanBox = m.querySelector('#st-scan');
-  const renderScan = () => {
-    scanBox.innerHTML = '';
-    if (!scan.length) { scanBox.appendChild(el('div', 'scan-empty', '— пусто —')); return; }
-    scan.forEach((d, i) => {
-      const r = el('div', 'scan-item');
-      const path = el('span', 'scan-path', d); path.title = d;
-      const x = el('button', 'scan-del', '✕');
-      x.onclick = () => { scan.splice(i, 1); renderScan(); };
-      r.append(path, x); scanBox.appendChild(r);
-    });
-  };
-  renderScan();
-  m.querySelector('#st-wd-pick').onclick = async () => { const d = await lite.pickDir(); if (d) wd.value = d; };
-  m.querySelector('#st-wd-clear').onclick = () => { wd.value = ''; };
-  m.querySelector('#st-scan-add').onclick = async () => { const d = await lite.pickDir(); if (d && !scan.includes(d)) { scan.push(d); renderScan(); } };
-  m.querySelector('#st-ok').onclick = () => {
-    settings.notifications = notif.checked;
-    settings.sound = sound.checked;
-    settings.idleMs = Math.max(300, Math.min(6000, parseInt(idle.value, 10) || 1200));
-    settings.fontSize = Math.max(9, Math.min(24, parseInt(font.value, 10) || 13));
-    settings.screensaver = ssOn.checked;
-    settings.screensaverMins = Math.max(1, Math.min(180, parseInt(ssMin.value, 10) || 5));
-    settings.workingDir = wd.value || '';
-    settings.scanDirs = scan;
-    settings.shell = shellSel.value === '__custom__' ? shellPath.value.trim() : shellSel.value;
-    settings.termPrefill = prefill.value.trim();   // пусто = автоввода нет
-    saveSettings(); applyFontSize(); close();
-    scanProjects(); // pick up newly-added scan dirs right away
-  };
+  draw();
 }
 
 // ---------------------------------------------------------------- command palette (Ctrl+K)
@@ -2712,7 +3246,12 @@ function paletteActions() {
   acts.push({ label: 'Очистить терминал', run: () => clearTerminal() });
   acts.push({ label: 'Шкала времени слева — вкл/выкл', hint: settings.termTimeline === true ? 'сейчас включена' : 'сейчас выключена', run: () => { settings.termTimeline = settings.termTimeline !== true; saveSettings(); applyTimeline(); } });
   acts.push({ label: 'Перезапустить терминал', run: () => restartTerminal() });
-  acts.push({ label: 'Настройки…', run: showSettings });
+  acts.push({ label: 'Настройки…', run: () => showSettings() });
+  acts.push({ label: 'Модули — все модули плитками', run: () => showModulesCatalog() });
+  acts.push({ label: 'Быстрая панель — состав и порядок', run: showPanelSetup });
+  acts.push({ label: 'Оформление — цвета и размеры', run: () => showLookPanel($('#app').classList.contains('single') ? $('#rail-look') : $('#btn-look')) });
+  acts.push({ label: 'Заставка «матрица»', run: () => startMatrix() });
+  acts.push({ label: 'Репозиторий на GitHub', run: openRepo });
   // Дифф/превью/поиск по файлу — теперь действия внутри окна вивера (его кнопки/горячие клавиши).
   for (const a of Ext.paletteActions()) acts.push(a); // команды пользовательских модулей (ctx.commands)
   return acts;
@@ -2739,7 +3278,7 @@ function showPalette() {
   };
   const filter = () => {
     const q = input.value.trim().toLowerCase();
-    shown = q ? all.filter((a) => (a.label + ' ' + (a.hint || '')).toLowerCase().includes(q)) : all;
+    shown = q ? all.filter((a) => [a.label, tt(a.label), a.hint || ''].join(' ').toLowerCase().includes(q)) : all;
     sel = 0; render();
   };
   input.addEventListener('input', filter);
@@ -2754,32 +3293,33 @@ function showPalette() {
 
 // ---------------------------------------------------------------- onboarding (first run)
 function showOnboarding() {
+  closeMenus();
   const { m, close } = makeModal(`
-    <h2><span style="color:var(--green-bright)">▍</span>Добро пожаловать в LiteEditor</h2>
-    <div class="about-desc">
-      Терминал-ориентированное окружение для работы с агентами: у каждого проекта свой живой терминал,
-      а вивер кода и дерево файлов прячутся одной кнопкой.<br><br>
-      С чего начать:
-      <ul style="margin:6px 0 0; padding-left:18px; line-height:1.7">
-        <li><b>Открыть папку</b> — проект слева, справа поднимется его терминал.</li>
-        <li>В <b>Настройках</b> задай рабочую папку и папки для авто-скана проектов.</li>
-        <li><b>Ctrl+K</b> — палитра команд · <b>Ctrl+\\</b> — режим одного терминала.</li>
-      </ul>
-    </div>
+    <div class="ob-brand"><span class="ob-mark"></span><span>Добро пожаловать в LiteEditor</span></div>
+    <p>Терминал-ориентированное окружение для работы с агентами: у каждого проекта свой живой терминал, а вивер кода и дерево файлов прячутся одной кнопкой.</p>
+    <div class="ob-t">С чего начать</div>
+    <div class="ob-step"><span class="ob-n" data-icon="folder"></span><div><b>Откройте папку</b><span>проект появится слева, справа поднимется его терминал</span></div></div>
+    <div class="ob-step"><span class="ob-n" data-icon="gear"></span><div><b>Загляните в настройки</b><span>рабочая папка и папки для автоскана проектов</span></div></div>
+    <div class="ob-step"><span class="ob-n" data-icon="cmd"></span><div><b><kbd>Ctrl+K</kbd> палитра команд · <kbd>Ctrl+\\</kbd> один терминал</b><span>остальное меню — «Ещё» в боковой панели</span></div></div>
     <div class="modal-actions">
+      <button class="btn" id="ob-skip">Позже</button><span class="grow"></span>
       <button class="btn" id="ob-settings">Настройки</button>
       <button class="btn primary" id="ob-open">Открыть папку</button>
-      <button class="btn" id="ob-skip">Позже</button>
-    </div>`);
-  const done = () => { settings.onboarded = true; saveSettings(); close(); };
-  m.querySelector('#ob-settings').onclick = () => { done(); showSettings(); };
-  m.querySelector('#ob-open').onclick = () => { done(); openProjectDialog(); };
-  m.querySelector('#ob-skip').onclick = done;
+    </div>`, () => { if (!settings.onboarded) { settings.onboarded = true; saveSettings(); } });
+  m.classList.add('onb-modal');
+  hydrateIcons(m);
+  m.querySelector('#ob-settings').prepend(icon('gear', 14));
+  m.querySelector('#ob-open').prepend(icon('folder', 14));
+  m.querySelector('#ob-settings').onclick = () => { close(); showSettings('proj'); };
+  m.querySelector('#ob-open').onclick = () => { close(); openProjectDialog(); };
+  m.querySelector('#ob-skip').onclick = close;
 }
 
 // ---------------------------------------------------------------- single-terminal toggle
 function toggleSingle() {
-  $('#app').classList.toggle('single');
+  closeMenus();
+  const on = $('#app').classList.toggle('single');
+  $('#btn-single').title = on ? 'Развернуть проекты (Ctrl+\\)' : 'Один терминал (Ctrl+\\)';
   refitActiveTerminal();
 }
 
@@ -2798,40 +3338,40 @@ let updBusy = false;                     // нажатие уже обрабат
 function updMode() { return settings.updateMode || 'auto'; }
 
 // Плашка рисуется ТОЛЬКО из этих двух источников — фазы из main и результата проверки.
+// В подвале боковой карточки она живёт только пока идёт загрузка/установка и когда пора перезапускаться;
+// «доступна новая версия» — точка у номера версии (клик — «О программе») и пункт «Обновить» в «Ещё».
 function renderUpdateBadge() {
   const b = $('#update-badge');
-  if (!b) return;
-  const inst = (updateInfo && updateInfo.install) || {};
+  const ver = $('#app-ver');
   const tag = updPhase.tag || (updateInfo && updateInfo.tag) || '';
-  const set = (cls, text, title) => {
+  if (ver) {
+    ver.replaceChildren(el('span', null, APP_VERSION));
+    const avail = !!(updateInfo && updateInfo.newer) && !['downloading', 'installing', 'ready'].includes(updPhase.phase);
+    if (avail) ver.appendChild(el('span', 'updot'));
+    ver.title = avail ? `Доступна ${tag} — «Ещё» → «Обновить»` : 'О программе';
+  }
+  if (!b) return;
+  const set = (cls, glyph, text, title) => {
     b.hidden = false;
     b.className = 'update-badge' + (cls ? ' ' + cls : '');
-    b.textContent = text;
+    b.replaceChildren(icon(glyph, 13), el('span', null, text));
     b.title = title;
   };
   if (updPhase.phase === 'downloading') {
     const pct = Math.max(0, Math.min(100, updPhase.pct || 0));
-    // Прогресс показываем заливкой самой плашки — отдельная полоска в шапке не поместится.
+    // Прогресс — заливкой самой плашки.
     b.style.setProperty('--upd-pct', pct + '%');
-    set('busy', updPhase.unpacking ? 'распаковка…' : '↓ ' + pct + ' %',
+    set('busy', 'download', updPhase.unpacking ? 'распаковка…' : pct + ' %',
       'Загружается ' + (tag || 'обновление') + ' — нажмите, чтобы отменить');
     return;
   }
   b.style.removeProperty('--upd-pct');
-  if (updPhase.phase === 'installing') { set('busy', 'обновляю…', 'Идёт установка обновления'); return; }
+  if (updPhase.phase === 'installing') { set('busy', 'refresh', 'обновляю…', 'Идёт установка обновления'); return; }
   if (updPhase.phase === 'ready') {
-    set('ready', '⟳ Перезапустить', 'Обновление ' + (tag || '') + ' загружено — нажмите, чтобы перезапуститься на новой версии');
+    set('ready', 'refresh', 'Перезапустить', 'Обновление ' + (tag || '') + ' загружено — нажмите, чтобы перезапуститься на новой версии');
     return;
   }
-  if (!updateInfo || !updateInfo.newer) { b.hidden = true; return; }
-  if (inst.canSelfUpdate && updateInfo.asset) {
-    set('', '↑ ' + (tag || 'обновление'),
-      'Доступна ' + tag + ' — нажмите, чтобы обновиться' + (inst.needsPassword ? ' (потребуется пароль администратора)' : ''));
-  } else {
-    // Сами обновиться не можем (запуск из исходников, нет прав, нет файла под систему) — честно
-    // отправляем на страницу релиза, а не показываем кнопку, которая ничего не сделает.
-    set('', '↑ ' + (tag || 'обновление'), 'Доступна ' + tag + ' — открыть страницу загрузки' + (inst.reason ? ' (' + inst.reason + ')' : ''));
-  }
+  b.hidden = true;
 }
 
 // Единственный обработчик нажатия на плашку: что делать — решает фаза.
@@ -2920,9 +3460,10 @@ function updatePomoUI(s) {
   if (mini) {
     mini.hidden = !running;
     if (running) {
-      mini.innerHTML = '';
-      mini.classList.toggle('break', s.phase === 'short' || s.phase === 'long');
-      mini.append(icon('clock', 13), el('span', null, fmtRest(s.remaining) + (s.paused ? ' ⏸' : '') + ' · ' + (POMO_PHASE_SHORT[s.phase] || '')));
+      const brk = s.phase === 'short' || s.phase === 'long';
+      mini.classList.toggle('break', brk);
+      mini.replaceChildren(icon(s.paused ? 'pause' : 'clock', 13), el('span', 'pph', POMO_PHASE_SHORT[s.phase] || ''), el('span', 'pt', fmtRest(s.remaining)));
+      mini.title = s.paused ? 'Помодоро — на паузе' : 'Помодоро';
     }
   }
   // бейдж квикбара: минуты до конца фазы (тиковый mm:ss не влезает в крошечный бейдж)
@@ -3011,14 +3552,15 @@ function applyRestGuard(s) {
 
 function init() {
   hydrateIcons(); // fill the static [data-icon] buttons (titlebar / pane toolbars) with SVG
-  { const av = $('#app-ver'); if (av) av.textContent = APP_VERSION; } // version label in the titlebar
+  renderUpdateBadge(); // номер версии в подвале боковой карточки (+ точка «есть обновление»)
   // вивер живёт в отдельном окне (module.html#files) — в редакторе его DOM/редактор больше нет.
   applyLayout();
   applyTheme();
   applyFrame(settings);
   initGutters();
   initWindowControls();
-  initMenubar();
+  initMenus();
+  initShell();
 
   // surface unexpected renderer errors instead of failing silently — toast for
   // the user, and forward to the main-process file log so crashes are diagnosable
@@ -3097,9 +3639,9 @@ function init() {
   // авто-запуск по бездействию во ВСЕХ окнах (координирует main: активность в любом окне
   // сбрасывает таймер, main шлёт screensaver:set). Ручной запуск гасится только кнопкой/Esc,
   // авто — любым действием. Цвет — токен темы (--green).
-  const matrix = (() => {
+  const matrix = matrixCtl = (() => {
     const cv = $('#matrix-overlay'); const btn = $('#btn-matrix');
-    if (!cv) return { toggle() {}, dismissIfAuto() {} };
+    if (!cv) return { toggle() {}, start() {}, stop() {}, dismissIfAuto() {} };
     const ctx = cv.getContext('2d');
     const GLYPHS = 'アイウエオカキクケコサシスセソタチツテトナニヌネノﾊﾋﾌﾍﾎ0123456789:."=*+-<>¦｜LITEAI';
     const FS = 16;
@@ -3137,7 +3679,7 @@ function init() {
     }
     cv.addEventListener('mousedown', stop); // клик по заставке — выйти
     try { lite.screensaver.onSet(({ on }) => { if (on) start(true); else if (auto) stop(); }); } catch (_) {}
-    return { toggle: () => (active ? stop() : start(false)), stop, dismissIfAuto: () => { if (active && auto) stop(); } };
+    return { toggle: () => (active ? stop() : start(false)), start: () => start(false), stop, dismissIfAuto: () => { if (active && auto) stop(); } };
   })();
   if ($('#btn-matrix')) $('#btn-matrix').addEventListener('click', () => matrix.toggle());
   // Репорт активности в main (троттл) + мгновенный сброс авто-заставки на любое действие.
@@ -3165,7 +3707,7 @@ function init() {
   lite.pomodoro.onChime(({ to }) => { try { pomoChime(to); } catch (_) {} });     // звон смены фазы
   // Набор открытых окон-модулей → подсветка кнопок квикбара (идея 3).
   try { if (lite.module && lite.module.onOpenSet) lite.module.onOpenSet((ids) => { openModuleIds = new Set(ids || []); markOpenModules(); }); } catch (_) {}
-  { const mini = $('#pomo-mini'); if (mini) mini.onclick = () => openModule('pomodoro'); }
+  { const mini = $('#pomo-mini'); if (mini) mini.onclick = (e) => { e.stopPropagation(); showPomoMenu(mini); }; }
   lite.pomodoro.getState().then((s) => updatePomoUI(s)).catch(() => {});          // стартовый снимок (таймер мог идти до открытия редактора)
   $('#term-clear').addEventListener('click', () => clearTerminal());
   $('#term-restart').addEventListener('click', () => restartTerminal());
@@ -3175,10 +3717,14 @@ function init() {
   $('#term-tabs-next').addEventListener('click', () => scrollTabs(1));
   $('#term-tabs').addEventListener('scroll', () => { updateTabScroll(); hideTabTip(); });
   window.addEventListener('resize', updateTabScroll);
+  // бейдж «N ждёт ответа»: клик — к следующему ждущему агенту (по кругу, если ждут несколько)
   $('#attention-badge').addEventListener('click', () => {
-    const e = [...projState.entries()].find(([, s]) => s === 'waiting');
-    const rec = e && terms.get(e[0]);
-    if (rec) { setActive(rec.projId); switchTab(e[0]); }
+    const waiting = [...projState.entries()].filter(([, s]) => s === 'waiting').map(([sid]) => sid).filter((sid) => terms.has(sid));
+    if (!waiting.length) return;
+    const cur = waiting.indexOf(activeSessionId());
+    const sid = waiting[(cur + 1) % waiting.length];
+    const rec = terms.get(sid);
+    setActive(rec.projId); switchTab(sid);
   });
 
   // terminal search box
@@ -3196,9 +3742,23 @@ function init() {
   // Глобальные хоткеи — через единый реестр HOTKEYS (тот же, что перехватывает фабрика терминалов).
   document.addEventListener('keydown', (e) => { runGlobalHotkey(e); });
 
-  // drag a folder onto the window to open it as a project
-  document.addEventListener('dragover', (e) => { e.preventDefault(); });
+  // drag a folder onto the window to open it as a project (рамка-подсказка, пока тащат файлы снаружи)
+  let dropZone = null, dropT = null;
+  const hideDrop = () => { clearTimeout(dropT); if (dropZone) { dropZone.remove(); dropZone = null; } };
+  document.addEventListener('dragover', (e) => {
+    e.preventDefault();
+    if (favDragCard || !e.dataTransfer || ![...(e.dataTransfer.types || [])].includes('Files')) return;
+    if (!dropZone) {
+      dropZone = el('div', 'dropzone');
+      const c = el('div', 'dz-card');
+      c.append(icon('folder-plus', 30), el('b', null, 'Отпустите, чтобы открыть папку как проект'), el('span', null, 'появится слева, поднимется его терминал'));
+      dropZone.appendChild(c);
+      document.body.appendChild(dropZone);
+    }
+    clearTimeout(dropT); dropT = setTimeout(hideDrop, 180);   // dragleave у окна ненадёжен — гасим по тишине
+  });
   document.addEventListener('drop', (e) => {
+    hideDrop();
     e.preventDefault();
     const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
     if (!f) return;
@@ -3226,6 +3786,8 @@ function init() {
   scanProjects();          // add subfolders of settings.scanDirs (non-blocking)
   checkProjectsExistence();
   window.addEventListener('focus', checkProjectsExistence); // re-check when returning to the app
+  window.addEventListener('focus', () => refreshGitChip(300)); // ветка/изменения могли поменяться снаружи
+  lite.fs.onChange(() => refreshGitChip(1200));              // файлы активного проекта меняются — пересчитать чип git
 
   if (!settings.onboarded) setTimeout(showOnboarding, 200); // first-run welcome
   autoLaunchModules();
