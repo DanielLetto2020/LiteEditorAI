@@ -30,6 +30,10 @@ contextBridge.exposeInMainWorld('lite', {
       ipcRenderer.on('sync:linkStep', h);
       return () => ipcRenderer.removeListener('sync:linkStep', h);
     },
+    // мастер подключения: что есть на машине, проверка адреса сервера, запись адреса
+    setupInfo: () => ipcRenderer.invoke('sync:setupInfo'),
+    checkServer: (server) => ipcRenderer.invoke('sync:checkServer', server),
+    setServer: (server) => ipcRenderer.invoke('sync:setServer', server),
   },
 
   // Локализация: словарь берём СИНХРОННО (до первого прохода по DOM — иначе

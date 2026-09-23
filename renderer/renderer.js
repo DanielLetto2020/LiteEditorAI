@@ -12,7 +12,7 @@ import '@xterm/xterm/css/xterm.css';
 // В ядре остались только терминал (xterm) + темы/термутилы.
 import { initI18n, t as tt } from './i18n.js';
 import { syncSettings } from './settings-sync.js';
-import { applyLook, termThemeFor, lookOf, lookTokens, LOOK_DEFAULT, LOOK_BASE_NAMES, LOOK_STATUS_NAMES, LOOK_TOKEN_NAMES, THEME_NAME } from './themes.js';
+import { applyLook, termThemeFor, lookOf, lookTokens, LOOK_BASE_NAMES, LOOK_STATUS_NAMES, LOOK_TOKEN_NAMES, THEME_NAME } from './themes.js';
 import { FRAME_COLORS, frameConf, applyFrame } from './frame.js';
 import { prepareRenderer, activateRenderer, releaseRenderer, applyUnicode11, copySelection, ptyResizer } from './termutil.js';
 import { attachTimeline } from './termtimeline.js';
@@ -29,7 +29,7 @@ import { openGlobalSearch } from './gsearch.js';
 import { initExtensions } from './modules/extensions.js';
 // initFiles — вивер+дерево мигрированы в отдельное окно (renderer/module-entry.js).
 
-const APP_VERSION = 'alpha v1.1.201';
+const APP_VERSION = 'alpha v1.1.202';
 const GUTTER = 8; // зазор между карточками окна — он же разделитель, за который тянется ширина
 // Системный терминал («Система · ~») мигрирован в отдельное окно (renderer/modules/scratch.js):
 // его id `__scratch__::tN` маршрутизируются main'ом в окно-владельца, в ядре их больше не обрабатываем.
@@ -70,9 +70,8 @@ let projects = [];
 // в плашке появляется метка «sync». Держим множеством, потому что makeCard —
 // синхронный, а ответ главного процесса приходит обещанием.
 let syncedPaths = new Set();
-// Есть ли синхронизация на этой машине вообще. В публичной сборке её нет (утилита приватная):
-// облачко тогда серое и открывает честное объяснение (showSyncInfo), а не подключение —
-// редактор сам ни с каким сервером не соединяется.
+// Задан ли сервер синхронизации. Нет — облачко серое и открывает мастер подключения
+// (showSyncSetup), а не подключение проекта: до этого редактор ни с каким сервером не соединяется.
 let syncAvailable = false;
 let activeId = null;
 const terms = new Map();          // sessionId -> { term, fit, search, container, projId, name, ... }
@@ -257,37 +256,146 @@ function humanSize(bytes) {
 //    (scripts/server-sync/lite-sync-link.js, события sync:linkStep) → при расхождении вопрос, чью версию взять;
 //  · уже синхронизируется — состояние сторон и расхождений (тот же осмотр), без кнопок, которых нет в процедуре.
 // Всё собирается узлами, а не строкой HTML: имя проекта = имя ПАПКИ, и `<`/`&` в нём ломали бы разметку.
-// Синхронизации на этой машине нет (публичная сборка): что это, что нужно и почему подключить пока нельзя.
-function showSyncInfo(p) {
+// Сервер ещё не задан: мастер подключения. Проверяет эту машину (ssh, rsync) и сервер (вход по
+// ключу, программы на нём, часы), записывает адрес и передаёт дальше — в обычное подключение
+// проекта. До «Сохранить» редактор ни с каким сервером не соединяется, кроме проверки по кнопке.
+function showSyncSetup(p) {
   const { m, close } = makeModal(`
     <div class="sy-head"><span class="sy-ic"></span><div class="sy-t"><b>Синхронизация с сервером</b><span></span></div><button class="icon-btn" id="sy-x" title="Закрыть" aria-label="Закрыть"></button></div>
     <div class="sy-body">
       <div class="sy-lead">Синхронизация держит папку проекта одинаковой на этом компьютере и на вашем сервере: агент на сервере продолжает там, где остановился агент на ПК, и наоборот. Заменённые файлы не пропадают, а уезжают в корзину.</div>
-      <div class="sy-h">Что для неё нужно</div>
+      <div class="sy-h sy-need">Что для неё нужно</div>
       <ul class="sy-list">
         <li data-ic="server"><div><b>Свой сервер с доступом по SSH-ключу.</b> <span>По паролю синхронизация не работает.</span></div></li>
-        <li data-ic="folder"><div><b>Один и тот же путь к проекту</b> <span>на компьютере и на сервере.</span></div></li>
-        <li data-ic="refresh"><div><b>Утилита синхронизации на обеих машинах.</b> <span>Она ставится отдельно от редактора.</span></div></li>
+        <li data-ic="folder"><div><b>Один и тот же путь к проекту</b> <span>на компьютере и на сервере — папку на сервере редактор создаст сам.</span></div></li>
+        <li data-ic="refresh"><div><b>rsync на обеих машинах.</b> <span>Остальное — обычные программы Linux и macOS.</span></div></li>
       </ul>
+      <div class="sy-h">Адрес сервера</div>
+      <input type="text" id="sy-srv" class="sy-srv" placeholder="user@example.com" autocomplete="off" spellcheck="false">
+      <div class="sy-hint">Как в команде ssh: пользователь@сервер или имя хоста из ~/.ssh/config (так задаётся нестандартный порт).</div>
+      <div class="sy-res"></div>
     </div>
-    <div class="modal-actions"><button class="btn" id="sy-rel">Следить за релизами</button><span class="grow"></span><button class="btn primary" id="sy-ok">Понятно</button></div>`);
+    <div class="modal-actions"><button class="btn" id="sy-cancel">Отмена</button><span class="grow"></span><button class="btn" id="sy-check">Проверить</button><button class="btn primary" id="sy-save" disabled>Сохранить и продолжить</button></div>`);
   m.classList.add('sync-modal');
   m.querySelector('.sy-ic').appendChild(icon('cloud', 21));
   m.querySelector('.sy-t span').textContent = p.path;
   m.querySelector('#sy-x').appendChild(icon('x', 16));
   m.querySelector('#sy-x').onclick = close;
-  m.querySelector('#sy-ok').onclick = close;
-  m.querySelector('#sy-rel').prepend(icon('github', 14));
-  m.querySelector('#sy-rel').onclick = () => lite.openExternal(RELEASES_URL.replace(/\/latest$/, ''));
+  m.querySelector('#sy-cancel').onclick = close;
   m.querySelectorAll('.sy-list li').forEach((li) => li.prepend(icon(li.dataset.ic, 15)));
-  const note = (kind, glyph, text) => { const n = el('div', 'sy-note ' + kind); n.append(icon(glyph, 15), el('div', null, text)); return n; };
-  const body = m.querySelector('.sy-body');
-  body.appendChild(note('warn', 'info', 'Утилиты пока нет в открытом доступе: сейчас синхронизация — внутренний инструмент автора. Когда её опубликуют, здесь появится подключение по шагам.'));
-  body.appendChild(note('good', 'check', 'Редактор сам ни с каким сервером не соединяется: пока синхронизация не настроена, файлы проекта никуда не уходят.'));
+  const inp = m.querySelector('#sy-srv'), res = m.querySelector('.sy-res');
+  const bCheck = m.querySelector('#sy-check'), bSave = m.querySelector('#sy-save');
+  const note = (kind, glyph, ...parts) => {
+    const n = el('div', 'sy-note ' + kind);
+    const t = el('div');
+    parts.filter(Boolean).forEach((x) => t.appendChild(typeof x === 'string' ? el('div', null, x) : x));
+    n.append(icon(glyph, 15), t);
+    return n;
+  };
+  const cmd = (text) => {
+    const c = el('div', 'sy-cmd');
+    c.setAttribute('data-no-i18n', '');
+    const b = iconBtn('', 'copy', 'Копировать', 13);
+    b.onclick = () => { lite.copyText(text); toast('Скопировано'); };
+    c.append(el('code', null, text), b);
+    return c;
+  };
+  const detail = (text) => { if (!text) return null; const d = el('div', 'sy-detail', text); d.setAttribute('data-no-i18n', ''); return d; };
+  // тот же вид, что у шагов подключения проекта (.lk-steps)
+  const checklist = (items) => {
+    const ol = el('ol', 'lk-steps');
+    for (const [state, title, what] of items) {
+      const li = el('li', state);
+      const mark = el('span', 'mark');
+      if (state === 'run') mark.appendChild(el('span', 'sy-spin'));
+      else if (state === 'ok') mark.appendChild(icon('check', 13));
+      else if (state === 'bad') mark.appendChild(icon('x', 12));
+      else mark.textContent = '·';
+      const sc = el('div', 'sc');
+      sc.appendChild(el('div', 'title', title));
+      if (what) sc.appendChild(el('div', 'what', what));
+      li.append(mark, sc);
+      ol.appendChild(li);
+    }
+    return ol;
+  };
+  const installTools = lite.platform === 'darwin' ? 'brew install rsync' : 'sudo apt install openssh-client rsync';
+  let checked = '';   // адрес, прошедший проверку: «Сохранить» — только для него
+  inp.addEventListener('input', () => { bSave.disabled = inp.value.trim() !== checked || !checked; });
+  inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); if (!bSave.disabled) bSave.click(); else check(); } });
+
+  const check = async () => {
+    const server = inp.value.trim();
+    if (!server) { inp.focus(); return; }
+    checked = ''; bSave.disabled = true; bCheck.disabled = true;
+    m.classList.add('sy-checked');   // вводная прочитана — место под результат, без прокрутки окна
+    res.replaceChildren(checklist([['run', 'Проверяю сервер…', server]]));
+    let r;
+    try { r = await lite.sync.checkServer(server); } catch (e) { r = { ok: false, reason: 'ssh', detail: String(e.message || e) }; }
+    bCheck.disabled = false;
+    if (!m.isConnected || inp.value.trim() !== server) return;
+    const at = { 'local-tools': 0, address: 1, resolve: 1, unreachable: 1, auth: 1, hostkey: 1, ssh: 1, 'remote-tools': 2, clock: 3 }[r.reason];
+    const failAt = r.ok ? 99 : (at === undefined ? 1 : at);
+    const st = (i) => (i < failAt ? 'ok' : i === failAt ? 'bad' : 'wait');
+    res.replaceChildren(checklist([
+      [st(0), 'Этот компьютер', failAt === 0 ? 'нет ssh или rsync' : 'ssh и rsync на месте'],
+      [st(1), 'Вход по ключу', server],
+      [st(2), 'Программы на сервере', failAt === 2 ? tt('не хватает: {0}', (r.missing || []).join(', ')) : 'rsync, find, md5sum, du'],
+      [st(3), 'Часы', failAt >= 3 ? tt('расходятся на {0} с', r.drift || 0) : ''],
+    ]));
+    const host = server.split('@').pop();
+    if (r.ok) {
+      checked = server; bSave.disabled = false;
+      res.appendChild(note('good', 'check', 'Сервер подходит. Нажмите «Сохранить и продолжить» — дальше редактор покажет, что есть на обеих сторонах, и подключит проект.'));
+      return;
+    }
+    const why = {
+      'local-tools': ['На этом компьютере нет ssh или rsync — без них синхронизации не будет. Установите их:', cmd(installTools)],
+      address: ['Адрес не подходит: нужен вид пользователь@сервер или имя хоста из ~/.ssh/config.'],
+      resolve: ['Такой сервер не найден — проверьте адрес.', detail(r.detail)],
+      unreachable: ['Сервер не отвечает по SSH: он выключен, закрыт порт или нет сети.', detail(r.detail)],
+      auth: ['Сервер не пускает по ключу. Добавьте на него свой ключ — один раз, из терминала:', cmd('ssh-copy-id ' + server), 'Если ключа ещё нет, сначала создайте его:', cmd('ssh-keygen -t ed25519')],
+      hostkey: ['Ключ сервера не совпадает с запомненным. Так бывает после переустановки сервера — но и при подмене. Если сервер переустанавливали, удалите старую запись и проверьте снова:', cmd('ssh-keygen -R ' + host)],
+      'remote-tools': [tt('На сервере не хватает программ: {0}. На Debian и Ubuntu их ставит команда:', (r.missing || []).join(', ')), cmd('sudo apt install rsync')],
+      clock: [tt('Часы компьютера и сервера расходятся на {0} с. Включите синхронизацию времени (NTP): иначе не понять, где правка свежее.', r.drift || 0)],
+    }[r.reason] || ['SSH не соединился.', detail(r.detail)];
+    res.appendChild(note('bad', 'warning', ...why));
+  };
+  bCheck.onclick = check;
+  bSave.onclick = async () => {
+    const server = inp.value.trim();
+    if (!server || server !== checked) return;
+    bSave.disabled = true;
+    let r;
+    try { r = await lite.sync.setServer(server); } catch (e) { r = { ok: false, reason: String(e.message || e) }; }
+    if (!r || !r.ok) { bSave.disabled = false; res.appendChild(note('bad', 'warning', r?.reason || 'Не удалось сохранить адрес.')); return; }
+    syncAvailable = true;
+    close();
+    refreshSynced();
+    showSyncDialog(p);
+  };
+
+  (async () => {
+    let info = null;
+    try { info = await lite.sync.setupInfo(); } catch (_) {}
+    if (!m.isConnected) return;
+    if (!info || !info.supported) {
+      inp.disabled = true; bCheck.disabled = true;
+      res.replaceChildren(note('warn', 'info', lite.platform === 'win32'
+        ? 'На Windows синхронизация пока не работает: ей нужен rsync, а в Windows его нет.'
+        : 'Утилита синхронизации не найдена в этой сборке редактора.'));
+      return;
+    }
+    if (info.tools && (!info.tools.ssh || !info.tools.rsync)) {
+      res.replaceChildren(note('bad', 'warning', 'На этом компьютере нет ssh или rsync — без них синхронизации не будет. Установите их:', cmd(installTools)));
+    }
+    res.appendChild(note('info', 'info', 'Файлы уходят только на этот сервер и только через ваш ssh. Сверяет их демон синхронизации — он работает, пока открыт редактор.'));
+    inp.focus();
+  })();
 }
 
 function showSyncDialog(p) {
-  if (!syncAvailable) { showSyncInfo(p); return; }
+  if (!syncAvailable) { showSyncSetup(p); return; }
   let stopListen = null;
   const { m, close } = makeModal(`
     <div class="sy-head"><span class="sy-ic"></span><div class="sy-t"><b></b><span></span></div><button class="icon-btn" id="sy-x" title="Закрыть" aria-label="Закрыть"></button></div>

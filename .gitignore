@@ -45,13 +45,19 @@ landing/
 .stryker-tmp/
 reports/
 
-# --- Синхронизация ПК↔сервер: В РЕПОЗИТОРИЙ НЕ ПУСКАТЬ ---
-# Личная инфраструктура владельца (адреса, порядок работы с его сервером);
-# публикация — только по его явной команде. Дублируется в .git/info/exclude
-# и в хуке pre-commit (замок на замке).
+# --- Синхронизация ПК↔сервер: публичны ТОЛЬКО пять файлов ниже (решение владельца 2026-09-23) ---
+# Остальное в каталоге — личная часть владельца: перенос учётки и памяти Claude
+# (lite-sync-claude.js, push-auth.sh, sync-memory.sh, merge_memory_index.py, _target.sh),
+# живые проверки check-*.js и OWNER.md. Тот же список — в .git/info/exclude и в хуке
+# pre-commit (замок на замке): новый публичный файл добавляется во все три места.
 # Веб-версия жила рядом, в `web/`, и с 2026-08-14 переехала в отдельный
 # проект LiteWebEditor — здесь её больше нет.
-scripts/server-sync/
+scripts/server-sync/*
+!scripts/server-sync/lite-sync.js
+!scripts/server-sync/lite-sync-link.js
+!scripts/server-sync/lite-sync-daemon.js
+!scripts/server-sync/lite-sync.service
+!scripts/server-sync/README.md
 
 # Подключение к задачнику: внутри токен, в git едет только .mcp.json.example
 .mcp.json
