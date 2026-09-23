@@ -16,7 +16,9 @@
     "!locales/**",
     "!package.json",
     "!errledger.js",
-    "!renderer/settings-sync.js"
+    "!renderer/settings-sync.js",
+    "!scripts/server-sync/lite-sync.js",
+    "!scripts/server-sync/lite-sync-link.js"
   ],
   "reporters": [
     "html",
