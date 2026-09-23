@@ -3,6 +3,7 @@ const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
 contextBridge.exposeInMainWorld('lite', {
   platform: process.platform,   // 'win32' | 'linux' | 'darwin' — для платформо-зависимого UI (выбор шелла)
+  homeDir: (process.env && (process.env.HOME || process.env.USERPROFILE)) || '', // «~» в путях интерфейса (чип папки)
   openProject: () => ipcRenderer.invoke('dialog:openProject'),
   // Modern replacement for the deprecated File.path (Electron 32+ / Windows-safe).
   pathForFile: (file) => { try { return webUtils.getPathForFile(file); } catch (_) { return ''; } },

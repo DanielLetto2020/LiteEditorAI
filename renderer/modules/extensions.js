@@ -243,8 +243,9 @@ export function initExtensions(host) {
       else if (rec.status === 'broken') { row.appendChild(el('span', 'ext-state', '⚠ сломан')); row.title = rec.error; }
       dd.appendChild(row);
     }
-    dd.appendChild(el('div', 'menu-sep'));
-    const mrow = host.moduleRow || ((g, t, _d, fn) => host.menuRow(g, t, fn)); // двухстрочный пункт, если ядро его дало
+    if (!opts.compact) dd.appendChild(el('div', 'menu-sep'));
+    // двухстрочный пункт, если ядро его дало; compact — одной строкой (выезжающее меню «Ещё»)
+    const mrow = (!opts.compact && host.moduleRow) || ((g, t, _d, fn) => host.menuRow(g, t, fn));
     dd.appendChild(mrow('plus', 'Создать модуль…', 'менеджер пользовательских модулей', () => { host.closeMenus(); openWizard(); }));
     dd.appendChild(mrow('folder', 'Открыть папку модулей', '~/.LiteEditorAI/modules', () => { host.closeMenus(); if (extDirPath) lite.openInFileManager(extDirPath); }));
     dd.appendChild(mrow('refresh', 'Пересканировать', 'перечитать список модулей с диска', () => { host.closeMenus(); rescan(); }));

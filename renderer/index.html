@@ -8,65 +8,63 @@
   <link rel="stylesheet" href="dist/bundle.css" />
   <link rel="stylesheet" href="styles.css" />
 </head>
-<body data-theme="neumorphism">
+<body>
+  <!-- Оболочка «Графит»: боковая карточка проектов · терминал (вкладки сверху, чипы и модули снизу)
+       · правая панель «Моих модулей». Безрамочное окно: тащится за пустые места шапки и бренда. -->
   <div id="app">
-    <!-- Custom frameless titlebar: menu (left) + window controls (right). Draggable. -->
-    <!-- Заставка «матрица»: полноэкранный canvas-оверлей (вкл кнопкой/по бездействию). -->
+    <!-- Заставка «матрица»: полноэкранный canvas-оверлей (кнопка в шапке / по бездействию). -->
     <canvas id="matrix-overlay" class="hidden" aria-hidden="true"></canvas>
-    <header id="topbar">
-      <span class="brand"><span class="brand-mark">▍</span>LiteEditorAI</span>
-      <nav id="menubar">
-        <button class="menu-item" data-menu="file">Файл</button>
-        <button class="menu-item" data-menu="settings">Настройки</button>
-        <button class="menu-item" data-menu="modules">Модули</button>
-        <button class="menu-item" data-menu="about">О&nbsp;программе</button>
-      </nav>
-      <div class="drag-space"></div>
-      <div class="win-tools">
-        <button id="pomo-mini" class="pomo-mini" title="Помодоро — открыть пульт" hidden></button>
-        <button id="attention-badge" class="attention-badge" title="Агентов ждёт ответа">0</button>
-        <span id="app-ver" class="app-ver" title="Версия приложения"></span>
-        <button id="update-badge" class="update-badge" title="Доступна новая версия — открыть страницу загрузки" hidden></button>
-        <button id="btn-single" class="icon-btn" title="Один терминал (Ctrl+\)" data-icon="columns"></button>
-        <button id="btn-matrix" class="icon-btn" title="Заставка «матрица» (вкл/выкл)" data-icon="sparkles"></button>
-        <span class="win-sep"></span>
-        <button id="win-min" class="win-btn min" title="Свернуть" aria-label="Свернуть"></button>
-        <button id="win-max" class="win-btn max" title="Развернуть" aria-label="Развернуть"></button>
-        <button id="win-close" class="win-btn close" title="Закрыть" aria-label="Закрыть"></button>
-      </div>
-    </header>
 
-    <div id="body">
-      <!-- compact project switcher, shown only in single-terminal mode -->
-      <aside id="mini-rail"></aside>
-
-      <aside id="sidebar">
-        <div class="pane-head">
-          <span class="ph-title">ПРОЕКТЫ</span>
-          <button id="proj-find" class="icon-btn" title="Поиск по всем проектам (Ctrl+Shift+F)" data-icon="search" data-icon-size="15"></button>
+    <aside id="sidebar">
+      <div class="side-full">
+        <div class="side-brand">
+          <span class="side-mark" aria-hidden="true"></span><span class="side-name">LiteEditor</span>
+          <span class="drag-space"></span>
+          <button id="btn-single" class="icon-btn" title="Один терминал (Ctrl+\)" aria-label="Один терминал" data-icon="panel-left" data-icon-size="17"></button>
         </div>
-        <!-- фильтр списка проектов: сужает карточки по имени и пути, секции без совпадений скрываются -->
+        <nav class="side-nav">
+          <button id="proj-find" class="nav-btn" title="Содержимое и имена файлов всех проектов, вывод терминалов"><span data-icon="search"></span><span class="nav-t">Найти во всех проектах</span><span class="nav-k">Ctrl ⇧ F</span></button>
+          <button id="nav-modules" class="nav-btn"><span data-icon="grid"></span><span class="nav-t">Модули</span></button>
+          <button id="nav-more" class="nav-btn"><span data-icon="dots-h"></span><span class="nav-t">Ещё</span><span class="nav-chev" data-icon="chevron-right" data-icon-size="14"></span></button>
+        </nav>
+        <!-- фильтр списка проектов: сужает список по имени и пути, секции без совпадений скрываются -->
         <div class="proj-filter">
           <span class="pf-ic" data-icon="search" data-icon-size="13"></span>
-          <input type="text" id="proj-filter" placeholder="фильтр проектов…" spellcheck="false" autocomplete="off">
+          <input type="text" id="proj-filter" placeholder="Фильтр проектов" spellcheck="false" autocomplete="off">
           <button id="proj-filter-clear" class="pf-clear hidden" title="Сбросить фильтр" data-icon="x" data-icon-size="12"></button>
         </div>
         <div id="projects"></div>
-      </aside>
-      <div class="gutter" data-resize="sidebar"></div>
-
-      <section id="terminal-pane">
-        <div id="term-header">
-          <button id="term-tabs-prev" class="tab-scroll" title="Прокрутить вкладки влево" data-icon="chevron-left" data-icon-size="16"></button>
-          <div id="term-tabs"></div>
-          <button id="term-tabs-next" class="tab-scroll" title="Прокрутить вкладки вправо" data-icon="chevron-right" data-icon-size="16"></button>
-          <button id="term-tab-add" class="tab-add" title="Новая вкладка (Ctrl+Shift+T)" data-icon="plus" data-icon-size="15"></button>
-          <div id="term-tools">
-            <button id="term-clear" class="tt-btn" title="Очистить терминал" data-icon="eraser" data-icon-size="15"></button>
-            <button id="term-restart" class="tt-btn" title="Перезапустить терминал" data-icon="refresh" data-icon-size="15"></button>
-          </div>
+        <div class="side-foot">
+          <button id="app-ver" class="app-ver" title="О программе"></button>
+          <button id="update-badge" class="update-badge" hidden></button>
+          <button id="btn-github" class="icon-btn" title="Репозиторий на GitHub" aria-label="Репозиторий на GitHub" data-icon="github"></button>
+          <button id="btn-look" class="icon-btn" title="Оформление: цвета и размеры" aria-label="Оформление" data-icon="palette"></button>
+          <button id="btn-settings" class="icon-btn" title="Настройки" aria-label="Настройки" data-icon="gear"></button>
         </div>
-        <div id="term-body">
+      </div>
+      <!-- режим «один терминал» (Ctrl+\): карточка сжимается в узкий рельс с проектами -->
+      <div id="mini-rail"></div>
+    </aside>
+    <div class="gutter" data-resize="sidebar"></div>
+
+    <section id="terminal-pane">
+      <div id="term-header">
+        <button id="term-tabs-prev" class="tab-scroll" title="Прокрутить вкладки влево" data-icon="chevron-left" data-icon-size="15"></button>
+        <div id="term-tabs"></div>
+        <button id="term-tabs-next" class="tab-scroll" title="Прокрутить вкладки вправо" data-icon="chevron-right" data-icon-size="15"></button>
+        <button id="term-tab-add" class="tab-add" title="Новая вкладка (Ctrl+Shift+T)" data-icon="plus" data-icon-size="15"></button>
+        <div class="drag-space"></div>
+        <div class="win-tools">
+          <button id="attention-badge" class="attention-badge" title="Перейти к агенту, который ждёт ответа">0</button>
+          <button id="pomo-mini" class="pomo-mini" title="Помодоро — открыть пульт" hidden></button>
+          <button id="btn-matrix" class="icon-btn" title="Заставка «матрица»" aria-label="Заставка «матрица»" data-icon="sparkles"></button>
+          <span class="win-sep"></span>
+          <button id="win-min" class="win-btn min" title="Свернуть" aria-label="Свернуть"></button>
+          <button id="win-max" class="win-btn max" title="Развернуть" aria-label="Развернуть"></button>
+          <button id="win-close" class="win-btn close" title="Закрыть" aria-label="Закрыть"></button>
+        </div>
+      </div>
+      <div id="term-body">
         <div id="terminals"></div>
         <div id="term-search">
           <input id="term-search-input" type="text" placeholder="Поиск в терминале…" autocomplete="off" spellcheck="false">
@@ -77,46 +75,45 @@
         <div id="empty-hint">
           <div class="hint-card">
             <div class="hint-title">Пусто</div>
-            <div class="hint-text">Открой папку слева — справа поднимется её терминал.</div>
+            <div class="hint-text">Откройте папку — слева появится проект, здесь поднимется его терминал.</div>
+            <button id="empty-open" class="btn primary">Открыть папку</button>
           </div>
         </div>
+      </div>
+      <!-- нижняя полоса: чипы активного проекта · быстрая панель модулей · плашка кнопок терминала -->
+      <div id="bottombar">
+        <div class="chips">
+          <button id="chip-folder" class="chip" title="Папка проекта"></button>
+          <button id="chip-branch" class="chip hidden" title="Git: ветка и изменения"></button>
+          <button id="chip-sync" class="chip hidden" title="Синхронизация ПК ↔ сервер"></button>
         </div>
+        <div class="drag-space"></div>
         <!-- quickbar: полоса быстрого доступа к модулям (Модули → Настройка панели…) -->
-        <div id="quickbar" class="hidden"></div>
-      </section>
-
-      <!-- Системный терминал («Система · ~») — мигрирован в отдельное окно (renderer/module.html). -->
-
-      <!-- Git module («Git») — мигрирован в отдельное окно (renderer/module.html). -->
-
-      <!-- «Контекст» module («Контекст») — мигрирован в отдельное окно (renderer/module.html). -->
-
-      <!-- Notes/tasks module («Задачи») — мигрирован в отдельное окно (renderer/module.html). -->
-
-      <!-- Audit module («Аудит») — мигрирован в отдельное окно (renderer/module.html). -->
-
-      <!-- Tools module («Инструменты») — мигрирован в отдельное окно (renderer/module.html). -->
-
-      <!-- IterFlow и WEB/SEO аудит — мигрированы в отдельные окна (renderer/module.html). -->
-
-      <!-- Containers («Контейнеры»), Databases («Базы данных»), RemoteHost («Удалённые хосты»),
-           OpenRouter chat и «Обработка текста» — мигрированы в отдельные окна (renderer/module.html). -->
-
-      <!-- User modules (extensions): общая панель правого слота, один пользовательский модуль за раз -->
-      <div id="gutter-ext" class="gutter hidden" data-resize="ext"></div>
-      <section id="ext-pane" class="hidden">
-        <div class="pane-head">
-          <button id="ext-back" class="icon-btn" title="Назад к модулям" data-icon="chevron-left" style="display:none"></button>
-          <span id="ext-title">Модуль</span>
-          <div class="drag-space-static"></div>
-          <button id="ext-reload" class="icon-btn" title="Перезагрузить модуль (после правок кода)" data-icon="refresh"></button>
-          <button id="ext-close" class="icon-btn" title="Закрыть" data-icon="x"></button>
+        <div id="quickbar"></div>
+        <button id="qb-more" class="qb-btn icon-btn" title="Все модули · настроить панель" aria-label="Все модули" data-icon="plus"></button>
+        <div id="term-tools" class="tgroup" role="group" aria-label="Терминал">
+          <span class="tgroup-l">Терминал</span>
+          <button id="term-timeline" class="tt-btn" title="Шкала времени слева" aria-label="Шкала времени" data-icon="clock" data-icon-size="15"></button>
+          <button id="term-find" class="tt-btn" title="Поиск в терминале (Ctrl+F)" aria-label="Поиск в терминале" data-icon="search" data-icon-size="15"></button>
+          <button id="term-clear" class="tt-btn" title="Очистить терминал" aria-label="Очистить терминал" data-icon="eraser" data-icon-size="15"></button>
+          <button id="term-restart" class="tt-btn" title="Перезапустить терминал" aria-label="Перезапустить терминал" data-icon="refresh" data-icon-size="15"></button>
         </div>
-        <div id="ext-body" class="ext-body"></div>
-      </section>
+      </div>
+    </section>
 
-      <!-- Вивер кода (#viewer-pane) и дерево файлов (#tree-pane) переехали в окно модуля (module.html#files). -->
-    </div>
+    <!-- «Мои модули» (пользовательские плагины): правая панель, один модуль за раз -->
+    <div id="gutter-ext" class="gutter hidden" data-resize="ext"></div>
+    <section id="ext-pane" class="hidden">
+      <div class="pane-head">
+        <button id="ext-back" class="icon-btn" title="Назад к модулям" data-icon="chevron-left" style="display:none"></button>
+        <span id="ext-title">Модуль</span>
+        <div class="drag-space-static"></div>
+        <button id="ext-reload" class="icon-btn" title="Перезагрузить модуль (после правок кода)" data-icon="refresh"></button>
+        <button id="ext-close" class="icon-btn" title="Закрыть" data-icon="x"></button>
+      </div>
+      <div id="ext-body" class="ext-body"></div>
+    </section>
+    <!-- Вивер кода, дерево, Git, системный терминал и остальные встроенные модули — отдельные окна (module.html). -->
   </div>
 
   <div id="menu-layer"></div>

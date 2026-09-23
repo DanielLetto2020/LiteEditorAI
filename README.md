@@ -19,11 +19,13 @@ A terminal-first desktop workspace for developers who **supervise AI coding agen
 
 ![LiteEditorAI](assets/screenshots/hero.png)
 
-*Three agents running in three projects. The tab renamed itself after the task the agent is on; the amber dots
-mark the two agents waiting for an answer, and the badge in the title bar counts them.*
+*Three agents in three projects: the one in `web-shop` has answered, `api-gateway` asked a question, `dashboard`
+is still working. Amber dots mark the agents waiting for you, and the badge up top counts them. The tab named
+itself after the task; under the terminal sit the project folder, its git branch with the number of changed
+files, and the quick bar.*
 
 > [!NOTE]
-> **Interface language: English, Russian or 简体中文** — switch it in *Settings → Interface language*, applied
+> **Interface language: English, Russian or 简体中文** — switch it in *Settings → Appearance*, applied
 > live without a restart. Languages are **pluggable files** (`locales/<code>.json`), so adding your own is one
 > file and no build — see [Languages](#languages).
 
@@ -51,16 +53,20 @@ command in a third. A tab **names itself after the terminal title**, which for a
 working on right now".
 
 A traffic light shows the state without switching anywhere: **working** (spinner) · **waiting for your
-answer** (amber) · **done** (green). The project card aggregates all its tabs, and the title bar carries a
-counter — *how many agents are blocked on you*. Notifications included.
+answer** (amber) · **done** (green) · **not started yet** (dashed). The project row aggregates all its tabs,
+and the terminal header carries a counter — *how many agents are blocked on you*; click it to jump to the
+next one. Notifications included.
 
 An optional **time scale** runs down the left edge of the terminal. It marks when you sent a command, when
 output resumed after a pause, and every new minute — so an hour of agent output stops being an undated wall
 of text. It is a separate layer, not text in the buffer: the agent's own rendering stays intact, and the
-time never lands in your copy. Off by default — *Settings → Terminal*, or `Ctrl+K`.
+time never lands in your copy. Toggle it with the clock button under the terminal, in *Settings → Terminal*
+or from `Ctrl+K`.
 
-The clip above also shows the command palette (`Ctrl+K`) and the module catalog.
-[Full-size video](assets/screenshots/demo.mp4).
+Under the terminal sit the active project's **folder** (a menu: open the Project window, the file manager,
+copy the path) and its **git branch with the number of changed files** — click it for the list, a click on
+a file opens it. The clip also shows the **More** menu, the module catalog, the appearance panel and the
+single-terminal mode. [Full-size video](assets/screenshots/demo.mp4).
 
 ### 2. See what the agent touched
 
@@ -89,6 +95,15 @@ project's `.claude` and `~/.claude` with an editor, copy history and windowed vi
 **Conversation analysis** — mining long-lived rules out of your history with the agent, writing them
 into `CLAUDE.md` or creating skill and command drafts.
 
+### 4. Everything one click away
+
+The sidebar holds your projects and three entries: **Find in all projects**, **Modules** and **More**. More
+slides out beside it with the rest of the menu — folders, recent projects, your own modules, view and tools,
+help and every built-in module. `Ctrl+\` folds the sidebar into a thin rail of project initials that still
+shows each agent's state.
+
+![The More menu](assets/screenshots/more.png)
+
 ## Install
 
 Prebuilt binaries live on the [**Releases**](https://github.com/DanielLetto2020/LiteEditorAI/releases) page.
@@ -102,7 +117,8 @@ Prebuilt binaries live on the [**Releases**](https://github.com/DanielLetto2020/
 | **From source** | `npm install && npm start` (Node.js 22+) |
 
 **Updating is one click.** The editor checks GitHub Releases in the background, downloads the new version
-and shows a **Restart** badge in the title bar: press it and the editor closes and reopens already updated —
+and shows a **Restart** badge at the bottom of the sidebar (a dot next to the version number means a new
+release is out): press it and the editor closes and reopens already updated —
 no visit to the download page. The portable builds (Linux `tar.gz`, Windows `zip`, macOS `.app`) update
 without any password; the `.deb` install asks for the administrator password once, because it lives in a
 system directory. Update mode is in **Settings → Updates**.
@@ -111,16 +127,18 @@ system directory. Update mode is in **Settings → Updates**.
 
 ![Module catalog](assets/screenshots/modules.png)
 
-A **module** is a separate window next to the editor. Open several at once — each remembers its size and
-position, and the set reopens on next launch. Project-bound modules follow the active project.
+A **module** is a separate window next to the editor. Open it from **Modules** (tiles with search — pin a
+module to the quick bar or have it open at startup right on its tile), from **More**, `Ctrl+K` or the quick
+bar under the terminal. Open several at once — each remembers its size and position, and the set reopens on
+next launch. Project-bound modules follow the active project.
 
 <details>
 <summary><b>Full list of built-in modules</b> (click to expand)</summary>
 
 | Module | What it does |
 |---|---|
-| 👁 **Project** (viewer + Git) | Code and git in one window — see [above](#3-see-what-the-agent-touched). Plus Markdown / image / HTML preview, project-wide replace (`Ctrl+Shift+R`, regex and `$1` groups), history search, favourite branches, git status inside the file tree. |
-| 🧠 **Context** | `CLAUDE.md` by sections, memory, `.claude` files, conversation mining — see [above](#4-keep-the-agents-context-in-order). |
+| 👁 **Project** (viewer + Git) | Code and git in one window — see [above](#2-see-what-the-agent-touched). Plus Markdown / image / HTML preview, project-wide replace (`Ctrl+Shift+R`, regex and `$1` groups), history search, favourite branches, git status inside the file tree. |
+| 🧠 **Context** | `CLAUDE.md` by sections, memory, `.claude` files, conversation mining — see [above](#3-keep-the-agents-context-in-order). |
 | ✅ **Tasks** | TODO with statuses and priority, list **and kanban** (drag to change status), search, subtask checklists with progress, Markdown preview, project/global tabs, send a task straight into the terminal, JSON export/import. Plus a **Calendar** tab with due dates, **native reminders** and a month view — and a built-in **MCP server** (`lite-tasks`) so the agent in your terminal can read and set reminders itself. |
 | 🔍 **Audit** | Quick X-ray of a project: file types, largest files by lines/size with anomaly flags, media by weight, hygiene (junk in git, duplicates, minified, orphans), tech debt (TODO/FIXME and possible secrets — click jumps to the line), history (hot files by git churn, stale ones). Source: git-tracked or the whole directory; summary to clipboard, report export. |
 | 🤖 **AI company** | A team of agents on one project: a **director** agent decomposes the goal, "hires" specialists (coder, reviewer, tester…) and keeps a shared task board with progress; live log, role library, dry-run **plan mode**, budget cap, goal queue, run history with cost. |
@@ -137,7 +155,7 @@ position, and the set reopens on next launch. Project-bound modules follow the a
 | 📋 **IterFlow** | The [IterFlow](https://iter-flow.ru) tracker inside the editor: create and edit iterations and tasks, deadlines, kanban status changes, iteration stage transitions (submit / approve / accept), project notes. Handy for freelancers and studios who agree scope with a client. |
 | ✍️ **Text processing** | An Obsidian-style AI document editor: sidebar with the project's document tree, tabs, **rich-text ⇄ Markdown** modes, **KaTeX formulas**, formatting bar. Select a fragment and ask for a rewrite — handled by a **local agent with no API keys** (Claude Code / Codex / Gemini), streamed live; agent roles come from the project's `Roles/*.md`, autosave included. |
 | 💬 **OpenRouter chat** | Bring your own key: any model with its price and context size, **streamed** answers with Markdown and code highlighting, several sessions per key, images, key balance. Keys stay local. |
-| 🍅 **Pomodoro** | A work/rest timer for a workspace where agents keep working on their own: during a break a translucent overlay covers the terminals — input is blocked, **agents keep running**, output stays visible. Classic 25/5, 52/17, ultradian 90/20 or your own technique, habit stats with a day streak, mini-timer in the title bar. The countdown lives in the background. |
+| 🍅 **Pomodoro** | A work/rest timer for a workspace where agents keep working on their own: during a break a translucent overlay covers the terminals — input is blocked, **agents keep running**, output stays visible. Classic 25/5, 52/17, ultradian 90/20 or your own technique, habit stats with a day streak, a timer pill in the terminal header with pause and break controls. The countdown lives in the background. |
 | 🔊 **Voice** | Listen to the agent's answers instead of reading them: select terminal output and pick **Read aloud** in the context menu (or turn on clipboard capture), and a natural Russian voice reads it sentence by sentence — pause, skip by sentence, the current sentence highlighted, click a sentence to read from there. Terminal junk (box drawing, ANSI leftovers, spinners, Markdown) is stripped, numbers and versions are spoken as words, stress in homographs is placed automatically. The voice is **Silero v5** in a separate Python process and is **not bundled** (CC BY-NC-SA licence): you need Python with `torch`, the model (145 MB) downloads with one button. Russian only. |
 | 📈 **Resource monitor** | How much RAM and CPU the editor eats — per process (windows, GPU, core) **and per agent in the terminals** (PTY process trees), memory sparkline, summary snapshot to clipboard. |
 | 🖳 **System terminal** | Standalone shells outside projects (home directory), several tabs, for one-off system commands next to your working terminal. |
@@ -145,7 +163,7 @@ position, and the set reopens on next launch. Project-bound modules follow the a
 
 </details>
 
-**🧩 Write your own.** *Modules → Create module…* scaffolds a plugin and **opens a terminal inside its folder**,
+**🧩 Write your own.** *Modules → My modules → Create module* scaffolds a plugin and **opens a terminal inside its folder**,
 where **your own AI agent** writes the code against the bundled spec (`GUIDE.md` and prompts are dropped next
 to it). The result appears under "My modules" and can be hot-reloaded. A simple example (a calculator) ships
 with the app; the spec for authors is in [`module-kit/`](module-kit/).
@@ -167,12 +185,16 @@ settings — no rebuild required. The same folder also lets you fix a wording yo
 put just that one key in your own file. `node scripts/i18n-extract.js` refreshes the source dictionary and
 reports how complete each locale is; strings a locale is missing fall back to English rather than Russian.
 
-## Themes
+## Look and feel
 
-Six themes — Neumorphism (default), Glass, Material, Catppuccin, Gruvbox, Aurora. The terminal is recoloured
-along with the interface.
+One theme — **Graphite**: rounded cards on a dark window whose background and terminal are slightly
+translucent, while menus and buttons stay solid. The colours are yours: pick an accent, change the six base
+colours, the status colours or any of 16 more by hand, and set the corner radius, sidebar width, project row
+height, terminal font and background opacity. It all applies live in the **Appearance** panel (the palette
+button at the bottom of the sidebar), module windows follow along, and a theme can be copied and pasted as
+text to share it.
 
-![Themes](assets/screenshots/themes.png)
+![Appearance panel](assets/screenshots/appearance.png)
 
 ## Keyboard
 
@@ -184,7 +206,7 @@ along with the interface.
 | `Ctrl+C` / `Ctrl+V` | copy selection / paste (any keyboard layout) |
 | `Ctrl+\` | single-terminal mode |
 | `Ctrl+K` | command palette |
-| `Ctrl+F` / `Ctrl+Shift+F` | search in the terminal or file / across all open terminals |
+| `Ctrl+F` / `Ctrl+Shift+F` | search in the terminal or file / find in all projects (files and terminal output) |
 | `Ctrl+S` | save file |
 | `Ctrl+Shift+R` | project-wide replace (Project window) |
 | `Ctrl+1..9` / `Ctrl+Tab` | switch projects |
