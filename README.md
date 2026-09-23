@@ -104,6 +104,14 @@ shows each agent's state.
 
 ![The More menu](assets/screenshots/more.png)
 
+### 5. The same project on your server
+
+Leave an agent working on your own server and pick up at home where it stopped — the cloud next to a project
+keeps its folder identical on both machines. A short setup checks your SSH key, `rsync` and the clocks and tells
+you the exact command if something is missing. Files go only to your server, over your own `ssh`; replaced files
+land in a trash folder instead of disappearing. Linux and macOS; details in
+[`scripts/server-sync`](scripts/server-sync/README.md).
+
 ## Install
 
 Prebuilt binaries live on the [**Releases**](https://github.com/DanielLetto2020/LiteEditorAI/releases) page.
@@ -215,7 +223,8 @@ text to share it.
 ## Status
 
 **Alpha**, actively developed. A project can keep as many terminal tabs as you need and their **names** survive
-a restart (the processes do not). The viewer opens one file at a time and skips files over 2 MB. It is a viewer
+a restart (the processes do not; they do survive a reload of the window, so a crashed window does not stop
+your agents). The viewer opens one file at a time and skips files over 2 MB. It is a viewer
 with editing, not a replacement for your IDE's refactoring engine — that's on purpose.
 
 **Removed after v1.1.173: the Android remote and its relay.** The `.apk`, the PC-side relay client and the
