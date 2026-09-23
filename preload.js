@@ -30,6 +30,10 @@ contextBridge.exposeInMainWorld('lite', {
       ipcRenderer.on('sync:linkStep', h);
       return () => ipcRenderer.removeListener('sync:linkStep', h);
     },
+    // мастер подключения: что есть на машине, проверка адреса сервера, запись адреса
+    setupInfo: () => ipcRenderer.invoke('sync:setupInfo'),
+    checkServer: (server) => ipcRenderer.invoke('sync:checkServer', server),
+    setServer: (server) => ipcRenderer.invoke('sync:setServer', server),
   },
 
   // Локализация: словарь берём СИНХРОННО (до первого прохода по DOM — иначе
@@ -652,6 +656,7 @@ contextBridge.exposeInMainWorld('lite', {
   },
 
   pty: {
+    adoptable: () => ipcRenderer.invoke('pty:adoptable'), // терминалы, пережившие перезагрузку окна
     create: (opts) => ipcRenderer.invoke('pty:create', opts),
     write: (id, data) => ipcRenderer.send('pty:write', { id, data }),
     resize: (id, cols, rows) => ipcRenderer.send('pty:resize', { id, cols, rows }),

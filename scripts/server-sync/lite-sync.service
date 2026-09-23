@@ -1,0 +1,23 @@
+# Template: see README.md, section "Run the daemon without the editor". __NODE__, __NODEDIR__ and __HERE__ are placeholders.
+[Unit]
+Description=LiteEditor sync — keeps projects in step with your server
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart=__NODE__ __HERE__/lite-sync-daemon.js
+Restart=always
+RestartSec=10
+
+# the network may drop and the server may reboot: keep retrying, without a restart storm
+StartLimitBurst=0
+
+# without an explicit PATH systemd finds neither node nor rsync nor ssh
+Environment=PATH=__NODEDIR__:/usr/local/bin:/usr/bin:/bin
+
+# syncing must not get in the way of work at the machine
+Nice=10
+IOSchedulingClass=idle
+
+[Install]
+WantedBy=default.target

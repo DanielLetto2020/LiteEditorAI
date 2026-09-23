@@ -307,37 +307,57 @@ ipcMain.handle('sync:match', (_e, paths) => {
 
 // Подключение проекта к синхронизации. Процедура одна на оба редактора и живёт
 // рядом с демоном (scripts/server-sync/lite-sync-link.js): здесь мы на домашней
-// машине, поэтому запускаем её сразу, без заявок через сервер.
-// ⚠️ Проверка whitelist перед релизом (docs/RELEASE.md) показывает этот require
-// как `MISS scripts/server-sync/lite-sync-link.js` — и это ОЖИДАЕМО: каталог
-// приватный, в публичные сборки он не уезжает и в `build.files` ему не место.
-// Отсутствие модуля безопасно: до require дело доходит только когда на машине
-// есть настройки синхронизации, а сам вызов обёрнут в try/catch (см. syncAvailable).
+// машине, поэтому запускаем её сразу, без заявок через сервер. На Windows
+// синхронизации нет: утилита стоит на rsync, а его там нет.
+const SYNC_DIR = path.join(__dirname, 'scripts', 'server-sync');
 let linker = null;
 function linkerModule() {
-  // @ts-ignore -- модуля намеренно нет в публичном дереве (каталог приватный),
-  // и проверка типов на CI не должна падать на его отсутствии.
   if (!linker) linker = require('./scripts/server-sync/lite-sync-link.js');
   return linker;
 }
 
-// Синхронизация — личная оснастка владельца: её каталог (scripts/server-sync/)
-// приватный и в публичные сборки не попадает. Поэтому доступность проверяем по
-// факту: есть ли настройки и лежит ли рядом сама процедура. Нет — интерфейс о
-// синхронизации молчит, а не показывает кнопку, которая ничего не сделает.
+// Можно ли подключать проекты: задан ли сервер. Нет — облачко открывает мастер подключения.
 function syncAvailable() {
   try {
-    if (!syncmark.available()) return false;
-    linkerModule();
-    return true;
+    return process.platform !== 'win32' && linkerModule().configured();
   } catch (_) {
     return false;
   }
 }
 
-ipcMain.handle('sync:inspect', (_e, projectPath) => {
-  try { return linkerModule().inspect(String(projectPath || '')); } catch (e) { return { ok: false, reason: String(e && e.message ? e.message : e) }; }
-});
+// Процедуры синхронизации ходят по ssh и считают du/find по дереву проекта — это секунды,
+// а на недоступном сервере и десятки секунд. В главном процессе такой вызов заморозил бы
+// все окна, поэтому они идут отдельным процессом (Electron в режиме node), а сюда
+// возвращаются строками JSON: {step} по ходу и {result} в конце.
+function linkerCall(method, args, onStep) {
+  return new Promise((resolve) => {
+    const script = `const l = require(${JSON.stringify(path.join(SYNC_DIR, 'lite-sync-link.js'))});
+      const out = (o) => process.stdout.write(JSON.stringify(o) + '\\n');
+      const [m, a] = JSON.parse(process.argv[1]);
+      if (m === 'link') a[1] = Object.assign({}, a[1], { onStep: (s) => out({ step: s }) });
+      Promise.resolve().then(() => l[m](...a)).then((r) => out({ result: r }), (e) => out({ result: { ok: false, reason: String(e && e.message || e) } }));`;
+    let child;
+    try {
+      child = spawn(process.execPath, ['-e', script, JSON.stringify([method, args])], { env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' } });
+    } catch (e) { resolve({ ok: false, reason: String(e && e.message ? e.message : e) }); return; }
+    let buf = '', err = '', result = null;
+    child.stdout.on('data', (d) => {
+      buf += d;
+      let i;
+      while ((i = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, i); buf = buf.slice(i + 1);
+        let msg = null; try { msg = JSON.parse(line); } catch (_) {}
+        if (msg && msg.step && onStep) onStep(msg.step);
+        if (msg && msg.result) result = msg.result;
+      }
+    });
+    child.stderr.on('data', (d) => { err += d; });
+    child.on('error', (e) => { err += e.message; });
+    child.on('close', () => resolve(result || { ok: false, reason: err.trim().split('\n').pop() || 'процедура синхронизации прервалась' }));
+  });
+}
+
+ipcMain.handle('sync:inspect', (_e, projectPath) => linkerCall('inspect', [String(projectPath || '')]));
 
 let linkRunning = false;
 ipcMain.handle('sync:link', async (_e, { path: projectPath, prefer } = {}) => {
@@ -345,18 +365,54 @@ ipcMain.handle('sync:link', async (_e, { path: projectPath, prefer } = {}) => {
   if (linkRunning) return { ok: false, reason: 'подключение уже идёт' };
   linkRunning = true;
   try {
-    return await linkerModule().link(String(projectPath || ''), {
-      prefer: prefer === 'local' || prefer === 'remote' ? prefer : null,
-      onStep: (step) => {
-        sendTo(mainWindow, 'sync:linkStep', step);
-      },
-    });
-  } catch (e) {
-    return { ok: false, reason: String(e && e.message ? e.message : e) };
+    return await linkerCall('link', [String(projectPath || ''), { prefer: prefer === 'local' || prefer === 'remote' ? prefer : null }],
+      (step) => sendTo(mainWindow, 'sync:linkStep', step));
   } finally {
     linkRunning = false;
   }
 });
+
+// Мастер подключения: что есть на этой машине, проверка адреса сервера, запись адреса.
+ipcMain.handle('sync:setupInfo', () => {
+  if (process.platform === 'win32') return { supported: false };
+  try { const l = linkerModule(); return { supported: true, tools: l.localTools(), configured: l.configured() }; } catch (e) { return { supported: false, reason: String(e && e.message ? e.message : e) }; }
+});
+ipcMain.handle('sync:checkServer', (_e, server) => linkerCall('checkServer', [String(server || '')]));
+ipcMain.handle('sync:setServer', (_e, server) => {
+  try { linkerModule().setServer(String(server || '')); } catch (e) { return { ok: false, reason: String(e && e.message ? e.message : e) }; }
+  startSyncDaemon();
+  return { ok: true };
+});
+
+// Демон синхронизации, которого включил мастер (runner: 'editor' в конфиге), живёт, пока
+// открыт редактор. У кого демон в systemd, поля нет — тогда редактор демона не трогает.
+// Второй экземпляр демон не пустит сам (daemon.pid) и выйдет нулём — такой выход не перезапускаем.
+let syncDaemon = null, syncDaemonTimer = null, syncDaemonFails = 0, syncDaemonStopping = false;
+function startSyncDaemon() {
+  if (syncDaemon || syncDaemonStopping || process.platform === 'win32') return;
+  let cfg;
+  try { cfg = linkerModule().readConfig(); } catch (_) { return; }
+  if (!cfg || cfg.runner !== 'editor' || cfg.enabled === false || !syncAvailable()) return;
+  clearTimeout(syncDaemonTimer);
+  const started = Date.now();
+  const child = spawn(process.execPath, [path.join(SYNC_DIR, 'lite-sync-daemon.js')], { env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' }, stdio: 'ignore' });
+  syncDaemon = child;
+  logger.log('info', 'sync', `демон синхронизации запущен (pid ${child.pid})`);
+  child.on('error', (e) => logger.log('warn', 'sync', `демон синхронизации не запустился: ${e.message}`));
+  child.on('exit', (code) => {
+    if (syncDaemon === child) syncDaemon = null;
+    if (syncDaemonStopping || code === 0) return;
+    syncDaemonFails = Date.now() - started > 60000 ? 0 : syncDaemonFails + 1;
+    const delay = Math.min(300000, 5000 * 2 ** syncDaemonFails);
+    logger.log('warn', 'sync', `демон синхронизации вышел (код ${code}) — перезапуск через ${Math.round(delay / 1000)} с`);
+    syncDaemonTimer = setTimeout(startSyncDaemon, delay);
+  });
+}
+function stopSyncDaemon() {
+  syncDaemonStopping = true;
+  clearTimeout(syncDaemonTimer);
+  if (syncDaemon) { try { syncDaemon.kill('SIGTERM'); } catch (_) {} syncDaemon = null; }
+}
 
 // ── Реестр ошибок (errors ledger) ───────────────────────────────────────────────────────────
 ipcMain.handle('errors:list', () => errledger.list());
@@ -2682,10 +2738,10 @@ function createWindow() {
     recoverMainRenderer(d && d.reason);
   });
   // Окно редактора начинает загружать страницу заново (перезагрузка после падения, импорт настроек):
-  // терминалы старой страницы гасим — их xterm уже нет, а живой шелл без окна либо висит сиротой
-  // до выхода, либо цепляется к вкладке новой страницы с совпавшим id (в том числе чужого проекта).
+  // терминалы старой страницы не гасим — агенты в них продолжают работать, а новая страница забирает
+  // их по id (pty:adoptable → pty:create с тем же id). Кого не забрали за ORPHAN_TTL_MS — гасим.
   mainWindow.webContents.on('did-start-navigation', (ev) => {
-    if (ev && ev.isMainFrame && !ev.isSameDocument) killPtysOwnedBy(mainWindow.webContents);
+    if (ev && ev.isMainFrame && !ev.isSameDocument) orphanPtysOf(mainWindow.webContents);
   });
   mainWindow.webContents.on('unresponsive', () => logger.log('warn', 'window', 'renderer unresponsive'));
   mainWindow.webContents.on('responsive', () => logger.log('info', 'window', 'renderer responsive'));
@@ -2724,9 +2780,9 @@ function createWindow() {
 }
 
 // Падение рендерера окна редактора: раньше окно оставалось белым, агенты работали невидимо,
-// а выход был один — перезапуск всего приложения. Теперь окно перезагружается само; терминалы
-// упавшей страницы гасятся (переподхват живых PTY новой страницей — отдельная задача). Если окно
-// падает снова и снова (сбой при старте страницы), автоперезагрузку прекращаем и спрашиваем.
+// а выход был один — перезапуск всего приложения. Теперь окно перезагружается само, а терминалы
+// упавшей страницы переживают перезагрузку: новая страница забирает их по id. Если окно падает
+// снова и снова (сбой при старте страницы), автоперезагрузку прекращаем, терминалы гасим и спрашиваем.
 const RENDER_CRASH_WINDOW_MS = 60000;
 const RENDER_CRASH_MAX = 3;
 let renderCrashes = [];
@@ -2736,12 +2792,32 @@ function killPtysOwnedBy(wc) {
     try { p.kill(); } catch (_) {}
     ptys.delete(id);
     ownerBySession.delete(id);
+    dropOrphan(id);
+  }
+}
+// Терминалы, чья страница ушла (перезагрузка, падение): живут ORPHAN_TTL_MS, пока новая страница их не
+// заберёт. Незабранные гасятся — иначе шелл висел бы сиротой до выхода из редактора.
+const ORPHAN_TTL_MS = 90000;
+const orphanPtys = new Map(); // id → таймер гашения
+function dropOrphan(id) { const t = orphanPtys.get(id); if (t) { clearTimeout(t); orphanPtys.delete(id); } }
+function orphanPtysOf(wc) {
+  for (const [id] of ptys) {
+    if (ownerBySession.get(id) !== wc || orphanPtys.has(id)) continue;
+    orphanPtys.set(id, setTimeout(() => {
+      orphanPtys.delete(id);
+      const p = ptys.get(id);
+      if (!p) return;
+      try { p.kill(); } catch (_) {}
+      ptys.delete(id);
+      ownerBySession.delete(id);
+      logger.log('info', 'pty', `терминал ${id} никто не забрал после перезагрузки окна — остановлен`);
+    }, ORPHAN_TTL_MS));
   }
 }
 function recoverMainRenderer(reason) {
   if (!mainWindow || mainWindow.isDestroyed() || reason === 'clean-exit') return;
   const wc = mainWindow.webContents;
-  killPtysOwnedBy(wc);
+  orphanPtysOf(wc);
   const now = Date.now();
   renderCrashes = renderCrashes.filter((t) => now - t < RENDER_CRASH_WINDOW_MS);
   renderCrashes.push(now);
@@ -2751,6 +2827,7 @@ function recoverMainRenderer(reason) {
     return;
   }
   logger.log('error', 'window', `окно редактора упало ${renderCrashes.length} раз за минуту — автоперезагрузка остановлена`);
+  killPtysOwnedBy(wc);
   dialog.showMessageBox(mainWindow, {
     type: 'error',
     title: 'LiteEditorAI',
@@ -3076,7 +3153,7 @@ function createTray() {
 // GPU/utility child processes dying (the other half of a "trap int3" crash).
 app.on('child-process-gone', (_e, d) =>
   logger.log(d && d.reason === 'clean-exit' ? 'info' : 'error', 'child-process-gone', JSON.stringify(d)));
-app.on('before-quit', () => { try { errledger.flush(); } catch (_) {} logger.log('info', 'app', 'before-quit'); });
+app.on('before-quit', () => { try { errledger.flush(); } catch (_) {} stopSyncDaemon(); logger.log('info', 'app', 'before-quit'); });
 
 app.whenReady().then(() => {
   // Язык интерфейса — до создания окон: рендерер забирает словарь синхронно при старте.
@@ -3088,6 +3165,7 @@ app.whenReady().then(() => {
   const gpu = !(process.env.LITE_NO_GPU === '1' || process.env.LITE_SOFTWARE_RENDER === '1');
   logger.log('info', 'app', `ready — electron ${process.versions.electron}, chrome ${process.versions.chrome}, node ${process.versions.node}, gpu=${gpu}`);
   probeLoginPath(); // фоном: PATH логин-шелла для CLI-агентов «Обработки текста»
+  setTimeout(startSyncDaemon, 3000); // демон синхронизации, если его включил мастер (runner: 'editor'); не мешаем старту окна
   // Своё меню мы рисуем в титлбаре, поэтому системное не нужно — но на macOS оно ещё и держит
   // системные ускорители: без меню в приложении не работают Cmd+C/V/X/A и Cmd+Q, а About/Hide
   // недоступны совсем. Поэтому там ставим минимальное меню из ролей (идея PR #10), на остальных
@@ -3543,16 +3621,18 @@ function spawnPtyFor(id, cwd, cols, rows, owner) {
     ptys.delete(id);
     sendToOwner(id, 'pty:exit', { id });
     ownerBySession.delete(id); // сессия закрылась — не копим мёртвые id в карте маршрутизации (B4-LOW)
+    dropOrphan(id);
   });
   ptys.set(id, proc);
   return { ok: true };
 }
 ipcMain.handle('pty:create', (e, { id, cwd, cols, rows }) => {
-  if (ptys.has(id)) { ownerBySession.set(id, e.sender); return { ok: true, existed: true }; }
+  if (ptys.has(id)) { dropOrphan(id); ownerBySession.set(id, e.sender); return { ok: true, existed: true }; }
   return spawnPtyFor(id, cwd, cols, rows, e.sender);
 });
 // Kill the existing PTY (if any) and start a fresh one in the same cwd.
 ipcMain.handle('pty:restart', (e, { id, cwd, cols, rows }) => {
+  dropOrphan(id);
   const old = ptys.get(id);
   if (old) { try { old.kill(); } catch (_) {} ptys.delete(id); }
   return spawnPtyFor(id, cwd, cols, rows, e.sender);
@@ -3563,9 +3643,12 @@ ipcMain.on('pty:resize', (_e, { id, cols, rows }) => {
   if (p && cols > 0 && rows > 0) { try { p.resize(cols, rows); } catch (_) {} }
 });
 ipcMain.on('pty:kill', (_e, { id }) => {
+  dropOrphan(id);
   const p = ptys.get(id);
   if (p) { try { p.kill(); } catch (_) {} ptys.delete(id); }
 });
+// Терминалы этого окна, пережившие перезагрузку страницы: новая страница забирает их по id.
+ipcMain.handle('pty:adoptable', (e) => [...orphanPtys.keys()].filter((id) => ptys.has(id) && ownerBySession.get(id) === e.sender));
 // 'shell' | 'running' | 'waiting' | null — see foregroundKind().
 ipcMain.handle('pty:foregroundState', (_e, { id }) => {
   const p = ptys.get(id);

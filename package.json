@@ -1,6 +1,6 @@
 {
   "name": "liteeditor-ai",
-  "version": "1.1.199-alpha",
+  "version": "1.1.202-alpha",
   "description": "Lightweight editor for working with AI coding agents in the terminal",
   "main": "main.js",
   "author": "Максим Кузьминский <i@m-letto.ru>",
@@ -11,7 +11,7 @@
     "url": "https://github.com/DanielLetto2020/LiteEditorAI.git"
   },
   "scripts": {
-    "test": "node test/safe-name.test.js && node test/shell.test.js && node test/portparse.test.js && node test/dbdetect.test.js && node test/fsmeta.test.js && node test/i18n.test.js && node test/sync.test.js && node test/storage-path.test.js && node test/sql-readonly.test.js && node test/errledger.test.js && node test/updater.test.js && node test/ttsnorm.test.js && node test/tts-download.test.js && node test/tree-watch.test.js && node test/logger.test.js && node test/history.test.js && node test/ptybatch.test.js && node test/proctree.test.js && node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON test/settings-sync.test.js",
+    "test": "node test/safe-name.test.js && node test/shell.test.js && node test/portparse.test.js && node test/dbdetect.test.js && node test/fsmeta.test.js && node test/i18n.test.js && node test/sync.test.js && node test/lite-sync.test.js && node test/storage-path.test.js && node test/sql-readonly.test.js && node test/errledger.test.js && node test/updater.test.js && node test/ttsnorm.test.js && node test/tts-download.test.js && node test/tree-watch.test.js && node test/logger.test.js && node test/history.test.js && node test/ptybatch.test.js && node test/proctree.test.js && node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON test/settings-sync.test.js",
     "lint": "eslint .",
     "typecheck": "tsc -p tsconfig.check.json",
     "mutation": "node scripts/stryker-gate.js",
@@ -117,7 +117,8 @@
       "**/node_modules/node-pty/**",
       "**/node_modules/sql.js/dist/sql-wasm.wasm",
       "mcp/**",
-      "tts/**"
+      "tts/**",
+      "scripts/server-sync/**"
     ],
     "files": [
       "main.js",
@@ -125,6 +126,9 @@
       "logger.js",
       "errledger.js",
       "lib/**",
+      "scripts/server-sync/lite-sync-daemon.js",
+      "scripts/server-sync/lite-sync-link.js",
+      "scripts/server-sync/lite-sync.js",
       "locales/**",
       "mcp/**",
       "tts/**",
@@ -132,6 +136,7 @@
       "renderer/index.html",
       "renderer/module.html",
       "renderer/styles.css",
+      "renderer/fonts/**",
       "renderer/dist/**",
       "!renderer/dist/**/*.map",
       "assets/icon.png",
