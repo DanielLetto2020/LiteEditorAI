@@ -5957,6 +5957,19 @@ function seoWithTimeout(p, ms, fallback) {
     new Promise((r) => setTimeout(() => r(fallback), ms)),
   ]);
 }
+// Своя сессия в памяти для скрытого окна аудита. defaultSession делят окна с мостом, и её общий
+// обработчик разрешений выдаёт всё, кроме openExternal: проверяемый сайт молча получал микрофон/камеру,
+// геопозицию и системные уведомления от имени приложения, а скачивание (Content-Disposition: attachment,
+// аудит прямой ссылки на файл) открывало пользователю «Сохранить как». Аудиту ничего из этого не нужно.
+const SEO_PARTITION = 'seo-audit';
+let seoSessionHardened = false;
+function seoHardenSession(ses) {
+  if (seoSessionHardened) return;
+  seoSessionHardened = true;
+  ses.setPermissionRequestHandler((_wc, _permission, cb) => cb(false)); // вкл. openExternal (search-ms:, vscode: …)
+  ses.setPermissionCheckHandler(() => false);
+  ses.on('will-download', (e) => e.preventDefault());
+}
 
 // Глубокий аудит: грузим страницу в скрытом окне, снимаем отрендеренный DOM, метрики, сеть (CDP),
 // скриншоты, консольные ошибки, битые ссылки. Окно ВСЕГДА уничтожается в finally.
@@ -5968,8 +5981,10 @@ ipcMain.handle('seo:render', async (_e, { url }) => {
   const network = { requests: 0, bytes: 0, byType: {}, uncompressed: 0, thirdParty: 0, heavy: [], mixed: 0 };
   const consoleMsgs = [];
   try {
-    win = new BrowserWindow({ show: false, width: 1366, height: 900, webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false, webSecurity: true, backgroundThrottling: false, images: true } });
+    // disableDialogs: alert/confirm/prompt страницы иначе всплывали нативными окнами поверх редактора.
+    win = new BrowserWindow({ show: false, width: 1366, height: 900, webPreferences: { partition: SEO_PARTITION, sandbox: true, contextIsolation: true, nodeIntegration: false, webSecurity: true, backgroundThrottling: false, images: true, disableDialogs: true } });
     const wc = win.webContents;
+    seoHardenSession(wc.session);
     wc.setAudioMuted(true);
     // Сайт произвольный: window.open без обработчика создавал ВИДИМОЕ окно с чужой страницей (блокировщика
     // попапов в Electron нет), и оно переживало аудит. Уходить из окна — только на http(s).
