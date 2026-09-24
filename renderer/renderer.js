@@ -322,7 +322,8 @@ function showSyncSetup(p) {
   const installTools = lite.platform === 'darwin' ? 'brew install rsync' : 'sudo apt install openssh-client rsync';
   let checked = '';   // адрес, прошедший проверку: «Сохранить» — только для него
   inp.addEventListener('input', () => { bSave.disabled = inp.value.trim() !== checked || !checked; });
-  inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); if (!bSave.disabled) bSave.click(); else check(); } });
+  // Enter во время идущей проверки не запускает вторую (второй ssh-процесс, ответы вперемешку)
+  inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); if (!bSave.disabled) bSave.click(); else if (!bCheck.disabled) check(); } });
 
   const check = async () => {
     const server = inp.value.trim();
