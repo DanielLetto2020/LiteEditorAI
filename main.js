@@ -5565,20 +5565,32 @@ function seoRequestOnce(u, method, timeoutMs) {
   return new Promise((resolve) => {
     const mod = u.protocol === 'https:' ? https : http;
     const t0 = Date.now();
-    const req = mod.request(u, {
-      method: method || 'GET',
-      // самоподписанные сертификаты у dev-серверов не должны валить проверку
-      rejectUnauthorized: false,
-      headers: { 'User-Agent': 'LiteEditor-Audit/1.0', 'Accept': 'text/html,*/*' },
-      timeout: to,
-    }, (res) => {
-      const chunks = []; let len = 0;
-      res.on('data', (c) => { if (len < SEO_BODY_CAP) { chunks.push(c); len += c.length; } });
-      res.on('end', () => resolve({
-        ok: true, status: res.statusCode, headers: res.headers,
-        body: Buffer.concat(chunks).toString('utf8'), ms: Date.now() - t0, bytes: len,
-      }));
-    });
+    let req;
+    try {
+      req = mod.request(u, {
+        method: method || 'GET',
+        // самоподписанные сертификаты у dev-серверов не должны валить проверку
+        rejectUnauthorized: false,
+        headers: { 'User-Agent': 'LiteEditor-Audit/1.0', 'Accept': 'text/html,*/*' },
+        timeout: to,
+      }, (res) => {
+        const chunks = []; let len = 0;
+        const done = () => resolve({
+          ok: true, status: res.statusCode, headers: res.headers,
+          body: Buffer.concat(chunks).toString('utf8'), ms: Date.now() - t0, bytes: len,
+        });
+        res.on('data', (c) => {
+          if (len >= SEO_BODY_CAP) return;
+          chunks.push(c); len += c.length;
+          // Лимит набран — дальше не качаем: бесконечное/огромное тело держало бы запрос (и аудит) вечно,
+          // таймаут сокета — на простой, а не на общую длительность.
+          if (len >= SEO_BODY_CAP) { done(); req.destroy(); }
+        });
+        res.on('end', done);
+        // Обрыв посреди тела: 'end' не придёт, а сокет уже закрыт (его таймаут не сработает) — без этого висли навсегда.
+        res.on('close', () => { if (!res.complete) resolve({ ok: false, error: 'соединение прервано' }); });
+      });
+    } catch (e) { resolve({ ok: false, error: String((e && e.message) || e) }); return; } // неподдерживаемый протокол и т.п.
     req.on('timeout', () => { req.destroy(); resolve({ ok: false, error: 'таймаут (' + to + ' мс)' }); });
     req.on('error', (e) => resolve({ ok: false, error: String((e && e.message) || e) }));
     req.end();
