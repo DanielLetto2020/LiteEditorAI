@@ -5971,6 +5971,10 @@ ipcMain.handle('seo:render', async (_e, { url }) => {
     win = new BrowserWindow({ show: false, width: 1366, height: 900, webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false, webSecurity: true, backgroundThrottling: false, images: true } });
     const wc = win.webContents;
     wc.setAudioMuted(true);
+    // Сайт произвольный: window.open без обработчика создавал ВИДИМОЕ окно с чужой страницей (блокировщика
+    // попапов в Electron нет), и оно переживало аудит. Уходить из окна — только на http(s).
+    wc.setWindowOpenHandler(() => ({ action: 'deny' }));
+    wc.on('will-navigate', (e, navUrl) => { if (!/^https?:/i.test(navUrl)) e.preventDefault(); });
     wc.on('console-message', (e) => { const message = e.message; const level = e.level === 'error' ? 3 : e.level === 'warning' ? 2 : 0; if (level >= 2) consoleMsgs.push({ level, text: String(message).slice(0, 300) }); if (/Mixed Content/i.test(message)) network.mixed++; });
 
     // Сетевая статистика через CDP (точные размеры передачи, типы, сжатие).
