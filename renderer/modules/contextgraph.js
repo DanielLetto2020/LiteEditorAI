@@ -782,7 +782,12 @@ export function initCtx(host) {
   // Пауза перед чтением — агент дописывает файл в несколько заходов, иначе поймаем середину записи.
   const SETTLE_MS = 1500;
   function onExternalChange() {
-    if (!open || !proj || curTab !== 'canvas') return;
+    if (!open || !proj) return;
+    // Файл изменился, пока открыта другая вкладка («Применить» в «Анализе диалогов», правка CLAUDE.md
+    // во «Файлах», агент). Скрытую канву не перечитываем, но возврат на неё обязан перечитать: setTab
+    // делает это только для непрочитанной канвы — иначе она показывала старый текст, а первая же
+    // правка упиралась в «файл изменился снаружи».
+    if (curTab !== 'canvas') { loadedProj = null; return; }
     clearTimeout(extTimer);
     extTimer = setTimeout(async () => {
       const r = await lite.ctx.state(proj.id, proj.path);
