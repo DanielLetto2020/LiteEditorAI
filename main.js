@@ -4248,24 +4248,34 @@ function smFetch(rawUrl, opts = {}) {
   const rejectUnauthorized = opts.insecureTls !== true;
   return new Promise((resolve) => {
     let redirects = 6;
+    let req = null, settled = false, hard = null;
+    // Ошибка или обрезка по лимиту — рвём текущий запрос: докачивать тело дальше SM_BODY_CAP незачем
+    // (раньше остаток — хоть гигабайт — читался впустую до конца на каждой проверке).
+    const finish = (r) => { if (settled) return; settled = true; clearTimeout(hard); if (!r.ok || r.capped) { try { if (req) req.destroy(); } catch (_) {} } resolve(r); };
+    // timeout сокета ниже — это ПРОСТОЙ соединения: поток (SSE, бесконечный ответ, сервер, цедящий по байту)
+    // его не наступает, и промис не решался никогда — цель навсегда оставалась checking (больше не
+    // проверялась), а sample/dryRun висели. Общий срок — на весь обмен с редиректами и телом.
+    hard = setTimeout(() => finish({ ok: false, error: 'таймаут' }), timeoutMs * 3);
     const go = (urlStr) => {
-      let u; try { u = new URL(urlStr); } catch (_) { return resolve({ ok: false, error: 'некорректный URL' }); }
-      if (u.protocol !== 'http:' && u.protocol !== 'https:') return resolve({ ok: false, error: 'только http/https' });
+      let u; try { u = new URL(urlStr); } catch (_) { return finish({ ok: false, error: 'некорректный URL' }); }
+      if (u.protocol !== 'http:' && u.protocol !== 'https:') return finish({ ok: false, error: 'только http/https' });
       const mod = u.protocol === 'https:' ? https : http;
       const t0 = Date.now();
-      let req;
       try {
         req = mod.request(u, { method: 'GET', rejectUnauthorized, headers: Object.assign({ 'User-Agent': 'LiteEditor-Monitor/1.0', 'Accept': '*/*' }, headers || {}), timeout: timeoutMs }, (res) => {
-          if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location && redirects > 0) { redirects--; res.resume(); try { return go(new URL(res.headers.location, u).toString()); } catch (_) { return resolve({ ok: false, error: 'плохой редирект' }); } }
+          if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location && redirects > 0) { redirects--; res.resume(); try { return go(new URL(res.headers.location, u).toString()); } catch (_) { return finish({ ok: false, error: 'плохой редирект' }); } }
           const chunks = []; let len = 0, capped = false;
-          res.on('data', (c) => { if (len < SM_BODY_CAP) { chunks.push(c); len += c.length; } else capped = true; });
-          res.on('end', () => resolve({ ok: true, status: res.statusCode, headers: res.headers, body: Buffer.concat(chunks).toString('utf8'), ms: Date.now() - t0, bytes: len, capped }));
-          res.on('error', (e) => resolve({ ok: false, error: String((e && e.message) || e) }));
+          const done = () => finish({ ok: true, status: res.statusCode, headers: res.headers, body: Buffer.concat(chunks).toString('utf8'), ms: Date.now() - t0, bytes: len, capped });
+          res.on('data', (c) => { if (len < SM_BODY_CAP) { chunks.push(c); len += c.length; } if (len >= SM_BODY_CAP) { capped = true; done(); } });
+          res.on('end', done);
+          res.on('error', (e) => finish({ ok: false, error: String((e && e.message) || e) }));
         });
-      } catch (e) { return resolve({ ok: false, error: String((e && e.message) || e) }); }
-      req.on('timeout', () => { try { req.destroy(); } catch (_) {} resolve({ ok: false, error: 'таймаут' }); });
-      req.on('error', (e) => resolve({ ok: false, error: (e && e.code === 'ENOTFOUND') ? 'домен не найден' : String((e && e.message) || e) }));
-      req.end();
+      } catch (e) { return finish({ ok: false, error: String((e && e.message) || e) }); }
+      // r0 — запрос ЭТОГО шага; после редиректа его поздние timeout/error (дочитывали тело 3xx) уже не итог
+      const r0 = req;
+      r0.on('timeout', () => { try { r0.destroy(); } catch (_) {} if (req === r0) finish({ ok: false, error: 'таймаут' }); });
+      r0.on('error', (e) => { if (req === r0) finish({ ok: false, error: (e && e.code === 'ENOTFOUND') ? 'домен не найден' : String((e && e.message) || e) }); });
+      r0.end();
     };
     go(rawUrl);
   });
