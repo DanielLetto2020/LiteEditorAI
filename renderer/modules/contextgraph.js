@@ -473,6 +473,8 @@ export function initCtx(host) {
   // видно оглавление файла целиком и можно прыгать между разделами.
   function modalBlock(startBlock) {
     let editor = null, cur = startBlock, dirty = false;
+    // Как открытый раздел называется В ФАЙЛЕ и из какого он проекта — чтобы найти его снова (rebind).
+    let curTitle = startBlock.title, curProj = proj && proj.id;
     let preview = blockPreviewMode;   // режим показа общий для всех разделов и переживает переход
     const dirtyKey = 'block:' + (++dirtyKeySeq);
     modalOpen = true;
@@ -539,7 +541,7 @@ export function initCtx(host) {
           'Без сохранения', () => openBlock(b, true));
         return;
       }
-      cur = b; orig = b.content;
+      cur = b; orig = b.content; curTitle = b.title; curProj = proj && proj.id;
       if (editor) { editor.destroy(); host2.textContent = ''; }
       editor = mkEditor(orig, languageFor('block.md', (sup) => {
         if (!editor) return;
@@ -579,15 +581,32 @@ export function initCtx(host) {
       m.querySelector('#cxm-mode-view').classList.toggle('on', on);
       m.querySelector('#cxm-mode-edit').classList.toggle('on', !on);
     };
+    // Канву перечитали, пока модалка открыта (файл изменили снаружи и сохранение упёрлось в stale,
+    // «Сохранить» нажали дважды) — блоки пересозданы, а cur указывает на объект, которого в blocks
+    // уже нет. Повторное «Сохранить» собирало файл БЕЗ правки и рапортовало «Сохранено» — правка
+    // пропадала молча. Находим раздел заново по заголовку (как раскладка при перечитывании);
+    // сменился проект или заголовок неоднозначен — честный отказ, текст остаётся в редакторе.
+    function rebind() {
+      if (blocks.includes(cur)) return true;
+      if (!proj || proj.id !== curProj) return false;
+      const same = blocks.filter((b) => b.title === curTitle);
+      if (same.length !== 1) return false;
+      cur = same[0];
+      return true;
+    }
+    const lostWarn = () => toast(t('Раздел «{0}» не найден в перечитанном CLAUDE.md — скопируйте правку и откройте раздел заново', curTitle), { kind: 'warn', ttl: 9000 });
     async function doSave() {
+      if (!rebind()) { lostWarn(); return false; }
       const text = editor.getValue();
       cur.content = text; cur.chars = text.length; cur.title = titleFromContent(text);
       if (!(await persist('Правка раздела', cur.title))) { await reloadFromDisk(); return false; }
+      curTitle = cur.title;
       orig = text; recheck();
       toast(t('Сохранено в CLAUDE.md, прежняя версия в истории'), { ttl: 5000 });
       return true;
     }
     const step = (delta) => {
+      rebind();
       const list = ordered();
       const i = list.findIndex((x) => x.id === cur.id);
       openBlock(list[i + delta]);
@@ -601,7 +620,7 @@ export function initCtx(host) {
     const bye = () => { if (!dirty) { close(); return; } showConfirm('Закрыть без сохранения?', 'Правки будут потеряны.', 'Закрыть', close); };
     m.querySelector('#cxm-cancel').addEventListener('click', bye);
     m.querySelector('#cxm-x').addEventListener('click', bye);
-    m.querySelector('#cxm-del').addEventListener('click', () => { const b = cur; close(); deleteBlock(b); });
+    m.querySelector('#cxm-del').addEventListener('click', () => { if (!rebind()) { lostWarn(); return; } const b = cur; close(); deleteBlock(b); });
     drawList();
     openBlock(startBlock, true);
   }
