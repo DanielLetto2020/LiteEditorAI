@@ -549,11 +549,16 @@ export function initRh(host) {
     const treeEl = $('#rh-conns .rh-tree');
     if (!treeEl || !rhFiles) return;
     treeEl.innerHTML = '';
-    buildRhLevel(rhFiles.root, treeEl, 0);
+    const missing = [];
+    buildRhLevel(rhFiles.root, treeEl, 0, missing);
+    // Раскрытый подкаталог без кэша (после «Обновить дерево» кэш сброшен, раскрытые пути остались) —
+    // догружаем, иначе под ним навсегда висело «Загрузка…». Корень грузят сами вызывающие.
+    for (const p of missing) if (rhFiles && !rhFiles.dirs.has(p)) rhLoadDir(p); // вложенный рендер из rhLoadDir мог уже запустить загрузку
   }
-  function buildRhLevel(dirPath, container, depth) {
+  function buildRhLevel(dirPath, container, depth, missing) {
     const node = rhFiles.dirs.get(dirPath);
     const pad = depth * RH_INDENT + 6;
+    if (!node && depth > 0 && missing) missing.push(dirPath);
     if (!node || node.loading) { const l = el('div', 'rh-tload', 'Загрузка…'); l.style.paddingLeft = pad + 'px'; container.appendChild(l); return; }
     if (node.error) { const w = el('div', 'rh-terr', '⚠ ' + node.error); w.style.paddingLeft = pad + 'px'; container.appendChild(w); return; }
     const entries = node.entries || [];
@@ -561,7 +566,7 @@ export function initRh(host) {
     for (const ent of entries) {
       const full = rhJoin(dirPath, ent.name);
       container.appendChild(rhTreeRow(ent, full, depth));
-      if (ent.dir && rhFiles.expanded.has(full)) buildRhLevel(full, container, depth + 1);
+      if (ent.dir && rhFiles.expanded.has(full)) buildRhLevel(full, container, depth + 1, missing);
     }
   }
   function rhTreeRow(ent, full, depth) {
