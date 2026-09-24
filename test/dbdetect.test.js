@@ -137,6 +137,21 @@ eq(d.guessMqKind('custom', '0.0.0.0:15672->15672/tcp'), 'rabbitmq', 'rabbitmq п
 eq(d.guessMqKind('custom', '0.0.0.0:29092->29092/tcp'), 'kafka', 'kafka по внешнему листенеру');
 eq(d.guessMqKind('custom', '0.0.0.0:1234->1234/tcp'), null, 'чужой порт');
 
+// --- адрес публикации: порт на конкретном IP loopback'ом не достать ---
+const bindIp = (ports) => d.dbPrefillFromInspect({ Name: 'b', Config: { Image: 'postgres:16', Env: ['POSTGRES_PASSWORD=p'] }, NetworkSettings: { Ports: { '5432/tcp': ports } } }, 'docker').prefill;
+eq(bindIp([{ HostIp: '192.168.1.5', HostPort: '5434' }]).host, '192.168.1.5', 'конкретный IP — как есть');
+eq(bindIp([{ HostIp: '192.168.1.5', HostPort: '5434' }]).port, 5434, 'порт этого бинда');
+eq(bindIp([{ HostIp: '0.0.0.0', HostPort: '5433' }, { HostIp: '::', HostPort: '5433' }]).host, '127.0.0.1', '0.0.0.0/:: — loopback');
+eq(bindIp([{ HostIp: '', HostPort: '5433' }]).host, '127.0.0.1', 'пустой HostIp — loopback');
+eq(bindIp([{ HostIp: '10.0.0.2', HostPort: '6000' }, { HostIp: '0.0.0.0', HostPort: '5433' }]).port, 5433, 'бинд на все интерфейсы предпочтительнее');
+eq(bindIp([{ HostIp: '::1', HostPort: '5433' }]).host, '::1', 'IPv6 для драйвера БД — без скобок');
+const webIp = d.webPrefillFromInspect({ Name: 'w', Config: { Image: 'nginx' }, NetworkSettings: { Ports: { '80/tcp': [{ HostIp: '::1', HostPort: '8080' }] } } }, 'docker');
+eq(webIp.prefill.url, 'http://[::1]:8080', 'IPv6 в URL — в скобках');
+const rmqIp = d.rmqPrefillFromInspect({ Name: 'r', Config: { Image: 'rabbitmq:3-management' }, NetworkSettings: { Ports: { '15672/tcp': [{ HostIp: '192.168.1.5', HostPort: '15673' }] } } }, 'docker');
+eq([rmqIp.prefill.host, rmqIp.prefill.port], ['192.168.1.5', 15673], 'RabbitMQ: адрес management-порта');
+const minioIp = d.storagePrefillFromInspect({ Name: 'm', Config: { Image: 'minio/minio' }, NetworkSettings: { Ports: { '9000/tcp': [{ HostIp: '192.168.1.5', HostPort: '9100' }] } } }, 'docker');
+eq(minioIp.prefill.endpoint, 'http://192.168.1.5:9100', 'MinIO: эндпоинт по адресу бинда');
+
 // --- спутники: экспортёры и веб-интерфейсы носят имя СУБД/брокера, но сами ими не являются ---
 for (const img of ['prom/mysqld-exporter:v0.15.1', 'quay.io/prometheuscommunity/postgres-exporter', 'wrouesnel/postgres_exporter']) {
   eq(d.guessDbKind(img, '0.0.0.0:9104->9104/tcp'), null, 'экспортёр не СУБД: ' + img);
