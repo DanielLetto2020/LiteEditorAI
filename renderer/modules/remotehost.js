@@ -760,5 +760,9 @@ export function initRh(host) {
     for (const rec of rhTerms.values()) { try { rec.term.options.theme = termTheme(); } catch (_) {} }
   }
 
-  return { isOpen: () => rhOpen, setOpen: setRhOpen, renderPanel: renderRhPanel, goList: rhGoList, refitSession: refitRhSession, bindEvents, applyFontSize, applyTermTheme };
+  // Закрытие окна (✕ / Alt+F4) — через тот же гард несохранённого удалённого файла, что и уход из вида:
+  // без него правки в открытом файле пропадали молча.
+  function confirmClose(proceed) { rhGuardDirty(proceed); }
+
+  return { isOpen: () => rhOpen, setOpen: setRhOpen, renderPanel: renderRhPanel, goList: rhGoList, refitSession: refitRhSession, bindEvents, applyFontSize, applyTermTheme, confirmClose };
 }
