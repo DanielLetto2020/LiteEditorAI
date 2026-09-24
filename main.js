@@ -5816,8 +5816,11 @@ async function seoGeo(host) {
   if (!ip) return null;
   return new Promise((resolve) => {
     const req = http.get('http://ip-api.com/json/' + ip + '?fields=status,country,city,isp,org,as,query', { timeout: 6000 }, (r) => {
-      let d = ''; r.on('data', (c) => d += c);
+      let d = ''; r.setEncoding('utf8');
+      // Ответ — пара сотен байт; по голому http вместо него может прийти что угодно (портал, прокси) — не копим без предела.
+      r.on('data', (c) => { d += c; if (d.length > 65536) { req.destroy(); resolve(null); } });
       r.on('end', () => { try { const j = JSON.parse(d); resolve(j.status === 'success' ? j : null); } catch { resolve(null); } });
+      r.on('close', () => { if (!r.complete) resolve(null); }); // обрыв посреди ответа: 'end' не придёт — скан висел бы
     });
     req.on('timeout', () => { req.destroy(); resolve(null); });
     req.on('error', () => resolve(null));
