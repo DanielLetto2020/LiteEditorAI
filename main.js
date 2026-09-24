@@ -4409,9 +4409,22 @@ ipcMain.handle('fs:create', async (_e, { parent, name, dir }) => {
     return { path: full, name: safe, dir: !!dir };
   } catch (err) { return { error: String(err.message || err) }; }
 });
+// Смена только регистра («readme.md» → «README.md») на нечувствительной к регистру ФС (macOS, Windows):
+// existsSync(to) там видит сам источник. Это не чужой файл, если путь совпадает без учёта регистра
+// и указывает на тот же inode; на Linux одноимённые в другом регистре — разные файлы, их не трогаем.
+async function isSameFileOtherCase(from, to) {
+  if (typeof from !== 'string' || typeof to !== 'string') return false;
+  const a0 = path.resolve(from), b0 = path.resolve(to);   // вивер склеивает «to» через '/', на Windows «from» — с '\'
+  if (a0 === b0 || a0.toLowerCase() !== b0.toLowerCase()) return false;
+  try {
+    // lstat: две разные ссылки на один файл — разные записи каталога, их rename не должен склеивать
+    const [a, b] = await Promise.all([fs.promises.lstat(from, { bigint: true }), fs.promises.lstat(to, { bigint: true })]);
+    return a.dev === b.dev && a.ino === b.ino;
+  } catch (_) { return false; }
+}
 ipcMain.handle('fs:rename', async (_e, { from, to }) => {
   try {
-    if (fs.existsSync(to)) return { error: 'цель уже существует' };
+    if (fs.existsSync(to) && !(await isSameFileOtherCase(from, to))) return { error: 'цель уже существует' };
     await fs.promises.rename(from, to);
     return { path: to };
   } catch (err) { return { error: String(err.message || err) }; }
