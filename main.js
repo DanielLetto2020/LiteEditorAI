@@ -4907,7 +4907,7 @@ ipcMain.handle('hist:read', async (_e, { file, name } = {}) => {
 // версию безвозвратно. content передан — снимаем его (несохранённые правки открытого файла),
 // иначе — файл с диска. saved:false — снимать нечего (дедуп/нет файла/бинарь), это не ошибка.
 ipcMain.handle('hist:snapshot', async (_e, { file, content } = {}) => {
-  if (typeof file !== 'string' || !path.isAbsolute(file)) return { error: 'нужен абсолютный путь файла' };
+  if (typeof file !== 'string' || !path.isAbsolute(file)) return { error: 'нет пути' };
   const saved = typeof content === 'string'
     ? await history.snapshot(file, content, 'save', { force: true })
     : await history.snapshotFromDisk(file, 'save', { force: true });

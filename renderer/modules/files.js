@@ -580,7 +580,7 @@ export function initFiles(host) {
     if (res.error) { toast(res.error, { kind: 'err', ttl: 6000 }); return; } // оставляем текущий вид нетронутым
     // NUL в тексте — бинарник (или UTF-16): читать там нечего, а любой ввод автосейвом записал бы обратно
     // испорченную UTF-8-перекодировку — файл терялся безвозвратно (локальная история бинарники не снимает).
-    if (res.content.includes('\0')) { toast('Бинарный файл — в вивере не открывается', { kind: 'warn', ttl: 5000 }); return; }
+    if (res.content.includes('\0')) { toast('Бинарный файл — в вивере не редактируется', { kind: 'warn', ttl: 5000 }); return; }
     resetCenterView();
     currentFile = filePath;
     docEol = eolOf(res.content);
