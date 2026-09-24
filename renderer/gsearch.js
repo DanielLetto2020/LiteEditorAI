@@ -70,6 +70,8 @@ export function openGlobalSearch(host, initial = {}) {
 
   // ── состояние выдачи ───────────────────────────────────────────────────────────────
   let runId = null;             // текущий запрос бэкенда (null = не ищем)
+  let runSeq = 0;               // номер последнего вызова run(): устаревший после await не продолжает
+  let closed = false;           // окно закрыто — новых поисков не начинать
   let groups = new Map();       // rootId → { proj, box, body, cntEl, files: Map(rel → {box, body, cntEl, n}) }
   let totalHits = 0, totalFiles = 0, rendered = 0, capNoted = false;
   let selected = null;          // выделенная строка результата
@@ -78,6 +80,10 @@ export function openGlobalSearch(host, initial = {}) {
   const offDone = host.lite.gsearch.onDone((p) => { if (p.runId === runId) finish(p); });
 
   function stopEverything() {
+    // Отложенный запуск (набор в поле, 350 мс) и run(), ждущий отмены прошлого запроса, иначе
+    // стартовали бы поиск уже ПОСЛЕ закрытия: обход всех проектов шёл бы в main впустую и без отмены.
+    closed = true;
+    clearTimeout(timer);
     if (runId) { try { host.lite.gsearch.cancel(runId); } catch (_) {} runId = null; }
     offHit(); offProg(); offDone();
   }
@@ -184,6 +190,7 @@ export function openGlobalSearch(host, initial = {}) {
   // ── запуск / остановка поиска ──────────────────────────────────────────────────────
   function resetResults() {
     resEl.innerHTML = ''; prevEl.innerHTML = '';
+    prevSeq++;                  // превью, ещё читающее файл прошлой выдачи, в новую не дорисуется
     groups = new Map(); totalHits = 0; totalFiles = 0; rendered = 0; capNoted = false; selected = null;
   }
   function saveState() {
@@ -192,8 +199,13 @@ export function openGlobalSearch(host, initial = {}) {
     host.persist('gsearch', { mode: st.mode, caseSensitive: st.caseSensitive, regex: st.regex, wholeWord: st.wholeWord, include: st.include, exclude: st.exclude, scopeOff: st.scopeOff });
   }
   async function run() {
+    if (closed) return;
+    const seq = ++runSeq;
     const query = qEl.value;
-    if (runId) { try { await host.lite.gsearch.cancel(runId); } catch (_) {} runId = null; }
+    // Отменяемый id берём локально: параллельный run(), доживший до этого места после своего await,
+    // иначе обнулил бы runId уже НОВОГО запроса — тот терял выдачу и шёл в main до конца без отмены.
+    if (runId) { const prev = runId; runId = null; try { await host.lite.gsearch.cancel(prev); } catch (_) {} }
+    if (closed || seq !== runSeq) return;   // пока ждали отмены, окно закрыли или начали новый поиск
     resetResults();
     if (!query || query.length < 2) { setStatus('Введите минимум 2 символа'); setRunning(false); return; }
     saveState(); pushHist(query);
@@ -208,7 +220,7 @@ export function openGlobalSearch(host, initial = {}) {
       mode: st.mode, caseSensitive: st.caseSensitive, regex: st.regex, wholeWord: st.wholeWord,
       include: st.include, exclude: st.exclude,
     }, roots);
-    if (!r || r.ok === false) {
+    if ((!r || r.ok === false) && runId === id) {   // не наш уже запрос (новый поиск/закрытие) — его состояние не трогаем
       runId = null; setRunning(false);
       // строки цельные, без склейки: иначе половина фразы осталась бы непереведённой
       if (r && r.error) { toast(`Поиск: ${r.error}`, { kind: 'err' }); setStatus(r.error); }
@@ -328,7 +340,9 @@ export function openGlobalSearch(host, initial = {}) {
 
   // ── предпросмотр найденного места ──────────────────────────────────────────────────
   let prevFile = null, prevText = null;
+  let prevSeq = 0;              // стрелками по выдаче превью запрашиваются быстрее, чем читаются файлы
   async function showPreview(proj, h, abs) {
+    const seq = ++prevSeq;
     prevEl.innerHTML = '';
     const head = el('div', 'gsx-prev-head');
     head.appendChild(el('span', 'gsx-prev-path', h.file));
@@ -339,6 +353,8 @@ export function openGlobalSearch(host, initial = {}) {
     if (!h.line) { prevEl.appendChild(el('div', 'gsx-prev-note', 'Совпадение в имени файла')); return; }
     if (prevFile !== abs) {
       const r = await host.lite.fs.readFile(abs);
+      // пока читали, выбрали другую строку: её превью уже рисуется — не подмешивать сюда старый файл
+      if (seq !== prevSeq) return;
       if (!r || r.error) { prevEl.appendChild(el('div', 'gsx-prev-note', (r && r.error) || 'не удалось прочитать файл')); return; }
       prevFile = abs; prevText = r.content;
     }
@@ -363,7 +379,6 @@ export function openGlobalSearch(host, initial = {}) {
       if (total >= TERM_CAP) break;
       const hits = host.scanTermBuffer(rec.term, query);
       if (!hits.length) continue;
-      const proj = projs().find((p) => p.id === rec.projId) || { id: rec.projId, name: '—', path: '' };
       const g = groupFor(rec.projId);
       const f = fileFor(g, rec.name || 'терминал');
       for (const h of hits) {
@@ -379,7 +394,6 @@ export function openGlobalSearch(host, initial = {}) {
         f.body.appendChild(row);
       }
       g.cntEl.textContent = String(g.n); f.cntEl.textContent = String(f.n);
-      void proj;
     }
     setStatus(total ? `Найдено ${total} строк в ${totalFiles} сессиях (${groups.size} проектов)` : 'Ничего не найдено в открытых сессиях');
   }

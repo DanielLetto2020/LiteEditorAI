@@ -173,8 +173,8 @@ export function initVoice(host) {
   function rate() { return settings.ttsRate || 'medium'; }
 
   // ---------------- плеер ----------------
-  // audioGen — поколение ПАРАМЕТРОВ синтеза (голос, темп). Просто очистить bufs мало: запрос,
-  // ушедший до смены темпа, вернётся позже и запишет в кэш фразу, наговорённую прежним голосом.
+  // audioGen — поколение ПАРАМЕТРОВ синтеза (голос, темп) и списка фраз. Просто очистить bufs мало:
+  // запрос, ушедший до смены темпа, вернётся позже и запишет в кэш фразу, наговорённую прежним голосом.
   const player = { list: [], i: 0, playing: false, paused: false, src: null, gen: 0, audioGen: 0, endCurrent: null, bufs: new Map(), pending: new Map() };
   let audioCtx = null;
   function ac() {
@@ -351,6 +351,10 @@ export function initVoice(host) {
     player.list = all;
     player.bufs.clear();
     player.pending.clear();
+    // Новый список фраз — новое поколение: индексы теперь указывают на другие фразы, а предзагрузка
+    // прежнего текста, ещё идущая в сайдкаре, иначе легла бы в bufs под тем же номером — и вместо
+    // второй фразы нового текста (другой записи, выделенного куска) прозвучала бы вторая старого.
+    player.audioGen++;
     let from = 0;
     if (sel) {
       const idx = all.findIndex((s) => s.end > sel.start && s.start < sel.end);

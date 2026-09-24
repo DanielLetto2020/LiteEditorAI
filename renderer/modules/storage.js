@@ -35,6 +35,13 @@ const fmtSize = (n) => { n = +n || 0; if (n < 1024) return n + ' Б'; if (n < 10
 const fmtDate = (t) => { if (!t) return '—'; const d = new Date(t); return d.toLocaleDateString('ru-RU', { day: 'numeric', month: 'short', year: 'numeric' }) + ' ' + d.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }); };
 const IMG_EXT = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'ico', 'avif']);
 const extOf = (name) => String(name).split('.').pop().toLowerCase();
+// Имя локального файла/папки для скачивания. Ключ объекта — недоверенная строка (чужой/публичный
+// бакет), правила — как safeRelSegments в lib/safe-name.js: папка «..» (префикс «../») уводила
+// «Скачать папку» в РОДИТЕЛЯ выбранного каталога, а «\» и «:» на Windows — в путь/NTFS-поток.
+const localName = (name, fallback) => {
+  const s = String(name == null ? '' : name).replace(/[\\/:*?"<>|\0]/g, '_').trim();
+  return (!s || s === '.' || s === '..') ? fallback : s;
+};
 
 export function initStorage(host) {
   const { activeProject, createCodeEditor, STORE, persist,
@@ -424,7 +431,10 @@ export function initStorage(host) {
     saveUi();
     for (const k of [...expanded]) if (k.startsWith(id + ' ')) expanded.delete(k);
     if (activeId === id) {
-      activeId = null; activeConn = null; viewer = null;
+      // curBucket тоже сбрасываем: иначе завершение фоновой загрузки (onDone) «обновляло» папку уже
+      // закрытого подключения — st:ls с id=null (WARN в логе), а пока список подключений ещё не
+      // перерисован, toolbarRow падал на activeConn=null
+      activeId = null; activeConn = null; viewer = null; curBucket = null; curPrefix = '';
       ++listSeq; ++treeSeq;
       connListMode = true;
     }
@@ -790,7 +800,9 @@ export function initStorage(host) {
     if (cp.presign || cp.acl || cp.publicUrl) dd.appendChild(menuRow('link', 'Доступ и ссылки…', () => { closeMenus(); linkModal(fo.key); }));
     dd.appendChild(menuRow('copy', 'Копировать ключ', () => { closeMenus(); lite.copyText(fo.key); toast('Ключ скопирован'); }));
     dd.appendChild(menuRow('copy', 'Копировать s3:// URI', () => { closeMenus(); lite.copyText(`s3://${curBucket}/${fo.key}`); toast('URI скопирован'); }));
-    dd.appendChild(menuRow('terminal', 'Путь в терминал', () => { closeMenus(); try { sendToTerminal(`s3://${curBucket}/${fo.key}`); toast('Отправлено в терминал'); } catch (_) { toast('Терминал недоступен', { kind: 'err' }); } }));
+    // ключ — недоверенная строка: «\n»/ESC в нём без bracketed paste сработали бы как Enter/управляющая
+    // последовательность в шелле — схлопываем управляющие символы (как termSafe в «Контексте»)
+    dd.appendChild(menuRow('terminal', 'Путь в терминал', () => { closeMenus(); try { sendToTerminal(`s3://${curBucket}/${fo.key}`.replace(/[\x00-\x1f\x7f-\x9f]+/g, ' ')); toast('Отправлено в терминал'); } catch (_) { toast('Терминал недоступен', { kind: 'err' }); } }));
     if (canWrite()) {
       dd.appendChild(menuRow('copy', 'Копировать в…', () => { closeMenus(); copyMoveModal(fo, false); }));
       dd.appendChild(menuRow('arrow-right', 'Переместить в…', () => { closeMenus(); copyMoveModal(fo, true); }));
@@ -834,7 +846,10 @@ export function initStorage(host) {
       const name = String(nm || '').trim();
       if (!name || name === fo.name) return;
       const to = curPrefix + name;
-      guardedConfirm('Переименовать объект?', `«${fo.name}» → «${name}».`, 'Переименовать', async () => {
+      // CopyObject молча заменяет существующий ключ — как при загрузке поверх объекта, предупреждаем
+      const clash = listing.files.some((f) => f.key === to)
+        ? ` Объект «${name}» уже есть — старая версия будет заменена безвозвратно (корзины у S3 нет).` : '';
+      guardedConfirm('Переименовать объект?', `«${fo.name}» → «${name}».${clash}`, 'Переименовать', async () => {
         const r = await lite.storage.rename(activeId, curBucket, fo.key, to);
         if (!r.ok) { toast(r.error || 'Не удалось переименовать', { kind: 'err' }); return; }
         navigateTo(curBucket, curPrefix);
@@ -970,11 +985,15 @@ export function initStorage(host) {
     if (v.truncated) box.appendChild(el('div', 'st-truncnote', `Показаны первые 2 МБ из ${fmtSize(v.size)}.`));
     const edBox = el('div', 'st-editor');
     box.appendChild(edBox);
-    curEditor = createCodeEditor(edBox, {
-      doc: v.content || '',
-      language: languageFor(v.key, () => {}),
-      readOnly: true,
-    });
+    const mkEditor = (language) => createCodeEditor(edBox, { doc: v.content || '', language, readOnly: true });
+    // поддержка языка грузится лениво: при первом открытии файла такого типа languageFor отдаёт []
+    // и подсветки не было вовсе (onLoad был пустым) — пересоздаём вивер, когда язык догрузится,
+    // если открыт всё тот же объект в этом же контейнере (как в «Контексте»)
+    curEditor = mkEditor(languageFor(v.key, (sup) => {
+      if (viewer !== v || !curEditor || !edBox.isConnected) return;
+      destroyEditor();
+      curEditor = mkEditor(sup);
+    }));
   }
 
   // Открыть объект во внешнем вивере редактора (tmp-копия, read-only по смыслу).
@@ -1105,28 +1124,48 @@ export function initStorage(host) {
     if (activeConn.isProd) guardedConfirm('Загрузить в PRODUCTION?', `Файлов: ${paths.length} → «${bucket}/${prefix}».`, 'Загрузить', start);
     else start();
   }
+  // Скачивание идёт в выбранную ПАПКУ (без «Сохранить как» и его вопроса о замене), поэтому
+  // одноимённые локальные файлы заменялись молча — спрашиваем, как и при загрузке поверх объектов.
+  function confirmLocalOverwrite(dir, names, isDir, run) {
+    lite.fs.existsMany(names.map((nm) => dir + '/' + nm)).then((ex) => {
+      const clash = names.filter((_, i) => ex && ex[i]);
+      if (!clash.length) { run(); return; }
+      const list = clash.slice(0, 5).join(', ') + (clash.length > 5 ? ` и ещё ${clash.length - 5}` : '');
+      confirm2('Перезаписать локальные файлы?',
+        isDir ? `В «${dir}» уже есть папка «${list}» — файлы с совпадающими именами будут заменены скачанными.`
+          : `В «${dir}» уже есть: ${list}. Они будут заменены скачанными.`,
+        'Перезаписать', run);
+    }, () => run());
+  }
   async function downloadObjects(objs) {
+    const id = activeId, bucket = curBucket;
     const r = await lite.storage.pickDownloadDir();
     if (!r.ok || !r.dir) return;
-    for (const o of objs) {
-      const opId = newOpId();
-      const name = o.name || baseName(o.key);
-      transfers.set(opId, { phase: 'download', key: o.key, name, loaded: 0, total: 0, speed: 0, lastLoaded: 0, lastT: Date.now(), status: 'run' });
-      lite.storage.download(activeId, curBucket, o.key, r.dir + '/' + name, opId).then((res) => {
-        if (!res.ok) { const t = transfers.get(opId); if (t) { t.status = 'err'; t.error = res.error; } paintTransfersBar(); }
-      });
-    }
-    paintTransfersBar();
+    const items = objs.map((o) => ({ key: o.key, name: localName(o.name || baseName(o.key), 'object') }));
+    confirmLocalOverwrite(r.dir, items.map((it) => it.name), false, () => {
+      for (const { key, name } of items) {
+        const opId = newOpId();
+        transfers.set(opId, { phase: 'download', key, name, loaded: 0, total: 0, speed: 0, lastLoaded: 0, lastT: Date.now(), status: 'run' });
+        lite.storage.download(id, bucket, key, r.dir + '/' + name, opId).then((res) => {
+          if (!res.ok) { const t = transfers.get(opId); if (t) { t.status = 'err'; t.error = res.error; } paintTransfersBar(); }
+        });
+      }
+      paintTransfersBar();
+    });
   }
   async function downloadPrefix(d) {
+    const id = activeId, bucket = curBucket;
     const r = await lite.storage.pickDownloadDir();
     if (!r.ok || !r.dir) return;
-    const opId = newOpId();
-    transfers.set(opId, { phase: 'download', key: d.prefix, name: d.name + '/', loaded: 0, total: 0, speed: 0, lastLoaded: 0, lastT: Date.now(), status: 'run' });
-    lite.storage.downloadPrefix(activeId, curBucket, d.prefix, r.dir + '/' + d.name, opId).then((res) => {
-      if (!res.ok) { const t = transfers.get(opId); if (t) { t.status = 'err'; t.error = res.error; } paintTransfersBar(); }
+    const dirName = localName(d.name, 'folder');
+    confirmLocalOverwrite(r.dir, [dirName], true, () => {
+      const opId = newOpId();
+      transfers.set(opId, { phase: 'download', key: d.prefix, name: d.name + '/', loaded: 0, total: 0, speed: 0, lastLoaded: 0, lastT: Date.now(), status: 'run' });
+      lite.storage.downloadPrefix(id, bucket, d.prefix, r.dir + '/' + dirName, opId).then((res) => {
+        if (!res.ok) { const t = transfers.get(opId); if (t) { t.status = 'err'; t.error = res.error; } paintTransfersBar(); }
+      });
+      paintTransfersBar();
     });
-    paintTransfersBar();
   }
   function wireDropZone(box) {
     // Гард нужен ВСЕГДА: без preventDefault Chromium навигирует окно модуля на file:// сброшенного

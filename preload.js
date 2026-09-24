@@ -710,6 +710,8 @@ contextBridge.exposeInMainWorld('lite', {
     // Локальная история файла (снапшоты автосейва/внешних правок).
     histList: (file) => ipcRenderer.invoke('hist:list', file),
     histRead: (file, name) => ipcRenderer.invoke('hist:read', { file, name }),
+    // Снимок текущего состояния мимо троттла (перед откатом к версии); content — несохранённый текст.
+    histSnapshot: (file, content) => ipcRenderer.invoke('hist:snapshot', { file, content }),
   },
   // Поиск по всем проектам (Ctrl+Shift+F): start отвечает сразу, результат течёт событиями.
   gsearch: {

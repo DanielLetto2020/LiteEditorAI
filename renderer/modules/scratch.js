@@ -51,9 +51,18 @@ export function initScratch(host) {
     menuEl = dd;
     setTimeout(() => document.addEventListener('mousedown', closeTermMenu, { once: true }), 0);
   }
+  // Вставка — не нажатия клавиш (как writeAsPaste в renderer/renderer.js): если программа включила
+  // bracketed paste, оборачиваем текст в маркеры вставки (переводы строк → \r, вложенные маркеры
+  // вырезаны). Иначе многострочный буфер выполнялся оболочкой построчно, до того как его увидели.
+  function writeAsPaste(id, text) {
+    const rec = scratchTerms.get(id);
+    const bracketed = !!(rec && rec.term && rec.term.modes && rec.term.modes.bracketedPasteMode);
+    const s = String(text);
+    lite.pty.write(id, bracketed ? '\x1b[200~' + s.replace(/\x1b\[20[01]~/g, '').replace(/\r?\n/g, '\r') + '\x1b[201~' : s);
+  }
   async function pasteInto(id) {
     const text = await lite.readClipboard();
-    if (text) lite.pty.write(id, text);
+    if (text) writeAsPaste(id, text);
     const rec = scratchTerms.get(id); if (rec && rec.term) { try { rec.term.focus(); } catch (_) {} }
   }
 

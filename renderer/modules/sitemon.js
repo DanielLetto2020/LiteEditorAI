@@ -359,9 +359,10 @@ export function initSitemon(host) {
   // ── чат кастомного чека ─────────────────────────────────────────────────────────────────────────────
   function customCheckDialog(target, existing) {
     const disposers = [];
-    let sample = null, busy = null;
+    let sample = null, busy = null, sending = false, closed = false;
     const transcript = [];
     const { m, close } = makeModal('<h2>Кастомный чек — чат с агентом</h2>', () => {
+      closed = true;
       if (busy) { try { busy.abort(); } catch (_) {} busy = null; }
       for (const d of disposers) { try { d(); } catch (_) {} }
     });
@@ -451,8 +452,10 @@ export function initSitemon(host) {
     const stopBusy = () => { busy = null; sendBtn.textContent = 'Отправить'; sendBtn.classList.remove('busy'); };
 
     async function send() {
-      const userText = ta.value.trim(); if (!userText || busy) return;
-      if (!sample) await loadSample();
+      const userText = ta.value.trim(); if (!userText || busy || sending) return;
+      // Пока грузится сэмпл (с рендером — десятки секунд), busy ещё пуст: второй Enter отправлял тот же текст вторым
+      // агентом, которого уже не остановить, а закрытие окна в это время не мешало агенту стартовать после.
+      if (!sample) { sending = true; try { await loadSample(); } finally { sending = false; } if (closed) return; }
       ta.value = '';
       const prompt = buildPrompt(userText);            // строим ДО добавления в транскрипт (иначе дубль)
       transcript.push({ role: 'user', text: userText });
@@ -464,7 +467,10 @@ export function initSitemon(host) {
         onError: (err) => { stopBusy(); asst.pending = false; asst.text += (asst.text ? '\n' : '') + '⚠️ ' + err; renderLog(); toast(err, { kind: 'err' }); },
       });
     }
-    sendBtn.addEventListener('click', () => { if (busy) { busy.abort(); stopBusy(); return; } send(); });
+    // «Стоп»: abort снимает подписки, и dbai:done/error уже не придут — пустой ответ агента убираем, иначе
+    // его пузырь «агент думает» висел в диалоге навсегда (и уходил пустым «АГЕНТ:» в следующий промпт)
+    const settleStopped = () => { for (let i = transcript.length - 1; i >= 0; i--) { const msg = transcript[i]; if (!msg.pending) continue; msg.pending = false; if (!msg.text) transcript.splice(i, 1); } renderLog(); };
+    sendBtn.addEventListener('click', () => { if (busy) { busy.abort(); stopBusy(); settleStopped(); return; } send(); });
     ta.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); } });
 
     async function runDry() {

@@ -52,6 +52,21 @@ const GAP = 900;   // чуть больше дебаунса реестра (700
   const raw = JSON.parse(fs.readFileSync(path.join(dir, 'errors.json'), 'utf8'));
   ok(raw && raw.entries && Object.keys(raw.entries).length === 2, 'на диске ровно две записи');
 
+  // --- id из IPC не достаёт до прототипа ---
+  const r = errledger.setStatus('__proto__', 'resolved', 'x', 'y');
+  ok(r.ok === false, 'id «__proto__» — «запись не найдена», а не правка Object.prototype');
+  ok(({}).status === undefined && ({}).note === undefined, 'Object.prototype не тронут');
+
+  // --- Кривая правка агентом: не-объект в entries не роняет реестр ---
+  const dir2 = fs.mkdtempSync(path.join(os.tmpdir(), 'errledger-'));
+  fs.writeFileSync(path.join(dir2, 'errors.json'), JSON.stringify({ version: 1, entries: { a: null, b: 'x', c: { id: 'c', status: 'resolved', lastSeen: 1 } } }));
+  errledger.init(dir2);
+  let listed = null; try { listed = errledger.list(); } catch (_) {}
+  ok(listed && listed.entries.length === 1, 'list() работает, мусорные элементы отброшены');
+  let cleared = null; try { cleared = errledger.clearResolved(); } catch (_) {}
+  ok(cleared && cleared.ok && cleared.removed === 1, 'clearResolved() не падает на мусоре');
+  fs.rmSync(dir2, { recursive: true, force: true });
+
   fs.rmSync(dir, { recursive: true, force: true });
   console.log(`✓ errledger: ${passed} проверок пройдено`);
   process.exit(0);

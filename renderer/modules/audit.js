@@ -57,7 +57,6 @@ export function initAudit(host) {
   let typeFilter = null;              // null | категория — фильтр вкладки «Типы» (клик по категории в «Обзоре»)
   let drillExt = null;                // null | расширение — раскрытый список файлов одного типа
   const cache = new Map();            // projId → результат скана
-  let scanSeq = 0;                    // защита от гонок async-скана
 
   function curProj() { return activeProject(); }
 
@@ -66,15 +65,18 @@ export function initAudit(host) {
     const p = curProj();
     if (!p) return;
     if (!force && cache.has(p.id)) { renderBody(); return; }
-    const seq = ++scanSeq;
-    cache.set(p.id, { loading: true });
+    // Гонки — по заглушке СВОЕГО проекта, а не по глобальному счётчику: раньше скан проекта A,
+    // обогнанный сменой проекта на B, выбрасывал результат, а в кэше A навсегда оставалась
+    // { loading } — при возврате на A вечное «Сканирую проект…» (авто-скан видел запись в кэше).
+    const pending = { loading: true };
+    cache.set(p.id, pending);
     renderBody();
     let res;
     try { res = await lite.audit.scan(p.path, { source }); }
     catch (e) { res = { error: String(e && e.message || e) }; }
-    if (seq !== scanSeq) return;                 // более новый скан уже идёт
+    if (cache.get(p.id) !== pending) return;     // этот проект уже пересканируют (Сканировать / смена источника)
     cache.set(p.id, res || { error: 'Пустой ответ' });
-    if (auditOpen) renderBody();
+    if (auditOpen) renderBody();                 // renderBody рисует ТЕКУЩИЙ проект — чужой результат просто ляжет в кэш
   }
 
   // ---------------- рендер ----------------
@@ -453,7 +455,10 @@ export function initAudit(host) {
     box.appendChild(copy);
     if (sendToTerminal) {
       const term = iconBtn('au-fact', 'terminal', 'В терминал: разобрать файл', 13);
-      term.onclick = (e) => { e.stopPropagation(); sendToTerminal('Открой и проанализируй файл ' + f.rel + (ln ? ' (строка ' + ln + ')' : '') + ': '); toast('Вставлено в терминал'); };
+      // Имя файла — недоверенный текст из репозитория, а текст пишется в PTY как есть: '\r'/'\n' в имени
+      // сработали бы как Enter (в шелле — выполнение хвоста имени командой), ESC/C1 — как управляющие последовательности.
+      const safeRel = String(f.rel).replace(/[\x00-\x1f\x7f-\x9f]/g, '?');
+      term.onclick = (e) => { e.stopPropagation(); sendToTerminal('Открой и проанализируй файл ' + safeRel + (ln ? ' (строка ' + ln + ')' : '') + ': '); toast('Вставлено в терминал'); };
       box.appendChild(term);
     }
     return box;

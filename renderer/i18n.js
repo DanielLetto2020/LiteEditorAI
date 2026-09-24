@@ -107,12 +107,16 @@ function translateText(node) {
     // Ключи словаря русские, якорь шаблона — тоже. Значит текст без кириллицы может
     // совпасть только как УЖЕ переведённый (обратный индекс). Это самая частая ветка
     // на переведённом интерфейсе, и она должна стоить один regex, а не три поиска.
+    // Уже переведённый текст ищется по обратному индексу (в нём и прошлый язык — applyLocale):
+    // en → zh тоже должен переводиться на лету, а не только возврат к русскому. На русском словарь
+    // пуст, и перевод строки — её исходник (иначе не возвращался текст кириллической локали, uk и т.п.).
     if (!CYR.test(text)) {
-      if (locale !== 'ru' || !reverse[text]) return;
-      out = reverse[text];                          // возврат к русскому при смене языка
+      const src = reverse[text];
+      if (!src) return;
+      out = locale === 'ru' ? src : (dict[src] || byPattern(src));
     } else {
       const key = sourceOf(text);
-      out = dict[key] || byPattern(key);
+      out = locale === 'ru' ? key : (dict[key] || byPattern(key));
     }
   }
   if (out == null || out === text) return;

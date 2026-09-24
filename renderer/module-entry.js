@@ -238,7 +238,9 @@ const MODULES = {
 };
 
 const modId = (location.hash || '').replace(/^#/, '') || 'tools';
-const def = MODULES[modId];
+// Только собственные ключи реестра: '#constructor' / '#toString' из битого персиста __open иначе
+// дали бы «модуль» из Object.prototype, и def.load() уронил бы оболочку окна на старте.
+const def = Object.prototype.hasOwnProperty.call(MODULES, modId) ? MODULES[modId] : null;
 
 // Store snapshot + settings/theme (each window loads its own; writes go to the shared main store).
 const STORE = lite.store.loadAll() || {};
@@ -311,7 +313,9 @@ async function boot() {
     // Удалённый/устаревший модуль (например, старое окно 'git' из персиста __open после слияния с вивером)
     // — не показываем стрелую заглушку, а тихо закрываем окно; набор открытых окон self-heal'ится.
     try { lite.log('warn', '[module-entry]', 'unknown module → closing window: ' + modId); } catch (_) {}
-    try { lite.win.close(); } catch (_) {}
+    // confirmClose, а не close: main гасит обычное закрытие и ждёт ответа на win:closeRequest, а
+    // слушатель ниже здесь так и не вешается — окно оставалось висеть пустым и не закрывалось даже ✕.
+    try { lite.win.confirmClose(); } catch (_) {}
     return;
   }
   document.body.classList.add('mw-' + modId); // per-module хук для CSS (раскладка окна вивера и пр.)

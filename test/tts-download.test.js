@@ -38,6 +38,8 @@ const srv = http.createServer((req, res) => {
   if (req.url === '/ok') { res.writeHead(200, { 'content-length': String(BODY.length) }); res.end(BODY); return; }
   if (req.url === '/tiny') { res.writeHead(200, { 'content-length': '10' }); res.end(Buffer.alloc(10)); return; }
   if (req.url === '/loop') { res.writeHead(302, { location: '/loop' }); res.end(); return; }
+  if (req.url === '/ftp') { res.writeHead(302, { location: 'ftp://127.0.0.1/model.pt' }); res.end(); return; }
+  if (req.url === '/badloc') { res.writeHead(302, { location: 'http://[::1' }); res.end(); return; }
   res.writeHead(404); res.end();
 });
 
@@ -69,8 +71,21 @@ srv.listen(0, '127.0.0.1', async () => {
     r = await loadWith(base + '/loop').downloadModel(() => {});
     ok(r.ok === false && /перенаправлен/.test(r.error), 'цикл редиректов должен обрываться');
 
+    // редирект на чужой протокол и битый Location: раньше исключение улетало из колбэка ответа,
+    // промис не разрешался, а флаг «загрузка идёт» залипал до перезапуска
+    const withDeadline = (p) => Promise.race([p, new Promise((res) => setTimeout(() => res({ hung: true }), 3000))]);
+    let tts = loadWith(base + '/ftp');
+    r = await withDeadline(tts.downloadModel(() => {}));
+    ok(r.ok === false && !r.hung, 'редирект на чужой протокол должен отклоняться, а не вешать загрузку');
+    r = await withDeadline(tts.downloadModel(() => {}));
+    ok(r.ok === false && !/уже идёт/.test(r.error || ''), 'после отказа флаг загрузки должен сниматься');
+    tts = loadWith(base + '/badloc');
+    r = await withDeadline(tts.downloadModel(() => {}));
+    ok(r.ok === false && !r.hung, 'битый адрес перенаправления должен отклоняться');
+    ok(!fs.existsSync(dest + '.part'), 'после отказа не должно оставаться .part');
+
     // параллельный запуск не бьёт файл первой закачки
-    const tts = loadWith(base + '/ok');
+    tts = loadWith(base + '/ok');
     const first = tts.downloadModel(() => {});
     const second = await tts.downloadModel(() => {});
     ok(second.ok === false, 'вторая одновременная загрузка должна отбиваться');

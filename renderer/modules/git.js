@@ -546,7 +546,13 @@ export function initGit(host) {
       if (host.gitDiff) host.gitDiff(p.path, f, splitPath(f, p.path));
     };
 
-    if (!keys.length) {
+    if (!keys.length && st && st.error) {
+      // git status не отработал — это НЕ «чистое дерево» (коммитить/откатывать вслепую нельзя)
+      const warn = el('div', 'git-conflict-note');
+      warn.appendChild(icon('warning', 15));
+      warn.appendChild(el('span', null, st.error));
+      changes.appendChild(warn);
+    } else if (!keys.length) {
       const clean = el('div', 'git-clean-state');
       clean.appendChild(icon('check', 20));
       clean.appendChild(el('div', 'git-clean-title', 'Рабочее дерево чистое'));
@@ -717,7 +723,15 @@ export function initGit(host) {
         filesEl.appendChild(row);
       }
     };
+    // Одна операция за раз: двойной клик по «pop» снимал ДВА stash (после первого индексы сдвигаются,
+    // и второй вызов stash@{N} бьёт уже по соседнему), по «apply» — применял набор повторно.
+    let stashBusy = false;
     const stashOp = async (op, it) => {
+      if (stashBusy) return;
+      stashBusy = true;
+      try { await stashOpRun(op, it); } finally { stashBusy = false; }
+    };
+    const stashOpRun = async (op, it) => {
       const fn = op === 'apply' ? lite.git.stashApply : op === 'pop' ? lite.git.stashPopIndex : lite.git.stashDrop;
       const r = await fn(p.path, it.index);
       if (!r.ok) { toast(r.error || (op + ' не прошёл'), { kind: 'err', ttl: 8000 }); return; }
@@ -1008,6 +1022,10 @@ export function initGit(host) {
     const read = await lite.fs.readFile(fileAbs);
     if (read.error) { toast(read.error || 'не удалось прочитать файл', { kind: 'err' }); return; }
     const raw = read.content || '';
+    // CodeMirror хранит документ с '\n' — без возврата исходного перевода строки «Сохранить разрешение»
+    // переводило CRLF-файл в LF целиком (весь файл — одна сплошная правка). Правило — как у вивера (files.js).
+    const crlf = (raw.match(/\r\n/g) || []).length;
+    const eol = crlf && crlf * 2 >= (raw.match(/\n/g) || []).length ? '\r\n' : '\n';
     const parsed0 = parseConflicts(raw);
     if (!parsed0.blocks.length) { toast('В файле нет маркеров конфликта', { kind: 'err' }); return; }
     // язык грузим ДО makeModal: await после неё — окно для onClose в TDZ констант ed* (закрыли во время await)
@@ -1124,7 +1142,7 @@ export function initGit(host) {
       doSave(text);
     };
     async function doSave(text) {
-      const w = await lite.fs.writeFile(fileAbs, text);
+      const w = await lite.fs.writeFile(fileAbs, eol === '\n' ? text : text.replace(/\n/g, eol));
       if (w && w.error) { toast(w.error || 'не удалось записать', { kind: 'err', ttl: 8000 }); return; }
       const a = await lite.git.add(p.path, [fileAbs]);
       close();

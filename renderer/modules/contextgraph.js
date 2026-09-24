@@ -25,21 +25,43 @@ function renderSafeMarkdown(target, src) {
   catch (_) { target.textContent = String(src || ''); return; }
   const tpl = document.createElement('template');
   tpl.innerHTML = html;
-  tpl.content.querySelectorAll('script,style,iframe,object,embed,form,link,meta,base').forEach((e) => e.remove());
+  // animate/set — SVG-анимация умеет подменить href ссылки на javascript: в обход проверки атрибутов ниже
+  tpl.content.querySelectorAll('script,style,iframe,object,embed,form,link,meta,base,animate,set').forEach((e) => e.remove());
   tpl.content.querySelectorAll('*').forEach((e) => {
     for (const a of [...e.attributes]) {
       const name = a.name.toLowerCase();
-      const val = a.value.replace(/[\s-]/g, '').toLowerCase();
+      // Управляющие символы тоже срезаем: URL-парсер отбрасывает их в начале адреса, и
+      // «&#1;javascript:…» иначе проходил мимо проверки схемы.
+      const val = a.value.replace(/[\s\x00-\x1f\x7f-]/g, '').toLowerCase();
       if (name.startsWith('on') || name === 'srcset' || name === 'style') e.removeAttribute(a.name);
       else if ((name === 'href' || name === 'src' || name === 'xlink:href') && /^(javascript|data|vbscript):/.test(val)) e.removeAttribute(a.name);
     }
   });
   target.replaceChildren(...tpl.content.childNodes);
 }
+// makeModal закрывает модалку по Esc и по клику мимо неё — в обход вопроса «Закрыть без сохранения?»,
+// который задают кнопки «Закрыть»/✕ редакторов: набранный текст пропадал молча (а Esc жмут
+// рефлекторно — снять выделение, закрыть поиск). Пока есть несохранённое, оба пути ведут в тот же
+// вопрос. Слушатели в фазе захвата и stopImmediatePropagation — срабатывают раньше makeModal.
+function guardDirtyClose(overlay, m, isDirty, ask) {
+  m.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape' || !isDirty()) return;
+    e.preventDefault(); e.stopImmediatePropagation(); ask();
+  }, true);
+  overlay.addEventListener('mousedown', (e) => {
+    if (e.target !== overlay || !isDirty()) return;
+    e.stopImmediatePropagation(); ask();
+  }, true);
+}
 const fmtTok = (chars) => {
   const t = Math.round((chars || 0) / 4);
   return '≈' + (t >= 1000 ? (t / 1000).toFixed(1).replace(/\.0$/, '') + 'k' : t) + ' тк';
 };
+// Текст «Спросить агента» уходит в терминал НАЖАТИЯМИ клавиш (pty.write, задумано без Enter).
+// Подставляем в него чужие данные — имена файлов из .claude репозитория и памяти, заголовки
+// CLAUDE.md, ответ модели: перевод строки в них срабатывал как Enter (остаток выполнялся в оболочке
+// или уходил агенту сам), ^C/ESC — как клавиши. Управляющие символы схлопываем в пробел.
+const termSafe = (s) => String(s == null ? '' : s).replace(/[\x00-\x1f\x7f-\x9f]+/g, ' ');
 function fmtTs(ts) {
   if (!ts) return '';
   try { return new Date(ts).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }); } catch (_) { return ''; }
@@ -459,7 +481,7 @@ export function initCtx(host) {
   }
   function askAbout(b) {
     if (!proj) return;
-    lite.editorBus.sendToTerminal(`В ${proj.path}/CLAUDE.md есть раздел «${b.title}». `);
+    lite.editorBus.sendToTerminal(termSafe(`В ${proj.path}/CLAUDE.md есть раздел «${b.title}». `));
     toast(t('Вставлено в терминал проекта — допишите вопрос и нажмите Enter'), { ttl: 7000 });
   }
 
@@ -468,10 +490,12 @@ export function initCtx(host) {
   // видно оглавление файла целиком и можно прыгать между разделами.
   function modalBlock(startBlock) {
     let editor = null, cur = startBlock, dirty = false;
+    // Как открытый раздел называется В ФАЙЛЕ и из какого он проекта — чтобы найти его снова (rebind).
+    let curTitle = startBlock.title, curProj = proj && proj.id;
     let preview = blockPreviewMode;   // режим показа общий для всех разделов и переживает переход
     const dirtyKey = 'block:' + (++dirtyKeySeq);
     modalOpen = true;
-    const { m, close } = makeModal(`<div class="ctx-bl-top">
+    const { overlay, m, close } = makeModal(`<div class="ctx-bl-top">
         <h2>Разделы CLAUDE.md</h2>
         <button class="ctx-x" id="cxm-x" title="Закрыть">✕</button>
       </div>
@@ -534,7 +558,7 @@ export function initCtx(host) {
           'Без сохранения', () => openBlock(b, true));
         return;
       }
-      cur = b; orig = b.content;
+      cur = b; orig = b.content; curTitle = b.title; curProj = proj && proj.id;
       if (editor) { editor.destroy(); host2.textContent = ''; }
       editor = mkEditor(orig, languageFor('block.md', (sup) => {
         if (!editor) return;
@@ -574,15 +598,32 @@ export function initCtx(host) {
       m.querySelector('#cxm-mode-view').classList.toggle('on', on);
       m.querySelector('#cxm-mode-edit').classList.toggle('on', !on);
     };
+    // Канву перечитали, пока модалка открыта (файл изменили снаружи и сохранение упёрлось в stale,
+    // «Сохранить» нажали дважды) — блоки пересозданы, а cur указывает на объект, которого в blocks
+    // уже нет. Повторное «Сохранить» собирало файл БЕЗ правки и рапортовало «Сохранено» — правка
+    // пропадала молча. Находим раздел заново по заголовку (как раскладка при перечитывании);
+    // сменился проект или заголовок неоднозначен — честный отказ, текст остаётся в редакторе.
+    function rebind() {
+      if (blocks.includes(cur)) return true;
+      if (!proj || proj.id !== curProj) return false;
+      const same = blocks.filter((b) => b.title === curTitle);
+      if (same.length !== 1) return false;
+      cur = same[0];
+      return true;
+    }
+    const lostWarn = () => toast(t('Раздел «{0}» не найден в перечитанном CLAUDE.md — скопируйте правку и откройте раздел заново', curTitle), { kind: 'warn', ttl: 9000 });
     async function doSave() {
+      if (!rebind()) { lostWarn(); return false; }
       const text = editor.getValue();
       cur.content = text; cur.chars = text.length; cur.title = titleFromContent(text);
       if (!(await persist('Правка раздела', cur.title))) { await reloadFromDisk(); return false; }
+      curTitle = cur.title;
       orig = text; recheck();
       toast(t('Сохранено в CLAUDE.md, прежняя версия в истории'), { ttl: 5000 });
       return true;
     }
     const step = (delta) => {
+      rebind();
       const list = ordered();
       const i = list.findIndex((x) => x.id === cur.id);
       openBlock(list[i + delta]);
@@ -596,7 +637,8 @@ export function initCtx(host) {
     const bye = () => { if (!dirty) { close(); return; } showConfirm('Закрыть без сохранения?', 'Правки будут потеряны.', 'Закрыть', close); };
     m.querySelector('#cxm-cancel').addEventListener('click', bye);
     m.querySelector('#cxm-x').addEventListener('click', bye);
-    m.querySelector('#cxm-del').addEventListener('click', () => { const b = cur; close(); deleteBlock(b); });
+    guardDirtyClose(overlay, m, () => dirty, bye);
+    m.querySelector('#cxm-del').addEventListener('click', () => { if (!rebind()) { lostWarn(); return; } const b = cur; close(); deleteBlock(b); });
     drawList();
     openBlock(startBlock, true);
   }
@@ -743,7 +785,12 @@ export function initCtx(host) {
   // Пауза перед чтением — агент дописывает файл в несколько заходов, иначе поймаем середину записи.
   const SETTLE_MS = 1500;
   function onExternalChange() {
-    if (!open || !proj || curTab !== 'canvas') return;
+    if (!open || !proj) return;
+    // Файл изменился, пока открыта другая вкладка («Применить» в «Анализе диалогов», правка CLAUDE.md
+    // во «Файлах», агент). Скрытую канву не перечитываем, но возврат на неё обязан перечитать: setTab
+    // делает это только для непрочитанной канвы — иначе она показывала старый текст, а первая же
+    // правка упиралась в «файл изменился снаружи».
+    if (curTab !== 'canvas') { loadedProj = null; return; }
     clearTimeout(extTimer);
     extTimer = setTimeout(async () => {
       const r = await lite.ctx.state(proj.id, proj.path);
@@ -822,7 +869,7 @@ export function initCtx(host) {
   // rules — накопленный реестр (персист в localStorage per-project); done — имена уже разобранных сессий
   // (батчинг + «только новые»); ctx — содержимое существующих CLAUDE.md для дедупа; sel — выбор
   // правил для записи в файлы. У правила могут быть поля status:'ignored', applied:true, exists:true (B).
-  const mine = { scanned: null, scanPath: null, running: false, reqId: 0, raw: '', t0: 0, timer: null, q: '', cat: '', conf: '',
+  const mine = { scanned: null, scanPath: null, runPath: null, running: false, reqId: 0, raw: '', t0: 0, timer: null, q: '', cat: '', conf: '',
     rules: [], done: [], remaining: 0, totalFiles: 0, batches: 0, summary: '', ctx: null, showIgnored: false, hideExists: false, sel: new Set() };
   let curTab = 'canvas';
   const hasRules = () => mine.rules.length > 0 || mine.batches > 0;
@@ -895,7 +942,7 @@ export function initCtx(host) {
   function ruleHandoff(r) {
     const pl = placeOf(r);
     const lead = HANDOFF[pl]; if (!lead) return;
-    lite.editorBus.sendToTerminal(`${lead}: «${r.title}». Подробности: ${String(r.detail || '').replace(/\s+/g, ' ')} `);
+    lite.editorBus.sendToTerminal(termSafe(`${lead}: «${r.title}». Подробности: ${String(r.detail || '').replace(/\s+/g, ' ')} `));
     toast(t('Правило отправлено в терминал проекта — проверьте формулировку и нажмите Enter'), { ttl: 8000 });
   }
   // Какое имя файла получит правило: слаг из заголовка (та же транслитерация, что на бэкенде).
@@ -1078,6 +1125,7 @@ export function initCtx(host) {
     if (mine.running) return;
     if (!cont) mineReset();
     mine.running = true; mine.reqId = Date.now() * 1000 + Math.floor(Math.random() * 1000); mine.raw = ''; mine.t0 = Date.now();
+    mine.runPath = p.path;   // чей реестр пополнит ответ (см. onResult)
     if (mine.timer) clearInterval(mine.timer);
     mine.timer = setInterval(() => { const e = $('#mine-elapsed'); if (e) e.textContent = Math.floor((Date.now() - mine.t0) / 1000) + ' с'; }, 1000);
     lite.ctxmine.analyze(mine.reqId, p.path, { done: cont ? mine.done : [], only: (only && only.length) ? only : undefined });
@@ -1121,19 +1169,32 @@ export function initCtx(host) {
     if (!items.length) { toast('Нет выбранных правил для записи (память и «на ревью» в файлы не пишутся)', { kind: 'warn' }); return; }
     const by = {}; for (const r of items) (by[placeOf(r)] = by[placeOf(r)] || []).push(r);
     const summary = Object.entries(by).map(([pl, arr]) => `${FILE_LABEL[pl]} — ${arr.length} ${plural(arr.length, 'правило', 'правила', 'правил')}`).join('; ');
+    const regPath = mine.scanPath;   // чей реестр — туда и пишем «CLAUDE.md проекта»
     showConfirm('Записать правила в файлы?', 'Будут дописаны: ' + summary + '. Файлы изменятся на диске.', 'Записать', async () => {
       const p = activeProject();
       if (!p) { toast(t('Проект закрыт — записывать правила некуда'), { kind: 'warn' }); return; }
+      // Пока висело подтверждение, активный проект сменился: правила этого реестра ушли бы в CLAUDE.md
+      // ДРУГОГО проекта (путь брался из activeProject() в момент «Записать»).
+      if (p.path !== regPath) { toast(t('Проект сменился — правила не записаны, выберите их заново'), { kind: 'warn' }); return; }
       const payload = items.map((r) => ({ placement: placeOf(r), title: r.title, detail: r.detail }));
       let res; try { res = await lite.ctxmine.apply(p.path, payload); } catch (e) { res = { ok: false, error: String((e && e.message) || e) }; }
-      if (res && res.ok) {
-        for (const r of items) { r.applied = true; mine.sel.delete(ruleKey(r)); }
+      // Частичный сбой (глобальный файл записан, проектный — нет, или наоборот): main отвечает ok:false,
+      // но applied перечисляет записанные цели. Раньше их правила не помечались «записано», и повторное
+      // «Применить» дописывало их в тот же файл второй раз.
+      const okPl = new Set(((res && res.applied) || []).map((a) => a.placement));
+      if (okPl.size) {
+        for (const r of items) if (okPl.has(placeOf(r))) { r.applied = true; mine.sel.delete(ruleKey(r)); }
         mineSave();
         try { const c = await lite.ctxmine.context(p.path); if (c && c.ok) { mine.ctx = c; markExists(); } } catch (_) {}
         renderMine();
+      }
+      if (res && res.ok) {
         const n = (res.applied || []).reduce((s, a) => s + a.count, 0);
         toast(t('Записано: {0} {1}', n, plural(n, 'правило', 'правила', 'правил')), { kind: 'ok' });
-      } else { toast((res && res.error) || 'Не удалось записать', { kind: 'err' }); }
+      } else {
+        const why = (res && (res.error || (res.errors || []).map((x) => x && x.error).filter(Boolean).join('; '))) || '?';
+        toast(t('Не удалось записать: {0}', why), { kind: 'err' });
+      }
     });
   }
 
@@ -1144,6 +1205,13 @@ export function initCtx(host) {
   lite.ctxmine.onResult((d) => {
     if (!d || d.reqId !== mine.reqId) return;
     mineEnd();
+    // Пока шёл анализ, проект сменился и mineScan поднял реестр ДРУГОГО проекта: слияние записало бы
+    // в него чужие правила и отметило «разобранными» чужие сессии (и сохранило под его ключом).
+    if (mine.runPath !== mine.scanPath) {
+      renderMine();
+      toast(t('Проект сменился, пока шёл анализ, — результат не записан, сессии остались неразобранными'), { kind: 'warn', ttl: 9000 });
+      return;
+    }
     const meta = d.meta || {};
     const { added } = mergeRules(Array.isArray(d.rules) ? d.rules : []);
     for (const n of (meta.batchFiles || [])) {   // запись по сессии ОДНА: свежая заменяет прежнюю
@@ -1487,7 +1555,7 @@ export function initCtx(host) {
     const isJson = /\.(json|jsonc|json5)$/i.test(name);
     const isJsonl = /\.(jsonl|ndjson)$/i.test(name);
     const isSh = /\.(sh|bash|zsh)$/i.test(name) || /^\.?(bashrc|zshrc|profile)$/i.test(name);
-    const { m, close } = makeModal(`<h2>${title.replace(/[<>&]/g, '')}</h2>
+    const { overlay, m, close } = makeModal(`<h2>${title.replace(/[<>&]/g, '')}</h2>
       <div class="about-desc mem-ed-sub"></div>
       <div class="ctx-medbar">
         <div class="ctx-seg" id="fed-modes" hidden>
@@ -1597,10 +1665,12 @@ export function initCtx(host) {
       return true;
     };
     saveBtn.addEventListener('click', doSave);
-    cancelBtn.addEventListener('click', () => {
+    const bye = () => {
       if (!recheck()) { close(); return; }
       showConfirm('Закрыть без сохранения?', 'Правки будут потеряны.', 'Закрыть', close);
-    });
+    };
+    cancelBtn.addEventListener('click', bye);
+    guardDirtyClose(overlay, m, () => !!editor && editor.getValue() !== orig, bye);
     m.querySelector('#fed-hist').addEventListener('click', () => openBackups(file, (txt) => {
       editor.view.dispatch({ changes: { from: 0, to: editor.view.state.doc.length, insert: txt } });
       recheck();
@@ -1751,7 +1821,7 @@ export function initCtx(host) {
   function memAsk(it) {
     const dir = mem.data && mem.data.dir;
     if (!dir) return;
-    lite.editorBus.sendToTerminal(`Прочитай файл памяти ${dir}/${it.file} («${it.name}») и ответь на вопрос: `);
+    lite.editorBus.sendToTerminal(termSafe(`Прочитай файл памяти ${dir}/${it.file} («${it.name}») и ответь на вопрос: `));
     toast(t('Вставлено в терминал проекта: {0} — допишите вопрос и нажмите Enter', it.name), { ttl: 7000 });
   }
   function memDelete(it) {
@@ -1945,7 +2015,11 @@ export function initCtx(host) {
   async function cfsLoad(force) {
     const p = activeProject();
     if (cfs.scope !== 'home' && !p) { cfs.data = null; renderFiles(); return; }
-    if (!force && cfs.data && cfs.data.scope === cfs.scope) { renderFiles(); return; }
+    // Дерево области «Проект» принадлежит конкретному проекту. Проект сменился, пока открыта другая
+    // вкладка (onProjectChange перечитывает «Файлы», только если они на экране), — без сверки пути
+    // вкладка показывала .claude прежнего проекта, а файлы из него открывались уже в новом.
+    const askedPath = (p && p.path) || '';
+    if (!force && cfs.data && cfs.data.scope === cfs.scope && (cfs.scope === 'home' || cfs.data.projPath === askedPath)) { renderFiles(); return; }
     if (!lite.ctxfs || typeof lite.ctxfs.tree !== 'function') {
       cfs.error = 'перезапустите редактор — мост ещё старый'; cfs.data = null; renderFiles(); return;
     }
@@ -1958,7 +2032,7 @@ export function initCtx(host) {
     if (my !== cfsSeq) return;
     cfs.loading = false;
     if (!r || !r.ok) { cfs.error = (r && r.error) || 'не прочитать папку'; cfs.data = null; }
-    else { cfs.data = { ...r, scope: askedScope }; }
+    else { cfs.data = { ...r, scope: askedScope, projPath: askedPath }; }
     renderFiles();
   }
   async function cfsOpen(node) {
@@ -2018,11 +2092,11 @@ export function initCtx(host) {
       const from = wins[0].start, to = wins[wins.length - 1].end;
       pos.textContent = `${fmtBytes(from)} – ${fmtBytes(to)} из ${fmtBytes(size)}`;
     };
-    const load = async (offset, side) => {
+    const load = async (offset, side, limit) => {
       if (busy) return;
       busy = true;
       try {
-        const r = await lite.ctxfs.read(cfs.scope, p && p.path, node.rel, offset);
+        const r = await lite.ctxfs.read(cfs.scope, p && p.path, node.rel, offset, limit);
         if (!r || !r.ok || !r.text) return;
         if (wins.some((w) => w.start === r.start)) return;      // это окно уже показано
         if (side === 'down') { wins.push({ start: r.start, end: r.end, text: r.text }); if (wins.length > BIG_KEEP) wins.shift(); }
@@ -2048,7 +2122,12 @@ export function initCtx(host) {
         const nearTop = sd.scrollTop < 400;
         const last = wins[wins.length - 1], head = wins[0];
         if (nearBottom && last.end < size) load(last.end, 'down');
-        else if (nearTop && head.start > 0) load(Math.max(0, head.start - (first.window || 128 * 1024)), 'up');
+        else if (nearTop && head.start > 0) {
+          // Окно выше читаем РОВНО до начала показанного: у начала файла отступ упирается в 0, и полное
+          // окно [0, W) перекрывало head — кусок текста показывался дважды (после «В конец» и прокрутки вверх).
+          const from = Math.max(0, head.start - (first.window || 128 * 1024));
+          load(from, 'up', head.start - from);
+        }
       });
     }
     bindScroll();
@@ -2072,7 +2151,7 @@ export function initCtx(host) {
   }
   // «Спросить агента» для файла настроек: тот же уговор, что в памяти — путь + заготовка, без Enter.
   function cfsAsk(node, abs) {
-    lite.editorBus.sendToTerminal(`Посмотри файл ${abs} и `);
+    lite.editorBus.sendToTerminal(termSafe(`Посмотри файл ${abs} и `));
     toast(t('Путь вставлен в терминал проекта — допишите просьбу и нажмите Enter'), { ttl: 7000 });
   }
   function renderFiles() {

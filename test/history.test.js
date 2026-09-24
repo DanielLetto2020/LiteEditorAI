@@ -58,6 +58,17 @@ fs.promises.readFile = function (p, ...rest) { if (p === watched) reads++; retur
   // --- снимок переданного текста (замена по проекту) уважает тот же троттл ---
   ok(await h.snapshot(f, 'другое', 'ext') === false, 'snapshot() внутри окна троттла — пропуск');
 
+  // --- force (откат к версии из истории): мимо троттла, но не мимо дедупа; часы стоят на месте ---
+  ok(await h.snapshot(f, 'другое', 'save', { force: true }) === true, 'force-снимок внутри окна троттла записан');
+  ok(await h.snapshot(f, 'другое', 'save', { force: true }) === false, 'force не отменяет дедуп');
+  fs.writeFileSync(f, 'v7');
+  ok(await h.snapshotFromDisk(f, 'save', { force: true }) === true, 'force-снимок с диска в ту же миллисекунду записан');
+  await new Promise((r) => setTimeout(r, 50));   // unlink ротации идёт без await
+  const forced = await h.list(f);
+  ok(forced.length === 3 && forced[0].ts > forced[1].ts && forced[1].ts > forced[2].ts,
+    'снимки одной миллисекунды не затёрли друг друга: ' + forced.map((x) => x.name).join(', '));
+  ok(await h.read(f, forced[0].name) === 'v7' && await h.read(f, forced[1].name) === 'другое', 'порядок снимков сохранён');
+
   // --- чистка ---
   const mk = (absFile, ageMs, bytes) => {
     const d = path.join(store, key(absFile));

@@ -33,20 +33,23 @@ export const LOOK_TOKEN_NAMES = {
 };
 
 const HEX = /^#[0-9a-f]{6}$/i;
+// Только строка: RegExp.test приводит аргумент к строке, и ['#aabbcc'] из битого settings.json/импорта
+// проходил проверку, а следом .toLowerCase() бросал — окно редактора и окна модулей не стартовали.
+const isHex = (v) => typeof v === 'string' && HEX.test(v);
 const hex2rgb = (x) => { const n = parseInt(x.slice(1), 16); return [(n >> 16) & 255, (n >> 8) & 255, n & 255]; };
 const rgb2hex = (a) => '#' + a.map((v) => Math.round(Math.max(0, Math.min(255, v))).toString(16).padStart(2, '0')).join('');
 export const mixHex = (a, b, t) => { const A = hex2rgb(a), B = hex2rgb(b); return rgb2hex(A.map((v, i) => v + (B[i] - v) * t)); };
 const alpha = (x, a) => x + Math.round(Math.max(0, Math.min(1, a)) * 255).toString(16).padStart(2, '0');
 const num = (v, lo, hi, d) => { const n = Number(v); return Number.isFinite(n) ? Math.max(lo, Math.min(hi, n)) : d; };
-const pick = (src, def) => { const out = {}; for (const k of Object.keys(def)) out[k] = (src && HEX.test(src[k])) ? src[k].toLowerCase() : def[k]; return out; };
+const pick = (src, def) => { const out = {}; for (const k of Object.keys(def)) out[k] = (src && isHex(src[k])) ? src[k].toLowerCase() : def[k]; return out; };
 
 // Нормализованная настройка из settings (окна модулей держат settings без дефолтов редактора).
 export function lookOf(settings) {
   const l = (settings && settings.look) || {};
   const over = {};
-  if (l.over && typeof l.over === 'object') for (const [k, v] of Object.entries(l.over)) if (LOOK_TOKEN_NAMES[k] && HEX.test(v)) over[k] = v.toLowerCase();
+  if (l.over && typeof l.over === 'object') for (const [k, v] of Object.entries(l.over)) if (LOOK_TOKEN_NAMES[k] && isHex(v)) over[k] = v.toLowerCase();
   return {
-    accent: HEX.test(l.accent) ? l.accent.toLowerCase() : LOOK_DEFAULT.accent,
+    accent: isHex(l.accent) ? l.accent.toLowerCase() : LOOK_DEFAULT.accent,
     r: num(l.r, 4, 22, LOOK_DEFAULT.r),
     row: num(l.row, 28, 42, LOOK_DEFAULT.row),
     alpha: num(l.alpha, 60, 100, LOOK_DEFAULT.alpha),

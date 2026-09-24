@@ -116,6 +116,7 @@ export function initFiles(host) {
     try { const d = document.createElement('div'); d.style.color = color; document.body.appendChild(d); const c = getComputedStyle(d).color; d.remove();
       const m = c.match(/\d+/g); if (!m) return null; return '#' + m.slice(0, 3).map((n) => (+n).toString(16).padStart(2, '0')).join(''); } catch (_) { return null; }
   }
+  let colorInp = null;               // скрытый <input type=color> последнего клика по свотчу
   class ColorSwatch extends WidgetType {
     constructor(color, from, to) { super(); this.color = color; this.from = from; this.to = to; }
     eq(o) { return o.color === this.color && o.from === this.from && o.to === this.to; }
@@ -126,6 +127,10 @@ export function initFiles(host) {
         e.preventDefault(); e.stopPropagation();
         const inp = document.createElement('input'); inp.type = 'color'; inp.value = colorToHex(this.color) || '#000000';
         inp.style.position = 'fixed'; inp.style.left = '-9999px'; document.body.appendChild(inp);
+        // пикер закрыли без выбора (или выбрали тот же цвет) — 'change' не приходит, и инпут оставался
+        // в body навсегда: по узлу на клик. Держим не больше одного.
+        if (colorInp) colorInp.remove();
+        colorInp = inp;
         inp.addEventListener('change', () => { try { view.dispatch({ changes: { from: this.from, to: this.to, insert: inp.value } }); } catch (_) {} inp.remove(); });
         inp.click();
       });
@@ -286,7 +291,9 @@ export function initFiles(host) {
           indentWithTab, ...completionKeymap, ...foldKeymap, ...searchKeymap, ...defaultKeymap, ...historyKeymap,
         ]),
         EditorView.updateListener.of((u) => {
-          if (u.docChanged && !loadingDoc) { markDirty(true); scheduleAutosave(); }
+          // Картинки (и svg) открываются только превью, исходника у них в вивере нет. Пустой редактор под
+          // ними всё же проявляется (выход из диффа), и ввод туда автосейвом затирал бы сам файл картинки.
+          if (u.docChanged && !loadingDoc && previewKind(currentFile) !== 'image') { markDirty(true); scheduleAutosave(); }
           if (u.docChanged && !loadingDoc && agentMode) {   // C21: пометить твои правки в гаттере авторства
             const ls = new Set();
             u.changes.iterChangedRanges((fA, tA, fB, tB) => { const a = u.state.doc.lineAt(fB).number, b = u.state.doc.lineAt(tB).number; for (let n = a; n <= b; n++) ls.add(n); });
@@ -571,8 +578,13 @@ export function initFiles(host) {
     const res = await lite.fs.readFile(filePath);
     if (seq !== openSeq) return; // обогнал более свежий openFile — выходим, не затирая его результат
     if (res.error) { toast(res.error, { kind: 'err', ttl: 6000 }); return; } // оставляем текущий вид нетронутым
+    // NUL в тексте — бинарник (или UTF-16): читать там нечего, а любой ввод автосейвом записал бы обратно
+    // испорченную UTF-8-перекодировку — файл терялся безвозвратно (локальная история бинарники не снимает).
+    if (res.content.includes('\0')) { toast('Бинарный файл — в вивере не редактируется', { kind: 'warn', ttl: 5000 }); return; }
     resetCenterView();
     currentFile = filePath;
+    docEol = eolOf(res.content);
+    diskBase = normEol(res.content);
     commitOpenUI(filePath, kind);
     afterOpen(filePath);
     // язык может грузиться лениво (первое открытие типа) → по готовности переконфигурируем, если файл ещё открыт
@@ -598,6 +610,11 @@ export function initFiles(host) {
         const name = attr.name.toLowerCase();
         if (name.startsWith('on')) n.removeAttribute(attr.name); // инлайн-обработчики (onerror/onclick/…)
         else if (/^(href|src|xlink:href)$/.test(name) && /^(javascript|vbscript):/i.test(attr.value.replace(/[\s-]/g, ''))) n.removeAttribute(attr.name);
+        // DOM clobbering: у Document именованные свойства перекрывают встроенные — <img name="querySelector">
+        // превращал document.querySelector в картинку, и весь модуль падал на первом же $(…) (выйти из
+        // превью было нечем). id/name, совпадающие с id интерфейса окна (#tree, #toasts, #modal-root — они
+        // в DOM после превью), уводили бы туда рендер дерева, тосты и модалки.
+        else if ((name === 'id' || name === 'name') && (attr.value in document || document.getElementById(attr.value))) n.removeAttribute(attr.name);
       }
     });
   }
@@ -873,12 +890,15 @@ export function initFiles(host) {
     if (res.error) return;
     const head = editor.state.selection.main.head;
     const oldText = editor.state.doc.toString();        // C21: до подмены — чтобы пометить, что тронул агент
-    if (res.content === oldText) { markDirty(false); hideReloadBar(); return; } // эхо нашего же автосейва — не перезаливаем док (иначе сброс folds/курсора)
+    docEol = eolOf(res.content);                        // агент мог сменить переводы строк — пишем дальше как на диске
+    const text = normEol(res.content);                  // док CodeMirror — с '\n': сравниваем в тех же координатах
+    diskBase = text;
+    if (text === oldText) { markDirty(false); hideReloadBar(); return; } // эхо нашего же автосейва — не перезаливаем док (иначе сброс folds/курсора)
     setEditorText(res.content, languageFor(f, langOnLoad(f)));
     markDirty(false);
     hideReloadBar();
     updateGitGutter(currentFile);
-    if (agentMode) { const ch = diffChangedLines(oldText, res.content); if (ch.length) markAuthor(ch, 'agent'); } // живой reload = правка агента
+    if (agentMode) { const ch = diffChangedLines(oldText, text); if (ch.length) markAuthor(ch, 'agent'); } // живой reload = правка агента
     try { editor.dispatch({ selection: { anchor: Math.min(head, editor.state.doc.length) } }); } catch (_) {}
     if (previewMode && kind) await showPreview(kind, currentFile, res.content); // перерисовать рендер md/html
   }
@@ -906,6 +926,16 @@ export function initFiles(host) {
     refreshBookmarkGutter();          // канонический момент загрузки дока → маркеры закладок по НОВОМУ содержимому
   }
   function markDirty(v) { dirty = v; $('#viewer-dirty').classList.toggle('show', v); }
+  // Перевод строки файла на диске. Док CodeMirror всегда с '\n' (CRLF/CR он режет при загрузке), и без
+  // этого каждое сохранение молча переводило CRLF-файл в LF целиком: дифф на все строки, чужие переводы
+  // строк в Windows-репозитории. Запоминаем преобладающий при загрузке и возвращаем его при записи.
+  let docEol = '\n';
+  function eolOf(s) { const crlf = (s.match(/\r\n/g) || []).length; return crlf && crlf * 2 >= (s.match(/\n/g) || []).length ? '\r\n' : '\n'; }
+  const toDiskText = (text) => (docEol === '\n' ? text : text.replace(/\n/g, docEol));
+  const normEol = (s) => s.replace(/\r\n?/g, '\n');   // текст с диска → координаты дока CodeMirror
+  // Что вивер последним видел на диске для открытого буфера (загрузка, перечитывание, своя запись) —
+  // по нему эхо собственной записи отличается от настоящей чужой правки (checkDiskConflict).
+  let diskBase = null;
   // Автосохранение (PhpStorm-style): через AUTOSAVE_MS тишины после правки тихо пишем файл на диск.
   // Не сохраняем в превью/диффе, при конфликте на диске (открыта reload-плашка) и при загрузке дока —
   // там пишет/решает другой путь. Сохраняет ровно текущий файл; stale-таймер после смены файла безвреден
@@ -924,6 +954,17 @@ export function initFiles(host) {
   // Постоянная (в отличие от тоста) — пока пользователь не решит: перечитать с диска или оставить своё.
   function showReloadBar() { $('#viewer-reload-bar').classList.remove('hidden'); }
   function hideReloadBar() { $('#viewer-reload-bar').classList.add('hidden'); }
+  // Открытый файл изменился на диске, а в редакторе несохранённые правки. Часто это эхо НАШЕЙ записи:
+  // человек продолжил печатать, пока событие автосейва шло через вотчер (180 + 120 мс), — и плашка
+  // «изменён на диске» всплывала на ровном месте, выключая автосейв до решения. Плашка — только если
+  // на диске не то, что вивер видел там последним.
+  async function checkDiskConflict() {
+    const f = currentFile;
+    let res; try { res = await lite.fs.readFile(f); } catch (_) { res = null; }
+    if (f !== currentFile || !dirty) return;            // за время чтения сменили файл или успели сохраниться
+    if (res && !res.error && diskBase != null && normEol(res.content) === diskBase) return;
+    showReloadBar();
+  }
   // Returns true when the file is safely on disk (or there was nothing to save), false on a
   // failed write. Callers that gate a destructive next step (guardDirty) must NOT proceed on
   // false, or the unsaved edits are lost.
@@ -945,15 +986,19 @@ export function initFiles(host) {
     for (let pass = 0; pass < 3; pass++) {             // печатать без пауз три записи подряд человек не может
       const text = editor.state.doc.toString();
       let res;
-      try { res = await lite.fs.writeFile(file, text); }
+      try { res = await lite.fs.writeFile(file, toDiskText(text)); }
       catch (e) { res = { error: String(e) }; }
       if (!res || !res.ok) {
         toast(`Не удалось сохранить: ${(res && res.error) || 'ошибка записи'}`, { kind: 'err', ttl: 6000 });
         return false;
       }
       if (currentFile !== file) return true;           // файл сменили под нами — дальше решает его собственный путь
+      diskBase = text;
       if (editor.state.doc.toString() === text) {
         markDirty(false); hideReloadBar(); updateGitGutter(file); refreshBlameIfOn();
+        // HTML в сплите грузится С ДИСКА, а его перерисовка по вводу (300 мс) срабатывает раньше автосейва
+        // (400 мс) — без этого «Рядом» всегда показывал состояние до последней правки
+        if (splitMode && previewKind(file) === 'html') refreshSplitPreview();
         return true;
       }
     }
@@ -1071,9 +1116,10 @@ export function initFiles(host) {
   }
 
   // ---------------------------------------------------------------- git status (tree decorations)
-  async function loadGitStatus(proj) {
+  async function loadGitStatus(proj, seq) {
     if (!proj) { gitFiles = {}; return; }
     const res = await lite.git.status(proj.path);
+    if (seq !== treeSeq) return;                        // обогнала более свежая перерисовка дерева — её статус новее
     gitFiles = res && res.files ? res.files : {};
     // освежить гаттер после внешних git-операций (коммит/checkout → tree refresh); только при чистом буфере —
     // иначе перерисовали бы метки по диск-vs-HEAD, не совпадающие с несохранёнными правками в редакторе
@@ -1110,7 +1156,18 @@ export function initFiles(host) {
   // Re-render the tree for the active project; viewer starts empty (no auto-reopen).
   // Switching/opening a project always gives a clean viewer — open files from the tree.
   // Нет выбранного проекта (открыта категория) → показываем заглушку вивера.
-  async function refreshViewerForActive() {
+  // Идущую отрисовку помним: открытие файла ждёт её конца (openFileGuarded). Окно помечается открытым
+  // синхронно, а при старте окна main флашит очередь openInViewer сразу после viewerReady — файл
+  // успевал загрузиться раньше, чем отрисовка доходила до clearViewer(), и тут же стирался.
+  let viewerRenderP = null;
+  function refreshViewerForActive() {
+    const run = renderViewerForActive();
+    viewerRenderP = run;
+    const done = () => { if (viewerRenderP === run) viewerRenderP = null; };
+    run.then(done, done);
+    return run;
+  }
+  async function renderViewerForActive() {
     const p = activeProject();
     if (!p) { showViewerPlaceholder(); if (git) git.renderPanel(null); return; }
     await renderTree(p);
@@ -1121,6 +1178,7 @@ export function initFiles(host) {
   // Заглушка вивера, когда нет выбранного проекта (открыта категория/чат OpenRouter).
   function showViewerPlaceholder() {
     $('#tree-title').textContent = 'ДЕРЕВО';
+    ++treeSeq;                                          // идущая перерисовка прошлого проекта не должна лечь поверх заглушки
     const root = $('#tree');
     root.innerHTML = '';
     root.appendChild(el('div', 'tree-empty', 'Нужно выбрать проект для отображения файлов'));
@@ -1143,8 +1201,9 @@ export function initFiles(host) {
   // Канонический путь «открыть файл»: показать вивер (первичный рендер) + защитить несохранённые
   // правки. Все входы (дерево, табы, Ctrl+P, поиск, закладки, editorBus, git-меню) идут через него.
   function openFileGuarded(filePath, line) {
-    if (!viewerOpen) setViewerOpen(true);
-    guardDirty(() => openFile(filePath, line));
+    const render = viewerOpen ? viewerRenderP : setViewerOpen(true);
+    const go = () => guardDirty(() => openFile(filePath, line));
+    if (render) render.then(go, go); else go();   // сначала дать отрисовке дойти до clearViewer()
   }
 
   // Don't lose unsaved viewer edits when switching away — ask first.
@@ -1161,12 +1220,20 @@ export function initFiles(host) {
   }
 
   // ---------------------------------------------------------------- file tree
+  let treeSeq = 0;                   // токен перерисовки дерева: вотчер, ⟳, git и смена проекта идут внахлёст
   async function renderTree(proj) {
+    const seq = ++treeSeq;
     $('#tree-title').textContent = proj.name.toUpperCase();
-    await loadGitStatus(proj);
-    const root = $('#tree');
-    root.innerHTML = '';
-    await buildDir(proj.path, root, 0);
+    await loadGitStatus(proj, seq);
+    if (seq !== treeSeq) return;
+    // Строим в отвязанный фрагмент и подменяем разом. Раньше #tree чистился и наполнялся по ходу
+    // await'ов readDir: две перерисовки внахлёст (пачки вотчера идут чаще, чем проходят git status +
+    // readDir раскрытых папок) дописывали строки в один контейнер — дерево двоилось, а после смены
+    // проекта в нём оставались строки прошлого.
+    const frag = document.createDocumentFragment();
+    await buildDir(proj.path, frag, 0);
+    if (seq !== treeSeq) return;
+    $('#tree').replaceChildren(frag);
   }
   // ---- drag-and-drop в дереве: перемещение узлов (move) + втягивание файлов извне (copy из ОС)
   function setDropHL(row) { if (dropHLRow && dropHLRow !== row) dropHLRow.classList.remove('drag-over'); dropHLRow = row; if (row) row.classList.add('drag-over'); }
@@ -1364,21 +1431,30 @@ export function initFiles(host) {
   }
 
   // ---- сборка live-обновления диска для активного проекта (агент тронул файл)
+  // Пачки fs:changed копим за окно дебаунса: раньше таймер брал `files` только ПОСЛЕДНЕГО вызова, и если
+  // две пачки приходили внутри 120 мс (окно было занято рендером/git status), первая терялась — открытый
+  // файл из неё не перечитывался, а следующий автосейв записывал старый текст поверх правки агента.
+  let fsPending = new Set();
   function onFsChange(p, files) {
     fileListCache = null;                               // дерево менялось на диске → пересобрать листинг для Ctrl+P
+    for (const f of files || []) fsPending.add(f);
     clearTimeout(fsTimer);
     fsTimer = setTimeout(() => {
+      const changed = fsPending; fsPending = new Set();
+      // за время дебаунса сменили проект — его дерево уже перерисовал refreshViewerForActive; рендер
+      // прошлого проекта поверх нового показал бы чужое дерево
+      const cur = activeProject(); if (!cur || cur.path !== p.path) return;
       if (viewerOpen) renderTree(p);
       if (agentMode) updateReviewBadge();               // C18: агент тронул диск → освежить счётчик изменённых файлов
       // живой git-дифф в центре: показанный файл изменился на диске (агент правит) → перечитать дифф
-      if (gitDiffFile && diffMode && gitDiffProj && files.includes(gitDiffFile)) {
+      if (gitDiffFile && diffMode && gitDiffProj && changed.has(gitDiffFile)) {
         const f = gitDiffFile;
         fetchWorkingDiff(gitDiffProj, f).then((d) => { if (gitDiffFile === f && diffMode) showDiff(d.unified, d.pair, f); });
       }
-      if (currentFile && files.includes(currentFile)) {
+      if (currentFile && changed.has(currentFile)) {
         if (diffMode) reloadCurrentDiff();              // в режиме диффа — обновляем дифф (редактор не трогаем)
         else if (!dirty) reloadCurrentFile();           // нет правок — молча перечитываем (вивер всегда = диск)
-        else showReloadBar();                           // есть несохранённые правки — постоянная плашка-конфликт
+        else checkDiskConflict();                       // есть несохранённые правки — плашка-конфликт, если это не эхо своей записи
       }
     }, 120);
   }
@@ -1928,7 +2004,7 @@ export function initFiles(host) {
     await ensureLanguage(file);      // прогреть язык до модалки: MergeView версий строится без reconfigure
     let cur = '';
     try { const rf = await lite.fs.readFile(file); if (rf && !rf.error) cur = rf.content; } catch (_) {}
-    let mv = null;
+    let mv = null, closed = false, showSeq = 0;
     const destroyMv = () => { if (mv) { try { mv.destroy(); } catch (_) {} mv = null; } };
     const { m, close } = makeModal(`
       <div class="hist-head"><span class="hist-title"></span><span class="hist-count"></span></div>
@@ -1942,7 +2018,7 @@ export function initFiles(host) {
       <div class="modal-actions">
         <button class="btn" id="hist-close">Закрыть</button>
         <button class="btn primary" id="hist-restore" disabled>Откатить к этой версии</button>
-      </div>`, destroyMv);
+      </div>`, () => { closed = true; destroyMv(); });
     m.classList.add('modal-hist');
     m.querySelector('.hist-title').textContent = 'Локальная история — ' + baseName(file);
     m.querySelector('.hist-count').textContent = shortCountRu(items.length, 'версия', 'версии', 'версий');
@@ -1953,15 +2029,30 @@ export function initFiles(host) {
     let selContent = null;
     restoreBtn.onclick = async () => {
       if (selContent == null) return;
-      const w = await lite.fs.writeFile(file, selContent); // текущее состояние снапшотится само (tag save)
-      if (w && w.error) { toast(w.error, { kind: 'err', ttl: 7000 }); return; }
+      const content = selContent;
+      restoreBtn.disabled = true;                          // повторный клик во время записи не откатывает дважды
+      // Текущее состояние — в историю МИМО троттла: снимок внутри fs:writeFile троттлится (раз в 45 с),
+      // и откат вскоре после автосейва затирал текущую версию безвозвратно. Если файл открыт, гасим
+      // автосейв (его запись легла бы поверх отката) и снимаем ещё и несохранённый текст редактора.
+      if (currentFile === file) { cancelAutosave(); while (savingP) { try { await savingP; } catch (_) {} } }
+      try {
+        await lite.fs.histSnapshot(file);
+        if (currentFile === file && dirty) await lite.fs.histSnapshot(file, toDiskText(editor.state.doc.toString()));
+      } catch (_) {}                                       // история best-effort: сбой снимка откат не блокирует
+      const w = await lite.fs.writeFile(file, content);
+      if (w && w.error) { toast(w.error, { kind: 'err', ttl: 7000 }); restoreBtn.disabled = false; return; }
       close();
       toast('Файл откатан к выбранной версии');
       if (currentFile === file) reloadCurrentFile();       // вотчер тоже поймает, но форсим сразу
     };
     const show = async (it, row) => {
+      const my = ++showSeq;
       listEl.querySelectorAll('.hist-item').forEach((x) => x.classList.toggle('active', x === row));
+      selContent = null; restoreBtn.disabled = true;       // пока версия не прочитана, откатывать нечего
       const rr = await lite.fs.histRead(file, it.name);
+      // Закрыли модалку или выбрали другую версию, пока читали: MergeView в отвязанный узел уже некому
+      // уничтожить (утечка), а поздний ответ подменил бы выбранную версию — «Откатить» взял бы не ту.
+      if (closed || my !== showSeq) return;
       if (!rr || rr.error) { toast((rr && rr.error) || 'не удалось прочитать версию', { kind: 'err' }); return; }
       selContent = rr.content;
       restoreBtn.disabled = false;
