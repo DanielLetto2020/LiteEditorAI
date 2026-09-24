@@ -4766,7 +4766,7 @@ ipcMain.handle('hist:read', async (_e, { file, name } = {}) => {
 // tree and the open file refresh live while an agent edits things in the terminal.
 const isIgnoredPath = (rel) => rel.split(/[\\/]/).some((seg) => IGNORE_DIRS.has(seg));
 // Сообщить окнам (редактор + вивер), что слежение за деревом отвалилось → ручной ⟳ (идея 11).
-// Окно редактора fs:changed/fs:watchEnded не слушает (дерево и вивер живут в окне «Проект») — ему не шлём.
+// Окно редактора fs:watchEnded не слушает (дерево и вивер живут в окне «Проект») — ему не шлём.
 function notifyWatchEnded(root) {
   const fw = filesWindow(); if (fw) sendTo(fw, 'fs:watchEnded', { root });
   const dw = docWindow(); if (dw) sendTo(dw, 'fs:watchEnded', { root });
@@ -4814,6 +4814,7 @@ ipcMain.on('fs:watch', (_e, root) => {
       const files = [...rec.pending]; rec.pending.clear();
       const fw = filesWindow(); if (fw) sendTo(fw, 'fs:changed', { root, files }); // окно вивера обновляет дерево/файл
       const dw = docWindow(); if (dw) sendTo(dw, 'fs:changed', { root, files }); // «Обработка текста»: сайдбар-дерево
+      sendTo(mainWindow, 'fs:changed', { root, files }); // редактор: пересчитать чип git под терминалом (renderer.js, lite.fs.onChange)
       // локальная история: внешняя правка (агент/git). Большая пачка = массовая операция — шум, пропускаем.
       if (files.length <= HIST_BATCH_CAP) for (const f of files) histSnapshotFromDisk(f, 'ext');
     }, 180);
