@@ -4128,7 +4128,17 @@ ipcMain.handle('keepass:pick', async (e) => {
   saveState({ lastOpenDir: path.dirname(file) });
   return { ok: true, path: file, name: path.basename(file) };
 });
-ipcMain.handle('keepass:open', async (_e, { path: file, password } = {}) => {
+// Окно, открывшее базу, умерло мимо keepass:lock — окно формы закрыли с открытым пикером «Из сейфа»
+// (его промис уже не дорезолвится до lock), рендерер «Сейфа» упал — расшифрованная база жила бы в
+// памяти main до выхода. Слушатель один на базу: новое открытие снимает прежний.
+let kpOwnerUnbind = null;
+function kpBindOwner(wc, db) {
+  if (kpOwnerUnbind) kpOwnerUnbind();
+  const onGone = () => { kpOwnerUnbind = null; if (kpDb === db) { kpDb = null; kpDbFile = null; kpDbName = null; kpEntryById.clear(); } };
+  try { wc.once('destroyed', onGone); } catch (_) {}
+  kpOwnerUnbind = () => { kpOwnerUnbind = null; try { wc.removeListener('destroyed', onGone); } catch (_) {} };
+}
+ipcMain.handle('keepass:open', async (e, { path: file, password } = {}) => {
   try {
     if (!file || !fs.existsSync(file)) return { ok: false, error: 'Файл не найден' };
     const kw = ensureKdbx();
@@ -4137,6 +4147,7 @@ ipcMain.handle('keepass:open', async (_e, { path: file, password } = {}) => {
     const cred = new kw.Credentials(kw.ProtectedValue.fromString(String(password || '')));
     const db = await kw.Kdbx.load(ab, cred);   // мастер-пароль использован только здесь, не сохраняем
     kpDb = db; kpDbFile = file; kpDbName = path.basename(file);
+    kpBindOwner(e.sender, db);
     return { ok: true, name: kpDbName, entries: kpListEntries() };
   } catch (err) {
     const code = err && err.code;
@@ -4158,7 +4169,7 @@ ipcMain.handle('keepass:copy', (_e, { id, field } = {}) => {
 });
 // Блокировка стирает базу, но НЕ отменяет авто-очистку буфера: «скопировал пароль → закрыл сейф →
 // вставил» — обычный сценарий, а отменённый таймер оставлял секрет в буфере навсегда вопреки «очистится через 20 с».
-ipcMain.on('keepass:lock', () => { kpDb = null; kpDbFile = null; kpDbName = null; kpEntryById.clear(); });
+ipcMain.on('keepass:lock', () => { if (kpOwnerUnbind) kpOwnerUnbind(); kpDb = null; kpDbFile = null; kpDbName = null; kpEntryById.clear(); });
 // Выход раньше таймера — чистим сразу: на Windows/macOS буфер переживает процесс редактора.
 app.on('will-quit', () => { if (kpClipClear) { clearTimeout(kpClipTimer); kpClipClear(); } });
 // --- Шов «из сейфа» для форм подключений (db/rmq/kafka/rh): пикер записей в чужом окне.
