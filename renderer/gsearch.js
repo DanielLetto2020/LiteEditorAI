@@ -379,7 +379,6 @@ export function openGlobalSearch(host, initial = {}) {
       if (total >= TERM_CAP) break;
       const hits = host.scanTermBuffer(rec.term, query);
       if (!hits.length) continue;
-      const proj = projs().find((p) => p.id === rec.projId) || { id: rec.projId, name: '—', path: '' };
       const g = groupFor(rec.projId);
       const f = fileFor(g, rec.name || 'терминал');
       for (const h of hits) {
@@ -395,7 +394,6 @@ export function openGlobalSearch(host, initial = {}) {
         f.body.appendChild(row);
       }
       g.cntEl.textContent = String(g.n); f.cntEl.textContent = String(f.n);
-      void proj;
     }
     setStatus(total ? `Найдено ${total} строк в ${totalFiles} сессиях (${groups.size} проектов)` : 'Ничего не найдено в открытых сессиях');
   }
