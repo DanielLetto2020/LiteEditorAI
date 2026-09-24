@@ -1973,7 +1973,7 @@ export function initFiles(host) {
     await ensureLanguage(file);      // прогреть язык до модалки: MergeView версий строится без reconfigure
     let cur = '';
     try { const rf = await lite.fs.readFile(file); if (rf && !rf.error) cur = rf.content; } catch (_) {}
-    let mv = null;
+    let mv = null, closed = false, showSeq = 0;
     const destroyMv = () => { if (mv) { try { mv.destroy(); } catch (_) {} mv = null; } };
     const { m, close } = makeModal(`
       <div class="hist-head"><span class="hist-title"></span><span class="hist-count"></span></div>
@@ -1987,7 +1987,7 @@ export function initFiles(host) {
       <div class="modal-actions">
         <button class="btn" id="hist-close">Закрыть</button>
         <button class="btn primary" id="hist-restore" disabled>Откатить к этой версии</button>
-      </div>`, destroyMv);
+      </div>`, () => { closed = true; destroyMv(); });
     m.classList.add('modal-hist');
     m.querySelector('.hist-title').textContent = 'Локальная история — ' + baseName(file);
     m.querySelector('.hist-count').textContent = shortCountRu(items.length, 'версия', 'версии', 'версий');
@@ -2015,8 +2015,13 @@ export function initFiles(host) {
       if (currentFile === file) reloadCurrentFile();       // вотчер тоже поймает, но форсим сразу
     };
     const show = async (it, row) => {
+      const my = ++showSeq;
       listEl.querySelectorAll('.hist-item').forEach((x) => x.classList.toggle('active', x === row));
+      selContent = null; restoreBtn.disabled = true;       // пока версия не прочитана, откатывать нечего
       const rr = await lite.fs.histRead(file, it.name);
+      // Закрыли модалку или выбрали другую версию, пока читали: MergeView в отвязанный узел уже некому
+      // уничтожить (утечка), а поздний ответ подменил бы выбранную версию — «Откатить» взял бы не ту.
+      if (closed || my !== showSeq) return;
       if (!rr || rr.error) { toast((rr && rr.error) || 'не удалось прочитать версию', { kind: 'err' }); return; }
       selContent = rr.content;
       restoreBtn.disabled = false;
