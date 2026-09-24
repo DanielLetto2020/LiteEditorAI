@@ -431,7 +431,10 @@ export function initStorage(host) {
     saveUi();
     for (const k of [...expanded]) if (k.startsWith(id + ' ')) expanded.delete(k);
     if (activeId === id) {
-      activeId = null; activeConn = null; viewer = null;
+      // curBucket тоже сбрасываем: иначе завершение фоновой загрузки (onDone) «обновляло» папку уже
+      // закрытого подключения — st:ls с id=null (WARN в логе), а пока список подключений ещё не
+      // перерисован, toolbarRow падал на activeConn=null
+      activeId = null; activeConn = null; viewer = null; curBucket = null; curPrefix = '';
       ++listSeq; ++treeSeq;
       connListMode = true;
     }
