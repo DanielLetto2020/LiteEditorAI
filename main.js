@@ -535,6 +535,11 @@ function agendaReminderTick() {
     }
   }
 }
+// Показанные уведомления держим ссылкой до клика: объект Notification, собранный GC, отвязывает
+// нативное уведомление от JS (деструктор снимает delegate), и клик по висящему в шторке уведомлению
+// молча терялся — «Календарь» не открывался. По 'close' не отпускаем: на Windows он приходит по
+// таймауту, а уведомление остаётся в Центре уведомлений и кликабельно. Держим последние 20.
+const agendaNotifs = new Set();
 function agendaShowNotification(r) {
   try {
     if (Notification.isSupported && !Notification.isSupported()) return;
@@ -545,7 +550,11 @@ function agendaShowNotification(r) {
       ? d.toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' })
       : d.toLocaleString('ru-RU', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
     const n = new Notification({ title: '🔔 ' + title, body, silent: false });
-    n.on('click', () => { try { focusNotesCalendar(); } catch (_) {} });
+    const drop = () => { agendaNotifs.delete(n); };
+    n.on('click', () => { drop(); try { focusNotesCalendar(); } catch (_) {} });
+    n.on('failed', drop);
+    agendaNotifs.add(n);
+    if (agendaNotifs.size > 20) agendaNotifs.delete(agendaNotifs.values().next().value);
     n.show();
   } catch (_) {}
 }
