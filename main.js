@@ -6265,7 +6265,17 @@ ipcMain.handle('git:conflicts', async (_e, root) => {
 // Слить ветку в текущую. Конфликт → ok:false (UI откроет модалку разрешения по git:conflicts).
 ipcMain.handle('git:merge', async (_e, { root, branch }) =>
   BAD_REF(branch) ? { ok: false, error: 'Недопустимое имя ветки' } : gitRun(root, ['merge', '--no-edit', branch]));
-ipcMain.handle('git:mergeAbort', async (_e, root) => gitRun(root, ['merge', '--abort']));
+// Модалка конфликта одна на merge / cherry-pick / revert (cherryPickCommit/revertCommitUi ведут в неё
+// же), а `merge --abort` при cherry-pick/revert падал «There is no merge to abort» — прервать операцию
+// из UI было нельзя. Прерываем ту, что реально идёт; без MERGE_HEAD и прочих — прежняя ошибка merge.
+ipcMain.handle('git:mergeAbort', async (_e, root) => {
+  const has = async (ref) => (await git(root, ['rev-parse', '-q', '--verify', ref])) != null;
+  if (!(await has('MERGE_HEAD'))) {
+    if (await has('CHERRY_PICK_HEAD')) return gitRun(root, ['cherry-pick', '--abort']);
+    if (await has('REVERT_HEAD')) return gitRun(root, ['revert', '--abort']);
+  }
+  return gitRun(root, ['merge', '--abort']);
+});
 ipcMain.handle('git:push', async (_e, root) => gitPush(root));
 ipcMain.handle('git:pull', async (_e, root) => gitRun(root, ['pull', '--ff-only']));
 // Stash including untracked (-u) so a quick "спрятать всё" doesn't leave new files behind.
