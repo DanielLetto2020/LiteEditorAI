@@ -1111,7 +1111,18 @@ export function initFiles(host) {
   // Re-render the tree for the active project; viewer starts empty (no auto-reopen).
   // Switching/opening a project always gives a clean viewer — open files from the tree.
   // Нет выбранного проекта (открыта категория) → показываем заглушку вивера.
-  async function refreshViewerForActive() {
+  // Идущую отрисовку помним: открытие файла ждёт её конца (openFileGuarded). Окно помечается открытым
+  // синхронно, а при старте окна main флашит очередь openInViewer сразу после viewerReady — файл
+  // успевал загрузиться раньше, чем отрисовка доходила до clearViewer(), и тут же стирался.
+  let viewerRenderP = null;
+  function refreshViewerForActive() {
+    const run = renderViewerForActive();
+    viewerRenderP = run;
+    const done = () => { if (viewerRenderP === run) viewerRenderP = null; };
+    run.then(done, done);
+    return run;
+  }
+  async function renderViewerForActive() {
     const p = activeProject();
     if (!p) { showViewerPlaceholder(); if (git) git.renderPanel(null); return; }
     await renderTree(p);
@@ -1145,8 +1156,9 @@ export function initFiles(host) {
   // Канонический путь «открыть файл»: показать вивер (первичный рендер) + защитить несохранённые
   // правки. Все входы (дерево, табы, Ctrl+P, поиск, закладки, editorBus, git-меню) идут через него.
   function openFileGuarded(filePath, line) {
-    if (!viewerOpen) setViewerOpen(true);
-    guardDirty(() => openFile(filePath, line));
+    const render = viewerOpen ? viewerRenderP : setViewerOpen(true);
+    const go = () => guardDirty(() => openFile(filePath, line));
+    if (render) render.then(go, go); else go();   // сначала дать отрисовке дойти до clearViewer()
   }
 
   // Don't lose unsaved viewer edits when switching away — ask first.
