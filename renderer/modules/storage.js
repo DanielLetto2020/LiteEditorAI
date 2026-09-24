@@ -985,11 +985,15 @@ export function initStorage(host) {
     if (v.truncated) box.appendChild(el('div', 'st-truncnote', `Показаны первые 2 МБ из ${fmtSize(v.size)}.`));
     const edBox = el('div', 'st-editor');
     box.appendChild(edBox);
-    curEditor = createCodeEditor(edBox, {
-      doc: v.content || '',
-      language: languageFor(v.key, () => {}),
-      readOnly: true,
-    });
+    const mkEditor = (language) => createCodeEditor(edBox, { doc: v.content || '', language, readOnly: true });
+    // поддержка языка грузится лениво: при первом открытии файла такого типа languageFor отдаёт []
+    // и подсветки не было вовсе (onLoad был пустым) — пересоздаём вивер, когда язык догрузится,
+    // если открыт всё тот же объект в этом же контейнере (как в «Контексте»)
+    curEditor = mkEditor(languageFor(v.key, (sup) => {
+      if (viewer !== v || !curEditor || !edBox.isConnected) return;
+      destroyEditor();
+      curEditor = mkEditor(sup);
+    }));
   }
 
   // Открыть объект во внешнем вивере редактора (tmp-копия, read-only по смыслу).
