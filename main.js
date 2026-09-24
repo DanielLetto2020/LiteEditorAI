@@ -5955,6 +5955,9 @@ ipcMain.handle('git:status', async (_e, root) => {
   // имена с '"', '\', табом/переводом строки или « -> » git всё равно квотил, а построчный разбор
   // («old -> new») резал их не там — путь не совпадал с файлом на диске.
   const out = await git(root, ['status', '--porcelain', '-z', '--untracked-files=all']);
+  // null — git упал или не уложился (таймаут, вывод > maxBuffer: с -uall это, например, неигнорируемый
+  // node_modules). Раньше это выглядело как «Рабочее дерево чистое»; files:{} оставляем для совместимости.
+  if (out == null) return { repo: true, files: {}, error: 'git status не отработал: слишком много изменённых/новых файлов (нет .gitignore для node_modules/сборки?) или таймаут' };
   const files = {};
   for (const e of parsePorcelainZ(out)) files[path.join(base, e.path)] = e.code || '?';
   return { repo: true, files };

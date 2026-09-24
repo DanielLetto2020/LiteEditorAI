@@ -546,7 +546,13 @@ export function initGit(host) {
       if (host.gitDiff) host.gitDiff(p.path, f, splitPath(f, p.path));
     };
 
-    if (!keys.length) {
+    if (!keys.length && st && st.error) {
+      // git status не отработал — это НЕ «чистое дерево» (коммитить/откатывать вслепую нельзя)
+      const warn = el('div', 'git-conflict-note');
+      warn.appendChild(icon('warning', 15));
+      warn.appendChild(el('span', null, st.error));
+      changes.appendChild(warn);
+    } else if (!keys.length) {
       const clean = el('div', 'git-clean-state');
       clean.appendChild(icon('check', 20));
       clean.appendChild(el('div', 'git-clean-title', 'Рабочее дерево чистое'));
