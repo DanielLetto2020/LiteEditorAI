@@ -2841,7 +2841,8 @@ function newPromptId() { return 'ps_' + Date.now().toString(36) + Math.floor(Mat
 // Вставка промпта в конкретную сессию (sid). Хвостовые переводы строк срезаем — ничего не запускаем.
 function insertPrompt(sid, body) {
   const text = String(body || '').replace(/[\r\n]+$/, '');
-  if (text) lite.pty.write(sid, text);
+  // как pasteInto: в свежем терминале отложенный автоввод («claude») иначе допишется следом за промптом
+  if (text) { cancelPrefill(sid); lite.pty.write(sid, text); }
   const rec = terms.get(sid);
   if (rec && rec.term) { try { rec.term.focus(); } catch (_) {} }
 }
