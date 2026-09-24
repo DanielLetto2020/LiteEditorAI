@@ -132,6 +132,20 @@ for (const d of [undefined, 'postgres', 'mysql', 'sqlite']) {
   rod("SELECT 'pg_terminate_backend(1)' AS s", d, true, 'имя функции в строке');
 }
 
+// --- Число операторов (db:queryRo — ровно один; фильтр WHERE таблицы — одно условие) ---
+const { sqlStatementCount } = require('../lib/sqlro');
+const cnt = (sql, dialect, want, msg) => { assert.strictEqual(sqlStatementCount(sql, dialect), want, msg + ' [' + (dialect || 'все') + '] :: ' + sql); passed++; };
+cnt('SELECT 1', undefined, 1, 'один');
+cnt('SELECT 1;', 'postgres', 1, 'хвостовой «;»');
+cnt('SELECT 1; -- конец', 'mysql', 1, 'комментарий после «;»');
+cnt("SELECT 'a;b' FROM t", undefined, 1, '«;» в строке');
+cnt('SELECT 1; COMMIT; SELECT setval(1)', 'postgres', 3, 'три оператора');
+cnt('SELECT $$a;b$$', 'postgres', 1, 'Postgres: «;» в $$…$$');
+cnt('SELECT $$a;b$$', undefined, 2, 'без СУБД $$…$$ может быть кодом');
+cnt("SELECT '\\''; COMMIT", 'mysql', 2, "MySQL: \\' не прячет второй оператор");
+cnt('SELECT 1 /*!; COMMIT */', 'mysql', 2, 'MySQL: /*! … */ — код');
+cnt('   ', undefined, 0, 'пусто');
+
 // --- Сам сканер ---
 assert.strictEqual(stripSqlLiterals("SELECT 'a--b' FROM t"), "SELECT '' FROM t"); passed++;
 assert.strictEqual(stripSqlLiterals('SELECT 1 -- hvost\nSELECT 2'), 'SELECT 1 \nSELECT 2'); passed++;
