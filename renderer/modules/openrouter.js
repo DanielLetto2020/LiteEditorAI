@@ -28,7 +28,6 @@ export function initOpenRouter(host) {
   const orModelsByKey = new Map(); // apiKey -> [{id,name}] (fetched once, cached for the session)
   const orUsageByKey = new Map();  // apiKey -> {usage,limit,limit_remaining,label} | {loading} | {error}
   const pendingOr = new Map();  // reqId -> { chunk, done, error } stream handlers
-  let orReqSeq = 0;
 
   function saveOrCards() { persist('openrouter', orCards); }
   function activeOrCard() { return orCards.find((c) => c.id === activeCardId) || null; }
@@ -340,7 +339,9 @@ export function initOpenRouter(host) {
     const ctx = sess.messages.slice(-n).map((m) => ({ role: m.role, content: m.content }));
     const wrap = appendChatMsg('assistant', '…', true);
     const bubble = wrap.querySelector('.chat-bubble');
-    const reqId = 'orq' + (++orReqSeq);
+    // Уникален и после перезагрузки окна: счётчик с нуля повторял id стрима, который main ещё ведёт,
+    // и старый поток дописывался в новый ответ, а его 'end' закрывал новый запрос.
+    const reqId = 'orq' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
     st.streaming = true; st.reqId = reqId;
     setChatSending(true);
     let acc = '';

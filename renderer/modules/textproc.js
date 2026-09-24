@@ -260,7 +260,6 @@ export function initTextProc(host) {
   let aiMode = 'chat';
   let chatRole = 'Без роли';
   let chatLog = [];
-  let aiSeq = 0;
   // Скрепка: прикладывать ли документ к сообщению. Раньше документ уходил агенту ВСЕГДА, и
   // спросить «а как правильно пишется?» было нельзя — на любую фразу приходил переписанный текст.
   let attachCtx = settings.tpAttach !== false;
@@ -987,7 +986,10 @@ export function initTextProc(host) {
     const sel = (!agentMode && attachCtx) ? selForChat() : null;
     ta.value = '';
     chatLog.push({ role: 'user', text: instruction });
-    const am = { role: 'agent', text: '', busy: true, reqId: 'tpq' + (++aiSeq), agentMode };
+    // reqId уникален и после перезагрузки окна: счётчик с нуля совпадал с id агента, которого main
+    // ещё ведёт, — tpReqs перезаписывался, старый процесс уже нельзя было остановить, а его вывод и
+    // 'close' попадали в новый ответ.
+    const am = { role: 'agent', text: '', busy: true, reqId: 'tpq' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8), agentMode };
     chatLog.push(am);
     while (chatLog.length > 200) chatLog.shift(); // кап истории: чат не растёт бесконечно
     renderChatLog();
