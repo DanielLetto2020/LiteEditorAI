@@ -35,6 +35,13 @@ const fmtSize = (n) => { n = +n || 0; if (n < 1024) return n + ' Б'; if (n < 10
 const fmtDate = (t) => { if (!t) return '—'; const d = new Date(t); return d.toLocaleDateString('ru-RU', { day: 'numeric', month: 'short', year: 'numeric' }) + ' ' + d.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }); };
 const IMG_EXT = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'ico', 'avif']);
 const extOf = (name) => String(name).split('.').pop().toLowerCase();
+// Имя локального файла/папки для скачивания. Ключ объекта — недоверенная строка (чужой/публичный
+// бакет), правила — как safeRelSegments в lib/safe-name.js: папка «..» (префикс «../») уводила
+// «Скачать папку» в РОДИТЕЛЯ выбранного каталога, а «\» и «:» на Windows — в путь/NTFS-поток.
+const localName = (name, fallback) => {
+  const s = String(name == null ? '' : name).replace(/[\\/:*?"<>|\0]/g, '_').trim();
+  return (!s || s === '.' || s === '..') ? fallback : s;
+};
 
 export function initStorage(host) {
   const { activeProject, createCodeEditor, STORE, persist,
@@ -1110,7 +1117,7 @@ export function initStorage(host) {
     if (!r.ok || !r.dir) return;
     for (const o of objs) {
       const opId = newOpId();
-      const name = o.name || baseName(o.key);
+      const name = localName(o.name || baseName(o.key), 'object');
       transfers.set(opId, { phase: 'download', key: o.key, name, loaded: 0, total: 0, speed: 0, lastLoaded: 0, lastT: Date.now(), status: 'run' });
       lite.storage.download(activeId, curBucket, o.key, r.dir + '/' + name, opId).then((res) => {
         if (!res.ok) { const t = transfers.get(opId); if (t) { t.status = 'err'; t.error = res.error; } paintTransfersBar(); }
@@ -1123,7 +1130,7 @@ export function initStorage(host) {
     if (!r.ok || !r.dir) return;
     const opId = newOpId();
     transfers.set(opId, { phase: 'download', key: d.prefix, name: d.name + '/', loaded: 0, total: 0, speed: 0, lastLoaded: 0, lastT: Date.now(), status: 'run' });
-    lite.storage.downloadPrefix(activeId, curBucket, d.prefix, r.dir + '/' + d.name, opId).then((res) => {
+    lite.storage.downloadPrefix(activeId, curBucket, d.prefix, r.dir + '/' + localName(d.name, 'folder'), opId).then((res) => {
       if (!res.ok) { const t = transfers.get(opId); if (t) { t.status = 'err'; t.error = res.error; } paintTransfersBar(); }
     });
     paintTransfersBar();
