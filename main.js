@@ -6718,14 +6718,21 @@ ipcMain.handle('containers:list', async (_e, { engine, light } = {}) => {
     // а коннект по SSH идёт секундами — без этой защёлки каждый вызов, пришедший за время
     // переподключения, поднимал бы свой туннель. Запись хранит только последний, остальные
     // оставались бы висеть навсегда: живое SSH-соединение и занятый локальный порт.
+    const rc = containersRemote;
     if (!containersTunnelFix) {
-      const rc = containersRemote;
       containersTunnelFix = rhApi.sockTunnel(rc.rhId, rc.sockPath, 'containers: ' + rc.name)
-        .then((t) => { if (t.ok && containersRemote === rc) { rc.tunId = t.tunId; rc.port = t.port; } return t; })
+        .then((t) => {
+          if (t.ok && containersRemote === rc) { rc.tunId = t.tunId; rc.port = t.port; }
+          // Пока SSH переподключался, хост сменили (другой / локально): свежий туннель уже ничей —
+          // без закрытия он жил бы до выхода из редактора (живое SSH-соединение + занятый порт).
+          else if (t.ok) { try { rhApi.closeTunnel(t.tunId); } catch (_) {} }
+          return t;
+        })
         .finally(() => { containersTunnelFix = null; });
     }
     const t = await containersTunnelFix;
-    if (!t.ok) return { containers: { error: `SSH-туннель к «${containersRemote.name}» оборвался и не восстановился: ` + (t.error || '') } };
+    // rc, а не containersRemote: за время await контекст мог обнулиться (возврат к локальным) — TypeError
+    if (!t.ok) return { containers: { error: `SSH-туннель к «${rc.name}» оборвался и не восстановился: ` + (t.error || '') } };
   }
   // Light path = the live poll: only the fast, frequently-changing data (containers + pods). Skips the heavy
   // `system df` (storage scan, ~1s) and images/volumes so a 3s poll doesn't churn the disk. The renderer
