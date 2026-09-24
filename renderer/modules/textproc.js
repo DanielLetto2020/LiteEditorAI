@@ -324,14 +324,6 @@ export function initTextProc(host) {
       container._thumbObs.observe(container);
     }
   }
-  function loadDocument(html) {
-    mode = 'wysiwyg';
-    $('#doc-editor-wysiwyg').innerHTML = DOMPurify.sanitize(html, SANITIZE);
-    $('#doc-editor-md').textContent = '';
-    dirty = false;
-    updateModeUI();
-  }
-
   // ---- UI Setup ----
   let uiWired = false; // повторный setOpen не должен дублировать addEventListener (wheel-зум, input и т.д.)
   function setupUI() {
@@ -725,17 +717,7 @@ export function initTextProc(host) {
     const res = await lite.tp.openFile();
     if (!res || res.canceled) return;
     if (!res.ok) { toast(res.error || 'Не удалось открыть файл', { kind: 'err' }); return; }
-    
-    // Check if openProjectFile exists (we will inject it shortly), else fallback
-    if (typeof openProjectFile === 'function') {
-      openProjectFile(res.file);
-    } else {
-      currentFile = res.file; currentName = res.name;
-      const isHtml = /\.html?$/i.test(res.name);
-      loadDocument(isHtml ? res.content : mdToHtml(res.content));
-      updateStatus('Открыт');
-      toast('Файл открыт: ' + res.name);
-    }
+    openProjectFile(res.file);
   }
   async function saveFile() {
     if (!currentFile) return saveFileAs();
@@ -1226,11 +1208,7 @@ export function initTextProc(host) {
             return;
           }
           await loadRoles();
-          if (typeof openProjectFile === 'function') {
-            openProjectFile(`${activeProj.path}/Roles/${newName}.md`);
-          } else {
-            toast('Роль создана, откройте её слева', { kind: 'info' });
-          }
+          openProjectFile(`${activeProj.path}/Roles/${newName}.md`);
         } catch(e) { 
           console.error(e);
           toast('Системная ошибка: ' + e.message, { kind: 'err' });
@@ -1625,7 +1603,7 @@ export function initTextProc(host) {
     mode = tab.mode;
     dirty = tab.dirty;
     
-    // Load content without resetting mode (sanitize при каждой инъекции — как в setMode/loadDocument)
+    // Load content without resetting mode (sanitize при каждой инъекции — как в setMode)
     $('#doc-editor-wysiwyg').innerHTML = DOMPurify.sanitize(tab.html, SANITIZE);
     $('#doc-editor-md').textContent = tab.md;
     updateModeUI();
