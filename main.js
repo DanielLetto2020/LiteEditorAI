@@ -6060,13 +6060,16 @@ ipcMain.handle('seo:links', async (_e, { urls, base }) => {
   return seoCheckLinks(Array.isArray(urls) ? urls : [], b);
 });
 
-// Поиск локальных dev-серверов: пробуем открыть TCP на типовых портах 127.0.0.1.
+// Поиск локальных dev-серверов: пробуем открыть TCP на типовых портах 127.0.0.1, затем ::1.
 ipcMain.handle('seo:devServers', async () => {
-  const probe = (port) => new Promise((resolve) => {
-    const s = net.connect({ host: '127.0.0.1', port, timeout: 350 }, () => { s.destroy(); resolve(port); });
-    s.on('timeout', () => { s.destroy(); resolve(null); });
-    s.on('error', () => resolve(null));
+  const tryHost = (host, port) => new Promise((resolve) => {
+    const s = net.connect({ host, port, timeout: 350 }, () => { s.destroy(); resolve(true); });
+    s.on('timeout', () => { s.destroy(); resolve(false); });
+    s.on('error', () => resolve(false));
   });
+  // Vite/Astro/Next на Node ≥ 17 слушают «localhost» по первому адресу из резолвера — на macOS и части
+  // Linux это только ::1, и проба одного 127.0.0.1 их не находила. Без IPv6 ::1 отказывает сразу.
+  const probe = async (port) => ((await tryHost('127.0.0.1', port)) || (await tryHost('::1', port))) ? port : null;
   const open = (await Promise.all(SEO_DEV_PORTS.map(probe))).filter(Boolean);
   return { ports: open };
 });
