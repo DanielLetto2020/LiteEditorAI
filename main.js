@@ -6488,12 +6488,13 @@ function cRemoteCtx(cli, baseEnv) {
   return { cli: containersRemote.cli, env };
 }
 function containerRun(cli, args, opts = {}) {
-  // opts.env — явное окружение (проба свежего туннеля ДО фиксации containersRemote); opts.local — форс-локальный
+  // opts.env — явное окружение (проба свежего туннеля ДО фиксации containersRemote); opts.local — форс-локальный;
+  // opts.raw — stdout без trim (содержимое файла для вивера: отступ первой строки и финальный перевод строки — часть файла)
   const ctx = opts.env ? { cli, env: opts.env } : (opts.local ? { cli } : cRemoteCtx(cli));
   return new Promise((resolve) => {
     execFile(ctx.cli, args, { timeout: opts.timeout || 15000, maxBuffer: 24 * 1024 * 1024, windowsHide: true, env: ctx.env },
       (err, stdout, stderr) => resolve({
-        ok: !err, out: (stdout || '').trim(),
+        ok: !err, out: opts.raw ? (stdout || '') : (stdout || '').trim(),
         error: err ? ((stderr || '').trim() || String(err.message || err)) : '',
       }));
   });
@@ -6917,7 +6918,7 @@ ipcMain.handle('containers:fsOpenInViewer', async (_e, { engine, id, path: p } =
   if (engine !== 'docker' && engine !== 'podman') return { ok: false, error: 'bad engine' };
   if (cBadId(id) || !p) return { ok: false, error: 'no id/path' };
   const file = '/' + String(p).replace(/^\/+/, '');   // абсолютный: «-…» не уйдёт в cat флагом
-  const r = await containerRun(engine, ['exec', id, 'cat', file], { timeout: 15000 });
+  const r = await containerRun(engine, ['exec', id, 'cat', file], { timeout: 15000, raw: true });
   // ls -p помечает «/» только настоящие каталоги: симлинк на каталог (/bin, /lib в современных образах)
   // приходит как файл. Сообщаем об этом рендереру — он войдёт в каталог вместо ошибки.
   if (!r.ok && /is a directory/i.test(r.error || '')) return { ok: false, dir: true, error: r.error };
