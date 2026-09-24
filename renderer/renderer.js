@@ -4141,9 +4141,18 @@ function init() {
     // иначе они остались бы видны и просвечивали сквозь прозрачный фон активного
     for (const pid of [...adoptPtys.keys()]) {
       const p = projects.find((x) => x.id === pid);
-      if (p) ensureProjectTabs(p);
+      if (!p) continue;
+      const t = tabsByProj.get(pid);
+      if (!t) { ensureProjectTabs(p); continue; }
+      // Гонка: проект активировали (клик по карточке, Ctrl+1…) раньше ответа adoptable — его вкладки уже
+      // созданы свежими, и ensureProjectTabs живые терминалы не заберёт: main погасил бы их через
+      // ORPHAN_TTL вместе с работающим агентом. Садим их дополнительными вкладками.
+      const ids = adoptPtys.get(pid); adoptPtys.delete(pid);
+      for (const id of ids) createSession(p, tt('Терминал {0}', t.sessions.length + 1), false, id);
+      saveProjTabs();
     }
-    if (first) setActive(first);
+    // Проект уже выбран руками (та же гонка) — не перескакивать; showActiveTerminal спрячет лишние вкладки.
+    if (first && !activeId) setActive(first);
     else showActiveTerminal();
   });
 
