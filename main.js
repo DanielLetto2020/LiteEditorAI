@@ -2138,7 +2138,11 @@ function ctxbkPush(file, kind) {
   try {
     fs.mkdirSync(CTXBK_DIR, { recursive: true });
     const id = 'bk' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5);
-    fs.writeFileSync(path.join(CTXBK_DIR, id + '.bak'), text);
+    // Права исходника переносим на копию: в ~/.claude есть файлы 0600 с секретами (.credentials.json,
+    // settings.json с токенами MCP/env), и копия по umask (0644) делала их читаемыми всем.
+    // 0o600 — владелец копию в любом случае читает (иначе восстановление с «копия пропала»).
+    let mode; try { mode = (fs.statSync(file).mode & 0o777) | 0o600; } catch (_) {}
+    fs.writeFileSync(path.join(CTXBK_DIR, id + '.bak'), text, mode == null ? undefined : { mode });
     const d = ctxbkLoad();
     d.list.push({ id, file, kind: kind || '', ts: Date.now(), chars: text.length });
     // ротация: у каждого пути остаются CTXBK_KEEP свежих копий
