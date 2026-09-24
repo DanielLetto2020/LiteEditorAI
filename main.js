@@ -5604,8 +5604,12 @@ async function seoFetchChain(start) {
     const r = await seoRequestOnce(u, 'GET');
     if (!r.ok) return { ...r, finalUrl: u.href, redirects };
     const loc = r.headers && r.headers.location;
-    if (r.status >= 300 && r.status < 400 && loc && i < SEO_MAX_REDIRECTS) {
+    if (r.status >= 300 && r.status < 400 && loc) {
+      // Лимит исчерпан (кольцо редиректов) → ошибка ниже; раньше последний 3xx уходил в отчёт как «ok» со
+      // SEO-разбором тела редиректа, а строка «слишком много редиректов» была недостижима.
+      if (i >= SEO_MAX_REDIRECTS) break;
       let next; try { next = new URL(loc, u); } catch { return { ...r, finalUrl: u.href, redirects }; }
+      if (!/^https?:$/.test(next.protocol)) return { ok: false, error: 'редирект на неподдерживаемый адрес: ' + next.href.slice(0, 200), finalUrl: u.href, redirects };
       redirects.push({ from: u.href, status: r.status, to: next.href });
       u = next; continue;
     }
