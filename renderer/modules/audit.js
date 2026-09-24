@@ -57,7 +57,6 @@ export function initAudit(host) {
   let typeFilter = null;              // null | категория — фильтр вкладки «Типы» (клик по категории в «Обзоре»)
   let drillExt = null;                // null | расширение — раскрытый список файлов одного типа
   const cache = new Map();            // projId → результат скана
-  let scanSeq = 0;                    // защита от гонок async-скана
 
   function curProj() { return activeProject(); }
 
@@ -66,15 +65,18 @@ export function initAudit(host) {
     const p = curProj();
     if (!p) return;
     if (!force && cache.has(p.id)) { renderBody(); return; }
-    const seq = ++scanSeq;
-    cache.set(p.id, { loading: true });
+    // Гонки — по заглушке СВОЕГО проекта, а не по глобальному счётчику: раньше скан проекта A,
+    // обогнанный сменой проекта на B, выбрасывал результат, а в кэше A навсегда оставалась
+    // { loading } — при возврате на A вечное «Сканирую проект…» (авто-скан видел запись в кэше).
+    const pending = { loading: true };
+    cache.set(p.id, pending);
     renderBody();
     let res;
     try { res = await lite.audit.scan(p.path, { source }); }
     catch (e) { res = { error: String(e && e.message || e) }; }
-    if (seq !== scanSeq) return;                 // более новый скан уже идёт
+    if (cache.get(p.id) !== pending) return;     // этот проект уже пересканируют (Сканировать / смена источника)
     cache.set(p.id, res || { error: 'Пустой ответ' });
-    if (auditOpen) renderBody();
+    if (auditOpen) renderBody();                 // renderBody рисует ТЕКУЩИЙ проект — чужой результат просто ляжет в кэш
   }
 
   // ---------------- рендер ----------------
