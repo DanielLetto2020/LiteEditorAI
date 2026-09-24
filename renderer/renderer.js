@@ -3591,9 +3591,11 @@ function showPalette() {
     sel = 0; render();
   };
   input.addEventListener('input', filter);
+  // список ограничен по высоте (.pal-list) — выбранная стрелками строка должна оставаться в виду
+  const reveal = () => { const r = list.children[sel]; if (r) r.scrollIntoView({ block: 'nearest' }); };
   input.addEventListener('keydown', (e) => {
-    if (e.key === 'ArrowDown') { e.preventDefault(); sel = Math.min(sel + 1, shown.length - 1); render(); }
-    else if (e.key === 'ArrowUp') { e.preventDefault(); sel = Math.max(sel - 1, 0); render(); }
+    if (e.key === 'ArrowDown') { e.preventDefault(); sel = Math.min(sel + 1, shown.length - 1); render(); reveal(); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); sel = Math.max(sel - 1, 0); render(); reveal(); }
     else if (e.key === 'Enter') { e.preventDefault(); const a = shown[sel]; if (a) { close(); a.run(); } }
   });
   render();
