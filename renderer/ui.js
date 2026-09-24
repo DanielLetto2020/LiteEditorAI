@@ -219,14 +219,6 @@ export const ICONS = {
 export function icon(name, size = 16) {
   return svgEl(`<svg class="ic" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name] || ''}</svg>`);
 }
-// Метка «sync» в плашке проекта — не иконка из общего набора: буквы шире квадрата
-// 24×24, поэтому у неё свой viewBox. Рисуем контуром, а не текстом: так метка не
-// зависит от шрифта системы и держит один вес с соседними значками карточки.
-export const SYNC_MARK_D = 'M6.5 6.3C6.5 5.2 5.4 4.8 4.2 4.8 3.0 4.8 1.9 5.2 1.9 6.3c0 1.2 1.5 1.5 2.6 1.7 1.2.2 2.4.6 2.4 1.9 0 1.1-1.2 1.6-2.5 1.6-1.2 0-2.6-.4-2.6-1.5M8.8 5.0 11.5 11.1M14.5 5.0 10.8 14.9M16.4 11.8V5.2M16.4 7.1c.6-1.4 1.9-2.1 3.1-2.1 1.6 0 2.5 1 2.5 2.6v4.2M29.3 6.3c-.7-.9-1.8-1.4-2.9-1.4-1.9 0-3.2 1.5-3.2 3.4s1.3 3.4 3.2 3.4c1.1 0 2.2-.5 2.9-1.4';
-export function syncMark(height = 12, title = 'Синхронизируется с сервером') {
-  // Тултип у инлайнового SVG даёт дочерний <title>, а не одноимённый атрибут.
-  return svgEl(`<svg class="sync-mark" viewBox="0 0 31 16" height="${height}" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><title>${title}</title><path d="${SYNC_MARK_D}"/></svg>`);
-}
 // Button carrying a single icon (replaces the old emoji-in-textContent buttons).
 export function iconBtn(cls, name, title, size) {
   const b = el('button', cls);
