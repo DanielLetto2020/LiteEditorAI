@@ -2418,11 +2418,14 @@ export function initDb(host) {
   // сама, без единого клика, и унесла данные. Ссылки остаются: наружу они уходят только по клику.
   function sanitizeMdHtml(html) {
     const tpl = document.createElement('template'); tpl.innerHTML = html;
-    tpl.content.querySelectorAll('script,style,iframe,object,embed,link,meta,form,base').forEach((n) => n.remove());
+    // svg/math — тоже: <svg><image href="https://…"> грузится сам (href там разрешён как у ссылки),
+    // а SMIL (<set attributeName="href" to=…>) меняет адрес в обход проверки атрибутов. poster/background
+    // (<video poster>, <table background>) — такие же самозагружающиеся картинки мимо src.
+    tpl.content.querySelectorAll('script,style,iframe,object,embed,link,meta,form,base,svg,math').forEach((n) => n.remove());
     tpl.content.querySelectorAll('*').forEach((n) => {
       [...n.attributes].forEach((a) => {
         const name = a.name.toLowerCase();
-        if (name.startsWith('on') || name === 'srcset' || name === 'style') { n.removeAttribute(a.name); return; }
+        if (name.startsWith('on') || name === 'srcset' || name === 'style' || name === 'poster' || name === 'background' || name === 'ping') { n.removeAttribute(a.name); return; }
         if (name === 'href' || name === 'src') {
           let proto; try { proto = new URL(a.value, location.href).protocol; } catch (_) { n.removeAttribute(a.name); return; }
           const ok = (name === 'src') ? ['data:'] : ['http:', 'https:', 'mailto:'];
