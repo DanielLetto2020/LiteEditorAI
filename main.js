@@ -1204,6 +1204,10 @@ ipcMain.on('tp:run', (e, { reqId, agent, prompt, mode, cwd } = {}) => {
   // Декодируем поток целиком (StringDecoder): русский текст — по два байта на букву, и буква на
   // границе чанков при c.toString() превращалась в «��» и в чате, и в итоговом тексте для «Заменить».
   child.stdout.setEncoding('utf8'); child.stderr.setEncoding('utf8');
+  // Агент вышел, не дочитав промпт (не авторизован, неверный флаг), а документ больше буфера
+  // pipe (64 КБ) → асинхронный EPIPE на stdin. try/catch у write его не ловит, и без слушателя
+  // это необработанное исключение главного процесса. Причину и так сообщат 'close'/'error'.
+  child.stdin.on('error', () => {});
   let out = '', errOut = '';
   // Агент-режим обходит файлы и правит их — 4 минут ему мало; чат отвечает одним куском.
   const to = setTimeout(() => { if (tpReqs.has(reqId)) { tpReqs.delete(reqId); try { child.kill(); } catch (_) {} safeSend(sender, 'tp:error', { reqId, error: i18n.t('таймаут (агент не ответил вовремя)') }); } }, mode === 'agent' ? 900000 : 240000);
