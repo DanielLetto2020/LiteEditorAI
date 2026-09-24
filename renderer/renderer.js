@@ -3386,7 +3386,8 @@ function showSettings(start = 'look') {
       ld.appendChild(dirLink);
       body.appendChild(row('Язык интерфейса', ld, lang));
       body.appendChild(row('Цвета и размеры', 'Фон, панели, текст, акцент, состояния, скругление, ширина панели, шрифт терминала — всё настраивается.',
-        button('Настроить…', 'palette', () => { close(); showLookPanel($('#app').classList.contains('single') ? $('#rail-look') : $('#btn-look')); })));
+        // stopPropagation — как у кнопки-палитры: иначе клик всплывёт до document и closeMenus() сразу закроет панель
+        button('Настроить…', 'palette', (e) => { e.stopPropagation(); close(); showLookPanel($('#app').classList.contains('single') ? $('#rail-look') : $('#btn-look')); })));
       body.appendChild(row('Размер шрифта терминала', 'На ходу — Ctrl + «+» / «−».', number(settings.fontSize, 9, 24, 1, (v) => { settings.fontSize = v; save(); applyFontSize(); })));
       // Рамка окна — живой предпросмотр: применяется сразу и уезжает в окна модулей (шина settingsChanged).
       const frameLive = () => { save(); applyFrame(settings); try { lite.app.settingsChanged(settings); } catch (_) {} };
@@ -3578,7 +3579,9 @@ function showPalette() {
       const row = el('div', 'pal-row' + (i === sel ? ' sel' : ''));
       row.appendChild(el('span', 'pal-label', a.label));
       if (a.hint) row.appendChild(el('span', 'pal-hint', a.hint));
-      row.addEventListener('click', () => { close(); a.run(); });
+      // Клик не должен всплыть до document: там closeMenus() тут же закрыл бы выпадашку,
+      // которую открыло само действие («Оформление — цвета и размеры»).
+      row.addEventListener('click', (e) => { e.stopPropagation(); close(); a.run(); });
       list.appendChild(row);
     });
   };
