@@ -6245,9 +6245,12 @@ ipcMain.handle('git:stash', async (_e, root) => gitRun(root, ['stash', 'push', '
 // изменённому отслеживаемому файлу. Лимит — чтобы откат на тысяче файлов не встал колом.
 const DISCARD_HIST_CAP = 60;
 ipcMain.handle('git:discardAll', async (_e, root) => {
-  const out = await git(root, ['diff', '--name-only']);
+  // --relative: пути от root и только его поддерево — ровно то, что откатит `checkout -- .` ниже
+  // (без него пути шли от корня репозитория и для проекта-подкаталога снимки брались с несуществующих
+  // путей); -z: юникод/спецсимволы без кавычек и \ooo — иначе такие файлы тоже оставались без снимка.
+  const out = await git(root, ['diff', '--name-only', '-z', '--relative']);
   if (out) {
-    for (const rel of out.split('\n').map((x) => x.trim()).filter(Boolean).slice(0, DISCARD_HIST_CAP))
+    for (const rel of out.split('\0').filter(Boolean).slice(0, DISCARD_HIST_CAP))
       await histSnapshotFromDisk(path.join(root, rel), 'save');
   }
   return gitRun(root, ['checkout', '--', '.']);
