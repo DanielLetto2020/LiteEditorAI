@@ -354,10 +354,16 @@ export function showPrompt(title, label, initial, onOk) {
   const err = m.querySelector('#pr-err');
   setTimeout(() => { inp.focus(); inp.select(); }, 30);
   m.querySelector('#pr-cancel').onclick = close;
+  // Пока асинхронный onOk в работе, повторный Enter/клик «Ок» не должен запускать его ещё раз
+  // (двойное создание раздела/ветки/папки).
+  let busy = false;
   const ok = async () => {
+    if (busy) return;
     const v = inp.value.trim();
     if (!v) { err.textContent = t('Введи имя'); return; }
-    const res = await onOk(v);
+    busy = true;
+    let res;
+    try { res = await onOk(v); } finally { busy = false; }
     if (res && res.error) { err.textContent = t(res.error); return; }
     close();
   };
