@@ -33,10 +33,14 @@ const TARGET_ID = resolveTargetId();
 const agendaFile = () => path.join(AGENDA_DIR, String(TARGET_ID).replace(/[^\w.-]/g, '_') + '.json');
 
 // ---- чтение/запись (атомарно: tmp + rename) ----
+// Файла нет — список пуст. Файл есть, но не читается или не разбирается (правка руками, сбой диска) —
+// null: писать поверх нельзя, иначе add/complete молча заменили бы все напоминания проекта одним.
 function readItems() {
-  try { const a = JSON.parse(fs.readFileSync(agendaFile(), 'utf8')); return Array.isArray(a) ? a : []; }
-  catch { return []; }
+  let raw;
+  try { raw = fs.readFileSync(agendaFile(), 'utf8'); } catch (e) { return e && e.code === 'ENOENT' ? [] : null; }
+  try { const a = JSON.parse(raw); return Array.isArray(a) ? a : null; } catch { return null; }
 }
+const unreadable = () => ({ content: [{ type: 'text', text: 'Ошибка: файл напоминаний не читается или повреждён (' + agendaFile() + '). Ничего не изменено.' }], isError: true });
 function writeItems(items) {
   fs.mkdirSync(AGENDA_DIR, { recursive: true });
   const f = agendaFile();
@@ -118,6 +122,7 @@ function toolListReminders(args) {
   const sod = new Date(); sod.setHours(0, 0, 0, 0);
   const eod = sod.getTime() + 86400000;
   let items = readItems();
+  if (!items) return unreadable();
   const has = (r) => r && r.at && !isNaN(new Date(r.at));
   // «Весь день» просрочен только со следующего дня — как в ленте Календаря (bucketOf), а не с полуночи самого дня
   const due = (r) => (r.allDay ? sod.getTime() : now);
@@ -136,6 +141,7 @@ function toolAddReminder(args) {
   const remind = REMIND.includes(args && args.remind) ? args.remind : null;
   const item = { id: genId(), text, at, allDay, remind, done: false, tag: '', notifiedAt: null, createdAt: new Date().toISOString() };
   const items = readItems();
+  if (!items) return unreadable();
   items.unshift(item);
   writeItems(items);
   return { content: [{ type: 'text', text: 'Создано напоминание: ' + fmtItem(item) }] };
@@ -144,6 +150,7 @@ function toolCompleteReminder(args) {
   const id = args && args.id;
   if (!id) return { content: [{ type: 'text', text: 'Ошибка: не задан id.' }], isError: true };
   const items = readItems();
+  if (!items) return unreadable();
   const r = items.find((x) => x && x.id === id);
   if (!r) return { content: [{ type: 'text', text: 'Напоминание с id=' + id + ' не найдено.' }], isError: true };
   r.done = true; r.notifiedAt = r.notifiedAt || new Date().toISOString();
