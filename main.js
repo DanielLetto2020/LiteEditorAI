@@ -4249,6 +4249,7 @@ function smFetch(rawUrl, opts = {}) {
   return new Promise((resolve) => {
     let redirects = 6;
     let req = null, settled = false, hard = null;
+    let hdrs = headers;
     // Ошибка или обрезка по лимиту — рвём текущий запрос: докачивать тело дальше SM_BODY_CAP незачем
     // (раньше остаток — хоть гигабайт — читался впустую до конца на каждой проверке).
     const finish = (r) => { if (settled) return; settled = true; clearTimeout(hard); if (!r.ok || r.capped) { try { if (req) req.destroy(); } catch (_) {} } resolve(r); };
@@ -4262,8 +4263,15 @@ function smFetch(rawUrl, opts = {}) {
       const mod = u.protocol === 'https:' ? https : http;
       const t0 = Date.now();
       try {
-        req = mod.request(u, { method: 'GET', rejectUnauthorized, headers: Object.assign({ 'User-Agent': 'LiteEditor-Monitor/1.0', 'Accept': '*/*' }, headers || {}), timeout: timeoutMs }, (res) => {
-          if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location && redirects > 0) { redirects--; res.resume(); try { return go(new URL(res.headers.location, u).toString()); } catch (_) { return finish({ ok: false, error: 'плохой редирект' }); } }
+        req = mod.request(u, { method: 'GET', rejectUnauthorized, headers: Object.assign({ 'User-Agent': 'LiteEditor-Monitor/1.0', 'Accept': '*/*' }, hdrs || {}), timeout: timeoutMs }, (res) => {
+          if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location && redirects > 0) {
+            redirects--; res.resume();
+            let next; try { next = new URL(res.headers.location, u); } catch (_) { return finish({ ok: false, error: 'плохой редирект' }); }
+            // Заголовки цели (Authorization, API-ключи) — только её хосту: на другой хост/порт и с https на http
+            // их не несём (как браузер и curl), иначе редирект на чужой сервер уводил токен
+            if (hdrs && (next.host !== u.host || (u.protocol === 'https:' && next.protocol === 'http:'))) hdrs = null;
+            return go(next.toString());
+          }
           const chunks = []; let len = 0, capped = false;
           const done = () => finish({ ok: true, status: res.statusCode, headers: res.headers, body: Buffer.concat(chunks).toString('utf8'), ms: Date.now() - t0, bytes: len, capped });
           res.on('data', (c) => { if (len < SM_BODY_CAP) { chunks.push(c); len += c.length; } if (len >= SM_BODY_CAP) { capped = true; done(); } });
