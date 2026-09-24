@@ -1217,7 +1217,13 @@ export function initTextProc(host) {
         const newName = val.trim();
         if (!newName) return;
         
+        // Роль — файл Roles/<имя>.md. Сначала fs:create: он не перезаписывает существующий файл и режет
+        // «..»/разделители. Раньше сразу шёл writeFile — повтор имени («Юрист», второй раз «Моя роль»)
+        // молча заменял инструкцию готовой роли заглушкой, а «../README» писал за пределы Roles/.
+        if (/[\\/]/.test(newName)) return { error: 'недопустимое имя' };
         try {
+          const c = await lite.fs.create(`${activeProj.path}/Roles`, newName + '.md', false);
+          if (!c || c.error) return c || { error: 'Не удалось создать' }; // покажет диалог («уже существует»)
           const res = await lite.fs.writeFile(`${activeProj.path}/Roles/${newName}.md`, 'Действуй в роли...');
           if (res && res.error) {
             toast('Ошибка записи: ' + res.error, { kind: 'err' });
