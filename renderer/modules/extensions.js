@@ -29,7 +29,7 @@ export function initExtensions(host) {
     return {
       id: m.id, dir: m.dir, manifest: m.manifest || {}, error: m.error || '', mainUrl: m.mainUrl, mainFile: m.mainFile,
       status: 'off', // 'off' | 'on' | 'broken'
-      container: null, instance: null, ctx: null, title: '', loadSeq: 0,
+      container: null, instance: null, ctx: null, title: '', loadSeq: 0, loading: null,
       closeCbs: [], projCbs: [], themeCbs: [], commands: new Map(),
     };
   }
@@ -126,7 +126,16 @@ export function initExtensions(host) {
     }
   }
 
-  async function loadModule(rec) {
+  // Повторный вызов, пока загрузка ещё идёт (activate бывает async), поднимал ВТОРОЙ экземпляр:
+  // клик по модулю в квикбаре/меню во время стартовой загрузки или «Пересканировать» — второй
+  // контейнер, вторые подписки, а deactivate потом звался только у последнего, первый жил дальше.
+  // Все, кто просит загрузить модуль во время загрузки, ждут ту же самую.
+  function loadModule(rec) {
+    if (!rec.loading) rec.loading = doLoadModule(rec).finally(() => { rec.loading = null; });
+    return rec.loading;
+  }
+
+  async function doLoadModule(rec) {
     rec.loadSeq++;
     try {
       const ns = await importModule(rec);
@@ -197,7 +206,7 @@ export function initExtensions(host) {
         rec = mkRec(m);
         mods.set(m.id, rec);
         if (!m.error && isEnabled(m.id)) await loadModule(rec);
-      } else if (rec.status !== 'on') { // выгруженные и сломанные пробуем поднять заново; живые — через reload
+      } else if (rec.status !== 'on' && !rec.loading) { // выгруженные и сломанные пробуем поднять заново; живые — через reload; идущую загрузку не сбиваем
         unloadModule(rec); // у broken чистит остатки состояния (deactivate не зовётся — instance нет)
         rec.dir = m.dir; rec.manifest = m.manifest || rec.manifest; rec.error = m.error || ''; rec.mainUrl = m.mainUrl; rec.mainFile = m.mainFile;
         if (!rec.error && isEnabled(m.id)) await loadModule(rec);
