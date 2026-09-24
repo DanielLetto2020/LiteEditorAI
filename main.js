@@ -1303,6 +1303,28 @@ function killReqMap(m) {
   for (const v of m.values()) { try { if (v && typeof v.kill === 'function') v.kill(); else if (v && typeof v.destroy === 'function') v.destroy(); } catch (_) {} }
   m.clear();
 }
+// Запрос живёт, пока живо окно, которое его заказало. Каналом ходят «Базы данных» и «Мониторинг
+// сайтов»; закрытие окна глушило только запросы окна БД (и заодно чужие), а агент закрытого
+// «Мониторинга» жил до таймаута — до 5 минут работы и токенов впустую. Подписка — одна на окно.
+const dbaiOwner = new Map();          // reqId → webContents-заказчик
+const dbaiWatched = new WeakSet();    // окна, на чьё закрытие уже подписаны
+function dbaiTrack(sender, reqId, req) {
+  dbaiReqs.set(reqId, req);
+  for (const id of [...dbaiOwner.keys()]) if (!dbaiReqs.has(id)) dbaiOwner.delete(id);   // завершённые
+  dbaiOwner.set(reqId, sender);
+  if (!sender || dbaiWatched.has(sender)) return;
+  dbaiWatched.add(sender);
+  try {
+    sender.once('destroyed', () => {
+      for (const [id, wc] of [...dbaiOwner]) {
+        if (wc !== sender) continue;
+        dbaiOwner.delete(id);
+        const c = dbaiReqs.get(id); dbaiReqs.delete(id);
+        try { if (c && typeof c.kill === 'function') c.kill(); else if (c && typeof c.destroy === 'function') c.destroy(); } catch (_) {}
+      }
+    });
+  } catch (_) {}
+}
 ipcMain.on('dbai:run', (e, { reqId, agent, prompt } = {}) => {
   const sender = e.sender;
   const conf = DBAI_AGENTS[agent] || DBAI_AGENTS.claude;
@@ -1310,7 +1332,7 @@ ipcMain.on('dbai:run', (e, { reqId, agent, prompt } = {}) => {
   let child;
   try { child = spawn(conf.cmd, args, { cwd: os.homedir(), env: tpEnv() }); }
   catch (err) { safeSend(sender, 'dbai:error', { reqId, error: 'не запустить «' + conf.cmd + '»: ' + (err.message || err) }); return; }
-  dbaiReqs.set(reqId, child);
+  dbaiTrack(sender, reqId, child);
   let errOut = '', any = false, buf = '', sawDelta = false;
   const to = setTimeout(() => { if (dbaiReqs.has(reqId)) { dbaiReqs.delete(reqId); try { child.kill(); } catch (_) {} safeSend(sender, 'dbai:error', { reqId, error: 'таймаут (агент не ответил вовремя)' }); } }, 300000);
   const emit = (chunk) => { if (!chunk) return; any = true; safeSend(sender, 'dbai:data', { reqId, chunk }); };
@@ -1333,13 +1355,17 @@ ipcMain.on('dbai:run', (e, { reqId, agent, prompt } = {}) => {
     child.stdout.on('data', (c) => emit(c.toString('utf8')));
   }
   child.stderr.on('data', (c) => { errOut += c.toString('utf8'); });
-  child.on('error', (err) => { if (!dbaiReqs.has(reqId)) return; dbaiReqs.delete(reqId); clearTimeout(to); safeSend(sender, 'dbai:error', { reqId, error: 'агент «' + conf.cmd + '» не найден/не запустился: ' + (err.message || err) }); });
+  // clearTimeout — до проверки: после «Стоп»/закрытия окна запроса в карте уже нет, а 5-минутный
+  // таймер с замыканием на процесс и окно висел бы до срабатывания
+  child.on('error', (err) => { clearTimeout(to); if (!dbaiReqs.has(reqId)) return; dbaiReqs.delete(reqId); safeSend(sender, 'dbai:error', { reqId, error: 'агент «' + conf.cmd + '» не найден/не запустился: ' + (err.message || err) }); });
   child.on('close', (code) => {
-    if (!dbaiReqs.has(reqId)) return; dbaiReqs.delete(reqId); clearTimeout(to);
+    clearTimeout(to);
+    if (!dbaiReqs.has(reqId)) return; dbaiReqs.delete(reqId);
     if (conf.stream === 'json' && buf.trim()) handleLine(buf);
     if (any) safeSend(sender, 'dbai:done', { reqId });
     else safeSend(sender, 'dbai:error', { reqId, error: errOut.trim() || ('агент завершился с кодом ' + code) });
   });
+  child.stdin.on('error', () => {});   // агент не стартовал/вышел раньше, чем дочитал промпт → async EPIPE не должен ронять main
   try { child.stdin.write(prompt || ''); child.stdin.end(); } catch (_) {}
 });
 ipcMain.on('dbai:abort', (e, { reqId } = {}) => {
@@ -1405,7 +1431,7 @@ ipcMain.on('dbai:apiRun', (e, { reqId, baseUrl, key, model, messages, usage, pro
   });
   req.on('error', (err) => { if (!dbaiReqs.has(reqId)) return; dbaiReqs.delete(reqId); safeSend(sender, 'dbai:error', { reqId, error: String(err.message || err) }); });
   req.setTimeout(300000, () => { req.destroy(); if (!dbaiReqs.has(reqId)) return; dbaiReqs.delete(reqId); safeSend(sender, 'dbai:error', { reqId, error: 'таймаут запроса' }); });
-  dbaiReqs.set(reqId, req);
+  dbaiTrack(sender, reqId, req);
   req.write(body); req.end();
 });
 
