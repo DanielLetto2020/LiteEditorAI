@@ -2043,12 +2043,16 @@ ipcMain.handle('ctxfs:createArtifact', (_e, { scope, projPath, kind, slug, title
 });
 // Заготовка хука: НЕ пишем в settings.json сами (там чужая схема и чужие настройки),
 // а отдаём готовый кусок JSON — человек вставит его в открытый рядом редактор.
+// Заголовок правила — ответ модели по истории диалогов, то есть недоверенный текст. В двойных
+// кавычках (JSON.stringify) оболочка всё равно раскрывает $(…) и `…`, и вставленный хук выполнял бы
+// это на КАЖДОМ вызове Bash агентом. В одинарных кавычках оболочка не интерпретирует ничего.
+const ctxfsShQuote = (s) => "'" + String(s).replace(/'/g, "'\\''") + "'";
 ipcMain.handle('ctxfs:hookStub', (_e, { title, detail } = {}) => {
   const stub = {
     hooks: {
       PreToolUse: [{
         matcher: 'Bash',
-        hooks: [{ type: 'command', command: `echo ${JSON.stringify(String(title || 'правило'))}` }],
+        hooks: [{ type: 'command', command: `echo ${ctxfsShQuote(String(title || 'правило'))}` }],
       }],
     },
   };
