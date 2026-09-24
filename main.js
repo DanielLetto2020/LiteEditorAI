@@ -32,6 +32,7 @@ const { watchTree } = require('./lib/tree-watch'); // слежение за де
 const { createHistory } = require('./lib/history'); // локальная история файлов: снимки, троттл, срок и объём
 const { createBatcher } = require('./lib/ptybatch'); // склейка вывода PTY перед отправкой в окно
 const { foregroundKind } = require('./lib/proctree'); // индикатор активности: состояние группы переднего плана
+const { agentState } = require('./lib/agentstate'); // индикатор: отчёт Claude Code о своей сессии
 
 app.setName('LiteEditorAI');
 app.setAppUserModelId('com.mletto.liteeditorai'); // Windows: имя/иконка/группировка в панели задач и уведомлениях
@@ -1260,6 +1261,8 @@ ipcMain.handle('dbai:apiModels', async (_e, { baseUrl, key } = {}) => {
     const headers = { 'Accept': 'application/json', ...(key ? { Authorization: 'Bearer ' + key } : {}) };
     const req = dbaiHttpMod(u).request(u, { method: 'GET', headers }, (res) => {
       let data = ''; res.on('data', (c) => { data += c; });
+      // обрыв посреди ответа даёт только 'close' без 'end' — иначе invoke висел бы вечно
+      res.on('close', () => { if (!res.complete) resolve({ error: 'соединение с сервером оборвалось' }); });
       res.on('end', () => {
         try { const j = JSON.parse(data); if (res.statusCode >= 400) return resolve({ error: (j.error && j.error.message) || ('HTTP ' + res.statusCode) }); const models = (j.data || j.models || []).map((m) => ({ id: m.id || m.name, name: m.id || m.name })); resolve({ models }); }
         catch (_) { resolve({ error: 'не удалось разобрать список моделей (проверьте адрес/сервер)' }); }
@@ -1298,6 +1301,9 @@ ipcMain.on('dbai:apiRun', (e, { reqId, baseUrl, key, model, messages, usage } = 
       }
     });
     res.on('end', () => { if (!dbaiReqs.has(reqId)) return; dbaiReqs.delete(reqId); if (any) safeSend(sender, 'dbai:done', { reqId }); else safeSend(sender, 'dbai:error', { reqId, error: 'пустой ответ модели' }); });
+    // Провайдер оборвал поток посреди ответа (сеть, рестарт Ollama): приходит только 'close' без 'end',
+    // и чат висел со спиннером до ручной остановки. Нажатый «Стоп» сюда не попадает — он уже убрал reqId.
+    res.on('close', () => { if (res.complete || !dbaiReqs.has(reqId)) return; dbaiReqs.delete(reqId); safeSend(sender, 'dbai:error', { reqId, error: 'соединение с провайдером оборвалось посреди ответа' }); });
   });
   req.on('error', (err) => { if (!dbaiReqs.has(reqId)) return; dbaiReqs.delete(reqId); safeSend(sender, 'dbai:error', { reqId, error: String(err.message || err) }); });
   req.setTimeout(300000, () => { req.destroy(); if (!dbaiReqs.has(reqId)) return; dbaiReqs.delete(reqId); safeSend(sender, 'dbai:error', { reqId, error: 'таймаут запроса' }); });
@@ -3653,6 +3659,12 @@ ipcMain.handle('pty:adoptable', (e) => [...orphanPtys.keys()].filter((id) => pty
 ipcMain.handle('pty:foregroundState', (_e, { id }) => {
   const p = ptys.get(id);
   return p ? foregroundKind(p.pid) : null;
+});
+// { fg, claude: { status, waitingFor } | null } | null — то же плюс отчёт Claude Code, если он
+// на переднем плане (lib/agentstate.js). По нему индикатор отличает «работает» / «ждёт вас» / «готов».
+ipcMain.handle('pty:agentState', (_e, { id }) => {
+  const p = ptys.get(id);
+  return p ? agentState(p.pid) : null;
 });
 
 // ---------------------------------------------------------------- Монитор ресурсов
@@ -6225,10 +6237,16 @@ function cParseJson(out) { // podman `--format json` → array (fallback to line
 }
 function cLabelMap(str) { const m = {}; for (const part of String(str || '').split(',')) { const i = part.indexOf('='); if (i > 0) m[part.slice(0, i)] = part.slice(i + 1); } return m; }
 const C_PROJECT = 'com.docker.compose.project', C_SERVICE = 'com.docker.compose.service';
+// id/имя объекта движка уходит в CLI позиционным аргументом: начинаться с «-» ему нельзя (иначе docker/
+// podman прочтут его как флаг). Настоящие id, имена контейнеров/томов/подов и ссылки на образ
+// (repo:tag, repo@sha256:…) начинаются с буквы или цифры.
+const cBadId = (id) => typeof id !== 'string' || !/^[A-Za-z0-9][\w.:/@-]{0,255}$/.test(id);
 
 // Detect both engines + their compose flavours (legacy `docker-compose` vs the `docker compose` plugin).
 ipcMain.handle('containers:detect', async () => {
-  const probe = (cli, args) => containerRun(cli, args, { timeout: 6000 });
+  // local: версии клиентов на ЭТОЙ машине. В удалённом контексте подмена cli превращала бы
+  // «docker-compose --version» и «podman --version» в «docker --version» — полоса версий врала.
+  const probe = (cli, args) => containerRun(cli, args, { timeout: 6000, local: true });
   const [dcli, dleg, dplug, pcli, pleg, pplug] = await Promise.all([
     probe('docker', ['--version']), probe('docker-compose', ['--version']), probe('docker', ['compose', 'version']),
     probe('podman', ['--version']), probe('podman-compose', ['--version']), probe('podman', ['compose', 'version']),
@@ -6344,7 +6362,7 @@ ipcMain.handle('containers:bulk', async (_e, { engine, action, ids } = {}) => {
   const verb = { start: ['start'], stop: ['stop'], pause: ['pause'], unpause: ['unpause'], restart: ['restart'], remove: ['rm', '-f'] }[action];
   if (!verb) return { ok: false, error: 'bad action' };
   const failed = [];
-  for (const id of ids) { if (typeof id !== 'string') continue; const r = await containerRun(engine, [...verb, id], { timeout: 60000 }); if (!r.ok) failed.push(r.error); }
+  for (const id of ids) { if (cBadId(id)) continue; const r = await containerRun(engine, [...verb, id], { timeout: 60000 }); if (!r.ok) failed.push(r.error); }
   return failed.length ? { ok: false, error: failed.join('; ') } : { ok: true };
 });
 
@@ -6353,7 +6371,7 @@ const cLogProcs = new Map();  // streamId -> ChildProcess (logs -f)
 const cExecPtys = new Map();  // execId   -> IPty (exec -it)
 ipcMain.handle('containers:logsStart', (e, { engine, id, streamId, tail } = {}) => {
   if (engine !== 'docker' && engine !== 'podman') return { error: 'bad engine' };
-  if (!id || !streamId) return { error: 'bad args' };
+  if (cBadId(id) || !streamId) return { error: 'bad args' };
   let cp;
   const lctx = cRemoteCtx(engine); // удалённый контекст: стрим логов тоже через туннель к сокету
   try { cp = spawn(lctx.cli, ['logs', '-f', '--tail', String(Math.max(1, Math.min(5000, parseInt(tail, 10) || 500))), id], { windowsHide: true, env: lctx.env }); }
@@ -6369,7 +6387,7 @@ ipcMain.handle('containers:logsStart', (e, { engine, id, streamId, tail } = {}) 
 ipcMain.on('containers:logsStop', (_e, { streamId } = {}) => { const cp = cLogProcs.get(streamId); if (cp) { try { cp.kill(); } catch (_) {} cLogProcs.delete(streamId); } });
 ipcMain.handle('containers:execStart', (e, { engine, id, execId, cols, rows } = {}) => {
   if (engine !== 'docker' && engine !== 'podman') return { error: 'bad engine' };
-  if (!id || !execId) return { error: 'bad args' };
+  if (cBadId(id) || !execId) return { error: 'bad args' };
   let proc;
   const xctx = cRemoteCtx(engine, userShellEnv()); // удалённый контекст: exec-терминал через туннель к сокету
   try {
@@ -6388,7 +6406,7 @@ ipcMain.on('containers:execKill', (_e, { execId } = {}) => { const p = cExecPtys
 // Lifecycle action on one object. action/kind are whitelisted; id is a CLI arg (execFile, no shell).
 ipcMain.handle('containers:action', async (_e, { engine, kind, action, id } = {}) => {
   if (engine !== 'docker' && engine !== 'podman') return { ok: false, error: 'bad engine' };
-  if (!id || typeof id !== 'string') return { ok: false, error: 'no id' };
+  if (cBadId(id)) return { ok: false, error: 'no id' };
   let args = null;
   if (kind === 'container') args = ({ start: ['start', id], stop: ['stop', id], pause: ['pause', id], unpause: ['unpause', id], restart: ['restart', id], remove: ['rm', '-f', id] })[action];
   else if (kind === 'pod') args = ({ start: ['pod', 'start', id], stop: ['pod', 'stop', id], remove: ['pod', 'rm', '-f', id] })[action];
@@ -6403,7 +6421,7 @@ ipcMain.handle('containers:action', async (_e, { engine, kind, action, id } = {}
 // Разбор — в lib/dbdetect.js; пароль берётся из env контейнера (он и так виден любому с доступом к CLI).
 ipcMain.handle('containers:inspectDb', async (_e, { engine, id } = {}) => {
   if (engine !== 'docker' && engine !== 'podman') return { ok: false, error: 'bad engine' };
-  if (!id || typeof id !== 'string') return { ok: false, error: 'no id' };
+  if (cBadId(id)) return { ok: false, error: 'no id' };
   const r = await containerRun(engine, ['inspect', id], { timeout: 12000 });
   if (!r.ok) return { ok: false, error: r.error };
   const info = cParseJson(r.out)[0];
@@ -6431,7 +6449,7 @@ ipcMain.handle('containers:inspectDb', async (_e, { engine, id } = {}) => {
 // «Открыть в модуле Внешние хранилища»: inspect MinIO-контейнера → заготовка S3-подключения.
 ipcMain.handle('containers:inspectStorage', async (_e, { engine, id } = {}) => {
   if (engine !== 'docker' && engine !== 'podman') return { ok: false, error: 'bad engine' };
-  if (!id || typeof id !== 'string') return { ok: false, error: 'no id' };
+  if (cBadId(id)) return { ok: false, error: 'no id' };
   const r = await containerRun(engine, ['inspect', id], { timeout: 12000 });
   if (!r.ok) return { ok: false, error: r.error };
   const info = cParseJson(r.out)[0];
@@ -6442,7 +6460,7 @@ ipcMain.handle('containers:inspectStorage', async (_e, { engine, id } = {}) => {
 });
 ipcMain.handle('containers:inspectMq', async (_e, { engine, id } = {}) => {
   if (engine !== 'docker' && engine !== 'podman') return { ok: false, error: 'bad engine' };
-  if (!id || typeof id !== 'string') return { ok: false, error: 'no id' };
+  if (cBadId(id)) return { ok: false, error: 'no id' };
   const r = await containerRun(engine, ['inspect', id], { timeout: 12000 });
   if (!r.ok) return { ok: false, error: r.error };
   const info = cParseJson(r.out)[0];
@@ -6454,7 +6472,7 @@ ipcMain.handle('containers:inspectMq', async (_e, { engine, id } = {}) => {
 // «Открыть в модуле Kafka»: inspect контейнера → заготовка профиля (брокер = 127.0.0.1:порт).
 ipcMain.handle('containers:inspectKafka', async (_e, { engine, id } = {}) => {
   if (engine !== 'docker' && engine !== 'podman') return { ok: false, error: 'bad engine' };
-  if (!id || typeof id !== 'string') return { ok: false, error: 'no id' };
+  if (cBadId(id)) return { ok: false, error: 'no id' };
   const r = await containerRun(engine, ['inspect', id], { timeout: 12000 });
   if (!r.ok) return { ok: false, error: r.error };
   const info = cParseJson(r.out)[0];
@@ -6466,7 +6484,7 @@ ipcMain.handle('containers:inspectKafka', async (_e, { engine, id } = {}) => {
 // «Наблюдать в Мониторинге сайтов»: inspect контейнера → URL веб-интерфейса по published-порту.
 ipcMain.handle('containers:inspectWeb', async (_e, { engine, id } = {}) => {
   if (engine !== 'docker' && engine !== 'podman') return { ok: false, error: 'bad engine' };
-  if (!id || typeof id !== 'string') return { ok: false, error: 'no id' };
+  if (cBadId(id)) return { ok: false, error: 'no id' };
   const r = await containerRun(engine, ['inspect', id], { timeout: 12000 });
   if (!r.ok) return { ok: false, error: r.error };
   const info = cParseJson(r.out)[0];
@@ -6480,10 +6498,13 @@ ipcMain.handle('containers:inspectWeb', async (_e, { engine, id } = {}) => {
 // внутри должен быть ls/cat (busybox достаточно; distroless честно вернёт ошибку).
 ipcMain.handle('containers:fsList', async (_e, { engine, id, path: p } = {}) => {
   if (engine !== 'docker' && engine !== 'podman') return { ok: false, error: 'bad engine' };
-  if (!id || typeof id !== 'string') return { ok: false, error: 'no id' };
-  const dir = String(p || '/');
+  if (cBadId(id)) return { ok: false, error: 'no id' };
+  // Путь всегда абсолютный: иначе «-…» ушёл бы в ls флагом.
+  const dir = '/' + String(p || '/').replace(/^\/+/, '');
   const r = await containerRun(engine, ['exec', id, 'ls', '-1Ap', dir], { timeout: 12000 });
-  if (!r.ok) return { ok: false, error: r.error || 'ls не выполнился (контейнер запущен?)' };
+  // ls завершается с кодом 1, если хоть одна запись не прочиталась (в /proc они исчезают на ходу),
+  // но то, что прочиталось, уже в stdout: показываем его, а не ошибку на весь каталог.
+  if (!r.ok && !r.out) return { ok: false, error: r.error || 'ls не выполнился (контейнер запущен?)' };
   const entries = [];
   for (const ln of r.out.split('\n')) {
     const name = ln.trim(); if (!name) continue;
@@ -6495,15 +6516,19 @@ ipcMain.handle('containers:fsList', async (_e, { engine, id, path: p } = {}) => 
 });
 ipcMain.handle('containers:fsOpenInViewer', async (_e, { engine, id, path: p } = {}) => {
   if (engine !== 'docker' && engine !== 'podman') return { ok: false, error: 'bad engine' };
-  if (!id || typeof id !== 'string' || !p) return { ok: false, error: 'no id/path' };
-  const r = await containerRun(engine, ['exec', id, 'cat', String(p)], { timeout: 15000 });
+  if (cBadId(id) || !p) return { ok: false, error: 'no id/path' };
+  const file = '/' + String(p).replace(/^\/+/, '');   // абсолютный: «-…» не уйдёт в cat флагом
+  const r = await containerRun(engine, ['exec', id, 'cat', file], { timeout: 15000 });
+  // ls -p помечает «/» только настоящие каталоги: симлинк на каталог (/bin, /lib в современных образах)
+  // приходит как файл. Сообщаем об этом рендереру — он войдёт в каталог вместо ошибки.
+  if (!r.ok && /is a directory/i.test(r.error || '')) return { ok: false, dir: true, error: r.error };
   if (!r.ok) return { ok: false, error: r.error || 'cat не выполнился (контейнер запущен?)' };
   if (r.out.length > MAX_VIEW_BYTES) return { ok: false, error: 'Файл слишком большой для просмотра (> 2 МБ)' };
   if (r.out.slice(0, 8192).includes('\0')) return { ok: false, error: 'Бинарный файл — просмотр не поддерживается' };
   try {
-    const file = stageTextForViewer(String(p).split('/').filter(Boolean).pop() || 'container.txt', r.out);
-    routeOpenInViewer({ path: file });
-    return { ok: true, file };
+    const staged = stageTextForViewer(file.split('/').filter(Boolean).pop() || 'container.txt', r.out);
+    routeOpenInViewer({ path: staged });
+    return { ok: true, file: staged };
   } catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
 });
 

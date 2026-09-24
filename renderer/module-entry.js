@@ -288,7 +288,8 @@ function buildHost() {
   return {
     el, icon, iconBtn, makeModal, showConfirm, showPrompt, toast, applyLayoutSwap,
     createCodeEditor, // языковая поддержка — модули импортируют languageFor/ensureLanguage из codeedit.js напрямую
-    termTheme: () => termThemeFor(settings), applyUnicode11, loadFastRenderer, copySelection,
+    // терминалы модулей стеклянные, как в редакторе: свой фон прозрачный, виден фон окна или карточки
+    termTheme: () => termThemeFor(settings, { glass: true }), applyUnicode11, loadFastRenderer, copySelection,
     STORE, persist, settings, saveSettings,
     layout: layoutProxy, GUTTER: 0,
     saveUiState: () => {}, refitActiveTerminal: () => {}, closeOtherPanels: () => {}, renderProjects: () => {},

@@ -64,6 +64,7 @@ export function initScratch(host) {
     const term = new Terminal({
       fontFamily: '"JetBrains Mono", "Fira Code", "Cascadia Code", Consolas, monospace',
       fontSize: settings.fontSize, cursorBlink: true, allowProposedApi: true, theme: termTheme(), scrollback: 5000,
+      allowTransparency: true, // фон терминала прозрачный — виден полупрозрачный фон окна (задаётся только при создании)
     });
     const fit = new FitAddon();
     const search = new SearchAddon();

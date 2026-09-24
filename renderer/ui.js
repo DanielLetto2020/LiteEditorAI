@@ -84,11 +84,11 @@ export function fileTypeSvg(name) {
     <path fill="${colorFor(name)}" opacity="0.95" d="M3.5 1.4h5.1L13 5.3v9.3a1 1 0 0 1-1 1H3.5a1 1 0 0 1-1-1V2.4a1 1 0 0 1 1-1z"/>
     <path fill="#06120c" opacity="0.4" d="M8.6 1.4 13 5.3H9.1a.5.5 0 0 1-.5-.5z"/></svg>`);
 }
-/** Значок папки: открытая — светлее закрытой. */
+/** Значок папки цвета акцента («Оформление»): открытая — светлее закрытой. */
 export function folderTypeSvg(open) {
-  const c = open ? '#7fd9ad' : '#56b98a';
+  const c = open ? 'var(--green-bright)' : 'var(--green)';
   return svgEl(`<svg class="ti" viewBox="0 0 16 16" width="14" height="14">
-    <path fill="${c}" d="M1.4 3.6h4.2l1.2 1.5H14.6a1 1 0 0 1 1 1v6.4a1 1 0 0 1-1 1H1.4a1 1 0 0 1-1-1V4.6a1 1 0 0 1 1-1z"/></svg>`);
+    <path style="fill:${c}" d="M1.4 3.6h4.2l1.2 1.5H14.6a1 1 0 0 1 1 1v6.4a1 1 0 0 1-1 1H1.4a1 1 0 0 1-1-1V4.6a1 1 0 0 1 1-1z"/></svg>`);
 }
 // ---------------------------------------------------------------- icon set
 // One consistent line-icon family (Lucide-ish): 24-grid, currentColor stroke, rounded.

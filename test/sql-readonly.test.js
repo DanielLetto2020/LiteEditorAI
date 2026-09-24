@@ -53,4 +53,23 @@ assert.strictEqual(stripSqlLiterals('a /* b */ c'), 'a  c'); passed++;
 assert.strictEqual(stripSqlLiterals("SELECT 'it''s'"), "SELECT ''"); passed++;
 assert.strictEqual(stripSqlLiterals(''), ''); passed++;
 
+// --- Разметка для SQL-консоли: «запрос под курсором» и :параметры (renderer/modules/db.js) ---
+const { splitSqlStatements, findSqlParams, substituteSqlParams } = require('../lib/sqlro');
+const stmts = (sql) => splitSqlStatements(sql).map((r) => sql.slice(r.from, r.to).trim()).filter(Boolean);
+const eq = (a, b, msg) => { assert.deepStrictEqual(a, b, msg); passed++; };
+eq(stmts('SELECT 1; SELECT 2'), ['SELECT 1', 'SELECT 2'], 'два оператора');
+eq(stmts("SELECT 'a;b' FROM t; SELECT 2"), ["SELECT 'a;b' FROM t", 'SELECT 2'], '«;» внутри строки не режет запрос');
+eq(stmts('SELECT "x;y" FROM t'), ['SELECT "x;y" FROM t'], '«;» в идентификаторе');
+eq(stmts('SELECT 1 -- a;b\n; SELECT 2'), ['SELECT 1 -- a;b', 'SELECT 2'], '«;» в строчном комментарии');
+eq(stmts('SELECT 1 /* ; */; SELECT 2'), ['SELECT 1 /* ; */', 'SELECT 2'], '«;» в блочном комментарии');
+eq(stmts('CREATE FUNCTION f() RETURNS int AS $$ SELECT 1; SELECT 2; $$ LANGUAGE sql; SELECT f()'),
+  ['CREATE FUNCTION f() RETURNS int AS $$ SELECT 1; SELECT 2; $$ LANGUAGE sql', 'SELECT f()'], 'тело функции в $$…$$ — один оператор');
+eq(stmts('DO $body$ BEGIN PERFORM 1; END $body$; SELECT 2'), ['DO $body$ BEGIN PERFORM 1; END $body$', 'SELECT 2'], 'именованные долларовые кавычки');
+eq(stmts('SELECT $1; SELECT 2'), ['SELECT $1', 'SELECT 2'], '$1 — не долларовая кавычка');
+eq(stmts("SELECT 'it''s; ok'"), ["SELECT 'it''s; ok'"], 'удвоенный апостроф');
+eq(findSqlParams('SELECT * FROM t WHERE id = :id AND name = :name OR id = :id'), ['id', 'name'], 'параметры без повторов');
+eq(findSqlParams("SELECT 'a:b', '10:30', x::text, @v := 1, arr[1:n] FROM t WHERE c = :c"), ['c'], 'в строках, приведениях, := и срезах параметров нет');
+eq(findSqlParams('SELECT 1 -- :nope\n/* :nope2 */'), [], 'в комментариях параметров нет');
+eq(substituteSqlParams("SELECT ':id' AS s, :id AS v", () => '42'), "SELECT ':id' AS s, 42 AS v", 'подставляется только в коде');
+
 console.log(`✓ sql-readonly: ${passed} проверок пройдено`);
