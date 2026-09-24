@@ -754,7 +754,11 @@ export function initJira(host) {
     // агенту не нужны — это шум в промпте. Если тело описания пустое (частый случай у подзадач),
     // сутью выступает заголовок, иначе агент получил бы пустую задачу.
     const body = String(it.description || '').trim() || String(it.summary || '').trim();
-    const text = 'номерзадачи/ветка: ' + it.key + '\nописание: ' + body;
+    // Описание — недоверенный текст из Jira: ESC-последовательности и прочие C0/C1 в PTY сработали бы
+    // как нажатия клавиш (Ctrl+C/D, CR = Enter, стрелки). Переводы строк и табы оставляем —
+    // многострочное описание осмысленно, а вставку в маркерах bracketed paste делает ядро.
+    const termSafe = (s) => String(s).replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, ' ');
+    const text = termSafe('номерзадачи/ветка: ' + it.key + '\nописание: ' + body);
     if (typeof sendToTerminal === 'function') { sendToTerminal(text); toast('Задача отправлена в терминал ✓'); }
     else { await navigator.clipboard.writeText(text); toast('Задача скопирована в буфер ✓'); }
   }
