@@ -3297,7 +3297,11 @@ function showLogs() {
     if (!p) { toast('Нет активного проекта — открой проект, чтобы передать в его терминал', { kind: 'err', ttl: 7000 }); return; }
     const open = errEntries.filter((e) => e.status === 'open' && (!e.project || e.project === p.path));
     if (!open.length) { toast('Открытых ошибок для этого проекта нет'); return; }
-    const lines = open.slice(0, 40).map((e) => `- [${e.level}] ${e.source}: ${e.sample} (×${e.count}, id ${e.id})`).join('\n');
+    // Сэмплы — недоверенный текст (стеки, ответы серверов, имена файлов), а пишется он в PTY как
+    // нажатия клавиш: \r отправил бы агенту недочитанный текст, Ctrl+C/ESC — сработали бы как клавиши,
+    // переводы строк стека разорвали бы список. Схлопываем управляющие символы — одна строка на ошибку.
+    const oneLine = (s) => String(s == null ? '' : s).replace(/[\x00-\x1f\x7f-\x9f]+/g, ' ').trim();
+    const lines = open.slice(0, 40).map((e) => `- [${oneLine(e.level)}] ${oneLine(e.source)}: ${oneLine(e.sample)} (×${e.count}, id ${oneLine(e.id)})`).join('\n');
     const text = `В логе редактора есть открытые ошибки (реестр ~/.LiteEditorAI/errors.json). Разберись и почини; что устранил — отметь в errors.json по правилу из CLAUDE.md (для записи по id выставить "status":"resolved" + "note" + "commit"). Открытые сейчас:\n${lines}\n`;
     sendNoteToTerminal(p, text);
     toast('Передано в терминал: ' + open.length);
