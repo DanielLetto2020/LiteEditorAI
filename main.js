@@ -3569,6 +3569,15 @@ function routeOpenInViewer(payload) {
   else pendingViewerOpens.push(payload); // флашнем по editor:viewerReady
 }
 ipcMain.on('editor:openInViewer', (_e, payload) => routeOpenInViewer(payload));
+// Корень staging-каталогов ЭТОГО процесса — mkdtemp (атомарно, 0700, владелец — мы). Общий
+// «/tmp/lite-editor-view» создавал 0700 первый пользователь машины, и у остальных «В вивер» падал с
+// EACCES. pid в имени — чтобы уборка при старте отличала корни умерших процессов от живого соседа
+// (другой экземпляр редактора со своим профилем). Живёт до выхода: сносится на will-quit (ниже).
+let viewStageRoot = null;
+function viewStageDir() {
+  if (!viewStageRoot || !fs.existsSync(viewStageRoot)) viewStageRoot = fs.mkdtempSync(path.join(os.tmpdir(), `lite-editor-view-${process.pid}-`));
+  return viewStageRoot;
+}
 // Открыть ПРОИЗВОЛЬНЫЙ ТЕКСТ в вивере: пишем во временный файл (человеческое имя сохраняется —
 // каждый экспорт в своей подпапке) и роутим обычный openInViewer. Используют: экспорт результата
 // SQL-запроса (CSV/JSON), просмотр файла из контейнера, правка удалённого файла (SFTP) и т.п.
@@ -3576,12 +3585,38 @@ function stageTextForViewer(name, content) {
   // Контент бывает чувствительным (SQL-выгрузки, конфиги с хоста) → каталог 0700 / файл 0600,
   // имя каталога — из CSPRNG (общий /tmp, соседний юзер не должен ни читать, ни угадать путь).
   const base = String(name || 'export.txt').replace(/[/\\:*?"<>|]/g, '_').slice(0, 120) || 'export.txt';
-  const dir = path.join(os.tmpdir(), 'lite-editor-view', Date.now().toString(36) + crypto.randomBytes(9).toString('hex'));
-  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const dir = path.join(viewStageDir(), Date.now().toString(36) + crypto.randomBytes(9).toString('hex'));
+  fs.mkdirSync(dir, { mode: 0o700 });
   const file = path.join(dir, base);
   fs.writeFileSync(file, String(content == null ? '' : content), { encoding: 'utf8', mode: 0o600 });
   return file;
 }
+// Tmp-копии (выгрузки SQL, файлы с хостов и из контейнеров) раньше копились до перезагрузки ОС, а в
+// %TEMP% Windows — навсегда. Открытые вкладки вивера между запусками не сохраняются, так что на выходе
+// файлы уже никому не нужны. После краха/жёсткого выхода корень остаётся — его подберёт уборка при
+// следующем старте, но только если процесс-владелец (pid из имени) мёртв и каталог наш.
+app.on('will-quit', () => {
+  remoteViewerFiles.clear();
+  if (viewStageRoot) { try { fs.rmSync(viewStageRoot, { recursive: true, force: true }); } catch (_) {} viewStageRoot = null; }
+});
+async function sweepStaleViewStageRoots() {
+  const tmp = os.tmpdir();
+  let names;
+  try { names = await fs.promises.readdir(tmp); } catch (_) { return; }
+  for (const n of names) {
+    const m = /^lite-editor-view-(\d+)-/.exec(n);
+    const pid = m ? Number(m[1]) : 0;
+    if (!pid || pid === process.pid) continue;
+    try { process.kill(pid, 0); continue; } catch (e) { if (!e || e.code !== 'ESRCH') continue; } // жив или чужой (EPERM) — не трогаем
+    const p = path.join(tmp, n);
+    try {
+      const st = await fs.promises.lstat(p);
+      if (!st.isDirectory() || (typeof process.getuid === 'function' && st.uid !== process.getuid())) continue;
+      await fs.promises.rm(p, { recursive: true, force: true });
+    } catch (_) {}
+  }
+}
+app.whenReady().then(() => { setTimeout(() => { sweepStaleViewStageRoots().catch(() => {}); }, 20000); });
 ipcMain.handle('editor:openTextInViewer', (_e, { name, content } = {}) => {
   try {
     const file = stageTextForViewer(name, content);
