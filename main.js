@@ -5977,9 +5977,17 @@ ipcMain.handle('git:fileDiff', async (_e, { root, file }) => {
     const tracked = await git(root, ['ls-files', '--error-unmatch', '--', file]); // null → файл не отслеживается
     if (tracked == null) {
       try {
-        const buf = fs.readFileSync(file);
-        const rel = path.basename(file);
-        if (buf.includes(0)) out = 'diff --git a/' + rel + ' b/' + rel + '\nBinary file (новый, не отслеживается)';
+        // Путь в заголовке — от корня проекта (cwd git): по нему git:revertHunk (git apply --reverse)
+        // ищет файл. С basename откат ханка нового файла из подкаталога падал «No such file», а
+        // одноимённый файл в корне проекта с тем же содержимым был бы удалён вместо него.
+        let rel = path.relative(root, file).replace(/\\/g, '/');
+        if (!rel || rel.startsWith('../') || path.isAbsolute(rel)) rel = path.basename(file);
+        // Лимит как у git:filePair: целиком в память (синхронно, в main) читался файл любого размера —
+        // многосотмегабайтный лог/дамп агента подвешивал все окна и мог уронить main по памяти.
+        const tooBig = fs.statSync(file).size > MAX_VIEW_BYTES;
+        const buf = tooBig ? null : fs.readFileSync(file);
+        if (!buf) out = 'diff --git a/' + rel + ' b/' + rel + '\nФайл слишком большой для диффа (новый, не отслеживается)';
+        else if (buf.includes(0)) out = 'diff --git a/' + rel + ' b/' + rel + '\nBinary file (новый, не отслеживается)';
         else {
           const lines = buf.toString('utf8').split('\n');
           if (lines.length && lines[lines.length - 1] === '') lines.pop(); // не считать финальный перевод строки лишней строкой
