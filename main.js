@@ -676,6 +676,7 @@ ipcMain.handle('openrouter:histSet', (_e, { id, messages } = {}) => {
 ipcMain.handle('openrouter:models', async (_e, { key } = {}) => {
   return await new Promise((resolve) => {
     const req = https.request(OR_BASE + '/models', { method: 'GET', headers: orHeaders(key) }, (res) => {
+      res.setEncoding('utf8'); // многобайтный символ на границе чанков не бьётся (см. openrouter:chatStart)
       let data = '';
       res.on('data', (c) => { data += c; });
       res.on('end', () => {
@@ -875,6 +876,7 @@ ipcMain.handle('update:install', async () => {
 ipcMain.handle('openrouter:keyInfo', async (_e, { key } = {}) => {
   return await new Promise((resolve) => {
     const req = https.request(OR_BASE + '/key', { method: 'GET', headers: orHeaders(key) }, (res) => {
+      res.setEncoding('utf8'); // многобайтный символ на границе чанков не бьётся (см. openrouter:chatStart)
       let data = '';
       res.on('data', (c) => { data += c; });
       res.on('end', () => {
@@ -901,6 +903,9 @@ ipcMain.on('openrouter:chatStart', (e, { reqId, key, model, messages, temperatur
     req = https.request(OR_BASE + '/chat/completions',
     { method: 'POST', headers: { ...orHeaders(key), 'Content-Length': Buffer.byteLength(body) } },
     (res) => {
+      // Строки, а не Buffer: кириллица — два байта, и символ, разрезанный границей чанка, при
+      // chunk.toString() превращался в «��» прямо в ответе модели. StringDecoder склеивает хвост.
+      res.setEncoding('utf8');
       // Обрыв связи посреди стрима: 'end' не придёт, а у запроса нет 'error' (ответ уже начат) —
       // чат навсегда оставался в «отправке», запись в orReqs висела. После 'end'/abort — no-op.
       res.on('close', () => {
@@ -1196,6 +1201,9 @@ ipcMain.on('tp:run', (e, { reqId, agent, prompt, mode, cwd } = {}) => {
   try { child = spawn(conf.cmd, args, { cwd: plan.cwd, env: tpEnv() }); }
   catch (err) { safeSend(sender, 'tp:error', { reqId, error: 'не запустить «' + conf.cmd + '»: ' + (err.message || err) }); return; }
   tpReqs.set(reqId, child);
+  // Декодируем поток целиком (StringDecoder): русский текст — по два байта на букву, и буква на
+  // границе чанков при c.toString() превращалась в «��» и в чате, и в итоговом тексте для «Заменить».
+  child.stdout.setEncoding('utf8'); child.stderr.setEncoding('utf8');
   let out = '', errOut = '';
   // Агент-режим обходит файлы и правит их — 4 минут ему мало; чат отвечает одним куском.
   const to = setTimeout(() => { if (tpReqs.has(reqId)) { tpReqs.delete(reqId); try { child.kill(); } catch (_) {} safeSend(sender, 'tp:error', { reqId, error: i18n.t('таймаут (агент не ответил вовремя)') }); } }, mode === 'agent' ? 900000 : 240000);
@@ -2359,6 +2367,9 @@ ipcMain.on('company:run', (e, { reqId, projPath, goal, roles, director, limitUsd
   try { child = spawn('claude', args, { cwd: projPath, env: tpEnv(), detached: process.platform !== 'win32' }); }
   catch (err) { safeSend(sender, 'company:error', { reqId, error: 'не запустить «claude»: ' + (err.message || err) }); return; }
   companyReqs.set(reqId, child);
+  // Строки вместо Buffer: длинные строки stream-json (результаты инструментов) рвутся на чанки, и
+  // русская буква на стыке при c.toString() становилась «��» в логе директора.
+  child.stdout.setEncoding('utf8'); child.stderr.setEncoding('utf8');
   let buf = '', errOut = '';
   // сторож простоя: директор может думать долго, но если МОЛЧИТ 15 минут — считаем зависшим
   let idle;
