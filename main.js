@@ -6999,7 +6999,10 @@ ipcMain.handle('shell:openExternal', async (_e, url) => {
 ipcMain.handle('shell:openInBrowser', async (_e, target) => {
   try {
     const p = String(target == null ? '' : target);
-    if (!p || !fs.existsSync(p)) return { error: 'файл не найден' };
+    // Только HTML (так канал и зовут: вивер/дерево — для .html/.htm): file:// к .exe/.bat/.desktop
+    // shell.openExternal не «открывает в браузере», а запускает программой ОС.
+    if (!/\.html?$/i.test(p)) return { error: 'в браузере открывается только HTML-файл' };
+    if (!fs.existsSync(p)) return { error: 'файл не найден' };
     let u = p.replace(/\\/g, '/'); if (!u.startsWith('/')) u = '/' + u;
     const url = 'file://' + encodeURI(u).replace(/%(?![0-9A-Fa-f]{2})/g, '%25').replace(/#/g, '%23').replace(/\?/g, '%3F');
     await shell.openExternal(url);
