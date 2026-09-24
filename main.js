@@ -4487,18 +4487,34 @@ const FILES_SEARCH_CAP = 1000;                 // потолок совпаде�
 const FILES_SEARCH_FILE_MAX = 1024 * 1024;     // не грепаем файлы крупнее 1 МБ (минифицированные/данные)
 // Обход дерева проекта (тот же IGNORE_DIRS, что у дерева/аудита). onFile(full) — на каждый файл;
 // stop() → true прекращает обход (достигнут потолок). Симлинки на папки резолвим через stat.
+// Петли симлинков («ln -s .. up», «ln -s . self»): ссылку на каталог, который уже есть на пути от
+// корня (по реальному пути), не раскрываем. Без этого обход шёл по кругу до ELOOP ядра (40 уровней),
+// а две такие ссылки давали 2^40 путей — поиск по проекту не завершался никогда.
 async function walkProjectFiles(root, onFile, stop) {
-  const stack = [root];
+  let rootReal = root;
+  try { rootReal = await fs.promises.realpath(root); } catch { /* корня нет — readdir ниже вернёт ошибку */ }
+  const stack = [{ dir: root, real: rootReal, up: null }];   // up — родитель на пути от корня
   while (stack.length) {
     if (stop && stop()) return;
-    const dir = stack.pop();
+    const node = stack.pop();
+    const dir = node.dir;
     let entries;
     try { entries = await fs.promises.readdir(dir, { withFileTypes: true }); } catch { continue; }
     for (const d of entries) {
       const full = path.join(dir, d.name);
       let isDir = d.isDirectory();
-      if (d.isSymbolicLink()) { try { isDir = (await fs.promises.stat(full)).isDirectory(); } catch { isDir = false; } }
-      if (isDir) { if (!IGNORE_DIRS.has(d.name)) stack.push(full); continue; }
+      let real = null;
+      if (d.isSymbolicLink()) {
+        try { isDir = (await fs.promises.stat(full)).isDirectory(); } catch { isDir = false; }
+        if (isDir && !IGNORE_DIRS.has(d.name)) { try { real = await fs.promises.realpath(full); } catch { continue; } }
+      }
+      if (isDir) {
+        if (IGNORE_DIRS.has(d.name)) continue;
+        if (real === null) real = path.join(node.real, d.name);   // обычный каталог: реальный путь = родитель + имя
+        else { let a = node; while (a && a.real !== real) a = a.up; if (a) continue; } // петля — уже на пути
+        stack.push({ dir: full, real, up: node });
+        continue;
+      }
       if (stop && stop()) return;
       await onFile(full);
     }
