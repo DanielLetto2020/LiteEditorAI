@@ -663,6 +663,7 @@ contextBridge.exposeInMainWorld('lite', {
     kill: (id) => ipcRenderer.send('pty:kill', { id }),
     restart: (opts) => ipcRenderer.invoke('pty:restart', opts),
     foregroundState: (id) => ipcRenderer.invoke('pty:foregroundState', { id }),
+    agentState: (id) => ipcRenderer.invoke('pty:agentState', { id }), // + отчёт Claude Code о сессии
     onData: (cb) => {
       const h = (_e, payload) => cb(payload);
       ipcRenderer.on('pty:data', h);

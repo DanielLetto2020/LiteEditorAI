@@ -1,4 +1,4 @@
-// LiteEditor — модуль «Контейнеры» (Docker/Podman) правого слота.
+// LiteEditor — модуль «Контейнеры» (Docker/Podman), окно модуля (module.html#docker).
 // Изолирован по образцу textproc.js: всё из ядра — через host, UI-хелперы — из ui.js,
 // бэкенд — window.lite.containers.*. xterm для exec-терминала импортируется здесь же.
 // host: { STORE, persist, settings, layout, GUTTER, saveUiState, refitActiveTerminal,
@@ -76,7 +76,6 @@ export function initContainers(host) {
     if (open) renderDockerPanel();
     setTimeout(refitActiveTerminal, 150);
   }
-  function toggleDocker() { setDockerOpen(!dockerOpen); }
 
   // --- удалённый контекст: контейнеры хоста из «Удалённых хостов» (SSH-туннель до сокета в main)
   let dockerRemote; // undefined = статус не спрошен; null = локально; { rhId, name, engine }
@@ -85,6 +84,20 @@ export function initContainers(host) {
     if (dockerRemote !== undefined) return;
     try { const st = await lite.containers.remoteStatus(); dockerRemote = (st && st.rhId) ? st : null; } catch (_) { dockerRemote = null; }
   }
+  // Хост контейнеров переключают и из другого окна («Удалённые хосты» → «Сервисы» → «В Контейнеры»),
+  // а открытое окно «Контейнеров» лишь получает фокус и продолжало показывать прежний хост. Сверяемся
+  // с main при каждом возврате фокуса; список перерисовываем, деталь контейнера не трогаем.
+  async function syncRemoteFromMain() {
+    if (!dockerOpen || dockerRemote === undefined) return;
+    let st; try { st = await lite.containers.remoteStatus(); } catch (_) { return; }
+    const cur = (st && st.rhId) ? st : null;
+    const same = (cur && cur.rhId) === (dockerRemote && dockerRemote.rhId) && (!cur || cur.engine === dockerRemote.engine);
+    if (same) return;
+    dockerRemote = cur; dockerDetect = null;
+    if (cur) dockerEngine = cur.engine; else dockerTunnels = [];
+    if (dockerView === 'list') renderDockerPanel();
+  }
+  window.addEventListener('focus', () => { syncRemoteFromMain(); });
   async function applyContainersHost(rhId, label, engine) {
     const saved = rhId ? (dockerUi.engineByHost || {})[rhId] : undefined; // запомненный выбор движка для хоста
     const eng = engine || saved;
@@ -505,11 +518,15 @@ export function initContainers(host) {
     const row = el('div', 'docker-row');
     row.appendChild(icon('layers', 15));
     const main = el('div', 'drow-main');
-    main.appendChild(el('span', 'drow-name', (im.repo || '<none>') + (im.tag ? ':' + im.tag : '')));
+    const ref = (im.repo || '<none>') + (im.tag ? ':' + im.tag : '');
+    main.appendChild(el('span', 'drow-name', ref));
     main.appendChild(el('span', 'drow-sub', [im.size, im.created].filter(Boolean).join('   ·   ')));
     row.appendChild(main);
     const acts = el('div', 'drow-acts');
-    acts.appendChild(dRemoveBtn('image', im.id, (im.repo || '<none>') + (im.tag ? ':' + im.tag : ''), false));
+    // Удаляем ИМЕННО эту строку: по repo:tag, а не по id. У образа с несколькими тегами id общий,
+    // и `rmi -f <id>` снёс бы все его теги, хотя подтверждали удаление одного. Безымянный — по id.
+    const tagged = im.repo && im.repo !== '<none>' && im.tag && im.tag !== '<none>';
+    acts.appendChild(dRemoveBtn('image', tagged ? ref : im.id, ref, false));
     row.appendChild(acts);
     return row;
   }
@@ -766,7 +783,7 @@ export function initContainers(host) {
     view.innerHTML = '';
     const wrap = el('div', 'docker-term'); view.appendChild(wrap);
     const d = dockerDetail; if (!d) return;
-    const term = new Terminal({ fontFamily: '"JetBrains Mono", "Fira Code", "Cascadia Code", Consolas, monospace', fontSize: settings.fontSize, cursorBlink: true, allowProposedApi: true, theme: termTheme(), scrollback: 3000 });
+    const term = new Terminal({ fontFamily: '"JetBrains Mono", "Fira Code", "Cascadia Code", Consolas, monospace', fontSize: settings.fontSize, cursorBlink: true, allowProposedApi: true, theme: termTheme(), scrollback: 3000, allowTransparency: true });
     const fit = new FitAddon(); term.loadAddon(fit);
     applyUnicode11(term);
     term.open(wrap);
@@ -813,6 +830,7 @@ export function initContainers(host) {
           toast('Открываю в вивере…', { ttl: 2500 });
           let o;
           try { o = await lite.containers.fsOpenInViewer(d.engine, d.id, join(cur, e.name)); } catch (err) { o = { ok: false, error: String(err) }; }
+          if (o && o.dir) { load(join(cur, e.name)); return; } // симлинк на каталог (/bin, /lib) — входим
           if (!o || !o.ok) toast((o && o.error) || 'Не удалось открыть файл', { kind: 'err', ttl: 8000 });
           else toast('Файл из контейнера в вивере (копия — правки в контейнер не вернутся)', { ttl: 6000 });
         };
@@ -930,5 +948,5 @@ export function initContainers(host) {
   // Смена темы редактора: перекрасить живой exec-терминал (вызывается ядром из applyTheme).
   function applyTermTheme() { if (dockerExecTerm) { try { dockerExecTerm.options.theme = termTheme(); } catch (_) {} } }
 
-  return { isOpen: () => dockerOpen, setOpen: setDockerOpen, toggle: toggleDocker, refitExec, refresh, applyTermTheme };
+  return { isOpen: () => dockerOpen, setOpen: setDockerOpen, refitExec, refresh, applyTermTheme };
 }

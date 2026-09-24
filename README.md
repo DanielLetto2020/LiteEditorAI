@@ -55,7 +55,9 @@ working on right now".
 A traffic light shows the state without switching anywhere: **working** (spinner) · **waiting for your
 answer** (amber) · **done** (green) · **not started yet** (dashed). The project row aggregates all its tabs,
 and the terminal header carries a counter — *how many agents are blocked on you*; click it to jump to the
-next one. Notifications included.
+next one. Notifications included. For Claude Code the light doesn't guess from the output: Claude reports its
+own state, so status-line redraws and typing never start the spinner, and amber means it is asking for
+permission, asking a question or showing a dialog.
 
 An optional **time scale** runs down the left edge of the terminal. It marks when you sent a command, when
 output resumed after a pause, and every new minute — so an hour of agent output stops being an undated wall
@@ -199,7 +201,7 @@ One theme — **Graphite**: rounded cards on a dark window whose background and 
 translucent, while menus and buttons stay solid. The colours are yours: pick an accent, change the six base
 colours, the status colours or any of 16 more by hand, and set the corner radius, sidebar width, project row
 height, terminal font and background opacity. It all applies live in the **Appearance** panel (the palette
-button at the bottom of the sidebar), module windows follow along, and a theme can be copied and pasted as
+button at the bottom of the sidebar), module windows follow along, transparency included, and a theme can be copied and pasted as
 text to share it.
 
 ![Appearance panel](assets/screenshots/appearance.png)

@@ -29,7 +29,7 @@ import { openGlobalSearch } from './gsearch.js';
 import { initExtensions } from './modules/extensions.js';
 // initFiles — вивер+дерево мигрированы в отдельное окно (renderer/module-entry.js).
 
-const APP_VERSION = 'alpha v1.1.202';
+const APP_VERSION = 'alpha v1.1.203';
 const GUTTER = 8; // зазор между карточками окна — он же разделитель, за который тянется ширина
 // Системный терминал («Система · ~») мигрирован в отдельное окно (renderer/modules/scratch.js):
 // его id `__scratch__::tN` маршрутизируются main'ом в окно-владельца, в ядре их больше не обрабатываем.
@@ -969,7 +969,7 @@ function doCloseProject(id) {
     for (const sid of tabs.sessions) {
       lite.pty.kill(sid);
       const rec = terms.get(sid);
-      if (rec) { clearTimeout(rec.idleTimer); clearTimeout(rec.prefillTimer); releaseRenderer(rec.term); try { rec.timeline.dispose(); } catch (_) {} try { rec.term.dispose(); } catch (_) {} rec.container.remove(); terms.delete(sid); }
+      if (rec) { clearTimeout(rec.idleTimer); clearTimeout(rec.prefillTimer); stopClaudeProbe(rec); releaseRenderer(rec.term); try { rec.timeline.dispose(); } catch (_) {} try { rec.term.dispose(); } catch (_) {} rec.container.remove(); terms.delete(sid); }
       projState.delete(sid);
     }
     tabsByProj.delete(id);
@@ -1011,6 +1011,7 @@ async function checkProjectsExistence() {
 // (\x07) — agents/CLIs ring it on purpose; a normal shell/Claude prompt does not,
 // so we must NOT treat trailing $, #, ❯ as "waiting" (that's just idle/ready).
 // PROMPT_RE is a narrow backup for plain CLIs (git/ssh/sudo) that don't bell.
+// Claude Code идёт своим путём (ниже, «Claude Code»): его состояние — из его же отчёта.
 const PROMPT_RE = /\(y\/n\)|\[y\/n\]|\[Y\/n\]|\(yes\/no\)|overwrite\?|password[^\n]{0,24}:|passphrase[^\n]{0,24}:|press\s+(?:enter|return|any key)|continue\?/i;
 const ANSI_RE = /\x1b\][^\x07]*\x07|\x1b\[[0-?]*[ -/]*[@-~]|\x1b[@-_]|[\x00-\x08\x0b-\x1f\x7f]/g;
 const stripAnsi = (str) => str.replace(ANSI_RE, '');
@@ -1037,6 +1038,9 @@ function markActivity(id, data) {
   if (!rec) return;
   const bell = !!(data && hasRealBell(data));
   if (bell) rec.sawBell = true;
+  // Claude на переднем плане: его вывод — не признак работы (строка статуса и поле ввода
+  // перерисовываются и в простое), а только повод свериться с его отчётом.
+  if (rec.claude) { scheduleClaudeProbe(id); return; }
   // Local echo of the user's own typing is tiny and arrives right after a keystroke —
   // that's not the agent working, so don't spin on it.
   const echoLike = !bell && data && data.length <= 8 && (Date.now() - (rec.lastInputAt || 0)) < 250;
@@ -1054,8 +1058,10 @@ async function settleProject(id) {
   const rec = terms.get(id);
   if (!rec) return;
   const seq = rec.activitySeq;
-  const kind = await lite.pty.foregroundState(id); // 'shell' | 'running' | 'waiting' | null
+  const report = await agentReport(id);
   if (!terms.has(id) || rec.activitySeq !== seq) return; // new output arrived during the await
+  if (claudeVerdict(id, report)) return;           // в терминале Claude — решает его отчёт
+  const kind = report ? report.fg : null;          // 'shell' | 'running' | 'waiting' | null
 
   if (kind === 'running') { // a foreground program is computing silently → keep spinner, re-poll
     if (projState.get(id) !== 'busy') setProjState(id, 'busy');
@@ -1068,24 +1074,159 @@ async function settleProject(id) {
   else if (kind === 'shell') waiting = false;      // back at a bare shell prompt → idle/done
   else waiting = PROMPT_RE.test((rec.tail || '').split('\n').pop().trim()); // non-Linux fallback
   if (rec.sawBell) waiting = true;                 // explicit bell always means "look at me"
-  const worked = rec.sawBell || (Date.now() - (rec.busyStart || 0)) >= 1500; // skip trivial blips
+  // skip trivial blips; не busy — сюда пришли после выхода Claude, работы не было
+  const worked = rec.sawBell || (projState.get(id) === 'busy' && (Date.now() - (rec.busyStart || 0)) >= 1500);
   rec.sawBell = false;
   setProjState(id, waiting ? 'waiting' : 'quiet');
-  const pid = rec.projId;
   // notify per project when its turn ended on a non-visible tab (or app unfocused)
-  if (worked && (id !== activeSessionId() || !document.hasFocus())) notifyAgent(pid, waiting ? 'waiting' : 'quiet');
+  if (worked && (id !== activeSessionId() || !document.hasFocus())) notifyAgent(rec.projId, waiting ? 'waiting' : 'quiet', id);
+}
+// { fg, claude } (Linux) | null (нет /proc). Старый preload без agentState — только fg.
+async function agentReport(id) {
+  try {
+    if (lite.pty.agentState) return await lite.pty.agentState(id);
+    const fg = await lite.pty.foregroundState(id);
+    return fg ? { fg, claude: null } : null;
+  } catch (_) { return null; }
+}
+
+// ---- Claude Code ----
+// По выводу не понять, работает ли Claude: строка статуса с refreshInterval перерисовывается и
+// в простое (55–75 байт раз в 1–2 с), каждая буква в поле ввода — ~50 байт перерисовки. По правилу
+// «вывод = работа» простаивающий Claude мигал: 1,2 с крутилка, затем жёлтый, и снова (задача #35).
+// Что Claude сообщает сам (замер 24.09.2026, v2.1.281):
+//  • заголовок терминала: «◐ …»/«◑ …» — идёт ход (кадр сменяется раз в 0,96 с, пока терминал
+//    в фокусе; без фокуса замирает, но остаётся «рабочим»), «✳ …» — ход окончен или Claude ждёт
+//    ответа, пустой — Claude вышел. «Ждёт вас» от «готов» заголовок не отличает;
+//  • отчёт о сессии (lib/agentstate.js, только Linux): busy | idle | waiting + причина — главный источник.
+// Итог: крутилка — Claude работает; жёлтый — ждёт вашего решения (разрешение, вопрос, диалог);
+// зелёный — ход окончен, Claude готов к следующему сообщению.
+const CLAUDE_TITLE_RE = /^([◐◑✳])\s/;
+const CLAUDE_PROBE_MS = 150;      // пауза в выводе перед сверкой: отчёт отстаёт от экрана до ~50 мс
+const CLAUDE_PROBE_MAX_MS = 1000; // под непрерывным выводом сверяемся не реже раза в секунду
+// Отчёта нет (macOS/Windows, Claude по ssh, старая версия) — диалог узнаём по экрану: у запроса
+// разрешения, вопроса и меню Claude внизу нумерованный список «❯ 1.» и подвал «… Esc to cancel».
+const CLAUDE_PICK_RE = /^\s*❯\s*1\.\s/;
+const CLAUDE_FOOT_RE = /\bEsc to cancel\b/;
+
+function claudeDialogOnScreen(term) {
+  const b = term.buffer.active;
+  let pick = false, foot = false;
+  for (let y = b.baseY; y < b.baseY + term.rows; y++) {
+    const line = b.getLine(y);
+    if (!line) continue;
+    const text = line.translateToString(true);
+    if (CLAUDE_PICK_RE.test(text)) pick = true;
+    if (CLAUDE_FOOT_RE.test(text)) foot = true;
+  }
+  return pick && foot;
+}
+// Заголовок терминала (OSC 0/2) — самый быстрый признак: «◐/◑» ставит крутилку сразу.
+function onClaudeTitle(id, raw) {
+  const rec = terms.get(id);
+  if (!rec) return;
+  const m = CLAUDE_TITLE_RE.exec(String(raw || ''));
+  if (!m) {   // заголовок больше не от Claude: вышел (при выходе он пустой) или шелл поставил свой
+    if (rec.claude && rec.claude.titled) leaveClaude(id);
+    return;
+  }
+  const working = m[1] !== '✳';
+  const c = rec.claude || (rec.claude = {});
+  const was = c.titled ? c.working : null;
+  c.titled = true;
+  c.working = working;
+  clearTimeout(rec.idleTimer);                // обычная «тишина → проверка» для Claude не нужна
+  if (was === working) return;                // очередной кадр ◐/◑ — ничего не изменилось
+  if (working) setAgentState(id, 'busy');     // ход начался — крутилка сразу, отчёт догонит
+  scheduleClaudeProbe(id, working ? CLAUDE_PROBE_MS : 60);
+}
+function scheduleClaudeProbe(id, delay = CLAUDE_PROBE_MS) {
+  const rec = terms.get(id);
+  if (!rec) return;
+  clearTimeout(rec.probeTimer);
+  rec.probeTimer = setTimeout(() => probeClaude(id), delay);
+  if (!rec.probeDeadline) rec.probeDeadline = setTimeout(() => probeClaude(id), CLAUDE_PROBE_MAX_MS);
+}
+function stopClaudeProbe(rec) {
+  clearTimeout(rec.probeTimer); clearTimeout(rec.probeDeadline);
+  rec.probeTimer = rec.probeDeadline = null;
+}
+async function probeClaude(id) {
+  const rec = terms.get(id);
+  if (!rec) return;
+  stopClaudeProbe(rec);
+  const seq = rec.probeSeq = (rec.probeSeq || 0) + 1;
+  const report = await agentReport(id);
+  if (!terms.has(id) || rec.probeSeq !== seq || !rec.claude) return; // пока ждали, ушла новая сверка
+  if (!claudeVerdict(id, report)) settleProject(id);                 // Claude больше нет — обычная логика
+}
+// Состояние по Claude. false — Claude в терминале нет, решает обычная логика.
+function claudeVerdict(id, report) {
+  const rec = terms.get(id);
+  const rep = report && report.claude;
+  if (rep) {
+    const c = rec.claude || (rec.claude = {});   // Claude без заголовка (он отключён) узнаём по отчёту
+    clearTimeout(rec.idleTimer);
+    const st = rep.status === 'busy' ? 'busy' : rep.status === 'waiting' ? 'waiting' : 'quiet';
+    // Заголовок и отчёт расходятся — файл отстаёт от экрана на десятки мс, переспросим. Расхождение
+    // бывает и по делу («busy» при «✳», пока работают фоновые агенты Claude) — после трёх сверок верим отчёту.
+    if (c.titled && (st === 'busy') !== c.working && (rec.claudeRetry || 0) < 3) {
+      rec.claudeRetry = (rec.claudeRetry || 0) + 1;
+      scheduleClaudeProbe(id, 300);
+      return true;
+    }
+    rec.claudeRetry = 0;
+    setAgentState(id, st, rep.waitingFor);
+    return true;
+  }
+  if (!rec.claude) return false;
+  // Отчёта нет, но заголовок от Claude и на переднем плане не голый шелл — по заголовку и экрану.
+  if (rec.claude.titled && !(report && report.fg === 'shell')) {
+    setAgentState(id, rec.claude.working ? 'busy' : claudeDialogOnScreen(rec.term) ? 'waiting' : 'quiet');
+    return true;
+  }
+  rec.claude = null;   // Claude вышел: на переднем плане шелл или другая программа
+  stopClaudeProbe(rec);
+  return false;
+}
+function leaveClaude(id) {
+  const rec = terms.get(id);
+  if (!rec) return;
+  rec.claude = null;
+  rec.claudeRetry = 0;
+  stopClaudeProbe(rec);
+  clearTimeout(rec.idleTimer);
+  rec.idleTimer = setTimeout(() => settleProject(id), settings.idleMs);
+}
+// Смена состояния Claude. Уведомление, если вкладка не на виду: «ждёт вас» — всегда,
+// «закончил» — если ход был не пустяковый (≥ 1,5 с).
+function setAgentState(id, st, reason) {
+  const rec = terms.get(id);
+  if (!rec) return;
+  const prev = projState.get(id);
+  if (st === prev) return;
+  const worked = prev === 'busy' && Date.now() - (rec.busyStart || 0) >= 1500;
+  if (st === 'busy') rec.busyStart = Date.now();
+  rec.sawBell = false;
+  setProjState(id, st);
+  if (st === 'busy') return;
+  if ((st === 'waiting' || worked) && (id !== activeSessionId() || !document.hasFocus())) notifyAgent(rec.projId, st, id, reason);
 }
 
 let lastNotifyAt = 0;
-function notifyAgent(id, state) {
+// reason — причина ожидания из отчёта Claude ('permission prompt', 'input needed', …).
+function notifyAgent(id, state, sid, reason) {
   if (!settings.notifications) return;
   const proj = projects.find((p) => p.id === id);
   if (!proj || Date.now() - lastNotifyAt < 1200) return;
   lastNotifyAt = Date.now();
-  const title = state === 'waiting' ? `⏳ ${proj.name} — агент ждёт ответа` : `✓ ${proj.name} — агент закончил`;
+  const title = state !== 'waiting' ? tt('✓ {0} — агент закончил', proj.name)
+    : reason === 'permission prompt' ? tt('⏳ {0} — Claude просит разрешения', proj.name)
+    : reason === 'input needed' ? tt('⏳ {0} — Claude задал вопрос', proj.name)
+    : tt('⏳ {0} — агент ждёт ответа', proj.name);
   try {
     const n = new Notification(title, { body: proj.path, silent: !settings.sound, tag: 'lite-' + id });
-    n.onclick = () => { lite.win.show(); setActive(id); };
+    n.onclick = () => { lite.win.show(); setActive(id); if (sid && terms.has(sid)) switchTab(sid); };
   } catch (_) {}
 }
 // Count of agents waiting on input → titlebar badge + tray tooltip.
@@ -1147,7 +1288,8 @@ function projSessions(projId) { const t = tabsByProj.get(projId); return t ? t.s
 function projAggState(projId) {
   const ss = projSessions(projId).map((s) => projState.get(s));
   if (!ss.length) return 'idle';   // терминал проекта ещё не поднимали в этом запуске
-  return ss.includes('busy') ? 'busy' : ss.includes('waiting') ? 'waiting' : 'quiet';
+  // «ждёт вас» важнее «работает»: вторая вкладка с крутилкой не должна прятать вопрос первой
+  return ss.includes('waiting') ? 'waiting' : ss.includes('busy') ? 'busy' : 'quiet';
 }
 function refreshProjIndicator(projId) {
   const st = projAggState(projId);
@@ -1296,7 +1438,8 @@ function createSession(proj, name, custom, adoptId) {
     },
   });
   term.registerLinkProvider(fileLinkProvider(term, proj.path));
-  const rec = { term, fit, search, timeline, syncPty, container, projId: proj.id, name, customName: !!custom, idleTimer: null, sawBell: false, tail: '', busyStart: 0, lastInputAt: 0, activitySeq: 0, prefill: '', prefillTimer: null, redraw: !!adoptId };
+  const rec = { term, fit, search, timeline, syncPty, container, projId: proj.id, name, customName: !!custom, idleTimer: null, sawBell: false, tail: '', busyStart: 0, lastInputAt: 0, activitySeq: 0, prefill: '', prefillTimer: null, redraw: !!adoptId,
+    claude: null, probeTimer: null, probeDeadline: null, probeSeq: 0, claudeRetry: 0 }; // claude — см. «Claude Code» у индикатора
   terms.set(id, rec);
   if (adoptId) {
     // прокрутка прежней страницы пропала вместе с ней; программу в терминале попросим перерисоваться при показе
@@ -1308,7 +1451,8 @@ function createSession(proj, name, custom, adoptId) {
   // текущую задачу, шелл — user@host:cwd. Подхватываем как имя вкладки, пока пользователь
   // не переименовал вкладку руками (rec.customName). Один и тот же заголовок (bash каждый
   // промпт шлёт одно и то же) отсекаем сравнением — без дёрганья tab-бара.
-  term.onTitleChange((t) => adoptTermTitle(id, t));
+  // Он же — признак работы Claude Code для индикатора (onClaudeTitle).
+  term.onTitleChange((t) => { onClaudeTitle(id, t); adoptTermTitle(id, t); });
   tabsByProj.get(proj.id).sessions.push(id);
   return id;
 }
@@ -1419,7 +1563,7 @@ function closeTab(sid) {
   const t = tabsByProj.get(activeId); if (!t || t.sessions.length <= 1) return; // keep ≥1 tab
   lite.pty.kill(sid);
   const rec = terms.get(sid);
-  if (rec) { clearTimeout(rec.idleTimer); clearTimeout(rec.prefillTimer); releaseRenderer(rec.term); try { rec.timeline.dispose(); } catch (_) {} try { rec.term.dispose(); } catch (_) {} rec.container.remove(); terms.delete(sid); }
+  if (rec) { clearTimeout(rec.idleTimer); clearTimeout(rec.prefillTimer); stopClaudeProbe(rec); releaseRenderer(rec.term); try { rec.timeline.dispose(); } catch (_) {} try { rec.term.dispose(); } catch (_) {} rec.container.remove(); terms.delete(sid); }
   projState.delete(sid);
   const i = t.sessions.indexOf(sid);
   t.sessions.splice(i, 1);
@@ -1457,6 +1601,8 @@ function looksLikeShellTitle(s) {
 function adoptTermTitle(id, raw) {
   const rec = terms.get(id); if (!rec || rec.customName) return;
   let name = String(raw || '').replace(/[\x00-\x1f\x7f]/g, '').trim().replace(/\s+/g, ' ');
+  // значок состояния Claude (◐/◑ меняются раз в секунду, пока идёт ход) — в индикаторе, не в имени
+  name = name.replace(CLAUDE_TITLE_RE, '');
   if (!name || looksLikeShellTitle(name)) return;
   if (name.length > 200) name = name.slice(0, 200);
   if (name === rec.name && rec.autoTitled) return;
@@ -1538,6 +1684,7 @@ function restartTerminal(id) {
   try { rec.timeline.reset(); } catch (_) {}
   rec.sawBell = false; rec.tail = ''; rec.busyStart = Date.now();
   clearTimeout(rec.idleTimer);
+  rec.claude = null; stopClaudeProbe(rec);
   setProjState(sid, 'busy');
   lite.pty.restart({ id: sid, cwd: proj.path, cols: rec.term.cols, rows: rec.term.rows });
   rec.term.focus();
@@ -3732,6 +3879,7 @@ function init() {
     const rec = terms.get(id);
     if (!rec) return;   // сессия прежней загрузки окна (или уже закрытая вкладка) — не наша
     cancelPrefill(id); rec.term.write('\r\n\x1b[90m[процесс завершён — закрой и переоткрой проект]\x1b[0m\r\n');
+    clearTimeout(rec.idleTimer); rec.claude = null; stopClaudeProbe(rec);
     setProjState(id, 'quiet');
   });
   // RemoteHost — SSH-сессии (отдельный канал, не PTY): пишем вывод в соответствующий xterm.

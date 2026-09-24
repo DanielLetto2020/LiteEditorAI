@@ -2,7 +2,7 @@
 // (module-entry.js → git и др. модули, которым нужен встроенный редактор/дифф). Самодостаточно:
 // свои импорты CM, без зависимостей от ядра рендерера (граф DAG: codeedit ← renderer/modules).
 import { EditorView, keymap, lineNumbers, drawSelection, Decoration } from '@codemirror/view';
-import { EditorState, StateField, StateEffect } from '@codemirror/state';
+import { EditorState, StateField, StateEffect, Prec } from '@codemirror/state';
 import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands';
 import { syntaxHighlighting, defaultHighlightStyle, indentOnInput, bracketMatching, LanguageDescription,
   foldGutter, codeFolding, foldKeymap, foldAll, unfoldAll } from '@codemirror/language';
@@ -57,6 +57,34 @@ const marksField = StateField.define({
   provide: (f) => EditorView.decorations.from(f),
 });
 
+// Оформление редактора кода из палитры «Оформления» (CSS-переменные темы): фон, поля с номерами строк,
+// выделение, курсор, подсказки и панели поиска перекрашиваются вместе с редактором и лежат на
+// полупрозрачном фоне окна. Цвета подсветки синтаксиса остаются от One Dark — это опознавательный
+// признак языка, как цвета значков файлов. Приоритет повышен (Prec.high): при равном весе селекторов
+// CodeMirror отдаёт победу теме, подключённой раньше, а oneDark в списках расширений стоит первым.
+// Поле номеров плотное (цвет панели): при горизонтальной прокрутке код уезжает под него.
+const mix = (tok, pct) => `color-mix(in srgb, var(--${tok}) ${pct}%, transparent)`;
+export const liteEditorTheme = Prec.high(EditorView.theme({
+  '&': { color: 'var(--text2)', backgroundColor: 'transparent' },
+  '.cm-content': { caretColor: 'var(--accent)' },
+  '.cm-cursor, .cm-dropCursor': { borderLeftColor: 'var(--accent)' },
+  '&.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground, .cm-selectionBackground, .cm-content ::selection': { backgroundColor: mix('accent', 26) },
+  '.cm-gutters': { backgroundColor: 'var(--panel)', color: 'var(--text-mute)', border: 'none' },
+  '.cm-activeLine': { backgroundColor: 'var(--hover)' },
+  '.cm-activeLineGutter': { backgroundColor: 'var(--hover-2)', color: 'var(--text)' },
+  '.cm-selectionMatch': { backgroundColor: mix('accent', 14) },
+  '&.cm-focused .cm-matchingBracket, &.cm-focused .cm-nonmatchingBracket': { backgroundColor: mix('accent', 30) },
+  '.cm-searchMatch': { backgroundColor: mix('warn', 30), outline: '1px solid ' + mix('warn', 60) },
+  '.cm-searchMatch.cm-searchMatch-selected': { backgroundColor: mix('accent', 40) },
+  '.cm-foldPlaceholder': { color: 'var(--text-dim)' },
+  '.cm-panels': { backgroundColor: 'var(--bg-pop)', color: 'var(--text)' },
+  '.cm-panels.cm-panels-top': { borderBottom: '1px solid var(--border-strong)' },
+  '.cm-panels.cm-panels-bottom': { borderTop: '1px solid var(--border-strong)' },
+  '.cm-tooltip': { backgroundColor: 'var(--bg-pop)', color: 'var(--text)', border: '1px solid var(--border-strong)' },
+  '.cm-tooltip .cm-tooltip-arrow:after': { borderTopColor: 'var(--bg-pop)', borderBottomColor: 'var(--bg-pop)' },
+  '.cm-tooltip-autocomplete > ul > li[aria-selected]': { backgroundColor: 'var(--accent-soft)', color: 'var(--text)' },
+}, { dark: true }));
+
 // Read-only набор расширений для панелей MergeView (дифф «было / стало»). Вынесен сюда из
 // files.js, чтобы им мог пользоваться и модуль «Контекст»: модулю нельзя импортировать другой
 // модуль (граф зависимостей — DAG ui.js ← modules ← core), а общие хелперы живут здесь.
@@ -64,7 +92,7 @@ export function mergeRoExtensions(file, onLangLoad) {
   return [
     EditorState.readOnly.of(true), EditorView.editable.of(false),
     lineNumbers(), drawSelection(),
-    syntaxHighlighting(defaultHighlightStyle, { fallback: true }), oneDark,
+    syntaxHighlighting(defaultHighlightStyle, { fallback: true }), oneDark, liteEditorTheme,
     ...(file ? [].concat(languageFor(file, onLangLoad)) : []),
   ];
 }
@@ -74,7 +102,7 @@ export function mergeRoExtensions(file, onLangLoad) {
 export function createCodeEditor(parent, opts = {}) {
   const exts = [
     lineNumbers(), drawSelection(), history(), indentOnInput(), bracketMatching(),
-    syntaxHighlighting(defaultHighlightStyle, { fallback: true }), oneDark, marksField,
+    syntaxHighlighting(defaultHighlightStyle, { fallback: true }), oneDark, liteEditorTheme, marksField,
     opts.language || [],
     keymap.of([indentWithTab, ...defaultKeymap, ...historyKeymap, ...foldKeymap]),
   ];

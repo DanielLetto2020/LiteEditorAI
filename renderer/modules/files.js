@@ -4,7 +4,7 @@
 // живут вместе в одном модуле. DOM-скелет — в module.html (#viewer-pane/#tree-pane/#commit-pane/
 // #log-pane); host — window-host из module-entry.js; действия редактора идут через lite.editorBus.
 import { el, icon, toast, showConfirm, showPrompt, baseName, makeModal, extOf, fileTypeSvg, folderTypeSvg } from '../ui.js';
-import { languageFor, ensureLanguage, mergeRoExtensions } from '../codeedit.js';
+import { languageFor, ensureLanguage, mergeRoExtensions, liteEditorTheme } from '../codeedit.js';
 import { initGit } from './git.js';
 import { EditorView, keymap, lineNumbers, highlightActiveLine, highlightActiveLineGutter, drawSelection, gutter, GutterMarker, rectangularSelection, crosshairCursor, Decoration, ViewPlugin, WidgetType } from '@codemirror/view';
 import { EditorState, Compartment, StateField, StateEffect, RangeSet } from '@codemirror/state';
@@ -270,7 +270,7 @@ export function initFiles(host) {
         indentOnInput(), bracketMatching(), highlightSelectionMatches(), search({ top: true }),
         autocompletion({ override: [anywordSource], activateOnTyping: true, icons: false }),
         colorPreview, todoHighlight, mirrorHLField,
-        syntaxHighlighting(defaultHighlightStyle, { fallback: true }), oneDark,
+        syntaxHighlighting(defaultHighlightStyle, { fallback: true }), oneDark, liteEditorTheme,
         minimapComp.of(settings.minimap ? minimapExt : []),
         authComp.of([]),
         langComp.of([]),

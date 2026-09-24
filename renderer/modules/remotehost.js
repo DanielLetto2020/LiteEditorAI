@@ -1,4 +1,4 @@
-// LiteEditor — модуль «Удалённые хосты» (SSH/SFTP/FTP) правого слота.
+// LiteEditor — модуль «Удалённые хосты» (SSH/SFTP/FTP), окно модуля (module.html#rh).
 // Изолирован по образцу textproc.js: всё из ядра — через host, UI-хелперы — из ui.js,
 // бэкенд — window.lite.rh.* (ssh2/basic-ftp в main, lib/remotehost.js). xterm импортируется здесь.
 // host: { STORE, persist, settings, layout, GUTTER, saveUiState, refitActiveTerminal,
@@ -256,6 +256,7 @@ export function initRh(host) {
     const term = new Terminal({
       fontFamily: '"JetBrains Mono", "Fira Code", "Cascadia Code", Consolas, monospace',
       fontSize: settings.fontSize, cursorBlink: true, allowProposedApi: true, theme: termTheme(), scrollback: 8000,
+      allowTransparency: true, // фон терминала прозрачный — виден полупрозрачный фон окна (задаётся только при создании)
     });
     const fit = new FitAddon();
     const search = new SearchAddon();
@@ -362,7 +363,9 @@ export function initRh(host) {
     }
   }
   async function watchSvcSite(c, svc) {
-    const url = 'http://' + c.host + ':' + svc.port;
+    const scheme = (svc.port === 443 || svc.port === 8443) ? 'https' : 'http';
+    const h = String(c.host || '').includes(':') ? '[' + c.host + ']' : c.host;   // IPv6-литерал — в скобках
+    const url = scheme + '://' + h + ':' + svc.port;
     let sites = [];
     try { const l = await lite.sitemon.list(); if (Array.isArray(l)) sites = l; } catch (_) {}
     if (sites.some((s) => s && s.url === url)) { toast(`Уже наблюдается: ${url}`, { ttl: 5000 }); lite.module.open('sitemon'); return; }
@@ -405,7 +408,9 @@ export function initRh(host) {
         mkRow('box', engine === 'docker' ? 'Docker (сокет)' : 'Podman (сокет)', sock, 'В Контейнеры', async () => {
           toast('Переключаю «Контейнеры» на этот хост…', { ttl: 4000 });
           let rr;
-          try { rr = await lite.containers.remoteSet(c.id); } catch (e) { rr = { ok: false, error: String(e) }; }
+          // движок — тот, чей сокет выбран в строке. Без него при двух сокетах main отвечал needChoice
+          // (ok:true, но контекст не переключён) — и «Контейнеры» молча оставались на локальной машине.
+          try { rr = await lite.containers.remoteSet(c.id, engine); } catch (e) { rr = { ok: false, error: String(e) }; }
           if (!rr || !rr.ok) { toast((rr && rr.error) || 'Не удалось переключить', { kind: 'err', ttl: 9000 }); return; }
           lite.module.open('docker');
         });
@@ -736,6 +741,10 @@ export function initRh(host) {
   function applyFontSize() {
     for (const rec of rhTerms.values()) { rec.term.options.fontSize = settings.fontSize; try { rec.fit.fit(); } catch (_) {} }
   }
+  // Цвета SSH-терминалов вслед за «Оформлением» (окно модуля зовёт при живой смене настроек).
+  function applyTermTheme() {
+    for (const rec of rhTerms.values()) { try { rec.term.options.theme = termTheme(); } catch (_) {} }
+  }
 
-  return { isOpen: () => rhOpen, setOpen: setRhOpen, renderPanel: renderRhPanel, goList: rhGoList, refitSession: refitRhSession, bindEvents, applyFontSize };
+  return { isOpen: () => rhOpen, setOpen: setRhOpen, renderPanel: renderRhPanel, goList: rhGoList, refitSession: refitRhSession, bindEvents, applyFontSize, applyTermTheme };
 }

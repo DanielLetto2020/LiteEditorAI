@@ -12,7 +12,7 @@ export const LOOK_DEFAULT = Object.freeze({
   accent: '#3ecf8e',
   r: 16,      // скругление карточек; мелкие элементы — пропорционально (--r2/--r3)
   row: 34,    // высота строки проекта в боковой панели
-  alpha: 90,  // непрозрачность фона окна редактора и терминала, %; карточки и меню всегда плотные
+  alpha: 90,  // непрозрачность фона окон (редактор, терминал, окна модулей), %; карточки и меню всегда плотные
   base: { ground: '#0e0e10', card: '#18181b', border: '#26262a', raised: '#252529', text: '#ececee', muted: '#8b8b93' },
   status: { warn: '#e8a33d', ok: '#4cc38a', danger: '#e5746b' },
   over: {},
@@ -61,7 +61,10 @@ export function lookTokens(look) {
   const b = look.base, s = look.status, acc = look.accent;
   const t = {
     // поверхности
-    bg: b.ground, bar: b.ground, 'app-bg': alpha(b.ground, look.alpha / 100), panel: b.card, 'panel-solid': b.card, modal: b.card, surface: b.card,
+    // app-bg — полупрозрачный фон окна (редактор, шапка окна модуля); mod-bg — тело окна модуля: цвет
+    // панелей с той же непрозрачностью (модули свёрстаны на фоне-панели, так внутри ничего не съезжает)
+    bg: b.ground, bar: b.ground, 'app-bg': alpha(b.ground, look.alpha / 100), 'mod-bg': alpha(b.card, look.alpha / 100),
+    panel: b.card, 'panel-solid': b.card, modal: b.card, surface: b.card,
     'surface-2': alpha(b.text, 0.04), 'bg-input': mixHex(b.ground, b.card, 0.4), 'input-b': mixHex(b.border, b.text, 0.02),
     'bg-pop': mixHex(b.card, b.raised, 0.3), ink: b.ground, 'ink-2': mixHex(b.ground, b.card, 0.5),
     raised: b.raised, 'row-hover': mixHex(b.card, b.raised, 0.45), press: mixHex(b.raised, b.text, 0.045),
@@ -105,8 +108,8 @@ export const TERM_THEME = {
   blue: '#7aa2f7', magenta: '#bb9af7', cyan: '#7dcfff', white: '#a9b1d6',
 };
 // xterm-тема для настроек окна (фон терминала = фон окна: терминал «лежит» прямо на нём).
-// glass — терминал на полупрозрачном фоне окна редактора: свой фон прозрачный (xterm с allowTransparency),
-// сквозь него виден фон окна (--app-bg). Окна модулей плотные — им glass не нужен.
+// glass — терминал на полупрозрачном фоне окна: свой фон прозрачный (xterm с allowTransparency), сквозь
+// него виден фон окна или карточки, в которой он стоит. Так рисуют и редактор, и окна модулей.
 export function termThemeFor(settings, { glass = false } = {}) {
   const l = lookOf(settings), tok = lookTokens(l);
   return {

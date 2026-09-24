@@ -4562,5 +4562,21 @@
  "уже в синхронизации": "already being synced",
  "файлы перенесены": "files transferred",
  "файлы различаются: {0}": "files differ: {0}",
- "часы разошлись на {0} с — сначала поправьте время": "the clocks differ by {0} s — fix the time first"
+ "часы разошлись на {0} с — сначала поправьте время": "the clocks differ by {0} s — fix the time first",
+ "Не удалось подготовить запрос агенту: ": "Could not prepare the request for the agent: ",
+ "соединение с провайдером оборвалось посреди ответа": "the connection to the provider dropped in the middle of the reply",
+ "соединение с сервером оборвалось": "the connection to the server dropped",
+ "-- Текст процедуры недоступен: MySQL показывает его только владельцу (DEFINER) или пользователю с привилегией SHOW_ROUTINE.": "-- Procedure text is unavailable: MySQL shows it only to its owner (DEFINER) or to a user with the SHOW_ROUTINE privilege.",
+ "-- Текст функции недоступен: MySQL показывает его только владельцу (DEFINER) или пользователю с привилегией SHOW_ROUTINE.": "-- Function text is unavailable: MySQL shows it only to its owner (DEFINER) or to a user with the SHOW_ROUTINE privilege.",
+ "… ({0} Б)": "… ({0} B)",
+ "Выгружены первые {0} строк из {1} — для полной выгрузки сузьте фильтр или выгрузите частями через SQL": "Exported the first {0} of {1} rows — narrow the filter or export in parts via SQL to get everything",
+ "Двоичные данные в таблице не правятся — используйте SQL-консоль": "Binary data can't be edited in the grid — use the SQL console",
+ "нет активного подключения": "no active connection",
+ "отмена не поддерживается для этого типа": "cancelling is not supported for this database type",
+ "Подключение в режиме «только чтение» — изменяющие запросы запрещены.": "The connection is read-only — modifying queries are not allowed.",
+ "Подключение в режиме «только чтение».": "The connection is read-only.",
+ "подключение не найдено": "connection not found",
+ "Разрешены только читающие запросы.": "Only read queries are allowed.",
+ "⏳ {0} — Claude просит разрешения": "⏳ {0} — Claude is asking for permission",
+ "⏳ {0} — Claude задал вопрос": "⏳ {0} — Claude has asked a question"
 }
