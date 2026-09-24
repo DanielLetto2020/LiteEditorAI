@@ -248,7 +248,8 @@ export function initRh(host) {
     renderRhPanel();
     rec.term.write(`\x1b[90mПодключение к ${c.user ? c.user + '@' : ''}${c.host}:${c.port || 22}…\x1b[0m\r\n`);
     const r = await lite.rh.open(sessionId, c.id, rec.term.cols, rec.term.rows);
-    if (r && r.error) rec.term.write(`\r\n\x1b[31m${r.error}\x1b[0m\r\n`);
+    // вкладку могли закрыть, пока шло подключение: её xterm уже disposed
+    if (r && r.error && rhTerms.get(sessionId) === rec) rec.term.write(`\r\n\x1b[31m${r.error}\x1b[0m\r\n`);
   }
   function createRhTerminal(sessionId, name, connId) {
     const container = el('div', 'term-instance');
