@@ -1885,8 +1885,12 @@ function ctxfsResolve(root, rel) {
   const rootRes = path.resolve(root);
   if (abs !== rootRes && !abs.startsWith(rootRes + path.sep)) return null;
   try { // симлинк наружу корня режем по фактическому пути
-    if (fs.existsSync(abs)) {
-      const real = fs.realpathSync(abs), realRoot = fs.realpathSync(rootRes);
+    // Файла ещё нет (запись нового) — сверяем ближайшего существующего предка: иначе «link/new.md»
+    // при link → /куда-угодно проходил проверку, и mkdir/запись уходили за пределы корня.
+    let probe = abs;
+    while (probe !== rootRes && !fs.existsSync(probe)) probe = path.dirname(probe);
+    if (fs.existsSync(probe)) {
+      const real = fs.realpathSync(probe), realRoot = fs.realpathSync(rootRes);
       if (real !== realRoot && !real.startsWith(realRoot + path.sep)) return null;
     }
   } catch (_) {}
