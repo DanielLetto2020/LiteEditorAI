@@ -40,6 +40,11 @@ const fmtTok = (chars) => {
   const t = Math.round((chars || 0) / 4);
   return '≈' + (t >= 1000 ? (t / 1000).toFixed(1).replace(/\.0$/, '') + 'k' : t) + ' тк';
 };
+// Текст «Спросить агента» уходит в терминал НАЖАТИЯМИ клавиш (pty.write, задумано без Enter).
+// Подставляем в него чужие данные — имена файлов из .claude репозитория и памяти, заголовки
+// CLAUDE.md, ответ модели: перевод строки в них срабатывал как Enter (остаток выполнялся в оболочке
+// или уходил агенту сам), ^C/ESC — как клавиши. Управляющие символы схлопываем в пробел.
+const termSafe = (s) => String(s == null ? '' : s).replace(/[\x00-\x1f\x7f-\x9f]+/g, ' ');
 function fmtTs(ts) {
   if (!ts) return '';
   try { return new Date(ts).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }); } catch (_) { return ''; }
@@ -459,7 +464,7 @@ export function initCtx(host) {
   }
   function askAbout(b) {
     if (!proj) return;
-    lite.editorBus.sendToTerminal(`В ${proj.path}/CLAUDE.md есть раздел «${b.title}». `);
+    lite.editorBus.sendToTerminal(termSafe(`В ${proj.path}/CLAUDE.md есть раздел «${b.title}». `));
     toast(t('Вставлено в терминал проекта — допишите вопрос и нажмите Enter'), { ttl: 7000 });
   }
 
@@ -895,7 +900,7 @@ export function initCtx(host) {
   function ruleHandoff(r) {
     const pl = placeOf(r);
     const lead = HANDOFF[pl]; if (!lead) return;
-    lite.editorBus.sendToTerminal(`${lead}: «${r.title}». Подробности: ${String(r.detail || '').replace(/\s+/g, ' ')} `);
+    lite.editorBus.sendToTerminal(termSafe(`${lead}: «${r.title}». Подробности: ${String(r.detail || '').replace(/\s+/g, ' ')} `));
     toast(t('Правило отправлено в терминал проекта — проверьте формулировку и нажмите Enter'), { ttl: 8000 });
   }
   // Какое имя файла получит правило: слаг из заголовка (та же транслитерация, что на бэкенде).
@@ -1751,7 +1756,7 @@ export function initCtx(host) {
   function memAsk(it) {
     const dir = mem.data && mem.data.dir;
     if (!dir) return;
-    lite.editorBus.sendToTerminal(`Прочитай файл памяти ${dir}/${it.file} («${it.name}») и ответь на вопрос: `);
+    lite.editorBus.sendToTerminal(termSafe(`Прочитай файл памяти ${dir}/${it.file} («${it.name}») и ответь на вопрос: `));
     toast(t('Вставлено в терминал проекта: {0} — допишите вопрос и нажмите Enter', it.name), { ttl: 7000 });
   }
   function memDelete(it) {
@@ -2072,7 +2077,7 @@ export function initCtx(host) {
   }
   // «Спросить агента» для файла настроек: тот же уговор, что в памяти — путь + заготовка, без Enter.
   function cfsAsk(node, abs) {
-    lite.editorBus.sendToTerminal(`Посмотри файл ${abs} и `);
+    lite.editorBus.sendToTerminal(termSafe(`Посмотри файл ${abs} и `));
     toast(t('Путь вставлен в терминал проекта — допишите просьбу и нажмите Enter'), { ttl: 7000 });
   }
   function renderFiles() {
