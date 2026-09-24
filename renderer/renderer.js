@@ -2055,7 +2055,13 @@ function showPanelSetup() {
   const render = () => {
     const mods = quickAllModules();
     const byId = new Map(mods.map((x) => [x.id, x]));
-    const sel = (Array.isArray(STORE.quickbar) ? STORE.quickbar : []).filter((id) => id === QUICK_SEP || byId.has(id));
+    // Показываем только известные модули, а правим ПОЛНЫЙ список из стора через их позиции (at):
+    // id модуля, которого сейчас нет (свой модуль сломан или ещё не догрузился после скана), в списке
+    // не виден, но и не должен выпадать из стора от перестановки соседей — как в renderQuickbar.
+    const stored = Array.isArray(STORE.quickbar) ? STORE.quickbar : [];
+    const at = [];
+    stored.forEach((id, j) => { if (id === QUICK_SEP || byId.has(id)) at.push(j); });
+    const sel = at.map((j) => stored[j]);
     box.replaceChildren();
     const h1 = el('div', 'qb-sec'); h1.append(el('b', null, 'На панели'), el('span', null, String(sel.filter((x) => x !== QUICK_SEP).length)));
     box.appendChild(h1);
@@ -2064,11 +2070,11 @@ function showPanelSetup() {
       const row = el('div', 'qrow');
       if (id === QUICK_SEP) row.append(el('span', 'qsep-l'), el('span', 'qt dim2', 'разделитель'));
       else { const mod = byId.get(id); const ri = el('span', 'ri'); ri.appendChild(icon(mod.icon, 16)); row.append(ri, el('span', 'qt', names(mod)[0])); }
-      const move = (d) => { const ids = sel.slice(); [ids[i], ids[i + d]] = [ids[i + d], ids[i]]; save(ids); render(); };
+      const move = (d) => { const ids = stored.slice(), a = at[i], b = at[i + d]; [ids[a], ids[b]] = [ids[b], ids[a]]; save(ids); render(); };
       row.append(
         gt('chevron-up', 'Левее на панели', () => move(-1), i === 0),
         gt('chevron-down', 'Правее на панели', () => move(1), i === sel.length - 1),
-        gt('x', 'Убрать с панели', () => { const ids = sel.slice(); ids.splice(i, 1); save(ids); render(); }),
+        gt('x', 'Убрать с панели', () => { const ids = stored.slice(); ids.splice(at[i], 1); save(ids); render(); }),
       );
       box.appendChild(row);
     });
@@ -2081,7 +2087,7 @@ function showPanelSetup() {
       row.append(ri, el('span', 'qt', name), el('span', 'qd', desc));
       const plus = el('span', 'gt'); plus.appendChild(icon('plus', 13));
       row.appendChild(plus);
-      row.onclick = () => { save([...sel, mod.id]); render(); };
+      row.onclick = () => { save([...stored, mod.id]); render(); };
       box.appendChild(row);
     }
   };
