@@ -33,7 +33,9 @@ function fmtBytes(n) {
   return (v >= 100 ? Math.round(v) : v.toFixed(1)) + ' ' + u[i];
 }
 function fmtMs(ms) { return ms == null ? '—' : (ms >= 1000 ? (ms / 1000).toFixed(2) + ' с' : Math.round(ms) + ' мс'); }
-function hostOf(url) { try { return new URL(url).host; } catch { return url; } }
+// «localhost:5173» без схемы (как в подсказке поля) URL разбирает как схему «localhost:» с пустым host —
+// чип сайта и заголовок панели были пустыми; показываем ввод как есть.
+function hostOf(url) { try { return new URL(url).host || url; } catch { return url; } }
 
 // Оценка скорости из метрик Core Web Vitals + веса.
 function perfScore(p, net) {
