@@ -46,20 +46,27 @@ function writeItems(items) {
 }
 const genId = () => 'r' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
 
+// Даты — в ЛОКАЛЬНОМ времени, как у окна «Календарь» (renderer/modules/notes-agenda.js) и тикера
+// напоминаний в main: «весь день» = локальная полночь. new Date('YYYY-MM-DD') по стандарту даёт
+// полночь UTC — западнее Гринвича напоминание уезжало на день раньше (и в ленте, и в уведомлении).
 function parseAt(s) {
   if (!s) return { at: null, allDay: false };
-  const hasTime = /\d{1,2}:\d{2}/.test(String(s));
-  const d = new Date(s);
+  const str = String(s).trim();
+  const hasTime = /\d{1,2}:\d{2}/.test(str);
+  const d = new Date(/^\d{4}-\d{2}-\d{2}$/.test(str) ? str + 'T00:00' : str); // дата-время без смещения — локальное
   if (isNaN(d)) return { at: null, allDay: false };
   return { at: d.toISOString(), allDay: !hasTime };
 }
+const pad2 = (n) => String(n).padStart(2, '0');
+const localDay = (d) => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
 function fmtItem(r) {
   const parts = [];
   const title = String(r.text || '').split('\n')[0].trim() || '(без названия)';
   parts.push(r.done ? `[✓] ${title}` : `[ ] ${title}`);
   if (r.at) {
     const d = new Date(r.at);
-    if (!isNaN(d)) parts.push(r.allDay ? d.toISOString().slice(0, 10) : d.toISOString().slice(0, 16).replace('T', ' '));
+    // тот же формат, что принимает add_reminder («YYYY-MM-DD» / «YYYY-MM-DD HH:mm»), — локальное время
+    if (!isNaN(d)) parts.push(r.allDay ? localDay(d) : `${localDay(d)} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`);
   }
   if (r.remind) parts.push('напомнить: ' + r.remind);
   parts.push('id=' + r.id);
@@ -88,7 +95,7 @@ const TOOLS = [
       type: 'object',
       properties: {
         text: { type: 'string', description: 'Текст напоминания. Первая строка — заголовок.' },
-        at: { type: 'string', description: 'Срок: ISO 8601 или "YYYY-MM-DD" (весь день) или "YYYY-MM-DD HH:mm". Необязателен.' },
+        at: { type: 'string', description: 'Срок в локальном времени пользователя: ISO 8601 или "YYYY-MM-DD" (весь день) или "YYYY-MM-DD HH:mm". Необязателен.' },
         remind: { type: 'string', enum: REMIND, description: 'За сколько до срока уведомить: at (в момент), 10m, 1h, 1d. Необязателен.' },
       },
       required: ['text'],
