@@ -56,6 +56,7 @@ export function initJira(host) {
   let loadErrors = [];                    // аккаунты, которые не ответили
   let truncated = false;
   let busy = false;
+  let loadSeq = 0;                        // поколение загрузки списка: ответ устаревшей не перетирает свежую
   let renderSeq = 0;
   let report = null;                      // последний отчёт разведки
 
@@ -613,10 +614,14 @@ export function initJira(host) {
     // opts.silent — фоновый прогон по таймеру: список не гасим «загрузкой», иначе автообновление
     // раз в минуту мешало бы читать.
     async function load(opts = {}) {
+      const seq = ++loadSeq;
       if (!opts.silent) { busy = true; paint(); }
       const ids = enabledIds();
       if (!ids.length) { busy = false; rows = []; loadErrors = []; paint(); return; }
       const r = await lite.jira.searchAll(ids, preset, customJql);
+      // Пока ждали, пресет/аккаунты сменили или вкладку перерисовали — стартовала новая загрузка.
+      // Её ответ главнее: этот (старый пресет) иначе подменил бы rows уже после неё.
+      if (seq !== loadSeq) return;
       busy = false;
       if (!r || !r.ok) {
         if (!opts.silent) toast('Не удалось получить задачи: ' + ((r && r.error) || '?'), { kind: 'err' });
@@ -684,7 +689,9 @@ export function initJira(host) {
     }
 
     paint();
-    if (!rows.length && !busy) load();
+    // Без оглядки на busy: загрузка, начатая прежним списком (до смены пресета/вкладки), рисует
+    // в свой уже отсоединённый DOM — новый список иначе навсегда оставался на «Загружаю задачи…».
+    if (!rows.length) load();
     startAuto();
   }
 
