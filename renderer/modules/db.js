@@ -2221,7 +2221,9 @@ export function initDb(host) {
     return !['localhost', '127.0.0.1', '::1', '0.0.0.0'].includes(hostname);
   }
   // данные (строки результата и примеры значений) наружу не отдаём
-  function aiDataWithheld() { return !!(dbActiveConn && dbActiveConn.noCloud) && agentIsCloud(aiData().agent); }
+  // conn — база, ЧЬИ данные уходят (запрос «-- @db» идёт на соседнюю, и решает её флаг, а не активной)
+  function aiDataWithheld(conn = dbActiveConn) { return !!(conn && conn.noCloud) && agentIsCloud(aiData().agent); }
+  const aiConnById = (id) => (id && id !== dbActiveId ? dbConnsList.find((c) => c.id === id) : null) || dbActiveConn;
   function serializeAiMsg(m) {
     if (m.role === 'result') return { role: 'result', sql: m.sql, chart: m.chart || null, note: m.note || '', connId: m.connId || null, connName: m.connName || '', columns: m.columns || null, colTypes: m.colTypes || null, rows: m.rows ? m.rows.slice(0, 200) : null, rowsTrunc: !!(m.rows && m.rows.length > 200), error: m.error || null, summary: m.summary || '' };
     return { role: m.role, text: m.text || '' };
@@ -2384,12 +2386,12 @@ export function initDb(host) {
     if (msgs.length === 1) msgs.push({ role: 'user', content: '' });
     return msgs;
   }
-  function aiResultSummary(sql, r) {
+  function aiResultSummary(sql, r, conn) {
     if (!r || r.error) return `Ошибка выполнения: ${(r && r.error) || 'неизвестно'}\nSQL: ${sql}`;
     const cols = r.columns || [], rows = r.rows || [];
     let s = `Запрос вернул строк: ${rows.length}. Колонки: ${cols.join(', ')}.`;
     // подключение помечено «не отправлять данные наружу», а агент внешний → отдаём только структуру
-    if (aiDataWithheld()) return s + '\nСами строки не передаются: подключение помечено «не отправлять данные во внешние модели». Делай выводы по структуре и агрегатам (COUNT/SUM/AVG), запрашивая их отдельными запросами.';
+    if (aiDataWithheld(conn)) return s + '\nСами строки не передаются: подключение помечено «не отправлять данные во внешние модели». Делай выводы по структуре и агрегатам (COUNT/SUM/AVG), запрашивая их отдельными запросами.';
     if (rows.length) {
       const sample = rows.slice(0, 30).map((row) => cols.map((_, i) => { const v = fmtVal(row[i]); return v == null ? 'NULL' : v; }).join(' | ')).join('\n');
       s += `\nДанные (до 30 строк):\n${cols.join(' | ')}\n${sample}`;
@@ -3276,7 +3278,8 @@ blockquote{border-left:3px solid #c9ced4;margin:0;padding:.2rem 0 .2rem .8rem;co
     const r = await lite.db.queryRo(connId, sql, { timeoutMs: isProd ? AI_PROD_TIMEOUT_MS : AI_TIMEOUT_MS });
     resMsg.pending = false;
     if (r && r.error) resMsg.error = r.error; else if (r) { resMsg.columns = r.columns; resMsg.colTypes = r.colTypes; resMsg.rows = r.rows; }
-    resMsg.summary = (onOtherDb ? `База: ${aiConnName(connId)}\n` : '') + aiResultSummary(sql, r || {});
+    // строки базы с флагом «не отправлять данные» не уходят наружу, даже если она не активная
+    resMsg.summary = (onOtherDb ? `База: ${aiConnName(connId)}\n` : '') + aiResultSummary(sql, r || {}, conn);
     aiPersist(chatConn); aiRefreshMsg(host, resMsg);
     // пока шёл запрос, открыли другую базу — не зовём агента с её схемой к чужому диалогу
     if (dbActiveId !== chatConn) return;
@@ -3328,7 +3331,7 @@ blockquote{border-left:3px solid #c9ced4;margin:0;padding:.2rem 0 .2rem .8rem;co
     if (msg.error) { card.appendChild(el('div', 'docker-err', msg.error)); return card; }
     if (!msg.columns) { card.appendChild(el('div', 'db-ai-warn', 'Результат не сохранён — выполните запрос снова.')); return card; }
     if (msg.rowsTrunc) card.appendChild(el('div', 'db-ai-warn', 'Показаны первые 200 строк (полный результат не сохраняется).'));
-    if (aiDataWithheld()) card.appendChild(el('div', 'db-ai-warn', 'Данные показаны только здесь: во внешнюю модель отправлены лишь имена колонок и число строк.'));
+    if (aiDataWithheld(aiConnById(msg.connId))) card.appendChild(el('div', 'db-ai-warn', 'Данные показаны только здесь: во внешнюю модель отправлены лишь имена колонок и число строк.'));
     // chart (if the agent attached one) + collapsed table below — best-effort, never silently dropped
     let drewChart = false;
     if (msg.chart && msg.columns && msg.rows && msg.rows.length) {
