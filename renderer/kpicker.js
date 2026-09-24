@@ -73,20 +73,25 @@ function kpModal(mode, startOpen) {
       const cancel = el('button', 'btn', 'Отмена'); cancel.onclick = () => done(null);
       const openBtn = el('button', 'btn primary', 'Открыть');
       const tryOpen = async () => {
+        if (openBtn.disabled) return;   // Enter мимо выключенной кнопки: база уже открывается
         if (!pending) { toast('Выберите файл базы', { kind: 'warn' }); return; }
         if (!passIn.value) { toast('Введите мастер-пароль', { kind: 'warn' }); return; }
+        const target = pending;         // клик по другой недавней базе во время открытия не должен подменить запись в «Недавних»
         openBtn.disabled = true;
-        const r = await lite.keepass.open(pending.path, passIn.value);
+        const r = await lite.keepass.open(target.path, passIn.value);
         openBtn.disabled = false;
         if (!r || !r.ok) { showUnlock((r && r.error) || 'Не удалось открыть базу'); return; }
-        pushRecent(pending.path, r.name || pending.name);
+        pushRecent(target.path, r.name || target.name);
         if (mode === 'unlock') { done(true); return; }
         showList(r.entries || []);
       };
       openBtn.onclick = tryOpen;
       passIn.addEventListener('keydown', (e) => { if (e.key === 'Enter') tryOpen(); });
       acts.append(cancel, openBtn); body.appendChild(acts);
-      if (rec.length) { pending = { path: rec[0].path, name: rec[0].name }; paintPending(); }
+      // По умолчанию — последняя база, но только если ничего не выбрано: после неверного пароля
+      // выбранный вручную файл оставался бы подменён на недавнюю базу (или не подписан, если недавних нет).
+      if (!pending && rec.length) pending = { path: rec[0].path, name: rec[0].name };
+      paintPending();
       setTimeout(() => passIn.focus(), 30);
     }
 
