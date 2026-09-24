@@ -2705,7 +2705,9 @@ ipcMain.handle('settings:import', async () => {
     if (stat.size > IMPORT_MAX_BYTES) return { error: `Файл слишком большой (${Math.round(stat.size / 1024)} КБ)` };
     data = JSON.parse(fs.readFileSync(file, 'utf8'));
   } catch (e) { return { error: 'Не удалось прочитать файл: ' + String(e.message || e) }; }
-  if (!data || data._format !== 'lite-settings' || typeof data.store !== 'object') {
+  // typeof null и массив — тоже 'object': null ронял цикл ниже невнятным «Cannot convert undefined
+  // or null to object», а массив «успешно» импортировал ничего (ключи 0,1,… не из STORE_KEYS).
+  if (!data || data._format !== 'lite-settings' || !data.store || typeof data.store !== 'object' || Array.isArray(data.store)) {
     return { error: 'Это не файл настроек LiteEditor.' };
   }
   try {
@@ -2717,7 +2719,7 @@ ipcMain.handle('settings:import', async () => {
       if (Object.prototype.hasOwnProperty.call(data.store, k) && !writeStoreKey(k, data.store[k])) failedKeys.push(k);
     }
     let failedNotes = 0;
-    if (data.notes && typeof data.notes === 'object') {
+    if (data.notes && typeof data.notes === 'object' && !Array.isArray(data.notes)) { // массив дал бы notes/0.json, notes/1.json…
       const nd = path.join(storeDir, 'notes');
       fs.mkdirSync(nd, { recursive: true });
       for (const [id, arr] of Object.entries(data.notes)) {
