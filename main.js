@@ -4736,7 +4736,9 @@ ipcMain.handle('files:replace', async (_e, { root, query, opts, replacement, tar
     }
     if (!touched) continue;
     try {
-      await histSnapshot(full, text, 'save');       // локальная история: состояние до замены
+      // локальная история: состояние до замены — мимо троттла, иначе после автосейва <45 с назад
+      // замену по проекту было не откатить: версии «до» в истории не оставалось
+      await histSnapshot(full, text, 'save', { force: true });
       await writeFileCrashSafe(full, rows.join('\n'));   // как и вивер: обрыв не оставляет обрезанный файл
       files++; lines += touched;
     } catch (err) { return { error: String(err.message || err) + ' (' + t.file + ')', files, lines }; }
@@ -4882,7 +4884,7 @@ ipcMain.handle('gsearch:start', (e, { runId, query, opts, roots } = {}) => {
 // состояние ПОСЛЕ внешнего изменения (tag 'ext'). Best-effort: ошибки истории работе не мешают.
 const HIST_BATCH_CAP = 20;                      // пачка вотчера крупнее — массовая операция (checkout/npm), шум
 const history = createHistory({ dir: path.join(storeDir, 'history'), maxBytes: MAX_VIEW_BYTES });
-const histSnapshot = (absFile, content, tag) => history.snapshot(absFile, content, tag);
+const histSnapshot = (absFile, content, tag, opts) => history.snapshot(absFile, content, tag, opts);
 const histSnapshotFromDisk = (absFile, tag) => history.snapshotFromDisk(absFile, tag);
 // Общий срок и объём истории: через минуту после старта (не мешать подъёму окон) и раз в сутки.
 function historyPrune() {
