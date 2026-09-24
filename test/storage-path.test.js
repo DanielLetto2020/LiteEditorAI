@@ -77,7 +77,7 @@ const s3 = require('../lib/storage-s3');
 
     ok(await settle(s3.download(client, { bucket: 'b', key: 'ok', destPath: dest, onProgress: null }).done) === 'ok', 'успешное скачивание');
     ok(fs.readFileSync(dest, 'utf8') === 'hello', 'успешное скачивание заменило файл');
-    assert.deepStrictEqual(fs.readdirSync(dir), ['report.txt']); passed++; // временных .part не осталось
+    assert.deepStrictEqual(fs.readdirSync(dir), ['report.txt']); passed++; // временных файлов не осталось
   } finally {
     client.destroy();
     srv.close();
