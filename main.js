@@ -147,8 +147,8 @@ function atomicWriteSync(file, data) {
   // Права существующей цели переносим на нового соседа: rename кладёт на её место файл, созданный
   // по umask, и цель с чувствительным содержимым (база KeePass, 0600) стала бы читаемой всем.
   let mode; try { mode = fs.statSync(target).mode & 0o777; } catch (_) {}
-  // Имя соседа уникально по процессу. У приложения нет single-instance-лока: второй запущенный
-  // редактор пишет ТЕ ЖЕ файлы стора, и с общим `X.tmp` два процесса писали бы в один временный
+  // Имя соседа уникально по процессу. Single-instance-лок привязан к userData, а стор — к HOME: копия
+  // редактора с другим профилем (dev-запуск, portable) пишет ТЕ ЖЕ файлы, и с общим `X.tmp` два процесса писали бы в один временный
   // файл вперемешку, после чего один переименовывал бы мешанину поверх цели. Для projects.json
   // это ровно та потеря всего списка проектов, ради предотвращения которой запись и делалась
   // атомарной. Тот же приём уже применён в mcp/lite-agenda-server.js, который пишет agenda/*.json
@@ -2801,7 +2801,9 @@ function createWindow() {
 
   mainWindow = new BrowserWindow(opts);
   hardenNavigation(mainWindow);
-  mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'));
+  // Отказ loadFile (окно закрыли во время загрузки — ERR_ABORTED) иначе уходит в unhandledRejection
+  // и в реестр ошибок как сбой приложения; сам отказ оставляем в логе предупреждением.
+  mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html')).catch((e) => logger.log('warn', 'window', 'loadFile: ' + String((e && e.message) || e)));
   if (st.maximized) mainWindow.maximize();
 
   // Renderer death is the most likely "silent close": log reason + exitCode so
@@ -3045,7 +3047,7 @@ function openModuleWindow(modId) {
   const win = new BrowserWindow(opts);
   hardenNavigation(win);
   moduleWindows.set(modId, win);
-  win.loadFile(path.join(__dirname, 'renderer', 'module.html'), { hash: modId });
+  win.loadFile(path.join(__dirname, 'renderer', 'module.html'), { hash: modId }).catch((e) => logger.log('warn', 'window', `loadFile ${modId}: ` + String((e && e.message) || e))); // как у окна редактора
   if (saved.maximized) win.maximize();
   win.once('ready-to-show', () => { if (!win.isDestroyed()) win.show(); });
   win.on('maximize', () => { sendTo(win, 'win:maximized', true); });
@@ -3630,7 +3632,7 @@ ipcMain.on('win:growBy', (e, { dx }) => {
   // Accumulate the request in a virtual width (unclamped) so a clamped grow + full shrink
   // cancel out exactly. Re-sync from the real width if the user resized in between.
   const base = growDesiredWidth != null ? growDesiredWidth : b.width;
-  growDesiredWidth = Math.max(760, base + dx);
+  growDesiredWidth = Math.max(760, base + (Number(dx) || 0)); // нечисловой dx навсегда сделал бы ширину NaN
   const width = Math.max(760, Math.min(growDesiredWidth, work.x + work.width - b.x)); // don't run off-screen
   growAppliedWidth = width;
   mainWindow.setBounds({ x: b.x, y: b.y, width, height: b.height });
