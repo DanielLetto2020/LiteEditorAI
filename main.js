@@ -4472,6 +4472,8 @@ const IMG_MIME = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif:
 ipcMain.handle('fs:readDataUrl', async (_e, file) => {
   try {
     const stat = await fs.promises.stat(file);
+    // как в fs:readFile: FIFO с «картиночным» именем повесил бы readFile (и поток пула libuv) навсегда
+    if (!stat.isFile()) return { error: 'Это не обычный файл (сокет/FIFO/каталог)' };
     if (stat.size > 12 * 1024 * 1024) return { error: 'файл слишком большой для превью' };
     const ext = path.extname(file).slice(1).toLowerCase();
     const mime = IMG_MIME[ext] || 'application/octet-stream';
