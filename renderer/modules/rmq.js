@@ -372,7 +372,16 @@ export function initRmq(host) {
 
   // ---------------------------------------------------------------- «Контейнеры» → RabbitMQ
   // payload — ответ containers:inspectMq (через main). Повторный клик не плодит дубли (source).
+  // Повторный клик, пока первый ещё проверяет подключение (до ~15 с), профиля ещё не находил и
+  // создавал дубль — пока source в работе, повторы игнорируем: первый сам откроет профиль.
+  const srcInFlight = new Set();
   async function openFromContainer(payload) {
+    const src = payload && payload.prefill && payload.prefill.source;
+    if (src && srcInFlight.has(src)) return;
+    if (src) srcInFlight.add(src);
+    try { await openFromContainerNow(payload); } finally { if (src) srcInFlight.delete(src); }
+  }
+  async function openFromContainerNow(payload) {
     const p = payload && payload.prefill;
     if (!p || !p.name) return;
     restoredOnce = true; // явное намерение юзера главнее авто-восстановления вкладок
