@@ -1222,7 +1222,8 @@ ipcMain.on('tp:run', (e, { reqId, agent, prompt, mode, cwd } = {}) => {
     safeSend(sender, 'tp:error', { reqId, error: 'агент «' + conf.cmd + '» не найден/не запустился: ' + (err.message || err) });
   });
   child.on('close', (code) => {
-    if (!tpReqs.has(reqId)) return; tpReqs.delete(reqId); clearTimeout(to);
+    clearTimeout(to);   // и после «Стоп»/закрытия окна: иначе таймер до 15 мин держал процесс и весь вывод
+    if (!tpReqs.has(reqId)) return; tpReqs.delete(reqId);
     const text = out.trim();
     // Отказ по авторизации приходит обычным текстом и выглядел бы как ответ агента — ловим раньше.
     // Но модуль обработки ТЕКСТА: агента вполне могут попросить написать раздел про логин, и в
@@ -2403,7 +2404,8 @@ ipcMain.on('company:run', (e, { reqId, projPath, goal, roles, director, limitUsd
     safeSend(sender, 'company:error', { reqId, error: '«claude» не найден/не запустился: ' + (err.message || err) });
   });
   child.on('close', (code) => {
-    if (!companyReqs.has(reqId)) return; companyReqs.delete(reqId); clearTimeout(idle);
+    clearTimeout(idle); // и после «Стоп»/закрытия окна: вывод до смерти процесса взводил сторожа ещё на 15 мин
+    if (!companyReqs.has(reqId)) return; companyReqs.delete(reqId);
     if (buf.trim()) emitLine(buf);   // флаш хвоста: финальный {type:'result'} может прийти без \n
     safeSend(sender, 'company:done', { reqId, code, error: code ? (errOut.trim() || ('claude завершился с кодом ' + code)) : '' });
   });
