@@ -5922,23 +5922,28 @@ ipcMain.handle('git:status', async (_e, root) => {
   const base = top.trim();
   // --untracked-files=all: перечислять КАЖДЫЙ новый файл по отдельности, а не схлопывать
   // содержимое неотслеживаемой папки в один элемент-каталог (во вкладке «Изменения» нужны файлы).
-  // core.quotePath=false: иначе git октально экранирует не-ASCII имена и оборачивает в кавычки —
-  // снять кавычки мало, путь останется искажённым и не совпадёт с файлом на диске (декорации/диффы
-  // молча промахивались мимо русских/юникод-имён, B5).
-  const out = await git(root, ['-c', 'core.quotePath=false', 'status', '--porcelain', '--untracked-files=all']);
+  // -z: пути как есть, без кавычек и C-экранирования. Одного core.quotePath=false мало (B5):
+  // имена с '"', '\', табом/переводом строки или « -> » git всё равно квотил, а построчный разбор
+  // («old -> new») резал их не там — путь не совпадал с файлом на диске.
+  const out = await git(root, ['status', '--porcelain', '-z', '--untracked-files=all']);
   const files = {};
-  if (out) {
-    for (const line of out.split('\n')) {
-      if (!line) continue;
-      const code = line.slice(0, 2).trim();
-      let p = line.slice(3);
-      if (p.includes(' -> ')) p = p.split(' -> ')[1]; // renames: take the new path
-      if (p.startsWith('"') && p.endsWith('"')) p = p.slice(1, -1);
-      files[path.join(base, p)] = code || '?';
-    }
-  }
+  for (const e of parsePorcelainZ(out)) files[path.join(base, e.path)] = e.code || '?';
   return { repo: true, files };
 });
+// Разбор `git status --porcelain -z` (v1): записи «XY path» через NUL; у переименования/копии
+// следом идёт отдельная NUL-запись ИСХОДНОГО пути — её пропускаем (берём новый путь, как раньше).
+function parsePorcelainZ(out) {
+  const res = [];
+  const recs = String(out || '').split('\0');
+  for (let i = 0; i < recs.length; i++) {
+    const rec = recs[i];
+    if (rec.length < 4) continue;
+    const xy = rec.slice(0, 2);
+    if (/[RC]/.test(xy)) i++;
+    res.push({ xy, code: xy.trim(), path: rec.slice(3) });
+  }
+  return res;
+}
 // Unified diff of one file vs HEAD — "what did the agent just change here".
 ipcMain.handle('git:fileDiff', async (_e, { root, file }) => {
   if (!root) return { error: 'no root' };
@@ -6181,17 +6186,11 @@ ipcMain.handle('git:conflicts', async (_e, root) => {
   const top = await git(root, ['rev-parse', '--show-toplevel']);
   if (top == null) return { repo: false, files: [] };
   const base = top.trim();
-  const out = await git(root, ['-c', 'core.quotePath=false', 'status', '--porcelain', '--untracked-files=no']); // не-ASCII имена без октального экранирования (B5)
+  const out = await git(root, ['status', '--porcelain', '-z', '--untracked-files=no']); // -z: имена без кавычек/экранирования (B5)
   const files = [];
-  if (out) for (const line of out.split('\n')) {
-    if (!line) continue;
-    const code = line.slice(0, 2);
+  for (const e of parsePorcelainZ(out)) {
     // Unmerged: оба знака конфликта (DD, AU, UD, UA, DU, AA, UU) — наличие 'U', либо DD/AA.
-    if (/U/.test(code) || code === 'DD' || code === 'AA') {
-      let p = line.slice(3);
-      if (p.startsWith('"') && p.endsWith('"')) p = p.slice(1, -1);
-      files.push({ rel: p, abs: path.join(base, p), code: code.trim() });
-    }
+    if (/U/.test(e.xy) || e.xy === 'DD' || e.xy === 'AA') files.push({ rel: e.path, abs: path.join(base, e.path), code: e.code });
   }
   return { repo: true, files };
 });
