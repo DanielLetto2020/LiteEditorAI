@@ -6109,6 +6109,13 @@ async function gitPush(root) {
   }
   return first;
 }
+// Идёт ли в репозитории незавершённый merge / cherry-pick / revert (есть MERGE_HEAD и т.п.).
+async function gitMidOperation(root) {
+  for (const ref of ['MERGE_HEAD', 'CHERRY_PICK_HEAD', 'REVERT_HEAD']) {
+    if ((await git(root, ['rev-parse', '-q', '--verify', ref])) != null) return true;
+  }
+  return false;
+}
 ipcMain.handle('git:commit', async (_e, { root, message, push, files, amend }) => {
   // files передан → коммитим только выбранное (git add -- <files>), иначе всё (git add -A, как раньше).
   // amend + files:[] (пустой массив) — особый случай «только поправить сообщение»: ничего не добавляем.
@@ -6117,8 +6124,12 @@ ipcMain.handle('git:commit', async (_e, { root, message, push, files, amend }) =
   if (!msgOnly) { const add = await gitRun(root, sel ? ['add', '--', ...files] : ['add', '-A']); if (!add.ok) return add; }
   // sel → коммитим РОВНО выбранные пути (pathspec), иначе `git commit` забрал бы и всё прочее,
   // что уже лежит в индексе (напр. файл, застейдженный при разрешении конфликта и затем снятый галкой).
+  // Исключение — идущий merge/cherry-pick/revert: частичный коммит git там запрещает («cannot do a
+  // partial commit during a merge»), и после разрешения конфликта в модалке закоммитить было нельзя
+  // вовсе. Коммит слияния по смыслу фиксирует ВЕСЬ индекс: выбранное уже добавлено выше, коммитим без pathspec.
+  const midOp = sel && !amend && await gitMidOperation(root);
   const base = amend ? ['commit', '--amend', '-m', message || 'update'] : ['commit', '-m', message || 'update'];
-  const c = await gitRun(root, sel ? [...base, '--', ...files] : base); if (!c.ok) return c;
+  const c = await gitRun(root, sel && !midOp ? [...base, '--', ...files] : base); if (!c.ok) return c;
   // committed:true даже при провале пуша — фронт обязан обновить список (коммит-то уже лёг).
   if (push) { const p = await gitPush(root); if (!p.ok) return { ok: false, committed: true, error: 'Коммит создан, push не прошёл: ' + p.error }; }
   return { ok: true, out: c.out };
