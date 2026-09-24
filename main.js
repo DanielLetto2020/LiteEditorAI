@@ -3000,6 +3000,12 @@ function guardExternalProtocols(ses) {
     });
   } catch (_) {}
 }
+// shell.openExternal асинхронный: try/catch вокруг него отказ не ловит (нет браузера по умолчанию,
+// xdg-open упал) — промис уходил в unhandledRejection и в журнал ошибок как сбой приложения.
+function openExternalQuiet(url) {
+  Promise.resolve().then(() => shell.openExternal(url))
+    .catch((e) => logger.log('warn', 'window', 'openExternal: ' + String((e && e.message) || e)));
+}
 function hardenNavigation(win) {
   const wc = win.webContents;
   guardExternalProtocols(wc.session); // окна без partition делят defaultSession — вместе со скрытыми окнами аудита
@@ -3007,10 +3013,10 @@ function hardenNavigation(win) {
     if (isAppPage(url)) return;                       // своя страница и её перезагрузка
     e.preventDefault();
     logger.log('warn', 'window', 'навигация наружу отклонена: ' + String(url).slice(0, 200));
-    if (/^https?:/i.test(url)) { try { shell.openExternal(url); } catch (_) {} }
+    if (/^https?:/i.test(url)) openExternalQuiet(url);
   });
   wc.setWindowOpenHandler(({ url }) => {
-    if (/^https?:/i.test(url)) { try { shell.openExternal(url); } catch (_) {} }
+    if (/^https?:/i.test(url)) openExternalQuiet(url);
     return { action: 'deny' };                        // отдельных окон без preload-контракта не заводим
   });
 }
