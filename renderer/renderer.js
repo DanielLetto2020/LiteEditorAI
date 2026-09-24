@@ -2510,6 +2510,9 @@ function showModulesCatalog(start = 'all') {
 // Правка применяется сразу; запись и рассылка окнам модулей — с задержкой, чтобы ползунок не гонял IPC.
 const LOOK_ACCENTS = ['#3ecf8e', '#5b9cff', '#3dc8dc', '#a98cf0', '#e06fae', '#e0af68', '#d97757'];
 let lookSaveT = null;
+// Свои таймеры у ширины панели и шрифта: общий с lookSaveT отменял бы чужую отложенную запись
+// (сдвинули цвет, а через 200 мс ширину — палитра не сохранялась и не уезжала в окна модулей).
+let lookLayoutT = null, lookFontT = null;
 function lookLive() {
   applyLook(settings);
   for (const rec of terms.values()) { try { rec.term.options.theme = termTheme(); } catch (_) {} }
@@ -2566,9 +2569,9 @@ function showLookPanel(anchor) {
   const RANGES = [
     ['alpha', 'Непрозрачность фона', 60, 100, 1, '%', () => lookOf(settings).alpha, (v) => editLook((l) => { l.alpha = v; })],
     ['r', 'Скругление', 4, 22, 1, 'px', () => lookOf(settings).r, (v) => editLook((l) => { l.r = v; })],
-    ['side', 'Ширина панели', 240, 440, 2, 'px', () => layout.sidebar, (v) => { layout.sidebar = v; applyLayout(); refitActiveTerminal(); clearTimeout(lookSaveT); lookSaveT = setTimeout(saveLayout, 250); }],
+    ['side', 'Ширина панели', 240, 440, 2, 'px', () => layout.sidebar, (v) => { layout.sidebar = v; applyLayout(); refitActiveTerminal(); clearTimeout(lookLayoutT); lookLayoutT = setTimeout(saveLayout, 250); }],
     ['row', 'Строка проекта', 28, 42, 1, 'px', () => lookOf(settings).row, (v) => editLook((l) => { l.row = v; })],
-    ['font', 'Шрифт терминала', 9, 24, 1, 'px', () => settings.fontSize, (v) => { settings.fontSize = v; applyFontSize(); clearTimeout(lookSaveT); lookSaveT = setTimeout(saveSettings, 250); }],
+    ['font', 'Шрифт терминала', 9, 24, 1, 'px', () => settings.fontSize, (v) => { settings.fontSize = v; applyFontSize(); clearTimeout(lookFontT); lookFontT = setTimeout(saveSettings, 250); }],
   ];
   const draw = () => {
     const l = lookOf(settings), tok = lookTokens(l);
