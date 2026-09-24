@@ -1495,6 +1495,9 @@ function ensureProjectTabs(proj) {
 function renderTabBar() {
   const bar = $('#term-tabs');
   if (!bar) return;
+  // вкладки пересоздаются: у снятой из DOM mouseleave уже не сработает, и тултип (например, после ✕
+  // по вкладке под курсором или Ctrl+Tab) висел бы над панелью до следующего наведения
+  hideTabTip();
   bar.innerHTML = '';
   const t = tabsByProj.get(activeId);
   // шапка видна всегда (в ней кнопки окна и за неё тянут окно); без проекта нет только вкладок и «+»
