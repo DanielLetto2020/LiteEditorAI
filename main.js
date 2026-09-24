@@ -4341,10 +4341,26 @@ function smFmtShort(v) { const s = String(v); return s.length > 40 ? s.slice(0, 
 // предикат, принадлежат песочнице, поэтому input.constructor.constructor НЕ дотягивается до хостового
 // Function/process (защита от побега через прототип). Контекст свежий — нет require/process/таймеров/
 // import(); timeout ловит зацикливание. Код доверенный (пишет пользователь/его агент), но т.к. «сэмпл»
-// мониторимого URL попадает в промпт, изолируем данные хоста от предиката строго.
+// мониторимого URL попадает в промпт, изолируем данные хоста от предиката строго:
+//  • объект контекста — БЕЗ прототипа: у обычного { __j } глобальный this песочницы доставал хостовый
+//    Object, и `this.constructor.constructor('return process')()` отдавал предикату process main-процесса;
+//  • код исполняется eval'ом внутри фиксированной обёртки (не склейкой в исходник), и результат обёртка
+//    сама сводит к JSON-строке — геттеры, toString/toJSON, Proxy и микрозадачи (microtaskMode) отрабатывают
+//    под timeout. Раньше наружу уходил объект песочницы, и его геттер исполнялся уже в main без лимита:
+//    `{ get status() { for(;;); } }` вешал весь редактор.
+const SM_PRED_WRAP = '"use strict";const input=JSON.parse(__j);(function(){var r;'
+  + 'try{r=(0,eval)(\'"use strict";(\'+__code+\'\\n)\')(input);}'
+  + 'catch(e){var m;try{m=String((e&&e.message)||e);}catch(_){m="ошибка предиката";}return JSON.stringify({__err:m});}'
+  + 'if(r===null||typeof r!=="object")return "null";'
+  + 'var v=r.value,o={status:r.status==null?null:String(r.status),ok:typeof r.ok==="boolean"?r.ok:null,label:r.label==null?null:String(r.label)};'
+  + 'if(v!=null){if(typeof v==="object"){try{v=JSON.stringify(v);}catch(_){v=undefined;}o.value=v===undefined?"[object]":v;}else o.value=String(v);}else if(v===null)o.value=null;'
+  + 'return JSON.stringify(o);})()';
 function smRunCustom(code, input) {
   let j; try { j = JSON.stringify(input === undefined ? null : input); } catch (_) { j = 'null'; }
-  return vm.runInNewContext('"use strict";const input=JSON.parse(__j);(' + String(code || '').trim() + ')(input)', { __j: j }, { timeout: 1500, contextName: 'sitemon-predicate' });
+  const ctx = Object.create(null); ctx.__j = j; ctx.__code = String(code || '').trim();
+  const out = JSON.parse(vm.runInNewContext(SM_PRED_WRAP, ctx, { timeout: 1500, contextName: 'sitemon-predicate', microtaskMode: 'afterEvaluate' }));
+  if (out && typeof out.__err === 'string') throw new Error(out.__err);
+  return out;
 }
 
 // ── что цели нужно достать (какие части ответа собирать) ───────────────────────────────────────────
