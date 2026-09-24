@@ -25,11 +25,14 @@ function renderSafeMarkdown(target, src) {
   catch (_) { target.textContent = String(src || ''); return; }
   const tpl = document.createElement('template');
   tpl.innerHTML = html;
-  tpl.content.querySelectorAll('script,style,iframe,object,embed,form,link,meta,base').forEach((e) => e.remove());
+  // animate/set — SVG-анимация умеет подменить href ссылки на javascript: в обход проверки атрибутов ниже
+  tpl.content.querySelectorAll('script,style,iframe,object,embed,form,link,meta,base,animate,set').forEach((e) => e.remove());
   tpl.content.querySelectorAll('*').forEach((e) => {
     for (const a of [...e.attributes]) {
       const name = a.name.toLowerCase();
-      const val = a.value.replace(/[\s-]/g, '').toLowerCase();
+      // Управляющие символы тоже срезаем: URL-парсер отбрасывает их в начале адреса, и
+      // «&#1;javascript:…» иначе проходил мимо проверки схемы.
+      const val = a.value.replace(/[\s\x00-\x1f\x7f-]/g, '').toLowerCase();
       if (name.startsWith('on') || name === 'srcset' || name === 'style') e.removeAttribute(a.name);
       else if ((name === 'href' || name === 'src' || name === 'xlink:href') && /^(javascript|data|vbscript):/.test(val)) e.removeAttribute(a.name);
     }
