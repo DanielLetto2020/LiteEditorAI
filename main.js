@@ -594,7 +594,9 @@ ipcMain.handle('agenda:mcpConnect', async (_e, { projId, projPath } = {}) => {
     let done = false, stderr = '', stdout = '', to = null;
     const finish = (r) => { if (!done) { done = true; clearTimeout(to); resolve({ ...r, cmd: agendaMcpCommand(projId) }); } };
     let cp;
-    try { cp = spawn('claude', args, { cwd: projPath || os.homedir() }); }
+    // env: tpEnv() — как у всех запусков claude: у приложения из Dock/ярлыка PATH урезан, и CLI из
+    // ~/.local/bin, Homebrew или nvm здесь не находился («CLI не найден», хотя в терминале он есть).
+    try { cp = spawn('claude', args, { cwd: projPath || os.homedir(), env: tpEnv() }); }
     catch (e) { return finish({ ok: false, error: String(e.message || e) }); }
     // Без таймаута зависший `claude mcp add` (спросил что-то в stdin и ждёт) держал бы промис
     // IPC навсегда: кнопка в модалке крутилась бы вечно, процесс жил бы до выхода из редактора.
