@@ -5184,9 +5184,10 @@ async function auditDupes(root, files) {
 }
 
 // История из git: churn (число коммитов на файл) + дата последнего изменения (log новейшие-сверху).
-// quotePath=false — пути без кавычек, чтобы совпадали с `ls-files -z`.
+// quotePath=false — пути без кавычек, чтобы совпадали с `ls-files -z`. --relative — пути от root, как у
+// ls-files (без него log отдаёт их от корня репозитория, и для проекта-подкаталога «История» была пустой).
 async function auditGitHistory(root, fileSet) {
-  const out = await git(root, ['-c', 'core.quotePath=false', 'log', '-n', String(AUDIT_GIT_COMMITS), '--no-merges', '--pretty=format:\x01%aI', '--name-only']);
+  const out = await git(root, ['-c', 'core.quotePath=false', 'log', '-n', String(AUDIT_GIT_COMMITS), '--no-merges', '--pretty=format:\x01%aI', '--name-only', '--relative']);
   if (out == null) return null;
   const commits = new Map(), lastDate = new Map();
   let cur = null;
