@@ -4455,8 +4455,10 @@ ipcMain.handle('fs:move', async (_e, { src, destDir }) => {
     try { await fs.promises.rename(src, dest); }
     catch (e) {
       if (e.code !== 'EXDEV') throw e;
-      // другое устройство: rename невозможен → копируем и удаляем оригинал; при сбое копии чистим частичный dest
-      try { await fs.promises.cp(src, dest, { recursive: true }); }
+      // другое устройство: rename невозможен → копируем и удаляем оригинал; при сбое копии чистим частичный dest.
+      // verbatimSymlinks: по умолчанию cp переписывает относительные ссылки в абсолютные на ИСХОДНОЕ место,
+      // которое следом удаляется, — перенесённые ссылки оказывались битыми. rename текст ссылки не трогает.
+      try { await fs.promises.cp(src, dest, { recursive: true, verbatimSymlinks: true }); }
       catch (ce) { await fs.promises.rm(dest, { recursive: true, force: true }).catch(() => {}); throw ce; }
       await fs.promises.rm(src, { recursive: true, force: true });
     }
