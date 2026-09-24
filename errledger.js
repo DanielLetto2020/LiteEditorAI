@@ -37,13 +37,25 @@ function idOf(sig) { return crypto.createHash('sha1').update(sig).digest('hex').
 function serialize() { return JSON.stringify(data); }
 function fireChange() { for (const cb of changeCbs) { try { cb(); } catch (_) {} } }
 
+// errors.json правит и агент — по схеме, но руками. Не-объект в entries (null, строка) ронял list()
+// и clearResolved() на первом же обращении к полю: реестр в UI пустел до ручной правки файла.
+// Такие элементы отбрасываем при чтении; null — файл целиком не похож на реестр.
+function sanitize(parsed) {
+  if (!parsed || typeof parsed !== 'object' || !parsed.entries || typeof parsed.entries !== 'object') return null;
+  for (const id of Object.keys(parsed.entries)) {
+    const e = parsed.entries[id];
+    if (!e || typeof e !== 'object') delete parsed.entries[id];
+  }
+  return parsed;
+}
+
 function init(dir) {
   file = path.join(dir, 'errors.json');
   try {
     if (fs.existsSync(file)) {
       const raw = fs.readFileSync(file, 'utf8');
-      const parsed = JSON.parse(raw);
-      if (parsed && parsed.entries) { data = parsed; lastWritten = raw; }
+      const parsed = sanitize(JSON.parse(raw));
+      if (parsed) { data = parsed; lastWritten = raw; }
     }
   } catch (_) { data = { version: 1, entries: {} }; }
   if (!data.entries) data.entries = {};
@@ -131,7 +143,9 @@ function list() {
   return { entries, open: entries.filter((e) => e.status === 'open').length };
 }
 function setStatus(id, status, note, commit) {
-  const e = data.entries[id];
+  // Только собственные ключи: id приходит по IPC, и '__proto__' иначе давал Object.prototype —
+  // запись статуса/заметки в него засоряла ВСЕ объекты главного процесса.
+  const e = Object.prototype.hasOwnProperty.call(data.entries, id) ? data.entries[id] : null;
   if (!e) return { ok: false, error: 'запись не найдена' };
   if (!['open', 'resolved', 'ignored'].includes(status)) return { ok: false, error: 'bad status' };
   e.status = status;
@@ -156,8 +170,8 @@ function reloadExternal() {
   try {
     const raw = fs.readFileSync(file, 'utf8');
     if (raw === lastWritten) return; // это была наша же запись
-    const parsed = JSON.parse(raw);
-    if (parsed && parsed.entries) { data = parsed; lastWritten = raw; fireChange(); }
+    const parsed = sanitize(JSON.parse(raw));
+    if (parsed) { data = parsed; lastWritten = raw; fireChange(); }
   } catch (_) {}
 }
 // Сторожим КАТАЛОГ, а не файл: атомарный rename меняет inode и сбивает watch файла.
