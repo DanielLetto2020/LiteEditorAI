@@ -14,7 +14,7 @@ import { syntaxHighlighting, defaultHighlightStyle, indentOnInput, bracketMatchi
 import { autocompletion, completionKeymap, acceptCompletion } from '@codemirror/autocomplete';
 import { oneDark } from '@codemirror/theme-one-dark';
 import { liteEditorTheme } from '../codeedit.js';
-import { isReadOnlySql, stripSqlLiterals, sqlSegments, splitSqlStatements, findSqlParams, substituteSqlParams } from '../../lib/sqlro.js';
+import { isReadOnlySql, sqlStatementCount, stripSqlLiterals, sqlSegments, splitSqlStatements, findSqlParams, substituteSqlParams } from '../../lib/sqlro.js';
 import { sql, PostgreSQL, MySQL, SQLite } from '@codemirror/lang-sql';
 
 const $ = (sel) => document.querySelector(sel);
@@ -1537,6 +1537,9 @@ export function initDb(host) {
   // ---- graphical EXPLAIN
   async function explainQuery(t) {
     if (!t.editor) return; let text = currentSqlText(t); if (!text) return; text = text.replace(/;\s*$/, '');
+    // Выделено несколько операторов: EXPLAIN встал бы только перед первым, а остальные (UPDATE/DELETE…)
+    // выполнились бы по-настоящему — без подтверждения PRODUCTION, от кнопки, которая «ничего не выполняет».
+    if (sqlStatementCount(text, dbActiveConn.type) > 1) { toast('EXPLAIN строится для одного запроса — выделите один оператор', { kind: 'err' }); return; }
     const res = t.resultEl; if (!res) return; res.innerHTML = '<div class="git-loading">EXPLAIN…</div>';
     t.lastResult = null; const type = dbActiveConn.type;
     const q = type === 'postgres' ? `EXPLAIN (FORMAT JSON) ${text}` : type === 'mysql' ? `EXPLAIN FORMAT=JSON ${text}` : `EXPLAIN QUERY PLAN ${text}`;
