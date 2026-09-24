@@ -878,7 +878,11 @@ function sendNoteToTerminal(p, text) {
   ensureProjectTabs(proj);
   setActive(proj.id);
   const sid = (tabsByProj.get(proj.id) || {}).active;
-  if (sid) lite.pty.write(sid, text); // no trailing newline — review, then press Enter yourself
+  if (!sid) return;
+  // Терминал мог только что подняться (ensureProjectTabs) с отложенным автовводом — без отмены
+  // слово из настроек (`claude`) дописалось бы в ту же строку после текста заметки.
+  cancelPrefill(sid);
+  lite.pty.write(sid, text); // no trailing newline — review, then press Enter yourself
 }
 
 // Режим «один терминал»: карточка проектов сжимается в узкий рельс — буквы проектов со статусом,
