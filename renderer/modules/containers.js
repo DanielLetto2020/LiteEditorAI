@@ -956,6 +956,9 @@ export function initContainers(host) {
 
   // Смена темы редактора: перекрасить живой exec-терминал (вызывается ядром из applyTheme).
   function applyTermTheme() { if (dockerExecTerm) { try { dockerExecTerm.options.theme = termTheme(); } catch (_) {} } }
+  // Смена «Шрифт терминала» в настройках: exec-терминал следует за ней живьём, как SSH и «Система · ~»
+  // (оболочка окна зовёт applyFontSize, если модуль его отдаёт; раньше размер менялся лишь при новом входе).
+  function applyFontSize() { if (dockerExecTerm) { try { dockerExecTerm.options.fontSize = settings.fontSize; } catch (_) {} refitExec(); } }
 
-  return { isOpen: () => dockerOpen, setOpen: setDockerOpen, refitExec, refresh, applyTermTheme };
+  return { isOpen: () => dockerOpen, setOpen: setDockerOpen, refitExec, refresh, applyTermTheme, applyFontSize };
 }
