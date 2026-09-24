@@ -832,6 +832,11 @@ ipcMain.handle('update:cancel', () => {
 function updHardExit() {
   try { errledger.flush(); } catch (_) {}
   stopSyncDaemon();
+  // Агентов тоже гасим (как в window-all-closed, которое app.exit() не поднимает): директор «ИИ
+  // компании» запущен detached — своей группой процессов — и пережил бы редактор, продолжая править
+  // проект и тратить бюджет; claude/codex «Обработки текста», AI-DB и запросы чата — туда же.
+  for (const c of companyReqs.values()) { try { companyKill(c); } catch (_) {} }
+  killReqMap(tpReqs); killReqMap(dbaiReqs); killReqMap(orReqs); killReqMap(ctxmineReqs);
   app.exit(0);
 }
 
@@ -1642,6 +1647,8 @@ ipcMain.on('ctxmine:analyze', (e, { reqId, projPath, capChars, done, only } = {}
       for (const b of ev.message.content) if (b && b.type === 'text' && b.text) emit(b.text);
     }
   };
+  // Строки, а не Buffer: русская буква на стыке чанков при c.toString() давала «��» в правилах анализа.
+  child.stdout.setEncoding('utf8'); child.stderr.setEncoding('utf8');
   child.stdout.on('data', (c) => { buf += c.toString('utf8'); let nl; while ((nl = buf.indexOf('\n')) >= 0) { handleLine(buf.slice(0, nl)); buf = buf.slice(nl + 1); } });
   child.stderr.on('data', (c) => { errOut += c.toString('utf8'); });
   child.on('error', (err) => { if (!ctxmineReqs.has(reqId)) return; ctxmineReqs.delete(reqId); clearTimeout(to); safeSend(sender, 'ctxmine:error', { reqId, error: 'claude не найден/не запустился: ' + ((err && err.message) || err) }); });
@@ -3390,7 +3397,7 @@ app.on('window-all-closed', () => {
   companyReqs.clear();
   // In-flight агент-процессы/HTTP окон модулей (textproc/чат/AI-DB): окно могло крашнуться,
   // не успев послать *:abort → не оставляем claude/codex/запрос сиротами после выхода (B3).
-  killReqMap(tpReqs); killReqMap(dbaiReqs); killReqMap(orReqs);
+  killReqMap(tpReqs); killReqMap(dbaiReqs); killReqMap(orReqs); killReqMap(ctxmineReqs); // + анализ диалогов «Контекста»
   try { dbApi.closeAll(); } catch (_) {}
   try { rhApi.closeAll(); } catch (_) {}
   for (const w of watchers.values()) { try { w.watcher.close(); } catch (_) {} }
