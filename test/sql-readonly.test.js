@@ -46,12 +46,64 @@ ro("SELECT $$it's$$; DROP TABLE t;", false, 'апостроф в долларо�
 ro("SELECT $$ x $$ AS s", true, 'долларовые кавычки без апострофа — обычный select');
 ro('SELECT 1 /* незакрытый комментарий; DROP TABLE t', true, 'незакрытый блочный комментарий съедает хвост (как и СУБД)');
 
+// --- Лексика конкретной СУБД: текст, который одна СУБД читает строкой, а другая — кодом ---
+// dialect: тип подключения; без него запрос обязан пройти правила всех СУБД сразу.
+const rod = (sql, dialect, want, msg) => { assert.strictEqual(isReadOnlySql(sql, dialect), want, msg + ' [' + (dialect || 'все') + '] :: ' + sql); passed++; };
+for (const d of [undefined, 'mysql']) {
+  rod("SELECT '\\''; SET SESSION TRANSACTION READ WRITE; DROP TABLE t; -- '", d, false, "MySQL: \\' — экранированная кавычка, следом конец строки");
+  rod('SELECT "\\""; DROP TABLE t; -- "', d, false, 'MySQL: то же в двойных кавычках');
+  rod('SELECT 1--1; DROP TABLE t;', d, false, 'MySQL: «--» без пробела — не комментарий');
+  rod('SELECT 1 /*!50000 ; DROP TABLE t */', d, false, 'MySQL: /*! … */ исполняется');
+  rod('SELECT 1 /*M!100100 ; DROP TABLE t */', d, false, 'MariaDB: /*M! … */ исполняется');
+  rod('SELECT 1 /*!50000 SELECT 1 /* x */ ; DROP TABLE t */', d, false, 'MySQL: вложенный /* внутри исполняемого не прячет хвост');
+}
+for (const d of [undefined, 'postgres']) {
+  rod("SELECT $$a'$$; DROP TABLE t; SELECT 'x'", d, false, 'Postgres: апостроф в $$…$$ не открывает строку');
+  rod("SELECT $tag$a'$tag$; DROP TABLE t; SELECT 'x'", d, false, 'Postgres: именованные долларовые кавычки');
+  rod("SELECT $тег$a'$тег$; DROP TABLE t; SELECT 'x'", d, false, 'Postgres: метка долларовых кавычек не из ASCII');
+  rod("SELECT E'\\''; DROP TABLE t; -- '", d, false, "Postgres: в E'…' обратный слэш экранирует");
+  rod("SELECT 'C:\\', 'x'; DROP TABLE t; SELECT 'y'", d, false, 'Postgres (standard_conforming_strings=on): слэш в конце строки — просто символ');
+}
+for (const d of [undefined, 'sqlite']) rod("SELECT [a'b] FROM t; DROP TABLE t; SELECT 'x'", d, false, 'SQLite: апостроф в [идентификаторе]');
+for (const d of [undefined, 'postgres', 'mysql', 'sqlite']) {
+  rod("SELECT * FROM t/**/INTO OUTFILE '/tmp/x'", d, false, 'комментарий разделяет слова: t/**/INTO — это INTO');
+  rod('SELECT * FROM t WHERE a = 1', d, true, 'обычный select');
+  rod("SELECT name FROM t WHERE name LIKE 'a\\_b' OR code ~ '^\\d+$'", d, true, 'обратные слэши в шаблонах');
+}
+// своя СУБД — меньше ложных отказов: то, что в ней строка/комментарий, не считается кодом
+rod('SELECT $$drop table t$$ AS s', 'postgres', true, 'Postgres: ключевое слово внутри $$…$$');
+rod('SELECT $$drop table t$$ AS s', undefined, false, 'без СУБД $$…$$ может быть и кодом');
+rod('SELECT 1 # drop table t', 'mysql', true, 'MySQL: # — комментарий');
+rod('SELECT [drop] FROM t', 'sqlite', true, 'SQLite: [drop] — идентификатор');
+rod('SELECT 1 --drop table t', 'postgres', true, 'Postgres: «--» без пробела — тоже комментарий');
+rod('SELECT 1 --drop table t', 'mysql', false, 'MySQL: «--drop» — код');
+rod("SELECT 'it\\'s' AS s", 'mysql', true, "MySQL: \\' внутри строки");
+rod('SELECT 1 /*!99999 drop */', 'postgres', true, 'Postgres: /*! — обычный комментарий');
+
 // --- Сам сканер ---
 assert.strictEqual(stripSqlLiterals("SELECT 'a--b' FROM t"), "SELECT '' FROM t"); passed++;
 assert.strictEqual(stripSqlLiterals('SELECT 1 -- hvost\nSELECT 2'), 'SELECT 1 \nSELECT 2'); passed++;
-assert.strictEqual(stripSqlLiterals('a /* b */ c'), 'a  c'); passed++;
+assert.strictEqual(stripSqlLiterals('a /* b */ c'), 'a   c'); passed++;   // комментарий → пробел-разделитель
 assert.strictEqual(stripSqlLiterals("SELECT 'it''s'"), "SELECT ''"); passed++;
 assert.strictEqual(stripSqlLiterals(''), ''); passed++;
+assert.strictEqual(stripSqlLiterals("a '\\'' b", { bs: 'all' }), "a '' b"); passed++;
+assert.strictEqual(stripSqlLiterals("a '\\'' b"), "a '\\'' b"); passed++;   // «без слэша»: '' — удвоение, строка не закрыта → хвост как код
+assert.strictEqual(stripSqlLiterals("E'\\'' x", { bs: 'E' }), "E'' x"); passed++;
+assert.strictEqual(stripSqlLiterals("xE'\\'' x", { bs: 'E' }), "xE'\\'' x"); passed++;   // xE — идентификатор, слэш не экранирует
+assert.strictEqual(stripSqlLiterals('a $q$ b $q$ c', { dollar: true }), 'a $$ c'); passed++;
+assert.strictEqual(stripSqlLiterals('a$q$ b', { dollar: true }), 'a$q$ b'); passed++;   // $ после буквы — часть имени
+assert.strictEqual(stripSqlLiterals('$1 $$x', { dollar: true }), '$1 $$x'); passed++;   // незакрытая — хвост как код
+assert.strictEqual(stripSqlLiterals('a [b c] d', { brackets: true }), 'a [] d'); passed++;
+assert.strictEqual(stripSqlLiterals('a [b c] d'), 'a [b c] d'); passed++;
+assert.strictEqual(stripSqlLiterals('a --b\nc', { myDash: true }), 'a --b\nc'); passed++;
+assert.strictEqual(stripSqlLiterals('a -- b\nc', { myDash: true }), 'a \nc'); passed++;
+assert.strictEqual(stripSqlLiterals('a --', { myDash: true }), 'a '); passed++;
+assert.strictEqual(stripSqlLiterals('a # b\nc', { hash: true }), 'a \nc'); passed++;
+assert.strictEqual(stripSqlLiterals('a # b'), 'a # b'); passed++;
+assert.strictEqual(stripSqlLiterals('a /*!123 b */ c', { exec: true }), 'a   b   c'); passed++;
+assert.strictEqual(stripSqlLiterals('a /*!123 b */ c'), 'a   c'); passed++;
+assert.strictEqual(stripSqlLiterals('a "b\\" c" d', { bsDq: true }), 'a "" d'); passed++;
+assert.strictEqual(stripSqlLiterals('a "b\\" c" d'), 'a "" c" d'); passed++;
 
 // --- Разметка для SQL-консоли: «запрос под курсором» и :параметры (renderer/modules/db.js) ---
 const { splitSqlStatements, findSqlParams, substituteSqlParams } = require('../lib/sqlro');
