@@ -1192,7 +1192,10 @@ export function initTextProc(host) {
           dd.appendChild(host.menuRow('trash', 'Удалить', async () => {
             host.closeMenus();
             try {
-              await lite.fs.trash(`${activeProj.path}/Roles/${r}.md`);
+              // fs:trash не бросает, а отвечает {error} (нет корзины на этой ФС, нет прав) — без
+              // проверки роль молча оставалась на месте
+              const t = await lite.fs.trash(`${activeProj.path}/Roles/${r}.md`);
+              if (t && t.error) host.toast('Ошибка: ' + t.error, { kind: 'err' });
               await loadRoles();
             } catch (err) { console.error(err); host.toast('Ошибка: ' + err.message, { kind: 'err' }); }
           }, 'danger'));
