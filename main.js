@@ -3591,6 +3591,29 @@ function userShellEnv(extra) {
   return Object.assign({}, process.env, extra || {});
 }
 
+// Окно-владелец уничтожено (✕ у окна «Система · ~», падение окна модуля → destroy): его шеллы
+// больше некому показать — подхват после перезагрузки есть только у окна редактора (pty:adoptable),
+// а новое окно нумерует вкладки заново. Без этого bash и всё запущенное в нём жили до выхода из
+// редактора. Владельца держим при самом процессе: ownerBySession чистит 'closed' окна модуля.
+const ptyOwner = new WeakMap();        // IPty → webContents окна-владельца
+const ptyOwnerHooked = new WeakSet();  // webContents, на чей 'destroyed' уже подписаны
+function bindPtyOwner(proc, owner) {
+  if (!proc || !owner) return;
+  ptyOwner.set(proc, owner);
+  if (ptyOwnerHooked.has(owner)) return;
+  ptyOwnerHooked.add(owner);
+  try {
+    owner.once('destroyed', () => {
+      for (const [id, p] of [...ptys]) {
+        if (ptyOwner.get(p) !== owner) continue;
+        try { p.kill(); } catch (_) {}
+        ptys.delete(id);
+        dropOrphan(id);
+      }
+    });
+  } catch (_) {}
+}
+
 // owner = webContents окна, создавшего сессию (редактор для терминалов проектов, окно «Система · ~»
 // для scratch). Данные/выход маршрутизируем владельцу (sendToOwner; фолбэк — окно редактора).
 function spawnPtyFor(id, cwd, cols, rows, owner) {
@@ -3614,6 +3637,7 @@ function spawnPtyFor(id, cwd, cols, rows, owner) {
     logger.log('error', 'pty', 'spawn failed', err);
     sendToOwner(id, 'pty:data', { id, data: `\r\n\x1b[31mНе удалось запустить шелл (${shell}): ${err.message}\x1b[0m\r\n` });
     sendToOwner(id, 'pty:exit', { id });
+    ownerBySession.delete(id); // сессии нет — маршрут не нужен (как в onExit)
     return { error: String(err.message || err) };
   }
   logger.log('info', 'pty', `spawned pid=${proc.pid}`);
@@ -3630,10 +3654,11 @@ function spawnPtyFor(id, cwd, cols, rows, owner) {
     dropOrphan(id);
   });
   ptys.set(id, proc);
+  bindPtyOwner(proc, owner);
   return { ok: true };
 }
 ipcMain.handle('pty:create', (e, { id, cwd, cols, rows }) => {
-  if (ptys.has(id)) { dropOrphan(id); ownerBySession.set(id, e.sender); return { ok: true, existed: true }; }
+  if (ptys.has(id)) { dropOrphan(id); ownerBySession.set(id, e.sender); bindPtyOwner(ptys.get(id), e.sender); return { ok: true, existed: true }; }
   return spawnPtyFor(id, cwd, cols, rows, e.sender);
 });
 // Kill the existing PTY (if any) and start a fresh one in the same cwd.
