@@ -973,6 +973,9 @@ function doCloseProject(id) {
       projState.delete(sid);
     }
     tabsByProj.delete(id);
+    // Сессии ушли из projState — пересчитать бейдж «N ждёт ответа» и трей. Без этого закрытый проект
+    // с ждущим агентом оставлял бейдж и отметку в трее до следующей смены состояния любой вкладки.
+    updateAttention();
   }
   const pt = { ...(STORE.projTabs || {}) }; delete pt[id]; persist('projTabs', pt);
   if (loadFavOrder().includes(id)) saveFavOrder(loadFavOrder().filter((x) => x !== id));
