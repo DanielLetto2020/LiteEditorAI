@@ -846,7 +846,10 @@ export function initStorage(host) {
       const name = String(nm || '').trim();
       if (!name || name === fo.name) return;
       const to = curPrefix + name;
-      guardedConfirm('Переименовать объект?', `«${fo.name}» → «${name}».`, 'Переименовать', async () => {
+      // CopyObject молча заменяет существующий ключ — как при загрузке поверх объекта, предупреждаем
+      const clash = listing.files.some((f) => f.key === to)
+        ? ` Объект «${name}» уже есть — старая версия будет заменена безвозвратно (корзины у S3 нет).` : '';
+      guardedConfirm('Переименовать объект?', `«${fo.name}» → «${name}».${clash}`, 'Переименовать', async () => {
         const r = await lite.storage.rename(activeId, curBucket, fo.key, to);
         if (!r.ok) { toast(r.error || 'Не удалось переименовать', { kind: 'err' }); return; }
         navigateTo(curBucket, curPrefix);
