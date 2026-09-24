@@ -1071,9 +1071,10 @@ export function initFiles(host) {
   }
 
   // ---------------------------------------------------------------- git status (tree decorations)
-  async function loadGitStatus(proj) {
+  async function loadGitStatus(proj, seq) {
     if (!proj) { gitFiles = {}; return; }
     const res = await lite.git.status(proj.path);
+    if (seq !== treeSeq) return;                        // обогнала более свежая перерисовка дерева — её статус новее
     gitFiles = res && res.files ? res.files : {};
     // освежить гаттер после внешних git-операций (коммит/checkout → tree refresh); только при чистом буфере —
     // иначе перерисовали бы метки по диск-vs-HEAD, не совпадающие с несохранёнными правками в редакторе
@@ -1121,6 +1122,7 @@ export function initFiles(host) {
   // Заглушка вивера, когда нет выбранного проекта (открыта категория/чат OpenRouter).
   function showViewerPlaceholder() {
     $('#tree-title').textContent = 'ДЕРЕВО';
+    ++treeSeq;                                          // идущая перерисовка прошлого проекта не должна лечь поверх заглушки
     const root = $('#tree');
     root.innerHTML = '';
     root.appendChild(el('div', 'tree-empty', 'Нужно выбрать проект для отображения файлов'));
@@ -1161,12 +1163,20 @@ export function initFiles(host) {
   }
 
   // ---------------------------------------------------------------- file tree
+  let treeSeq = 0;                   // токен перерисовки дерева: вотчер, ⟳, git и смена проекта идут внахлёст
   async function renderTree(proj) {
+    const seq = ++treeSeq;
     $('#tree-title').textContent = proj.name.toUpperCase();
-    await loadGitStatus(proj);
-    const root = $('#tree');
-    root.innerHTML = '';
-    await buildDir(proj.path, root, 0);
+    await loadGitStatus(proj, seq);
+    if (seq !== treeSeq) return;
+    // Строим в отвязанный фрагмент и подменяем разом. Раньше #tree чистился и наполнялся по ходу
+    // await'ов readDir: две перерисовки внахлёст (пачки вотчера идут чаще, чем проходят git status +
+    // readDir раскрытых папок) дописывали строки в один контейнер — дерево двоилось, а после смены
+    // проекта в нём оставались строки прошлого.
+    const frag = document.createDocumentFragment();
+    await buildDir(proj.path, frag, 0);
+    if (seq !== treeSeq) return;
+    $('#tree').replaceChildren(frag);
   }
   // ---- drag-and-drop в дереве: перемещение узлов (move) + втягивание файлов извне (copy из ОС)
   function setDropHL(row) { if (dropHLRow && dropHLRow !== row) dropHLRow.classList.remove('drag-over'); dropHLRow = row; if (row) row.classList.add('drag-over'); }
