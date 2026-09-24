@@ -3516,7 +3516,9 @@ ipcMain.on('kafka:panelReady', () => {
 });
 ipcMain.on('editor:sendToTerminal', (_e, payload) => forwardToEditor('editor:sendToTerminal', payload));
 // «Пропустить отдых» с оверлея в окне редактора → пропустить текущую фазу помодоро (движок в main).
-ipcMain.on('editor:pomodoroSkip', () => { if (POMO.running) pomoAdvance(); });
+// Только на перерыве: двойной клик (или клик в ту секунду, когда перерыв кончился сам) приходил уже
+// в фазе 'work' — рабочий интервал пропускался целиком и попадал в журнал как завершённый помидор.
+ipcMain.on('editor:pomodoroSkip', () => { if (POMO.running && (POMO.phase === 'short' || POMO.phase === 'long')) pomoAdvance(true); });
 ipcMain.on('editor:sendNoteToTerminal', (_e, payload) => forwardToEditor('editor:sendNoteToTerminal', payload));
 // Окно вивера (встроенный Git) попросило редактор перерисовать список проектов (git-бейджи после commit/checkout).
 ipcMain.on('editor:refreshProjects', () => { sendTo(mainWindow, 'editor:refreshProjects'); });
