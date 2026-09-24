@@ -163,6 +163,10 @@ function reply(id, result) { send({ jsonrpc: '2.0', id, result }); }
 function replyErr(id, code, message) { send({ jsonrpc: '2.0', id, error: { code, message } }); }
 
 function handle(msg) {
+  // Не объект (строка «null», число, null внутри пакета) — не JSON-RPC-сообщение. Деструктуризация null
+  // бросала вне try, прямо в обработчике stdin, и роняла весь процесс: агент терял инструменты до
+  // перезапуска сессии.
+  if (!msg || typeof msg !== 'object') return;
   const { id, method, params } = msg;
   const isReq = id !== undefined && id !== null;
   try {
