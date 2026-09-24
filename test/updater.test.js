@@ -249,4 +249,39 @@ eq(path.basename(u.updatesDir('/home/u/.LiteEditorAI')), 'updates', 'подка�
   } finally { fs.rmSync(d, { recursive: true, force: true }); }
 }
 
+// --- загрузка: отмена и обрыв связи не должны вешать промис ---
+// Раньше отмена посреди файла и обрыв соединения рвали ответ без 'end': .part не закрывался, промис
+// не разрешался, и фаза «загрузка» в main висела до перезапуска. Сервер — локальный http, https.get
+// подменён на http.get в дочернем процессе; таймаут execFileSync ловит зависание.
+{
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'lite-dl-'));
+  try {
+    const code = `
+      const http = require('http'); require('https').get = http.get;
+      const u = require(${JSON.stringify(path.resolve(__dirname, '../lib/updater'))});
+      const SIZE = 65536 * 40;
+      const srv = http.createServer((req, res) => {
+        res.writeHead(200, { 'content-length': SIZE });
+        let n = 0;
+        const iv = setInterval(() => { res.write(Buffer.alloc(65536)); if (++n === 4 && req.url === '/drop') { clearInterval(iv); req.socket.destroy(); } }, 20);
+        res.on('close', () => clearInterval(iv));
+      });
+      srv.listen(0, async () => {
+        const base = 'http://127.0.0.1:' + srv.address().port;
+        const signal = {};
+        setTimeout(() => signal.onAbort(), 150);
+        const c = await u.download({ name: 'a.tar.gz', size: SIZE, url: base + '/cancel' }, ${JSON.stringify(path.join(d, 'c'))}, { signal });
+        const dr = await u.download({ name: 'a.tar.gz', size: SIZE, url: base + '/drop' }, ${JSON.stringify(path.join(d, 'd'))}, {});
+        process.stdout.write(JSON.stringify({ c, dr }));
+        process.exit(0);
+      });`;
+    const r = JSON.parse(cp.execFileSync(process.execPath, ['-e', code], { encoding: 'utf8', timeout: 10000 }));
+    eq(r.c.ok, false, 'отменённая загрузка завершается, а не висит');
+    eq(r.c.canceled, true, 'и помечена как отменённая — UI не покажет ошибку');
+    eq(fs.readdirSync(path.join(d, 'c')).length, 0, 'недокачанный .part после отмены убран');
+    eq(r.dr.ok, false, 'обрыв связи посреди файла завершает загрузку ошибкой');
+    eq(r.dr.canceled, false, 'обрыв — не отмена: пользователь увидит причину');
+  } finally { fs.rmSync(d, { recursive: true, force: true }); }
+}
+
 console.log(`updater: ok (${passed} проверок)`);
