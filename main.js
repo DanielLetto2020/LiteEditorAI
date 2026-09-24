@@ -669,11 +669,13 @@ ipcMain.handle('openrouter:models', async (_e, { key } = {}) => {
           resolve({ models });
         } catch (_) { resolve({ error: 'Не удалось разобрать ответ OpenRouter' }); }
       });
+      // Обрыв посреди ответа: без 'end' и без 'error' у запроса промис не разрешался никогда.
+      res.on('close', () => { if (!res.complete) resolve({ error: 'соединение прервано' }); });
     });
     req.on('error', (e) => resolve({ error: String(e.message || e) }));
     req.setTimeout(20000, () => { req.destroy(); resolve({ error: 'таймаут запроса моделей' }); });
     req.end();
-  });
+  }).catch((e) => ({ error: String((e && e.message) || e) })); // синхронный бросок https.request (недопустимый символ в ключе) — тем же контрактом {error}
 });
 // ---------------------------------------------------------------- обновление приложения
 // Самообновление «как в мессенджере»: плашка в шапке → загрузка в фоне → «Перезапустить» →
@@ -851,19 +853,28 @@ ipcMain.handle('openrouter:keyInfo', async (_e, { key } = {}) => {
           resolve({ usage: d.usage, limit: d.limit, limit_remaining: d.limit_remaining, label: d.label, is_free_tier: d.is_free_tier });
         } catch (_) { resolve({ error: 'Не удалось разобрать ответ OpenRouter' }); }
       });
+      res.on('close', () => { if (!res.complete) resolve({ error: 'соединение прервано' }); });
     });
     req.on('error', (e) => resolve({ error: String(e.message || e) }));
     req.setTimeout(15000, () => { req.destroy(); resolve({ error: 'таймаут' }); });
     req.end();
-  });
+  }).catch((e) => ({ error: String((e && e.message) || e) }));
 });
 const orReqs = new Map(); // reqId -> ClientRequest (for abort)
 ipcMain.on('openrouter:chatStart', (e, { reqId, key, model, messages, temperature } = {}) => {
   const sender = e.sender;
   const body = JSON.stringify({ model, messages, stream: true, ...(typeof temperature === 'number' ? { temperature } : {}) });
-  const req = https.request(OR_BASE + '/chat/completions',
+  let req;
+  try {
+    req = https.request(OR_BASE + '/chat/completions',
     { method: 'POST', headers: { ...orHeaders(key), 'Content-Length': Buffer.byteLength(body) } },
     (res) => {
+      // Обрыв связи посреди стрима: 'end' не придёт, а у запроса нет 'error' (ответ уже начат) —
+      // чат навсегда оставался в «отправке», запись в orReqs висела. После 'end'/abort — no-op.
+      res.on('close', () => {
+        if (res.complete || !orReqs.has(reqId)) return;
+        orReqs.delete(reqId); safeSend(sender, 'openrouter:error', { reqId, error: 'соединение прервано' });
+      });
       if (res.statusCode >= 400) { // surface the API error body (bad key, no credit, bad model…)
         let errData = '';
         res.on('data', (c) => { errData += c; });
@@ -907,6 +918,12 @@ ipcMain.on('openrouter:chatStart', (e, { reqId, key, model, messages, temperatur
       });
       res.on('end', () => { if (!orReqs.has(reqId)) return; orReqs.delete(reqId); safeSend(sender, 'openrouter:done', { reqId }); });
     });
+  } catch (err) {
+    // Символ вне latin1 в ключе (кириллица из-за раскладки) — https.request бросает синхронно. Без
+    // ответа рендерер ждал бы done/error вечно, а «Стоп» не помогал: запроса нет в orReqs.
+    safeSend(sender, 'openrouter:error', { reqId, error: String((err && err.message) || err) });
+    return;
+  }
   req.on('error', (err) => { if (!orReqs.has(reqId)) return; orReqs.delete(reqId); safeSend(sender, 'openrouter:error', { reqId, error: String(err.message || err) }); });
   req.setTimeout(120000, () => { req.destroy(); if (!orReqs.has(reqId)) return; orReqs.delete(reqId); safeSend(sender, 'openrouter:error', { reqId, error: 'таймаут запроса' }); });
   orReqs.set(reqId, req);
