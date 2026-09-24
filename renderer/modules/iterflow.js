@@ -90,6 +90,10 @@ export function initIterflow(host) {
   let messages = null;                   // null=не загружено | {items} | { error } — вкладка «Чат» (веб-cookie)
   let kanbanIterId = null;               // выбранная итерация для вкладки «Канбан» (свой селектор, как в mobile web)
   let prevVis = { cp: false, proj: false, content: false }; // что было видно — чтобы fade играл только при ПОЯВЛЕНИИ уровня
+  // Выпадашки не блокируются на время загрузки: ответ на прежний выбор, пришедший позже нового,
+  // перетирал бы его (итерации/туду проекта A под выбранным проектом B). Поколение выбора это отсекает.
+  let selSeq = 0;
+  let running = 0;                       // сколько run() в полёте: busy гаснет с последним, а не с первым
 
   // ---------------- данные ----------------
   function contextsFrom(bundle) {
@@ -104,8 +108,8 @@ export function initIterflow(host) {
     toast(label + ': ' + ((r && r.error) || 'ошибка'), { kind: 'err' });
   }
   async function run(fn) {
-    busy = true; renderBody();
-    try { await fn(); } finally { busy = false; renderBody(); }
+    running++; busy = true; renderBody();
+    try { await fn(); } finally { busy = --running > 0; renderBody(); }
   }
 
   async function boot() {
@@ -128,6 +132,7 @@ export function initIterflow(host) {
 
   async function doLogout() {
     await lite.iterflow.logout();
+    selSeq++;   // загрузки, начатые до выхода, не должны вернуть данные в пустое состояние
     user = null; contexts = []; counterparties = []; projects = []; iterations = [];
     activeCtx = activeCp = activeProj = null; tasksByIter.clear(); collapsed.clear(); notes = null; messages = null;
   }
@@ -135,25 +140,31 @@ export function initIterflow(host) {
   // Прогрессивное раскрытие: выбор уровня загружает СЛЕДУЮЩИЙ список, но НЕ выбирает
   // в нём ничего — пользователь выбирает сам, тогда появляется уровень ниже.
   async function selectCtx(key) {
+    const seq = ++selSeq;
     activeCtx = key; counterparties = []; activeCp = null; projects = []; activeProj = null; iterations = []; tasksByIter.clear(); notes = null; messages = null; kanbanIterId = null;
     if (!key) return;
     const r = await lite.iterflow.counterparties(key);
+    if (seq !== selSeq) return;
     if (!r || !r.ok) return failToast('Заказчики', r);
     counterparties = r.data || [];
   }
 
   async function selectCp(cpId) {
+    const seq = ++selSeq;
     activeCp = cpId; projects = []; activeProj = null; iterations = []; tasksByIter.clear(); notes = null; messages = null; kanbanIterId = null;
     if (!cpId) return;
     const r = await lite.iterflow.counterpartyProjects(cpId);
+    if (seq !== selSeq) return;
     if (!r || !r.ok) return failToast('Проекты', r);
     projects = r.data || [];
   }
 
   async function selectProj(projId) {
+    const seq = ++selSeq;
     activeProj = projId; iterations = []; tasksByIter.clear(); collapsed.clear(); notes = null; messages = null; kanbanIterId = null;
     if (!projId) return;
     const r = await lite.iterflow.projectIterations(projId);
+    if (seq !== selSeq) return;
     if (!r || !r.ok) return failToast('Итерации', r);
     iterations = (r.data || []).slice().sort((a, b) => {
       const d = (STAGE_ORDER[a.stage] ?? 9) - (STAGE_ORDER[b.stage] ?? 9);
@@ -171,11 +182,15 @@ export function initIterflow(host) {
   }
 
   async function loadNotes() {
+    const seq = selSeq;
     const r = await lite.iterflow.projectNotes(activeProj);
+    if (seq !== selSeq) return;
     notes = (r && r.ok) ? (r.data || []) : { error: (r && r.error) || 'ошибка', web: !!(r && r.web401) };
   }
   async function loadMessages() {
+    const seq = selSeq;
     const r = await lite.iterflow.projectMessages(activeProj);
+    if (seq !== selSeq) return;
     messages = (r && r.ok) ? (r.data || { items: [] }) : { error: (r && r.error) || 'ошибка', web: !!(r && r.web401) };
   }
 
@@ -203,8 +218,10 @@ export function initIterflow(host) {
   // Перезагрузка итераций после структурных изменений (сохраняем свёрнутость карточек).
   async function reloadIterations() {
     if (!activeProj) return;
+    const seq = selSeq;
     const keep = new Set(collapsed);
     const r = await lite.iterflow.projectIterations(activeProj);
+    if (seq !== selSeq) return;
     if (!r || !r.ok) return failToast('Итерации', r);
     iterations = (r.data || []).slice().sort((a, b) => {
       const d = (STAGE_ORDER[a.stage] ?? 9) - (STAGE_ORDER[b.stage] ?? 9);
