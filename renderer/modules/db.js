@@ -145,6 +145,9 @@ export function initDb(host) {
   async function renderDbPanel() {
     const seq = ++dbRenderSeq;
     const body = $('#db-body');
+    // графики AI-DB (Chart.js) живут в глобальном реестре, пока их не destroy(): снос DOM панели
+    // (переключение подключения, «Обновить схему», переподключение) оставлял их там с данными навсегда
+    destroyChartsIn(body);
     if (!dbActiveId || connListMode) {
       body.innerHTML = '<div class="git-loading">Загрузка подключений…</div>';
       try { const r = await lite.db.list(); dbConnsList = r.connections || []; dbSecure = r.secure !== false; }
@@ -530,6 +533,7 @@ export function initDb(host) {
 
   // ============================================================ workspace (IDE layout)
   async function renderDbWorkspace(body) {
+    destroyChartsIn(body);   // см. renderDbPanel
     body.innerHTML = '';
     const ide = el('div', 'db-ide');
     // --- sidebar ---
@@ -793,7 +797,11 @@ export function initDb(host) {
     }
   }
   function renderTabBody(body) {
-    if (!body) return; body.innerHTML = '';
+    if (!body) return;
+    // редактор ушедшей SQL-вкладки иначе оставался живым вне DOM (слушатели документа/окна у EditorView);
+    // активная SQL-вкладка всё равно пересоздаёт свой в renderSqlTab, текст хранится в t.sql
+    destroyAllEditors();
+    body.innerHTML = '';
     saveSession();
     const t = findTab(activeKey);
     if (!t) { body.appendChild(el('div', 'db-tab-empty-body', 'Нет открытых вкладок')); return; }
