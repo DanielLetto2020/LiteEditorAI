@@ -1369,12 +1369,14 @@ ipcMain.handle('dbai:apiModels', async (_e, { baseUrl, key } = {}) => {
     req.end();
   });
 });
-ipcMain.on('dbai:apiRun', (e, { reqId, baseUrl, key, model, messages, usage } = {}) => {
+ipcMain.on('dbai:apiRun', (e, { reqId, baseUrl, key, model, messages, usage, prompt } = {}) => {
   const sender = e.sender;
   let u; try { u = new URL(String(baseUrl).replace(/\/$/, '') + '/chat/completions'); } catch (_) { safeSend(sender, 'dbai:error', { reqId, error: 'неверный адрес провайдера' }); return; }
   // Полноценный многоходовой диалог с ролью system: одним склеенным user-сообщением модель хуже
   // держит правила, а провайдер не может кешировать неизменную часть промпта (схему БД).
-  const msgs = Array.isArray(messages) && messages.length ? messages : [{ role: 'user', content: '' }];
+  // Одиночный prompt — прежний контракт канала: им шлёт «Мониторинг сайтов» (sitemon.js), и без
+  // этого фолбэка модель получала пустое сообщение вместо задания.
+  const msgs = Array.isArray(messages) && messages.length ? messages : [{ role: 'user', content: String(prompt || '') }];
   const body = JSON.stringify({ model, messages: msgs, stream: true, ...(usage ? { stream_options: { include_usage: true } } : {}) });
   const headers = { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body), ...(key ? { Authorization: 'Bearer ' + key } : {}) };
   const req = dbaiHttpMod(u).request(u, { method: 'POST', headers }, (res) => {
