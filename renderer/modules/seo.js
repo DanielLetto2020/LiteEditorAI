@@ -99,6 +99,9 @@ export function initSeo(host) {
   let selectedUrl = sites.length ? sites[0].url : null;
   const results = new Map();                                 // url → полный результат (в памяти, со скриншотами)
   let scanSeq = 0;
+  // url → номер последнего скана ЭТОГО сайта. Общий счётчик на все сайты отбрасывал ответы скана A, как только
+  // запускали скан B: у A навсегда оставался плейсхолдер «Сканирую сайт…», результат и снимок истории терялись.
+  const scanOf = new Map();
 
   function saveSites() { persist('seoSites', sites); }
   function siteOf(url) { return sites.find((s) => s.url === url); }
@@ -116,7 +119,7 @@ export function initSeo(host) {
   function removeSite(url) {
     const i = sites.findIndex((s) => s.url === url);
     if (i < 0) return;
-    sites.splice(i, 1); results.delete(url); saveSites();
+    sites.splice(i, 1); results.delete(url); scanOf.delete(url); saveSites();   // ответы идущего скана — в никуда
     if (selectedUrl === url) selectedUrl = sites.length ? sites[0].url : null;
     renderBody();
   }
@@ -127,17 +130,20 @@ export function initSeo(host) {
     if (!site) { toast('Добавьте сайт'); return; }
     const url = site.url;
     const seq = ++scanSeq;
+    scanOf.set(url, seq);
+    const stale = () => scanOf.get(url) !== seq;
+    const redraw = () => { if (url === selectedUrl) renderBody(); };   // фоновый скан другого сайта не перерисовывает текущий
     const prog = { scanRes: undefined, renderRes: undefined, linksRes: undefined, snapped: false };
     results.set(url, { partial: true, url });          // плейсхолдер → спиннер «Сканирую…»
     renderBody();
 
     // Пересборка результата из того, что уже пришло; снимок в историю — только когда всё готово.
     const compose = () => {
-      if (seq !== scanSeq) return;
+      if (stale()) return;
       const sc = prog.scanRes;
       if (sc === undefined) return;                    // базовый скан ещё не пришёл — рисовать нечего
-      if (!sc || sc.error) { results.set(url, sc && sc.error ? sc : { error: 'Пустой ответ' }); renderBody(); return; }
-      if (sc.fetch && !sc.fetch.ok) { results.set(url, sc); renderBody(); return; }
+      if (!sc || sc.error) { results.set(url, sc && sc.error ? sc : { error: 'Пустой ответ' }); redraw(); return; }
+      if (sc.fetch && !sc.fetch.ok) { results.set(url, sc); redraw(); return; }
       const renderDone = prog.renderRes !== undefined;
       const rr = renderDone ? prog.renderRes : null;
       let renderForBuild = null;
@@ -154,28 +160,28 @@ export function initSeo(host) {
         site.snaps = site.snaps.slice(0, SNAP_CAP);
         saveSites();
       }
-      renderBody();
+      redraw();
     };
 
     // Этап 1 — быстрый скан (Node).
     lite.seo.scan(url)
-      .then((r) => { if (seq !== scanSeq) return; prog.scanRes = r; compose(); })
-      .catch((e) => { if (seq !== scanSeq) return; prog.scanRes = { error: String((e && e.message) || e) }; compose(); });
+      .then((r) => { if (stale()) return; prog.scanRes = r; compose(); })
+      .catch((e) => { if (stale()) return; prog.scanRes = { error: String((e && e.message) || e) }; compose(); });
 
     // Этап 2 — рендер (скрытый Chromium); этап 3 — проверка ссылок из отрендеренного DOM.
     lite.seo.render(url)
       .then((r) => {
-        if (seq !== scanSeq) return;
+        if (stale()) return;
         prog.renderRes = r || { ok: false, error: 'нет ответа' };
         compose();
         const links = r && r.ok && r.dom && r.dom.links;
         if (links) {
           lite.seo.links([...(links.internal || []), ...(links.external || [])], r.url)
-            .then((lr) => { if (seq !== scanSeq) return; prog.linksRes = lr || { checked: 0, broken: [] }; compose(); })
-            .catch(() => { if (seq !== scanSeq) return; prog.linksRes = { checked: 0, broken: [] }; compose(); });
+            .then((lr) => { if (stale()) return; prog.linksRes = lr || { checked: 0, broken: [] }; compose(); })
+            .catch(() => { if (stale()) return; prog.linksRes = { checked: 0, broken: [] }; compose(); });
         }
       })
-      .catch((e) => { if (seq !== scanSeq) return; prog.renderRes = { ok: false, error: String((e && e.message) || e) }; compose(); });
+      .catch((e) => { if (stale()) return; prog.renderRes = { ok: false, error: String((e && e.message) || e) }; compose(); });
   }
 
   async function findDevServers() {
