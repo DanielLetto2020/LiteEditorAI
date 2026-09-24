@@ -1001,6 +1001,7 @@ function doCloseProject(id) {
       try { Ext.notifyActiveProject(null); } catch (_) {}
       pushActiveProject(null);
       updateNotesBadge();
+      try { lite.errors.setContext(null); } catch (_) {} // новые ошибки не должны помечаться закрытым проектом
     }
   } else {
     renderProjects();
