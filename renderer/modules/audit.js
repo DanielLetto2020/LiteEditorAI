@@ -455,7 +455,10 @@ export function initAudit(host) {
     box.appendChild(copy);
     if (sendToTerminal) {
       const term = iconBtn('au-fact', 'terminal', 'В терминал: разобрать файл', 13);
-      term.onclick = (e) => { e.stopPropagation(); sendToTerminal('Открой и проанализируй файл ' + f.rel + (ln ? ' (строка ' + ln + ')' : '') + ': '); toast('Вставлено в терминал'); };
+      // Имя файла — недоверенный текст из репозитория, а текст пишется в PTY как есть: '\r'/'\n' в имени
+      // сработали бы как Enter (в шелле — выполнение хвоста имени командой), ESC/C1 — как управляющие последовательности.
+      const safeRel = String(f.rel).replace(/[\x00-\x1f\x7f-\x9f]/g, '?');
+      term.onclick = (e) => { e.stopPropagation(); sendToTerminal('Открой и проанализируй файл ' + safeRel + (ln ? ' (строка ' + ln + ')' : '') + ': '); toast('Вставлено в терминал'); };
       box.appendChild(term);
     }
     return box;
