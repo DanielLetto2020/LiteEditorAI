@@ -2339,8 +2339,10 @@ ipcMain.handle('company:notesSet', (_e, { projPath, text } = {}) => {
 });
 ipcMain.handle('company:diff', async (_e, { projPath } = {}) => {
   try {
-    const stat = await git(projPath, ['diff', '--stat']);
-    const names = await git(projPath, ['diff', '--name-only']);
+    // core.quotePath=false: иначе «Отчёт.md» приходит как "\320\236…" — в списке мусор, а клик
+    // открывает несуществующий путь (так же в git:status/аудите).
+    const stat = await git(projPath, ['-c', 'core.quotePath=false', 'diff', '--stat']);
+    const names = await git(projPath, ['-c', 'core.quotePath=false', 'diff', '--name-only']);
     if (stat == null && names == null) return { ok: false, error: 'git недоступен' };
     return { ok: true, stat: stat || '', files: (names || '').split('\n').map((s) => s.trim()).filter(Boolean) };
   } catch (e) { return { ok: false, error: String(e) }; }
