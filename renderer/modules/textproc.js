@@ -1322,11 +1322,12 @@ export function initTextProc(host) {
       if (!name) return;
       if (!name.includes('.')) name += '.md';
       try {
-        await lite.fs.create(activeProj.path, name, false);
+        // fs:create не бросает, а отвечает {error} («..» в имени, файл уже есть, нет прав). Ошибку
+        // показывает сам диалог и остаётся открытым — раньше открывалась вкладка несуществующего файла.
+        const r = await lite.fs.create(activeProj.path, name, false);
+        if (!r || r.error) return r || { error: 'Не удалось создать' };
         await renderTree(activeProj);
-        const sep = activeProj.path.includes('\\') ? '\\' : '/';
-        const newPath = activeProj.path.endsWith(sep) ? (activeProj.path + name) : (activeProj.path + sep + name);
-        openProjectFile(newPath);
+        openProjectFile(r.path); // путь от main: для «папка/файл.md» разделители те же, что в дереве
       } catch (err) { host.toast('Ошибка: ' + err.message, {kind:'err'}); }
     });
   };
@@ -1338,7 +1339,8 @@ export function initTextProc(host) {
       let name = val.trim();
       if (!name) return;
       try {
-        await lite.fs.create(activeProj.path, name, true);
+        const r = await lite.fs.create(activeProj.path, name, true);
+        if (!r || r.error) return r || { error: 'Не удалось создать' }; // покажет диалог
         await renderTree(activeProj);
       } catch (err) { host.toast('Ошибка: ' + err.message, {kind:'err'}); }
     });
