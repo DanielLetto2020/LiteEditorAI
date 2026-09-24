@@ -5779,9 +5779,12 @@ function seoWhoisQuery(server, query) {
     let data = '';
     const s = net.connect(43, server);
     s.setTimeout(8000);
+    s.setEncoding('utf8'); // иначе многобайтные символы (кириллица в whois .рф) бьются на стыке чанков
     s.on('connect', () => s.write(query + '\r\n'));
     s.on('data', (d) => { data += d; if (data.length > 200000) s.destroy(); });
     s.on('end', () => resolve(data));
+    // destroy() по лимиту не даёт ни 'end', ни 'error' — только 'close'; без него огромный ответ вешал seo:scan
+    s.on('close', () => resolve(data));
     s.on('timeout', () => { s.destroy(); resolve(data); });
     s.on('error', () => resolve(data || null));
   });
