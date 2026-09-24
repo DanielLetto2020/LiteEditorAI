@@ -34,6 +34,7 @@ export function initContainers(host) {
   let dockerListBox = null;       // the .docker-list element reconciled in place by polls (no full re-render)
   let dockerListBusy = false;     // guard: skip a poll tick while a list fetch is still in flight
   let dockerPollTick = 0;         // poll counter — most ticks are light (containers/pods); every 10th is full
+  let dockerFullPending = false;  // полный фетч запрошен, пока шёл другой (удаление образа/тома) — сделать на ближайшем тике
 
   function dockerGroupOrder(engine, names) { // saved order first, new groups appended (alpha)
     const saved = (dockerUi.order && dockerUi.order[engine]) || [];
@@ -930,7 +931,11 @@ export function initContainers(host) {
   // Fetch a snapshot + in-place reconcile. light=true asks the backend for only the fast, frequently-changing
   // data (containers/pods), skipping the heavy `system df`/images/volumes — that's the per-tick poll path.
   async function fetchAndReconcile(light) {
-    if (dockerListBusy || !dockerOpen || dockerView !== 'list' || !dockerListBox) return; // in flight, or not on the list
+    if (!dockerOpen || dockerView !== 'list' || !dockerListBox) return; // not on the list
+    // Идущий фетч мог начаться до удаления образа/тома и вернёт их ещё живыми, а лёгкие тики образы
+    // не читают — без отметки строка висела до 10-го тика (~30 с) и провоцировала повторное удаление.
+    if (dockerListBusy) { if (!light) dockerFullPending = true; return; }
+    if (!light) dockerFullPending = false;
     const eng = dockerEngine;
     dockerListBusy = true;
     let data;
@@ -941,11 +946,11 @@ export function initContainers(host) {
     reconcileDockerList(data);
   }
   function startDockerPoll() {
-    stopDockerPoll(); dockerPollTick = 0;
+    stopDockerPoll(); dockerPollTick = 0; dockerFullPending = false;
     dockerPoll = setInterval(() => {
       if (document.hidden) return;                    // pause when window/tab is hidden
       dockerPollTick += 1;
-      fetchAndReconcile(dockerPollTick % 10 !== 0);   // light every tick; full every 10th (~30s) to catch image/volume/df drift
+      fetchAndReconcile(!dockerFullPending && dockerPollTick % 10 !== 0); // light every tick; full every 10th (~30s) to catch image/volume/df drift
     }, 3000);
   }
 
