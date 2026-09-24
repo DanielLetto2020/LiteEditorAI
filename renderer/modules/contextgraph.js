@@ -1169,9 +1169,13 @@ export function initCtx(host) {
     if (!items.length) { toast('Нет выбранных правил для записи (память и «на ревью» в файлы не пишутся)', { kind: 'warn' }); return; }
     const by = {}; for (const r of items) (by[placeOf(r)] = by[placeOf(r)] || []).push(r);
     const summary = Object.entries(by).map(([pl, arr]) => `${FILE_LABEL[pl]} — ${arr.length} ${plural(arr.length, 'правило', 'правила', 'правил')}`).join('; ');
+    const regPath = mine.scanPath;   // чей реестр — туда и пишем «CLAUDE.md проекта»
     showConfirm('Записать правила в файлы?', 'Будут дописаны: ' + summary + '. Файлы изменятся на диске.', 'Записать', async () => {
       const p = activeProject();
       if (!p) { toast(t('Проект закрыт — записывать правила некуда'), { kind: 'warn' }); return; }
+      // Пока висело подтверждение, активный проект сменился: правила этого реестра ушли бы в CLAUDE.md
+      // ДРУГОГО проекта (путь брался из activeProject() в момент «Записать»).
+      if (p.path !== regPath) { toast(t('Проект сменился — правила не записаны, выберите их заново'), { kind: 'warn' }); return; }
       const payload = items.map((r) => ({ placement: placeOf(r), title: r.title, detail: r.detail }));
       let res; try { res = await lite.ctxmine.apply(p.path, payload); } catch (e) { res = { ok: false, error: String((e && e.message) || e) }; }
       if (res && res.ok) {
