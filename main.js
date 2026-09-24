@@ -2403,11 +2403,14 @@ ipcMain.on('company:run', (e, { reqId, projPath, goal, roles, director, limitUsd
     if (!companyReqs.has(reqId)) return; companyReqs.delete(reqId); clearTimeout(idle);
     safeSend(sender, 'company:error', { reqId, error: '«claude» не найден/не запустился: ' + (err.message || err) });
   });
-  child.on('close', (code) => {
+  child.on('close', (code, signal) => {
     clearTimeout(idle); // и после «Стоп»/закрытия окна: вывод до смерти процесса взводил сторожа ещё на 15 мин
     if (!companyReqs.has(reqId)) return; companyReqs.delete(reqId);
     if (buf.trim()) emitLine(buf);   // флаш хвоста: финальный {type:'result'} может прийти без \n
-    safeSend(sender, 'company:done', { reqId, code, error: code ? (errOut.trim() || ('claude завершился с кодом ' + code)) : '' });
+    // Убит сигналом извне (OOM, kill, падение) — code === null, и по `code ? … : ''` это считалось
+    // успехом: в логе «Готово.», в истории прогон отмечен удачным. Свой «Стоп» сюда не доходит.
+    const failed = code !== 0;
+    safeSend(sender, 'company:done', { reqId, code, error: failed ? (errOut.trim() || (code === null ? 'claude прерван сигналом ' + signal : 'claude завершился с кодом ' + code)) : '' });
   });
   try { child.stdin.write(goal || ''); child.stdin.end(); } catch (_) {}
 });
