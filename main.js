@@ -122,6 +122,13 @@ try {
   if (!fs.existsSync(storeDir) && fs.existsSync(legacy)) fs.cpSync(legacy, storeDir, { recursive: true });
 } catch (_) {}
 const STORE_KEYS = ['projects', 'settings', 'layout', 'recents', 'lastParent', 'categories', 'sectionOrder', 'favOrder', 'accordions', 'dismissed', 'projTabs', 'openrouter', 'dockerUi', 'dbConnections', 'dbUi', 'rhConnections', 'rhUi', 'extData', 'extEnabled', 'quickbar', 'seoSites', 'moduleWins', 'mwLeft', 'mwLogH', 'gitFav', 'commitDrafts', 'bookmarks', 'promptSnippets', 'pomodoro', 'pomodoroLog', 'dbaiProviders', 'sessionSnaps', 'siteMon', 'rmqConnections', 'rmqUi', 'kafkaConnections', 'kafkaUi', 'stConnections', 'stUi', 'jiraAccounts', 'jiraUi', 'gsearch', 'gsearchHist', 'voice', 'voiceClips'];
+// Профили подключений с зашифрованными секретами (passEnc/tokenEnc…) — только для main: модули
+// получают их через свои IPC (publicConn — без секретов), а рендерер эти ключи не читает и не пишет.
+// В общем снимке стора они уходили во ВСЕ окна (при недоступном safeStorage — base64, то есть по сути
+// открытым текстом), а через store:set любое окно могло подменить хост профиля при сохранённом пароле.
+// Бэкап настроек (settings:export/import) их по-прежнему несёт — он читает стор в main напрямую.
+const MAIN_ONLY_KEYS = new Set(['dbConnections', 'rhConnections', 'rmqConnections', 'kafkaConnections', 'stConnections', 'jiraAccounts']);
+const rendererStoreKey = (key) => STORE_KEYS.includes(key) && !MAIN_ONLY_KEYS.has(key);
 function ensureStoreDir() { try { fs.mkdirSync(storeDir, { recursive: true }); } catch (_) {} }
 function storeFile(key) { return path.join(storeDir, String(key).replace(/[^\w.-]/g, '_') + '.json'); }
 function readStoreKey(key) {
@@ -433,7 +440,7 @@ errledger.watch();
 
 ipcMain.on('store:loadAll', (e) => {
   const o = {};
-  for (const k of STORE_KEYS) { const v = readStoreKey(k); if (v !== undefined) o[k] = v; }
+  for (const k of STORE_KEYS) { if (MAIN_ONLY_KEYS.has(k)) continue; const v = readStoreKey(k); if (v !== undefined) o[k] = v; }
   o.noteCounts = {}; // project id -> number of ACTIVE (не выполненных) задач, for card badges
   try {
     const nd = path.join(storeDir, 'notes');
@@ -453,7 +460,7 @@ ipcMain.on('store:loadAll', (e) => {
   } catch (_) {}
   e.returnValue = o; // synchronous: renderer loads the snapshot once at startup
 });
-ipcMain.on('store:set', (_e, { key, value }) => { if (STORE_KEYS.includes(key)) writeStoreKey(key, value); });
+ipcMain.on('store:set', (_e, { key, value }) => { if (rendererStoreKey(key)) writeStoreKey(key, value); });
 // settings пишут несколько окон, поэтому для него — патч по полям, а не объект целиком: иначе
 // побеждала последняя запись из устаревшей копии окна (renderer/settings-sync.js). Вливаем патч
 // в файл и рассылаем его остальным окнам — они применят его к своему объекту.
@@ -474,7 +481,7 @@ function patchStoreKey(key, set, unset, exceptWc) {
 ipcMain.on('store:patch', (e, { key, set, unset } = {}) => { if (PATCH_KEYS.has(key)) patchStoreKey(key, set, unset, e.sender); });
 // Синхронный вариант — для записи на beforeunload (снимки сессий, идея 7): обычный send может
 // не успеть флашнуться до сноса рендерера, sendSync гарантирует запись до выхода.
-ipcMain.on('store:setSync', (e, { key, value } = {}) => { if (STORE_KEYS.includes(key)) writeStoreKey(key, value); e.returnValue = true; });
+ipcMain.on('store:setSync', (e, { key, value } = {}) => { if (rendererStoreKey(key)) writeStoreKey(key, value); e.returnValue = true; });
 ipcMain.handle('store:notesGet', (_e, id) => {
   try { return JSON.parse(fs.readFileSync(path.join(storeDir, 'notes', String(id).replace(/[^\w.-]/g, '_') + '.json'), 'utf8')); }
   catch { return []; }
