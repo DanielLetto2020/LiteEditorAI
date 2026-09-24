@@ -2415,7 +2415,7 @@ ipcMain.on('company:run', (e, { reqId, projPath, goal, roles, director, limitUsd
   // (проект переехал, внешний диск отключён), и директор с правом правок строил бы всё в пустой папке.
   let projStat = null;
   try { projStat = fs.statSync(projPath); } catch (_) { /* ниже */ }
-  if (!projStat || !projStat.isDirectory()) { safeSend(sender, 'company:error', { reqId, error: 'каталог проекта не найден: ' + projPath }); return; }
+  if (!projStat || !projStat.isDirectory()) { safeSend(sender, 'company:error', { reqId, error: `каталог проекта не найден: ${projPath}` }); return; }
   // материализуем штат в .claude/agents/ (нативные сабагенты)
   try {
     const agDir = path.join(projPath, '.claude', 'agents');
@@ -5679,7 +5679,7 @@ async function seoFetchChain(start) {
       // SEO-разбором тела редиректа, а строка «слишком много редиректов» была недостижима.
       if (i >= SEO_MAX_REDIRECTS) break;
       let next; try { next = new URL(loc, u); } catch { return { ...r, finalUrl: u.href, redirects }; }
-      if (!/^https?:$/.test(next.protocol)) return { ok: false, error: 'редирект на неподдерживаемый адрес: ' + next.href.slice(0, 200), finalUrl: u.href, redirects };
+      if (!/^https?:$/.test(next.protocol)) return { ok: false, error: `редирект на неподдерживаемый адрес: ${next.href.slice(0, 200)}`, finalUrl: u.href, redirects };
       redirects.push({ from: u.href, status: r.status, to: next.href });
       u = next; continue;
     }
@@ -6669,7 +6669,7 @@ ipcMain.handle('git:branchCompare', async (_e, { root, branch } = {}) => {
   const ahead = await git(root, ['log', '--oneline', '--no-color', `HEAD..${branch}`]);
   const behind = await git(root, ['log', '--oneline', '--no-color', `${branch}..HEAD`]);
   // null = git упал (ветки уже нет, таймаут, переполнен буфер) — не выдавать это за «нет коммитов»
-  if (ahead == null || behind == null) return { ok: false, error: 'Не удалось сравнить с «' + branch + '» (ветка не найдена или ошибка git)' };
+  if (ahead == null || behind == null) return { ok: false, error: `Не удалось сравнить с «${branch}» (ветка не найдена или ошибка git)` };
   const parse =(s) => (s || '').split('\n').filter(Boolean).map((l) => { const i = l.indexOf(' '); return { hash: l.slice(0, i), subject: l.slice(i + 1) }; });
   return { ok: true, branch, onlyInBranch: parse(ahead), onlyInCurrent: parse(behind) };
 });
@@ -6679,7 +6679,7 @@ ipcMain.handle('git:branchDiffWorktree', async (_e, { root, branch } = {}) => {
   const out = await git(root, ['diff', '--no-color', branch, '--']);   // '--': ветка, совпавшая с именем файла, не двусмысленна
   // null = git упал (ветки уже нет / дифф больше буфера / таймаут): раньше уходил пустой дифф и UI
   // уверенно писал «Различий нет».
-  if (out == null) return { error: 'Не удалось получить дифф с «' + branch + '» (ветка не найдена, дифф слишком большой или ошибка git)' };
+  if (out == null) return { error: `Не удалось получить дифф с «${branch}» (ветка не найдена, дифф слишком большой или ошибка git)` };
   return { diff: out };
 });
 

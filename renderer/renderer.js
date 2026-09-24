@@ -29,7 +29,7 @@ import { openGlobalSearch } from './gsearch.js';
 import { initExtensions } from './modules/extensions.js';
 // initFiles — вивер+дерево мигрированы в отдельное окно (renderer/module-entry.js).
 
-const APP_VERSION = 'alpha v1.1.203';
+const APP_VERSION = 'alpha v1.1.204';
 const GUTTER = 8; // зазор между карточками окна — он же разделитель, за который тянется ширина
 // Системный терминал («Система · ~») мигрирован в отдельное окно (renderer/modules/scratch.js):
 // его id `__scratch__::tN` маршрутизируются main'ом в окно-владельца, в ядре их больше не обрабатываем.
@@ -3734,7 +3734,7 @@ async function onUpdateBadgeClick() {
 // (фоновая автозагрузка), нажатие не должно её молча отменять — только напомнить, что она идёт
 // (в режиме «один терминал» плашки с прогрессом не видно).
 function updateNow() {
-  if (updPhase.phase === 'downloading') { toast('Обновление уже загружается — ' + Math.max(0, Math.min(100, updPhase.pct || 0)) + ' %'); return; }
+  if (updPhase.phase === 'downloading') { toast(`Обновление уже загружается — ${Math.max(0, Math.min(100, updPhase.pct || 0))} %`); return; }
   if (updPhase.phase === 'installing') return;
   onUpdateBadgeClick();
 }
