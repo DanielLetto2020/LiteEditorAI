@@ -3275,7 +3275,9 @@ app.on('window-all-closed', () => {
   watchers.clear();
   for (const w of ctxOutWatchers.values()) { try { w.close(); } catch (_) {} } // fs.watch выходных файлов «Контекста» (B2)
   ctxOutWatchers.clear();
-  if (pomoTimer) { clearInterval(pomoTimer); pomoTimer = null; }
+  // Не просто гасим тик: на macOS приложение живёт без окон, и с running=true и снятым таймером
+  // переоткрытое окно показывало замёрзший отсчёт, который «Пауза/Продолжить» уже не оживляли.
+  try { pomoStop(); } catch (_) {}
   clipStop(); try { ttsBackend.stop(); } catch (_) {} // сайдкар озвучки не должен пережить редактор
   if (process.platform !== 'darwin') app.quit();
 });
