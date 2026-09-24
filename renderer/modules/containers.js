@@ -770,11 +770,18 @@ export function initContainers(host) {
     const pre = el('pre', 'docker-logs'); view.appendChild(pre);
     const d = dockerDetail; if (!d) return;
     const sid = 'log' + (++dockerUid) + Date.now().toString(36); dockerLogId = sid;
+    // Лимит и по узлам, и по объёму текста: у болтливого контейнера чанк пайпа доходит до 64 КБ,
+    // и 3000 таких узлов — это ~200 МБ текста в DOM. Обычные логи (строка на чанк) упираются в узлы раньше.
+    let logChars = 0;
     const unData = lite.containers.onLogsData((p) => {
       if (p.streamId !== sid) return;
       const atBottom = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 40;
-      pre.appendChild(document.createTextNode(stripAnsiSeq(p.data)));
-      while (pre.childNodes.length > 3000) pre.removeChild(pre.firstChild);
+      const txt = stripAnsiSeq(p.data);
+      pre.appendChild(document.createTextNode(txt)); logChars += txt.length;
+      while (pre.childNodes.length > 3000 || (logChars > 4000000 && pre.childNodes.length > 1)) {
+        logChars = Math.max(0, logChars - (pre.firstChild.nodeValue || '').length);
+        pre.removeChild(pre.firstChild);
+      }
       if (atBottom) pre.scrollTop = pre.scrollHeight;
     });
     const unExit = lite.containers.onLogsExit((p) => { if (p.streamId === sid) pre.appendChild(document.createTextNode('\n— поток логов завершён —\n')); });
