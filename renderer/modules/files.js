@@ -1364,18 +1364,27 @@ export function initFiles(host) {
   }
 
   // ---- сборка live-обновления диска для активного проекта (агент тронул файл)
+  // Пачки fs:changed копим за окно дебаунса: раньше таймер брал `files` только ПОСЛЕДНЕГО вызова, и если
+  // две пачки приходили внутри 120 мс (окно было занято рендером/git status), первая терялась — открытый
+  // файл из неё не перечитывался, а следующий автосейв записывал старый текст поверх правки агента.
+  let fsPending = new Set();
   function onFsChange(p, files) {
     fileListCache = null;                               // дерево менялось на диске → пересобрать листинг для Ctrl+P
+    for (const f of files || []) fsPending.add(f);
     clearTimeout(fsTimer);
     fsTimer = setTimeout(() => {
+      const changed = fsPending; fsPending = new Set();
+      // за время дебаунса сменили проект — его дерево уже перерисовал refreshViewerForActive; рендер
+      // прошлого проекта поверх нового показал бы чужое дерево
+      const cur = activeProject(); if (!cur || cur.path !== p.path) return;
       if (viewerOpen) renderTree(p);
       if (agentMode) updateReviewBadge();               // C18: агент тронул диск → освежить счётчик изменённых файлов
       // живой git-дифф в центре: показанный файл изменился на диске (агент правит) → перечитать дифф
-      if (gitDiffFile && diffMode && gitDiffProj && files.includes(gitDiffFile)) {
+      if (gitDiffFile && diffMode && gitDiffProj && changed.has(gitDiffFile)) {
         const f = gitDiffFile;
         fetchWorkingDiff(gitDiffProj, f).then((d) => { if (gitDiffFile === f && diffMode) showDiff(d.unified, d.pair, f); });
       }
-      if (currentFile && files.includes(currentFile)) {
+      if (currentFile && changed.has(currentFile)) {
         if (diffMode) reloadCurrentDiff();              // в режиме диффа — обновляем дифф (редактор не трогаем)
         else if (!dirty) reloadCurrentFile();           // нет правок — молча перечитываем (вивер всегда = диск)
         else showReloadBar();                           // есть несохранённые правки — постоянная плашка-конфликт
