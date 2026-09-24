@@ -4087,6 +4087,12 @@ function init() {
     e.preventDefault();
     const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
     if (!f) return;
+    // Проект — это папка: брошенный файл превращался в «проект» с путём к файлу, терминал в нём не
+    // стартует, а запись остаётся в списке. Папку от файла отличает webkitGetAsEntry (синхронно, только
+    // внутри drop); нет entry — ведём себя как раньше.
+    let entry = null;
+    try { const it = [...(e.dataTransfer.items || [])].find((x) => x.kind === 'file'); entry = it && it.webkitGetAsEntry ? it.webkitGetAsEntry() : null; } catch (_) {}
+    if (entry && !entry.isDirectory) { toast('Перетащите папку — файл нельзя открыть как проект', { kind: 'warn' }); return; }
     const p = f.path || lite.pathForFile(f);
     if (p) openByPath(p, baseName(p));
   });
