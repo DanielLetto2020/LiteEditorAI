@@ -137,6 +137,22 @@ eq(d.guessMqKind('custom', '0.0.0.0:15672->15672/tcp'), 'rabbitmq', 'rabbitmq п
 eq(d.guessMqKind('custom', '0.0.0.0:29092->29092/tcp'), 'kafka', 'kafka по внешнему листенеру');
 eq(d.guessMqKind('custom', '0.0.0.0:1234->1234/tcp'), null, 'чужой порт');
 
+// --- спутники: экспортёры и веб-интерфейсы носят имя СУБД/брокера, но сами ими не являются ---
+for (const img of ['prom/mysqld-exporter:v0.15.1', 'quay.io/prometheuscommunity/postgres-exporter', 'wrouesnel/postgres_exporter']) {
+  eq(d.guessDbKind(img, '0.0.0.0:9104->9104/tcp'), null, 'экспортёр не СУБД: ' + img);
+}
+for (const img of ['kbudde/rabbitmq-exporter', 'danielqsj/kafka-exporter:latest', 'provectuslabs/kafka-ui:latest', 'provectuslabs/kafka-ui',
+  'redpandadata/console:v2.4.0', 'sheepkiller/kafka-manager@sha256:abc']) {
+  eq(d.guessMqKind(img, '0.0.0.0:8080->8080/tcp'), null, 'спутник не брокер: ' + img);
+}
+eq(d.guessWebKind('provectuslabs/kafka-ui:latest', '0.0.0.0:8080->8080/tcp'), 'web', 'kafka-ui — веб-интерфейс');
+eq(d.guessMqKind('rabbitmq:3-management', ''), 'rabbitmq', 'management — не «manager»');
+eq(d.guessDbKind('bitnami/postgresql:16.2.0-debian-12-r4', ''), 'postgres', 'теги образа не принимаются за спутника');
+eq(d.dbPrefillFromInspect({ Name: 'x', Config: { Image: 'prometheuscommunity/postgres-exporter', Env: ['POSTGRES_PASSWORD=p'], ExposedPorts: { '9187/tcp': {} } } }, 'docker'), null,
+  'экспортёр с env СУБД — не префилл подключения');
+eq(d.rmqPrefillFromInspect({ Name: 'x', Config: { Image: 'kbudde/rabbitmq-exporter', Env: ['RABBITMQ_DEFAULT_USER=u'] } }, 'docker'), null, 'rabbitmq-exporter — не брокер');
+eq(d.kafkaPrefillFromInspect({ Name: 'x', Config: { Image: 'provectuslabs/kafka-ui', Env: ['KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS=kafka:9092'] } }, 'docker'), null, 'kafka-ui — не брокер');
+
 const rmq = d.rmqPrefillFromInspect({
   Name: '/broker', Config: { Image: 'rabbitmq:3-management', Env: ['RABBITMQ_DEFAULT_USER=admin', 'RABBITMQ_DEFAULT_PASS=pw', 'RABBITMQ_DEFAULT_VHOST=/app'] },
   State: { Running: true },
