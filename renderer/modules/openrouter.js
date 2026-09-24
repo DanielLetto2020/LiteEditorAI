@@ -7,6 +7,7 @@
 import { el, icon, iconBtn, makeModal, showConfirm, showPrompt, toast } from '../ui.js';
 import { t } from '../i18n.js';
 import { marked } from 'marked';
+import DOMPurify from 'dompurify';
 import hljs from 'highlight.js/lib/common';
 import 'highlight.js/styles/atom-one-dark.css';
 
@@ -115,6 +116,11 @@ export function initOpenRouter(host) {
   function mdToSafeHtml(src) {
     let html;
     try { html = marked.parse(String(src || ''), { gfm: true, breaks: true }); } catch (_) { return escapeHtml(src); }
+    // Ответ модели — недоверенный текст, а в окне есть мост window.lite: основной фильтр — DOMPurify
+    // (самодельный ниже пропускал xlink:href в SVG, srcset, background, <base>). style режем тоже:
+    // иначе ответ мог накрыть окно fixed-плашкой, и она возвращалась бы из истории при каждом
+    // открытии сессии. marked сам style не ставит (выравнивание в таблицах — атрибут align).
+    html = DOMPurify.sanitize(html, { FORBID_TAGS: ['style', 'form', 'base'], FORBID_ATTR: ['style'] });
     const tpl = document.createElement('template');
     tpl.innerHTML = html;
     tpl.content.querySelectorAll('script,style,iframe,object,embed,link,meta,form').forEach((n) => n.remove());
