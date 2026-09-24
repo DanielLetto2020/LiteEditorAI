@@ -1041,11 +1041,12 @@ function tpUserAgents() {
   } catch (_) { return []; }   // нет файла или битый JSON — работаем на встроенных
 }
 // id → конфиг запуска. Пользовательские поля берём выборочно: массив args приводим к строкам,
-// via/pty нормализуем, посторонние ключи из файла в spawn не утекают.
-function tpAgents() {
+// via/pty нормализуем, посторонние ключи из файла в spawn не утекают. user — записи файла
+// (tp:saveAgents проверяет результат ещё ДО записи на диск).
+function tpAgents(user = tpUserAgents()) {
   const out = {};
   for (const [id, c] of Object.entries(TP_BUILTIN_AGENTS)) out[id] = { id, ...c };
-  for (const u of tpUserAgents()) {
+  for (const u of user) {
     const id = String((u && u.id) || '').trim();
     if (!id) continue;
     if (u.hidden) { delete out[id]; continue; }
@@ -1083,11 +1084,14 @@ ipcMain.handle('tp:saveAgents', (_e, { text } = {}) => {
     if (!u.hidden && !String(u.cmd || '').trim() && !TP_BUILTIN_AGENTS[u.id]) return { ok: false, error: i18n.t('У записи «{0}» нет команды (cmd)', u.id) };
     if (u.args !== undefined && !Array.isArray(u.args)) return { ok: false, error: i18n.t('Поле args у записи «{0}» должно быть массивом', u.id) };
   }
+  // Проверяем, что после правки остаётся хоть один агент, ДО записи: раньше файл сохранялся и
+  // только потом приходил отказ — «Отмена» в модалке оставляла на диске список без агентов, и
+  // любой запрос в чате отвечал «не настроено ни одного агента».
+  const list = Object.values(tpAgents(arr)).map((a) => ({ id: a.id, label: a.label, canAgent: Array.isArray(a.agentArgs) && a.agentArgs.length > 0 }));
+  if (!list.length) return { ok: false, error: 'Так не остаётся ни одного агента — верните хотя бы одного' };
   ensureStoreDir();
   try { atomicWriteSync(TP_AGENTS_FILE(), JSON.stringify(arr, null, 2)); }
   catch (e2) { return { ok: false, error: String(e2.message || e2) }; }
-  const list = Object.values(tpAgents()).map((a) => ({ id: a.id, label: a.label, canAgent: Array.isArray(a.agentArgs) && a.agentArgs.length > 0 }));
-  if (!list.length) return { ok: false, error: 'Так не остаётся ни одного агента — верните хотя бы одного' };
   return { ok: true, list };
 });
 // GUI-сессия часто не видит ~/.local/bin и nvm-bin → дополняем PATH, чтобы claude/codex нашлись.
