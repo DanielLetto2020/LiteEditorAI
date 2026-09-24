@@ -735,8 +735,20 @@ ipcMain.handle('update:state', () => ({ ...updState, install: updInstallInfo() }
 
 // Скачать и подготовить обновление. Возвращается сразу после ЗАВЕРШЕНИЯ загрузки (это долгая
 // операция, прогресс идёт событиями update:state).
+// Гейт от двойного вызова: фаза становится 'downloading' только ПОСЛЕ await fetchLatest, и автозагрузка
+// при старте + клик по плашке в эту секунду запускали две загрузки в один и тот же .part.
+let updDownloading = false;
 ipcMain.handle('update:download', async () => {
-  if (updState.phase === 'downloading') return { ok: false, error: 'загрузка уже идёт' };
+  if (updState.phase === 'downloading' || updDownloading) return { ok: false, error: 'загрузка уже идёт' };
+  updDownloading = true;
+  try { return await updDownload(); }
+  finally {
+    updDownloading = false; updAbort = null;
+    // Непредвиденный бросок не должен оставить плашку в «загрузке» навсегда.
+    if (updState.phase === 'downloading') updSet({ phase: 'available', pct: 0 });
+  }
+});
+async function updDownload() {
   const inst = updInstallInfo();
   if (!inst.canSelfUpdate) return { ok: false, error: inst.reason || 'эта установка не умеет обновляться сама' };
 
@@ -748,7 +760,9 @@ ipcMain.handle('update:download', async () => {
 
   const dir = path.join(updater.updatesDir(storeDir), rel.tag);
   updAbort = {};
-  updSet({ phase: 'downloading', tag: rel.tag, pct: 0, size: asset.size });
+  // unpacking сбрасываем явно: после неудачной распаковки флаг оставался в состоянии, и повторная
+  // загрузка всю дорогу показывала «распаковка…» вместо процентов.
+  updSet({ phase: 'downloading', tag: rel.tag, pct: 0, size: asset.size, unpacking: false });
   logger.log('info', 'update', `загрузка ${asset.name} (${Math.round((asset.size || 0) / 1048576)} МБ)`);
   const dl = await updater.download(asset, dir, {
     signal: updAbort,
@@ -779,7 +793,7 @@ ipcMain.handle('update:download', async () => {
   updSet({ phase: 'ready', tag: rel.tag, pct: 100 });
   logger.log('info', 'update', `${rel.tag} готова к установке`);
   return { ok: true, tag: rel.tag };
-});
+}
 
 ipcMain.handle('update:cancel', () => {
   if (updAbort && updAbort.onAbort) { try { updAbort.onAbort(); } catch (_) {} }
@@ -790,6 +804,8 @@ ipcMain.handle('update:cancel', () => {
 // рендерер получает только при неудаче.
 ipcMain.handle('update:install', async () => {
   if (!updStaged) return { ok: false, error: 'обновление ещё не загружено' };
+  // Второй вызов (двойное подтверждение, второе окно) запустил бы второй стейджер/pkexec поверх первого.
+  if (updState.phase === 'installing') return { ok: false, error: 'установка уже идёт' };
   const inst = updInstallInfo();
   updSet({ phase: 'installing' });
 
