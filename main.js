@@ -2813,8 +2813,12 @@ function createWindow() {
   // Окно редактора начинает загружать страницу заново (перезагрузка после падения, импорт настроек):
   // терминалы старой страницы не гасим — агенты в них продолжают работать, а новая страница забирает
   // их по id (pty:adoptable → pty:create с тем же id). Кого не забрали за ORPHAN_TTL_MS — гасим.
+  // did-start-navigation приходит РАНЬШЕ will-navigate (порядок событий навигации в Electron), поэтому
+  // переход наружу — ссылка или форма в пользовательском модуле, — который hardenNavigation тут же
+  // отменит, ставил бы все терминалы окна на гашение: страница оставалась, а агенты умирали через
+  // ORPHAN_TTL_MS. Страницу меняет только переход на свою страницу (перезагрузка, импорт настроек).
   mainWindow.webContents.on('did-start-navigation', (ev) => {
-    if (ev && ev.isMainFrame && !ev.isSameDocument) orphanPtysOf(mainWindow.webContents);
+    if (ev && ev.isMainFrame && !ev.isSameDocument && isAppPage(ev.url)) orphanPtysOf(mainWindow.webContents);
   });
   mainWindow.webContents.on('unresponsive', () => logger.log('warn', 'window', 'renderer unresponsive'));
   mainWindow.webContents.on('responsive', () => logger.log('info', 'window', 'renderer responsive'));
