@@ -2355,6 +2355,11 @@ function companyKill(child) {
 ipcMain.on('company:run', (e, { reqId, projPath, goal, roles, director, limitUsd, permission, memoryOn } = {}) => {
   const sender = e.sender;
   if (!projPath) { safeSend(sender, 'company:error', { reqId, error: 'нет активного проекта' }); return; }
+  // Каталог проекта обязан существовать: mkdirSync(recursive) ниже молча создал бы его заново
+  // (проект переехал, внешний диск отключён), и директор с правом правок строил бы всё в пустой папке.
+  let projStat = null;
+  try { projStat = fs.statSync(projPath); } catch (_) { /* ниже */ }
+  if (!projStat || !projStat.isDirectory()) { safeSend(sender, 'company:error', { reqId, error: 'каталог проекта не найден: ' + projPath }); return; }
   // материализуем штат в .claude/agents/ (нативные сабагенты)
   try {
     const agDir = path.join(projPath, '.claude', 'agents');
