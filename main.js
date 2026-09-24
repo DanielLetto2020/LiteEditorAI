@@ -5212,19 +5212,29 @@ async function auditGitHistory(root, fileSet) {
 }
 
 // Осиротевшие (эвристика): basename файла не встречается ни в одном ДРУГОМ файле. Только малые проекты.
+// Потолок корпуса (весь текст проекта держится в памяти main строками): 1500 файлов по ≤4 МБ — это
+// до 6 ГБ, «малый» проект с сотнями мегабайтных CSV/JSON ронял main по памяти. Сверх — эвристику
+// пропускаем тем же флагом skipped, что и для больших проектов (UI это уже объясняет).
+const AUDIT_ORPHAN_CORPUS_MAX = 64 * 1024 * 1024;
 async function auditOrphans(root, files) {
   if (files.length > 1500) return { items: [], skipped: true };
   const corpus = [];
+  let corpusBytes = 0;
   for (const f of files) {
     if (AUDIT_BINARY_CATS.has(f.cat) || f.bytes > AUDIT_LINE_MAX_BYTES) continue;
+    if ((corpusBytes += f.bytes) > AUDIT_ORPHAN_CORPUS_MAX) return { items: [], skipped: true };
     let buf; try { buf = await fs.promises.readFile(path.join(root, f.rel)); } catch { continue; }
     if (buf.includes(0)) continue;
     corpus.push({ rel: f.rel, lower: buf.toString('utf8').toLowerCase() });
   }
   const ENTRY = /^(index|main|app|mod|__init__|readme|license|changelog|setup|conftest)\b/i;
   const items = [];
+  let checked = 0;
   for (const f of files) {
     if (items.length >= 200) break;
+    // Поиск — синхронный проход по всему корпусу на каждый файл: отдаём цикл событий, иначе на
+    // крупном корпусе main (а с ним IPC всех окон) замирал на секунды.
+    if (++checked % 25 === 0) await new Promise((r) => setImmediate(r));
     if (f.cat !== 'code' && f.cat !== 'web') continue;
     const base = f.rel.split('/').pop();
     if (ENTRY.test(base) || base.startsWith('.')) continue;
