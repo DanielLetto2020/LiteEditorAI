@@ -4334,7 +4334,9 @@ function smRenderCapture(url, selectors, timeoutMs) {
         } catch (e) { clearTimeout(to); finish({ error: String((e && e.message) || e) }); }
       });
       win.webContents.on('did-fail-load', (_e, code, desc, _u, isMainFrame) => { if (isMainFrame) { clearTimeout(to); finish({ error: desc || ('ошибка загрузки ' + code) }); } });
-      win.loadURL(url, { userAgent: 'LiteEditor-Monitor/1.0' });
+      // Отказ загрузки уже разобран в did-fail-load (и таймаутом); без catch промис loadURL уходил в
+      // unhandledRejection — в реестр ошибок «сбоем приложения» на каждой проверке лежащего сайта.
+      win.loadURL(url, { userAgent: 'LiteEditor-Monitor/1.0' }).catch(() => {});
     } catch (e) { clearTimeout(to); finish({ error: String((e && e.message) || e) }); }
   });
 }
