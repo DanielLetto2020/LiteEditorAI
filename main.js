@@ -5164,6 +5164,17 @@ async function auditScanText(full) {
   return { lines, maxLine, markers, secrets };
 }
 
+// sha1 файла потоком. Кандидаты в дубли — любого размера (тома архива part1/part2, образы, видео
+// одинакового веса): readFile целиком держал бы в памяти main гигабайты, а файл > 2 ГБ и вовсе не читал.
+function auditHashFile(full) {
+  return new Promise((resolve) => {
+    const h = crypto.createHash('sha1');
+    const s = fs.createReadStream(full);
+    s.on('error', () => resolve(null));
+    s.on('data', (chunk) => h.update(chunk));
+    s.on('end', () => resolve(h.digest('hex')));
+  });
+}
 // Дубликаты: хешируем только файлы, чей размер совпал с другим (кандидаты), — дёшево.
 async function auditDupes(root, files) {
   const bySize = new Map();
@@ -5173,8 +5184,8 @@ async function auditDupes(root, files) {
   if (!cand.length || cand.length > 4000) return { groups: [], skipped: cand.length > 4000 };
   const byHash = new Map();
   for (const f of cand) {
-    let buf; try { buf = await fs.promises.readFile(path.join(root, f.rel)); } catch { continue; }
-    const k = f.bytes + ':' + crypto.createHash('sha1').update(buf).digest('hex');
+    const h = await auditHashFile(path.join(root, f.rel)); if (h == null) continue;
+    const k = f.bytes + ':' + h;
     const a = byHash.get(k); if (a) a.push(f); else byHash.set(k, [f]);
   }
   const groups = [];
