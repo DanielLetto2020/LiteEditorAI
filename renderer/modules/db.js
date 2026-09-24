@@ -592,8 +592,10 @@ export function initDb(host) {
       if (seq !== dbRenderSeq) return;
       if (r.error) { tree.innerHTML = ''; tree.appendChild(el('div', 'docker-err', r.error)); return; }
       dbSchema = r;
-      lite.db.columns(dbActiveId).then((cr) => { if (cr && !cr.error) { dbColsCache = cr.columns || {}; refreshOpenSqlSchemas(); } });
-      lite.db.objects(dbActiveId).then((o) => { if (o && !o.error) { dbObjectsCache = o; const tr = $('#db-tree-root') || tree; renderTree(tr, (dbUi.treeSearch || '').trim().toLowerCase()); } });
+      // ответ, пришедший после переключения на другую базу, — не её (иначе автокомплит и AI-DB видели чужую схему)
+      const wsConn = dbActiveId;
+      lite.db.columns(wsConn).then((cr) => { if (dbActiveId === wsConn && cr && !cr.error) { dbColsCache = cr.columns || {}; refreshOpenSqlSchemas(); } });
+      lite.db.objects(wsConn).then((o) => { if (dbActiveId === wsConn && o && !o.error) { dbObjectsCache = o; const tr = $('#db-tree-root') || tree; renderTree(tr, (dbUi.treeSearch || '').trim().toLowerCase()); } });
     }
     tree.id = 'db-tree-root';
     renderTree(tree, (search.value || '').trim().toLowerCase());
@@ -711,8 +713,11 @@ export function initDb(host) {
   async function getMeta(schema, table) {
     const key = (schema ? schema + '.' : '') + table;
     if (metaCache.has(key)) return metaCache.get(key);
+    // Кэш — того подключения, для которого спрашивали: пока шёл ответ, могли переключиться на другую
+    // базу, и её кэш получал чужие колонки/PK — правка в гриде одноимённой таблицы ушла бы с WHERE по чужому ключу.
+    const cache = metaCache;
     const m = await lite.db.tableMeta(dbActiveId, schema, table);
-    if (!m.error) metaCache.set(key, m);
+    if (!m.error) cache.set(key, m);
     return m;
   }
 
@@ -758,7 +763,14 @@ export function initDb(host) {
   function recordNav(key) { if (navLock) return; navStack = navStack.slice(0, navPtr + 1); if (navStack[navPtr] !== key) { navStack.push(key); navPtr = navStack.length - 1; } }
   function navGo(delta) { const p = navPtr + delta; if (p < 0 || p >= navStack.length) return; navPtr = p; navLock = true; if (findTab(navStack[p])) activate(navStack[p]); navLock = false; }
   let dbRelationsCache = null;
-  async function getRelations() { if (!dbRelationsCache) { const r = await lite.db.relations(dbActiveId); dbRelationsCache = (r && r.relations) || []; } return dbRelationsCache; }
+  async function getRelations() {
+    if (dbRelationsCache) return dbRelationsCache;
+    const id = dbActiveId;
+    const r = await lite.db.relations(id);
+    const rel = (r && r.relations) || [];
+    if (dbActiveId === id) dbRelationsCache = rel;   // переключились на другую базу — её кэш не трогаем
+    return rel;
+  }
   function openSqlTab(initialSql) {
     const key = 'sql:' + (++sqlSeq); tabs.push({ key, kind: 'sql', title: 'Запрос ' + sqlSeq, sql: initialSql || '' }); activate(key);
   }
@@ -3069,10 +3081,11 @@ blockquote{border-left:3px solid #c9ced4;margin:0;padding:.2rem 0 .2rem .8rem;co
   }
   function aiExtras() { return aiExtrasByConn.get(dbActiveId) || { samples: {}, comments: {} }; }
   async function aiLoadExtras() {
-    if (aiExtrasByConn.has(dbActiveId)) return;
+    const id = dbActiveId;   // запросы ушли к этой базе — под её id и кладём, даже если уже переключились
+    if (aiExtrasByConn.has(id)) return;
     const type = dbActiveConn ? dbActiveConn.type : null;
     const [samples, comments] = await Promise.all([aiLoadSamples(type), aiLoadComments(type)]);
-    aiExtrasByConn.set(dbActiveId, { samples, comments });
+    aiExtrasByConn.set(id, { samples, comments });
   }
   // подтянуть метаданные (типы/PK/FK) для таблиц, которые попадут в промпт подробно;
   // getMeta не кидает, а возвращает {error} — поэтому Promise.all тут безопасен
@@ -3333,7 +3346,7 @@ blockquote{border-left:3px solid #c9ced4;margin:0;padding:.2rem 0 .2rem .8rem;co
     const chatConn = dbActiveId;   // поток может закончиться, когда активна уже другая база
     // подготовка контекста до отправки; сорвалась — снимаем «занят», иначе поле ввода осталось бы заблокированным
     try {
-      if (!dbColsCache) { const cr = await lite.db.columns(dbActiveId); if (cr && !cr.error) dbColsCache = cr.columns || {}; }
+      if (!dbColsCache) { const cr = await lite.db.columns(chatConn); if (dbActiveId === chatConn && cr && !cr.error) dbColsCache = cr.columns || {}; }
       if (!dbRelationsCache) { try { await getRelations(); } catch (_) {} }
       await aiEnsureMeta(st);   // типы/PK/FK для таблиц, которые точно попадут в промпт
       await aiLoadExtras();     // комментарии и частые значения колонок (один раз на подключение)
@@ -3343,6 +3356,8 @@ blockquote{border-left:3px solid #c9ced4;margin:0;padding:.2rem 0 .2rem .8rem;co
       toast('Не удалось подготовить запрос агенту: ' + (e && e.message ? e.message : e), { kind: 'err' });
       return;
     }
+    // пока готовили контекст, открыли другую базу: промпт собрался бы из ЕЁ схемы для чужого диалога
+    if (dbActiveId !== chatConn) { st._busy = false; return; }
     const asst = { role: 'assistant', text: '', streaming: true }; st.messages.push(asst);
     aiAppendMsg(host, asst);
     const reqId = 'dbai-' + (++aiSeq) + '-' + dbActiveId; st._reqId = reqId;
