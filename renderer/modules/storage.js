@@ -1112,28 +1112,48 @@ export function initStorage(host) {
     if (activeConn.isProd) guardedConfirm('Загрузить в PRODUCTION?', `Файлов: ${paths.length} → «${bucket}/${prefix}».`, 'Загрузить', start);
     else start();
   }
+  // Скачивание идёт в выбранную ПАПКУ (без «Сохранить как» и его вопроса о замене), поэтому
+  // одноимённые локальные файлы заменялись молча — спрашиваем, как и при загрузке поверх объектов.
+  function confirmLocalOverwrite(dir, names, isDir, run) {
+    lite.fs.existsMany(names.map((nm) => dir + '/' + nm)).then((ex) => {
+      const clash = names.filter((_, i) => ex && ex[i]);
+      if (!clash.length) { run(); return; }
+      const list = clash.slice(0, 5).join(', ') + (clash.length > 5 ? ` и ещё ${clash.length - 5}` : '');
+      confirm2('Перезаписать локальные файлы?',
+        isDir ? `В «${dir}» уже есть папка «${list}» — файлы с совпадающими именами будут заменены скачанными.`
+          : `В «${dir}» уже есть: ${list}. Они будут заменены скачанными.`,
+        'Перезаписать', run);
+    }, () => run());
+  }
   async function downloadObjects(objs) {
+    const id = activeId, bucket = curBucket;
     const r = await lite.storage.pickDownloadDir();
     if (!r.ok || !r.dir) return;
-    for (const o of objs) {
-      const opId = newOpId();
-      const name = localName(o.name || baseName(o.key), 'object');
-      transfers.set(opId, { phase: 'download', key: o.key, name, loaded: 0, total: 0, speed: 0, lastLoaded: 0, lastT: Date.now(), status: 'run' });
-      lite.storage.download(activeId, curBucket, o.key, r.dir + '/' + name, opId).then((res) => {
-        if (!res.ok) { const t = transfers.get(opId); if (t) { t.status = 'err'; t.error = res.error; } paintTransfersBar(); }
-      });
-    }
-    paintTransfersBar();
+    const items = objs.map((o) => ({ key: o.key, name: localName(o.name || baseName(o.key), 'object') }));
+    confirmLocalOverwrite(r.dir, items.map((it) => it.name), false, () => {
+      for (const { key, name } of items) {
+        const opId = newOpId();
+        transfers.set(opId, { phase: 'download', key, name, loaded: 0, total: 0, speed: 0, lastLoaded: 0, lastT: Date.now(), status: 'run' });
+        lite.storage.download(id, bucket, key, r.dir + '/' + name, opId).then((res) => {
+          if (!res.ok) { const t = transfers.get(opId); if (t) { t.status = 'err'; t.error = res.error; } paintTransfersBar(); }
+        });
+      }
+      paintTransfersBar();
+    });
   }
   async function downloadPrefix(d) {
+    const id = activeId, bucket = curBucket;
     const r = await lite.storage.pickDownloadDir();
     if (!r.ok || !r.dir) return;
-    const opId = newOpId();
-    transfers.set(opId, { phase: 'download', key: d.prefix, name: d.name + '/', loaded: 0, total: 0, speed: 0, lastLoaded: 0, lastT: Date.now(), status: 'run' });
-    lite.storage.downloadPrefix(activeId, curBucket, d.prefix, r.dir + '/' + localName(d.name, 'folder'), opId).then((res) => {
-      if (!res.ok) { const t = transfers.get(opId); if (t) { t.status = 'err'; t.error = res.error; } paintTransfersBar(); }
+    const dirName = localName(d.name, 'folder');
+    confirmLocalOverwrite(r.dir, [dirName], true, () => {
+      const opId = newOpId();
+      transfers.set(opId, { phase: 'download', key: d.prefix, name: d.name + '/', loaded: 0, total: 0, speed: 0, lastLoaded: 0, lastT: Date.now(), status: 'run' });
+      lite.storage.downloadPrefix(id, bucket, d.prefix, r.dir + '/' + dirName, opId).then((res) => {
+        if (!res.ok) { const t = transfers.get(opId); if (t) { t.status = 'err'; t.error = res.error; } paintTransfersBar(); }
+      });
+      paintTransfersBar();
     });
-    paintTransfersBar();
   }
   function wireDropZone(box) {
     // Гард нужен ВСЕГДА: без preventDefault Chromium навигирует окно модуля на file:// сброшенного
