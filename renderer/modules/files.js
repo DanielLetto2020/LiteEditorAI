@@ -584,6 +584,7 @@ export function initFiles(host) {
     resetCenterView();
     currentFile = filePath;
     docEol = eolOf(res.content);
+    diskBase = normEol(res.content);
     commitOpenUI(filePath, kind);
     afterOpen(filePath);
     // язык может грузиться лениво (первое открытие типа) → по готовности переконфигурируем, если файл ещё открыт
@@ -890,7 +891,8 @@ export function initFiles(host) {
     const head = editor.state.selection.main.head;
     const oldText = editor.state.doc.toString();        // C21: до подмены — чтобы пометить, что тронул агент
     docEol = eolOf(res.content);                        // агент мог сменить переводы строк — пишем дальше как на диске
-    const text = res.content.replace(/\r\n?/g, '\n');   // док CodeMirror — с '\n': сравниваем в тех же координатах
+    const text = normEol(res.content);                  // док CodeMirror — с '\n': сравниваем в тех же координатах
+    diskBase = text;
     if (text === oldText) { markDirty(false); hideReloadBar(); return; } // эхо нашего же автосейва — не перезаливаем док (иначе сброс folds/курсора)
     setEditorText(res.content, languageFor(f, langOnLoad(f)));
     markDirty(false);
@@ -930,6 +932,10 @@ export function initFiles(host) {
   let docEol = '\n';
   function eolOf(s) { const crlf = (s.match(/\r\n/g) || []).length; return crlf && crlf * 2 >= (s.match(/\n/g) || []).length ? '\r\n' : '\n'; }
   const toDiskText = (text) => (docEol === '\n' ? text : text.replace(/\n/g, docEol));
+  const normEol = (s) => s.replace(/\r\n?/g, '\n');   // текст с диска → координаты дока CodeMirror
+  // Что вивер последним видел на диске для открытого буфера (загрузка, перечитывание, своя запись) —
+  // по нему эхо собственной записи отличается от настоящей чужой правки (checkDiskConflict).
+  let diskBase = null;
   // Автосохранение (PhpStorm-style): через AUTOSAVE_MS тишины после правки тихо пишем файл на диск.
   // Не сохраняем в превью/диффе, при конфликте на диске (открыта reload-плашка) и при загрузке дока —
   // там пишет/решает другой путь. Сохраняет ровно текущий файл; stale-таймер после смены файла безвреден
@@ -948,6 +954,17 @@ export function initFiles(host) {
   // Постоянная (в отличие от тоста) — пока пользователь не решит: перечитать с диска или оставить своё.
   function showReloadBar() { $('#viewer-reload-bar').classList.remove('hidden'); }
   function hideReloadBar() { $('#viewer-reload-bar').classList.add('hidden'); }
+  // Открытый файл изменился на диске, а в редакторе несохранённые правки. Часто это эхо НАШЕЙ записи:
+  // человек продолжил печатать, пока событие автосейва шло через вотчер (180 + 120 мс), — и плашка
+  // «изменён на диске» всплывала на ровном месте, выключая автосейв до решения. Плашка — только если
+  // на диске не то, что вивер видел там последним.
+  async function checkDiskConflict() {
+    const f = currentFile;
+    let res; try { res = await lite.fs.readFile(f); } catch (_) { res = null; }
+    if (f !== currentFile || !dirty) return;            // за время чтения сменили файл или успели сохраниться
+    if (res && !res.error && diskBase != null && normEol(res.content) === diskBase) return;
+    showReloadBar();
+  }
   // Returns true when the file is safely on disk (or there was nothing to save), false on a
   // failed write. Callers that gate a destructive next step (guardDirty) must NOT proceed on
   // false, or the unsaved edits are lost.
@@ -976,6 +993,7 @@ export function initFiles(host) {
         return false;
       }
       if (currentFile !== file) return true;           // файл сменили под нами — дальше решает его собственный путь
+      diskBase = text;
       if (editor.state.doc.toString() === text) {
         markDirty(false); hideReloadBar(); updateGitGutter(file); refreshBlameIfOn();
         // HTML в сплите грузится С ДИСКА, а его перерисовка по вводу (300 мс) срабатывает раньше автосейва
@@ -1436,7 +1454,7 @@ export function initFiles(host) {
       if (currentFile && changed.has(currentFile)) {
         if (diffMode) reloadCurrentDiff();              // в режиме диффа — обновляем дифф (редактор не трогаем)
         else if (!dirty) reloadCurrentFile();           // нет правок — молча перечитываем (вивер всегда = диск)
-        else showReloadBar();                           // есть несохранённые правки — постоянная плашка-конфликт
+        else checkDiskConflict();                       // есть несохранённые правки — плашка-конфликт, если это не эхо своей записи
       }
     }, 120);
   }
