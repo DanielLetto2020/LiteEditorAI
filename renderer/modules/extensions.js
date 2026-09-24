@@ -89,7 +89,10 @@ export function initExtensions(host) {
         isOpen: () => extPaneOpen && activeExtId === id,
         onClose: (fn) => { rec.closeCbs.push(fn); return () => { rec.closeCbs = rec.closeCbs.filter((f) => f !== fn); }; },
       }),
-      ui: Object.freeze({ el, icon, iconBtn, toast, makeModal, showConfirm, showPrompt }),
+      // GUIDE обещает модулям toast(msg, { kind: 'error' }), а ядро знает только 'err' — без
+      // перевода ошибка модуля показывалась обычным тостом и не попадала в журнал.
+      ui: Object.freeze({ el, icon, iconBtn, makeModal, showConfirm, showPrompt,
+        toast: (msg, opts) => toast(msg, (opts && opts.kind === 'error') ? { ...opts, kind: 'err' } : (opts || {})) }),
       storage: Object.freeze({
         get: (k, def) => { const d = (host.STORE.extData || {})[id] || {}; return (k in d) ? d[k] : def; },
         set: (k, v) => { const all = { ...(host.STORE.extData || {}) }; all[id] = { ...(all[id] || {}), [k]: v }; host.persist('extData', all); },
