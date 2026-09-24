@@ -973,6 +973,9 @@ export function initFiles(host) {
       if (currentFile !== file) return true;           // файл сменили под нами — дальше решает его собственный путь
       if (editor.state.doc.toString() === text) {
         markDirty(false); hideReloadBar(); updateGitGutter(file); refreshBlameIfOn();
+        // HTML в сплите грузится С ДИСКА, а его перерисовка по вводу (300 мс) срабатывает раньше автосейва
+        // (400 мс) — без этого «Рядом» всегда показывал состояние до последней правки
+        if (splitMode && previewKind(file) === 'html') refreshSplitPreview();
         return true;
       }
     }
