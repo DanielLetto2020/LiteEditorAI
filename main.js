@@ -2592,12 +2592,17 @@ ipcMain.handle('ext:scan', () => {
     let manifest = null, error = '';
     try { manifest = JSON.parse(fs.readFileSync(path.join(dir, 'manifest.json'), 'utf8')); }
     catch (e) { error = 'manifest.json не парсится: ' + (e.message || e); }
+    // null/false/0 — валидный JSON, но проверки ниже пропускали его целиком (и apiVersion тоже)
+    if (!error && (!manifest || typeof manifest !== 'object' || Array.isArray(manifest))) { error = 'manifest.json должен быть JSON-объектом'; manifest = null; }
     if (manifest && !error) {
       if (!manifest.id || !/^[a-z0-9-]+$/.test(manifest.id)) error = 'некорректный id в манифесте (только a-z, 0-9, дефис)';
       else if (manifest.id !== ent.name) error = `id «${manifest.id}» не совпадает с именем папки «${ent.name}»`;
       else if (Number(manifest.apiVersion) !== EXT_API_VERSION) error = `apiVersion ${manifest.apiVersion} не поддерживается (редактор: ${EXT_API_VERSION})`;
     }
     const mainFile = path.join(dir, (manifest && typeof manifest.main === 'string' && manifest.main) || 'index.js');
+    // main — путь ВНУТРИ папки модуля: «../чужой/index.js» грузил бы код из-за её пределов
+    const mainRel = path.relative(dir, mainFile);
+    if (!error && (!mainRel || mainRel === '..' || mainRel.startsWith('..' + path.sep) || path.isAbsolute(mainRel))) error = 'main должен указывать на файл внутри папки модуля';
     if (!error && !fs.existsSync(mainFile)) error = 'нет главного файла: ' + path.basename(mainFile);
     out.push({ id: ent.name, dir, manifest, error, mainUrl: error ? '' : pathToFileURL(mainFile).href, mainFile });
   }
