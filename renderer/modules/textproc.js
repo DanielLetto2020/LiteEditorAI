@@ -1398,8 +1398,11 @@ export function initTextProc(host) {
     }
 
     const buildTree = async (dirPath, container, level) => {
-        const entries = await lite.fs.readDir(dirPath);
-        
+        // fs:readDir при ошибке (нет прав, папку уже удалили) отдаёт {error}, а не массив: .filter
+        // падал, и клик по такой папке давал необработанный промис с тостом «entries.filter…».
+        const res = await lite.fs.readDir(dirPath);
+        const entries = Array.isArray(res) ? res : [];
+
         let hasFiles = false;
         const dirs = entries.filter(e => e.dir).sort((a,b) => {
           if (treeSortMode === 'za') return b.name.localeCompare(a.name);
