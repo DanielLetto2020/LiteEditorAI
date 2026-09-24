@@ -281,10 +281,18 @@ export function initRh(host) {
     rhTerms.set(sessionId, rec);
     return rec;
   }
+  // Вставка — не нажатия клавиш (как writeAsPaste ядра): если программа на хосте включила bracketed
+  // paste, оборачиваем текст в маркеры вставки (переводы строк → \r, вложенные маркеры вырезаем —
+  // ими нельзя «выйти» из вставки). Иначе многострочный буфер выполнялся в оболочке построчно.
   async function pasteRh(sessionId) {
     const text = await lite.readClipboard();
-    if (text) lite.rh.write(sessionId, text);
-    const rec = rhTerms.get(sessionId); if (rec) { try { rec.term.focus(); } catch (_) {} }
+    const rec = rhTerms.get(sessionId);
+    if (text) {
+      const s = String(text);
+      const bracketed = !!(rec && rec.term.modes && rec.term.modes.bracketedPasteMode);
+      lite.rh.write(sessionId, bracketed ? '\x1b[200~' + s.replace(/\x1b\[20[01]~/g, '').replace(/\r?\n/g, '\r') + '\x1b[201~' : s);
+    }
+    if (rec) { try { rec.term.focus(); } catch (_) {} }
   }
   function renderRhTabs() {
     const bar = $('#rh-tabs'); if (!bar) return;
