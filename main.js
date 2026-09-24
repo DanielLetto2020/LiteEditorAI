@@ -5062,9 +5062,13 @@ ipcMain.on('fs:unwatch', (_e, root) => {
 // matters: git:status runs on every tree decoration and git:info fires 6 calls per
 // branch view, so a hook or slow/networked repo without it would hang the handler
 // (and freeze the UI) forever. Mirrors gitRun()'s timeout for mutating commands.
+// GIT_OPTIONAL_LOCKS=0: фоновый `git status` (декорации дерева на каждое изменение на диске) иначе
+// берёт index.lock ради попутного обновления индекса — и параллельный `git add/commit` агента в
+// терминале падал «Unable to create '.git/index.lock': File exists». Ровно для фоновых опросов.
 function git(cwd, args) {
   return new Promise((resolve) => {
-    execFile('git', args, { cwd, timeout: 15000, maxBuffer: 8 * 1024 * 1024, windowsHide: true }, (err, stdout) => {
+    execFile('git', args, { cwd, timeout: 15000, maxBuffer: 8 * 1024 * 1024, windowsHide: true,
+      env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' } }, (err, stdout) => {
       resolve(err ? null : stdout);
     });
   });
