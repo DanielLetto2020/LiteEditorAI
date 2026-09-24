@@ -14,7 +14,7 @@ import { syntaxHighlighting, defaultHighlightStyle, indentOnInput, bracketMatchi
 import { autocompletion, completionKeymap, acceptCompletion } from '@codemirror/autocomplete';
 import { oneDark } from '@codemirror/theme-one-dark';
 import { liteEditorTheme } from '../codeedit.js';
-import { isReadOnlySql, stripSqlLiterals, splitSqlStatements, findSqlParams, substituteSqlParams } from '../../lib/sqlro.js';
+import { isReadOnlySql, stripSqlLiterals, sqlSegments, splitSqlStatements, findSqlParams, substituteSqlParams } from '../../lib/sqlro.js';
 import { sql, PostgreSQL, MySQL, SQLite } from '@codemirror/lang-sql';
 
 const $ = (sel) => document.querySelector(sel);
@@ -1960,12 +1960,23 @@ export function initDb(host) {
 
   // ============================================================ SQL formatter (lightweight, no deps)
   function formatSql(s) {
-    let out = s.replace(/\s+/g, ' ').trim();
+    // Трогаем только код. Раньше форматирование шло по всему тексту: в строке 'paid  from  shop'
+    // схлопывались пробелы и перед from вставлялся перенос (другое значение литерала), "Order From"
+    // превращался в другой идентификатор, а конец строчного комментария съедался, и следующий код
+    // («, b») уходил в комментарий. Строки, идентификаторы в кавычках и комментарии прячем за метки.
+    const src = String(s), keep = [];
+    let out = sqlSegments(src).map((seg) => {
+      const part = src.slice(seg.from, seg.to);
+      if (seg.code) return part;
+      keep.push(part.startsWith('--') ? part + '\n' : part);   // строчный комментарий кончается переводом строки
+      return '\u0000' + (keep.length - 1) + '\u0000';
+    }).join('');
+    out = out.replace(/\s+/g, ' ').trim();
     const breakBefore = ['from', 'where', 'order by', 'group by', 'having', 'limit', 'offset', 'left join', 'right join', 'inner join', 'join', 'union all', 'union', 'set', 'values'];
     for (const k of breakBefore) out = out.replace(new RegExp('\\s+' + k.replace(/ /g, '\\s+') + '\\b', 'gi'), '\n' + k.toUpperCase());
     out = out.replace(/\s+(and|or)\b/gi, '\n  $1');
     out = out.replace(/\bselect\b/gi, 'SELECT');
-    return out;
+    return out.replace(/\u0000(\d+)\u0000/g, (_m, i) => keep[+i]).replace(/\s+$/, '');
   }
 
   // ============================================================ ER diagram (SVG, draggable)
