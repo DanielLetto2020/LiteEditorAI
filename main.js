@@ -2557,6 +2557,13 @@ ipcMain.on('ctx:watchOutputs', (e, { projId, projPath } = {}) => {
       timer = setTimeout(() => safeSend(e.sender, 'ctx:outputChanged', { projId }), 400);
     });
   } catch (_) { return; }
+  // Каталог проекта удалили/переименовали/отмонтировали при открытом модуле: FSWatcher поднимает
+  // 'error', и без слушателя это uncaughtException в main, а мёртвый вотчер оставался в карте.
+  watcher.on('error', () => {
+    clearTimeout(timer);
+    try { watcher.close(); } catch (_) {}
+    if (ctxOutWatchers.get(projId) === watcher) ctxOutWatchers.delete(projId);
+  });
   ctxOutWatchers.set(projId, watcher);
 });
 ipcMain.on('ctx:unwatchOutputs', (_e, { projId } = {}) => {
