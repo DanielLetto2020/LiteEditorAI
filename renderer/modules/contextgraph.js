@@ -861,7 +861,7 @@ export function initCtx(host) {
   // rules — накопленный реестр (персист в localStorage per-project); done — имена уже разобранных сессий
   // (батчинг + «только новые»); ctx — содержимое существующих CLAUDE.md для дедупа; sel — выбор
   // правил для записи в файлы. У правила могут быть поля status:'ignored', applied:true, exists:true (B).
-  const mine = { scanned: null, scanPath: null, running: false, reqId: 0, raw: '', t0: 0, timer: null, q: '', cat: '', conf: '',
+  const mine = { scanned: null, scanPath: null, runPath: null, running: false, reqId: 0, raw: '', t0: 0, timer: null, q: '', cat: '', conf: '',
     rules: [], done: [], remaining: 0, totalFiles: 0, batches: 0, summary: '', ctx: null, showIgnored: false, hideExists: false, sel: new Set() };
   let curTab = 'canvas';
   const hasRules = () => mine.rules.length > 0 || mine.batches > 0;
@@ -1117,6 +1117,7 @@ export function initCtx(host) {
     if (mine.running) return;
     if (!cont) mineReset();
     mine.running = true; mine.reqId = Date.now() * 1000 + Math.floor(Math.random() * 1000); mine.raw = ''; mine.t0 = Date.now();
+    mine.runPath = p.path;   // чей реестр пополнит ответ (см. onResult)
     if (mine.timer) clearInterval(mine.timer);
     mine.timer = setInterval(() => { const e = $('#mine-elapsed'); if (e) e.textContent = Math.floor((Date.now() - mine.t0) / 1000) + ' с'; }, 1000);
     lite.ctxmine.analyze(mine.reqId, p.path, { done: cont ? mine.done : [], only: (only && only.length) ? only : undefined });
@@ -1183,6 +1184,13 @@ export function initCtx(host) {
   lite.ctxmine.onResult((d) => {
     if (!d || d.reqId !== mine.reqId) return;
     mineEnd();
+    // Пока шёл анализ, проект сменился и mineScan поднял реестр ДРУГОГО проекта: слияние записало бы
+    // в него чужие правила и отметило «разобранными» чужие сессии (и сохранило под его ключом).
+    if (mine.runPath !== mine.scanPath) {
+      renderMine();
+      toast(t('Проект сменился, пока шёл анализ, — результат не записан, сессии остались неразобранными'), { kind: 'warn', ttl: 9000 });
+      return;
+    }
     const meta = d.meta || {};
     const { added } = mergeRules(Array.isArray(d.rules) ? d.rules : []);
     for (const n of (meta.batchFiles || [])) {   // запись по сессии ОДНА: свежая заменяет прежнюю
