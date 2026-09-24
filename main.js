@@ -4081,8 +4081,10 @@ function kpListEntries() {
   return entries;
 }
 
-ipcMain.handle('keepass:pick', async () => {
-  const res = await dialog.showOpenDialog(mainWindow, {
+// Родитель диалога — окно-отправитель: пикер зовут и «Сейф паролей», и формы db/rmq/kafka/storage/rh;
+// с mainWindow диалог открывался за окном модуля.
+ipcMain.handle('keepass:pick', async (e) => {
+  const res = await dialog.showOpenDialog(senderWin(e) || mainWindow, {
     title: 'Открыть базу KeePass', properties: ['openFile'],
     filters: [{ name: 'KeePass', extensions: ['kdbx'] }, { name: 'Все файлы', extensions: ['*'] }], ...lastDirOpts(),
   });
