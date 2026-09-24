@@ -4264,8 +4264,12 @@ function smFetch(rawUrl, opts = {}) {
       const t0 = Date.now();
       try {
         req = mod.request(u, { method: 'GET', rejectUnauthorized, headers: Object.assign({ 'User-Agent': 'LiteEditor-Monitor/1.0', 'Accept': '*/*' }, hdrs || {}), timeout: timeoutMs }, (res) => {
-          if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location && redirects > 0) {
-            redirects--; res.resume();
+          if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+            res.resume();
+            // Кольцо редиректов — сбой сайта (в браузере ERR_TOO_MANY_REDIRECTS), а не ответ: раньше последний
+            // 3xx уходил итогом, и «доступен (HTTP < 400)» рапортовал норму
+            if (redirects <= 0) return finish({ ok: false, error: 'слишком много редиректов' });
+            redirects--;
             let next; try { next = new URL(res.headers.location, u); } catch (_) { return finish({ ok: false, error: 'плохой редирект' }); }
             // Заголовки цели (Authorization, API-ключи) — только её хосту: на другой хост/порт и с https на http
             // их не несём (как браузер и curl), иначе редирект на чужой сервер уводил токен
