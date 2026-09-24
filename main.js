@@ -5951,6 +5951,19 @@ function parsePorcelainZ(out) {
   }
   return res;
 }
+// Разбор `--name-status -z` (show/diff/stash show): «код\0путь\0», у R/C — «код\0старый\0новый\0».
+// rel — новый путь (как раньше брали последний столбец), from — исходный у переименования/копии.
+function parseNameStatusZ(out) {
+  const res = [];
+  const parts = String(out || '').split('\0');
+  for (let i = 0; i < parts.length;) {
+    const code = parts[i++].trim();
+    if (!code) continue;
+    if (code[0] === 'R' || code[0] === 'C') { const from = parts[i++], to = parts[i++]; if (to) res.push({ code, rel: to, from }); }
+    else { const p = parts[i++]; if (p) res.push({ code, rel: p }); }
+  }
+  return res;
+}
 // Unified diff of one file vs HEAD — "what did the agent just change here".
 ipcMain.handle('git:fileDiff', async (_e, { root, file }) => {
   if (!root) return { error: 'no root' };
@@ -6142,15 +6155,7 @@ async function gitStagedRenames(root) {
   const base = await gitWorkBase(root);
   const out = base == null ? null : await git(root, ['diff', '--cached', '--name-status', '-z', '-M']);
   if (out == null) return map;
-  const parts = out.split('\0');
-  for (let i = 0; i < parts.length;) {
-    const code = parts[i++].trim();
-    if (!code) continue;
-    if (code[0] === 'R' || code[0] === 'C') {
-      const from = parts[i++], to = parts[i++];
-      if (code[0] === 'R' && from && to) map.set(path.resolve(base, to), path.resolve(base, from));
-    } else i++;
-  }
+  for (const e of parseNameStatusZ(out)) if (e.code[0] === 'R' && e.from) map.set(path.resolve(base, e.rel), path.resolve(base, e.from));
   return map;
 }
 ipcMain.handle('git:commit', async (_e, { root, message, push, files, amend }) => {
@@ -6293,13 +6298,9 @@ ipcMain.handle('git:stashList', async (_e, root) => {
 // Файлы в конкретном stash (--name-status, включая untracked).
 ipcMain.handle('git:stashShow', async (_e, { root, index } = {}) => {
   const ref = stashRef(index); if (!ref) return { ok: false, error: 'bad stash index' };
-  const out = await git(root, ['stash', 'show', '--include-untracked', '--name-status', ref]);
-  const files = [];
-  if (out != null) for (const line of out.split('\n')) {
-    if (!line.trim()) continue;
-    const parts = line.split('\t');
-    files.push({ code: (parts[0] || '').trim(), rel: parts[parts.length - 1] });
-  }
+  // -z: пути как есть — без него не-ASCII/спецсимвольные имена приходили в кавычках с \ooo-экранированием
+  const out = await git(root, ['stash', 'show', '--include-untracked', '--name-status', '-z', ref]);
+  const files = parseNameStatusZ(out).map((e) => ({ code: e.code, rel: e.rel }));
   return { ok: true, files };
 });
 ipcMain.handle('git:stashApply', async (_e, { root, index } = {}) => { const r = stashRef(index); return r ? gitRun(root, ['stash', 'apply', r]) : { ok: false, error: 'bad index' }; });
@@ -6311,13 +6312,10 @@ ipcMain.handle('git:stashDrop', async (_e, { root, index } = {}) => { const r = 
 ipcMain.handle('git:commitFiles', async (_e, { root, hash } = {}) => {
   const h = String(hash || '').trim();
   if (!/^[0-9a-fA-F]{4,40}$/.test(h)) return { ok: false, error: 'bad hash' };
-  const out = await git(root, ['show', '--no-color', '--name-status', '--format=', h]);
-  const files = [];
-  if (out != null) for (const line of out.split('\n')) {
-    if (!line.trim()) continue;
-    const parts = line.split('\t');
-    files.push({ code: (parts[0] || '').trim(), rel: parts[parts.length - 1] });
-  }
+  // -z: пути как есть. Без него юникод-имена приходили «"\320\277…"» — в дереве лога мусор, а
+  // git:commitFilePair/commitFileDiff с таким rel не находили файл (тот же класс, что B5 в git:status).
+  const out = await git(root, ['show', '--no-color', '--name-status', '-z', '--format=', h]);
+  const files = parseNameStatusZ(out).map((e) => ({ code: e.code, rel: e.rel }));
   return { ok: true, files };
 });
 // Дифф одного файла в коммите (показать в центре вивера при выборе файла в логе).
