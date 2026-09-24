@@ -6136,6 +6136,23 @@ async function gitMidOperation(root) {
   }
   return false;
 }
+// Staged-переименования индекса: новый путь → исходный (абсолютные, в координатах проекта).
+async function gitStagedRenames(root) {
+  const map = new Map();
+  const base = await gitWorkBase(root);
+  const out = base == null ? null : await git(root, ['diff', '--cached', '--name-status', '-z', '-M']);
+  if (out == null) return map;
+  const parts = out.split('\0');
+  for (let i = 0; i < parts.length;) {
+    const code = parts[i++].trim();
+    if (!code) continue;
+    if (code[0] === 'R' || code[0] === 'C') {
+      const from = parts[i++], to = parts[i++];
+      if (code[0] === 'R' && from && to) map.set(path.resolve(base, to), path.resolve(base, from));
+    } else i++;
+  }
+  return map;
+}
 ipcMain.handle('git:commit', async (_e, { root, message, push, files, amend }) => {
   // files передан → коммитим только выбранное (git add -- <files>), иначе всё (git add -A, как раньше).
   // amend + files:[] (пустой массив) — особый случай «только поправить сообщение»: ничего не добавляем.
@@ -6148,8 +6165,18 @@ ipcMain.handle('git:commit', async (_e, { root, message, push, files, amend }) =
   // partial commit during a merge»), и после разрешения конфликта в модалке закоммитить было нельзя
   // вовсе. Коммит слияния по смыслу фиксирует ВЕСЬ индекс: выбранное уже добавлено выше, коммитим без pathspec.
   const midOp = sel && !amend && await gitMidOperation(root);
+  // Staged-переименование (git mv — частый ход агента) в списке — одна строка с НОВЫМ путём. Pathspec
+  // только из него коммитил копию: старый файл оставался в HEAD, а его удаление — висеть в индексе.
+  // Добавляем к pathspec исходный путь каждого выбранного переименования.
+  let spec = sel ? files : [];
+  if (sel && !midOp) {
+    const ren = await gitStagedRenames(root);
+    const extra = [];
+    for (const f of files) { const from = ren.get(path.resolve(root, f)); if (from) extra.push(from); }
+    spec = [...files, ...extra];
+  }
   const base = amend ? ['commit', '--amend', '-m', message || 'update'] : ['commit', '-m', message || 'update'];
-  const c = await gitRun(root, sel && !midOp ? [...base, '--', ...files] : base); if (!c.ok) return c;
+  const c = await gitRun(root, sel && !midOp ? [...base, '--', ...spec] : base); if (!c.ok) return c;
   // committed:true даже при провале пуша — фронт обязан обновить список (коммит-то уже лёг).
   if (push) { const p = await gitPush(root); if (!p.ok) return { ok: false, committed: true, error: 'Коммит создан, push не прошёл: ' + p.error }; }
   return { ok: true, out: c.out };
