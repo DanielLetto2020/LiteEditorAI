@@ -141,9 +141,13 @@ export function initKeepass() {
       });
       acts.appendChild(eye);
     }
-    if (f.name === 'URL' && f.value) {
+    // URL записи — недоверенный текст из базы: кнопка только для http(s), и через openExternal (main
+    // сам пропускает лишь http(s)). openInBrowser — канал для ЛОКАЛЬНЫХ .html: ссылка давала «файл не
+    // найден», а путь к программе в поле URL чужой базы уходил в shell.openExternal как file:// (запуск).
+    const url = f.name === 'URL' && f.value ? String(f.value).trim() : '';
+    if (/^https?:\/\//i.test(url)) {
       const open = el('button', 'icon-btn'); open.title = 'Открыть в браузере'; open.appendChild(icon('globe', 14));
-      open.addEventListener('click', () => lite.openInBrowser(f.value).then((rr) => { if (rr && rr.error) toast(rr.error, { kind: 'err' }); }));
+      open.addEventListener('click', () => lite.openExternal(url).then((rr) => { if (rr && rr.error) toast(rr.error, { kind: 'err' }); }));
       acts.appendChild(open);
     }
     const cp = el('button', 'icon-btn'); cp.title = 'Скопировать'; cp.appendChild(icon('copy', 14));
