@@ -4089,7 +4089,7 @@ function ensureKdbx() {
   });
   return _kdbxweb;
 }
-let kpDb = null; let kpClipTimer = null;
+let kpDb = null; let kpClipTimer = null; let kpClipClear = null;
 let kpDbFile = null, kpDbName = null; // путь/имя открытой базы (status + запись новых записей)
 const kpEntryById = new Map(); // uuid.id -> entry (живёт в main, в рендерер не отдаём)
 function kpVal(en, field) { const v = en.fields.get(field); return v && typeof v.getText === 'function' ? v.getText() : (v == null ? '' : String(v)); }
@@ -4152,10 +4152,15 @@ ipcMain.handle('keepass:copy', (_e, { id, field } = {}) => {
   const val = kpVal(en, field);
   try { clipboard.writeText(val); } catch (_) { return { ok: false, error: 'буфер недоступен' }; }
   if (kpClipTimer) clearTimeout(kpClipTimer);
-  kpClipTimer = setTimeout(() => { try { if (clipboard.readText() === val) clipboard.writeText(''); } catch (_) {} }, 20000); // авто-очистка
+  kpClipClear = () => { kpClipTimer = null; kpClipClear = null; try { if (clipboard.readText() === val) clipboard.writeText(''); } catch (_) {} };
+  kpClipTimer = setTimeout(kpClipClear, 20000); // авто-очистка
   return { ok: true };
 });
-ipcMain.on('keepass:lock', () => { kpDb = null; kpDbFile = null; kpDbName = null; kpEntryById.clear(); if (kpClipTimer) { clearTimeout(kpClipTimer); kpClipTimer = null; } });
+// Блокировка стирает базу, но НЕ отменяет авто-очистку буфера: «скопировал пароль → закрыл сейф →
+// вставил» — обычный сценарий, а отменённый таймер оставлял секрет в буфере навсегда вопреки «очистится через 20 с».
+ipcMain.on('keepass:lock', () => { kpDb = null; kpDbFile = null; kpDbName = null; kpEntryById.clear(); });
+// Выход раньше таймера — чистим сразу: на Windows/macOS буфер переживает процесс редактора.
+app.on('will-quit', () => { if (kpClipClear) { clearTimeout(kpClipTimer); kpClipClear(); } });
 // --- Шов «из сейфа» для форм подключений (db/rmq/kafka/rh): пикер записей в чужом окне.
 ipcMain.handle('keepass:status', () => ({ open: !!kpDb, name: kpDbName }));
 ipcMain.handle('keepass:entries', () => {
