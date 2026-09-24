@@ -717,7 +717,15 @@ export function initGit(host) {
         filesEl.appendChild(row);
       }
     };
+    // Одна операция за раз: двойной клик по «pop» снимал ДВА stash (после первого индексы сдвигаются,
+    // и второй вызов stash@{N} бьёт уже по соседнему), по «apply» — применял набор повторно.
+    let stashBusy = false;
     const stashOp = async (op, it) => {
+      if (stashBusy) return;
+      stashBusy = true;
+      try { await stashOpRun(op, it); } finally { stashBusy = false; }
+    };
+    const stashOpRun = async (op, it) => {
       const fn = op === 'apply' ? lite.git.stashApply : op === 'pop' ? lite.git.stashPopIndex : lite.git.stashDrop;
       const r = await fn(p.path, it.index);
       if (!r.ok) { toast(r.error || (op + ' не прошёл'), { kind: 'err', ttl: 8000 }); return; }
