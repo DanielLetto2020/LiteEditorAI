@@ -1236,7 +1236,9 @@ ipcMain.on('tp:cancel', (e, { reqId } = {}) => {
   if (!child) return;
   tpReqs.delete(reqId);
   try { child.kill('SIGTERM'); } catch (_) {}
-  setTimeout(() => { try { if (child.exitCode === null && !child.killed) child.kill('SIGKILL'); } catch (_) {} }, 3000);
+  // Жив ли процесс — по exitCode/signalCode: child.killed становится true сразу после УСПЕШНОЙ
+  // отправки SIGTERM, и с проверкой !killed добивание не срабатывало никогда.
+  setTimeout(() => { try { if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL'); } catch (_) {} }, 3000);
   safeSend(e.sender, 'tp:error', { reqId, error: i18n.t('Остановлено') });
 });
 
