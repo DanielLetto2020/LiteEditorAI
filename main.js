@@ -6623,7 +6623,9 @@ function cParseLines(out) { // docker `{{json .}}` → one JSON object per line
 }
 function cParseJson(out) { // podman `--format json` → array (fallback to line-JSON)
   const s = String(out || '').trim(); if (!s) return [];
-  try { const j = JSON.parse(s); return Array.isArray(j) ? j : [j]; } catch (_) { return cParseLines(out); }
+  // Только объекты: Go-шный nil-срез маршалится в «null» (у podman так бывает на пустых списках) —
+  // [null] ронял .map в cList* (c.Labels у null), и весь containers:list отвечал исключением.
+  try { const j = JSON.parse(s); return (Array.isArray(j) ? j : [j]).filter((x) => x && typeof x === 'object'); } catch (_) { return cParseLines(out); }
 }
 function cLabelMap(str) { const m = {}; for (const part of String(str || '').split(',')) { const i = part.indexOf('='); if (i > 0) m[part.slice(0, i)] = part.slice(i + 1); } return m; }
 const C_PROJECT = 'com.docker.compose.project', C_SERVICE = 'com.docker.compose.service';
