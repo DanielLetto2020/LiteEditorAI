@@ -6410,14 +6410,19 @@ ipcMain.handle('git:branchCompare', async (_e, { root, branch } = {}) => {
   if (BAD_REF(branch)) return { ok: false, error: 'плохая ветка' };
   const ahead = await git(root, ['log', '--oneline', '--no-color', `HEAD..${branch}`]);
   const behind = await git(root, ['log', '--oneline', '--no-color', `${branch}..HEAD`]);
-  const parse = (s) => (s || '').split('\n').filter(Boolean).map((l) => { const i = l.indexOf(' '); return { hash: l.slice(0, i), subject: l.slice(i + 1) }; });
+  // null = git упал (ветки уже нет, таймаут, переполнен буфер) — не выдавать это за «нет коммитов»
+  if (ahead == null || behind == null) return { ok: false, error: 'Не удалось сравнить с «' + branch + '» (ветка не найдена или ошибка git)' };
+  const parse =(s) => (s || '').split('\n').filter(Boolean).map((l) => { const i = l.indexOf(' '); return { hash: l.slice(0, i), subject: l.slice(i + 1) }; });
   return { ok: true, branch, onlyInBranch: parse(ahead), onlyInCurrent: parse(behind) };
 });
 // Diff выбранной ветки vs рабочее дерево (показать в центре вивера).
 ipcMain.handle('git:branchDiffWorktree', async (_e, { root, branch } = {}) => {
   if (BAD_REF(branch)) return { error: 'плохая ветка' };
   const out = await git(root, ['diff', '--no-color', branch, '--']);   // '--': ветка, совпавшая с именем файла, не двусмысленна
-  return { diff: out || '' };
+  // null = git упал (ветки уже нет / дифф больше буфера / таймаут): раньше уходил пустой дифф и UI
+  // уверенно писал «Различий нет».
+  if (out == null) return { error: 'Не удалось получить дифф с «' + branch + '» (ветка не найдена, дифф слишком большой или ошибка git)' };
+  return { diff: out };
 });
 
 // ================================================================ containers (docker/podman)
