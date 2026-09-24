@@ -237,7 +237,7 @@ export function initDb(host) {
       openConns = openConns.filter((x) => x !== c.id); connStates.delete(c.id); // вкладку тоже закрываем
       // за подключением уходит и его чат с базой: файл транскрипта, кэши схемы и таймер записи
       const t = aiSaveTimers.get(c.id); if (t) { clearTimeout(t); aiSaveTimers.delete(c.id); }
-      aiChats.delete(c.id); aiLoaded.delete(c.id); aiExtrasByConn.delete(c.id);
+      aiChats.delete(c.id); aiLoaded.delete(c.id); aiExtrasByConn.delete(c.id); aiExtraSchemaCache.delete(c.id);
       const rm = await lite.dbai.sessionsDelete(c.id);
       if (rm && rm.ok === false) toast('История чатов не удалена: ' + (rm.error || 'ошибка'), { kind: 'err' });
       if (dbUi.sessions) delete dbUi.sessions[c.id];
@@ -412,7 +412,9 @@ export function initDb(host) {
   // переоткрытия — изменяющий запрос на только что помеченной боевой базе уходил без подтверждения.
   // Бэкенд после сохранения переподключается (параметры могли смениться) — схему перечитываем тоже.
   function applySavedConn(conn) {
-    if (!conn || !openConns.includes(conn.id)) return;
+    if (!conn) return;
+    aiExtraSchemaCache.delete(conn.id);   // её схема могла быть «ещё одной базой» в чужом чате — перечитать
+    if (!openConns.includes(conn.id)) return;
     if (conn.id === dbActiveId) {
       dbActiveConn = conn;
       dbSchema = null; dbColsCache = null; dbObjectsCache = null; dbRelationsCache = null; metaCache.clear();
@@ -3432,7 +3434,7 @@ blockquote{border-left:3px solid #c9ced4;margin:0;padding:.2rem 0 .2rem .8rem;co
     lite.dbai.apiRun(reqId, { baseUrl: ep.base, key: ep.key, model: ag.model, messages: buildAiMessages(st), usage: ag.kind === 'or' });
   }
 
-  function refresh() { dbSchema = null; dbColsCache = null; dbObjectsCache = null; metaCache.clear(); dbRelationsCache = null; aiExtrasByConn.clear(); invalidateTableCaches(); if (dbOpen) renderDbPanel(); }
+  function refresh() { dbSchema = null; dbColsCache = null; dbObjectsCache = null; metaCache.clear(); dbRelationsCache = null; aiExtrasByConn.clear(); aiExtraSchemaCache.clear(); invalidateTableCaches(); if (dbOpen) renderDbPanel(); }
   document.addEventListener('keydown', (e) => { if (dbOpen && dbActiveId && (e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === 'p') { e.preventDefault(); openPalette(); } });
   // Закрытие окна: отложенная (400 мс) запись транскриптов AI-DB иначе терялась вместе с рендерером —
   // последний ответ агента не доезжал до диска, если окно закрыли сразу после него.
