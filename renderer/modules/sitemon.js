@@ -359,9 +359,10 @@ export function initSitemon(host) {
   // ── чат кастомного чека ─────────────────────────────────────────────────────────────────────────────
   function customCheckDialog(target, existing) {
     const disposers = [];
-    let sample = null, busy = null;
+    let sample = null, busy = null, sending = false, closed = false;
     const transcript = [];
     const { m, close } = makeModal('<h2>Кастомный чек — чат с агентом</h2>', () => {
+      closed = true;
       if (busy) { try { busy.abort(); } catch (_) {} busy = null; }
       for (const d of disposers) { try { d(); } catch (_) {} }
     });
@@ -451,8 +452,10 @@ export function initSitemon(host) {
     const stopBusy = () => { busy = null; sendBtn.textContent = 'Отправить'; sendBtn.classList.remove('busy'); };
 
     async function send() {
-      const userText = ta.value.trim(); if (!userText || busy) return;
-      if (!sample) await loadSample();
+      const userText = ta.value.trim(); if (!userText || busy || sending) return;
+      // Пока грузится сэмпл (с рендером — десятки секунд), busy ещё пуст: второй Enter отправлял тот же текст вторым
+      // агентом, которого уже не остановить, а закрытие окна в это время не мешало агенту стартовать после.
+      if (!sample) { sending = true; try { await loadSample(); } finally { sending = false; } if (closed) return; }
       ta.value = '';
       const prompt = buildPrompt(userText);            // строим ДО добавления в транскрипт (иначе дубль)
       transcript.push({ role: 'user', text: userText });
