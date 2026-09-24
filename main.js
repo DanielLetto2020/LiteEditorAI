@@ -4900,6 +4900,17 @@ ipcMain.handle('hist:read', async (_e, { file, name } = {}) => {
   try { return { ok: true, content: await history.read(file, name) }; }
   catch (err) { return { error: String(err.message || err) }; }
 });
+// Снимок текущего состояния МИМО троттла — вивер зовёт перед «Откатить к этой версии»: снимок
+// из fs:writeFile троттлится (автосейв 10 с назад «закрывал» окно), и откат затирал текущую
+// версию безвозвратно. content передан — снимаем его (несохранённые правки открытого файла),
+// иначе — файл с диска. saved:false — снимать нечего (дедуп/нет файла/бинарь), это не ошибка.
+ipcMain.handle('hist:snapshot', async (_e, { file, content } = {}) => {
+  if (typeof file !== 'string' || !path.isAbsolute(file)) return { error: 'нужен абсолютный путь файла' };
+  const saved = typeof content === 'string'
+    ? await history.snapshot(file, content, 'save', { force: true })
+    : await history.snapshotFromDisk(file, 'save', { force: true });
+  return { ok: true, saved };
+});
 
 // ---------------------------------------------------------------- file watching
 // Watch a project root and tell the renderer when files change on disk — so the

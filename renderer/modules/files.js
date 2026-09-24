@@ -1953,8 +1953,18 @@ export function initFiles(host) {
     let selContent = null;
     restoreBtn.onclick = async () => {
       if (selContent == null) return;
-      const w = await lite.fs.writeFile(file, selContent); // текущее состояние снапшотится само (tag save)
-      if (w && w.error) { toast(w.error, { kind: 'err', ttl: 7000 }); return; }
+      const content = selContent;
+      restoreBtn.disabled = true;                          // повторный клик во время записи не откатывает дважды
+      // Текущее состояние — в историю МИМО троттла: снимок внутри fs:writeFile троттлится (раз в 45 с),
+      // и откат вскоре после автосейва затирал текущую версию безвозвратно. Если файл открыт, гасим
+      // автосейв (его запись легла бы поверх отката) и снимаем ещё и несохранённый текст редактора.
+      if (currentFile === file) { cancelAutosave(); while (savingP) { try { await savingP; } catch (_) {} } }
+      try {
+        await lite.fs.histSnapshot(file);
+        if (currentFile === file && dirty) await lite.fs.histSnapshot(file, editor.state.doc.toString());
+      } catch (_) {}                                       // история best-effort: сбой снимка откат не блокирует
+      const w = await lite.fs.writeFile(file, content);
+      if (w && w.error) { toast(w.error, { kind: 'err', ttl: 7000 }); restoreBtn.disabled = false; return; }
       close();
       toast('Файл откатан к выбранной версии');
       if (currentFile === file) reloadCurrentFile();       // вотчер тоже поймает, но форсим сразу
