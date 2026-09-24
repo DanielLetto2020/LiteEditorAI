@@ -116,6 +116,7 @@ export function initFiles(host) {
     try { const d = document.createElement('div'); d.style.color = color; document.body.appendChild(d); const c = getComputedStyle(d).color; d.remove();
       const m = c.match(/\d+/g); if (!m) return null; return '#' + m.slice(0, 3).map((n) => (+n).toString(16).padStart(2, '0')).join(''); } catch (_) { return null; }
   }
+  let colorInp = null;               // скрытый <input type=color> последнего клика по свотчу
   class ColorSwatch extends WidgetType {
     constructor(color, from, to) { super(); this.color = color; this.from = from; this.to = to; }
     eq(o) { return o.color === this.color && o.from === this.from && o.to === this.to; }
@@ -126,6 +127,10 @@ export function initFiles(host) {
         e.preventDefault(); e.stopPropagation();
         const inp = document.createElement('input'); inp.type = 'color'; inp.value = colorToHex(this.color) || '#000000';
         inp.style.position = 'fixed'; inp.style.left = '-9999px'; document.body.appendChild(inp);
+        // пикер закрыли без выбора (или выбрали тот же цвет) — 'change' не приходит, и инпут оставался
+        // в body навсегда: по узлу на клик. Держим не больше одного.
+        if (colorInp) colorInp.remove();
+        colorInp = inp;
         inp.addEventListener('change', () => { try { view.dispatch({ changes: { from: this.from, to: this.to, insert: inp.value } }); } catch (_) {} inp.remove(); });
         inp.click();
       });
