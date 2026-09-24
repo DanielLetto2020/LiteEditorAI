@@ -933,19 +933,25 @@ export function initTextProc(host) {
     return parts.join('\n\n');
   }
   // Перечитать документ с диска: после агент-режима файл на диске новее того, что в окне.
-  async function reloadFromDisk() {
-    if (!currentFile) return;
-    const r = await lite.fs.readFile(currentFile);
+  // file — тот, что правил агент, а не «текущий»: пока агент работал, могли уйти на другую вкладку.
+  // Раньше перечитывался currentFile — несохранённое в чужой вкладке затиралось её версией с диска,
+  // а вкладке агента оставался старый снимок, и первая же правка в ней автосейвом откатывала его работу.
+  async function reloadFromDisk(file) {
+    if (!file) return;
+    const r = await lite.fs.readFile(file);
     if (!r || r.error) { toast(tf('Агент отработал, но файл не перечитать: {0}', (r && r.error) || '—'), { kind: 'err' }); return; }
-    const tab = openTabs.find((t) => t.id === activeTabId);
+    const tab = openTabs.find((t) => t.absPath === file);
+    if (!tab) return;                         // вкладку закрыли — держать в окне нечего, на диске уже новое
     const html = mdToHtml(r.content);
-    $('#doc-editor-wysiwyg').innerHTML = DOMPurify.sanitize(html, SANITIZE);
-    $('#doc-editor-md').textContent = r.content;
-    if (tab) { tab.html = html; tab.md = r.content; tab.dirty = false; }
-    dirty = false;
+    tab.html = html; tab.md = r.content; tab.dirty = false;
+    if (tab.id === activeTabId) {
+      $('#doc-editor-wysiwyg').innerHTML = DOMPurify.sanitize(html, SANITIZE);
+      $('#doc-editor-md').textContent = r.content;
+      dirty = false;
+      updateStatus(tf('Обновлён агентом · {0}', new Date().toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })));
+      if (activeInspectorTab === 'outline') renderOutline();
+    }
     renderTabsUI();
-    updateStatus(tf('Обновлён агентом · {0}', new Date().toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })));
-    if (activeInspectorTab === 'outline') renderOutline();
   }
   // Промпт агент-режима: файл он открывает сам, поэтому в тексте — путь и задача, без «верни текст».
   function composeAgentPrompt(instruction) {
@@ -969,6 +975,7 @@ export function initTextProc(host) {
       // Сохраняем ПЕРЕД запуском: иначе агент правит одну версию файла, а окно держит другую.
       if (dirty && !(await saveFile())) { toast('Файл не сохранён — агент не запущен', { kind: 'err' }); return; }
     }
+    const agentFile = agentMode ? currentFile : null; // по нему и перечитываем по завершении
     const sel = (!agentMode && attachCtx) ? selForChat() : null;
     ta.value = '';
     chatLog.push({ role: 'user', text: instruction });
@@ -985,7 +992,7 @@ export function initTextProc(host) {
       if (r !== am.reqId) return;
       am.busy = false; am.text = text || '';
       cleanup(); renderChatLog();
-      if (agentMode) await reloadFromDisk();
+      if (agentMode) await reloadFromDisk(agentFile);
     });
     const offErr = lite.tp.onError(({ reqId: r, error, authRequired, loginCmd }) => {
       if (r !== am.reqId) return;
@@ -994,7 +1001,7 @@ export function initTextProc(host) {
       if (authRequired && loginCmd) am.loginCmd = loginCmd;
       cleanup(); renderChatLog();
       // Агент мог успеть что-то записать до остановки — показываем актуальный файл, а не старый.
-      if (agentMode) reloadFromDisk();
+      if (agentMode) reloadFromDisk(agentFile);
     });
     const cleanup = () => { busyReq = null; updateSendButton(); try { offData(); offDone(); offErr(); } catch (_) {} };
 
