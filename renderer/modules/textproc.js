@@ -942,11 +942,20 @@ export function initTextProc(host) {
     if (!r || r.error) { toast(tf('Агент отработал, но файл не перечитать: {0}', (r && r.error) || '—'), { kind: 'err' }); return; }
     const tab = openTabs.find((t) => t.absPath === file);
     if (!tab) return;                         // вкладку закрыли — держать в окне нечего, на диске уже новое
-    const html = mdToHtml(r.content);
-    tab.html = html; tab.md = r.content; tab.dirty = false;
+    // .html — как при открытии (openProjectFileInner): НЕ через marked. Иначе строка с отступом после
+    // пустой строки (обычное дело в свёрстанном агентом HTML) становилась блоком кода с экранированными
+    // тегами, и первый же автосейв записывал этот мусор в файл.
+    let html, md = r.content;
+    if (/\.html?$/i.test(file)) {
+      html = DOMPurify.sanitize(r.content, SANITIZE);
+      const root = document.createElement('div');
+      root.innerHTML = html;
+      md = htmlToMd(root);
+    } else html = mdToHtml(r.content);
+    tab.html = html; tab.md = md; tab.dirty = false;
     if (tab.id === activeTabId) {
       $('#doc-editor-wysiwyg').innerHTML = DOMPurify.sanitize(html, SANITIZE);
-      $('#doc-editor-md').textContent = r.content;
+      $('#doc-editor-md').textContent = md;
       dirty = false;
       updateStatus(tf('Обновлён агентом · {0}', new Date().toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })));
       if (activeInspectorTab === 'outline') renderOutline();
