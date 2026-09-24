@@ -119,10 +119,12 @@ function toolListReminders(args) {
   const eod = sod.getTime() + 86400000;
   let items = readItems();
   const has = (r) => r && r.at && !isNaN(new Date(r.at));
+  // «Весь день» просрочен только со следующего дня — как в ленте Календаря (bucketOf), а не с полуночи самого дня
+  const due = (r) => (r.allDay ? sod.getTime() : now);
   if (when === 'open') items = items.filter((r) => !r.done);
-  else if (when === 'overdue') items = items.filter((r) => !r.done && has(r) && new Date(r.at).getTime() < now);
+  else if (when === 'overdue') items = items.filter((r) => !r.done && has(r) && new Date(r.at).getTime() < due(r));
   else if (when === 'today') items = items.filter((r) => !r.done && has(r) && new Date(r.at).getTime() < eod && new Date(r.at).getTime() >= sod.getTime());
-  else if (when === 'upcoming') items = items.filter((r) => !r.done && has(r) && new Date(r.at).getTime() >= now);
+  else if (when === 'upcoming') items = items.filter((r) => !r.done && has(r) && new Date(r.at).getTime() >= due(r));
   items.sort((a, b) => (a.at ? new Date(a.at).getTime() : Infinity) - (b.at ? new Date(b.at).getTime() : Infinity));
   if (!items.length) return { content: [{ type: 'text', text: 'Напоминаний нет (фильтр: ' + when + ').' }] };
   return { content: [{ type: 'text', text: `Напоминаний: ${items.length} (${when})\n` + items.map(fmtItem).join('\n') }] };
