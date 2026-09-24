@@ -4398,11 +4398,15 @@ ipcMain.handle('fs:exists', (_e, p) => (p ? pathExists(p) : false));
 ipcMain.handle('fs:existsMany', (_e, paths) => (Array.isArray(paths) ? Promise.all(paths.map((p) => (p ? pathExists(p) : false))) : []));
 
 // create a file or directory inside parent
+// Файл можно создать сразу по пути внутри parent («src/app.js» — так обещает подсказка «Новый файл»
+// в дереве): каждый сегмент проходит safeChildName, так что «..», абсолютный путь и «C:» — по-прежнему
+// отказ (PC-3), а файл не выходит за parent. Папка — одним именем, как было.
 ipcMain.handle('fs:create', async (_e, { parent, name, dir }) => {
-  const safe = safeChildName(name);                       // блокируем ../ и сепараторы (PC-3)
-  if (!safe) return { error: 'недопустимое имя' };
+  const segs = (!dir && typeof name === 'string') ? name.split(/[\\/]/).map(safeChildName) : [safeChildName(name)];
+  if (segs.some((s) => !s)) return { error: 'недопустимое имя' };
+  const safe = segs[segs.length - 1];
   try {
-    const full = path.join(parent, safe);
+    const full = path.join(parent, ...segs);
     if (fs.existsSync(full)) return { error: 'уже существует' };
     if (dir) await fs.promises.mkdir(full, { recursive: false });
     else { await fs.promises.mkdir(path.dirname(full), { recursive: true }); await fs.promises.writeFile(full, '', { flag: 'wx' }); }
