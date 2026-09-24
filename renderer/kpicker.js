@@ -24,8 +24,8 @@ async function kpStatus() { try { return await lite.keepass.status(); } catch (_
 
 // Модалка-стейт-машина: шаг «разблокировать» (recent + выбор файла + мастер-пароль) → шаг «выбрать
 // запись» (поиск + список). mode 'pick' резолвит креды выбранной записи; mode 'unlock' — true после
-// успешного открытия базы (для saveCredToKeepass).
-function kpModal(mode, startOpen) {
+// успешного открытия базы (для saveCredToKeepass). own.unlocked = true, если базу открыла САМА модалка.
+function kpModal(mode, startOpen, own) {
   return new Promise((resolve) => {
     let settled = false;
     const done = (v) => { if (!settled) { settled = true; close(); resolve(v); } };
@@ -81,6 +81,10 @@ function kpModal(mode, startOpen) {
         const r = await lite.keepass.open(target.path, passIn.value);
         openBtn.disabled = false;
         if (!r || !r.ok) { showUnlock((r && r.error) || 'Не удалось открыть базу'); return; }
+        // Модалку закрыли (Esc/клик мимо), пока шла расшифровка: базу, которую никто не ждёт, сразу лочим —
+        // иначе она оставалась расшифрованной в памяти main.
+        if (settled) { try { lite.keepass.lock(); } catch (_) {} return; }
+        if (own) own.unlocked = true;
         pushRecent(target.path, r.name || target.name);
         if (mode === 'unlock') { done(true); return; }
         showList(r.entries || []);
@@ -143,8 +147,12 @@ function kpModal(mode, startOpen) {
 // Выбрать запись сейфа → { title, username, password, url } | null (отмена).
 export async function pickKeepassCred() {
   const st = await kpStatus();
-  const res = await kpModal('pick', !!st.open);
-  if (!st.open) { try { lite.keepass.lock(); } catch (_) {} } // базу открывал пикер → лочим обратно
+  const own = { unlocked: false };
+  const res = await kpModal('pick', !!st.open, own);
+  // Лочим, только если базу открывал сам пикер. Снимок st.open за время модалки устаревает: базу могли
+  // открыть в окне «Сейф паролей» (отмена пикера закрывала её там), или она залочилась и пикер открыл
+  // её заново (тогда расшифрованная база оставалась в памяти).
+  if (own.unlocked) { try { lite.keepass.lock(); } catch (_) {} }
   return res;
 }
 
@@ -182,8 +190,9 @@ export function kpFormButtons(opts) {
 // Добавить запись в сейф (форма подключения → «в сейф»). true — записано.
 export async function saveCredToKeepass(entry) {
   const st = await kpStatus();
+  const own = { unlocked: false };
   if (!st.open) {
-    const unlocked = await kpModal('unlock', false);
+    const unlocked = await kpModal('unlock', false, own);
     if (!unlocked) return false;
   }
   let ok = false;
@@ -192,6 +201,6 @@ export async function saveCredToKeepass(entry) {
     if (r && r.ok) { toast('Запись добавлена в сейф паролей', { ttl: 4000 }); ok = true; }
     else toast((r && r.error) || 'Не удалось записать в сейф', { kind: 'err', ttl: 8000 });
   } catch (e) { toast(String(e), { kind: 'err' }); }
-  if (!st.open) { try { lite.keepass.lock(); } catch (_) {} }
+  if (own.unlocked) { try { lite.keepass.lock(); } catch (_) {} }
   return ok;
 }
