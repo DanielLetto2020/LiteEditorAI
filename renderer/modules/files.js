@@ -604,6 +604,11 @@ export function initFiles(host) {
         const name = attr.name.toLowerCase();
         if (name.startsWith('on')) n.removeAttribute(attr.name); // инлайн-обработчики (onerror/onclick/…)
         else if (/^(href|src|xlink:href)$/.test(name) && /^(javascript|vbscript):/i.test(attr.value.replace(/[\s-]/g, ''))) n.removeAttribute(attr.name);
+        // DOM clobbering: у Document именованные свойства перекрывают встроенные — <img name="querySelector">
+        // превращал document.querySelector в картинку, и весь модуль падал на первом же $(…) (выйти из
+        // превью было нечем). id/name, совпадающие с id интерфейса окна (#tree, #toasts, #modal-root — они
+        // в DOM после превью), уводили бы туда рендер дерева, тосты и модалки.
+        else if ((name === 'id' || name === 'name') && (attr.value in document || document.getElementById(attr.value))) n.removeAttribute(attr.name);
       }
     });
   }
