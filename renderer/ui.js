@@ -307,13 +307,21 @@ export function makeModal(innerHtml, onClose) {
   const overlay = el('div', 'modal-overlay');
   const m = el('div', 'modal');
   m.innerHTML = innerHtml;
+  m.tabIndex = -1;
   overlay.appendChild(m);
   $('#modal-root').appendChild(overlay);
+  // Фокус — в модалку: Esc ловится на m, а открытая кликом по меню модалка оставляла фокус на body
+  // (Esc не закрывал), открытая поверх терминала — в xterm (клавиши уходили в PTY под оверлеем).
+  // Поле, которое вызывающий фокусирует сам (обычно через setTimeout), перехватит фокус позже.
+  const prevFocus = document.activeElement;
+  try { m.focus({ preventScroll: true }); } catch (_) {}
   let closed = false;
   const close = () => {
     if (closed) return;
     closed = true;
     overlay.remove();   // только СВОЙ оверлей — иначе закрытие вложенной модалки снесло бы родителя мимо его close()/onClose (#modal-root:empty прячет контейнер сам)
+    // вложенная модалка: вернуть фокус в родительскую, иначе её Esc перестал бы работать
+    if (prevFocus && prevFocus.isConnected && prevFocus.closest && prevFocus.closest('.modal')) { try { prevFocus.focus({ preventScroll: true }); } catch (_) {} }
     if (onClose) { try { onClose(); } catch (_) {} }
   };
   overlay.addEventListener('mousedown', (e) => { if (e.target === overlay) close(); });
