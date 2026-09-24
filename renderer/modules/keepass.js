@@ -32,12 +32,19 @@ export function initKeepass() {
     pending = { path: r.path, name: r.name }; render();
   }
   function openRecent(p, name) { pending = { path: p, name }; render(); }
+  let unlocking = false; // расшифровка (Argon2 в main) идёт секунды: повторный Enter запускал её второй раз
   async function unlock(password) {
-    if (!pending) return;
+    if (!pending || unlocking) return;
     if (!password) { toast('Введите мастер-пароль', { kind: 'warn' }); return; }
-    const r = await lite.keepass.open(pending.path, password);
+    const target = pending;
+    unlocking = true;
+    let r;
+    try { r = await lite.keepass.open(target.path, password); } finally { unlocking = false; }
+    // «Отмена»/«Закрыть» или другой файл, пока шла расшифровка: pending.name ронял обработчик, а база
+    // оставалась открытой в main при заблокированном на вид окне — закрываем её.
+    if (pending !== target) { if (r && r.ok) { try { lite.keepass.lock(); } catch (_) {} } return; }
     if (!r || !r.ok) { toast((r && r.error) || 'Не удалось открыть', { kind: 'err' }); return; }
-    entries = r.entries || []; dbName = r.name || pending.name; pushRecent(pending.path, dbName);
+    entries = r.entries || []; dbName = r.name || target.name; pushRecent(target.path, dbName);
     pending = null; sel = null; q = ''; render();
   }
   function lock() { try { lite.keepass.lock(); } catch (_) {} entries = []; dbName = ''; sel = null; pending = null; q = ''; render(); }
