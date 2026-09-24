@@ -1969,7 +1969,9 @@ ipcMain.handle('ctxfs:read', (_e, { scope, projPath, rel, offset, limit } = {}) 
   const size = st.size;
   const whole = size <= CTXFS_EDIT_MAX && offset == null;
   const from = Math.max(0, Math.min(size, Number(offset) || 0));
-  const want = whole ? size : Math.max(4096, Math.min(CTXFS_WINDOW, Number(limit) || CTXFS_WINDOW));
+  // Явный limit задаёт просмотр вверх у начала файла: окно должно кончиться ровно на границе уже
+  // показанного, и нижняя планка 4 КБ там давала бы перекрытие — только для неявного размера.
+  const want = whole ? size : Math.max(limit != null ? 1 : 4096, Math.min(CTXFS_WINDOW, Number(limit) || CTXFS_WINDOW));
   let fd;
   try {
     fd = fs.openSync(abs, 'r');

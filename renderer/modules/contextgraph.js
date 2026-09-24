@@ -2079,11 +2079,11 @@ export function initCtx(host) {
       const from = wins[0].start, to = wins[wins.length - 1].end;
       pos.textContent = `${fmtBytes(from)} – ${fmtBytes(to)} из ${fmtBytes(size)}`;
     };
-    const load = async (offset, side) => {
+    const load = async (offset, side, limit) => {
       if (busy) return;
       busy = true;
       try {
-        const r = await lite.ctxfs.read(cfs.scope, p && p.path, node.rel, offset);
+        const r = await lite.ctxfs.read(cfs.scope, p && p.path, node.rel, offset, limit);
         if (!r || !r.ok || !r.text) return;
         if (wins.some((w) => w.start === r.start)) return;      // это окно уже показано
         if (side === 'down') { wins.push({ start: r.start, end: r.end, text: r.text }); if (wins.length > BIG_KEEP) wins.shift(); }
@@ -2109,7 +2109,12 @@ export function initCtx(host) {
         const nearTop = sd.scrollTop < 400;
         const last = wins[wins.length - 1], head = wins[0];
         if (nearBottom && last.end < size) load(last.end, 'down');
-        else if (nearTop && head.start > 0) load(Math.max(0, head.start - (first.window || 128 * 1024)), 'up');
+        else if (nearTop && head.start > 0) {
+          // Окно выше читаем РОВНО до начала показанного: у начала файла отступ упирается в 0, и полное
+          // окно [0, W) перекрывало head — кусок текста показывался дважды (после «В конец» и прокрутки вверх).
+          const from = Math.max(0, head.start - (first.window || 128 * 1024));
+          load(from, 'up', head.start - from);
+        }
       });
     }
     bindScroll();
