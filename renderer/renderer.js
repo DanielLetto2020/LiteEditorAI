@@ -2729,7 +2729,9 @@ function refreshGitChip(delay = 400) {
     if (seq !== gitChipSeq) return;          // пока ждали, проект сменился — ответ устарел
     if (!info || !info.repo) { gitChip = { projId: p.id, repo: false, branch: '', files: [] }; renderChips(); return; }
     const base = p.path.replace(/[\\/]+$/, '');
-    const files = Object.entries((st && st.files) || {}).map(([abs, code]) => ({ abs, code, rel: abs.startsWith(base) ? abs.slice(base.length + 1) : abs }));
+    // префикс — с разделителем: иначе у проекта /repo/app файл /repo/app-old/x показывался бы как «old/x»
+    const inBase = (abs) => abs.startsWith(base + '/') || abs.startsWith(base + '\\');
+    const files = Object.entries((st && st.files) || {}).map(([abs, code]) => ({ abs, code, rel: inBase(abs) ? abs.slice(base.length + 1) : abs }));
     gitChip = { projId: p.id, repo: true, branch: info.branch || 'HEAD', ahead: info.ahead || 0, behind: info.behind || 0, files };
     renderChips();
   }, delay);
