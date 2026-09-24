@@ -4962,7 +4962,7 @@ ipcMain.handle('gsearch:start', (e, { runId, query, opts, roots } = {}) => {
 const HIST_BATCH_CAP = 20;                      // пачка вотчера крупнее — массовая операция (checkout/npm), шум
 const history = createHistory({ dir: path.join(storeDir, 'history'), maxBytes: MAX_VIEW_BYTES });
 const histSnapshot = (absFile, content, tag, opts) => history.snapshot(absFile, content, tag, opts);
-const histSnapshotFromDisk = (absFile, tag) => history.snapshotFromDisk(absFile, tag);
+const histSnapshotFromDisk = (absFile, tag, opts) => history.snapshotFromDisk(absFile, tag, opts);
 // Общий срок и объём истории: через минуту после старта (не мешать подъёму окон) и раз в сутки.
 function historyPrune() {
   history.prune().then((r) => {
@@ -6125,9 +6125,11 @@ ipcMain.handle('git:fetch', async (_e, root) => gitRun(root, ['fetch', '--all', 
 // Откат правок — тоже перезапись файла рукой редактора, значит по контракту локальной истории
 // (см. histSnapshot) состояние ДО неё надо снять: `git checkout --` стирает несохранённую в
 // коммит работу насовсем, вернуть её больше неоткуда. Вотчер снимет уже ОТКАЧЕННОЕ содержимое —
-// поздно. Троттл истории (45 с) сам решит, нужен ли ещё один снимок.
+// поздно. Снимок — мимо троттла ({ force }): иначе откат вскоре после автосейва оставался без версии «до».
 ipcMain.handle('git:discardFile', async (_e, { root, file }) => {
-  await histSnapshotFromDisk(path.isAbsolute(file) ? file : path.join(root, file), 'save');
+  // force: откат по воле человека — текущее состояние в историю ВСЕГДА (троттл 15–45 с после автосейва
+  // иначе пропускал снимок, и «Откатить» сразу после правки терял её безвозвратно)
+  await histSnapshotFromDisk(path.isAbsolute(file) ? file : path.join(root, file), 'save', { force: true });
   return gitRun(root, ['checkout', '--', file]);
 });
 // Update a branch from its upstream WITHOUT checkout (fast-forward of the local ref).
@@ -6294,7 +6296,7 @@ ipcMain.handle('git:discardAll', async (_e, root) => {
   const out = await git(root, ['diff', '--name-only', '-z', '--relative']);
   if (out) {
     for (const rel of out.split('\0').filter(Boolean).slice(0, DISCARD_HIST_CAP))
-      await histSnapshotFromDisk(path.join(root, rel), 'save');
+      await histSnapshotFromDisk(path.join(root, rel), 'save', { force: true }); // как в git:discardFile — мимо троттла
   }
   return gitRun(root, ['checkout', '--', '.']);
 });
