@@ -2648,8 +2648,13 @@ function showLookPanel(anchor) {
       let o = null;
       try { o = JSON.parse(String(raw || '').trim()); } catch (_) {}
       if (!o || typeof o !== 'object' || (!o.base && !o.accent)) { toast('В буфере обмена нет темы — сначала скопируйте её', { kind: 'warn' }); return; }
-      settings.look = { accent: o.accent, r: o.r, row: o.row, alpha: o.alpha, base: o.base, status: o.status, over: o.over };
-      settings.look = lookOf(settings);                                   // проверка значений: мусор отбрасывается
+      // Проверка значений ДО записи в settings: lookOf отбрасывает мусор, но на значении-массиве
+      // (["#aabbcc"] проходит HEX.test) бросает — сырой объект остался бы в settings.look, ушёл бы на диск
+      // со следующим saveSettings и ронял бы применение темы (и init) при каждом запуске.
+      let look;
+      try { look = lookOf({ look: { accent: o.accent, r: o.r, row: o.row, alpha: o.alpha, base: o.base, status: o.status, over: o.over } }); }
+      catch (_) { toast('В буфере обмена нет темы — сначала скопируйте её', { kind: 'warn' }); return; }
+      settings.look = look;
       if (Number.isFinite(+o.side)) { layout.sidebar = +o.side; applyLayout(); saveLayout(); }
       if (Number.isFinite(+o.font)) { settings.fontSize = Math.max(9, Math.min(24, +o.font)); applyFontSize(); }
       lookLive(); draw(); refitActiveTerminal();
