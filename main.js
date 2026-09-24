@@ -661,10 +661,15 @@ function orChatFile(id) { return path.join(storeDir, 'orchats', String(id).repla
 ipcMain.handle('openrouter:histGet', (_e, id) => {
   try { return JSON.parse(fs.readFileSync(orChatFile(id), 'utf8')); } catch { return []; }
 });
-ipcMain.handle('openrouter:histSet', (_e, { id, messages }) => {
+ipcMain.handle('openrouter:histSet', (_e, { id, messages } = {}) => {
+  // Рендерер пишет сессии чата объектом { sessions, active } (массив — только старый формат и
+  // очистка при удалении ключа). Пропуская лишь массив, main молча заменял сессии на [] — история
+  // чатов не переживала закрытия окна.
+  const doc = Array.isArray(messages) ? messages
+    : (messages && Array.isArray(messages.sessions)) ? { sessions: messages.sessions, active: messages.active } : [];
   try {
     fs.mkdirSync(path.join(storeDir, 'orchats'), { recursive: true });
-    atomicWriteSync(orChatFile(id), JSON.stringify(Array.isArray(messages) ? messages : []));
+    atomicWriteSync(orChatFile(id), JSON.stringify(doc));
     return { ok: true };
   } catch (e) { return { error: String(e) }; }
 });
