@@ -2829,6 +2829,9 @@ function createWindow() {
 
   const persist = () => {
     if (!mainWindow || mainWindow.isDestroyed()) return;
+    // F11: getBounds() — это весь экран; сохранив его, следующий запуск открыл бы окно размером
+    // с экран, но уже не полноэкранным. Держим последние обычные габариты.
+    if (mainWindow.isFullScreen()) return;
     if (mainWindow.isMaximized()) { saveState({ maximized: true }); return; }
     const b = mainWindow.getBounds();
     saveState({ x: b.x, y: b.y, width: b.width, height: b.height, maximized: false });
@@ -2935,7 +2938,7 @@ const ownerBySession = new Map();   // sessionId -> webContents — маршру
 
 function readModuleWins() { const v = readStoreKey('moduleWins'); return (v && typeof v === 'object') ? v : {}; }
 function saveModuleBounds(modId, win) {
-  if (!win || win.isDestroyed()) return;
+  if (!win || win.isDestroyed() || win.isFullScreen()) return; // F11 — не затираем обычные габариты размером экрана
   const all = readModuleWins();
   if (win.isMaximized()) { all[modId] = { ...(all[modId] || {}), maximized: true }; }
   else { const b = win.getBounds(); all[modId] = { x: b.x, y: b.y, width: b.width, height: b.height, maximized: false }; }
