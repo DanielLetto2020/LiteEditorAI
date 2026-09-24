@@ -985,7 +985,14 @@ function doCloseProject(id) {
   if (activeId === id) {
     activeId = null;
     if (projects.length) setActive(projects[0].id);
-    else { renderProjects(); showActiveTerminal(); } // нет проектов → окно вивера отреагирует на app:activeProject=null
+    else {
+      renderProjects(); showActiveTerminal();
+      // нет проектов → окна модулей (вивер, git, задачи…) получают app:activeProject=null и показывают
+      // пустое состояние. Раньше null никто не отправлял, и они продолжали работать с закрытым проектом.
+      try { Ext.notifyActiveProject(null); } catch (_) {}
+      pushActiveProject(null);
+      updateNotesBadge();
+    }
   } else {
     renderProjects();
   }
