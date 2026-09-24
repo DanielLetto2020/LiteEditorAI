@@ -29,6 +29,9 @@ export function initExtensions(host) {
     return {
       id: m.id, dir: m.dir, manifest: m.manifest || {}, error: m.error || '', mainUrl: m.mainUrl, mainFile: m.mainFile,
       status: 'off', // 'off' | 'on' | 'broken'
+      // error — отказ скана (манифест/файлы: модуль не грузим вовсе), loadError — падение import/activate
+      // (статус 'broken': модуль можно перезагрузить после правки кода из меню/квикбара)
+      loadError: '',
       container: null, instance: null, ctx: null, title: '', loadSeq: 0, loading: null,
       closeCbs: [], projCbs: [], themeCbs: [], commands: new Map(),
     };
@@ -148,13 +151,16 @@ export function initExtensions(host) {
       rec.ctx = buildCtx(rec);
       await ns.activate(rec.ctx);
       rec.status = 'on';
+      rec.loadError = '';
     } catch (e) {
       rec.status = 'broken';
-      rec.error = String((e && e.message) || e);
+      // Не в rec.error: тот — отказ скана и выключает пункт меню/квикбара целиком, из-за чего все
+      // ветки «broken → перезагрузить» (меню, квикбар, toggle) были недостижимы.
+      rec.loadError = String((e && e.message) || e);
       if (rec.container) { try { rec.container.remove(); } catch (_) {} rec.container = null; }
       rec.instance = null; rec.ctx = null;
-      toast(`Модуль «${modName(rec)}» не загрузился: ${rec.error}`, { kind: 'err' });
-      try { lite.log('error', 'ext activate failed', rec.id, rec.error); } catch (_) {}
+      toast(`Модуль «${modName(rec)}» не загрузился: ${rec.loadError}`, { kind: 'err' });
+      try { lite.log('error', 'ext activate failed', rec.id, rec.loadError); } catch (_) {}
     }
   }
 
@@ -252,7 +258,7 @@ export function initExtensions(host) {
       };
       const row = host.menuRow('layers', modName(rec), click, rec.error ? 'disabled' : '');
       if (rec.error) { row.appendChild(el('span', 'ext-state', '⚠ ошибка')); row.title = rec.error; }
-      else if (rec.status === 'broken') { row.appendChild(el('span', 'ext-state', '⚠ сломан')); row.title = rec.error; }
+      else if (rec.status === 'broken') { row.appendChild(el('span', 'ext-state', '⚠ сломан')); row.title = rec.loadError; }
       dd.appendChild(row);
     }
     if (!opts.compact) dd.appendChild(el('div', 'menu-sep'));
