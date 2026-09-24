@@ -121,7 +121,11 @@ export function initDb(host) {
     if (typeof v === 'number') return String(v);
     if (typeof v === 'boolean') return v ? 'TRUE' : 'FALSE';
     if (isBinary(v)) return "X'" + hexOf(v).toUpperCase() + "'";   // BLOB MySQL/SQLite (bytea Postgres приходит текстом '\x…')
-    return "'" + String(v).replace(/'/g, "''") + "'";
+    // MySQL экранирует обратным слэшем: значение ячейки «\'; DROP TABLE t; -- » давало '\''; DROP …,
+    // где \' — кавычка, а следующая ' закрывает строку, — и «Фильтр»/переход по FK выполняли DROP
+    // (соединение с multipleStatements). У Postgres/SQLite слэш — обычный символ, его не трогаем.
+    const s = dbActiveConn && dbActiveConn.type === 'mysql' ? String(v).replace(/\\/g, '\\\\') : String(v);
+    return "'" + s.replace(/'/g, "''") + "'";
   }
   // Значение :параметра, введённое руками: число без кавычек (LIMIT :n в MySQL кавычек не терпит), остальное — строкой.
   function litParam(v) { if (v == null) return 'NULL'; return /^-?\d+(\.\d+)?$/.test(String(v)) ? String(v) : lit(v); }
