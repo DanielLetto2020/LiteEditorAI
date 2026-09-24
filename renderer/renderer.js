@@ -174,7 +174,7 @@ function effectiveOrder() {
   let order;
   if (!stored) order = keys.slice();
   else {
-    order = stored.filter((k) => keys.includes(k) && k !== ARCHIVE);
+    order = [...new Set(stored)].filter((k) => keys.includes(k) && k !== ARCHIVE); // Set — лечит дубли, записанные прежним переименованием
     for (const k of keys) {
       if (order.includes(k)) continue;
       if (k === UNCATEGORIZED) { order.push(k); continue; }
@@ -794,7 +794,9 @@ function renameCategory(old) {
     if (name === old || name === UNCATEGORIZED || name === ARCHIVE) return;
     saveCategories([...new Set(loadCategories().map((c) => (c === old ? name : c)))]);
     const order = loadSectionOrder();
-    if (order) saveSectionOrder(order.map((k) => (k === old ? name : k)));
+    // имя уже занятой категории = слияние (список выше схлопнут Set'ом) — порядок схлопываем так же,
+    // иначе в нём остались бы две записи одной категории и группа рисовалась бы дважды
+    if (order) saveSectionOrder([...new Set(order.map((k) => (k === old ? name : k)))]);
     for (const p of projects) if (p.category === old) p.category = name;
     saveProjects(); renderProjects();
   });
