@@ -79,6 +79,9 @@ rod('SELECT 1 --drop table t', 'postgres', true, 'Postgres: «--» без про
 rod('SELECT 1 --drop table t', 'mysql', false, 'MySQL: «--drop» — код');
 rod("SELECT 'it\\'s' AS s", 'mysql', true, "MySQL: \\' внутри строки");
 rod('SELECT 1 /*!99999 drop */', 'postgres', true, 'Postgres: /*! — обычный комментарий');
+rod("SELECT 'a\\''; DROP TABLE t; -- '", 'postgres', false, 'Postgres со standard_conforming_strings=off: слэш экранирует и в обычной строке');
+ro('SELECT 4/2; DROP TABLE t', false, 'деление — не начало комментария');
+ro('SELECT 1 /* x*y / drop */', true, '«*» и «/» по отдельности комментарий не закрывают');
 
 // --- Не пишут в таблицы, но снимают защиту или бьют по серверу ---
 for (const d of [undefined, 'postgres', 'mysql', 'sqlite']) {
@@ -168,6 +171,8 @@ assert.strictEqual(stripSqlLiterals('a # b\nc', { hash: true }), 'a \nc'); passe
 assert.strictEqual(stripSqlLiterals('a # b'), 'a # b'); passed++;
 assert.strictEqual(stripSqlLiterals('a /*!123 b */ c', { exec: true }), 'a   b   c'); passed++;
 assert.strictEqual(stripSqlLiterals('a /*!123 b */ c'), 'a   c'); passed++;
+assert.strictEqual(stripSqlLiterals('/*!1 a */ b /* c */ d', { exec: true }), '  a   b   d'); passed++;   // после */ обычный комментарий снова комментарий
+assert.strictEqual(stripSqlLiterals('$$a$$ b', { dollar: true }), '$$ b'); passed++;   // долларовые кавычки в самом начале
 assert.strictEqual(stripSqlLiterals('a "b\\" c" d', { bsDq: true }), 'a "" d'); passed++;
 assert.strictEqual(stripSqlLiterals('a "b\\" c" d'), 'a "" c" d'); passed++;
 
