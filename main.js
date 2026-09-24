@@ -6013,7 +6013,9 @@ ipcMain.handle('seo:render', async (_e, { url }) => {
       await wc.debugger.sendCommand('Network.enable');
     } catch (e) { /* CDP недоступен — сетевые метрики пропустим */ }
 
-    const loaded = new Promise((res) => { wc.once('did-finish-load', () => res({ ok: true })); wc.once('did-fail-load', (_e2, code, desc) => res({ fail: desc || String(code) })); });
+    // did-fail-load приходит и для iframe (реклама/виджет не загрузился, X-Frame-Options) — с once() такой
+    // сбой завершал ожидание раньше самой страницы: DOM/метрики/скриншоты снимались с недогруженной.
+    const loaded = new Promise((res) => { wc.once('did-finish-load', () => res({ ok: true })); wc.on('did-fail-load', (_e2, code, desc, _u, isMainFrame) => { if (isMainFrame) res({ fail: desc || String(code) }); }); });
     const timer = new Promise((res) => setTimeout(() => res({ timeout: true }), SEO_RENDER_TIMEOUT));
     win.loadURL(u.href).catch(() => {});
     const loadRes = await Promise.race([loaded, timer]);
