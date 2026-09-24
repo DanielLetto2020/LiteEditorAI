@@ -36,6 +36,20 @@ function renderSafeMarkdown(target, src) {
   });
   target.replaceChildren(...tpl.content.childNodes);
 }
+// makeModal закрывает модалку по Esc и по клику мимо неё — в обход вопроса «Закрыть без сохранения?»,
+// который задают кнопки «Закрыть»/✕ редакторов: набранный текст пропадал молча (а Esc жмут
+// рефлекторно — снять выделение, закрыть поиск). Пока есть несохранённое, оба пути ведут в тот же
+// вопрос. Слушатели в фазе захвата и stopImmediatePropagation — срабатывают раньше makeModal.
+function guardDirtyClose(overlay, m, isDirty, ask) {
+  m.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape' || !isDirty()) return;
+    e.preventDefault(); e.stopImmediatePropagation(); ask();
+  }, true);
+  overlay.addEventListener('mousedown', (e) => {
+    if (e.target !== overlay || !isDirty()) return;
+    e.stopImmediatePropagation(); ask();
+  }, true);
+}
 const fmtTok = (chars) => {
   const t = Math.round((chars || 0) / 4);
   return '≈' + (t >= 1000 ? (t / 1000).toFixed(1).replace(/\.0$/, '') + 'k' : t) + ' тк';
@@ -478,7 +492,7 @@ export function initCtx(host) {
     let preview = blockPreviewMode;   // режим показа общий для всех разделов и переживает переход
     const dirtyKey = 'block:' + (++dirtyKeySeq);
     modalOpen = true;
-    const { m, close } = makeModal(`<div class="ctx-bl-top">
+    const { overlay, m, close } = makeModal(`<div class="ctx-bl-top">
         <h2>Разделы CLAUDE.md</h2>
         <button class="ctx-x" id="cxm-x" title="Закрыть">✕</button>
       </div>
@@ -620,6 +634,7 @@ export function initCtx(host) {
     const bye = () => { if (!dirty) { close(); return; } showConfirm('Закрыть без сохранения?', 'Правки будут потеряны.', 'Закрыть', close); };
     m.querySelector('#cxm-cancel').addEventListener('click', bye);
     m.querySelector('#cxm-x').addEventListener('click', bye);
+    guardDirtyClose(overlay, m, () => dirty, bye);
     m.querySelector('#cxm-del').addEventListener('click', () => { if (!rebind()) { lostWarn(); return; } const b = cur; close(); deleteBlock(b); });
     drawList();
     openBlock(startBlock, true);
@@ -1511,7 +1526,7 @@ export function initCtx(host) {
     const isJson = /\.(json|jsonc|json5)$/i.test(name);
     const isJsonl = /\.(jsonl|ndjson)$/i.test(name);
     const isSh = /\.(sh|bash|zsh)$/i.test(name) || /^\.?(bashrc|zshrc|profile)$/i.test(name);
-    const { m, close } = makeModal(`<h2>${title.replace(/[<>&]/g, '')}</h2>
+    const { overlay, m, close } = makeModal(`<h2>${title.replace(/[<>&]/g, '')}</h2>
       <div class="about-desc mem-ed-sub"></div>
       <div class="ctx-medbar">
         <div class="ctx-seg" id="fed-modes" hidden>
@@ -1621,10 +1636,12 @@ export function initCtx(host) {
       return true;
     };
     saveBtn.addEventListener('click', doSave);
-    cancelBtn.addEventListener('click', () => {
+    const bye = () => {
       if (!recheck()) { close(); return; }
       showConfirm('Закрыть без сохранения?', 'Правки будут потеряны.', 'Закрыть', close);
-    });
+    };
+    cancelBtn.addEventListener('click', bye);
+    guardDirtyClose(overlay, m, () => !!editor && editor.getValue() !== orig, bye);
     m.querySelector('#fed-hist').addEventListener('click', () => openBackups(file, (txt) => {
       editor.view.dispatch({ changes: { from: 0, to: editor.view.state.doc.length, insert: txt } });
       recheck();
