@@ -797,7 +797,9 @@ export function initStorage(host) {
     if (cp.presign || cp.acl || cp.publicUrl) dd.appendChild(menuRow('link', 'Доступ и ссылки…', () => { closeMenus(); linkModal(fo.key); }));
     dd.appendChild(menuRow('copy', 'Копировать ключ', () => { closeMenus(); lite.copyText(fo.key); toast('Ключ скопирован'); }));
     dd.appendChild(menuRow('copy', 'Копировать s3:// URI', () => { closeMenus(); lite.copyText(`s3://${curBucket}/${fo.key}`); toast('URI скопирован'); }));
-    dd.appendChild(menuRow('terminal', 'Путь в терминал', () => { closeMenus(); try { sendToTerminal(`s3://${curBucket}/${fo.key}`); toast('Отправлено в терминал'); } catch (_) { toast('Терминал недоступен', { kind: 'err' }); } }));
+    // ключ — недоверенная строка: «\n»/ESC в нём без bracketed paste сработали бы как Enter/управляющая
+    // последовательность в шелле — схлопываем управляющие символы (как termSafe в «Контексте»)
+    dd.appendChild(menuRow('terminal', 'Путь в терминал', () => { closeMenus(); try { sendToTerminal(`s3://${curBucket}/${fo.key}`.replace(/[\x00-\x1f\x7f-\x9f]+/g, ' ')); toast('Отправлено в терминал'); } catch (_) { toast('Терминал недоступен', { kind: 'err' }); } }));
     if (canWrite()) {
       dd.appendChild(menuRow('copy', 'Копировать в…', () => { closeMenus(); copyMoveModal(fo, false); }));
       dd.appendChild(menuRow('arrow-right', 'Переместить в…', () => { closeMenus(); copyMoveModal(fo, true); }));
