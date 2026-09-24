@@ -578,6 +578,7 @@ export function initFiles(host) {
     if (res.content.includes('\0')) { toast('Бинарный файл — в вивере не открывается', { kind: 'warn', ttl: 5000 }); return; }
     resetCenterView();
     currentFile = filePath;
+    docEol = eolOf(res.content);
     commitOpenUI(filePath, kind);
     afterOpen(filePath);
     // язык может грузиться лениво (первое открытие типа) → по готовности переконфигурируем, если файл ещё открыт
@@ -878,12 +879,14 @@ export function initFiles(host) {
     if (res.error) return;
     const head = editor.state.selection.main.head;
     const oldText = editor.state.doc.toString();        // C21: до подмены — чтобы пометить, что тронул агент
-    if (res.content === oldText) { markDirty(false); hideReloadBar(); return; } // эхо нашего же автосейва — не перезаливаем док (иначе сброс folds/курсора)
+    docEol = eolOf(res.content);                        // агент мог сменить переводы строк — пишем дальше как на диске
+    const text = res.content.replace(/\r\n?/g, '\n');   // док CodeMirror — с '\n': сравниваем в тех же координатах
+    if (text === oldText) { markDirty(false); hideReloadBar(); return; } // эхо нашего же автосейва — не перезаливаем док (иначе сброс folds/курсора)
     setEditorText(res.content, languageFor(f, langOnLoad(f)));
     markDirty(false);
     hideReloadBar();
     updateGitGutter(currentFile);
-    if (agentMode) { const ch = diffChangedLines(oldText, res.content); if (ch.length) markAuthor(ch, 'agent'); } // живой reload = правка агента
+    if (agentMode) { const ch = diffChangedLines(oldText, text); if (ch.length) markAuthor(ch, 'agent'); } // живой reload = правка агента
     try { editor.dispatch({ selection: { anchor: Math.min(head, editor.state.doc.length) } }); } catch (_) {}
     if (previewMode && kind) await showPreview(kind, currentFile, res.content); // перерисовать рендер md/html
   }
@@ -911,6 +914,12 @@ export function initFiles(host) {
     refreshBookmarkGutter();          // канонический момент загрузки дока → маркеры закладок по НОВОМУ содержимому
   }
   function markDirty(v) { dirty = v; $('#viewer-dirty').classList.toggle('show', v); }
+  // Перевод строки файла на диске. Док CodeMirror всегда с '\n' (CRLF/CR он режет при загрузке), и без
+  // этого каждое сохранение молча переводило CRLF-файл в LF целиком: дифф на все строки, чужие переводы
+  // строк в Windows-репозитории. Запоминаем преобладающий при загрузке и возвращаем его при записи.
+  let docEol = '\n';
+  function eolOf(s) { const crlf = (s.match(/\r\n/g) || []).length; return crlf && crlf * 2 >= (s.match(/\n/g) || []).length ? '\r\n' : '\n'; }
+  const toDiskText = (text) => (docEol === '\n' ? text : text.replace(/\n/g, docEol));
   // Автосохранение (PhpStorm-style): через AUTOSAVE_MS тишины после правки тихо пишем файл на диск.
   // Не сохраняем в превью/диффе, при конфликте на диске (открыта reload-плашка) и при загрузке дока —
   // там пишет/решает другой путь. Сохраняет ровно текущий файл; stale-таймер после смены файла безвреден
@@ -950,7 +959,7 @@ export function initFiles(host) {
     for (let pass = 0; pass < 3; pass++) {             // печатать без пауз три записи подряд человек не может
       const text = editor.state.doc.toString();
       let res;
-      try { res = await lite.fs.writeFile(file, text); }
+      try { res = await lite.fs.writeFile(file, toDiskText(text)); }
       catch (e) { res = { error: String(e) }; }
       if (!res || !res.ok) {
         toast(`Не удалось сохранить: ${(res && res.error) || 'ошибка записи'}`, { kind: 'err', ttl: 6000 });
@@ -1997,7 +2006,7 @@ export function initFiles(host) {
       if (currentFile === file) { cancelAutosave(); while (savingP) { try { await savingP; } catch (_) {} } }
       try {
         await lite.fs.histSnapshot(file);
-        if (currentFile === file && dirty) await lite.fs.histSnapshot(file, editor.state.doc.toString());
+        if (currentFile === file && dirty) await lite.fs.histSnapshot(file, toDiskText(editor.state.doc.toString()));
       } catch (_) {}                                       // история best-effort: сбой снимка откат не блокирует
       const w = await lite.fs.writeFile(file, content);
       if (w && w.error) { toast(w.error, { kind: 'err', ttl: 7000 }); restoreBtn.disabled = false; return; }
