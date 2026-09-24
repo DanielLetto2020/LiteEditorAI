@@ -974,6 +974,10 @@ export function initTextProc(host) {
     ].join('\n\n');
   }
   async function sendChat() {
+    // Один запрос за раз: кнопка на это время — «Стоп», но Enter шёл сюда мимо неё и запускал
+    // второго агента параллельно. busyReq перезаписывался, завершение первого снимало «Стоп», и
+    // второго (в агент-режиме он правит файл) уже нечем было остановить.
+    if (busyReq) return;
     const ta = $('#doc-ai-chat-input');
     const instruction = ta.value.trim();
     if (!instruction) return;
