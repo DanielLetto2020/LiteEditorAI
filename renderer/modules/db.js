@@ -3181,14 +3181,15 @@ blockquote{border-left:3px solid #c9ced4;margin:0;padding:.2rem 0 .2rem .8rem;co
     const t = sqlStripped(sql).replace(/;\s*$/, '');
     return /^\s*\(*\s*(select|with)\b/i.test(t) && !t.includes(';');
   }
-  function aiProdConfirm(sql) {
+  // conn — подключение, на котором запрос ВЫПОЛНИТСЯ («-- @db» может увести его с активного)
+  function aiProdConfirm(sql, conn = dbActiveConn) {
     return new Promise((resolve) => {
-      if (!(dbActiveConn && dbActiveConn.isProd)) { resolve(sql); return; }
+      if (!(conn && conn.isProd)) { resolve(sql); return; }
       let done = false;
       const finish = (v) => { if (!done) { done = true; resolve(v); } };
       const { m, close } = makeModal('<h2>PRODUCTION</h2>', () => finish(null));
       m.classList.add('db-modal');
-      m.appendChild(el('div', 'db-prov-sub', `Подключение «${dbActiveConn.name}» помечено как PRODUCTION. Запрос только читает, но нагрузку на боевую базу всё равно создаёт.`));
+      m.appendChild(el('div', 'db-prov-sub', `Подключение «${conn.name}» помечено как PRODUCTION. Запрос только читает, но нагрузку на боевую базу всё равно создаёт.`));
       const pre = el('pre', 'db-ai-sql'); pre.textContent = sql; m.appendChild(pre);
       const canLimit = sqlIsSingleSelect(sql) && !sqlHasLimit(sql);
       let addLimit = canLimit;
@@ -3248,14 +3249,18 @@ blockquote{border-left:3px solid #c9ced4;margin:0;padding:.2rem 0 .2rem .8rem;co
   const aiWithParams = (sqlText) => new Promise((resolve) => runWithParams(sqlText, resolve, () => resolve(null)));
   async function aiExecute(host, sqlIn, chart, opts = {}) {
     if (!isReadOnlyQuery(sqlIn)) { toast('Разрешены только читающие запросы (SELECT/WITH/EXPLAIN)', { kind: 'err' }); return; }
+    // На какой базе выполнить: карточка передаёт выбор, «Выполнить все» — нет, поэтому по умолчанию
+    // та же разводка «-- @db», что и в карточке (раньше план целиком шёл на активную базу).
+    // Подтверждение PRODUCTION — по ЭТОЙ базе, а не по активной: боевая соседняя шла без вопроса.
+    const connId = opts.connId || aiSqlTargetConn(aiSession(), sqlIn);
+    // активное — из dbActiveConn: его обновляет сохранение профиля, а список подключений тут не перечитывается
+    const conn = (connId === dbActiveId ? dbActiveConn : dbConnsList.find((c) => c.id === connId)) || dbActiveConn;
     const withParams = await aiWithParams(sqlIn);
     if (!withParams) return;
-    const sql = await aiProdConfirm(withParams);
+    const sql = await aiProdConfirm(withParams, conn);
     if (!sql) return;   // на PRODUCTION пользователь отказался
     const st = aiSession();
     const chatConn = dbActiveId;   // чей это диалог (запрос может идти на другую базу — connId)
-    const connId = opts.connId || dbActiveId;
-    const conn = dbConnsList.find((c) => c.id === connId) || dbActiveConn;
     const isProd = !!(conn && conn.isProd);
     const onOtherDb = connId !== dbActiveId;
     const resMsg = { role: 'result', sql, chart, note: opts.note || '', connId, connName: onOtherDb ? aiConnName(connId) : '', pending: true };
