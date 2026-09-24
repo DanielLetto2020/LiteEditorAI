@@ -1151,7 +1151,7 @@ export function initJira(host) {
       del.onclick = () => {
         showConfirm('Удалить аккаунт', 'Аккаунт «' + a.name + '» и его сохранённый токен будут стёрты.', 'Удалить', async () => {
           const r = await lite.jira.delete(a.id);
-          if (r && r.ok) { loaded = false; toast('Аккаунт удалён'); renderPanel(); }
+          if (r && r.ok) { loaded = false; boardsByAcc.delete(a.id); metaByAcc.delete(a.id); toast('Аккаунт удалён'); renderPanel(); }
           else toast('Не удалось удалить аккаунт: ' + ((r && r.error) || '?'), { kind: 'err' });
         });
       };
@@ -1248,7 +1248,12 @@ export function initJira(host) {
       if (!acc.name) { toast('Не задано название', { kind: 'err' }); return; }
       if (!acc.host) { toast('Не задан адрес Jira', { kind: 'err' }); return; }
       const r = await lite.jira.save(acc);
-      if (r && r.ok) { loaded = false; close(); toast('Аккаунт сохранён ✓'); renderPanel(); }
+      if (r && r.ok) {
+        loaded = false;
+        // Адрес/токен могли смениться — доски и справочник прежней Jira для этого аккаунта неверны.
+        if (acc.id) { boardsByAcc.delete(acc.id); metaByAcc.delete(acc.id); }
+        close(); toast('Аккаунт сохранён ✓'); renderPanel();
+      }
       else toast('Не удалось сохранить: ' + ((r && r.error) || '?'), { kind: 'err' });
     };
 
@@ -1397,6 +1402,10 @@ export function initJira(host) {
     if (!jiraOpen) return;
     loaded = false;
     rows = [];
+    // Доски и справочник иначе грузятся раз на жизнь окна: новые задачи не получали лейблов досок
+    // (и прятались фильтром по доске), даже когда пользователь явно жал «Обновить».
+    boardsByAcc.clear();
+    metaByAcc.clear();
     renderPanel();
   }
 
