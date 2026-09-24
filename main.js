@@ -5990,7 +5990,8 @@ ipcMain.handle('seo:render', async (_e, { url }) => {
     // попапов в Electron нет), и оно переживало аудит. Уходить из окна — только на http(s).
     wc.setWindowOpenHandler(() => ({ action: 'deny' }));
     wc.on('will-navigate', (e, navUrl) => { if (!/^https?:/i.test(navUrl)) e.preventDefault(); });
-    wc.on('console-message', (e) => { const message = e.message; const level = e.level === 'error' ? 3 : e.level === 'warning' ? 2 : 0; if (level >= 2) consoleMsgs.push({ level, text: String(message).slice(0, 300) }); if (/Mixed Content/i.test(message)) network.mixed++; });
+    // Отдаём 30 сообщений — больше и не копим: страница с console.error в цикле за ~40 с аудита набивала main миллионами записей.
+    wc.on('console-message', (e) => { const message = e.message; const level = e.level === 'error' ? 3 : e.level === 'warning' ? 2 : 0; if (level >= 2 && consoleMsgs.length < 30) consoleMsgs.push({ level, text: String(message).slice(0, 300) }); if (/Mixed Content/i.test(message)) network.mixed++; });
 
     // Сетевая статистика через CDP (точные размеры передачи, типы, сжатие).
     let dbg = false; const reqInfo = new Map();
