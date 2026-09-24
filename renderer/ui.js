@@ -250,8 +250,11 @@ let _errSink = null;
 export function setErrorSink(fn) { _errSink = typeof fn === 'function' ? fn : null; }
 
 export function toast(msg, opts = {}) {
-  if (opts.kind === 'err' && _errSink && !opts.silent) { try { _errSink(String(msg)); } catch (_) {} }  // в лог — исходный текст
-  const box = el('div', 'toast' + (opts.kind ? ' ' + opts.kind : ''));
+  // module-kit/GUIDE.md обещает пользовательским модулям kind: 'error', ядро пишет 'err' —
+  // принимаем оба, иначе ошибки модулей не красились и не попадали в лог.
+  const kind = opts.kind === 'error' ? 'err' : opts.kind;
+  if (kind === 'err' && _errSink && !opts.silent) { try { _errSink(String(msg)); } catch (_) {} }  // в лог — исходный текст
+  const box = el('div', 'toast' + (kind ? ' ' + kind : ''));
   box.appendChild(el('span', 'toast-msg', t(msg)));
   if (opts.actionLabel) {
     const b = el('button', 'toast-act', t(opts.actionLabel));
