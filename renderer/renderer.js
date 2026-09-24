@@ -2332,7 +2332,7 @@ function showMoreMenu(anchor) {
   c1.appendChild(menuRow('palette', 'Оформление…', () => { closeMenus(); showLookPanel($('#app').classList.contains('single') ? $('#rail-look') : $('#btn-look')); }));
   c1.appendChild(menuRow('sparkles', 'Заставка «матрица»', go(() => startMatrix())));
   T(c1, 'Справка');
-  if (updateInfo && updateInfo.newer) c1.appendChild(menuRow('download', `Обновить до ${updateInfo.tag || 'новой версии'}`, go(onUpdateBadgeClick), '', { badge: 'новая' }));
+  if (updateInfo && updateInfo.newer) c1.appendChild(menuRow('download', `Обновить до ${updateInfo.tag || 'новой версии'}`, go(updateNow), '', { badge: 'новая' }));
   else c1.appendChild(menuRow('refresh', 'Проверить обновления', go(() => checkForUpdate({ manual: true }))));
   c1.appendChild(menuRow('github', 'Репозиторий на GitHub', go(openRepo), '', { ext: true }));
   c1.appendChild(menuRow('info', 'О программе', go(showAbout)));
@@ -3065,6 +3065,8 @@ function showAbout() {
         // Уже скачано в фоне — сразу к перезапуску; иначе качаем и предлагаем перезапуск по готовности.
         if (updPhase.phase === 'ready') return confirmAndInstall();
         setSt('— загружаю…');
+        // фоновая автозагрузка уже идёт — второй запрос main отклонил бы ошибкой «загрузка уже идёт»
+        if (updPhase.phase === 'downloading') return;
         const d = await startUpdateDownload({ manual: true });
         if (d && d.ok) { close(); confirmAndInstall(); } else setSt('— не удалось загрузить', 'err');
       };
@@ -3470,7 +3472,7 @@ function showSettings(start = 'look') {
       const newer = updateInfo && updateInfo.newer;
       body.appendChild(row(newer ? 'Доступна новая версия' : 'Проверить прямо сейчас', '', button(newer ? 'Обновить' : 'Проверить', newer ? 'download' : 'refresh', async (e) => {
         const b = e.currentTarget;
-        if (newer) { close(); onUpdateBadgeClick(); return; }
+        if (newer) { close(); updateNow(); return; }
         b.disabled = true;
         try { await checkForUpdate({ manual: true }); } finally { b.disabled = false; }
         if (cur === 'upd') draw();
@@ -3698,6 +3700,14 @@ async function onUpdateBadgeClick() {
   }
   updBusy = true;
   try { await startUpdateDownload({ manual: true }); } finally { updBusy = false; }
+}
+// «Обновить» из меню «Ещё» и из настроек. Это не переключатель, как плашка: если загрузка уже идёт
+// (фоновая автозагрузка), нажатие не должно её молча отменять — только напомнить, что она идёт
+// (в режиме «один терминал» плашки с прогрессом не видно).
+function updateNow() {
+  if (updPhase.phase === 'downloading') { toast('Обновление уже загружается — ' + Math.max(0, Math.min(100, updPhase.pct || 0)) + ' %'); return; }
+  if (updPhase.phase === 'installing') return;
+  onUpdateBadgeClick();
 }
 
 // Скачать обновление. Тихо при автозагрузке: фоновая закачка не должна сыпать тостами.
