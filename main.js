@@ -2980,8 +2980,29 @@ function isAppPage(url) {
     return APP_PAGES.has(u.href);
   } catch (_) { return false; }
 }
+// Внешние протоколы (search-ms:, ms-msdt:, vscode:, …) Chromium отдаёт ОС через запрос разрешения
+// 'openExternal', которое Electron без обработчика выдаёт ВСЕГДА. Главный фрейм наших окон режет
+// will-navigate выше, но есть и то, что он не видит: iframe превью HTML в вивере (allow-scripts +
+// allow-popups — чужой файл из репозитория) и скрытые окна SEO-аудита/мониторинга сайтов, которые
+// грузят произвольные страницы. Любая из них одной строкой JS запускала бы обработчик протокола ОС.
+// Пропускаем только http(s)/mailto; остальные разрешения — как по умолчанию (выдаём).
+const guardedSessions = new WeakSet();
+function guardExternalProtocols(ses) {
+  if (!ses || guardedSessions.has(ses)) return;
+  guardedSessions.add(ses);
+  try {
+    ses.setPermissionRequestHandler((_wc, permission, cb, details) => {
+      if (permission !== 'openExternal') { cb(true); return; }
+      const url = String((details && details.externalURL) || '');
+      const ok = /^(https?|mailto):/i.test(url);
+      if (!ok) logger.log('warn', 'window', 'внешний протокол отклонён: ' + url.slice(0, 200));
+      cb(ok);
+    });
+  } catch (_) {}
+}
 function hardenNavigation(win) {
   const wc = win.webContents;
+  guardExternalProtocols(wc.session); // окна без partition делят defaultSession — вместе со скрытыми окнами аудита
   wc.on('will-navigate', (e, url) => {
     if (isAppPage(url)) return;                       // своя страница и её перезагрузка
     e.preventDefault();
