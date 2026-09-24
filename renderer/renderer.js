@@ -852,7 +852,9 @@ async function scanProjects() {
     if (!Array.isArray(entries)) continue;
     for (const ent of entries) {
       if (!ent.dir || ent.name.startsWith('.')) continue;
-      if (known.has(ent.path) || dismissed.has(ent.path)) continue;
+      // known снят до await: пока читалась папка, проект мог добавить второй скан (закрытие настроек
+      // во время стартового) или ручное открытие — сверяемся и с живым списком, иначе будет дубль с тем же id
+      if (known.has(ent.path) || dismissed.has(ent.path) || projects.some((p) => p.path === ent.path)) continue;
       projects.push({ id: projId(ent.path), name: ent.name, path: ent.path });
       known.add(ent.path); added = true;
     }
