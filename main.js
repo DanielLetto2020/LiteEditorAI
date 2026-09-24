@@ -3190,7 +3190,10 @@ function openModuleWindow(modId) {
     // (или HTTP-стрим OpenRouter) доживал до своего таймаута — 2–5 минут работы и токенов в никуда,
     // а «Директор» ИИ-компании ещё и detached, то есть переживал бы окно гарантированно.
     if (modId === 'doc') killReqMap(tpReqs);         // «Обработка текста»
-    if (modId === 'db') killReqMap(dbaiReqs);        // AI-DB (child ИЛИ ClientRequest — killReqMap разбирает оба)
+    // AI-DB: запросы гасит dbaiTrack по закрытию окна-ЗАКАЗЧИКА (тем же каналом ходит «Мониторинг сайтов» —
+    // killReqMap здесь обрывал и его). Соединения и SSH-туннели «Баз данных» нужны только этому окну — закрываем,
+    // иначе они жили до выхода из редактора (следующее открытие окна переподключится само).
+    if (modId === 'db') { try { dbApi.closeAll(); } catch (_) {} }
     if (modId === 'chat') killReqMap(orReqs);        // OpenRouter
     if (modId === 'company') { for (const c of companyReqs.values()) { try { companyKill(c); } catch (_) {} } companyReqs.clear(); }
     // «Контейнеры»: закрыть окно ✕ мимо closeDockerDetail() — и `logs -f` продолжал бы качать вывод
