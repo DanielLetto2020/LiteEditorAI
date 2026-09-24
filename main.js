@@ -1024,7 +1024,10 @@ ipcMain.handle('tp:saveFileAs', async (e, { content, name, ext } = {}) => {
 // соответствующих CLI; при смене версий сверить заново.
 const TP_BUILTIN_AGENTS = {
   claude: { label: 'Claude', cmd: 'claude', args: ['-p', '--output-format', 'text'], via: 'stdin', agentArgs: ['--permission-mode', 'acceptEdits', '-p'] },
-  codex: { label: 'Codex', cmd: 'codex', args: ['exec'], via: 'arg', agentArgs: ['exec', '--full-auto'] },
+  // codex в чате — через stdin («codex exec -», как в AI-DB): промпт несёт весь документ, а один
+  // аргумент в Linux ограничен 128 КБ (≈64 тыс. русских букв) — spawn падал с E2BIG; к тому же argv
+  // виден в `ps` любому пользователю системы. Агент-режим — аргументом: там только путь и задача.
+  codex: { label: 'Codex', cmd: 'codex', args: ['exec', '-'], via: 'stdin', agentArgs: ['exec', '--full-auto'] },
   gemini: { label: 'Gemini', cmd: 'gemini', args: ['-p'], via: 'arg', agentArgs: ['--yolo', '-p'] },
 };
 // Список агентов расширяется файлом ~/.LiteEditorAI/tpAgents.json — по записи на утилиту:
