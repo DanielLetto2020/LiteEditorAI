@@ -4523,14 +4523,21 @@ function smNotify(target, check, kind) {
 
 async function smCheckTarget(target) {
   if (!target || target.checking) return; target.checking = true;
+  // Правка цели/чеков во время загрузки (gen растёт в IPC ниже): ответ собран под СТАРУЮ конфигурацию —
+  // старый URL, без JSON/селекторов нового чека. Раньше он всё равно фиксировался: «изменилось» брало
+  // ложный эталон (и следующая проверка слала уведомление), а сброшенный правкой nextAt=0 затирался полным
+  // интервалом — исправленный URL проверялся лишь через интервал (до суток). Такой ответ отбрасываем.
+  const gen = target.gen || 0;
+  let stale = false;
   try {
     if (target.checks && target.checks.length) {
       const cap = await smBuildCapture(target);
-      for (const check of target.checks) smCommit(target, check, smEvalCheck(check, cap, true), cap.ms);
+      stale = (target.gen || 0) !== gen;
+      if (!stale) for (const check of target.checks) smCommit(target, check, smEvalCheck(check, cap, true), cap.ms);
     }
   } catch (_) { /* отдельные чеки уже под своим try/catch */ }
   target.checking = false;
-  target.nextAt = Date.now() + smClampInt(target.intervalSec) * 1000;
+  target.nextAt = stale ? 0 : Date.now() + smClampInt(target.intervalSec) * 1000;   // 0 — тикер перепроверит в ближайшие 5 с
   smPersist(); smBroadcast();
 }
 
@@ -4596,13 +4603,13 @@ ipcMain.handle('sitemon:editTarget', (_e, { id, name, url, intervalSec, render, 
   if (render != null) t.render = !!render;
   if (insecureTls != null) t.insecureTls = !!insecureTls;
   if (headers !== undefined) t.headers = smCleanHeaders(headers);
-  t.nextAt = 0; smPersist(); smBroadcast(); smCheckTarget(t); return { ok: true };
+  t.gen = (t.gen || 0) + 1; t.nextAt = 0; smPersist(); smBroadcast(); smCheckTarget(t); return { ok: true };
 });
 ipcMain.handle('sitemon:removeTarget', (_e, { id } = {}) => { smTargets = smTargets.filter((x) => x.id !== id); smPersist(); smBroadcast(); return { ok: true }; });
 ipcMain.handle('sitemon:addCheck', (_e, { targetId, check } = {}) => {
   const t = smTargets.find((x) => x.id === targetId); if (!t) return { ok: false, error: 'нет цели' };
   const san = smSanitizeCheck(check); if (!san.ok) return { ok: false, error: san.error };
-  t.checks = t.checks || []; t.checks.push(san.check); t.nextAt = 0; smPersist(); smBroadcast(); smCheckTarget(t);
+  t.checks = t.checks || []; t.checks.push(san.check); t.gen = (t.gen || 0) + 1; t.nextAt = 0; smPersist(); smBroadcast(); smCheckTarget(t);
   return { ok: true, id: san.check.id };
 });
 ipcMain.handle('sitemon:editCheck', (_e, { targetId, checkId, patch } = {}) => {
@@ -4616,6 +4623,7 @@ ipcMain.handle('sitemon:editCheck', (_e, { targetId, checkId, patch } = {}) => {
     if (patch.notify != null) c.notify = !!patch.notify;
     if (patch.debounce != null) c.debounce = Math.max(1, Math.min(10, Number(patch.debounce) || 1));
     c.state = 'unknown'; c.baseline = undefined; c.pend = null; c.error = ''; c.value = undefined;   // условие изменилось → сброс
+    t.gen = (t.gen || 0) + 1;
   }
   t.nextAt = 0; smPersist(); smBroadcast(); smCheckTarget(t); return { ok: true };
 });
