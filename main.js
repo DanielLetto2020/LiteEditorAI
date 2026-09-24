@@ -1670,7 +1670,10 @@ ipcMain.handle('ctxmine:apply', (_e, { projPath, items } = {}) => {
     const file = targets[pl];
     try {
       fs.mkdirSync(path.dirname(file), { recursive: true });
-      let cur = ''; try { cur = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : ''; } catch (_) {}
+      // Пустым считаем ТОЛЬКО отсутствующий файл. Раньше любая ошибка чтения (EACCES, EMFILE…) тоже
+      // давала cur = '', и запись «заголовок + буллеты» затирала весь существующий CLAUDE.md.
+      let cur = '';
+      try { cur = fs.readFileSync(file, 'utf8'); } catch (e) { if (!e || e.code !== 'ENOENT') throw e; }
       const bullets = arr.map((it) => {
         const t = String((it && it.title) || '').trim();
         const d = String((it && it.detail) || '').trim();
@@ -1680,6 +1683,7 @@ ipcMain.handle('ctxmine:apply', (_e, { projPath, items } = {}) => {
       const next = cur.includes(CTXMINE_APPLY_HEADER)
         ? base + '\n' + bullets + '\n'
         : (base ? base + '\n\n' : '') + CTXMINE_APPLY_HEADER + '\n' + bullets + '\n';
+      ctxbkPush(file, 'claude-file');   // как и любая перезапись из модуля — сначала копия (глобальный CLAUDE.md иначе без отката)
       atomicWriteSync(file, next);
       applied.push({ placement: pl, file, count: arr.length });
     } catch (err) { errors.push({ placement: pl, error: String((err && err.message) || err) }); }
