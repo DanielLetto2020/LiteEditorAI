@@ -5073,6 +5073,14 @@ function git(cwd, args) {
     });
   });
 }
+// Корень рабочего дерева в тех же координатах, что и путь проекта: root + `--show-cdup`.
+// `--show-toplevel` отдаёт realpath (симлинки раскрыты), и для проекта, открытого через симлинк
+// (~/work → /mnt/data/work, /tmp → /private/tmp на macOS), ключи статуса расходились с путями
+// дерева — ни декораций, ни корректных путей в списке изменений. null — не git-репозиторий.
+async function gitWorkBase(root) {
+  const cdup = await git(root, ['rev-parse', '--show-cdup']);
+  return cdup == null ? null : path.resolve(root, cdup.trim());
+}
 
 // ---------------------------------------------------------------- audit (базовый аудит проекта)
 // Один проход по дереву проекта → агрегаты: типы файлов, крупнейшие файлы, медиа по весу.
@@ -5917,9 +5925,8 @@ ipcMain.handle('seo:export', async (_e, { content, defaultName }) => {
 // Map of changed files (abs path -> short status code) for tree decorations.
 ipcMain.handle('git:status', async (_e, root) => {
   if (!root || !fs.existsSync(root)) return { error: 'no root' };
-  const top = await git(root, ['rev-parse', '--show-toplevel']);
-  if (top == null) return { repo: false, files: {} };
-  const base = top.trim();
+  const base = await gitWorkBase(root);
+  if (base == null) return { repo: false, files: {} };
   // --untracked-files=all: перечислять КАЖДЫЙ новый файл по отдельности, а не схлопывать
   // содержимое неотслеживаемой папки в один элемент-каталог (во вкладке «Изменения» нужны файлы).
   // -z: пути как есть, без кавычек и C-экранирования. Одного core.quotePath=false мало (B5):
@@ -5975,9 +5982,9 @@ ipcMain.handle('git:fileDiff', async (_e, { root, file }) => {
 // откатится на unified-вид).
 ipcMain.handle('git:filePair', async (_e, { root, file } = {}) => {
   if (!root || !file) return { error: 'no root/file' };
-  const top = await git(root, ['rev-parse', '--show-toplevel']);
-  if (top == null) return { error: 'не git-репозиторий' };
-  const rel = path.relative(top.trim(), file).replace(/\\/g, '/');
+  const base = await gitWorkBase(root);   // не realpath: иначе за симлинком rel = '../…' и HEAD-версия «пропадала»
+  if (base == null) return { error: 'не git-репозиторий' };
+  const rel = path.relative(base, file).replace(/\\/g, '/');
   const oldText = await git(root, ['show', 'HEAD:' + rel]);      // null → файла не было в HEAD
   let newText = null;
   try {
@@ -6183,9 +6190,8 @@ ipcMain.handle('git:add', async (_e, { root, files }) =>
 // Список конфликтных файлов (unmerged). Коды porcelain с 'U' либо AA/DD — обе стороны изменили.
 ipcMain.handle('git:conflicts', async (_e, root) => {
   if (!root || !fs.existsSync(root)) return { error: 'no root' };
-  const top = await git(root, ['rev-parse', '--show-toplevel']);
-  if (top == null) return { repo: false, files: [] };
-  const base = top.trim();
+  const base = await gitWorkBase(root);   // координаты пути проекта, а не realpath (см. gitWorkBase)
+  if (base == null) return { repo: false, files: [] };
   const out = await git(root, ['status', '--porcelain', '-z', '--untracked-files=no']); // -z: имена без кавычек/экранирования (B5)
   const files = [];
   for (const e of parsePorcelainZ(out)) {
