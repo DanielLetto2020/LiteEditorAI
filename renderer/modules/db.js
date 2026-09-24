@@ -1691,7 +1691,9 @@ export function initDb(host) {
   async function tableEditor(schema, table) {
     const meta = await getMeta(schema, table); if (meta.error) { toast(meta.error, { kind: 'err' }); return; }
     const tq = qual(schema, table); const stmts = [];
-    const { m, close } = makeModal(`<h2>Изменить структуру: ${table}</h2><div class="db-ed"></div>`); m.classList.add('db-modal');
+    // имя таблицы приходит из базы — текстом, а не разметкой (makeModal вставляет innerHTML)
+    const { m, close } = makeModal('<h2></h2><div class="db-ed"></div>'); m.classList.add('db-modal');
+    m.querySelector('h2').textContent = `Изменить структуру: ${table}`;
     const host = m.querySelector('.db-ed');
     const inp = (ph) => { const i = el('input'); i.placeholder = ph; return i; };
     const out = el('pre', 'db-ddl-pre'); const refresh = () => { out.textContent = stmts.join('\n') || '— нет изменений —'; };
@@ -1731,7 +1733,9 @@ export function initDb(host) {
     const col = meta && meta.columns && meta.columns.find((c) => c.name === colName);
     const numeric = col && /\b(int|integer|numeric|real|double|decimal|float|money|serial|bigint|smallint)\b/i.test(col.type || '');
     const c = qIdent(colName); const tbl = qual(t.schema, t.table); const wh = t.where ? ` WHERE ${t.where}` : '';
-    const { m } = makeModal(`<h2>Профайл колонки: ${colName}</h2><div id="dbprof" class="db-prof"><div class="git-loading">Считаю…</div></div>`); m.classList.add('db-modal');
+    // имя колонки приходит из базы — текстом, а не разметкой (makeModal вставляет innerHTML)
+    const { m } = makeModal('<h2></h2><div id="dbprof" class="db-prof"><div class="git-loading">Считаю…</div></div>'); m.classList.add('db-modal');
+    m.querySelector('h2').textContent = `Профайл колонки: ${colName}`;
     const host = m.querySelector('#dbprof');
     const agg = await lite.db.query(dbActiveId, `SELECT COUNT(*) AS total, COUNT(${c}) AS nonnull, COUNT(DISTINCT ${c}) AS distinctc, MIN(${c}) AS mn, MAX(${c}) AS mx${numeric ? `, AVG(${c}) AS avgv` : ''} FROM ${tbl}${wh}`);
     if (agg.error) { host.innerHTML = ''; host.appendChild(el('div', 'docker-err', agg.error)); return; }
