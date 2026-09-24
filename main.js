@@ -154,9 +154,16 @@ function atomicWriteSync(file, data) {
   // атомарной. Тот же приём уже применён в mcp/lite-agenda-server.js, который пишет agenda/*.json
   // из отдельного процесса.
   const tmp = target + '.' + process.pid + WRITE_TMP_SUFFIX;
-  fs.writeFileSync(tmp, data, mode == null ? undefined : { mode });
-  if (mode != null) { try { fs.chmodSync(tmp, mode); } catch (_) {} }  // tmp мог остаться от прошлого краха — { mode } его не переоткрывает
-  fs.renameSync(tmp, target);
+  try {
+    fs.writeFileSync(tmp, data, mode == null ? undefined : { mode });
+    if (mode != null) { try { fs.chmodSync(tmp, mode); } catch (_) {} }  // tmp мог остаться от прошлого краха — { mode } его не переоткрывает
+    fs.renameSync(tmp, target);
+  } catch (e) {
+    // Недописанный сосед (ENOSPC, EPERM на rename) убираем: имя уникально по pid, и при каждом
+    // новом запуске такие файлы копились бы в сторе и папках проектов, добивая и без того полный диск.
+    try { fs.unlinkSync(tmp); } catch (_) {}
+    throw e;
+  }
 }
 // Returns true on success. store:set is fire-and-forget (renderer updates its in-memory
 // snapshot before the write), so a swallowed failure = silent data loss after restart — we
