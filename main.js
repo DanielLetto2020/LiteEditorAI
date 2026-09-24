@@ -4593,11 +4593,22 @@ ipcMain.handle('files:replace', async (_e, { root, query, opts, replacement, tar
   // не-regex режим: replacement литеральный — экранируем $, иначе "$&" в тексте замены сработал бы как группа
   const repl = o.regex ? String(replacement ?? '') : String(replacement ?? '').replace(/\$/g, '$$$$');
   const rootNorm = path.resolve(root);
-  let files = 0, lines = 0;
+  // Один файл под двумя путями (симлинк на папку внутри проекта — обход поиска находит его под обоими
+  // именами) правился бы дважды: второй проход перечитывал уже заменённое, и «foo» → «fooBar» давало
+  // «fooBarBar». Цели сводим по реальному пути, строки объединяем (повтор номера — одна замена).
+  const jobs = new Map();   // realpath → { full, file, lines:Set<number> }
   for (const t of targets) {
     if (!t || !t.file || !Array.isArray(t.lines) || !t.lines.length) continue;
     const full = path.resolve(rootNorm, t.file);
     if (full !== rootNorm && !full.startsWith(rootNorm + path.sep)) continue;
+    let real; try { real = await fs.promises.realpath(full); } catch { continue; }
+    let job = jobs.get(real);
+    if (!job) { job = { full, file: t.file, lines: new Set() }; jobs.set(real, job); }
+    for (const ln of t.lines) job.lines.add(ln | 0);
+  }
+  let files = 0, lines = 0;
+  for (const t of jobs.values()) {
+    const full = t.full;
     let st; try { st = await fs.promises.stat(full); } catch { continue; }
     if (!st.isFile() || st.size > FILES_SEARCH_FILE_MAX) continue;
     let text; try { text = await fs.promises.readFile(full, 'utf8'); } catch { continue; }
@@ -4605,7 +4616,7 @@ ipcMain.handle('files:replace', async (_e, { root, query, opts, replacement, tar
     const rows = text.split('\n');
     let touched = 0;
     for (const ln of t.lines) {
-      const i = (ln | 0) - 1;
+      const i = ln - 1;
       if (i < 0 || i >= rows.length) continue;
       re.lastIndex = 0;
       const next = rows[i].replace(re, repl);
