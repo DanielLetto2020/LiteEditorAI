@@ -1994,7 +1994,11 @@ export function initCtx(host) {
   async function cfsLoad(force) {
     const p = activeProject();
     if (cfs.scope !== 'home' && !p) { cfs.data = null; renderFiles(); return; }
-    if (!force && cfs.data && cfs.data.scope === cfs.scope) { renderFiles(); return; }
+    // Дерево области «Проект» принадлежит конкретному проекту. Проект сменился, пока открыта другая
+    // вкладка (onProjectChange перечитывает «Файлы», только если они на экране), — без сверки пути
+    // вкладка показывала .claude прежнего проекта, а файлы из него открывались уже в новом.
+    const askedPath = (p && p.path) || '';
+    if (!force && cfs.data && cfs.data.scope === cfs.scope && (cfs.scope === 'home' || cfs.data.projPath === askedPath)) { renderFiles(); return; }
     if (!lite.ctxfs || typeof lite.ctxfs.tree !== 'function') {
       cfs.error = 'перезапустите редактор — мост ещё старый'; cfs.data = null; renderFiles(); return;
     }
@@ -2007,7 +2011,7 @@ export function initCtx(host) {
     if (my !== cfsSeq) return;
     cfs.loading = false;
     if (!r || !r.ok) { cfs.error = (r && r.error) || 'не прочитать папку'; cfs.data = null; }
-    else { cfs.data = { ...r, scope: askedScope }; }
+    else { cfs.data = { ...r, scope: askedScope, projPath: askedPath }; }
     renderFiles();
   }
   async function cfsOpen(node) {
