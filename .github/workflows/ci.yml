@@ -20,12 +20,17 @@ jobs:
         with:
           node-version: 22
           cache: npm
+      # Deps go first: some tests load real libraries (test/storage-path.test.js drives
+      # lib/storage-s3.js, i.e. @aws-sdk/client-s3, against a local stub server).
+      # --ignore-scripts skips the node-pty rebuild, so this stays Electron-free.
+      - name: Install deps
+        run: npm ci --ignore-scripts
       - name: Unit tests (pure Node, no Electron)
         run: npm test
       - name: Syntax check (main/preload/errledger)
         run: node -c main.js && node -c preload.js && node -c errledger.js
-      - name: Install deps + bundle frontend
-        run: npm ci --ignore-scripts && npm run build
+      - name: Bundle frontend
+        run: npm run build
       - name: Lint
         run: npm run lint
       - name: Types (JSDoc via tsc, see tsconfig.check.json)

@@ -260,7 +260,6 @@ export function initTextProc(host) {
   let aiMode = 'chat';
   let chatRole = 'Без роли';
   let chatLog = [];
-  let aiSeq = 0;
   // Скрепка: прикладывать ли документ к сообщению. Раньше документ уходил агенту ВСЕГДА, и
   // спросить «а как правильно пишется?» было нельзя — на любую фразу приходил переписанный текст.
   let attachCtx = settings.tpAttach !== false;
@@ -325,14 +324,6 @@ export function initTextProc(host) {
       container._thumbObs.observe(container);
     }
   }
-  function loadDocument(html) {
-    mode = 'wysiwyg';
-    $('#doc-editor-wysiwyg').innerHTML = DOMPurify.sanitize(html, SANITIZE);
-    $('#doc-editor-md').textContent = '';
-    dirty = false;
-    updateModeUI();
-  }
-
   // ---- UI Setup ----
   let uiWired = false; // повторный setOpen не должен дублировать addEventListener (wheel-зум, input и т.д.)
   function setupUI() {
@@ -726,17 +717,7 @@ export function initTextProc(host) {
     const res = await lite.tp.openFile();
     if (!res || res.canceled) return;
     if (!res.ok) { toast(res.error || 'Не удалось открыть файл', { kind: 'err' }); return; }
-    
-    // Check if openProjectFile exists (we will inject it shortly), else fallback
-    if (typeof openProjectFile === 'function') {
-      openProjectFile(res.file);
-    } else {
-      currentFile = res.file; currentName = res.name;
-      const isHtml = /\.html?$/i.test(res.name);
-      loadDocument(isHtml ? res.content : mdToHtml(res.content));
-      updateStatus('Открыт');
-      toast('Файл открыт: ' + res.name);
-    }
+    openProjectFile(res.file);
   }
   async function saveFile() {
     if (!currentFile) return saveFileAs();
@@ -952,19 +933,34 @@ export function initTextProc(host) {
     return parts.join('\n\n');
   }
   // Перечитать документ с диска: после агент-режима файл на диске новее того, что в окне.
-  async function reloadFromDisk() {
-    if (!currentFile) return;
-    const r = await lite.fs.readFile(currentFile);
+  // file — тот, что правил агент, а не «текущий»: пока агент работал, могли уйти на другую вкладку.
+  // Раньше перечитывался currentFile — несохранённое в чужой вкладке затиралось её версией с диска,
+  // а вкладке агента оставался старый снимок, и первая же правка в ней автосейвом откатывала его работу.
+  async function reloadFromDisk(file) {
+    if (!file) return;
+    const r = await lite.fs.readFile(file);
     if (!r || r.error) { toast(tf('Агент отработал, но файл не перечитать: {0}', (r && r.error) || '—'), { kind: 'err' }); return; }
-    const tab = openTabs.find((t) => t.id === activeTabId);
-    const html = mdToHtml(r.content);
-    $('#doc-editor-wysiwyg').innerHTML = DOMPurify.sanitize(html, SANITIZE);
-    $('#doc-editor-md').textContent = r.content;
-    if (tab) { tab.html = html; tab.md = r.content; tab.dirty = false; }
-    dirty = false;
+    const tab = openTabs.find((t) => t.absPath === file);
+    if (!tab) return;                         // вкладку закрыли — держать в окне нечего, на диске уже новое
+    // .html — как при открытии (openProjectFileInner): НЕ через marked. Иначе строка с отступом после
+    // пустой строки (обычное дело в свёрстанном агентом HTML) становилась блоком кода с экранированными
+    // тегами, и первый же автосейв записывал этот мусор в файл.
+    let html, md = r.content;
+    if (/\.html?$/i.test(file)) {
+      html = DOMPurify.sanitize(r.content, SANITIZE);
+      const root = document.createElement('div');
+      root.innerHTML = html;
+      md = htmlToMd(root);
+    } else html = mdToHtml(r.content);
+    tab.html = html; tab.md = md; tab.dirty = false;
+    if (tab.id === activeTabId) {
+      $('#doc-editor-wysiwyg').innerHTML = DOMPurify.sanitize(html, SANITIZE);
+      $('#doc-editor-md').textContent = md;
+      dirty = false;
+      updateStatus(tf('Обновлён агентом · {0}', new Date().toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })));
+      if (activeInspectorTab === 'outline') renderOutline();
+    }
     renderTabsUI();
-    updateStatus(tf('Обновлён агентом · {0}', new Date().toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })));
-    if (activeInspectorTab === 'outline') renderOutline();
   }
   // Промпт агент-режима: файл он открывает сам, поэтому в тексте — путь и задача, без «верни текст».
   function composeAgentPrompt(instruction) {
@@ -975,6 +971,10 @@ export function initTextProc(host) {
     ].join('\n\n');
   }
   async function sendChat() {
+    // Один запрос за раз: кнопка на это время — «Стоп», но Enter шёл сюда мимо неё и запускал
+    // второго агента параллельно. busyReq перезаписывался, завершение первого снимало «Стоп», и
+    // второго (в агент-режиме он правит файл) уже нечем было остановить.
+    if (busyReq) return;
     const ta = $('#doc-ai-chat-input');
     const instruction = ta.value.trim();
     if (!instruction) return;
@@ -984,10 +984,14 @@ export function initTextProc(host) {
       // Сохраняем ПЕРЕД запуском: иначе агент правит одну версию файла, а окно держит другую.
       if (dirty && !(await saveFile())) { toast('Файл не сохранён — агент не запущен', { kind: 'err' }); return; }
     }
+    const agentFile = agentMode ? currentFile : null; // по нему и перечитываем по завершении
     const sel = (!agentMode && attachCtx) ? selForChat() : null;
     ta.value = '';
     chatLog.push({ role: 'user', text: instruction });
-    const am = { role: 'agent', text: '', busy: true, reqId: 'tpq' + (++aiSeq), agentMode };
+    // reqId уникален и после перезагрузки окна: счётчик с нуля совпадал с id агента, которого main
+    // ещё ведёт, — tpReqs перезаписывался, старый процесс уже нельзя было остановить, а его вывод и
+    // 'close' попадали в новый ответ.
+    const am = { role: 'agent', text: '', busy: true, reqId: 'tpq' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8), agentMode };
     chatLog.push(am);
     while (chatLog.length > 200) chatLog.shift(); // кап истории: чат не растёт бесконечно
     renderChatLog();
@@ -997,7 +1001,7 @@ export function initTextProc(host) {
       if (r !== am.reqId) return;
       am.busy = false; am.text = text || '';
       cleanup(); renderChatLog();
-      if (agentMode) await reloadFromDisk();
+      if (agentMode) await reloadFromDisk(agentFile);
     });
     const offErr = lite.tp.onError(({ reqId: r, error, authRequired, loginCmd }) => {
       if (r !== am.reqId) return;
@@ -1006,7 +1010,7 @@ export function initTextProc(host) {
       if (authRequired && loginCmd) am.loginCmd = loginCmd;
       cleanup(); renderChatLog();
       // Агент мог успеть что-то записать до остановки — показываем актуальный файл, а не старый.
-      if (agentMode) reloadFromDisk();
+      if (agentMode) reloadFromDisk(agentFile);
     });
     const cleanup = () => { busyReq = null; updateSendButton(); try { offData(); offDone(); offErr(); } catch (_) {} };
 
@@ -1188,7 +1192,10 @@ export function initTextProc(host) {
           dd.appendChild(host.menuRow('trash', 'Удалить', async () => {
             host.closeMenus();
             try {
-              await lite.fs.trash(`${activeProj.path}/Roles/${r}.md`);
+              // fs:trash не бросает, а отвечает {error} (нет корзины на этой ФС, нет прав) — без
+              // проверки роль молча оставалась на месте
+              const t = await lite.fs.trash(`${activeProj.path}/Roles/${r}.md`);
+              if (t && t.error) host.toast('Ошибка: ' + t.error, { kind: 'err' });
               await loadRoles();
             } catch (err) { console.error(err); host.toast('Ошибка: ' + err.message, { kind: 'err' }); }
           }, 'danger'));
@@ -1213,18 +1220,20 @@ export function initTextProc(host) {
         const newName = val.trim();
         if (!newName) return;
         
+        // Роль — файл Roles/<имя>.md. Сначала fs:create: он не перезаписывает существующий файл и режет
+        // «..»/разделители. Раньше сразу шёл writeFile — повтор имени («Юрист», второй раз «Моя роль»)
+        // молча заменял инструкцию готовой роли заглушкой, а «../README» писал за пределы Roles/.
+        if (/[\\/]/.test(newName)) return { error: 'недопустимое имя' };
         try {
+          const c = await lite.fs.create(`${activeProj.path}/Roles`, newName + '.md', false);
+          if (!c || c.error) return c || { error: 'Не удалось создать' }; // покажет диалог («уже существует»)
           const res = await lite.fs.writeFile(`${activeProj.path}/Roles/${newName}.md`, 'Действуй в роли...');
           if (res && res.error) {
             toast('Ошибка записи: ' + res.error, { kind: 'err' });
             return;
           }
           await loadRoles();
-          if (typeof openProjectFile === 'function') {
-            openProjectFile(`${activeProj.path}/Roles/${newName}.md`);
-          } else {
-            toast('Роль создана, откройте её слева', { kind: 'info' });
-          }
+          openProjectFile(`${activeProj.path}/Roles/${newName}.md`);
         } catch(e) { 
           console.error(e);
           toast('Системная ошибка: ' + e.message, { kind: 'err' });
@@ -1320,11 +1329,12 @@ export function initTextProc(host) {
       if (!name) return;
       if (!name.includes('.')) name += '.md';
       try {
-        await lite.fs.create(activeProj.path, name, false);
+        // fs:create не бросает, а отвечает {error} («..» в имени, файл уже есть, нет прав). Ошибку
+        // показывает сам диалог и остаётся открытым — раньше открывалась вкладка несуществующего файла.
+        const r = await lite.fs.create(activeProj.path, name, false);
+        if (!r || r.error) return r || { error: 'Не удалось создать' };
         await renderTree(activeProj);
-        const sep = activeProj.path.includes('\\') ? '\\' : '/';
-        const newPath = activeProj.path.endsWith(sep) ? (activeProj.path + name) : (activeProj.path + sep + name);
-        openProjectFile(newPath);
+        openProjectFile(r.path); // путь от main: для «папка/файл.md» разделители те же, что в дереве
       } catch (err) { host.toast('Ошибка: ' + err.message, {kind:'err'}); }
     });
   };
@@ -1336,7 +1346,8 @@ export function initTextProc(host) {
       let name = val.trim();
       if (!name) return;
       try {
-        await lite.fs.create(activeProj.path, name, true);
+        const r = await lite.fs.create(activeProj.path, name, true);
+        if (!r || r.error) return r || { error: 'Не удалось создать' }; // покажет диалог
         await renderTree(activeProj);
       } catch (err) { host.toast('Ошибка: ' + err.message, {kind:'err'}); }
     });
@@ -1394,8 +1405,11 @@ export function initTextProc(host) {
     }
 
     const buildTree = async (dirPath, container, level) => {
-        const entries = await lite.fs.readDir(dirPath);
-        
+        // fs:readDir при ошибке (нет прав, папку уже удалили) отдаёт {error}, а не массив: .filter
+        // падал, и клик по такой папке давал необработанный промис с тостом «entries.filter…».
+        const res = await lite.fs.readDir(dirPath);
+        const entries = Array.isArray(res) ? res : [];
+
         let hasFiles = false;
         const dirs = entries.filter(e => e.dir).sort((a,b) => {
           if (treeSortMode === 'za') return b.name.localeCompare(a.name);
@@ -1614,7 +1628,7 @@ export function initTextProc(host) {
     mode = tab.mode;
     dirty = tab.dirty;
     
-    // Load content without resetting mode (sanitize при каждой инъекции — как в setMode/loadDocument)
+    // Load content without resetting mode (sanitize при каждой инъекции — как в setMode)
     $('#doc-editor-wysiwyg').innerHTML = DOMPurify.sanitize(tab.html, SANITIZE);
     $('#doc-editor-md').textContent = tab.md;
     updateModeUI();

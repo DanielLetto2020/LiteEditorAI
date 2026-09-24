@@ -42,4 +42,47 @@ ok(join('') !== '/dest', 'пустой ключ не даёт путь само�
 // --- NUL-байт вырезается ---
 ok(!safeRelSegments('a\0b/c').some((s) => s.includes('\0')), 'NUL-байт удалён');
 
-console.log(`✓ storage-path: ${passed} проверок пройдено`);
+// --- Скачивание объекта не трогает уже лежащий локальный файл, пока объект не докачан целиком ---
+// Раньше любая ошибка (404/403/обрыв/отмена) делала unlink(destPath) — даже до записи первого байта,
+// и файл человека с тем же именем пропадал. Заглушка S3 API на 127.0.0.1 (без сети и реального S3).
+const http = require('http');
+const fs = require('fs');
+const os = require('os');
+const s3 = require('../lib/storage-s3');
+
+(async () => {
+  const srv = http.createServer((req, res) => {
+    if (req.url.includes('missing')) { res.writeHead(404, { 'content-type': 'application/xml' }); res.end('<?xml version="1.0"?><Error><Code>NoSuchKey</Code><Message>no</Message></Error>'); return; }
+    if (req.url.includes('slow')) { res.writeHead(200, { 'content-type': 'text/plain', 'content-length': '1000000' }); res.write(Buffer.alloc(65536, 1)); return; }
+    res.writeHead(200, { 'content-type': 'text/plain', 'content-length': '5' }); res.end('hello');
+  });
+  await new Promise((r) => { srv.listen(0, '127.0.0.1', () => r(null)); });
+  const client = s3.makeClient({ endpoint: 'http://127.0.0.1:' + /** @type {import('net').AddressInfo} */ (srv.address()).port, forcePathStyle: true, accessKeyId: 'a', secret: 'b', region: 'us-east-1' });
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'st-dl-'));
+  const dest = path.join(dir, 'report.txt');
+  const settle = (p) => p.then(() => 'ok', (e) => e.message);
+  try {
+    fs.writeFileSync(dest, 'PRECIOUS');
+    ok(await settle(s3.download(client, { bucket: 'b', key: 'missing', destPath: dest, onProgress: null }).done) !== 'ok', '404 — ошибка');
+    ok(fs.readFileSync(dest, 'utf8') === 'PRECIOUS', '404 не удалил существующий файл');
+
+    const early = s3.download(client, { bucket: 'b', key: 'ok', destPath: dest, onProgress: null });
+    early.abort();
+    ok(await settle(early.done) !== 'ok', 'ранняя отмена — ошибка');
+    ok(fs.readFileSync(dest, 'utf8') === 'PRECIOUS', 'ранняя отмена не удалила существующий файл');
+
+    const mid = s3.download(client, { bucket: 'b', key: 'slow', destPath: dest, onProgress: () => mid.abort() });
+    ok(await settle(mid.done) !== 'ok', 'отмена посреди потока — ошибка');
+    ok(fs.readFileSync(dest, 'utf8') === 'PRECIOUS', 'отмена посреди потока не обрезала существующий файл');
+
+    ok(await settle(s3.download(client, { bucket: 'b', key: 'ok', destPath: dest, onProgress: null }).done) === 'ok', 'успешное скачивание');
+    ok(fs.readFileSync(dest, 'utf8') === 'hello', 'успешное скачивание заменило файл');
+    assert.deepStrictEqual(fs.readdirSync(dir), ['report.txt']); passed++; // временных файлов не осталось
+  } finally {
+    client.destroy();
+    srv.close();
+    if (srv.closeAllConnections) srv.closeAllConnections();
+    try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_) {}
+  }
+  console.log(`✓ storage-path: ${passed} проверок пройдено`);
+})().catch((e) => { console.error(e); process.exit(1); });

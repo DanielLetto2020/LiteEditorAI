@@ -14,7 +14,7 @@ import { syntaxHighlighting, defaultHighlightStyle, indentOnInput, bracketMatchi
 import { autocompletion, completionKeymap, acceptCompletion } from '@codemirror/autocomplete';
 import { oneDark } from '@codemirror/theme-one-dark';
 import { liteEditorTheme } from '../codeedit.js';
-import { isReadOnlySql, stripSqlLiterals, splitSqlStatements, findSqlParams, substituteSqlParams } from '../../lib/sqlro.js';
+import { isReadOnlySql, sqlStatementCount, stripSqlLiterals, sqlSegments, splitSqlStatements, findSqlParams, substituteSqlParams } from '../../lib/sqlro.js';
 import { sql, PostgreSQL, MySQL, SQLite } from '@codemirror/lang-sql';
 
 const $ = (sel) => document.querySelector(sel);
@@ -121,14 +121,19 @@ export function initDb(host) {
     if (typeof v === 'number') return String(v);
     if (typeof v === 'boolean') return v ? 'TRUE' : 'FALSE';
     if (isBinary(v)) return "X'" + hexOf(v).toUpperCase() + "'";   // BLOB MySQL/SQLite (bytea Postgres приходит текстом '\x…')
-    return "'" + String(v).replace(/'/g, "''") + "'";
+    // MySQL экранирует обратным слэшем: значение ячейки «\'; DROP TABLE t; -- » давало '\''; DROP …,
+    // где \' — кавычка, а следующая ' закрывает строку, — и «Фильтр»/переход по FK выполняли DROP
+    // (соединение с multipleStatements). У Postgres/SQLite слэш — обычный символ, его не трогаем.
+    const s = dbActiveConn && dbActiveConn.type === 'mysql' ? String(v).replace(/\\/g, '\\\\') : String(v);
+    return "'" + s.replace(/'/g, "''") + "'";
   }
   // Значение :параметра, введённое руками: число без кавычек (LIMIT :n в MySQL кавычек не терпит), остальное — строкой.
   function litParam(v) { if (v == null) return 'NULL'; return /^-?\d+(\.\d+)?$/.test(String(v)) ? String(v) : lit(v); }
   // Изменяющий ли запрос — тем же разбором, что и бэкенд (lib/sqlro.js). Своя копия фильтра здесь
   // снимала комментарии раньше строк: в «SELECT 'a--'; DROP TABLE t» она не видела DROP, и
   // подтверждение PRODUCTION не спрашивалось; а REPLACE() (строковая функция) считался записью.
-  function isDestructiveSql(s) { return !isReadOnlySql(s); }
+  // Разбор — по лексике СУБД активного подключения (у каждой свои строки и комментарии).
+  function isDestructiveSql(s) { return !isReadOnlySql(s, dbActiveConn && dbActiveConn.type); }
   // Строгий допуск для AI-DB: не изменяющий И начинается с читающего оператора. Начало смотрим после
   // снятия комментариев: запрос агента к другой базе начинается строкой «-- @db имя» и раньше
   // отбраковывался как «не только чтение».
@@ -140,6 +145,9 @@ export function initDb(host) {
   async function renderDbPanel() {
     const seq = ++dbRenderSeq;
     const body = $('#db-body');
+    // графики AI-DB (Chart.js) живут в глобальном реестре, пока их не destroy(): снос DOM панели
+    // (переключение подключения, «Обновить схему», переподключение) оставлял их там с данными навсегда
+    destroyChartsIn(body);
     if (!dbActiveId || connListMode) {
       body.innerHTML = '<div class="git-loading">Загрузка подключений…</div>';
       try { const r = await lite.db.list(); dbConnsList = r.connections || []; dbSecure = r.secure !== false; }
@@ -229,7 +237,7 @@ export function initDb(host) {
       openConns = openConns.filter((x) => x !== c.id); connStates.delete(c.id); // вкладку тоже закрываем
       // за подключением уходит и его чат с базой: файл транскрипта, кэши схемы и таймер записи
       const t = aiSaveTimers.get(c.id); if (t) { clearTimeout(t); aiSaveTimers.delete(c.id); }
-      aiChats.delete(c.id); aiLoaded.delete(c.id); aiExtrasByConn.delete(c.id);
+      aiChats.delete(c.id); aiLoaded.delete(c.id); aiExtrasByConn.delete(c.id); aiExtraSchemaCache.delete(c.id);
       const rm = await lite.dbai.sessionsDelete(c.id);
       if (rm && rm.ok === false) toast('История чатов не удалена: ' + (rm.error || 'ошибка'), { kind: 'err' });
       if (dbUi.sessions) delete dbUi.sessions[c.id];
@@ -404,7 +412,9 @@ export function initDb(host) {
   // переоткрытия — изменяющий запрос на только что помеченной боевой базе уходил без подтверждения.
   // Бэкенд после сохранения переподключается (параметры могли смениться) — схему перечитываем тоже.
   function applySavedConn(conn) {
-    if (!conn || !openConns.includes(conn.id)) return;
+    if (!conn) return;
+    aiExtraSchemaCache.delete(conn.id);   // её схема могла быть «ещё одной базой» в чужом чате — перечитать
+    if (!openConns.includes(conn.id)) return;
     if (conn.id === dbActiveId) {
       dbActiveConn = conn;
       dbSchema = null; dbColsCache = null; dbObjectsCache = null; dbRelationsCache = null; metaCache.clear();
@@ -525,6 +535,7 @@ export function initDb(host) {
 
   // ============================================================ workspace (IDE layout)
   async function renderDbWorkspace(body) {
+    destroyChartsIn(body);   // см. renderDbPanel
     body.innerHTML = '';
     const ide = el('div', 'db-ide');
     // --- sidebar ---
@@ -587,8 +598,10 @@ export function initDb(host) {
       if (seq !== dbRenderSeq) return;
       if (r.error) { tree.innerHTML = ''; tree.appendChild(el('div', 'docker-err', r.error)); return; }
       dbSchema = r;
-      lite.db.columns(dbActiveId).then((cr) => { if (cr && !cr.error) { dbColsCache = cr.columns || {}; refreshOpenSqlSchemas(); } });
-      lite.db.objects(dbActiveId).then((o) => { if (o && !o.error) { dbObjectsCache = o; const tr = $('#db-tree-root') || tree; renderTree(tr, (dbUi.treeSearch || '').trim().toLowerCase()); } });
+      // ответ, пришедший после переключения на другую базу, — не её (иначе автокомплит и AI-DB видели чужую схему)
+      const wsConn = dbActiveId;
+      lite.db.columns(wsConn).then((cr) => { if (dbActiveId === wsConn && cr && !cr.error) { dbColsCache = cr.columns || {}; refreshOpenSqlSchemas(); } });
+      lite.db.objects(wsConn).then((o) => { if (dbActiveId === wsConn && o && !o.error) { dbObjectsCache = o; const tr = $('#db-tree-root') || tree; renderTree(tr, (dbUi.treeSearch || '').trim().toLowerCase()); } });
     }
     tree.id = 'db-tree-root';
     renderTree(tree, (search.value || '').trim().toLowerCase());
@@ -706,8 +719,11 @@ export function initDb(host) {
   async function getMeta(schema, table) {
     const key = (schema ? schema + '.' : '') + table;
     if (metaCache.has(key)) return metaCache.get(key);
+    // Кэш — того подключения, для которого спрашивали: пока шёл ответ, могли переключиться на другую
+    // базу, и её кэш получал чужие колонки/PK — правка в гриде одноимённой таблицы ушла бы с WHERE по чужому ключу.
+    const cache = metaCache;
     const m = await lite.db.tableMeta(dbActiveId, schema, table);
-    if (!m.error) metaCache.set(key, m);
+    if (!m.error) cache.set(key, m);
     return m;
   }
 
@@ -753,7 +769,14 @@ export function initDb(host) {
   function recordNav(key) { if (navLock) return; navStack = navStack.slice(0, navPtr + 1); if (navStack[navPtr] !== key) { navStack.push(key); navPtr = navStack.length - 1; } }
   function navGo(delta) { const p = navPtr + delta; if (p < 0 || p >= navStack.length) return; navPtr = p; navLock = true; if (findTab(navStack[p])) activate(navStack[p]); navLock = false; }
   let dbRelationsCache = null;
-  async function getRelations() { if (!dbRelationsCache) { const r = await lite.db.relations(dbActiveId); dbRelationsCache = (r && r.relations) || []; } return dbRelationsCache; }
+  async function getRelations() {
+    if (dbRelationsCache) return dbRelationsCache;
+    const id = dbActiveId;
+    const r = await lite.db.relations(id);
+    const rel = (r && r.relations) || [];
+    if (dbActiveId === id) dbRelationsCache = rel;   // переключились на другую базу — её кэш не трогаем
+    return rel;
+  }
   function openSqlTab(initialSql) {
     const key = 'sql:' + (++sqlSeq); tabs.push({ key, kind: 'sql', title: 'Запрос ' + sqlSeq, sql: initialSql || '' }); activate(key);
   }
@@ -776,7 +799,11 @@ export function initDb(host) {
     }
   }
   function renderTabBody(body) {
-    if (!body) return; body.innerHTML = '';
+    if (!body) return;
+    // редактор ушедшей SQL-вкладки иначе оставался живым вне DOM (слушатели документа/окна у EditorView);
+    // активная SQL-вкладка всё равно пересоздаёт свой в renderSqlTab, текст хранится в t.sql
+    destroyAllEditors();
+    body.innerHTML = '';
     saveSession();
     const t = findTab(activeKey);
     if (!t) { body.appendChild(el('div', 'db-tab-empty-body', 'Нет открытых вкладок')); return; }
@@ -1520,6 +1547,9 @@ export function initDb(host) {
   // ---- graphical EXPLAIN
   async function explainQuery(t) {
     if (!t.editor) return; let text = currentSqlText(t); if (!text) return; text = text.replace(/;\s*$/, '');
+    // Выделено несколько операторов: EXPLAIN встал бы только перед первым, а остальные (UPDATE/DELETE…)
+    // выполнились бы по-настоящему — без подтверждения PRODUCTION, от кнопки, которая «ничего не выполняет».
+    if (sqlStatementCount(text, dbActiveConn.type) > 1) { toast('EXPLAIN строится для одного запроса — выделите один оператор', { kind: 'err' }); return; }
     const res = t.resultEl; if (!res) return; res.innerHTML = '<div class="git-loading">EXPLAIN…</div>';
     t.lastResult = null; const type = dbActiveConn.type;
     const q = type === 'postgres' ? `EXPLAIN (FORMAT JSON) ${text}` : type === 'mysql' ? `EXPLAIN FORMAT=JSON ${text}` : `EXPLAIN QUERY PLAN ${text}`;
@@ -1686,7 +1716,9 @@ export function initDb(host) {
   async function tableEditor(schema, table) {
     const meta = await getMeta(schema, table); if (meta.error) { toast(meta.error, { kind: 'err' }); return; }
     const tq = qual(schema, table); const stmts = [];
-    const { m, close } = makeModal(`<h2>Изменить структуру: ${table}</h2><div class="db-ed"></div>`); m.classList.add('db-modal');
+    // имя таблицы приходит из базы — текстом, а не разметкой (makeModal вставляет innerHTML)
+    const { m, close } = makeModal('<h2></h2><div class="db-ed"></div>'); m.classList.add('db-modal');
+    m.querySelector('h2').textContent = `Изменить структуру: ${table}`;
     const host = m.querySelector('.db-ed');
     const inp = (ph) => { const i = el('input'); i.placeholder = ph; return i; };
     const out = el('pre', 'db-ddl-pre'); const refresh = () => { out.textContent = stmts.join('\n') || '— нет изменений —'; };
@@ -1726,7 +1758,9 @@ export function initDb(host) {
     const col = meta && meta.columns && meta.columns.find((c) => c.name === colName);
     const numeric = col && /\b(int|integer|numeric|real|double|decimal|float|money|serial|bigint|smallint)\b/i.test(col.type || '');
     const c = qIdent(colName); const tbl = qual(t.schema, t.table); const wh = t.where ? ` WHERE ${t.where}` : '';
-    const { m } = makeModal(`<h2>Профайл колонки: ${colName}</h2><div id="dbprof" class="db-prof"><div class="git-loading">Считаю…</div></div>`); m.classList.add('db-modal');
+    // имя колонки приходит из базы — текстом, а не разметкой (makeModal вставляет innerHTML)
+    const { m } = makeModal('<h2></h2><div id="dbprof" class="db-prof"><div class="git-loading">Считаю…</div></div>'); m.classList.add('db-modal');
+    m.querySelector('h2').textContent = `Профайл колонки: ${colName}`;
     const host = m.querySelector('#dbprof');
     const agg = await lite.db.query(dbActiveId, `SELECT COUNT(*) AS total, COUNT(${c}) AS nonnull, COUNT(DISTINCT ${c}) AS distinctc, MIN(${c}) AS mn, MAX(${c}) AS mx${numeric ? `, AVG(${c}) AS avgv` : ''} FROM ${tbl}${wh}`);
     if (agg.error) { host.innerHTML = ''; host.appendChild(el('div', 'docker-err', agg.error)); return; }
@@ -1939,12 +1973,23 @@ export function initDb(host) {
 
   // ============================================================ SQL formatter (lightweight, no deps)
   function formatSql(s) {
-    let out = s.replace(/\s+/g, ' ').trim();
+    // Трогаем только код. Раньше форматирование шло по всему тексту: в строке 'paid  from  shop'
+    // схлопывались пробелы и перед from вставлялся перенос (другое значение литерала), "Order From"
+    // превращался в другой идентификатор, а конец строчного комментария съедался, и следующий код
+    // («, b») уходил в комментарий. Строки, идентификаторы в кавычках и комментарии прячем за метки.
+    const src = String(s), keep = [];
+    let out = sqlSegments(src).map((seg) => {
+      const part = src.slice(seg.from, seg.to);
+      if (seg.code) return part;
+      keep.push(part.startsWith('--') ? part + '\n' : part);   // строчный комментарий кончается переводом строки
+      return '\u0000' + (keep.length - 1) + '\u0000';
+    }).join('');
+    out = out.replace(/\s+/g, ' ').trim();
     const breakBefore = ['from', 'where', 'order by', 'group by', 'having', 'limit', 'offset', 'left join', 'right join', 'inner join', 'join', 'union all', 'union', 'set', 'values'];
     for (const k of breakBefore) out = out.replace(new RegExp('\\s+' + k.replace(/ /g, '\\s+') + '\\b', 'gi'), '\n' + k.toUpperCase());
     out = out.replace(/\s+(and|or)\b/gi, '\n  $1');
     out = out.replace(/\bselect\b/gi, 'SELECT');
-    return out;
+    return out.replace(/\u0000(\d+)\u0000/g, (_m, i) => keep[+i]).replace(/\s+$/, '');
   }
 
   // ============================================================ ER diagram (SVG, draggable)
@@ -2178,7 +2223,9 @@ export function initDb(host) {
     return !['localhost', '127.0.0.1', '::1', '0.0.0.0'].includes(hostname);
   }
   // данные (строки результата и примеры значений) наружу не отдаём
-  function aiDataWithheld() { return !!(dbActiveConn && dbActiveConn.noCloud) && agentIsCloud(aiData().agent); }
+  // conn — база, ЧЬИ данные уходят (запрос «-- @db» идёт на соседнюю, и решает её флаг, а не активной)
+  function aiDataWithheld(conn = dbActiveConn) { return !!(conn && conn.noCloud) && agentIsCloud(aiData().agent); }
+  const aiConnById = (id) => (id && id !== dbActiveId ? dbConnsList.find((c) => c.id === id) : null) || dbActiveConn;
   function serializeAiMsg(m) {
     if (m.role === 'result') return { role: 'result', sql: m.sql, chart: m.chart || null, note: m.note || '', connId: m.connId || null, connName: m.connName || '', columns: m.columns || null, colTypes: m.colTypes || null, rows: m.rows ? m.rows.slice(0, 200) : null, rowsTrunc: !!(m.rows && m.rows.length > 200), error: m.error || null, summary: m.summary || '' };
     return { role: m.role, text: m.text || '' };
@@ -2341,12 +2388,12 @@ export function initDb(host) {
     if (msgs.length === 1) msgs.push({ role: 'user', content: '' });
     return msgs;
   }
-  function aiResultSummary(sql, r) {
+  function aiResultSummary(sql, r, conn) {
     if (!r || r.error) return `Ошибка выполнения: ${(r && r.error) || 'неизвестно'}\nSQL: ${sql}`;
     const cols = r.columns || [], rows = r.rows || [];
     let s = `Запрос вернул строк: ${rows.length}. Колонки: ${cols.join(', ')}.`;
     // подключение помечено «не отправлять данные наружу», а агент внешний → отдаём только структуру
-    if (aiDataWithheld()) return s + '\nСами строки не передаются: подключение помечено «не отправлять данные во внешние модели». Делай выводы по структуре и агрегатам (COUNT/SUM/AVG), запрашивая их отдельными запросами.';
+    if (aiDataWithheld(conn)) return s + '\nСами строки не передаются: подключение помечено «не отправлять данные во внешние модели». Делай выводы по структуре и агрегатам (COUNT/SUM/AVG), запрашивая их отдельными запросами.';
     if (rows.length) {
       const sample = rows.slice(0, 30).map((row) => cols.map((_, i) => { const v = fmtVal(row[i]); return v == null ? 'NULL' : v; }).join(' | ')).join('\n');
       s += `\nДанные (до 30 строк):\n${cols.join(' | ')}\n${sample}`;
@@ -2409,11 +2456,14 @@ export function initDb(host) {
   // сама, без единого клика, и унесла данные. Ссылки остаются: наружу они уходят только по клику.
   function sanitizeMdHtml(html) {
     const tpl = document.createElement('template'); tpl.innerHTML = html;
-    tpl.content.querySelectorAll('script,style,iframe,object,embed,link,meta,form,base').forEach((n) => n.remove());
+    // svg/math — тоже: <svg><image href="https://…"> грузится сам (href там разрешён как у ссылки),
+    // а SMIL (<set attributeName="href" to=…>) меняет адрес в обход проверки атрибутов. poster/background
+    // (<video poster>, <table background>) — такие же самозагружающиеся картинки мимо src.
+    tpl.content.querySelectorAll('script,style,iframe,object,embed,link,meta,form,base,svg,math').forEach((n) => n.remove());
     tpl.content.querySelectorAll('*').forEach((n) => {
       [...n.attributes].forEach((a) => {
         const name = a.name.toLowerCase();
-        if (name.startsWith('on') || name === 'srcset' || name === 'style') { n.removeAttribute(a.name); return; }
+        if (name.startsWith('on') || name === 'srcset' || name === 'style' || name === 'poster' || name === 'background' || name === 'ping') { n.removeAttribute(a.name); return; }
         if (name === 'href' || name === 'src') {
           let proto; try { proto = new URL(a.value, location.href).protocol; } catch (_) { n.removeAttribute(a.name); return; }
           const ok = (name === 'src') ? ['data:'] : ['http:', 'https:', 'mailto:'];
@@ -3057,10 +3107,11 @@ blockquote{border-left:3px solid #c9ced4;margin:0;padding:.2rem 0 .2rem .8rem;co
   }
   function aiExtras() { return aiExtrasByConn.get(dbActiveId) || { samples: {}, comments: {} }; }
   async function aiLoadExtras() {
-    if (aiExtrasByConn.has(dbActiveId)) return;
+    const id = dbActiveId;   // запросы ушли к этой базе — под её id и кладём, даже если уже переключились
+    if (aiExtrasByConn.has(id)) return;
     const type = dbActiveConn ? dbActiveConn.type : null;
     const [samples, comments] = await Promise.all([aiLoadSamples(type), aiLoadComments(type)]);
-    aiExtrasByConn.set(dbActiveId, { samples, comments });
+    aiExtrasByConn.set(id, { samples, comments });
   }
   // подтянуть метаданные (типы/PK/FK) для таблиц, которые попадут в промпт подробно;
   // getMeta не кидает, а возвращает {error} — поэтому Promise.all тут безопасен
@@ -3142,14 +3193,15 @@ blockquote{border-left:3px solid #c9ced4;margin:0;padding:.2rem 0 .2rem .8rem;co
     const t = sqlStripped(sql).replace(/;\s*$/, '');
     return /^\s*\(*\s*(select|with)\b/i.test(t) && !t.includes(';');
   }
-  function aiProdConfirm(sql) {
+  // conn — подключение, на котором запрос ВЫПОЛНИТСЯ («-- @db» может увести его с активного)
+  function aiProdConfirm(sql, conn = dbActiveConn) {
     return new Promise((resolve) => {
-      if (!(dbActiveConn && dbActiveConn.isProd)) { resolve(sql); return; }
+      if (!(conn && conn.isProd)) { resolve(sql); return; }
       let done = false;
       const finish = (v) => { if (!done) { done = true; resolve(v); } };
       const { m, close } = makeModal('<h2>PRODUCTION</h2>', () => finish(null));
       m.classList.add('db-modal');
-      m.appendChild(el('div', 'db-prov-sub', `Подключение «${dbActiveConn.name}» помечено как PRODUCTION. Запрос только читает, но нагрузку на боевую базу всё равно создаёт.`));
+      m.appendChild(el('div', 'db-prov-sub', `Подключение «${conn.name}» помечено как PRODUCTION. Запрос только читает, но нагрузку на боевую базу всё равно создаёт.`));
       const pre = el('pre', 'db-ai-sql'); pre.textContent = sql; m.appendChild(pre);
       const canLimit = sqlIsSingleSelect(sql) && !sqlHasLimit(sql);
       let addLimit = canLimit;
@@ -3209,14 +3261,18 @@ blockquote{border-left:3px solid #c9ced4;margin:0;padding:.2rem 0 .2rem .8rem;co
   const aiWithParams = (sqlText) => new Promise((resolve) => runWithParams(sqlText, resolve, () => resolve(null)));
   async function aiExecute(host, sqlIn, chart, opts = {}) {
     if (!isReadOnlyQuery(sqlIn)) { toast('Разрешены только читающие запросы (SELECT/WITH/EXPLAIN)', { kind: 'err' }); return; }
+    // На какой базе выполнить: карточка передаёт выбор, «Выполнить все» — нет, поэтому по умолчанию
+    // та же разводка «-- @db», что и в карточке (раньше план целиком шёл на активную базу).
+    // Подтверждение PRODUCTION — по ЭТОЙ базе, а не по активной: боевая соседняя шла без вопроса.
+    const connId = opts.connId || aiSqlTargetConn(aiSession(), sqlIn);
+    // активное — из dbActiveConn: его обновляет сохранение профиля, а список подключений тут не перечитывается
+    const conn = (connId === dbActiveId ? dbActiveConn : dbConnsList.find((c) => c.id === connId)) || dbActiveConn;
     const withParams = await aiWithParams(sqlIn);
     if (!withParams) return;
-    const sql = await aiProdConfirm(withParams);
+    const sql = await aiProdConfirm(withParams, conn);
     if (!sql) return;   // на PRODUCTION пользователь отказался
     const st = aiSession();
     const chatConn = dbActiveId;   // чей это диалог (запрос может идти на другую базу — connId)
-    const connId = opts.connId || dbActiveId;
-    const conn = dbConnsList.find((c) => c.id === connId) || dbActiveConn;
     const isProd = !!(conn && conn.isProd);
     const onOtherDb = connId !== dbActiveId;
     const resMsg = { role: 'result', sql, chart, note: opts.note || '', connId, connName: onOtherDb ? aiConnName(connId) : '', pending: true };
@@ -3224,7 +3280,8 @@ blockquote{border-left:3px solid #c9ced4;margin:0;padding:.2rem 0 .2rem .8rem;co
     const r = await lite.db.queryRo(connId, sql, { timeoutMs: isProd ? AI_PROD_TIMEOUT_MS : AI_TIMEOUT_MS });
     resMsg.pending = false;
     if (r && r.error) resMsg.error = r.error; else if (r) { resMsg.columns = r.columns; resMsg.colTypes = r.colTypes; resMsg.rows = r.rows; }
-    resMsg.summary = (onOtherDb ? `База: ${aiConnName(connId)}\n` : '') + aiResultSummary(sql, r || {});
+    // строки базы с флагом «не отправлять данные» не уходят наружу, даже если она не активная
+    resMsg.summary = (onOtherDb ? `База: ${aiConnName(connId)}\n` : '') + aiResultSummary(sql, r || {}, conn);
     aiPersist(chatConn); aiRefreshMsg(host, resMsg);
     // пока шёл запрос, открыли другую базу — не зовём агента с её схемой к чужому диалогу
     if (dbActiveId !== chatConn) return;
@@ -3276,7 +3333,7 @@ blockquote{border-left:3px solid #c9ced4;margin:0;padding:.2rem 0 .2rem .8rem;co
     if (msg.error) { card.appendChild(el('div', 'docker-err', msg.error)); return card; }
     if (!msg.columns) { card.appendChild(el('div', 'db-ai-warn', 'Результат не сохранён — выполните запрос снова.')); return card; }
     if (msg.rowsTrunc) card.appendChild(el('div', 'db-ai-warn', 'Показаны первые 200 строк (полный результат не сохраняется).'));
-    if (aiDataWithheld()) card.appendChild(el('div', 'db-ai-warn', 'Данные показаны только здесь: во внешнюю модель отправлены лишь имена колонок и число строк.'));
+    if (aiDataWithheld(aiConnById(msg.connId))) card.appendChild(el('div', 'db-ai-warn', 'Данные показаны только здесь: во внешнюю модель отправлены лишь имена колонок и число строк.'));
     // chart (if the agent attached one) + collapsed table below — best-effort, never silently dropped
     let drewChart = false;
     if (msg.chart && msg.columns && msg.rows && msg.rows.length) {
@@ -3321,7 +3378,7 @@ blockquote{border-left:3px solid #c9ced4;margin:0;padding:.2rem 0 .2rem .8rem;co
     const chatConn = dbActiveId;   // поток может закончиться, когда активна уже другая база
     // подготовка контекста до отправки; сорвалась — снимаем «занят», иначе поле ввода осталось бы заблокированным
     try {
-      if (!dbColsCache) { const cr = await lite.db.columns(dbActiveId); if (cr && !cr.error) dbColsCache = cr.columns || {}; }
+      if (!dbColsCache) { const cr = await lite.db.columns(chatConn); if (dbActiveId === chatConn && cr && !cr.error) dbColsCache = cr.columns || {}; }
       if (!dbRelationsCache) { try { await getRelations(); } catch (_) {} }
       await aiEnsureMeta(st);   // типы/PK/FK для таблиц, которые точно попадут в промпт
       await aiLoadExtras();     // комментарии и частые значения колонок (один раз на подключение)
@@ -3331,6 +3388,8 @@ blockquote{border-left:3px solid #c9ced4;margin:0;padding:.2rem 0 .2rem .8rem;co
       toast('Не удалось подготовить запрос агенту: ' + (e && e.message ? e.message : e), { kind: 'err' });
       return;
     }
+    // пока готовили контекст, открыли другую базу: промпт собрался бы из ЕЁ схемы для чужого диалога
+    if (dbActiveId !== chatConn) { st._busy = false; return; }
     const asst = { role: 'assistant', text: '', streaming: true }; st.messages.push(asst);
     aiAppendMsg(host, asst);
     const reqId = 'dbai-' + (++aiSeq) + '-' + dbActiveId; st._reqId = reqId;
@@ -3375,7 +3434,7 @@ blockquote{border-left:3px solid #c9ced4;margin:0;padding:.2rem 0 .2rem .8rem;co
     lite.dbai.apiRun(reqId, { baseUrl: ep.base, key: ep.key, model: ag.model, messages: buildAiMessages(st), usage: ag.kind === 'or' });
   }
 
-  function refresh() { dbSchema = null; dbColsCache = null; dbObjectsCache = null; metaCache.clear(); dbRelationsCache = null; aiExtrasByConn.clear(); invalidateTableCaches(); if (dbOpen) renderDbPanel(); }
+  function refresh() { dbSchema = null; dbColsCache = null; dbObjectsCache = null; metaCache.clear(); dbRelationsCache = null; aiExtrasByConn.clear(); aiExtraSchemaCache.clear(); invalidateTableCaches(); if (dbOpen) renderDbPanel(); }
   document.addEventListener('keydown', (e) => { if (dbOpen && dbActiveId && (e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === 'p') { e.preventDefault(); openPalette(); } });
   // Закрытие окна: отложенная (400 мс) запись транскриптов AI-DB иначе терялась вместе с рендерером —
   // последний ответ агента не доезжал до диска, если окно закрыли сразу после него.

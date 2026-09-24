@@ -147,6 +147,15 @@ def handle(req):
 
 def main():
     global model_path
+    # Труба с main — всегда UTF-8 (JSON.stringify пишет кириллицу как есть, main читает ответы как
+    # UTF-8). Python же у труб берёт кодировку локали: на Windows это ANSI (cp1251/cp1252) — текст
+    # фразы приходил кракозябрами или ронял чтение stdin UnicodeDecodeError, а печать кириллической
+    # ошибки в cp1252 роняла сайдкар UnicodeEncodeError. Менять кодировку можно только до чтения.
+    for stream in (sys.stdin, sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding='utf-8')
+        except (AttributeError, ValueError):
+            pass
     ap = argparse.ArgumentParser()
     ap.add_argument('--model', required=True, help='путь к модели ru (torch.package): v5_5_ru.pt, v4_ru.pt…')
     ap.add_argument('--preload', action='store_true', help='загрузить модель сразу, не ждать первого speak')

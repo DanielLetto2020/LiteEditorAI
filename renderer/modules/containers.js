@@ -34,6 +34,7 @@ export function initContainers(host) {
   let dockerListBox = null;       // the .docker-list element reconciled in place by polls (no full re-render)
   let dockerListBusy = false;     // guard: skip a poll tick while a list fetch is still in flight
   let dockerPollTick = 0;         // poll counter — most ticks are light (containers/pods); every 10th is full
+  let dockerFullPending = false;  // полный фетч запрошен, пока шёл другой (удаление образа/тома) — сделать на ближайшем тике
 
   function dockerGroupOrder(engine, names) { // saved order first, new groups appended (alpha)
     const saved = (dockerUi.order && dockerUi.order[engine]) || [];
@@ -700,7 +701,9 @@ export function initContainers(host) {
     setText(sec.querySelector('.dsec-count'), String(items.length));
     if (!items.length) return setSectionPlaceholder(body, 'docker-empty', 'Нет контейнеров.');
     clearSectionPlaceholder(body);
-    const groups = {};
+    // Без прототипа: имя compose-проекта — чужая метка, а «constructor» (валидное имя проекта) в {}
+    // находило Object и роняло .push — список не рисовался, полл не стартовал.
+    const groups = Object.create(null);
     for (const c of items) { const g = c.project || ''; (groups[g] = groups[g] || []).push(c); }
     const byName = (a, b) => (a.service || a.name || a.id).localeCompare(b.service || b.name || b.id);
     for (const g of Object.keys(groups)) groups[g].sort(byName); // stable row order across polls
@@ -768,11 +771,18 @@ export function initContainers(host) {
     const pre = el('pre', 'docker-logs'); view.appendChild(pre);
     const d = dockerDetail; if (!d) return;
     const sid = 'log' + (++dockerUid) + Date.now().toString(36); dockerLogId = sid;
+    // Лимит и по узлам, и по объёму текста: у болтливого контейнера чанк пайпа доходит до 64 КБ,
+    // и 3000 таких узлов — это ~200 МБ текста в DOM. Обычные логи (строка на чанк) упираются в узлы раньше.
+    let logChars = 0;
     const unData = lite.containers.onLogsData((p) => {
       if (p.streamId !== sid) return;
       const atBottom = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 40;
-      pre.appendChild(document.createTextNode(stripAnsiSeq(p.data)));
-      while (pre.childNodes.length > 3000) pre.removeChild(pre.firstChild);
+      const txt = stripAnsiSeq(p.data);
+      pre.appendChild(document.createTextNode(txt)); logChars += txt.length;
+      while (pre.childNodes.length > 3000 || (logChars > 4000000 && pre.childNodes.length > 1)) {
+        logChars = Math.max(0, logChars - (pre.firstChild.nodeValue || '').length);
+        pre.removeChild(pre.firstChild);
+      }
       if (atBottom) pre.scrollTop = pre.scrollHeight;
     });
     const unExit = lite.containers.onLogsExit((p) => { if (p.streamId === sid) pre.appendChild(document.createTextNode('\n— поток логов завершён —\n')); });
@@ -921,7 +931,11 @@ export function initContainers(host) {
   // Fetch a snapshot + in-place reconcile. light=true asks the backend for only the fast, frequently-changing
   // data (containers/pods), skipping the heavy `system df`/images/volumes — that's the per-tick poll path.
   async function fetchAndReconcile(light) {
-    if (dockerListBusy || !dockerOpen || dockerView !== 'list' || !dockerListBox) return; // in flight, or not on the list
+    if (!dockerOpen || dockerView !== 'list' || !dockerListBox) return; // not on the list
+    // Идущий фетч мог начаться до удаления образа/тома и вернёт их ещё живыми, а лёгкие тики образы
+    // не читают — без отметки строка висела до 10-го тика (~30 с) и провоцировала повторное удаление.
+    if (dockerListBusy) { if (!light) dockerFullPending = true; return; }
+    if (!light) dockerFullPending = false;
     const eng = dockerEngine;
     dockerListBusy = true;
     let data;
@@ -932,11 +946,11 @@ export function initContainers(host) {
     reconcileDockerList(data);
   }
   function startDockerPoll() {
-    stopDockerPoll(); dockerPollTick = 0;
+    stopDockerPoll(); dockerPollTick = 0; dockerFullPending = false;
     dockerPoll = setInterval(() => {
       if (document.hidden) return;                    // pause when window/tab is hidden
       dockerPollTick += 1;
-      fetchAndReconcile(dockerPollTick % 10 !== 0);   // light every tick; full every 10th (~30s) to catch image/volume/df drift
+      fetchAndReconcile(!dockerFullPending && dockerPollTick % 10 !== 0); // light every tick; full every 10th (~30s) to catch image/volume/df drift
     }, 3000);
   }
 
@@ -947,6 +961,9 @@ export function initContainers(host) {
 
   // Смена темы редактора: перекрасить живой exec-терминал (вызывается ядром из applyTheme).
   function applyTermTheme() { if (dockerExecTerm) { try { dockerExecTerm.options.theme = termTheme(); } catch (_) {} } }
+  // Смена «Шрифт терминала» в настройках: exec-терминал следует за ней живьём, как SSH и «Система · ~»
+  // (оболочка окна зовёт applyFontSize, если модуль его отдаёт; раньше размер менялся лишь при новом входе).
+  function applyFontSize() { if (dockerExecTerm) { try { dockerExecTerm.options.fontSize = settings.fontSize; } catch (_) {} refitExec(); } }
 
-  return { isOpen: () => dockerOpen, setOpen: setDockerOpen, refitExec, refresh, applyTermTheme };
+  return { isOpen: () => dockerOpen, setOpen: setDockerOpen, refitExec, refresh, applyTermTheme, applyFontSize };
 }

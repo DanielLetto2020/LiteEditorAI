@@ -248,7 +248,8 @@ export function initRh(host) {
     renderRhPanel();
     rec.term.write(`\x1b[90mПодключение к ${c.user ? c.user + '@' : ''}${c.host}:${c.port || 22}…\x1b[0m\r\n`);
     const r = await lite.rh.open(sessionId, c.id, rec.term.cols, rec.term.rows);
-    if (r && r.error) rec.term.write(`\r\n\x1b[31m${r.error}\x1b[0m\r\n`);
+    // вкладку могли закрыть, пока шло подключение: её xterm уже disposed
+    if (r && r.error && rhTerms.get(sessionId) === rec) rec.term.write(`\r\n\x1b[31m${r.error}\x1b[0m\r\n`);
   }
   function createRhTerminal(sessionId, name, connId) {
     const container = el('div', 'term-instance');
@@ -281,10 +282,18 @@ export function initRh(host) {
     rhTerms.set(sessionId, rec);
     return rec;
   }
+  // Вставка — не нажатия клавиш (как writeAsPaste ядра): если программа на хосте включила bracketed
+  // paste, оборачиваем текст в маркеры вставки (переводы строк → \r, вложенные маркеры вырезаем —
+  // ими нельзя «выйти» из вставки). Иначе многострочный буфер выполнялся в оболочке построчно.
   async function pasteRh(sessionId) {
     const text = await lite.readClipboard();
-    if (text) lite.rh.write(sessionId, text);
-    const rec = rhTerms.get(sessionId); if (rec) { try { rec.term.focus(); } catch (_) {} }
+    const rec = rhTerms.get(sessionId);
+    if (text) {
+      const s = String(text);
+      const bracketed = !!(rec && rec.term.modes && rec.term.modes.bracketedPasteMode);
+      lite.rh.write(sessionId, bracketed ? '\x1b[200~' + s.replace(/\x1b\[20[01]~/g, '').replace(/\r?\n/g, '\r') + '\x1b[201~' : s);
+    }
+    if (rec) { try { rec.term.focus(); } catch (_) {} }
   }
   function renderRhTabs() {
     const bar = $('#rh-tabs'); if (!bar) return;
@@ -540,11 +549,16 @@ export function initRh(host) {
     const treeEl = $('#rh-conns .rh-tree');
     if (!treeEl || !rhFiles) return;
     treeEl.innerHTML = '';
-    buildRhLevel(rhFiles.root, treeEl, 0);
+    const missing = [];
+    buildRhLevel(rhFiles.root, treeEl, 0, missing);
+    // Раскрытый подкаталог без кэша (после «Обновить дерево» кэш сброшен, раскрытые пути остались) —
+    // догружаем, иначе под ним навсегда висело «Загрузка…». Корень грузят сами вызывающие.
+    for (const p of missing) if (rhFiles && !rhFiles.dirs.has(p)) rhLoadDir(p); // вложенный рендер из rhLoadDir мог уже запустить загрузку
   }
-  function buildRhLevel(dirPath, container, depth) {
+  function buildRhLevel(dirPath, container, depth, missing) {
     const node = rhFiles.dirs.get(dirPath);
     const pad = depth * RH_INDENT + 6;
+    if (!node && depth > 0 && missing) missing.push(dirPath);
     if (!node || node.loading) { const l = el('div', 'rh-tload', 'Загрузка…'); l.style.paddingLeft = pad + 'px'; container.appendChild(l); return; }
     if (node.error) { const w = el('div', 'rh-terr', '⚠ ' + node.error); w.style.paddingLeft = pad + 'px'; container.appendChild(w); return; }
     const entries = node.entries || [];
@@ -552,7 +566,7 @@ export function initRh(host) {
     for (const ent of entries) {
       const full = rhJoin(dirPath, ent.name);
       container.appendChild(rhTreeRow(ent, full, depth));
-      if (ent.dir && rhFiles.expanded.has(full)) buildRhLevel(full, container, depth + 1);
+      if (ent.dir && rhFiles.expanded.has(full)) buildRhLevel(full, container, depth + 1, missing);
     }
   }
   function rhTreeRow(ent, full, depth) {
@@ -746,5 +760,9 @@ export function initRh(host) {
     for (const rec of rhTerms.values()) { try { rec.term.options.theme = termTheme(); } catch (_) {} }
   }
 
-  return { isOpen: () => rhOpen, setOpen: setRhOpen, renderPanel: renderRhPanel, goList: rhGoList, refitSession: refitRhSession, bindEvents, applyFontSize, applyTermTheme };
+  // Закрытие окна (✕ / Alt+F4) — через тот же гард несохранённого удалённого файла, что и уход из вида:
+  // без него правки в открытом файле пропадали молча.
+  function confirmClose(proceed) { rhGuardDirty(proceed); }
+
+  return { isOpen: () => rhOpen, setOpen: setRhOpen, renderPanel: renderRhPanel, goList: rhGoList, refitSession: refitRhSession, bindEvents, applyFontSize, applyTermTheme, confirmClose };
 }

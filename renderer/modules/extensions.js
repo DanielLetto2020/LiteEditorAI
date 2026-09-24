@@ -29,7 +29,10 @@ export function initExtensions(host) {
     return {
       id: m.id, dir: m.dir, manifest: m.manifest || {}, error: m.error || '', mainUrl: m.mainUrl, mainFile: m.mainFile,
       status: 'off', // 'off' | 'on' | 'broken'
-      container: null, instance: null, ctx: null, title: '', loadSeq: 0,
+      // error — отказ скана (манифест/файлы: модуль не грузим вовсе), loadError — падение import/activate
+      // (статус 'broken': модуль можно перезагрузить после правки кода из меню/квикбара)
+      loadError: '',
+      container: null, instance: null, ctx: null, title: '', loadSeq: 0, loading: null,
       closeCbs: [], projCbs: [], themeCbs: [], commands: new Map(),
     };
   }
@@ -89,7 +92,10 @@ export function initExtensions(host) {
         isOpen: () => extPaneOpen && activeExtId === id,
         onClose: (fn) => { rec.closeCbs.push(fn); return () => { rec.closeCbs = rec.closeCbs.filter((f) => f !== fn); }; },
       }),
-      ui: Object.freeze({ el, icon, iconBtn, toast, makeModal, showConfirm, showPrompt }),
+      // GUIDE обещает модулям toast(msg, { kind: 'error' }), а ядро знает только 'err' — без
+      // перевода ошибка модуля показывалась обычным тостом и не попадала в журнал.
+      ui: Object.freeze({ el, icon, iconBtn, makeModal, showConfirm, showPrompt,
+        toast: (msg, opts) => toast(msg, (opts && opts.kind === 'error') ? { ...opts, kind: 'err' } : (opts || {})) }),
       storage: Object.freeze({
         get: (k, def) => { const d = (host.STORE.extData || {})[id] || {}; return (k in d) ? d[k] : def; },
         set: (k, v) => { const all = { ...(host.STORE.extData || {}) }; all[id] = { ...(all[id] || {}), [k]: v }; host.persist('extData', all); },
@@ -123,7 +129,16 @@ export function initExtensions(host) {
     }
   }
 
-  async function loadModule(rec) {
+  // Повторный вызов, пока загрузка ещё идёт (activate бывает async), поднимал ВТОРОЙ экземпляр:
+  // клик по модулю в квикбаре/меню во время стартовой загрузки или «Пересканировать» — второй
+  // контейнер, вторые подписки, а deactivate потом звался только у последнего, первый жил дальше.
+  // Все, кто просит загрузить модуль во время загрузки, ждут ту же самую.
+  function loadModule(rec) {
+    if (!rec.loading) rec.loading = doLoadModule(rec).finally(() => { rec.loading = null; });
+    return rec.loading;
+  }
+
+  async function doLoadModule(rec) {
     rec.loadSeq++;
     try {
       const ns = await importModule(rec);
@@ -136,13 +151,16 @@ export function initExtensions(host) {
       rec.ctx = buildCtx(rec);
       await ns.activate(rec.ctx);
       rec.status = 'on';
+      rec.loadError = '';
     } catch (e) {
       rec.status = 'broken';
-      rec.error = String((e && e.message) || e);
+      // Не в rec.error: тот — отказ скана и выключает пункт меню/квикбара целиком, из-за чего все
+      // ветки «broken → перезагрузить» (меню, квикбар, toggle) были недостижимы.
+      rec.loadError = String((e && e.message) || e);
       if (rec.container) { try { rec.container.remove(); } catch (_) {} rec.container = null; }
       rec.instance = null; rec.ctx = null;
-      toast(`Модуль «${modName(rec)}» не загрузился: ${rec.error}`, { kind: 'err' });
-      try { lite.log('error', 'ext activate failed', rec.id, rec.error); } catch (_) {}
+      toast(`Модуль «${modName(rec)}» не загрузился: ${rec.loadError}`, { kind: 'err' });
+      try { lite.log('error', 'ext activate failed', rec.id, rec.loadError); } catch (_) {}
     }
   }
 
@@ -194,7 +212,7 @@ export function initExtensions(host) {
         rec = mkRec(m);
         mods.set(m.id, rec);
         if (!m.error && isEnabled(m.id)) await loadModule(rec);
-      } else if (rec.status !== 'on') { // выгруженные и сломанные пробуем поднять заново; живые — через reload
+      } else if (rec.status !== 'on' && !rec.loading) { // выгруженные и сломанные пробуем поднять заново; живые — через reload; идущую загрузку не сбиваем
         unloadModule(rec); // у broken чистит остатки состояния (deactivate не зовётся — instance нет)
         rec.dir = m.dir; rec.manifest = m.manifest || rec.manifest; rec.error = m.error || ''; rec.mainUrl = m.mainUrl; rec.mainFile = m.mainFile;
         if (!rec.error && isEnabled(m.id)) await loadModule(rec);
@@ -240,7 +258,7 @@ export function initExtensions(host) {
       };
       const row = host.menuRow('layers', modName(rec), click, rec.error ? 'disabled' : '');
       if (rec.error) { row.appendChild(el('span', 'ext-state', '⚠ ошибка')); row.title = rec.error; }
-      else if (rec.status === 'broken') { row.appendChild(el('span', 'ext-state', '⚠ сломан')); row.title = rec.error; }
+      else if (rec.status === 'broken') { row.appendChild(el('span', 'ext-state', '⚠ сломан')); row.title = rec.loadError; }
       dd.appendChild(row);
     }
     if (!opts.compact) dd.appendChild(el('div', 'menu-sep'));

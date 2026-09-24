@@ -219,14 +219,6 @@ export const ICONS = {
 export function icon(name, size = 16) {
   return svgEl(`<svg class="ic" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name] || ''}</svg>`);
 }
-// Метка «sync» в плашке проекта — не иконка из общего набора: буквы шире квадрата
-// 24×24, поэтому у неё свой viewBox. Рисуем контуром, а не текстом: так метка не
-// зависит от шрифта системы и держит один вес с соседними значками карточки.
-export const SYNC_MARK_D = 'M6.5 6.3C6.5 5.2 5.4 4.8 4.2 4.8 3.0 4.8 1.9 5.2 1.9 6.3c0 1.2 1.5 1.5 2.6 1.7 1.2.2 2.4.6 2.4 1.9 0 1.1-1.2 1.6-2.5 1.6-1.2 0-2.6-.4-2.6-1.5M8.8 5.0 11.5 11.1M14.5 5.0 10.8 14.9M16.4 11.8V5.2M16.4 7.1c.6-1.4 1.9-2.1 3.1-2.1 1.6 0 2.5 1 2.5 2.6v4.2M29.3 6.3c-.7-.9-1.8-1.4-2.9-1.4-1.9 0-3.2 1.5-3.2 3.4s1.3 3.4 3.2 3.4c1.1 0 2.2-.5 2.9-1.4';
-export function syncMark(height = 12, title = 'Синхронизируется с сервером') {
-  // Тултип у инлайнового SVG даёт дочерний <title>, а не одноимённый атрибут.
-  return svgEl(`<svg class="sync-mark" viewBox="0 0 31 16" height="${height}" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><title>${title}</title><path d="${SYNC_MARK_D}"/></svg>`);
-}
 // Button carrying a single icon (replaces the old emoji-in-textContent buttons).
 export function iconBtn(cls, name, title, size) {
   const b = el('button', cls);
@@ -250,8 +242,11 @@ let _errSink = null;
 export function setErrorSink(fn) { _errSink = typeof fn === 'function' ? fn : null; }
 
 export function toast(msg, opts = {}) {
-  if (opts.kind === 'err' && _errSink && !opts.silent) { try { _errSink(String(msg)); } catch (_) {} }  // в лог — исходный текст
-  const box = el('div', 'toast' + (opts.kind ? ' ' + opts.kind : ''));
+  // module-kit/GUIDE.md обещает пользовательским модулям kind: 'error', ядро пишет 'err' —
+  // принимаем оба, иначе ошибки модулей не красились и не попадали в лог.
+  const kind = opts.kind === 'error' ? 'err' : opts.kind;
+  if (kind === 'err' && _errSink && !opts.silent) { try { _errSink(String(msg)); } catch (_) {} }  // в лог — исходный текст
+  const box = el('div', 'toast' + (kind ? ' ' + kind : ''));
   box.appendChild(el('span', 'toast-msg', t(msg)));
   if (opts.actionLabel) {
     const b = el('button', 'toast-act', t(opts.actionLabel));
@@ -304,13 +299,21 @@ export function makeModal(innerHtml, onClose) {
   const overlay = el('div', 'modal-overlay');
   const m = el('div', 'modal');
   m.innerHTML = innerHtml;
+  m.tabIndex = -1;
   overlay.appendChild(m);
   $('#modal-root').appendChild(overlay);
+  // Фокус — в модалку: Esc ловится на m, а открытая кликом по меню модалка оставляла фокус на body
+  // (Esc не закрывал), открытая поверх терминала — в xterm (клавиши уходили в PTY под оверлеем).
+  // Поле, которое вызывающий фокусирует сам (обычно через setTimeout), перехватит фокус позже.
+  const prevFocus = document.activeElement;
+  try { m.focus({ preventScroll: true }); } catch (_) {}
   let closed = false;
   const close = () => {
     if (closed) return;
     closed = true;
     overlay.remove();   // только СВОЙ оверлей — иначе закрытие вложенной модалки снесло бы родителя мимо его close()/onClose (#modal-root:empty прячет контейнер сам)
+    // вложенная модалка: вернуть фокус в родительскую, иначе её Esc перестал бы работать
+    if (prevFocus && prevFocus.isConnected && prevFocus.closest && prevFocus.closest('.modal')) { try { prevFocus.focus({ preventScroll: true }); } catch (_) {} }
     if (onClose) { try { onClose(); } catch (_) {} }
   };
   overlay.addEventListener('mousedown', (e) => { if (e.target === overlay) close(); });
@@ -354,10 +357,16 @@ export function showPrompt(title, label, initial, onOk) {
   const err = m.querySelector('#pr-err');
   setTimeout(() => { inp.focus(); inp.select(); }, 30);
   m.querySelector('#pr-cancel').onclick = close;
+  // Пока асинхронный onOk в работе, повторный Enter/клик «Ок» не должен запускать его ещё раз
+  // (двойное создание раздела/ветки/папки).
+  let busy = false;
   const ok = async () => {
+    if (busy) return;
     const v = inp.value.trim();
     if (!v) { err.textContent = t('Введи имя'); return; }
-    const res = await onOk(v);
+    busy = true;
+    let res;
+    try { res = await onOk(v); } finally { busy = false; }
     if (res && res.error) { err.textContent = t(res.error); return; }
     close();
   };

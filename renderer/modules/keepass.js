@@ -32,12 +32,19 @@ export function initKeepass() {
     pending = { path: r.path, name: r.name }; render();
   }
   function openRecent(p, name) { pending = { path: p, name }; render(); }
+  let unlocking = false; // расшифровка (Argon2 в main) идёт секунды: повторный Enter запускал её второй раз
   async function unlock(password) {
-    if (!pending) return;
+    if (!pending || unlocking) return;
     if (!password) { toast('Введите мастер-пароль', { kind: 'warn' }); return; }
-    const r = await lite.keepass.open(pending.path, password);
+    const target = pending;
+    unlocking = true;
+    let r;
+    try { r = await lite.keepass.open(target.path, password); } finally { unlocking = false; }
+    // «Отмена»/«Закрыть» или другой файл, пока шла расшифровка: pending.name ронял обработчик, а база
+    // оставалась открытой в main при заблокированном на вид окне — закрываем её.
+    if (pending !== target) { if (r && r.ok) { try { lite.keepass.lock(); } catch (_) {} } return; }
     if (!r || !r.ok) { toast((r && r.error) || 'Не удалось открыть', { kind: 'err' }); return; }
-    entries = r.entries || []; dbName = r.name || pending.name; pushRecent(pending.path, dbName);
+    entries = r.entries || []; dbName = r.name || target.name; pushRecent(target.path, dbName);
     pending = null; sel = null; q = ''; render();
   }
   function lock() { try { lite.keepass.lock(); } catch (_) {} entries = []; dbName = ''; sel = null; pending = null; q = ''; render(); }
@@ -141,9 +148,13 @@ export function initKeepass() {
       });
       acts.appendChild(eye);
     }
-    if (f.name === 'URL' && f.value) {
+    // URL записи — недоверенный текст из базы: кнопка только для http(s), и через openExternal (main
+    // сам пропускает лишь http(s)). openInBrowser — канал для ЛОКАЛЬНЫХ .html: ссылка давала «файл не
+    // найден», а путь к программе в поле URL чужой базы уходил в shell.openExternal как file:// (запуск).
+    const url = f.name === 'URL' && f.value ? String(f.value).trim() : '';
+    if (/^https?:\/\//i.test(url)) {
       const open = el('button', 'icon-btn'); open.title = 'Открыть в браузере'; open.appendChild(icon('globe', 14));
-      open.addEventListener('click', () => lite.openInBrowser(f.value).then((rr) => { if (rr && rr.error) toast(rr.error, { kind: 'err' }); }));
+      open.addEventListener('click', () => lite.openExternal(url).then((rr) => { if (rr && rr.error) toast(rr.error, { kind: 'err' }); }));
       acts.appendChild(open);
     }
     const cp = el('button', 'icon-btn'); cp.title = 'Скопировать'; cp.appendChild(icon('copy', 14));

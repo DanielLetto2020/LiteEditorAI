@@ -122,6 +122,13 @@ try {
   if (!fs.existsSync(storeDir) && fs.existsSync(legacy)) fs.cpSync(legacy, storeDir, { recursive: true });
 } catch (_) {}
 const STORE_KEYS = ['projects', 'settings', 'layout', 'recents', 'lastParent', 'categories', 'sectionOrder', 'favOrder', 'accordions', 'dismissed', 'projTabs', 'openrouter', 'dockerUi', 'dbConnections', 'dbUi', 'rhConnections', 'rhUi', 'extData', 'extEnabled', 'quickbar', 'seoSites', 'moduleWins', 'mwLeft', 'mwLogH', 'gitFav', 'commitDrafts', 'bookmarks', 'promptSnippets', 'pomodoro', 'pomodoroLog', 'dbaiProviders', 'sessionSnaps', 'siteMon', 'rmqConnections', 'rmqUi', 'kafkaConnections', 'kafkaUi', 'stConnections', 'stUi', 'jiraAccounts', 'jiraUi', 'gsearch', 'gsearchHist', 'voice', 'voiceClips'];
+// Профили подключений с зашифрованными секретами (passEnc/tokenEnc…) — только для main: модули
+// получают их через свои IPC (publicConn — без секретов), а рендерер эти ключи не читает и не пишет.
+// В общем снимке стора они уходили во ВСЕ окна (при недоступном safeStorage — base64, то есть по сути
+// открытым текстом), а через store:set любое окно могло подменить хост профиля при сохранённом пароле.
+// Бэкап настроек (settings:export/import) их по-прежнему несёт — он читает стор в main напрямую.
+const MAIN_ONLY_KEYS = new Set(['dbConnections', 'rhConnections', 'rmqConnections', 'kafkaConnections', 'stConnections', 'jiraAccounts']);
+const rendererStoreKey = (key) => STORE_KEYS.includes(key) && !MAIN_ONLY_KEYS.has(key);
 function ensureStoreDir() { try { fs.mkdirSync(storeDir, { recursive: true }); } catch (_) {} }
 function storeFile(key) { return path.join(storeDir, String(key).replace(/[^\w.-]/g, '_') + '.json'); }
 function readStoreKey(key) {
@@ -147,16 +154,23 @@ function atomicWriteSync(file, data) {
   // Права существующей цели переносим на нового соседа: rename кладёт на её место файл, созданный
   // по umask, и цель с чувствительным содержимым (база KeePass, 0600) стала бы читаемой всем.
   let mode; try { mode = fs.statSync(target).mode & 0o777; } catch (_) {}
-  // Имя соседа уникально по процессу. У приложения нет single-instance-лока: второй запущенный
-  // редактор пишет ТЕ ЖЕ файлы стора, и с общим `X.tmp` два процесса писали бы в один временный
+  // Имя соседа уникально по процессу. Single-instance-лок привязан к userData, а стор — к HOME: копия
+  // редактора с другим профилем (dev-запуск, portable) пишет ТЕ ЖЕ файлы, и с общим `X.tmp` два процесса писали бы в один временный
   // файл вперемешку, после чего один переименовывал бы мешанину поверх цели. Для projects.json
   // это ровно та потеря всего списка проектов, ради предотвращения которой запись и делалась
   // атомарной. Тот же приём уже применён в mcp/lite-agenda-server.js, который пишет agenda/*.json
   // из отдельного процесса.
   const tmp = target + '.' + process.pid + WRITE_TMP_SUFFIX;
-  fs.writeFileSync(tmp, data, mode == null ? undefined : { mode });
-  if (mode != null) { try { fs.chmodSync(tmp, mode); } catch (_) {} }  // tmp мог остаться от прошлого краха — { mode } его не переоткрывает
-  fs.renameSync(tmp, target);
+  try {
+    fs.writeFileSync(tmp, data, mode == null ? undefined : { mode });
+    if (mode != null) { try { fs.chmodSync(tmp, mode); } catch (_) {} }  // tmp мог остаться от прошлого краха — { mode } его не переоткрывает
+    fs.renameSync(tmp, target);
+  } catch (e) {
+    // Недописанный сосед (ENOSPC, EPERM на rename) убираем: имя уникально по pid, и при каждом
+    // новом запуске такие файлы копились бы в сторе и папках проектов, добивая и без того полный диск.
+    try { fs.unlinkSync(tmp); } catch (_) {}
+    throw e;
+  }
 }
 // Returns true on success. store:set is fire-and-forget (renderer updates its in-memory
 // snapshot before the write), so a swallowed failure = silent data loss after restart — we
@@ -426,7 +440,7 @@ errledger.watch();
 
 ipcMain.on('store:loadAll', (e) => {
   const o = {};
-  for (const k of STORE_KEYS) { const v = readStoreKey(k); if (v !== undefined) o[k] = v; }
+  for (const k of STORE_KEYS) { if (MAIN_ONLY_KEYS.has(k)) continue; const v = readStoreKey(k); if (v !== undefined) o[k] = v; }
   o.noteCounts = {}; // project id -> number of ACTIVE (не выполненных) задач, for card badges
   try {
     const nd = path.join(storeDir, 'notes');
@@ -446,7 +460,7 @@ ipcMain.on('store:loadAll', (e) => {
   } catch (_) {}
   e.returnValue = o; // synchronous: renderer loads the snapshot once at startup
 });
-ipcMain.on('store:set', (_e, { key, value }) => { if (STORE_KEYS.includes(key)) writeStoreKey(key, value); });
+ipcMain.on('store:set', (_e, { key, value }) => { if (rendererStoreKey(key)) writeStoreKey(key, value); });
 // settings пишут несколько окон, поэтому для него — патч по полям, а не объект целиком: иначе
 // побеждала последняя запись из устаревшей копии окна (renderer/settings-sync.js). Вливаем патч
 // в файл и рассылаем его остальным окнам — они применят его к своему объекту.
@@ -467,7 +481,7 @@ function patchStoreKey(key, set, unset, exceptWc) {
 ipcMain.on('store:patch', (e, { key, set, unset } = {}) => { if (PATCH_KEYS.has(key)) patchStoreKey(key, set, unset, e.sender); });
 // Синхронный вариант — для записи на beforeunload (снимки сессий, идея 7): обычный send может
 // не успеть флашнуться до сноса рендерера, sendSync гарантирует запись до выхода.
-ipcMain.on('store:setSync', (e, { key, value } = {}) => { if (STORE_KEYS.includes(key)) writeStoreKey(key, value); e.returnValue = true; });
+ipcMain.on('store:setSync', (e, { key, value } = {}) => { if (rendererStoreKey(key)) writeStoreKey(key, value); e.returnValue = true; });
 ipcMain.handle('store:notesGet', (_e, id) => {
   try { return JSON.parse(fs.readFileSync(path.join(storeDir, 'notes', String(id).replace(/[^\w.-]/g, '_') + '.json'), 'utf8')); }
   catch { return []; }
@@ -528,6 +542,11 @@ function agendaReminderTick() {
     }
   }
 }
+// Показанные уведомления держим ссылкой до клика: объект Notification, собранный GC, отвязывает
+// нативное уведомление от JS (деструктор снимает delegate), и клик по висящему в шторке уведомлению
+// молча терялся — «Календарь» не открывался. По 'close' не отпускаем: на Windows он приходит по
+// таймауту, а уведомление остаётся в Центре уведомлений и кликабельно. Держим последние 20.
+const agendaNotifs = new Set();
 function agendaShowNotification(r) {
   try {
     if (Notification.isSupported && !Notification.isSupported()) return;
@@ -538,7 +557,11 @@ function agendaShowNotification(r) {
       ? d.toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' })
       : d.toLocaleString('ru-RU', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
     const n = new Notification({ title: '🔔 ' + title, body, silent: false });
-    n.on('click', () => { try { focusNotesCalendar(); } catch (_) {} });
+    const drop = () => { agendaNotifs.delete(n); };
+    n.on('click', () => { drop(); try { focusNotesCalendar(); } catch (_) {} });
+    n.on('failed', drop);
+    agendaNotifs.add(n);
+    if (agendaNotifs.size > 20) agendaNotifs.delete(agendaNotifs.values().next().value);
     n.show();
   } catch (_) {}
 }
@@ -587,7 +610,9 @@ ipcMain.handle('agenda:mcpConnect', async (_e, { projId, projPath } = {}) => {
     let done = false, stderr = '', stdout = '', to = null;
     const finish = (r) => { if (!done) { done = true; clearTimeout(to); resolve({ ...r, cmd: agendaMcpCommand(projId) }); } };
     let cp;
-    try { cp = spawn('claude', args, { cwd: projPath || os.homedir() }); }
+    // env: tpEnv() — как у всех запусков claude: у приложения из Dock/ярлыка PATH урезан, и CLI из
+    // ~/.local/bin, Homebrew или nvm здесь не находился («CLI не найден», хотя в терминале он есть).
+    try { cp = spawn('claude', args, { cwd: projPath || os.homedir(), env: tpEnv() }); }
     catch (e) { return finish({ ok: false, error: String(e.message || e) }); }
     // Без таймаута зависший `claude mcp add` (спросил что-то в stdin и ждёт) держал бы промис
     // IPC навсегда: кнопка в модалке крутилась бы вечно, процесс жил бы до выхода из редактора.
@@ -643,16 +668,22 @@ function orChatFile(id) { return path.join(storeDir, 'orchats', String(id).repla
 ipcMain.handle('openrouter:histGet', (_e, id) => {
   try { return JSON.parse(fs.readFileSync(orChatFile(id), 'utf8')); } catch { return []; }
 });
-ipcMain.handle('openrouter:histSet', (_e, { id, messages }) => {
+ipcMain.handle('openrouter:histSet', (_e, { id, messages } = {}) => {
+  // Рендерер пишет сессии чата объектом { sessions, active } (массив — только старый формат и
+  // очистка при удалении ключа). Пропуская лишь массив, main молча заменял сессии на [] — история
+  // чатов не переживала закрытия окна.
+  const doc = Array.isArray(messages) ? messages
+    : (messages && Array.isArray(messages.sessions)) ? { sessions: messages.sessions, active: messages.active } : [];
   try {
     fs.mkdirSync(path.join(storeDir, 'orchats'), { recursive: true });
-    atomicWriteSync(orChatFile(id), JSON.stringify(Array.isArray(messages) ? messages : []));
+    atomicWriteSync(orChatFile(id), JSON.stringify(doc));
     return { ok: true };
   } catch (e) { return { error: String(e) }; }
 });
 ipcMain.handle('openrouter:models', async (_e, { key } = {}) => {
   return await new Promise((resolve) => {
     const req = https.request(OR_BASE + '/models', { method: 'GET', headers: orHeaders(key) }, (res) => {
+      res.setEncoding('utf8'); // многобайтный символ на границе чанков не бьётся (см. openrouter:chatStart)
       let data = '';
       res.on('data', (c) => { data += c; });
       res.on('end', () => {
@@ -669,11 +700,13 @@ ipcMain.handle('openrouter:models', async (_e, { key } = {}) => {
           resolve({ models });
         } catch (_) { resolve({ error: 'Не удалось разобрать ответ OpenRouter' }); }
       });
+      // Обрыв посреди ответа: без 'end' и без 'error' у запроса промис не разрешался никогда.
+      res.on('close', () => { if (!res.complete) resolve({ error: 'соединение прервано' }); });
     });
     req.on('error', (e) => resolve({ error: String(e.message || e) }));
     req.setTimeout(20000, () => { req.destroy(); resolve({ error: 'таймаут запроса моделей' }); });
     req.end();
-  });
+  }).catch((e) => ({ error: String((e && e.message) || e) })); // синхронный бросок https.request (недопустимый символ в ключе) — тем же контрактом {error}
 });
 // ---------------------------------------------------------------- обновление приложения
 // Самообновление «как в мессенджере»: плашка в шапке → загрузка в фоне → «Перезапустить» →
@@ -735,8 +768,20 @@ ipcMain.handle('update:state', () => ({ ...updState, install: updInstallInfo() }
 
 // Скачать и подготовить обновление. Возвращается сразу после ЗАВЕРШЕНИЯ загрузки (это долгая
 // операция, прогресс идёт событиями update:state).
+// Гейт от двойного вызова: фаза становится 'downloading' только ПОСЛЕ await fetchLatest, и автозагрузка
+// при старте + клик по плашке в эту секунду запускали две загрузки в один и тот же .part.
+let updDownloading = false;
 ipcMain.handle('update:download', async () => {
-  if (updState.phase === 'downloading') return { ok: false, error: 'загрузка уже идёт' };
+  if (updState.phase === 'downloading' || updDownloading) return { ok: false, error: 'загрузка уже идёт' };
+  updDownloading = true;
+  try { return await updDownload(); }
+  finally {
+    updDownloading = false; updAbort = null;
+    // Непредвиденный бросок не должен оставить плашку в «загрузке» навсегда.
+    if (updState.phase === 'downloading') updSet({ phase: 'available', pct: 0 });
+  }
+});
+async function updDownload() {
   const inst = updInstallInfo();
   if (!inst.canSelfUpdate) return { ok: false, error: inst.reason || 'эта установка не умеет обновляться сама' };
 
@@ -748,7 +793,9 @@ ipcMain.handle('update:download', async () => {
 
   const dir = path.join(updater.updatesDir(storeDir), rel.tag);
   updAbort = {};
-  updSet({ phase: 'downloading', tag: rel.tag, pct: 0, size: asset.size });
+  // unpacking сбрасываем явно: после неудачной распаковки флаг оставался в состоянии, и повторная
+  // загрузка всю дорогу показывала «распаковка…» вместо процентов.
+  updSet({ phase: 'downloading', tag: rel.tag, pct: 0, size: asset.size, unpacking: false });
   logger.log('info', 'update', `загрузка ${asset.name} (${Math.round((asset.size || 0) / 1048576)} МБ)`);
   const dl = await updater.download(asset, dir, {
     signal: updAbort,
@@ -779,17 +826,33 @@ ipcMain.handle('update:download', async () => {
   updSet({ phase: 'ready', tag: rel.tag, pct: 100 });
   logger.log('info', 'update', `${rel.tag} готова к установке`);
   return { ok: true, tag: rel.tag };
-});
+}
 
 ipcMain.handle('update:cancel', () => {
   if (updAbort && updAbort.onAbort) { try { updAbort.onAbort(); } catch (_) {} }
   return { ok: true };
 });
 
+// Жёсткий выход под обновление. app.exit() не поднимает before-quit, поэтому его уборку делаем
+// здесь: иначе демон синхронизации переживал редактор сиротой со старым кодом (новая версия свой
+// уже не запустит — daemon.pid занят), а реестр ошибок терял последние отложенные правки.
+function updHardExit() {
+  try { errledger.flush(); } catch (_) {}
+  stopSyncDaemon();
+  // Агентов тоже гасим (как в window-all-closed, которое app.exit() не поднимает): директор «ИИ
+  // компании» запущен detached — своей группой процессов — и пережил бы редактор, продолжая править
+  // проект и тратить бюджет; claude/codex «Обработки текста», AI-DB и запросы чата — туда же.
+  for (const c of companyReqs.values()) { try { companyKill(c); } catch (_) {} }
+  killReqMap(tpReqs); killReqMap(dbaiReqs); killReqMap(orReqs); killReqMap(ctxmineReqs);
+  app.exit(0);
+}
+
 // Применить обновление и перезапуститься. После этого вызова приложение закрывается — ответ
 // рендерер получает только при неудаче.
 ipcMain.handle('update:install', async () => {
   if (!updStaged) return { ok: false, error: 'обновление ещё не загружено' };
+  // Второй вызов (двойное подтверждение, второе окно) запустил бы второй стейджер/pkexec поверх первого.
+  if (updState.phase === 'installing') return { ok: false, error: 'установка уже идёт' };
   const inst = updInstallInfo();
   updSet({ phase: 'installing' });
 
@@ -798,7 +861,7 @@ ipcMain.handle('update:install', async () => {
     if (!r.ok) { updSet({ phase: 'ready', error: r.canceled ? '' : r.error }); return r; }
     logger.log('info', 'update', 'пакет установлен, перезапуск');
     app.relaunch();
-    app.exit(0);
+    updHardExit();
     return { ok: true };
   }
 
@@ -818,13 +881,14 @@ ipcMain.handle('update:install', async () => {
   logger.log('info', 'update', `стейджер запущен, выходим для подмены ${inst.appDir}`);
   // Стейджер ждёт смерти этого процесса, поэтому выходим сразу и жёстко: обычный quit может
   // упереться в диалог «сохранить файл?» и оставить стейджер крутиться впустую.
-  setTimeout(() => app.exit(0), 300);
+  setTimeout(updHardExit, 300);
   return { ok: true };
 });
 // Key balance: GET /key → credit limit + usage (so the card can show «израсходовано / лимит»).
 ipcMain.handle('openrouter:keyInfo', async (_e, { key } = {}) => {
   return await new Promise((resolve) => {
     const req = https.request(OR_BASE + '/key', { method: 'GET', headers: orHeaders(key) }, (res) => {
+      res.setEncoding('utf8'); // многобайтный символ на границе чанков не бьётся (см. openrouter:chatStart)
       let data = '';
       res.on('data', (c) => { data += c; });
       res.on('end', () => {
@@ -835,19 +899,31 @@ ipcMain.handle('openrouter:keyInfo', async (_e, { key } = {}) => {
           resolve({ usage: d.usage, limit: d.limit, limit_remaining: d.limit_remaining, label: d.label, is_free_tier: d.is_free_tier });
         } catch (_) { resolve({ error: 'Не удалось разобрать ответ OpenRouter' }); }
       });
+      res.on('close', () => { if (!res.complete) resolve({ error: 'соединение прервано' }); });
     });
     req.on('error', (e) => resolve({ error: String(e.message || e) }));
     req.setTimeout(15000, () => { req.destroy(); resolve({ error: 'таймаут' }); });
     req.end();
-  });
+  }).catch((e) => ({ error: String((e && e.message) || e) }));
 });
 const orReqs = new Map(); // reqId -> ClientRequest (for abort)
 ipcMain.on('openrouter:chatStart', (e, { reqId, key, model, messages, temperature } = {}) => {
   const sender = e.sender;
   const body = JSON.stringify({ model, messages, stream: true, ...(typeof temperature === 'number' ? { temperature } : {}) });
-  const req = https.request(OR_BASE + '/chat/completions',
+  let req;
+  try {
+    req = https.request(OR_BASE + '/chat/completions',
     { method: 'POST', headers: { ...orHeaders(key), 'Content-Length': Buffer.byteLength(body) } },
     (res) => {
+      // Строки, а не Buffer: кириллица — два байта, и символ, разрезанный границей чанка, при
+      // chunk.toString() превращался в «��» прямо в ответе модели. StringDecoder склеивает хвост.
+      res.setEncoding('utf8');
+      // Обрыв связи посреди стрима: 'end' не придёт, а у запроса нет 'error' (ответ уже начат) —
+      // чат навсегда оставался в «отправке», запись в orReqs висела. После 'end'/abort — no-op.
+      res.on('close', () => {
+        if (res.complete || !orReqs.has(reqId)) return;
+        orReqs.delete(reqId); safeSend(sender, 'openrouter:error', { reqId, error: 'соединение прервано' });
+      });
       if (res.statusCode >= 400) { // surface the API error body (bad key, no credit, bad model…)
         let errData = '';
         res.on('data', (c) => { errData += c; });
@@ -891,6 +967,12 @@ ipcMain.on('openrouter:chatStart', (e, { reqId, key, model, messages, temperatur
       });
       res.on('end', () => { if (!orReqs.has(reqId)) return; orReqs.delete(reqId); safeSend(sender, 'openrouter:done', { reqId }); });
     });
+  } catch (err) {
+    // Символ вне latin1 в ключе (кириллица из-за раскладки) — https.request бросает синхронно. Без
+    // ответа рендерер ждал бы done/error вечно, а «Стоп» не помогал: запроса нет в orReqs.
+    safeSend(sender, 'openrouter:error', { reqId, error: String((err && err.message) || err) });
+    return;
+  }
   req.on('error', (err) => { if (!orReqs.has(reqId)) return; orReqs.delete(reqId); safeSend(sender, 'openrouter:error', { reqId, error: String(err.message || err) }); });
   req.setTimeout(120000, () => { req.destroy(); if (!orReqs.has(reqId)) return; orReqs.delete(reqId); safeSend(sender, 'openrouter:error', { reqId, error: 'таймаут запроса' }); });
   orReqs.set(reqId, req);
@@ -954,7 +1036,10 @@ ipcMain.handle('tp:saveFileAs', async (e, { content, name, ext } = {}) => {
 // соответствующих CLI; при смене версий сверить заново.
 const TP_BUILTIN_AGENTS = {
   claude: { label: 'Claude', cmd: 'claude', args: ['-p', '--output-format', 'text'], via: 'stdin', agentArgs: ['--permission-mode', 'acceptEdits', '-p'] },
-  codex: { label: 'Codex', cmd: 'codex', args: ['exec'], via: 'arg', agentArgs: ['exec', '--full-auto'] },
+  // codex в чате — через stdin («codex exec -», как в AI-DB): промпт несёт весь документ, а один
+  // аргумент в Linux ограничен 128 КБ (≈64 тыс. русских букв) — spawn падал с E2BIG; к тому же argv
+  // виден в `ps` любому пользователю системы. Агент-режим — аргументом: там только путь и задача.
+  codex: { label: 'Codex', cmd: 'codex', args: ['exec', '-'], via: 'stdin', agentArgs: ['exec', '--full-auto'] },
   gemini: { label: 'Gemini', cmd: 'gemini', args: ['-p'], via: 'arg', agentArgs: ['--yolo', '-p'] },
 };
 // Список агентов расширяется файлом ~/.LiteEditorAI/tpAgents.json — по записи на утилиту:
@@ -971,11 +1056,12 @@ function tpUserAgents() {
   } catch (_) { return []; }   // нет файла или битый JSON — работаем на встроенных
 }
 // id → конфиг запуска. Пользовательские поля берём выборочно: массив args приводим к строкам,
-// via/pty нормализуем, посторонние ключи из файла в spawn не утекают.
-function tpAgents() {
+// via/pty нормализуем, посторонние ключи из файла в spawn не утекают. user — записи файла
+// (tp:saveAgents проверяет результат ещё ДО записи на диск).
+function tpAgents(user = tpUserAgents()) {
   const out = {};
   for (const [id, c] of Object.entries(TP_BUILTIN_AGENTS)) out[id] = { id, ...c };
-  for (const u of tpUserAgents()) {
+  for (const u of user) {
     const id = String((u && u.id) || '').trim();
     if (!id) continue;
     if (u.hidden) { delete out[id]; continue; }
@@ -1013,11 +1099,14 @@ ipcMain.handle('tp:saveAgents', (_e, { text } = {}) => {
     if (!u.hidden && !String(u.cmd || '').trim() && !TP_BUILTIN_AGENTS[u.id]) return { ok: false, error: i18n.t('У записи «{0}» нет команды (cmd)', u.id) };
     if (u.args !== undefined && !Array.isArray(u.args)) return { ok: false, error: i18n.t('Поле args у записи «{0}» должно быть массивом', u.id) };
   }
+  // Проверяем, что после правки остаётся хоть один агент, ДО записи: раньше файл сохранялся и
+  // только потом приходил отказ — «Отмена» в модалке оставляла на диске список без агентов, и
+  // любой запрос в чате отвечал «не настроено ни одного агента».
+  const list = Object.values(tpAgents(arr)).map((a) => ({ id: a.id, label: a.label, canAgent: Array.isArray(a.agentArgs) && a.agentArgs.length > 0 }));
+  if (!list.length) return { ok: false, error: 'Так не остаётся ни одного агента — верните хотя бы одного' };
   ensureStoreDir();
   try { atomicWriteSync(TP_AGENTS_FILE(), JSON.stringify(arr, null, 2)); }
   catch (e2) { return { ok: false, error: String(e2.message || e2) }; }
-  const list = Object.values(tpAgents()).map((a) => ({ id: a.id, label: a.label, canAgent: Array.isArray(a.agentArgs) && a.agentArgs.length > 0 }));
-  if (!list.length) return { ok: false, error: 'Так не остаётся ни одного агента — верните хотя бы одного' };
   return { ok: true, list };
 });
 // GUI-сессия часто не видит ~/.local/bin и nvm-bin → дополняем PATH, чтобы claude/codex нашлись.
@@ -1131,6 +1220,13 @@ ipcMain.on('tp:run', (e, { reqId, agent, prompt, mode, cwd } = {}) => {
   try { child = spawn(conf.cmd, args, { cwd: plan.cwd, env: tpEnv() }); }
   catch (err) { safeSend(sender, 'tp:error', { reqId, error: 'не запустить «' + conf.cmd + '»: ' + (err.message || err) }); return; }
   tpReqs.set(reqId, child);
+  // Декодируем поток целиком (StringDecoder): русский текст — по два байта на букву, и буква на
+  // границе чанков при c.toString() превращалась в «��» и в чате, и в итоговом тексте для «Заменить».
+  child.stdout.setEncoding('utf8'); child.stderr.setEncoding('utf8');
+  // Агент вышел, не дочитав промпт (не авторизован, неверный флаг), а документ больше буфера
+  // pipe (64 КБ) → асинхронный EPIPE на stdin. try/catch у write его не ловит, и без слушателя
+  // это необработанное исключение главного процесса. Причину и так сообщат 'close'/'error'.
+  child.stdin.on('error', () => {});
   let out = '', errOut = '';
   // Агент-режим обходит файлы и правит их — 4 минут ему мало; чат отвечает одним куском.
   const to = setTimeout(() => { if (tpReqs.has(reqId)) { tpReqs.delete(reqId); try { child.kill(); } catch (_) {} safeSend(sender, 'tp:error', { reqId, error: i18n.t('таймаут (агент не ответил вовремя)') }); } }, mode === 'agent' ? 900000 : 240000);
@@ -1141,7 +1237,8 @@ ipcMain.on('tp:run', (e, { reqId, agent, prompt, mode, cwd } = {}) => {
     safeSend(sender, 'tp:error', { reqId, error: 'агент «' + conf.cmd + '» не найден/не запустился: ' + (err.message || err) });
   });
   child.on('close', (code) => {
-    if (!tpReqs.has(reqId)) return; tpReqs.delete(reqId); clearTimeout(to);
+    clearTimeout(to);   // и после «Стоп»/закрытия окна: иначе таймер до 15 мин держал процесс и весь вывод
+    if (!tpReqs.has(reqId)) return; tpReqs.delete(reqId);
     const text = out.trim();
     // Отказ по авторизации приходит обычным текстом и выглядел бы как ответ агента — ловим раньше.
     // Но модуль обработки ТЕКСТА: агента вполне могут попросить написать раздел про логин, и в
@@ -1153,6 +1250,10 @@ ipcMain.on('tp:run', (e, { reqId, agent, prompt, mode, cwd } = {}) => {
     else safeSend(sender, 'tp:error', { reqId, error: errOut.trim() || ('агент завершился с кодом ' + code) });
   });
   if (plan.viaStdin) { try { child.stdin.write(prompt || ''); child.stdin.end(); } catch (_) {} }
+  // Промпт в аргументе (агент-режим, gemini) — stdin всё равно закрываем: CLI, который при не-TTY
+  // stdin дочитывает его до EOF, чтобы приклеить к промпту (так работает `cat f | claude -p …`), с
+  // открытым pipe ждал бы до таймаута в 4/15 минут. Пустой вход промпт из аргумента не меняет.
+  else { try { child.stdin.end(); } catch (_) {} }
 });
 
 // Остановить работающего агента. В агент-режиме это не удобство, а необходимость: до сих пор
@@ -1163,7 +1264,9 @@ ipcMain.on('tp:cancel', (e, { reqId } = {}) => {
   if (!child) return;
   tpReqs.delete(reqId);
   try { child.kill('SIGTERM'); } catch (_) {}
-  setTimeout(() => { try { if (child.exitCode === null && !child.killed) child.kill('SIGKILL'); } catch (_) {} }, 3000);
+  // Жив ли процесс — по exitCode/signalCode: child.killed становится true сразу после УСПЕШНОЙ
+  // отправки SIGTERM, и с проверкой !killed добивание не срабатывало никогда.
+  setTimeout(() => { try { if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL'); } catch (_) {} }, 3000);
   safeSend(e.sender, 'tp:error', { reqId, error: i18n.t('Остановлено') });
 });
 
@@ -1207,6 +1310,28 @@ function killReqMap(m) {
   for (const v of m.values()) { try { if (v && typeof v.kill === 'function') v.kill(); else if (v && typeof v.destroy === 'function') v.destroy(); } catch (_) {} }
   m.clear();
 }
+// Запрос живёт, пока живо окно, которое его заказало. Каналом ходят «Базы данных» и «Мониторинг
+// сайтов»; закрытие окна глушило только запросы окна БД (и заодно чужие), а агент закрытого
+// «Мониторинга» жил до таймаута — до 5 минут работы и токенов впустую. Подписка — одна на окно.
+const dbaiOwner = new Map();          // reqId → webContents-заказчик
+const dbaiWatched = new WeakSet();    // окна, на чьё закрытие уже подписаны
+function dbaiTrack(sender, reqId, req) {
+  dbaiReqs.set(reqId, req);
+  for (const id of [...dbaiOwner.keys()]) if (!dbaiReqs.has(id)) dbaiOwner.delete(id);   // завершённые
+  dbaiOwner.set(reqId, sender);
+  if (!sender || dbaiWatched.has(sender)) return;
+  dbaiWatched.add(sender);
+  try {
+    sender.once('destroyed', () => {
+      for (const [id, wc] of [...dbaiOwner]) {
+        if (wc !== sender) continue;
+        dbaiOwner.delete(id);
+        const c = dbaiReqs.get(id); dbaiReqs.delete(id);
+        try { if (c && typeof c.kill === 'function') c.kill(); else if (c && typeof c.destroy === 'function') c.destroy(); } catch (_) {}
+      }
+    });
+  } catch (_) {}
+}
 ipcMain.on('dbai:run', (e, { reqId, agent, prompt } = {}) => {
   const sender = e.sender;
   const conf = DBAI_AGENTS[agent] || DBAI_AGENTS.claude;
@@ -1214,7 +1339,10 @@ ipcMain.on('dbai:run', (e, { reqId, agent, prompt } = {}) => {
   let child;
   try { child = spawn(conf.cmd, args, { cwd: os.homedir(), env: tpEnv() }); }
   catch (err) { safeSend(sender, 'dbai:error', { reqId, error: 'не запустить «' + conf.cmd + '»: ' + (err.message || err) }); return; }
-  dbaiReqs.set(reqId, child);
+  dbaiTrack(sender, reqId, child);
+  // Декодируем поток целиком (StringDecoder): русская буква — два байта, и на границе чанков
+  // c.toString() давал «��» в ответе агента (так же в tp:run/openrouter)
+  child.stdout.setEncoding('utf8'); child.stderr.setEncoding('utf8');
   let errOut = '', any = false, buf = '', sawDelta = false;
   const to = setTimeout(() => { if (dbaiReqs.has(reqId)) { dbaiReqs.delete(reqId); try { child.kill(); } catch (_) {} safeSend(sender, 'dbai:error', { reqId, error: 'таймаут (агент не ответил вовремя)' }); } }, 300000);
   const emit = (chunk) => { if (!chunk) return; any = true; safeSend(sender, 'dbai:data', { reqId, chunk }); };
@@ -1237,13 +1365,17 @@ ipcMain.on('dbai:run', (e, { reqId, agent, prompt } = {}) => {
     child.stdout.on('data', (c) => emit(c.toString('utf8')));
   }
   child.stderr.on('data', (c) => { errOut += c.toString('utf8'); });
-  child.on('error', (err) => { if (!dbaiReqs.has(reqId)) return; dbaiReqs.delete(reqId); clearTimeout(to); safeSend(sender, 'dbai:error', { reqId, error: 'агент «' + conf.cmd + '» не найден/не запустился: ' + (err.message || err) }); });
+  // clearTimeout — до проверки: после «Стоп»/закрытия окна запроса в карте уже нет, а 5-минутный
+  // таймер с замыканием на процесс и окно висел бы до срабатывания
+  child.on('error', (err) => { clearTimeout(to); if (!dbaiReqs.has(reqId)) return; dbaiReqs.delete(reqId); safeSend(sender, 'dbai:error', { reqId, error: 'агент «' + conf.cmd + '» не найден/не запустился: ' + (err.message || err) }); });
   child.on('close', (code) => {
-    if (!dbaiReqs.has(reqId)) return; dbaiReqs.delete(reqId); clearTimeout(to);
+    clearTimeout(to);
+    if (!dbaiReqs.has(reqId)) return; dbaiReqs.delete(reqId);
     if (conf.stream === 'json' && buf.trim()) handleLine(buf);
     if (any) safeSend(sender, 'dbai:done', { reqId });
     else safeSend(sender, 'dbai:error', { reqId, error: errOut.trim() || ('агент завершился с кодом ' + code) });
   });
+  child.stdin.on('error', () => {});   // агент не стартовал/вышел раньше, чем дочитал промпт → async EPIPE не должен ронять main
   try { child.stdin.write(prompt || ''); child.stdin.end(); } catch (_) {}
 });
 ipcMain.on('dbai:abort', (e, { reqId } = {}) => {
@@ -1260,6 +1392,7 @@ ipcMain.handle('dbai:apiModels', async (_e, { baseUrl, key } = {}) => {
     let u; try { u = new URL(String(baseUrl).replace(/\/$/, '') + '/models'); } catch (_) { return resolve({ error: 'неверный адрес' }); }
     const headers = { 'Accept': 'application/json', ...(key ? { Authorization: 'Bearer ' + key } : {}) };
     const req = dbaiHttpMod(u).request(u, { method: 'GET', headers }, (res) => {
+      res.setEncoding('utf8');   // многобайтный символ на границе чанков не бьётся
       let data = ''; res.on('data', (c) => { data += c; });
       // обрыв посреди ответа даёт только 'close' без 'end' — иначе invoke висел бы вечно
       res.on('close', () => { if (!res.complete) resolve({ error: 'соединение с сервером оборвалось' }); });
@@ -1273,15 +1406,18 @@ ipcMain.handle('dbai:apiModels', async (_e, { baseUrl, key } = {}) => {
     req.end();
   });
 });
-ipcMain.on('dbai:apiRun', (e, { reqId, baseUrl, key, model, messages, usage } = {}) => {
+ipcMain.on('dbai:apiRun', (e, { reqId, baseUrl, key, model, messages, usage, prompt } = {}) => {
   const sender = e.sender;
   let u; try { u = new URL(String(baseUrl).replace(/\/$/, '') + '/chat/completions'); } catch (_) { safeSend(sender, 'dbai:error', { reqId, error: 'неверный адрес провайдера' }); return; }
   // Полноценный многоходовой диалог с ролью system: одним склеенным user-сообщением модель хуже
   // держит правила, а провайдер не может кешировать неизменную часть промпта (схему БД).
-  const msgs = Array.isArray(messages) && messages.length ? messages : [{ role: 'user', content: '' }];
+  // Одиночный prompt — прежний контракт канала: им шлёт «Мониторинг сайтов» (sitemon.js), и без
+  // этого фолбэка модель получала пустое сообщение вместо задания.
+  const msgs = Array.isArray(messages) && messages.length ? messages : [{ role: 'user', content: String(prompt || '') }];
   const body = JSON.stringify({ model, messages: msgs, stream: true, ...(usage ? { stream_options: { include_usage: true } } : {}) });
   const headers = { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body), ...(key ? { Authorization: 'Bearer ' + key } : {}) };
   const req = dbaiHttpMod(u).request(u, { method: 'POST', headers }, (res) => {
+    res.setEncoding('utf8');   // SSE-кадры с русским текстом: буква на границе чанков иначе превращалась в «��»
     if (res.statusCode >= 400) { let err = ''; res.on('data', (c) => { err += c; }); res.on('end', () => { let msg = 'HTTP ' + res.statusCode; try { const j = JSON.parse(err); if (j.error && j.error.message) msg = j.error.message; } catch (_) {} if (!dbaiReqs.has(reqId)) return; dbaiReqs.delete(reqId); safeSend(sender, 'dbai:error', { reqId, error: msg }); }); return; }
     let buf = '', any = false;
     res.on('data', (chunk) => {
@@ -1307,7 +1443,7 @@ ipcMain.on('dbai:apiRun', (e, { reqId, baseUrl, key, model, messages, usage } = 
   });
   req.on('error', (err) => { if (!dbaiReqs.has(reqId)) return; dbaiReqs.delete(reqId); safeSend(sender, 'dbai:error', { reqId, error: String(err.message || err) }); });
   req.setTimeout(300000, () => { req.destroy(); if (!dbaiReqs.has(reqId)) return; dbaiReqs.delete(reqId); safeSend(sender, 'dbai:error', { reqId, error: 'таймаут запроса' }); });
-  dbaiReqs.set(reqId, req);
+  dbaiTrack(sender, reqId, req);
   req.write(body); req.end();
 });
 
@@ -1551,6 +1687,8 @@ ipcMain.on('ctxmine:analyze', (e, { reqId, projPath, capChars, done, only } = {}
       for (const b of ev.message.content) if (b && b.type === 'text' && b.text) emit(b.text);
     }
   };
+  // Строки, а не Buffer: русская буква на стыке чанков при c.toString() давала «��» в правилах анализа.
+  child.stdout.setEncoding('utf8'); child.stderr.setEncoding('utf8');
   child.stdout.on('data', (c) => { buf += c.toString('utf8'); let nl; while ((nl = buf.indexOf('\n')) >= 0) { handleLine(buf.slice(0, nl)); buf = buf.slice(nl + 1); } });
   child.stderr.on('data', (c) => { errOut += c.toString('utf8'); });
   child.on('error', (err) => { if (!ctxmineReqs.has(reqId)) return; ctxmineReqs.delete(reqId); clearTimeout(to); safeSend(sender, 'ctxmine:error', { reqId, error: 'claude не найден/не запустился: ' + ((err && err.message) || err) }); });
@@ -1610,7 +1748,10 @@ ipcMain.handle('ctxmine:apply', (_e, { projPath, items } = {}) => {
     const file = targets[pl];
     try {
       fs.mkdirSync(path.dirname(file), { recursive: true });
-      let cur = ''; try { cur = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : ''; } catch (_) {}
+      // Пустым считаем ТОЛЬКО отсутствующий файл. Раньше любая ошибка чтения (EACCES, EMFILE…) тоже
+      // давала cur = '', и запись «заголовок + буллеты» затирала весь существующий CLAUDE.md.
+      let cur = '';
+      try { cur = fs.readFileSync(file, 'utf8'); } catch (e) { if (!e || e.code !== 'ENOENT') throw e; }
       const bullets = arr.map((it) => {
         const t = String((it && it.title) || '').trim();
         const d = String((it && it.detail) || '').trim();
@@ -1620,6 +1761,7 @@ ipcMain.handle('ctxmine:apply', (_e, { projPath, items } = {}) => {
       const next = cur.includes(CTXMINE_APPLY_HEADER)
         ? base + '\n' + bullets + '\n'
         : (base ? base + '\n\n' : '') + CTXMINE_APPLY_HEADER + '\n' + bullets + '\n';
+      ctxbkPush(file, 'claude-file');   // как и любая перезапись из модуля — сначала копия (глобальный CLAUDE.md иначе без отката)
       atomicWriteSync(file, next);
       applied.push({ placement: pl, file, count: arr.length });
     } catch (err) { errors.push({ placement: pl, error: String((err && err.message) || err) }); }
@@ -1821,8 +1963,12 @@ function ctxfsResolve(root, rel) {
   const rootRes = path.resolve(root);
   if (abs !== rootRes && !abs.startsWith(rootRes + path.sep)) return null;
   try { // симлинк наружу корня режем по фактическому пути
-    if (fs.existsSync(abs)) {
-      const real = fs.realpathSync(abs), realRoot = fs.realpathSync(rootRes);
+    // Файла ещё нет (запись нового) — сверяем ближайшего существующего предка: иначе «link/new.md»
+    // при link → /куда-угодно проходил проверку, и mkdir/запись уходили за пределы корня.
+    let probe = abs;
+    while (probe !== rootRes && !fs.existsSync(probe)) probe = path.dirname(probe);
+    if (fs.existsSync(probe)) {
+      const real = fs.realpathSync(probe), realRoot = fs.realpathSync(rootRes);
       if (real !== realRoot && !real.startsWith(realRoot + path.sep)) return null;
     }
   } catch (_) {}
@@ -1901,7 +2047,9 @@ ipcMain.handle('ctxfs:read', (_e, { scope, projPath, rel, offset, limit } = {}) 
   const size = st.size;
   const whole = size <= CTXFS_EDIT_MAX && offset == null;
   const from = Math.max(0, Math.min(size, Number(offset) || 0));
-  const want = whole ? size : Math.max(4096, Math.min(CTXFS_WINDOW, Number(limit) || CTXFS_WINDOW));
+  // Явный limit задаёт просмотр вверх у начала файла: окно должно кончиться ровно на границе уже
+  // показанного, и нижняя планка 4 КБ там давала бы перекрытие — только для неявного размера.
+  const want = whole ? size : Math.max(limit != null ? 1 : 4096, Math.min(CTXFS_WINDOW, Number(limit) || CTXFS_WINDOW));
   let fd;
   try {
     fd = fs.openSync(abs, 'r');
@@ -1983,12 +2131,16 @@ ipcMain.handle('ctxfs:createArtifact', (_e, { scope, projPath, kind, slug, title
 });
 // Заготовка хука: НЕ пишем в settings.json сами (там чужая схема и чужие настройки),
 // а отдаём готовый кусок JSON — человек вставит его в открытый рядом редактор.
+// Заголовок правила — ответ модели по истории диалогов, то есть недоверенный текст. В двойных
+// кавычках (JSON.stringify) оболочка всё равно раскрывает $(…) и `…`, и вставленный хук выполнял бы
+// это на КАЖДОМ вызове Bash агентом. В одинарных кавычках оболочка не интерпретирует ничего.
+const ctxfsShQuote = (s) => "'" + String(s).replace(/'/g, "'\\''") + "'";
 ipcMain.handle('ctxfs:hookStub', (_e, { title, detail } = {}) => {
   const stub = {
     hooks: {
       PreToolUse: [{
         matcher: 'Bash',
-        hooks: [{ type: 'command', command: `echo ${JSON.stringify(String(title || 'правило'))}` }],
+        hooks: [{ type: 'command', command: `echo ${ctxfsShQuote(String(title || 'правило'))}` }],
       }],
     },
   };
@@ -2064,7 +2216,11 @@ function ctxbkPush(file, kind) {
   try {
     fs.mkdirSync(CTXBK_DIR, { recursive: true });
     const id = 'bk' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5);
-    fs.writeFileSync(path.join(CTXBK_DIR, id + '.bak'), text);
+    // Права исходника переносим на копию: в ~/.claude есть файлы 0600 с секретами (.credentials.json,
+    // settings.json с токенами MCP/env), и копия по umask (0644) делала их читаемыми всем.
+    // 0o600 — владелец копию в любом случае читает (иначе восстановление с «копия пропала»).
+    let mode; try { mode = (fs.statSync(file).mode & 0o777) | 0o600; } catch (_) {}
+    fs.writeFileSync(path.join(CTXBK_DIR, id + '.bak'), text, mode == null ? undefined : { mode });
     const d = ctxbkLoad();
     d.list.push({ id, file, kind: kind || '', ts: Date.now(), chars: text.length });
     // ротация: у каждого пути остаются CTXBK_KEEP свежих копий
@@ -2234,8 +2390,10 @@ ipcMain.handle('company:notesSet', (_e, { projPath, text } = {}) => {
 });
 ipcMain.handle('company:diff', async (_e, { projPath } = {}) => {
   try {
-    const stat = await git(projPath, ['diff', '--stat']);
-    const names = await git(projPath, ['diff', '--name-only']);
+    // core.quotePath=false: иначе «Отчёт.md» приходит как "\320\236…" — в списке мусор, а клик
+    // открывает несуществующий путь (так же в git:status/аудите).
+    const stat = await git(projPath, ['-c', 'core.quotePath=false', 'diff', '--stat']);
+    const names = await git(projPath, ['-c', 'core.quotePath=false', 'diff', '--name-only']);
     if (stat == null && names == null) return { ok: false, error: 'git недоступен' };
     return { ok: true, stat: stat || '', files: (names || '').split('\n').map((s) => s.trim()).filter(Boolean) };
   } catch (e) { return { ok: false, error: String(e) }; }
@@ -2253,6 +2411,11 @@ function companyKill(child) {
 ipcMain.on('company:run', (e, { reqId, projPath, goal, roles, director, limitUsd, permission, memoryOn } = {}) => {
   const sender = e.sender;
   if (!projPath) { safeSend(sender, 'company:error', { reqId, error: 'нет активного проекта' }); return; }
+  // Каталог проекта обязан существовать: mkdirSync(recursive) ниже молча создал бы его заново
+  // (проект переехал, внешний диск отключён), и директор с правом правок строил бы всё в пустой папке.
+  let projStat = null;
+  try { projStat = fs.statSync(projPath); } catch (_) { /* ниже */ }
+  if (!projStat || !projStat.isDirectory()) { safeSend(sender, 'company:error', { reqId, error: `каталог проекта не найден: ${projPath}` }); return; }
   // материализуем штат в .claude/agents/ (нативные сабагенты)
   try {
     const agDir = path.join(projPath, '.claude', 'agents');
@@ -2276,6 +2439,9 @@ ipcMain.on('company:run', (e, { reqId, projPath, goal, roles, director, limitUsd
   try { child = spawn('claude', args, { cwd: projPath, env: tpEnv(), detached: process.platform !== 'win32' }); }
   catch (err) { safeSend(sender, 'company:error', { reqId, error: 'не запустить «claude»: ' + (err.message || err) }); return; }
   companyReqs.set(reqId, child);
+  // Строки вместо Buffer: длинные строки stream-json (результаты инструментов) рвутся на чанки, и
+  // русская буква на стыке при c.toString() становилась «��» в логе директора.
+  child.stdout.setEncoding('utf8'); child.stderr.setEncoding('utf8');
   let buf = '', errOut = '';
   // сторож простоя: директор может думать долго, но если МОЛЧИТ 15 минут — считаем зависшим
   let idle;
@@ -2298,10 +2464,14 @@ ipcMain.on('company:run', (e, { reqId, projPath, goal, roles, director, limitUsd
     if (!companyReqs.has(reqId)) return; companyReqs.delete(reqId); clearTimeout(idle);
     safeSend(sender, 'company:error', { reqId, error: '«claude» не найден/не запустился: ' + (err.message || err) });
   });
-  child.on('close', (code) => {
-    if (!companyReqs.has(reqId)) return; companyReqs.delete(reqId); clearTimeout(idle);
+  child.on('close', (code, signal) => {
+    clearTimeout(idle); // и после «Стоп»/закрытия окна: вывод до смерти процесса взводил сторожа ещё на 15 мин
+    if (!companyReqs.has(reqId)) return; companyReqs.delete(reqId);
     if (buf.trim()) emitLine(buf);   // флаш хвоста: финальный {type:'result'} может прийти без \n
-    safeSend(sender, 'company:done', { reqId, code, error: code ? (errOut.trim() || ('claude завершился с кодом ' + code)) : '' });
+    // Убит сигналом извне (OOM, kill, падение) — code === null, и по `code ? … : ''` это считалось
+    // успехом: в логе «Готово.», в истории прогон отмечен удачным. Свой «Стоп» сюда не доходит.
+    const failed = code !== 0;
+    safeSend(sender, 'company:done', { reqId, code, error: failed ? (errOut.trim() || (code === null ? 'claude прерван сигналом ' + signal : 'claude завершился с кодом ' + code)) : '' });
   });
   try { child.stdin.write(goal || ''); child.stdin.end(); } catch (_) {}
 });
@@ -2497,6 +2667,13 @@ ipcMain.on('ctx:watchOutputs', (e, { projId, projPath } = {}) => {
       timer = setTimeout(() => safeSend(e.sender, 'ctx:outputChanged', { projId }), 400);
     });
   } catch (_) { return; }
+  // Каталог проекта удалили/переименовали/отмонтировали при открытом модуле: FSWatcher поднимает
+  // 'error', и без слушателя это uncaughtException в main, а мёртвый вотчер оставался в карте.
+  watcher.on('error', () => {
+    clearTimeout(timer);
+    try { watcher.close(); } catch (_) {}
+    if (ctxOutWatchers.get(projId) === watcher) ctxOutWatchers.delete(projId);
+  });
   ctxOutWatchers.set(projId, watcher);
 });
 ipcMain.on('ctx:unwatchOutputs', (_e, { projId } = {}) => {
@@ -2532,12 +2709,17 @@ ipcMain.handle('ext:scan', () => {
     let manifest = null, error = '';
     try { manifest = JSON.parse(fs.readFileSync(path.join(dir, 'manifest.json'), 'utf8')); }
     catch (e) { error = 'manifest.json не парсится: ' + (e.message || e); }
+    // null/false/0 — валидный JSON, но проверки ниже пропускали его целиком (и apiVersion тоже)
+    if (!error && (!manifest || typeof manifest !== 'object' || Array.isArray(manifest))) { error = 'manifest.json должен быть JSON-объектом'; manifest = null; }
     if (manifest && !error) {
       if (!manifest.id || !/^[a-z0-9-]+$/.test(manifest.id)) error = 'некорректный id в манифесте (только a-z, 0-9, дефис)';
       else if (manifest.id !== ent.name) error = `id «${manifest.id}» не совпадает с именем папки «${ent.name}»`;
       else if (Number(manifest.apiVersion) !== EXT_API_VERSION) error = `apiVersion ${manifest.apiVersion} не поддерживается (редактор: ${EXT_API_VERSION})`;
     }
     const mainFile = path.join(dir, (manifest && typeof manifest.main === 'string' && manifest.main) || 'index.js');
+    // main — путь ВНУТРИ папки модуля: «../чужой/index.js» грузил бы код из-за её пределов
+    const mainRel = path.relative(dir, mainFile);
+    if (!error && (!mainRel || mainRel === '..' || mainRel.startsWith('..' + path.sep) || path.isAbsolute(mainRel))) error = 'main должен указывать на файл внутри папки модуля';
     if (!error && !fs.existsSync(mainFile)) error = 'нет главного файла: ' + path.basename(mainFile);
     out.push({ id: ent.name, dir, manifest, error, mainUrl: error ? '' : pathToFileURL(mainFile).href, mainFile });
   }
@@ -2665,7 +2847,9 @@ ipcMain.handle('settings:import', async () => {
     if (stat.size > IMPORT_MAX_BYTES) return { error: `Файл слишком большой (${Math.round(stat.size / 1024)} КБ)` };
     data = JSON.parse(fs.readFileSync(file, 'utf8'));
   } catch (e) { return { error: 'Не удалось прочитать файл: ' + String(e.message || e) }; }
-  if (!data || data._format !== 'lite-settings' || typeof data.store !== 'object') {
+  // typeof null и массив — тоже 'object': null ронял цикл ниже невнятным «Cannot convert undefined
+  // or null to object», а массив «успешно» импортировал ничего (ключи 0,1,… не из STORE_KEYS).
+  if (!data || data._format !== 'lite-settings' || !data.store || typeof data.store !== 'object' || Array.isArray(data.store)) {
     return { error: 'Это не файл настроек LiteEditor.' };
   }
   try {
@@ -2677,7 +2861,7 @@ ipcMain.handle('settings:import', async () => {
       if (Object.prototype.hasOwnProperty.call(data.store, k) && !writeStoreKey(k, data.store[k])) failedKeys.push(k);
     }
     let failedNotes = 0;
-    if (data.notes && typeof data.notes === 'object') {
+    if (data.notes && typeof data.notes === 'object' && !Array.isArray(data.notes)) { // массив дал бы notes/0.json, notes/1.json…
       const nd = path.join(storeDir, 'notes');
       fs.mkdirSync(nd, { recursive: true });
       for (const [id, arr] of Object.entries(data.notes)) {
@@ -2734,7 +2918,9 @@ function createWindow() {
 
   mainWindow = new BrowserWindow(opts);
   hardenNavigation(mainWindow);
-  mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'));
+  // Отказ loadFile (окно закрыли во время загрузки — ERR_ABORTED) иначе уходит в unhandledRejection
+  // и в реестр ошибок как сбой приложения; сам отказ оставляем в логе предупреждением.
+  mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html')).catch((e) => logger.log('warn', 'window', 'loadFile: ' + String((e && e.message) || e)));
   if (st.maximized) mainWindow.maximize();
 
   // Renderer death is the most likely "silent close": log reason + exitCode so
@@ -2746,8 +2932,12 @@ function createWindow() {
   // Окно редактора начинает загружать страницу заново (перезагрузка после падения, импорт настроек):
   // терминалы старой страницы не гасим — агенты в них продолжают работать, а новая страница забирает
   // их по id (pty:adoptable → pty:create с тем же id). Кого не забрали за ORPHAN_TTL_MS — гасим.
+  // did-start-navigation приходит РАНЬШЕ will-navigate (порядок событий навигации в Electron), поэтому
+  // переход наружу — ссылка или форма в пользовательском модуле, — который hardenNavigation тут же
+  // отменит, ставил бы все терминалы окна на гашение: страница оставалась, а агенты умирали через
+  // ORPHAN_TTL_MS. Страницу меняет только переход на свою страницу (перезагрузка, импорт настроек).
   mainWindow.webContents.on('did-start-navigation', (ev) => {
-    if (ev && ev.isMainFrame && !ev.isSameDocument) orphanPtysOf(mainWindow.webContents);
+    if (ev && ev.isMainFrame && !ev.isSameDocument && isAppPage(ev.url)) orphanPtysOf(mainWindow.webContents);
   });
   mainWindow.webContents.on('unresponsive', () => logger.log('warn', 'window', 'renderer unresponsive'));
   mainWindow.webContents.on('responsive', () => logger.log('info', 'window', 'renderer responsive'));
@@ -2758,6 +2948,9 @@ function createWindow() {
 
   const persist = () => {
     if (!mainWindow || mainWindow.isDestroyed()) return;
+    // F11: getBounds() — это весь экран; сохранив его, следующий запуск открыл бы окно размером
+    // с экран, но уже не полноэкранным. Держим последние обычные габариты.
+    if (mainWindow.isFullScreen()) return;
     if (mainWindow.isMaximized()) { saveState({ maximized: true }); return; }
     const b = mainWindow.getBounds();
     saveState({ x: b.x, y: b.y, width: b.width, height: b.height, maximized: false });
@@ -2864,7 +3057,7 @@ const ownerBySession = new Map();   // sessionId -> webContents — маршру
 
 function readModuleWins() { const v = readStoreKey('moduleWins'); return (v && typeof v === 'object') ? v : {}; }
 function saveModuleBounds(modId, win) {
-  if (!win || win.isDestroyed()) return;
+  if (!win || win.isDestroyed() || win.isFullScreen()) return; // F11 — не затираем обычные габариты размером экрана
   const all = readModuleWins();
   if (win.isMaximized()) { all[modId] = { ...(all[modId] || {}), maximized: true }; }
   else { const b = win.getBounds(); all[modId] = { x: b.x, y: b.y, width: b.width, height: b.height, maximized: false }; }
@@ -2913,16 +3106,43 @@ function isAppPage(url) {
     return APP_PAGES.has(u.href);
   } catch (_) { return false; }
 }
+// Внешние протоколы (search-ms:, ms-msdt:, vscode:, …) Chromium отдаёт ОС через запрос разрешения
+// 'openExternal', которое Electron без обработчика выдаёт ВСЕГДА. Главный фрейм наших окон режет
+// will-navigate выше, но есть и то, что он не видит: iframe превью HTML в вивере (allow-scripts +
+// allow-popups — чужой файл из репозитория) и скрытые окна SEO-аудита/мониторинга сайтов, которые
+// грузят произвольные страницы. Любая из них одной строкой JS запускала бы обработчик протокола ОС.
+// Пропускаем только http(s)/mailto; остальные разрешения — как по умолчанию (выдаём).
+const guardedSessions = new WeakSet();
+function guardExternalProtocols(ses) {
+  if (!ses || guardedSessions.has(ses)) return;
+  guardedSessions.add(ses);
+  try {
+    ses.setPermissionRequestHandler((_wc, permission, cb, details) => {
+      if (permission !== 'openExternal') { cb(true); return; }
+      const url = String((details && details.externalURL) || '');
+      const ok = /^(https?|mailto):/i.test(url);
+      if (!ok) logger.log('warn', 'window', 'внешний протокол отклонён: ' + url.slice(0, 200));
+      cb(ok);
+    });
+  } catch (_) {}
+}
+// shell.openExternal асинхронный: try/catch вокруг него отказ не ловит (нет браузера по умолчанию,
+// xdg-open упал) — промис уходил в unhandledRejection и в журнал ошибок как сбой приложения.
+function openExternalQuiet(url) {
+  Promise.resolve().then(() => shell.openExternal(url))
+    .catch((e) => logger.log('warn', 'window', 'openExternal: ' + String((e && e.message) || e)));
+}
 function hardenNavigation(win) {
   const wc = win.webContents;
+  guardExternalProtocols(wc.session); // окна без partition делят defaultSession — вместе со скрытыми окнами аудита
   wc.on('will-navigate', (e, url) => {
     if (isAppPage(url)) return;                       // своя страница и её перезагрузка
     e.preventDefault();
     logger.log('warn', 'window', 'навигация наружу отклонена: ' + String(url).slice(0, 200));
-    if (/^https?:/i.test(url)) { try { shell.openExternal(url); } catch (_) {} }
+    if (/^https?:/i.test(url)) openExternalQuiet(url);
   });
   wc.setWindowOpenHandler(({ url }) => {
-    if (/^https?:/i.test(url)) { try { shell.openExternal(url); } catch (_) {} }
+    if (/^https?:/i.test(url)) openExternalQuiet(url);
     return { action: 'deny' };                        // отдельных окон без preload-контракта не заводим
   });
 }
@@ -2944,7 +3164,7 @@ function openModuleWindow(modId) {
   const win = new BrowserWindow(opts);
   hardenNavigation(win);
   moduleWindows.set(modId, win);
-  win.loadFile(path.join(__dirname, 'renderer', 'module.html'), { hash: modId });
+  win.loadFile(path.join(__dirname, 'renderer', 'module.html'), { hash: modId }).catch((e) => logger.log('warn', 'window', `loadFile ${modId}: ` + String((e && e.message) || e))); // как у окна редактора
   if (saved.maximized) win.maximize();
   win.once('ready-to-show', () => { if (!win.isDestroyed()) win.show(); });
   win.on('maximize', () => { sendTo(win, 'win:maximized', true); });
@@ -2977,7 +3197,10 @@ function openModuleWindow(modId) {
     // (или HTTP-стрим OpenRouter) доживал до своего таймаута — 2–5 минут работы и токенов в никуда,
     // а «Директор» ИИ-компании ещё и detached, то есть переживал бы окно гарантированно.
     if (modId === 'doc') killReqMap(tpReqs);         // «Обработка текста»
-    if (modId === 'db') killReqMap(dbaiReqs);        // AI-DB (child ИЛИ ClientRequest — killReqMap разбирает оба)
+    // AI-DB: запросы гасит dbaiTrack по закрытию окна-ЗАКАЗЧИКА (тем же каналом ходит «Мониторинг сайтов» —
+    // killReqMap здесь обрывал и его). Соединения и SSH-туннели «Баз данных» нужны только этому окну — закрываем,
+    // иначе они жили до выхода из редактора (следующее открытие окна переподключится само).
+    if (modId === 'db') { try { dbApi.closeAll(); } catch (_) {} }
     if (modId === 'chat') killReqMap(orReqs);        // OpenRouter
     if (modId === 'company') { for (const c of companyReqs.values()) { try { companyKill(c); } catch (_) {} } companyReqs.clear(); }
     // «Контейнеры»: закрыть окно ✕ мимо closeDockerDetail() — и `logs -f` продолжал бы качать вывод
@@ -3196,7 +3419,10 @@ app.whenReady().then(() => {
   startAgendaWatch();      // подхват внешних записей напоминаний (MCP-сервер)
   // Архивы обновлений (по 150 МБ) живут только до перезапуска: раз мы стартовали, скачанное
   // либо уже применено, либо устарело — качать его повторно дешевле, чем копить на диске.
-  setTimeout(() => updater.cleanup(storeDir), 8000);
+  // Но не во время загрузки этого запуска: автозагрузка стартует через ~3 с после окна и к 8 с ещё
+  // идёт — уборка стирала её .part/распаковку, а стейджер без каталога новой версии выходил, не
+  // перезапустив редактор.
+  setTimeout(() => { if (!updDownloading && !updStaged) updater.cleanup(storeDir); }, 8000);
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
@@ -3214,14 +3440,16 @@ app.on('window-all-closed', () => {
   companyReqs.clear();
   // In-flight агент-процессы/HTTP окон модулей (textproc/чат/AI-DB): окно могло крашнуться,
   // не успев послать *:abort → не оставляем claude/codex/запрос сиротами после выхода (B3).
-  killReqMap(tpReqs); killReqMap(dbaiReqs); killReqMap(orReqs);
+  killReqMap(tpReqs); killReqMap(dbaiReqs); killReqMap(orReqs); killReqMap(ctxmineReqs); // + анализ диалогов «Контекста»
   try { dbApi.closeAll(); } catch (_) {}
   try { rhApi.closeAll(); } catch (_) {}
   for (const w of watchers.values()) { try { w.watcher.close(); } catch (_) {} }
   watchers.clear();
   for (const w of ctxOutWatchers.values()) { try { w.close(); } catch (_) {} } // fs.watch выходных файлов «Контекста» (B2)
   ctxOutWatchers.clear();
-  if (pomoTimer) { clearInterval(pomoTimer); pomoTimer = null; }
+  // Не просто гасим тик: на macOS приложение живёт без окон, и с running=true и снятым таймером
+  // переоткрытое окно показывало замёрзший отсчёт, который «Пауза/Продолжить» уже не оживляли.
+  try { pomoStop(); } catch (_) {}
   clipStop(); try { ttsBackend.stop(); } catch (_) {} // сайдкар озвучки не должен пережить редактор
   if (process.platform !== 'darwin') app.quit();
 });
@@ -3341,6 +3569,15 @@ function routeOpenInViewer(payload) {
   else pendingViewerOpens.push(payload); // флашнем по editor:viewerReady
 }
 ipcMain.on('editor:openInViewer', (_e, payload) => routeOpenInViewer(payload));
+// Корень staging-каталогов ЭТОГО процесса — mkdtemp (атомарно, 0700, владелец — мы). Общий
+// «/tmp/lite-editor-view» создавал 0700 первый пользователь машины, и у остальных «В вивер» падал с
+// EACCES. pid в имени — чтобы уборка при старте отличала корни умерших процессов от живого соседа
+// (другой экземпляр редактора со своим профилем). Живёт до выхода: сносится на will-quit (ниже).
+let viewStageRoot = null;
+function viewStageDir() {
+  if (!viewStageRoot || !fs.existsSync(viewStageRoot)) viewStageRoot = fs.mkdtempSync(path.join(os.tmpdir(), `lite-editor-view-${process.pid}-`));
+  return viewStageRoot;
+}
 // Открыть ПРОИЗВОЛЬНЫЙ ТЕКСТ в вивере: пишем во временный файл (человеческое имя сохраняется —
 // каждый экспорт в своей подпапке) и роутим обычный openInViewer. Используют: экспорт результата
 // SQL-запроса (CSV/JSON), просмотр файла из контейнера, правка удалённого файла (SFTP) и т.п.
@@ -3348,12 +3585,38 @@ function stageTextForViewer(name, content) {
   // Контент бывает чувствительным (SQL-выгрузки, конфиги с хоста) → каталог 0700 / файл 0600,
   // имя каталога — из CSPRNG (общий /tmp, соседний юзер не должен ни читать, ни угадать путь).
   const base = String(name || 'export.txt').replace(/[/\\:*?"<>|]/g, '_').slice(0, 120) || 'export.txt';
-  const dir = path.join(os.tmpdir(), 'lite-editor-view', Date.now().toString(36) + crypto.randomBytes(9).toString('hex'));
-  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const dir = path.join(viewStageDir(), Date.now().toString(36) + crypto.randomBytes(9).toString('hex'));
+  fs.mkdirSync(dir, { mode: 0o700 });
   const file = path.join(dir, base);
   fs.writeFileSync(file, String(content == null ? '' : content), { encoding: 'utf8', mode: 0o600 });
   return file;
 }
+// Tmp-копии (выгрузки SQL, файлы с хостов и из контейнеров) раньше копились до перезагрузки ОС, а в
+// %TEMP% Windows — навсегда. Открытые вкладки вивера между запусками не сохраняются, так что на выходе
+// файлы уже никому не нужны. После краха/жёсткого выхода корень остаётся — его подберёт уборка при
+// следующем старте, но только если процесс-владелец (pid из имени) мёртв и каталог наш.
+app.on('will-quit', () => {
+  remoteViewerFiles.clear();
+  if (viewStageRoot) { try { fs.rmSync(viewStageRoot, { recursive: true, force: true }); } catch (_) {} viewStageRoot = null; }
+});
+async function sweepStaleViewStageRoots() {
+  const tmp = os.tmpdir();
+  let names;
+  try { names = await fs.promises.readdir(tmp); } catch (_) { return; }
+  for (const n of names) {
+    const m = /^lite-editor-view-(\d+)-/.exec(n);
+    const pid = m ? Number(m[1]) : 0;
+    if (!pid || pid === process.pid) continue;
+    try { process.kill(pid, 0); continue; } catch (e) { if (!e || e.code !== 'ESRCH') continue; } // жив или чужой (EPERM) — не трогаем
+    const p = path.join(tmp, n);
+    try {
+      const st = await fs.promises.lstat(p);
+      if (!st.isDirectory() || (typeof process.getuid === 'function' && st.uid !== process.getuid())) continue;
+      await fs.promises.rm(p, { recursive: true, force: true });
+    } catch (_) {}
+  }
+}
+app.whenReady().then(() => { setTimeout(() => { sweepStaleViewStageRoots().catch(() => {}); }, 20000); });
 ipcMain.handle('editor:openTextInViewer', (_e, { name, content } = {}) => {
   try {
     const file = stageTextForViewer(name, content);
@@ -3480,7 +3743,9 @@ ipcMain.on('kafka:panelReady', () => {
 });
 ipcMain.on('editor:sendToTerminal', (_e, payload) => forwardToEditor('editor:sendToTerminal', payload));
 // «Пропустить отдых» с оверлея в окне редактора → пропустить текущую фазу помодоро (движок в main).
-ipcMain.on('editor:pomodoroSkip', () => { if (POMO.running) pomoAdvance(); });
+// Только на перерыве: двойной клик (или клик в ту секунду, когда перерыв кончился сам) приходил уже
+// в фазе 'work' — рабочий интервал пропускался целиком и попадал в журнал как завершённый помидор.
+ipcMain.on('editor:pomodoroSkip', () => { if (POMO.running && (POMO.phase === 'short' || POMO.phase === 'long')) pomoAdvance(true); });
 ipcMain.on('editor:sendNoteToTerminal', (_e, payload) => forwardToEditor('editor:sendNoteToTerminal', payload));
 // Окно вивера (встроенный Git) попросило редактор перерисовать список проектов (git-бейджи после commit/checkout).
 ipcMain.on('editor:refreshProjects', () => { sendTo(mainWindow, 'editor:refreshProjects'); });
@@ -3522,7 +3787,7 @@ ipcMain.on('win:growBy', (e, { dx }) => {
   // Accumulate the request in a virtual width (unclamped) so a clamped grow + full shrink
   // cancel out exactly. Re-sync from the real width if the user resized in between.
   const base = growDesiredWidth != null ? growDesiredWidth : b.width;
-  growDesiredWidth = Math.max(760, base + dx);
+  growDesiredWidth = Math.max(760, base + (Number(dx) || 0)); // нечисловой dx навсегда сделал бы ширину NaN
   const width = Math.max(760, Math.min(growDesiredWidth, work.x + work.width - b.x)); // don't run off-screen
   growAppliedWidth = width;
   mainWindow.setBounds({ x: b.x, y: b.y, width, height: b.height });
@@ -3591,6 +3856,29 @@ function userShellEnv(extra) {
   return Object.assign({}, process.env, extra || {});
 }
 
+// Окно-владелец уничтожено (✕ у окна «Система · ~», падение окна модуля → destroy): его шеллы
+// больше некому показать — подхват после перезагрузки есть только у окна редактора (pty:adoptable),
+// а новое окно нумерует вкладки заново. Без этого bash и всё запущенное в нём жили до выхода из
+// редактора. Владельца держим при самом процессе: ownerBySession чистит 'closed' окна модуля.
+const ptyOwner = new WeakMap();        // IPty → webContents окна-владельца
+const ptyOwnerHooked = new WeakSet();  // webContents, на чей 'destroyed' уже подписаны
+function bindPtyOwner(proc, owner) {
+  if (!proc || !owner) return;
+  ptyOwner.set(proc, owner);
+  if (ptyOwnerHooked.has(owner)) return;
+  ptyOwnerHooked.add(owner);
+  try {
+    owner.once('destroyed', () => {
+      for (const [id, p] of [...ptys]) {
+        if (ptyOwner.get(p) !== owner) continue;
+        try { p.kill(); } catch (_) {}
+        ptys.delete(id);
+        dropOrphan(id);
+      }
+    });
+  } catch (_) {}
+}
+
 // owner = webContents окна, создавшего сессию (редактор для терминалов проектов, окно «Система · ~»
 // для scratch). Данные/выход маршрутизируем владельцу (sendToOwner; фолбэк — окно редактора).
 function spawnPtyFor(id, cwd, cols, rows, owner) {
@@ -3614,6 +3902,7 @@ function spawnPtyFor(id, cwd, cols, rows, owner) {
     logger.log('error', 'pty', 'spawn failed', err);
     sendToOwner(id, 'pty:data', { id, data: `\r\n\x1b[31mНе удалось запустить шелл (${shell}): ${err.message}\x1b[0m\r\n` });
     sendToOwner(id, 'pty:exit', { id });
+    ownerBySession.delete(id); // сессии нет — маршрут не нужен (как в onExit)
     return { error: String(err.message || err) };
   }
   logger.log('info', 'pty', `spawned pid=${proc.pid}`);
@@ -3630,10 +3919,11 @@ function spawnPtyFor(id, cwd, cols, rows, owner) {
     dropOrphan(id);
   });
   ptys.set(id, proc);
+  bindPtyOwner(proc, owner);
   return { ok: true };
 }
 ipcMain.handle('pty:create', (e, { id, cwd, cols, rows }) => {
-  if (ptys.has(id)) { dropOrphan(id); ownerBySession.set(id, e.sender); return { ok: true, existed: true }; }
+  if (ptys.has(id)) { dropOrphan(id); ownerBySession.set(id, e.sender); bindPtyOwner(ptys.get(id), e.sender); return { ok: true, existed: true }; }
   return spawnPtyFor(id, cwd, cols, rows, e.sender);
 });
 // Kill the existing PTY (if any) and start a fresh one in the same cwd.
@@ -3799,7 +4089,7 @@ function ensureKdbx() {
   });
   return _kdbxweb;
 }
-let kpDb = null; let kpClipTimer = null;
+let kpDb = null; let kpClipTimer = null; let kpClipClear = null;
 let kpDbFile = null, kpDbName = null; // путь/имя открытой базы (status + запись новых записей)
 const kpEntryById = new Map(); // uuid.id -> entry (живёт в main, в рендерер не отдаём)
 function kpVal(en, field) { const v = en.fields.get(field); return v && typeof v.getText === 'function' ? v.getText() : (v == null ? '' : String(v)); }
@@ -3826,8 +4116,10 @@ function kpListEntries() {
   return entries;
 }
 
-ipcMain.handle('keepass:pick', async () => {
-  const res = await dialog.showOpenDialog(mainWindow, {
+// Родитель диалога — окно-отправитель: пикер зовут и «Сейф паролей», и формы db/rmq/kafka/storage/rh;
+// с mainWindow диалог открывался за окном модуля.
+ipcMain.handle('keepass:pick', async (e) => {
+  const res = await dialog.showOpenDialog(senderWin(e) || mainWindow, {
     title: 'Открыть базу KeePass', properties: ['openFile'],
     filters: [{ name: 'KeePass', extensions: ['kdbx'] }, { name: 'Все файлы', extensions: ['*'] }], ...lastDirOpts(),
   });
@@ -3836,7 +4128,17 @@ ipcMain.handle('keepass:pick', async () => {
   saveState({ lastOpenDir: path.dirname(file) });
   return { ok: true, path: file, name: path.basename(file) };
 });
-ipcMain.handle('keepass:open', async (_e, { path: file, password } = {}) => {
+// Окно, открывшее базу, умерло мимо keepass:lock — окно формы закрыли с открытым пикером «Из сейфа»
+// (его промис уже не дорезолвится до lock), рендерер «Сейфа» упал — расшифрованная база жила бы в
+// памяти main до выхода. Слушатель один на базу: новое открытие снимает прежний.
+let kpOwnerUnbind = null;
+function kpBindOwner(wc, db) {
+  if (kpOwnerUnbind) kpOwnerUnbind();
+  const onGone = () => { kpOwnerUnbind = null; if (kpDb === db) { kpDb = null; kpDbFile = null; kpDbName = null; kpEntryById.clear(); } };
+  try { wc.once('destroyed', onGone); } catch (_) {}
+  kpOwnerUnbind = () => { kpOwnerUnbind = null; try { wc.removeListener('destroyed', onGone); } catch (_) {} };
+}
+ipcMain.handle('keepass:open', async (e, { path: file, password } = {}) => {
   try {
     if (!file || !fs.existsSync(file)) return { ok: false, error: 'Файл не найден' };
     const kw = ensureKdbx();
@@ -3845,6 +4147,7 @@ ipcMain.handle('keepass:open', async (_e, { path: file, password } = {}) => {
     const cred = new kw.Credentials(kw.ProtectedValue.fromString(String(password || '')));
     const db = await kw.Kdbx.load(ab, cred);   // мастер-пароль использован только здесь, не сохраняем
     kpDb = db; kpDbFile = file; kpDbName = path.basename(file);
+    kpBindOwner(e.sender, db);
     return { ok: true, name: kpDbName, entries: kpListEntries() };
   } catch (err) {
     const code = err && err.code;
@@ -3860,10 +4163,15 @@ ipcMain.handle('keepass:copy', (_e, { id, field } = {}) => {
   const val = kpVal(en, field);
   try { clipboard.writeText(val); } catch (_) { return { ok: false, error: 'буфер недоступен' }; }
   if (kpClipTimer) clearTimeout(kpClipTimer);
-  kpClipTimer = setTimeout(() => { try { if (clipboard.readText() === val) clipboard.writeText(''); } catch (_) {} }, 20000); // авто-очистка
+  kpClipClear = () => { kpClipTimer = null; kpClipClear = null; try { if (clipboard.readText() === val) clipboard.writeText(''); } catch (_) {} };
+  kpClipTimer = setTimeout(kpClipClear, 20000); // авто-очистка
   return { ok: true };
 });
-ipcMain.on('keepass:lock', () => { kpDb = null; kpDbFile = null; kpDbName = null; kpEntryById.clear(); if (kpClipTimer) { clearTimeout(kpClipTimer); kpClipTimer = null; } });
+// Блокировка стирает базу, но НЕ отменяет авто-очистку буфера: «скопировал пароль → закрыл сейф →
+// вставил» — обычный сценарий, а отменённый таймер оставлял секрет в буфере навсегда вопреки «очистится через 20 с».
+ipcMain.on('keepass:lock', () => { if (kpOwnerUnbind) kpOwnerUnbind(); kpDb = null; kpDbFile = null; kpDbName = null; kpEntryById.clear(); });
+// Выход раньше таймера — чистим сразу: на Windows/macOS буфер переживает процесс редактора.
+app.on('will-quit', () => { if (kpClipClear) { clearTimeout(kpClipTimer); kpClipClear(); } });
 // --- Шов «из сейфа» для форм подключений (db/rmq/kafka/rh): пикер записей в чужом окне.
 ipcMain.handle('keepass:status', () => ({ open: !!kpDb, name: kpDbName }));
 ipcMain.handle('keepass:entries', () => {
@@ -3940,37 +4248,81 @@ function smFetch(rawUrl, opts = {}) {
   const rejectUnauthorized = opts.insecureTls !== true;
   return new Promise((resolve) => {
     let redirects = 6;
+    let req = null, settled = false, hard = null;
+    let hdrs = headers;
+    // Ошибка или обрезка по лимиту — рвём текущий запрос: докачивать тело дальше SM_BODY_CAP незачем
+    // (раньше остаток — хоть гигабайт — читался впустую до конца на каждой проверке).
+    const finish = (r) => { if (settled) return; settled = true; clearTimeout(hard); if (!r.ok || r.capped) { try { if (req) req.destroy(); } catch (_) {} } resolve(r); };
+    // timeout сокета ниже — это ПРОСТОЙ соединения: поток (SSE, бесконечный ответ, сервер, цедящий по байту)
+    // его не наступает, и промис не решался никогда — цель навсегда оставалась checking (больше не
+    // проверялась), а sample/dryRun висели. Общий срок — на весь обмен с редиректами и телом.
+    hard = setTimeout(() => finish({ ok: false, error: 'таймаут' }), timeoutMs * 3);
     const go = (urlStr) => {
-      let u; try { u = new URL(urlStr); } catch (_) { return resolve({ ok: false, error: 'некорректный URL' }); }
-      if (u.protocol !== 'http:' && u.protocol !== 'https:') return resolve({ ok: false, error: 'только http/https' });
+      let u; try { u = new URL(urlStr); } catch (_) { return finish({ ok: false, error: 'некорректный URL' }); }
+      if (u.protocol !== 'http:' && u.protocol !== 'https:') return finish({ ok: false, error: 'только http/https' });
       const mod = u.protocol === 'https:' ? https : http;
       const t0 = Date.now();
-      let req;
       try {
-        req = mod.request(u, { method: 'GET', rejectUnauthorized, headers: Object.assign({ 'User-Agent': 'LiteEditor-Monitor/1.0', 'Accept': '*/*' }, headers || {}), timeout: timeoutMs }, (res) => {
-          if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location && redirects > 0) { redirects--; res.resume(); try { return go(new URL(res.headers.location, u).toString()); } catch (_) { return resolve({ ok: false, error: 'плохой редирект' }); } }
+        req = mod.request(u, { method: 'GET', rejectUnauthorized, headers: Object.assign({ 'User-Agent': 'LiteEditor-Monitor/1.0', 'Accept': '*/*' }, hdrs || {}), timeout: timeoutMs }, (res) => {
+          if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+            res.resume();
+            // Кольцо редиректов — сбой сайта (в браузере ERR_TOO_MANY_REDIRECTS), а не ответ: раньше последний
+            // 3xx уходил итогом, и «доступен (HTTP < 400)» рапортовал норму
+            if (redirects <= 0) return finish({ ok: false, error: 'слишком много редиректов' });
+            redirects--;
+            let next; try { next = new URL(res.headers.location, u); } catch (_) { return finish({ ok: false, error: 'плохой редирект' }); }
+            // Заголовки цели (Authorization, API-ключи) — только её хосту: на другой хост/порт и с https на http
+            // их не несём (как браузер и curl), иначе редирект на чужой сервер уводил токен
+            if (hdrs && (next.host !== u.host || (u.protocol === 'https:' && next.protocol === 'http:'))) hdrs = null;
+            return go(next.toString());
+          }
           const chunks = []; let len = 0, capped = false;
-          res.on('data', (c) => { if (len < SM_BODY_CAP) { chunks.push(c); len += c.length; } else capped = true; });
-          res.on('end', () => resolve({ ok: true, status: res.statusCode, headers: res.headers, body: Buffer.concat(chunks).toString('utf8'), ms: Date.now() - t0, bytes: len, capped }));
-          res.on('error', (e) => resolve({ ok: false, error: String((e && e.message) || e) }));
+          const done = () => finish({ ok: true, status: res.statusCode, headers: res.headers, body: Buffer.concat(chunks).toString('utf8'), ms: Date.now() - t0, bytes: len, capped });
+          res.on('data', (c) => { if (len < SM_BODY_CAP) { chunks.push(c); len += c.length; } if (len >= SM_BODY_CAP) { capped = true; done(); } });
+          res.on('end', done);
+          res.on('error', (e) => finish({ ok: false, error: String((e && e.message) || e) }));
         });
-      } catch (e) { return resolve({ ok: false, error: String((e && e.message) || e) }); }
-      req.on('timeout', () => { try { req.destroy(); } catch (_) {} resolve({ ok: false, error: 'таймаут' }); });
-      req.on('error', (e) => resolve({ ok: false, error: (e && e.code === 'ENOTFOUND') ? 'домен не найден' : String((e && e.message) || e) }));
-      req.end();
+      } catch (e) { return finish({ ok: false, error: String((e && e.message) || e) }); }
+      // r0 — запрос ЭТОГО шага; после редиректа его поздние timeout/error (дочитывали тело 3xx) уже не итог
+      const r0 = req;
+      r0.on('timeout', () => { try { r0.destroy(); } catch (_) {} if (req === r0) finish({ ok: false, error: 'таймаут' }); });
+      r0.on('error', (e) => { if (req === r0) finish({ ok: false, error: (e && e.code === 'ENOTFOUND') ? 'домен не найден' : String((e && e.message) || e) }); });
+      r0.end();
     };
     go(rawUrl);
   });
 }
 
 // ── рендер страницы в скрытом окне: innerText + textContent нужных селекторов (для SPA / DOM-чеков) ──
+// Окно грузит ПРОИЗВОЛЬНЫЙ сайт, и ему не положено ничего, кроме отрисовки. Своя сессия в памяти: общий
+// обработчик разрешений defaultSession (guardExternalProtocols) выдаёт всё, кроме внешних протоколов, —
+// страница молча брала бы микрофон/камеру и слала системные уведомления от имени редактора. Здесь любые
+// разрешения отклонены, загрузки отменены (иначе — диалог «Сохранить» на каждой проверке), а cookies и кэш
+// проверяемых сайтов не оседают в профиле редактора.
+const SM_RENDER_PARTITION = 'sitemon-render';
+let smRenderSesReady = false;
+function smRenderSession(ses) {
+  if (smRenderSesReady || !ses) return;
+  smRenderSesReady = true;
+  try {
+    ses.setPermissionRequestHandler((_wc, _perm, cb) => cb(false));
+    ses.setPermissionCheckHandler(() => false);
+    ses.on('will-download', (e) => e.preventDefault());
+  } catch (_) {}
+}
 function smRenderCapture(url, selectors, timeoutMs) {
   return new Promise((resolve) => {
     let win = null, done = false;
     const finish = (r) => { if (done) return; done = true; try { if (win && !win.isDestroyed()) win.destroy(); } catch (_) {} resolve(r); };
     const to = setTimeout(() => finish({ error: 'таймаут рендера' }), (timeoutMs || 15000) + 3000);
     try {
-      win = new BrowserWindow({ show: false, width: 1280, height: 900, webPreferences: { offscreen: false, images: false, contextIsolation: true, sandbox: true, nodeIntegration: false, javascript: true } });
+      // disableDialogs — alert/confirm/prompt сайта иначе всплывают нативным окном поверх рабочего стола
+      win = new BrowserWindow({ show: false, width: 1280, height: 900, webPreferences: { offscreen: false, images: false, contextIsolation: true, sandbox: true, nodeIntegration: false, javascript: true, partition: SM_RENDER_PARTITION, disableDialogs: true } });
+      smRenderSession(win.webContents.session);
+      // В Electron нет блокировщика всплывающих окон: window.open со страницы открывал ВИДИМОЕ окно без хозяина,
+      // которое переживало и проверку, и уничтожение скрытого окна. Навигация — только по http(s).
+      win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+      win.webContents.on('will-navigate', (e, navUrl) => { if (!/^https?:/i.test(String((e && e.url) || navUrl || ''))) e.preventDefault(); });
       try { win.webContents.setAudioMuted(true); } catch (_) {}
       win.webContents.on('did-finish-load', async () => {
         try {
@@ -3982,7 +4334,9 @@ function smRenderCapture(url, selectors, timeoutMs) {
         } catch (e) { clearTimeout(to); finish({ error: String((e && e.message) || e) }); }
       });
       win.webContents.on('did-fail-load', (_e, code, desc, _u, isMainFrame) => { if (isMainFrame) { clearTimeout(to); finish({ error: desc || ('ошибка загрузки ' + code) }); } });
-      win.loadURL(url, { userAgent: 'LiteEditor-Monitor/1.0' });
+      // Отказ загрузки уже разобран в did-fail-load (и таймаутом); без catch промис loadURL уходил в
+      // unhandledRejection — в реестр ошибок «сбоем приложения» на каждой проверке лежащего сайта.
+      win.loadURL(url, { userAgent: 'LiteEditor-Monitor/1.0' }).catch(() => {});
     } catch (e) { clearTimeout(to); finish({ error: String((e && e.message) || e) }); }
   });
 }
@@ -4033,10 +4387,26 @@ function smFmtShort(v) { const s = String(v); return s.length > 40 ? s.slice(0, 
 // предикат, принадлежат песочнице, поэтому input.constructor.constructor НЕ дотягивается до хостового
 // Function/process (защита от побега через прототип). Контекст свежий — нет require/process/таймеров/
 // import(); timeout ловит зацикливание. Код доверенный (пишет пользователь/его агент), но т.к. «сэмпл»
-// мониторимого URL попадает в промпт, изолируем данные хоста от предиката строго.
+// мониторимого URL попадает в промпт, изолируем данные хоста от предиката строго:
+//  • объект контекста — БЕЗ прототипа: у обычного { __j } глобальный this песочницы доставал хостовый
+//    Object, и `this.constructor.constructor('return process')()` отдавал предикату process main-процесса;
+//  • код исполняется eval'ом внутри фиксированной обёртки (не склейкой в исходник), и результат обёртка
+//    сама сводит к JSON-строке — геттеры, toString/toJSON, Proxy и микрозадачи (microtaskMode) отрабатывают
+//    под timeout. Раньше наружу уходил объект песочницы, и его геттер исполнялся уже в main без лимита:
+//    `{ get status() { for(;;); } }` вешал весь редактор.
+const SM_PRED_WRAP = '"use strict";const input=JSON.parse(__j);(function(){var r;'
+  + 'try{r=(0,eval)(\'"use strict";(\'+__code+\'\\n)\')(input);}'
+  + 'catch(e){var m;try{m=String((e&&e.message)||e);}catch(_){m="ошибка предиката";}return JSON.stringify({__err:m});}'
+  + 'if(r===null||typeof r!=="object")return "null";'
+  + 'var v=r.value,o={status:r.status==null?null:String(r.status),ok:typeof r.ok==="boolean"?r.ok:null,label:r.label==null?null:String(r.label)};'
+  + 'if(v!=null){if(typeof v==="object"){try{v=JSON.stringify(v);}catch(_){v=undefined;}o.value=v===undefined?"[object]":v;}else o.value=String(v);}else if(v===null)o.value=null;'
+  + 'return JSON.stringify(o);})()';
 function smRunCustom(code, input) {
   let j; try { j = JSON.stringify(input === undefined ? null : input); } catch (_) { j = 'null'; }
-  return vm.runInNewContext('"use strict";const input=JSON.parse(__j);(' + String(code || '').trim() + ')(input)', { __j: j }, { timeout: 1500, contextName: 'sitemon-predicate' });
+  const ctx = Object.create(null); ctx.__j = j; ctx.__code = String(code || '').trim();
+  const out = JSON.parse(vm.runInNewContext(SM_PRED_WRAP, ctx, { timeout: 1500, contextName: 'sitemon-predicate', microtaskMode: 'afterEvaluate' }));
+  if (out && typeof out.__err === 'string') throw new Error(out.__err);
+  return out;
 }
 
 // ── что цели нужно достать (какие части ответа собирать) ───────────────────────────────────────────
@@ -4153,14 +4523,21 @@ function smNotify(target, check, kind) {
 
 async function smCheckTarget(target) {
   if (!target || target.checking) return; target.checking = true;
+  // Правка цели/чеков во время загрузки (gen растёт в IPC ниже): ответ собран под СТАРУЮ конфигурацию —
+  // старый URL, без JSON/селекторов нового чека. Раньше он всё равно фиксировался: «изменилось» брало
+  // ложный эталон (и следующая проверка слала уведомление), а сброшенный правкой nextAt=0 затирался полным
+  // интервалом — исправленный URL проверялся лишь через интервал (до суток). Такой ответ отбрасываем.
+  const gen = target.gen || 0;
+  let stale = false;
   try {
     if (target.checks && target.checks.length) {
       const cap = await smBuildCapture(target);
-      for (const check of target.checks) smCommit(target, check, smEvalCheck(check, cap, true), cap.ms);
+      stale = (target.gen || 0) !== gen;
+      if (!stale) for (const check of target.checks) smCommit(target, check, smEvalCheck(check, cap, true), cap.ms);
     }
   } catch (_) { /* отдельные чеки уже под своим try/catch */ }
   target.checking = false;
-  target.nextAt = Date.now() + smClampInt(target.intervalSec) * 1000;
+  target.nextAt = stale ? 0 : Date.now() + smClampInt(target.intervalSec) * 1000;   // 0 — тикер перепроверит в ближайшие 5 с
   smPersist(); smBroadcast();
 }
 
@@ -4226,13 +4603,13 @@ ipcMain.handle('sitemon:editTarget', (_e, { id, name, url, intervalSec, render, 
   if (render != null) t.render = !!render;
   if (insecureTls != null) t.insecureTls = !!insecureTls;
   if (headers !== undefined) t.headers = smCleanHeaders(headers);
-  t.nextAt = 0; smPersist(); smBroadcast(); smCheckTarget(t); return { ok: true };
+  t.gen = (t.gen || 0) + 1; t.nextAt = 0; smPersist(); smBroadcast(); smCheckTarget(t); return { ok: true };
 });
 ipcMain.handle('sitemon:removeTarget', (_e, { id } = {}) => { smTargets = smTargets.filter((x) => x.id !== id); smPersist(); smBroadcast(); return { ok: true }; });
 ipcMain.handle('sitemon:addCheck', (_e, { targetId, check } = {}) => {
   const t = smTargets.find((x) => x.id === targetId); if (!t) return { ok: false, error: 'нет цели' };
   const san = smSanitizeCheck(check); if (!san.ok) return { ok: false, error: san.error };
-  t.checks = t.checks || []; t.checks.push(san.check); t.nextAt = 0; smPersist(); smBroadcast(); smCheckTarget(t);
+  t.checks = t.checks || []; t.checks.push(san.check); t.gen = (t.gen || 0) + 1; t.nextAt = 0; smPersist(); smBroadcast(); smCheckTarget(t);
   return { ok: true, id: san.check.id };
 });
 ipcMain.handle('sitemon:editCheck', (_e, { targetId, checkId, patch } = {}) => {
@@ -4246,6 +4623,7 @@ ipcMain.handle('sitemon:editCheck', (_e, { targetId, checkId, patch } = {}) => {
     if (patch.notify != null) c.notify = !!patch.notify;
     if (patch.debounce != null) c.debounce = Math.max(1, Math.min(10, Number(patch.debounce) || 1));
     c.state = 'unknown'; c.baseline = undefined; c.pend = null; c.error = ''; c.value = undefined;   // условие изменилось → сброс
+    t.gen = (t.gen || 0) + 1;
   }
   t.nextAt = 0; smPersist(); smBroadcast(); smCheckTarget(t); return { ok: true };
 });
@@ -4373,20 +4751,37 @@ ipcMain.handle('fs:exists', (_e, p) => (p ? pathExists(p) : false));
 ipcMain.handle('fs:existsMany', (_e, paths) => (Array.isArray(paths) ? Promise.all(paths.map((p) => (p ? pathExists(p) : false))) : []));
 
 // create a file or directory inside parent
+// Файл можно создать сразу по пути внутри parent («src/app.js» — так обещает подсказка «Новый файл»
+// в дереве): каждый сегмент проходит safeChildName, так что «..», абсолютный путь и «C:» — по-прежнему
+// отказ (PC-3), а файл не выходит за parent. Папка — одним именем, как было.
 ipcMain.handle('fs:create', async (_e, { parent, name, dir }) => {
-  const safe = safeChildName(name);                       // блокируем ../ и сепараторы (PC-3)
-  if (!safe) return { error: 'недопустимое имя' };
+  const segs = (!dir && typeof name === 'string') ? name.split(/[\\/]/).map(safeChildName) : [safeChildName(name)];
+  if (segs.some((s) => !s)) return { error: 'недопустимое имя' };
+  const safe = segs[segs.length - 1];
   try {
-    const full = path.join(parent, safe);
+    const full = path.join(parent, ...segs);
     if (fs.existsSync(full)) return { error: 'уже существует' };
     if (dir) await fs.promises.mkdir(full, { recursive: false });
     else { await fs.promises.mkdir(path.dirname(full), { recursive: true }); await fs.promises.writeFile(full, '', { flag: 'wx' }); }
     return { path: full, name: safe, dir: !!dir };
   } catch (err) { return { error: String(err.message || err) }; }
 });
+// Смена только регистра («readme.md» → «README.md») на нечувствительной к регистру ФС (macOS, Windows):
+// existsSync(to) там видит сам источник. Это не чужой файл, если путь совпадает без учёта регистра
+// и указывает на тот же inode; на Linux одноимённые в другом регистре — разные файлы, их не трогаем.
+async function isSameFileOtherCase(from, to) {
+  if (typeof from !== 'string' || typeof to !== 'string') return false;
+  const a0 = path.resolve(from), b0 = path.resolve(to);   // вивер склеивает «to» через '/', на Windows «from» — с '\'
+  if (a0 === b0 || a0.toLowerCase() !== b0.toLowerCase()) return false;
+  try {
+    // lstat: две разные ссылки на один файл — разные записи каталога, их rename не должен склеивать
+    const [a, b] = await Promise.all([fs.promises.lstat(from, { bigint: true }), fs.promises.lstat(to, { bigint: true })]);
+    return a.dev === b.dev && a.ino === b.ino;
+  } catch (_) { return false; }
+}
 ipcMain.handle('fs:rename', async (_e, { from, to }) => {
   try {
-    if (fs.existsSync(to)) return { error: 'цель уже существует' };
+    if (fs.existsSync(to) && !(await isSameFileOtherCase(from, to))) return { error: 'цель уже существует' };
     await fs.promises.rename(from, to);
     return { path: to };
   } catch (err) { return { error: String(err.message || err) }; }
@@ -4413,8 +4808,10 @@ ipcMain.handle('fs:move', async (_e, { src, destDir }) => {
     try { await fs.promises.rename(src, dest); }
     catch (e) {
       if (e.code !== 'EXDEV') throw e;
-      // другое устройство: rename невозможен → копируем и удаляем оригинал; при сбое копии чистим частичный dest
-      try { await fs.promises.cp(src, dest, { recursive: true }); }
+      // другое устройство: rename невозможен → копируем и удаляем оригинал; при сбое копии чистим частичный dest.
+      // verbatimSymlinks: по умолчанию cp переписывает относительные ссылки в абсолютные на ИСХОДНОЕ место,
+      // которое следом удаляется, — перенесённые ссылки оказывались битыми. rename текст ссылки не трогает.
+      try { await fs.promises.cp(src, dest, { recursive: true, verbatimSymlinks: true }); }
       catch (ce) { await fs.promises.rm(dest, { recursive: true, force: true }).catch(() => {}); throw ce; }
       await fs.promises.rm(src, { recursive: true, force: true });
     }
@@ -4447,6 +4844,8 @@ const IMG_MIME = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif:
 ipcMain.handle('fs:readDataUrl', async (_e, file) => {
   try {
     const stat = await fs.promises.stat(file);
+    // как в fs:readFile: FIFO с «картиночным» именем повесил бы readFile (и поток пула libuv) навсегда
+    if (!stat.isFile()) return { error: 'Это не обычный файл (сокет/FIFO/каталог)' };
     if (stat.size > 12 * 1024 * 1024) return { error: 'файл слишком большой для превью' };
     const ext = path.extname(file).slice(1).toLowerCase();
     const mime = IMG_MIME[ext] || 'application/octet-stream';
@@ -4462,18 +4861,34 @@ const FILES_SEARCH_CAP = 1000;                 // потолок совпаде�
 const FILES_SEARCH_FILE_MAX = 1024 * 1024;     // не грепаем файлы крупнее 1 МБ (минифицированные/данные)
 // Обход дерева проекта (тот же IGNORE_DIRS, что у дерева/аудита). onFile(full) — на каждый файл;
 // stop() → true прекращает обход (достигнут потолок). Симлинки на папки резолвим через stat.
+// Петли симлинков («ln -s .. up», «ln -s . self»): ссылку на каталог, который уже есть на пути от
+// корня (по реальному пути), не раскрываем. Без этого обход шёл по кругу до ELOOP ядра (40 уровней),
+// а две такие ссылки давали 2^40 путей — поиск по проекту не завершался никогда.
 async function walkProjectFiles(root, onFile, stop) {
-  const stack = [root];
+  let rootReal = root;
+  try { rootReal = await fs.promises.realpath(root); } catch { /* корня нет — readdir ниже вернёт ошибку */ }
+  const stack = [{ dir: root, real: rootReal, up: null }];   // up — родитель на пути от корня
   while (stack.length) {
     if (stop && stop()) return;
-    const dir = stack.pop();
+    const node = stack.pop();
+    const dir = node.dir;
     let entries;
     try { entries = await fs.promises.readdir(dir, { withFileTypes: true }); } catch { continue; }
     for (const d of entries) {
       const full = path.join(dir, d.name);
       let isDir = d.isDirectory();
-      if (d.isSymbolicLink()) { try { isDir = (await fs.promises.stat(full)).isDirectory(); } catch { isDir = false; } }
-      if (isDir) { if (!IGNORE_DIRS.has(d.name)) stack.push(full); continue; }
+      let real = null;
+      if (d.isSymbolicLink()) {
+        try { isDir = (await fs.promises.stat(full)).isDirectory(); } catch { isDir = false; }
+        if (isDir && !IGNORE_DIRS.has(d.name)) { try { real = await fs.promises.realpath(full); } catch { continue; } }
+      }
+      if (isDir) {
+        if (IGNORE_DIRS.has(d.name)) continue;
+        if (real === null) real = path.join(node.real, d.name);   // обычный каталог: реальный путь = родитель + имя
+        else { let a = node; while (a && a.real !== real) a = a.up; if (a) continue; } // петля — уже на пути
+        stack.push({ dir: full, real, up: node });
+        continue;
+      }
       if (stop && stop()) return;
       await onFile(full);
     }
@@ -4533,11 +4948,22 @@ ipcMain.handle('files:replace', async (_e, { root, query, opts, replacement, tar
   // не-regex режим: replacement литеральный — экранируем $, иначе "$&" в тексте замены сработал бы как группа
   const repl = o.regex ? String(replacement ?? '') : String(replacement ?? '').replace(/\$/g, '$$$$');
   const rootNorm = path.resolve(root);
-  let files = 0, lines = 0;
+  // Один файл под двумя путями (симлинк на папку внутри проекта — обход поиска находит его под обоими
+  // именами) правился бы дважды: второй проход перечитывал уже заменённое, и «foo» → «fooBar» давало
+  // «fooBarBar». Цели сводим по реальному пути, строки объединяем (повтор номера — одна замена).
+  const jobs = new Map();   // realpath → { full, file, lines:Set<number> }
   for (const t of targets) {
     if (!t || !t.file || !Array.isArray(t.lines) || !t.lines.length) continue;
     const full = path.resolve(rootNorm, t.file);
     if (full !== rootNorm && !full.startsWith(rootNorm + path.sep)) continue;
+    let real; try { real = await fs.promises.realpath(full); } catch { continue; }
+    let job = jobs.get(real);
+    if (!job) { job = { full, file: t.file, lines: new Set() }; jobs.set(real, job); }
+    for (const ln of t.lines) job.lines.add(ln | 0);
+  }
+  let files = 0, lines = 0;
+  for (const t of jobs.values()) {
+    const full = t.full;
     let st; try { st = await fs.promises.stat(full); } catch { continue; }
     if (!st.isFile() || st.size > FILES_SEARCH_FILE_MAX) continue;
     let text; try { text = await fs.promises.readFile(full, 'utf8'); } catch { continue; }
@@ -4545,7 +4971,7 @@ ipcMain.handle('files:replace', async (_e, { root, query, opts, replacement, tar
     const rows = text.split('\n');
     let touched = 0;
     for (const ln of t.lines) {
-      const i = (ln | 0) - 1;
+      const i = ln - 1;
       if (i < 0 || i >= rows.length) continue;
       re.lastIndex = 0;
       const next = rows[i].replace(re, repl);
@@ -4553,7 +4979,9 @@ ipcMain.handle('files:replace', async (_e, { root, query, opts, replacement, tar
     }
     if (!touched) continue;
     try {
-      await histSnapshot(full, text, 'save');       // локальная история: состояние до замены
+      // локальная история: состояние до замены — мимо троттла, иначе после автосейва <45 с назад
+      // замену по проекту было не откатить: версии «до» в истории не оставалось
+      await histSnapshot(full, text, 'save', { force: true });
       await writeFileCrashSafe(full, rows.join('\n'));   // как и вивер: обрыв не оставляет обрезанный файл
       files++; lines += touched;
     } catch (err) { return { error: String(err.message || err) + ' (' + t.file + ')', files, lines }; }
@@ -4699,8 +5127,8 @@ ipcMain.handle('gsearch:start', (e, { runId, query, opts, roots } = {}) => {
 // состояние ПОСЛЕ внешнего изменения (tag 'ext'). Best-effort: ошибки истории работе не мешают.
 const HIST_BATCH_CAP = 20;                      // пачка вотчера крупнее — массовая операция (checkout/npm), шум
 const history = createHistory({ dir: path.join(storeDir, 'history'), maxBytes: MAX_VIEW_BYTES });
-const histSnapshot = (absFile, content, tag) => history.snapshot(absFile, content, tag);
-const histSnapshotFromDisk = (absFile, tag) => history.snapshotFromDisk(absFile, tag);
+const histSnapshot = (absFile, content, tag, opts) => history.snapshot(absFile, content, tag, opts);
+const histSnapshotFromDisk = (absFile, tag, opts) => history.snapshotFromDisk(absFile, tag, opts);
 // Общий срок и объём истории: через минуту после старта (не мешать подъёму окон) и раз в сутки.
 function historyPrune() {
   history.prune().then((r) => {
@@ -4717,13 +5145,24 @@ ipcMain.handle('hist:read', async (_e, { file, name } = {}) => {
   try { return { ok: true, content: await history.read(file, name) }; }
   catch (err) { return { error: String(err.message || err) }; }
 });
+// Снимок текущего состояния МИМО троттла — вивер зовёт перед «Откатить к этой версии»: снимок
+// из fs:writeFile троттлится (автосейв 10 с назад «закрывал» окно), и откат затирал текущую
+// версию безвозвратно. content передан — снимаем его (несохранённые правки открытого файла),
+// иначе — файл с диска. saved:false — снимать нечего (дедуп/нет файла/бинарь), это не ошибка.
+ipcMain.handle('hist:snapshot', async (_e, { file, content } = {}) => {
+  if (typeof file !== 'string' || !path.isAbsolute(file)) return { error: 'нет пути' };
+  const saved = typeof content === 'string'
+    ? await history.snapshot(file, content, 'save', { force: true })
+    : await history.snapshotFromDisk(file, 'save', { force: true });
+  return { ok: true, saved };
+});
 
 // ---------------------------------------------------------------- file watching
 // Watch a project root and tell the renderer when files change on disk — so the
 // tree and the open file refresh live while an agent edits things in the terminal.
 const isIgnoredPath = (rel) => rel.split(/[\\/]/).some((seg) => IGNORE_DIRS.has(seg));
 // Сообщить окнам (редактор + вивер), что слежение за деревом отвалилось → ручной ⟳ (идея 11).
-// Окно редактора fs:changed/fs:watchEnded не слушает (дерево и вивер живут в окне «Проект») — ему не шлём.
+// Окно редактора fs:watchEnded не слушает (дерево и вивер живут в окне «Проект») — ему не шлём.
 function notifyWatchEnded(root) {
   const fw = filesWindow(); if (fw) sendTo(fw, 'fs:watchEnded', { root });
   const dw = docWindow(); if (dw) sendTo(dw, 'fs:watchEnded', { root });
@@ -4771,6 +5210,7 @@ ipcMain.on('fs:watch', (_e, root) => {
       const files = [...rec.pending]; rec.pending.clear();
       const fw = filesWindow(); if (fw) sendTo(fw, 'fs:changed', { root, files }); // окно вивера обновляет дерево/файл
       const dw = docWindow(); if (dw) sendTo(dw, 'fs:changed', { root, files }); // «Обработка текста»: сайдбар-дерево
+      sendTo(mainWindow, 'fs:changed', { root, files }); // редактор: пересчитать чип git под терминалом (renderer.js, lite.fs.onChange)
       // локальная история: внешняя правка (агент/git). Большая пачка = массовая операция — шум, пропускаем.
       if (files.length <= HIST_BATCH_CAP) for (const f of files) histSnapshotFromDisk(f, 'ext');
     }, 180);
@@ -4788,12 +5228,24 @@ ipcMain.on('fs:unwatch', (_e, root) => {
 // matters: git:status runs on every tree decoration and git:info fires 6 calls per
 // branch view, so a hook or slow/networked repo without it would hang the handler
 // (and freeze the UI) forever. Mirrors gitRun()'s timeout for mutating commands.
+// GIT_OPTIONAL_LOCKS=0: фоновый `git status` (декорации дерева на каждое изменение на диске) иначе
+// берёт index.lock ради попутного обновления индекса — и параллельный `git add/commit` агента в
+// терминале падал «Unable to create '.git/index.lock': File exists». Ровно для фоновых опросов.
 function git(cwd, args) {
   return new Promise((resolve) => {
-    execFile('git', args, { cwd, timeout: 15000, maxBuffer: 8 * 1024 * 1024, windowsHide: true }, (err, stdout) => {
+    execFile('git', args, { cwd, timeout: 15000, maxBuffer: 8 * 1024 * 1024, windowsHide: true,
+      env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' } }, (err, stdout) => {
       resolve(err ? null : stdout);
     });
   });
+}
+// Корень рабочего дерева в тех же координатах, что и путь проекта: root + `--show-cdup`.
+// `--show-toplevel` отдаёт realpath (симлинки раскрыты), и для проекта, открытого через симлинк
+// (~/work → /mnt/data/work, /tmp → /private/tmp на macOS), ключи статуса расходились с путями
+// дерева — ни декораций, ни корректных путей в списке изменений. null — не git-репозиторий.
+async function gitWorkBase(root) {
+  const cdup = await git(root, ['rev-parse', '--show-cdup']);
+  return cdup == null ? null : path.resolve(root, cdup.trim());
 }
 
 // ---------------------------------------------------------------- audit (базовый аудит проекта)
@@ -4878,6 +5330,17 @@ async function auditScanText(full) {
   return { lines, maxLine, markers, secrets };
 }
 
+// sha1 файла потоком. Кандидаты в дубли — любого размера (тома архива part1/part2, образы, видео
+// одинакового веса): readFile целиком держал бы в памяти main гигабайты, а файл > 2 ГБ и вовсе не читал.
+function auditHashFile(full) {
+  return new Promise((resolve) => {
+    const h = crypto.createHash('sha1');
+    const s = fs.createReadStream(full);
+    s.on('error', () => resolve(null));
+    s.on('data', (chunk) => h.update(chunk));
+    s.on('end', () => resolve(h.digest('hex')));
+  });
+}
 // Дубликаты: хешируем только файлы, чей размер совпал с другим (кандидаты), — дёшево.
 async function auditDupes(root, files) {
   const bySize = new Map();
@@ -4887,8 +5350,8 @@ async function auditDupes(root, files) {
   if (!cand.length || cand.length > 4000) return { groups: [], skipped: cand.length > 4000 };
   const byHash = new Map();
   for (const f of cand) {
-    let buf; try { buf = await fs.promises.readFile(path.join(root, f.rel)); } catch { continue; }
-    const k = f.bytes + ':' + crypto.createHash('sha1').update(buf).digest('hex');
+    const h = await auditHashFile(path.join(root, f.rel)); if (h == null) continue;
+    const k = f.bytes + ':' + h;
     const a = byHash.get(k); if (a) a.push(f); else byHash.set(k, [f]);
   }
   const groups = [];
@@ -4898,9 +5361,10 @@ async function auditDupes(root, files) {
 }
 
 // История из git: churn (число коммитов на файл) + дата последнего изменения (log новейшие-сверху).
-// quotePath=false — пути без кавычек, чтобы совпадали с `ls-files -z`.
+// quotePath=false — пути без кавычек, чтобы совпадали с `ls-files -z`. --relative — пути от root, как у
+// ls-files (без него log отдаёт их от корня репозитория, и для проекта-подкаталога «История» была пустой).
 async function auditGitHistory(root, fileSet) {
-  const out = await git(root, ['-c', 'core.quotePath=false', 'log', '-n', String(AUDIT_GIT_COMMITS), '--no-merges', '--pretty=format:\x01%aI', '--name-only']);
+  const out = await git(root, ['-c', 'core.quotePath=false', 'log', '-n', String(AUDIT_GIT_COMMITS), '--no-merges', '--pretty=format:\x01%aI', '--name-only', '--relative']);
   if (out == null) return null;
   const commits = new Map(), lastDate = new Map();
   let cur = null;
@@ -4914,19 +5378,29 @@ async function auditGitHistory(root, fileSet) {
 }
 
 // Осиротевшие (эвристика): basename файла не встречается ни в одном ДРУГОМ файле. Только малые проекты.
+// Потолок корпуса (весь текст проекта держится в памяти main строками): 1500 файлов по ≤4 МБ — это
+// до 6 ГБ, «малый» проект с сотнями мегабайтных CSV/JSON ронял main по памяти. Сверх — эвристику
+// пропускаем тем же флагом skipped, что и для больших проектов (UI это уже объясняет).
+const AUDIT_ORPHAN_CORPUS_MAX = 64 * 1024 * 1024;
 async function auditOrphans(root, files) {
   if (files.length > 1500) return { items: [], skipped: true };
   const corpus = [];
+  let corpusBytes = 0;
   for (const f of files) {
     if (AUDIT_BINARY_CATS.has(f.cat) || f.bytes > AUDIT_LINE_MAX_BYTES) continue;
+    if ((corpusBytes += f.bytes) > AUDIT_ORPHAN_CORPUS_MAX) return { items: [], skipped: true };
     let buf; try { buf = await fs.promises.readFile(path.join(root, f.rel)); } catch { continue; }
     if (buf.includes(0)) continue;
     corpus.push({ rel: f.rel, lower: buf.toString('utf8').toLowerCase() });
   }
   const ENTRY = /^(index|main|app|mod|__init__|readme|license|changelog|setup|conftest)\b/i;
   const items = [];
+  let checked = 0;
   for (const f of files) {
     if (items.length >= 200) break;
+    // Поиск — синхронный проход по всему корпусу на каждый файл: отдаём цикл событий, иначе на
+    // крупном корпусе main (а с ним IPC всех окон) замирал на секунды.
+    if (++checked % 25 === 0) await new Promise((r) => setImmediate(r));
     if (f.cat !== 'code' && f.cat !== 'web') continue;
     const base = f.rel.split('/').pop();
     if (ENTRY.test(base) || base.startsWith('.')) continue;
@@ -5161,20 +5635,32 @@ function seoRequestOnce(u, method, timeoutMs) {
   return new Promise((resolve) => {
     const mod = u.protocol === 'https:' ? https : http;
     const t0 = Date.now();
-    const req = mod.request(u, {
-      method: method || 'GET',
-      // самоподписанные сертификаты у dev-серверов не должны валить проверку
-      rejectUnauthorized: false,
-      headers: { 'User-Agent': 'LiteEditor-Audit/1.0', 'Accept': 'text/html,*/*' },
-      timeout: to,
-    }, (res) => {
-      const chunks = []; let len = 0;
-      res.on('data', (c) => { if (len < SEO_BODY_CAP) { chunks.push(c); len += c.length; } });
-      res.on('end', () => resolve({
-        ok: true, status: res.statusCode, headers: res.headers,
-        body: Buffer.concat(chunks).toString('utf8'), ms: Date.now() - t0, bytes: len,
-      }));
-    });
+    let req;
+    try {
+      req = mod.request(u, {
+        method: method || 'GET',
+        // самоподписанные сертификаты у dev-серверов не должны валить проверку
+        rejectUnauthorized: false,
+        headers: { 'User-Agent': 'LiteEditor-Audit/1.0', 'Accept': 'text/html,*/*' },
+        timeout: to,
+      }, (res) => {
+        const chunks = []; let len = 0;
+        const done = () => resolve({
+          ok: true, status: res.statusCode, headers: res.headers,
+          body: Buffer.concat(chunks).toString('utf8'), ms: Date.now() - t0, bytes: len,
+        });
+        res.on('data', (c) => {
+          if (len >= SEO_BODY_CAP) return;
+          chunks.push(c); len += c.length;
+          // Лимит набран — дальше не качаем: бесконечное/огромное тело держало бы запрос (и аудит) вечно,
+          // таймаут сокета — на простой, а не на общую длительность.
+          if (len >= SEO_BODY_CAP) { done(); req.destroy(); }
+        });
+        res.on('end', done);
+        // Обрыв посреди тела: 'end' не придёт, а сокет уже закрыт (его таймаут не сработает) — без этого висли навсегда.
+        res.on('close', () => { if (!res.complete) resolve({ ok: false, error: 'соединение прервано' }); });
+      });
+    } catch (e) { resolve({ ok: false, error: String((e && e.message) || e) }); return; } // неподдерживаемый протокол и т.п.
     req.on('timeout', () => { req.destroy(); resolve({ ok: false, error: 'таймаут (' + to + ' мс)' }); });
     req.on('error', (e) => resolve({ ok: false, error: String((e && e.message) || e) }));
     req.end();
@@ -5188,8 +5674,12 @@ async function seoFetchChain(start) {
     const r = await seoRequestOnce(u, 'GET');
     if (!r.ok) return { ...r, finalUrl: u.href, redirects };
     const loc = r.headers && r.headers.location;
-    if (r.status >= 300 && r.status < 400 && loc && i < SEO_MAX_REDIRECTS) {
+    if (r.status >= 300 && r.status < 400 && loc) {
+      // Лимит исчерпан (кольцо редиректов) → ошибка ниже; раньше последний 3xx уходил в отчёт как «ok» со
+      // SEO-разбором тела редиректа, а строка «слишком много редиректов» была недостижима.
+      if (i >= SEO_MAX_REDIRECTS) break;
       let next; try { next = new URL(loc, u); } catch { return { ...r, finalUrl: u.href, redirects }; }
+      if (!/^https?:$/.test(next.protocol)) return { ok: false, error: `редирект на неподдерживаемый адрес: ${next.href.slice(0, 200)}`, finalUrl: u.href, redirects };
       redirects.push({ from: u.href, status: r.status, to: next.href });
       u = next; continue;
     }
@@ -5359,9 +5849,12 @@ function seoWhoisQuery(server, query) {
     let data = '';
     const s = net.connect(43, server);
     s.setTimeout(8000);
+    s.setEncoding('utf8'); // иначе многобайтные символы (кириллица в whois .рф) бьются на стыке чанков
     s.on('connect', () => s.write(query + '\r\n'));
     s.on('data', (d) => { data += d; if (data.length > 200000) s.destroy(); });
     s.on('end', () => resolve(data));
+    // destroy() по лимиту не даёт ни 'end', ни 'error' — только 'close'; без него огромный ответ вешал seo:scan
+    s.on('close', () => resolve(data));
     s.on('timeout', () => { s.destroy(); resolve(data); });
     s.on('error', () => resolve(data || null));
   });
@@ -5393,8 +5886,11 @@ async function seoGeo(host) {
   if (!ip) return null;
   return new Promise((resolve) => {
     const req = http.get('http://ip-api.com/json/' + ip + '?fields=status,country,city,isp,org,as,query', { timeout: 6000 }, (r) => {
-      let d = ''; r.on('data', (c) => d += c);
+      let d = ''; r.setEncoding('utf8');
+      // Ответ — пара сотен байт; по голому http вместо него может прийти что угодно (портал, прокси) — не копим без предела.
+      r.on('data', (c) => { d += c; if (d.length > 65536) { req.destroy(); resolve(null); } });
       r.on('end', () => { try { const j = JSON.parse(d); resolve(j.status === 'success' ? j : null); } catch { resolve(null); } });
+      r.on('close', () => { if (!r.complete) resolve(null); }); // обрыв посреди ответа: 'end' не придёт — скан висел бы
     });
     req.on('timeout', () => { req.destroy(); resolve(null); });
     req.on('error', () => resolve(null));
@@ -5531,6 +6027,19 @@ function seoWithTimeout(p, ms, fallback) {
     new Promise((r) => setTimeout(() => r(fallback), ms)),
   ]);
 }
+// Своя сессия в памяти для скрытого окна аудита. defaultSession делят окна с мостом, и её общий
+// обработчик разрешений выдаёт всё, кроме openExternal: проверяемый сайт молча получал микрофон/камеру,
+// геопозицию и системные уведомления от имени приложения, а скачивание (Content-Disposition: attachment,
+// аудит прямой ссылки на файл) открывало пользователю «Сохранить как». Аудиту ничего из этого не нужно.
+const SEO_PARTITION = 'seo-audit';
+let seoSessionHardened = false;
+function seoHardenSession(ses) {
+  if (seoSessionHardened) return;
+  seoSessionHardened = true;
+  ses.setPermissionRequestHandler((_wc, _permission, cb) => cb(false)); // вкл. openExternal (search-ms:, vscode: …)
+  ses.setPermissionCheckHandler(() => false);
+  ses.on('will-download', (e) => e.preventDefault());
+}
 
 // Глубокий аудит: грузим страницу в скрытом окне, снимаем отрендеренный DOM, метрики, сеть (CDP),
 // скриншоты, консольные ошибки, битые ссылки. Окно ВСЕГДА уничтожается в finally.
@@ -5542,10 +6051,17 @@ ipcMain.handle('seo:render', async (_e, { url }) => {
   const network = { requests: 0, bytes: 0, byType: {}, uncompressed: 0, thirdParty: 0, heavy: [], mixed: 0 };
   const consoleMsgs = [];
   try {
-    win = new BrowserWindow({ show: false, width: 1366, height: 900, webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false, webSecurity: true, backgroundThrottling: false, images: true } });
+    // disableDialogs: alert/confirm/prompt страницы иначе всплывали нативными окнами поверх редактора.
+    win = new BrowserWindow({ show: false, width: 1366, height: 900, webPreferences: { partition: SEO_PARTITION, sandbox: true, contextIsolation: true, nodeIntegration: false, webSecurity: true, backgroundThrottling: false, images: true, disableDialogs: true } });
     const wc = win.webContents;
+    seoHardenSession(wc.session);
     wc.setAudioMuted(true);
-    wc.on('console-message', (e) => { const message = e.message; const level = e.level === 'error' ? 3 : e.level === 'warning' ? 2 : 0; if (level >= 2) consoleMsgs.push({ level, text: String(message).slice(0, 300) }); if (/Mixed Content/i.test(message)) network.mixed++; });
+    // Сайт произвольный: window.open без обработчика создавал ВИДИМОЕ окно с чужой страницей (блокировщика
+    // попапов в Electron нет), и оно переживало аудит. Уходить из окна — только на http(s).
+    wc.setWindowOpenHandler(() => ({ action: 'deny' }));
+    wc.on('will-navigate', (e, navUrl) => { if (!/^https?:/i.test(navUrl)) e.preventDefault(); });
+    // Отдаём 30 сообщений — больше и не копим: страница с console.error в цикле за ~40 с аудита набивала main миллионами записей.
+    wc.on('console-message', (e) => { const message = e.message; const level = e.level === 'error' ? 3 : e.level === 'warning' ? 2 : 0; if (level >= 2 && consoleMsgs.length < 30) consoleMsgs.push({ level, text: String(message).slice(0, 300) }); if (/Mixed Content/i.test(message)) network.mixed++; });
 
     // Сетевая статистика через CDP (точные размеры передачи, типы, сжатие).
     let dbg = false; const reqInfo = new Map();
@@ -5568,7 +6084,9 @@ ipcMain.handle('seo:render', async (_e, { url }) => {
       await wc.debugger.sendCommand('Network.enable');
     } catch (e) { /* CDP недоступен — сетевые метрики пропустим */ }
 
-    const loaded = new Promise((res) => { wc.once('did-finish-load', () => res({ ok: true })); wc.once('did-fail-load', (_e2, code, desc) => res({ fail: desc || String(code) })); });
+    // did-fail-load приходит и для iframe (реклама/виджет не загрузился, X-Frame-Options) — с once() такой
+    // сбой завершал ожидание раньше самой страницы: DOM/метрики/скриншоты снимались с недогруженной.
+    const loaded = new Promise((res) => { wc.once('did-finish-load', () => res({ ok: true })); wc.on('did-fail-load', (_e2, code, desc, _u, isMainFrame) => { if (isMainFrame) res({ fail: desc || String(code) }); }); });
     const timer = new Promise((res) => setTimeout(() => res({ timeout: true }), SEO_RENDER_TIMEOUT));
     win.loadURL(u.href).catch(() => {});
     const loadRes = await Promise.race([loaded, timer]);
@@ -5612,13 +6130,16 @@ ipcMain.handle('seo:links', async (_e, { urls, base }) => {
   return seoCheckLinks(Array.isArray(urls) ? urls : [], b);
 });
 
-// Поиск локальных dev-серверов: пробуем открыть TCP на типовых портах 127.0.0.1.
+// Поиск локальных dev-серверов: пробуем открыть TCP на типовых портах 127.0.0.1, затем ::1.
 ipcMain.handle('seo:devServers', async () => {
-  const probe = (port) => new Promise((resolve) => {
-    const s = net.connect({ host: '127.0.0.1', port, timeout: 350 }, () => { s.destroy(); resolve(port); });
-    s.on('timeout', () => { s.destroy(); resolve(null); });
-    s.on('error', () => resolve(null));
+  const tryHost = (host, port) => new Promise((resolve) => {
+    const s = net.connect({ host, port, timeout: 350 }, () => { s.destroy(); resolve(true); });
+    s.on('timeout', () => { s.destroy(); resolve(false); });
+    s.on('error', () => resolve(false));
   });
+  // Vite/Astro/Next на Node ≥ 17 слушают «localhost» по первому адресу из резолвера — на macOS и части
+  // Linux это только ::1, и проба одного 127.0.0.1 их не находила. Без IPv6 ::1 отказывает сразу.
+  const probe = async (port) => ((await tryHost('127.0.0.1', port)) || (await tryHost('::1', port))) ? port : null;
   const open = (await Promise.all(SEO_DEV_PORTS.map(probe))).filter(Boolean);
   return { ports: open };
 });
@@ -5639,28 +6160,48 @@ ipcMain.handle('seo:export', async (_e, { content, defaultName }) => {
 // Map of changed files (abs path -> short status code) for tree decorations.
 ipcMain.handle('git:status', async (_e, root) => {
   if (!root || !fs.existsSync(root)) return { error: 'no root' };
-  const top = await git(root, ['rev-parse', '--show-toplevel']);
-  if (top == null) return { repo: false, files: {} };
-  const base = top.trim();
+  const base = await gitWorkBase(root);
+  if (base == null) return { repo: false, files: {} };
   // --untracked-files=all: перечислять КАЖДЫЙ новый файл по отдельности, а не схлопывать
   // содержимое неотслеживаемой папки в один элемент-каталог (во вкладке «Изменения» нужны файлы).
-  // core.quotePath=false: иначе git октально экранирует не-ASCII имена и оборачивает в кавычки —
-  // снять кавычки мало, путь останется искажённым и не совпадёт с файлом на диске (декорации/диффы
-  // молча промахивались мимо русских/юникод-имён, B5).
-  const out = await git(root, ['-c', 'core.quotePath=false', 'status', '--porcelain', '--untracked-files=all']);
+  // -z: пути как есть, без кавычек и C-экранирования. Одного core.quotePath=false мало (B5):
+  // имена с '"', '\', табом/переводом строки или « -> » git всё равно квотил, а построчный разбор
+  // («old -> new») резал их не там — путь не совпадал с файлом на диске.
+  const out = await git(root, ['status', '--porcelain', '-z', '--untracked-files=all']);
+  // null — git упал или не уложился (таймаут, вывод > maxBuffer: с -uall это, например, неигнорируемый
+  // node_modules). Раньше это выглядело как «Рабочее дерево чистое»; files:{} оставляем для совместимости.
+  if (out == null) return { repo: true, files: {}, error: 'git status не отработал: слишком много изменённых/новых файлов (нет .gitignore для node_modules/сборки?) или таймаут' };
   const files = {};
-  if (out) {
-    for (const line of out.split('\n')) {
-      if (!line) continue;
-      const code = line.slice(0, 2).trim();
-      let p = line.slice(3);
-      if (p.includes(' -> ')) p = p.split(' -> ')[1]; // renames: take the new path
-      if (p.startsWith('"') && p.endsWith('"')) p = p.slice(1, -1);
-      files[path.join(base, p)] = code || '?';
-    }
-  }
+  for (const e of parsePorcelainZ(out)) files[path.join(base, e.path)] = e.code || '?';
   return { repo: true, files };
 });
+// Разбор `git status --porcelain -z` (v1): записи «XY path» через NUL; у переименования/копии
+// следом идёт отдельная NUL-запись ИСХОДНОГО пути — её пропускаем (берём новый путь, как раньше).
+function parsePorcelainZ(out) {
+  const res = [];
+  const recs = String(out || '').split('\0');
+  for (let i = 0; i < recs.length; i++) {
+    const rec = recs[i];
+    if (rec.length < 4) continue;
+    const xy = rec.slice(0, 2);
+    if (/[RC]/.test(xy)) i++;
+    res.push({ xy, code: xy.trim(), path: rec.slice(3) });
+  }
+  return res;
+}
+// Разбор `--name-status -z` (show/diff/stash show): «код\0путь\0», у R/C — «код\0старый\0новый\0».
+// rel — новый путь (как раньше брали последний столбец), from — исходный у переименования/копии.
+function parseNameStatusZ(out) {
+  const res = [];
+  const parts = String(out || '').split('\0');
+  for (let i = 0; i < parts.length;) {
+    const code = parts[i++].trim();
+    if (!code) continue;
+    if (code[0] === 'R' || code[0] === 'C') { const from = parts[i++], to = parts[i++]; if (to) res.push({ code, rel: to, from }); }
+    else { const p = parts[i++]; if (p) res.push({ code, rel: p }); }
+  }
+  return res;
+}
 // Unified diff of one file vs HEAD — "what did the agent just change here".
 ipcMain.handle('git:fileDiff', async (_e, { root, file }) => {
   if (!root) return { error: 'no root' };
@@ -5674,9 +6215,17 @@ ipcMain.handle('git:fileDiff', async (_e, { root, file }) => {
     const tracked = await git(root, ['ls-files', '--error-unmatch', '--', file]); // null → файл не отслеживается
     if (tracked == null) {
       try {
-        const buf = fs.readFileSync(file);
-        const rel = path.basename(file);
-        if (buf.includes(0)) out = 'diff --git a/' + rel + ' b/' + rel + '\nBinary file (новый, не отслеживается)';
+        // Путь в заголовке — от корня проекта (cwd git): по нему git:revertHunk (git apply --reverse)
+        // ищет файл. С basename откат ханка нового файла из подкаталога падал «No such file», а
+        // одноимённый файл в корне проекта с тем же содержимым был бы удалён вместо него.
+        let rel = path.relative(root, file).replace(/\\/g, '/');
+        if (!rel || rel.startsWith('../') || path.isAbsolute(rel)) rel = path.basename(file);
+        // Лимит как у git:filePair: целиком в память (синхронно, в main) читался файл любого размера —
+        // многосотмегабайтный лог/дамп агента подвешивал все окна и мог уронить main по памяти.
+        const tooBig = fs.statSync(file).size > MAX_VIEW_BYTES;
+        const buf = tooBig ? null : fs.readFileSync(file);
+        if (!buf) out = 'diff --git a/' + rel + ' b/' + rel + '\nФайл слишком большой для диффа (новый, не отслеживается)';
+        else if (buf.includes(0)) out = 'diff --git a/' + rel + ' b/' + rel + '\nBinary file (новый, не отслеживается)';
         else {
           const lines = buf.toString('utf8').split('\n');
           if (lines.length && lines[lines.length - 1] === '') lines.pop(); // не считать финальный перевод строки лишней строкой
@@ -5692,9 +6241,9 @@ ipcMain.handle('git:fileDiff', async (_e, { root, file }) => {
 // откатится на unified-вид).
 ipcMain.handle('git:filePair', async (_e, { root, file } = {}) => {
   if (!root || !file) return { error: 'no root/file' };
-  const top = await git(root, ['rev-parse', '--show-toplevel']);
-  if (top == null) return { error: 'не git-репозиторий' };
-  const rel = path.relative(top.trim(), file).replace(/\\/g, '/');
+  const base = await gitWorkBase(root);   // не realpath: иначе за симлинком rel = '../…' и HEAD-версия «пропадала»
+  if (base == null) return { error: 'не git-репозиторий' };
+  const rel = path.relative(base, file).replace(/\\/g, '/');
   const oldText = await git(root, ['show', 'HEAD:' + rel]);      // null → файла не было в HEAD
   let newText = null;
   try {
@@ -5780,20 +6329,27 @@ ipcMain.handle('git:log', async (_e, { root, limit } = {}) => {
   }
   return { repo: true, commits };
 });
-ipcMain.handle('git:checkout', async (_e, { root, branch }) => gitRun(root, ['checkout', branch]));
+// Имя ветки приходит из UI: ведущий '-' git принял бы за флаг, а завершающий '--' не даёт git
+// трактовать НЕ-ветку как путь — иначе устаревшее имя из списка (ветку удалили в терминале),
+// совпавшее с каталогом/файлом, молча откатывало его незакоммиченные правки (checkout <path>).
+ipcMain.handle('git:checkout', async (_e, { root, branch }) =>
+  BAD_REF(branch) ? { ok: false, error: 'Недопустимое имя ветки' } : gitRun(root, ['checkout', branch, '--']));
 ipcMain.handle('git:fetch', async (_e, root) => gitRun(root, ['fetch', '--all', '--prune']));
 // Откат правок — тоже перезапись файла рукой редактора, значит по контракту локальной истории
 // (см. histSnapshot) состояние ДО неё надо снять: `git checkout --` стирает несохранённую в
 // коммит работу насовсем, вернуть её больше неоткуда. Вотчер снимет уже ОТКАЧЕННОЕ содержимое —
-// поздно. Троттл истории (45 с) сам решит, нужен ли ещё один снимок.
+// поздно. Снимок — мимо троттла ({ force }): иначе откат вскоре после автосейва оставался без версии «до».
 ipcMain.handle('git:discardFile', async (_e, { root, file }) => {
-  await histSnapshotFromDisk(path.isAbsolute(file) ? file : path.join(root, file), 'save');
+  // force: откат по воле человека — текущее состояние в историю ВСЕГДА (троттл 15–45 с после автосейва
+  // иначе пропускал снимок, и «Откатить» сразу после правки терял её безвозвратно)
+  await histSnapshotFromDisk(path.isAbsolute(file) ? file : path.join(root, file), 'save', { force: true });
   return gitRun(root, ['checkout', '--', file]);
 });
 // Update a branch from its upstream WITHOUT checkout (fast-forward of the local ref).
 // Current branch can't be ff-fetched into → use pull --ff-only instead.
 ipcMain.handle('git:branchUpdate', async (_e, { root, branch, current }) => {
   if (current) return gitRun(root, ['pull', '--ff-only']);
+  if (BAD_REF(branch)) return { ok: false, error: 'Недопустимое имя ветки' };
   const remote = ((await git(root, ['config', `branch.${branch}.remote`])) || '').trim() || 'origin';
   const rb = ((await git(root, ['config', `branch.${branch}.merge`])) || '').trim().replace('refs/heads/', '') || branch;
   return gitRun(root, ['fetch', remote, `${rb}:${branch}`]);
@@ -5804,7 +6360,10 @@ ipcMain.handle('git:branchCreate', async (_e, { root, name, base, checkout }) =>
   // Имя из пользовательского ввода: ведущий '-' git примет за флаг (как в git:clone выше),
   // а пробелы/спецсимволы — невалидный ref. Отсекаем до вызова с понятной ошибкой.
   if (!nm || nm.startsWith('-') || /[\s~^:?*[\\]/.test(nm) || nm.includes('..')) return { ok: false, error: 'Недопустимое имя ветки' };
-  return gitRun(root, checkout ? ['checkout', '-b', nm, base] : ['branch', nm, base]);
+  // База — тоже позиционный аргумент: '-…' ушло бы в git флагом; не задана — ветка от HEAD.
+  if (base != null && base !== '' && BAD_REF(base)) return { ok: false, error: 'Недопустимая базовая ветка' };
+  const from = base ? [base] : [];
+  return gitRun(root, checkout ? ['checkout', '-b', nm, ...from] : ['branch', nm, ...from]);
 });
 ipcMain.handle('git:init', async (_e, root) => gitRun(root, ['init']));
 // Clone INTO the (empty) project folder. Longer timeout than other mutations — fetching
@@ -5831,6 +6390,22 @@ async function gitPush(root) {
   }
   return first;
 }
+// Идёт ли в репозитории незавершённый merge / cherry-pick / revert (есть MERGE_HEAD и т.п.).
+async function gitMidOperation(root) {
+  for (const ref of ['MERGE_HEAD', 'CHERRY_PICK_HEAD', 'REVERT_HEAD']) {
+    if ((await git(root, ['rev-parse', '-q', '--verify', ref])) != null) return true;
+  }
+  return false;
+}
+// Staged-переименования индекса: новый путь → исходный (абсолютные, в координатах проекта).
+async function gitStagedRenames(root) {
+  const map = new Map();
+  const base = await gitWorkBase(root);
+  const out = base == null ? null : await git(root, ['diff', '--cached', '--name-status', '-z', '-M']);
+  if (out == null) return map;
+  for (const e of parseNameStatusZ(out)) if (e.code[0] === 'R' && e.from) map.set(path.resolve(base, e.rel), path.resolve(base, e.from));
+  return map;
+}
 ipcMain.handle('git:commit', async (_e, { root, message, push, files, amend }) => {
   // files передан → коммитим только выбранное (git add -- <files>), иначе всё (git add -A, как раньше).
   // amend + files:[] (пустой массив) — особый случай «только поправить сообщение»: ничего не добавляем.
@@ -5839,8 +6414,22 @@ ipcMain.handle('git:commit', async (_e, { root, message, push, files, amend }) =
   if (!msgOnly) { const add = await gitRun(root, sel ? ['add', '--', ...files] : ['add', '-A']); if (!add.ok) return add; }
   // sel → коммитим РОВНО выбранные пути (pathspec), иначе `git commit` забрал бы и всё прочее,
   // что уже лежит в индексе (напр. файл, застейдженный при разрешении конфликта и затем снятый галкой).
+  // Исключение — идущий merge/cherry-pick/revert: частичный коммит git там запрещает («cannot do a
+  // partial commit during a merge»), и после разрешения конфликта в модалке закоммитить было нельзя
+  // вовсе. Коммит слияния по смыслу фиксирует ВЕСЬ индекс: выбранное уже добавлено выше, коммитим без pathspec.
+  const midOp = sel && !amend && await gitMidOperation(root);
+  // Staged-переименование (git mv — частый ход агента) в списке — одна строка с НОВЫМ путём. Pathspec
+  // только из него коммитил копию: старый файл оставался в HEAD, а его удаление — висеть в индексе.
+  // Добавляем к pathspec исходный путь каждого выбранного переименования.
+  let spec = sel ? files : [];
+  if (sel && !midOp) {
+    const ren = await gitStagedRenames(root);
+    const extra = [];
+    for (const f of files) { const from = ren.get(path.resolve(root, f)); if (from) extra.push(from); }
+    spec = [...files, ...extra];
+  }
   const base = amend ? ['commit', '--amend', '-m', message || 'update'] : ['commit', '-m', message || 'update'];
-  const c = await gitRun(root, sel ? [...base, '--', ...files] : base); if (!c.ok) return c;
+  const c = await gitRun(root, sel && !midOp ? [...base, '--', ...spec] : base); if (!c.ok) return c;
   // committed:true даже при провале пуша — фронт обязан обновить список (коммит-то уже лёг).
   if (push) { const p = await gitPush(root); if (!p.ok) return { ok: false, committed: true, error: 'Коммит создан, push не прошёл: ' + p.error }; }
   return { ok: true, out: c.out };
@@ -5881,26 +6470,30 @@ ipcMain.handle('git:add', async (_e, { root, files }) =>
 // Список конфликтных файлов (unmerged). Коды porcelain с 'U' либо AA/DD — обе стороны изменили.
 ipcMain.handle('git:conflicts', async (_e, root) => {
   if (!root || !fs.existsSync(root)) return { error: 'no root' };
-  const top = await git(root, ['rev-parse', '--show-toplevel']);
-  if (top == null) return { repo: false, files: [] };
-  const base = top.trim();
-  const out = await git(root, ['-c', 'core.quotePath=false', 'status', '--porcelain', '--untracked-files=no']); // не-ASCII имена без октального экранирования (B5)
+  const base = await gitWorkBase(root);   // координаты пути проекта, а не realpath (см. gitWorkBase)
+  if (base == null) return { repo: false, files: [] };
+  const out = await git(root, ['status', '--porcelain', '-z', '--untracked-files=no']); // -z: имена без кавычек/экранирования (B5)
   const files = [];
-  if (out) for (const line of out.split('\n')) {
-    if (!line) continue;
-    const code = line.slice(0, 2);
+  for (const e of parsePorcelainZ(out)) {
     // Unmerged: оба знака конфликта (DD, AU, UD, UA, DU, AA, UU) — наличие 'U', либо DD/AA.
-    if (/U/.test(code) || code === 'DD' || code === 'AA') {
-      let p = line.slice(3);
-      if (p.startsWith('"') && p.endsWith('"')) p = p.slice(1, -1);
-      files.push({ rel: p, abs: path.join(base, p), code: code.trim() });
-    }
+    if (/U/.test(e.xy) || e.xy === 'DD' || e.xy === 'AA') files.push({ rel: e.path, abs: path.join(base, e.path), code: e.code });
   }
   return { repo: true, files };
 });
 // Слить ветку в текущую. Конфликт → ok:false (UI откроет модалку разрешения по git:conflicts).
-ipcMain.handle('git:merge', async (_e, { root, branch }) => gitRun(root, ['merge', '--no-edit', branch]));
-ipcMain.handle('git:mergeAbort', async (_e, root) => gitRun(root, ['merge', '--abort']));
+ipcMain.handle('git:merge', async (_e, { root, branch }) =>
+  BAD_REF(branch) ? { ok: false, error: 'Недопустимое имя ветки' } : gitRun(root, ['merge', '--no-edit', branch]));
+// Модалка конфликта одна на merge / cherry-pick / revert (cherryPickCommit/revertCommitUi ведут в неё
+// же), а `merge --abort` при cherry-pick/revert падал «There is no merge to abort» — прервать операцию
+// из UI было нельзя. Прерываем ту, что реально идёт; без MERGE_HEAD и прочих — прежняя ошибка merge.
+ipcMain.handle('git:mergeAbort', async (_e, root) => {
+  const has = async (ref) => (await git(root, ['rev-parse', '-q', '--verify', ref])) != null;
+  if (!(await has('MERGE_HEAD'))) {
+    if (await has('CHERRY_PICK_HEAD')) return gitRun(root, ['cherry-pick', '--abort']);
+    if (await has('REVERT_HEAD')) return gitRun(root, ['revert', '--abort']);
+  }
+  return gitRun(root, ['merge', '--abort']);
+});
 ipcMain.handle('git:push', async (_e, root) => gitPush(root));
 ipcMain.handle('git:pull', async (_e, root) => gitRun(root, ['pull', '--ff-only']));
 // Stash including untracked (-u) so a quick "спрятать всё" doesn't leave new files behind.
@@ -5910,10 +6503,13 @@ ipcMain.handle('git:stash', async (_e, root) => gitRun(root, ['stash', 'push', '
 // изменённому отслеживаемому файлу. Лимит — чтобы откат на тысяче файлов не встал колом.
 const DISCARD_HIST_CAP = 60;
 ipcMain.handle('git:discardAll', async (_e, root) => {
-  const out = await git(root, ['diff', '--name-only']);
+  // --relative: пути от root и только его поддерево — ровно то, что откатит `checkout -- .` ниже
+  // (без него пути шли от корня репозитория и для проекта-подкаталога снимки брались с несуществующих
+  // путей); -z: юникод/спецсимволы без кавычек и \ooo — иначе такие файлы тоже оставались без снимка.
+  const out = await git(root, ['diff', '--name-only', '-z', '--relative']);
   if (out) {
-    for (const rel of out.split('\n').map((x) => x.trim()).filter(Boolean).slice(0, DISCARD_HIST_CAP))
-      await histSnapshotFromDisk(path.join(root, rel), 'save');
+    for (const rel of out.split('\0').filter(Boolean).slice(0, DISCARD_HIST_CAP))
+      await histSnapshotFromDisk(path.join(root, rel), 'save', { force: true }); // как в git:discardFile — мимо троттла
   }
   return gitRun(root, ['checkout', '--', '.']);
 });
@@ -5932,16 +6528,24 @@ ipcMain.handle('git:revertHunk', async (_e, { root, patch } = {}) => {
 // A7: git blame файла (--line-porcelain) → массив пер-строчных {hash,author,time,summary} (1:1 строкам файла).
 ipcMain.handle('git:blame', async (_e, { root, file } = {}) => {
   if (!root || !file) return { error: 'no root/file' };
-  const out = await git(root, ['blame', '--line-porcelain', '--', file]);
+  // --porcelain, а не --line-porcelain: тот повторяет ~12 строк шапки коммита на КАЖДУЮ строку файла,
+  // и уже у полуторамегабайтного файла (в пределах лимита вивера) вывод перерастал maxBuffer 8 МБ —
+  // blame падал с ложным «файл не отслеживается». Здесь шапка коммита идёт один раз — кэшируем по хешу.
+  const out = await git(root, ['blame', '--porcelain', '--', file]);
   if (out == null) return { error: 'не git-репозиторий или файл не отслеживается' };
   const lines = [];
+  const byHash = new Map();
   let cur = null;
   for (const ln of out.split('\n')) {
-    if (/^[0-9a-f]{40} /.test(ln)) { cur = { hash: ln.slice(0, 8), uncommitted: /^0{40} /.test(ln) }; }
+    if (/^[0-9a-f]{40} /.test(ln)) {
+      const h = ln.slice(0, 40);
+      cur = byHash.get(h);
+      if (!cur) { cur = { hash: h.slice(0, 8), uncommitted: /^0{40}$/.test(h) }; byHash.set(h, cur); }
+    }
     else if (cur && ln.startsWith('author ')) cur.author = ln.slice(7);
     else if (cur && ln.startsWith('author-time ')) cur.time = parseInt(ln.slice(12), 10) || 0;
     else if (cur && ln.startsWith('summary ')) cur.summary = ln.slice(8);
-    else if (cur && ln.startsWith('\t')) { lines.push(cur); cur = null; }
+    else if (cur && ln.startsWith('\t')) { lines.push({ ...cur }); cur = null; }
   }
   return { ok: true, lines };
 });
@@ -5963,13 +6567,9 @@ ipcMain.handle('git:stashList', async (_e, root) => {
 // Файлы в конкретном stash (--name-status, включая untracked).
 ipcMain.handle('git:stashShow', async (_e, { root, index } = {}) => {
   const ref = stashRef(index); if (!ref) return { ok: false, error: 'bad stash index' };
-  const out = await git(root, ['stash', 'show', '--include-untracked', '--name-status', ref]);
-  const files = [];
-  if (out != null) for (const line of out.split('\n')) {
-    if (!line.trim()) continue;
-    const parts = line.split('\t');
-    files.push({ code: (parts[0] || '').trim(), rel: parts[parts.length - 1] });
-  }
+  // -z: пути как есть — без него не-ASCII/спецсимвольные имена приходили в кавычках с \ooo-экранированием
+  const out = await git(root, ['stash', 'show', '--include-untracked', '--name-status', '-z', ref]);
+  const files = parseNameStatusZ(out).map((e) => ({ code: e.code, rel: e.rel }));
   return { ok: true, files };
 });
 ipcMain.handle('git:stashApply', async (_e, { root, index } = {}) => { const r = stashRef(index); return r ? gitRun(root, ['stash', 'apply', r]) : { ok: false, error: 'bad index' }; });
@@ -5981,13 +6581,10 @@ ipcMain.handle('git:stashDrop', async (_e, { root, index } = {}) => { const r = 
 ipcMain.handle('git:commitFiles', async (_e, { root, hash } = {}) => {
   const h = String(hash || '').trim();
   if (!/^[0-9a-fA-F]{4,40}$/.test(h)) return { ok: false, error: 'bad hash' };
-  const out = await git(root, ['show', '--no-color', '--name-status', '--format=', h]);
-  const files = [];
-  if (out != null) for (const line of out.split('\n')) {
-    if (!line.trim()) continue;
-    const parts = line.split('\t');
-    files.push({ code: (parts[0] || '').trim(), rel: parts[parts.length - 1] });
-  }
+  // -z: пути как есть. Без него юникод-имена приходили «"\320\277…"» — в дереве лога мусор, а
+  // git:commitFilePair/commitFileDiff с таким rel не находили файл (тот же класс, что B5 в git:status).
+  const out = await git(root, ['show', '--no-color', '--name-status', '-z', '--format=', h]);
+  const files = parseNameStatusZ(out).map((e) => ({ code: e.code, rel: e.rel }));
   return { ok: true, files };
 });
 // Дифф одного файла в коммите (показать в центре вивера при выборе файла в логе).
@@ -6045,7 +6642,7 @@ ipcMain.handle('git:checkoutRemote', async (_e, { root, remoteBranch } = {}) => 
   const local = rb.replace(/^[^/]+\//, '');   // origin/foo → foo
   if (BAD_REF(local)) return { ok: false, error: 'Недопустимое имя ветки' };
   const exists = await git(root, ['rev-parse', '--verify', '--quiet', 'refs/heads/' + local]);
-  if (exists != null) return gitRun(root, ['checkout', local]);
+  if (exists != null) return gitRun(root, ['checkout', local, '--']);
   return gitRun(root, ['checkout', '-b', local, '--track', rb]);
 });
 ipcMain.handle('git:rebaseOnto', async (_e, { root, onto } = {}) => BAD_REF(onto) ? { ok: false, error: 'плохая ветка' } : gitRun(root, ['rebase', onto]));
@@ -6071,14 +6668,19 @@ ipcMain.handle('git:branchCompare', async (_e, { root, branch } = {}) => {
   if (BAD_REF(branch)) return { ok: false, error: 'плохая ветка' };
   const ahead = await git(root, ['log', '--oneline', '--no-color', `HEAD..${branch}`]);
   const behind = await git(root, ['log', '--oneline', '--no-color', `${branch}..HEAD`]);
-  const parse = (s) => (s || '').split('\n').filter(Boolean).map((l) => { const i = l.indexOf(' '); return { hash: l.slice(0, i), subject: l.slice(i + 1) }; });
+  // null = git упал (ветки уже нет, таймаут, переполнен буфер) — не выдавать это за «нет коммитов»
+  if (ahead == null || behind == null) return { ok: false, error: `Не удалось сравнить с «${branch}» (ветка не найдена или ошибка git)` };
+  const parse =(s) => (s || '').split('\n').filter(Boolean).map((l) => { const i = l.indexOf(' '); return { hash: l.slice(0, i), subject: l.slice(i + 1) }; });
   return { ok: true, branch, onlyInBranch: parse(ahead), onlyInCurrent: parse(behind) };
 });
 // Diff выбранной ветки vs рабочее дерево (показать в центре вивера).
 ipcMain.handle('git:branchDiffWorktree', async (_e, { root, branch } = {}) => {
   if (BAD_REF(branch)) return { error: 'плохая ветка' };
-  const out = await git(root, ['diff', '--no-color', branch]);
-  return { diff: out || '' };
+  const out = await git(root, ['diff', '--no-color', branch, '--']);   // '--': ветка, совпавшая с именем файла, не двусмысленна
+  // null = git упал (ветки уже нет / дифф больше буфера / таймаут): раньше уходил пустой дифф и UI
+  // уверенно писал «Различий нет».
+  if (out == null) return { error: `Не удалось получить дифф с «${branch}» (ветка не найдена, дифф слишком большой или ошибка git)` };
+  return { diff: out };
 });
 
 // ================================================================ containers (docker/podman)
@@ -6099,12 +6701,13 @@ function cRemoteCtx(cli, baseEnv) {
   return { cli: containersRemote.cli, env };
 }
 function containerRun(cli, args, opts = {}) {
-  // opts.env — явное окружение (проба свежего туннеля ДО фиксации containersRemote); opts.local — форс-локальный
+  // opts.env — явное окружение (проба свежего туннеля ДО фиксации containersRemote); opts.local — форс-локальный;
+  // opts.raw — stdout без trim (содержимое файла для вивера: отступ первой строки и финальный перевод строки — часть файла)
   const ctx = opts.env ? { cli, env: opts.env } : (opts.local ? { cli } : cRemoteCtx(cli));
   return new Promise((resolve) => {
     execFile(ctx.cli, args, { timeout: opts.timeout || 15000, maxBuffer: 24 * 1024 * 1024, windowsHide: true, env: ctx.env },
       (err, stdout, stderr) => resolve({
-        ok: !err, out: (stdout || '').trim(),
+        ok: !err, out: opts.raw ? (stdout || '') : (stdout || '').trim(),
         error: err ? ((stderr || '').trim() || String(err.message || err)) : '',
       }));
   });
@@ -6233,7 +6836,9 @@ function cParseLines(out) { // docker `{{json .}}` → one JSON object per line
 }
 function cParseJson(out) { // podman `--format json` → array (fallback to line-JSON)
   const s = String(out || '').trim(); if (!s) return [];
-  try { const j = JSON.parse(s); return Array.isArray(j) ? j : [j]; } catch (_) { return cParseLines(out); }
+  // Только объекты: Go-шный nil-срез маршалится в «null» (у podman так бывает на пустых списках) —
+  // [null] ронял .map в cList* (c.Labels у null), и весь containers:list отвечал исключением.
+  try { const j = JSON.parse(s); return (Array.isArray(j) ? j : [j]).filter((x) => x && typeof x === 'object'); } catch (_) { return cParseLines(out); }
 }
 function cLabelMap(str) { const m = {}; for (const part of String(str || '').split(',')) { const i = part.indexOf('='); if (i > 0) m[part.slice(0, i)] = part.slice(i + 1); } return m; }
 const C_PROJECT = 'com.docker.compose.project', C_SERVICE = 'com.docker.compose.service';
@@ -6329,14 +6934,21 @@ ipcMain.handle('containers:list', async (_e, { engine, light } = {}) => {
     // а коннект по SSH идёт секундами — без этой защёлки каждый вызов, пришедший за время
     // переподключения, поднимал бы свой туннель. Запись хранит только последний, остальные
     // оставались бы висеть навсегда: живое SSH-соединение и занятый локальный порт.
+    const rc = containersRemote;
     if (!containersTunnelFix) {
-      const rc = containersRemote;
       containersTunnelFix = rhApi.sockTunnel(rc.rhId, rc.sockPath, 'containers: ' + rc.name)
-        .then((t) => { if (t.ok && containersRemote === rc) { rc.tunId = t.tunId; rc.port = t.port; } return t; })
+        .then((t) => {
+          if (t.ok && containersRemote === rc) { rc.tunId = t.tunId; rc.port = t.port; }
+          // Пока SSH переподключался, хост сменили (другой / локально): свежий туннель уже ничей —
+          // без закрытия он жил бы до выхода из редактора (живое SSH-соединение + занятый порт).
+          else if (t.ok) { try { rhApi.closeTunnel(t.tunId); } catch (_) {} }
+          return t;
+        })
         .finally(() => { containersTunnelFix = null; });
     }
     const t = await containersTunnelFix;
-    if (!t.ok) return { containers: { error: `SSH-туннель к «${containersRemote.name}» оборвался и не восстановился: ` + (t.error || '') } };
+    // rc, а не containersRemote: за время await контекст мог обнулиться (возврат к локальным) — TypeError
+    if (!t.ok) return { containers: { error: `SSH-туннель к «${rc.name}» оборвался и не восстановился: ` + (t.error || '') } };
   }
   // Light path = the live poll: only the fast, frequently-changing data (containers + pods). Skips the heavy
   // `system df` (storage scan, ~1s) and images/volumes so a 3s poll doesn't churn the disk. The renderer
@@ -6378,6 +6990,9 @@ ipcMain.handle('containers:logsStart', (e, { engine, id, streamId, tail } = {}) 
   catch (e2) { return { error: String(e2.message || e2) }; }
   const sender = e.sender; // окно-владелец (редактор ИЛИ окно модуля «Контейнеры») — стрим уходит туда
   const send = (d) => safeSend(sender, 'containers:logsData', { streamId, data: d.toString('utf8') });
+  // Декодер потока, а не Buffer.toString на каждый чанк: чанк пайпа (до 64 КБ) рвёт многобайтный
+  // символ — кириллица в логах на стыке превращалась в «��».
+  cp.stdout.setEncoding('utf8'); cp.stderr.setEncoding('utf8');
   cp.stdout.on('data', send); cp.stderr.on('data', send);
   cp.on('error', (err) => send('\n[ошибка logs: ' + (err.message || err) + ']\n'));
   cp.on('close', () => { cLogProcs.delete(streamId); safeSend(sender, 'containers:logsExit', { streamId }); });
@@ -6518,7 +7133,7 @@ ipcMain.handle('containers:fsOpenInViewer', async (_e, { engine, id, path: p } =
   if (engine !== 'docker' && engine !== 'podman') return { ok: false, error: 'bad engine' };
   if (cBadId(id) || !p) return { ok: false, error: 'no id/path' };
   const file = '/' + String(p).replace(/^\/+/, '');   // абсолютный: «-…» не уйдёт в cat флагом
-  const r = await containerRun(engine, ['exec', id, 'cat', file], { timeout: 15000 });
+  const r = await containerRun(engine, ['exec', id, 'cat', file], { timeout: 15000, raw: true });
   // ls -p помечает «/» только настоящие каталоги: симлинк на каталог (/bin, /lib в современных образах)
   // приходит как файл. Сообщаем об этом рендереру — он войдёт в каталог вместо ошибки.
   if (!r.ok && /is a directory/i.test(r.error || '')) return { ok: false, dir: true, error: r.error };
@@ -6554,7 +7169,10 @@ ipcMain.handle('shell:openExternal', async (_e, url) => {
 ipcMain.handle('shell:openInBrowser', async (_e, target) => {
   try {
     const p = String(target == null ? '' : target);
-    if (!p || !fs.existsSync(p)) return { error: 'файл не найден' };
+    // Только HTML (так канал и зовут: вивер/дерево — для .html/.htm): file:// к .exe/.bat/.desktop
+    // shell.openExternal не «открывает в браузере», а запускает программой ОС.
+    if (!/\.html?$/i.test(p)) return { error: 'в браузере открывается только HTML-файл' };
+    if (!fs.existsSync(p)) return { error: 'файл не найден' };
     let u = p.replace(/\\/g, '/'); if (!u.startsWith('/')) u = '/' + u;
     const url = 'file://' + encodeURI(u).replace(/%(?![0-9A-Fa-f]{2})/g, '%25').replace(/#/g, '%23').replace(/\?/g, '%3F');
     await shell.openExternal(url);

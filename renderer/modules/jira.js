@@ -56,6 +56,7 @@ export function initJira(host) {
   let loadErrors = [];                    // аккаунты, которые не ответили
   let truncated = false;
   let busy = false;
+  let loadSeq = 0;                        // поколение загрузки списка: ответ устаревшей не перетирает свежую
   let renderSeq = 0;
   let report = null;                      // последний отчёт разведки
 
@@ -613,10 +614,14 @@ export function initJira(host) {
     // opts.silent — фоновый прогон по таймеру: список не гасим «загрузкой», иначе автообновление
     // раз в минуту мешало бы читать.
     async function load(opts = {}) {
+      const seq = ++loadSeq;
       if (!opts.silent) { busy = true; paint(); }
       const ids = enabledIds();
       if (!ids.length) { busy = false; rows = []; loadErrors = []; paint(); return; }
       const r = await lite.jira.searchAll(ids, preset, customJql);
+      // Пока ждали, пресет/аккаунты сменили или вкладку перерисовали — стартовала новая загрузка.
+      // Её ответ главнее: этот (старый пресет) иначе подменил бы rows уже после неё.
+      if (seq !== loadSeq) return;
       busy = false;
       if (!r || !r.ok) {
         if (!opts.silent) toast('Не удалось получить задачи: ' + ((r && r.error) || '?'), { kind: 'err' });
@@ -684,7 +689,9 @@ export function initJira(host) {
     }
 
     paint();
-    if (!rows.length && !busy) load();
+    // Без оглядки на busy: загрузка, начатая прежним списком (до смены пресета/вкладки), рисует
+    // в свой уже отсоединённый DOM — новый список иначе навсегда оставался на «Загружаю задачи…».
+    if (!rows.length) load();
     startAuto();
   }
 
@@ -754,7 +761,11 @@ export function initJira(host) {
     // агенту не нужны — это шум в промпте. Если тело описания пустое (частый случай у подзадач),
     // сутью выступает заголовок, иначе агент получил бы пустую задачу.
     const body = String(it.description || '').trim() || String(it.summary || '').trim();
-    const text = 'номерзадачи/ветка: ' + it.key + '\nописание: ' + body;
+    // Описание — недоверенный текст из Jira: ESC-последовательности и прочие C0/C1 в PTY сработали бы
+    // как нажатия клавиш (Ctrl+C/D, CR = Enter, стрелки). Переводы строк и табы оставляем —
+    // многострочное описание осмысленно, а вставку в маркерах bracketed paste делает ядро.
+    const termSafe = (s) => String(s).replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, ' ');
+    const text = termSafe('номерзадачи/ветка: ' + it.key + '\nописание: ' + body);
     if (typeof sendToTerminal === 'function') { sendToTerminal(text); toast('Задача отправлена в терминал ✓'); }
     else { await navigator.clipboard.writeText(text); toast('Задача скопирована в буфер ✓'); }
   }
@@ -1140,7 +1151,7 @@ export function initJira(host) {
       del.onclick = () => {
         showConfirm('Удалить аккаунт', 'Аккаунт «' + a.name + '» и его сохранённый токен будут стёрты.', 'Удалить', async () => {
           const r = await lite.jira.delete(a.id);
-          if (r && r.ok) { loaded = false; toast('Аккаунт удалён'); renderPanel(); }
+          if (r && r.ok) { loaded = false; boardsByAcc.delete(a.id); metaByAcc.delete(a.id); toast('Аккаунт удалён'); renderPanel(); }
           else toast('Не удалось удалить аккаунт: ' + ((r && r.error) || '?'), { kind: 'err' });
         });
       };
@@ -1237,7 +1248,12 @@ export function initJira(host) {
       if (!acc.name) { toast('Не задано название', { kind: 'err' }); return; }
       if (!acc.host) { toast('Не задан адрес Jira', { kind: 'err' }); return; }
       const r = await lite.jira.save(acc);
-      if (r && r.ok) { loaded = false; close(); toast('Аккаунт сохранён ✓'); renderPanel(); }
+      if (r && r.ok) {
+        loaded = false;
+        // Адрес/токен могли смениться — доски и справочник прежней Jira для этого аккаунта неверны.
+        if (acc.id) { boardsByAcc.delete(acc.id); metaByAcc.delete(acc.id); }
+        close(); toast('Аккаунт сохранён ✓'); renderPanel();
+      }
       else toast('Не удалось сохранить: ' + ((r && r.error) || '?'), { kind: 'err' });
     };
 
@@ -1386,6 +1402,10 @@ export function initJira(host) {
     if (!jiraOpen) return;
     loaded = false;
     rows = [];
+    // Доски и справочник иначе грузятся раз на жизнь окна: новые задачи не получали лейблов досок
+    // (и прятались фильтром по доске), даже когда пользователь явно жал «Обновить».
+    boardsByAcc.clear();
+    metaByAcc.clear();
     renderPanel();
   }
 

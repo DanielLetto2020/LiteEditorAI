@@ -29,7 +29,7 @@ import { openGlobalSearch } from './gsearch.js';
 import { initExtensions } from './modules/extensions.js';
 // initFiles — вивер+дерево мигрированы в отдельное окно (renderer/module-entry.js).
 
-const APP_VERSION = 'alpha v1.1.203';
+const APP_VERSION = 'alpha v1.1.204';
 const GUTTER = 8; // зазор между карточками окна — он же разделитель, за который тянется ширина
 // Системный терминал («Система · ~») мигрирован в отдельное окно (renderer/modules/scratch.js):
 // его id `__scratch__::tN` маршрутизируются main'ом в окно-владельца, в ядре их больше не обрабатываем.
@@ -174,7 +174,7 @@ function effectiveOrder() {
   let order;
   if (!stored) order = keys.slice();
   else {
-    order = stored.filter((k) => keys.includes(k) && k !== ARCHIVE);
+    order = [...new Set(stored)].filter((k) => keys.includes(k) && k !== ARCHIVE); // Set — лечит дубли, записанные прежним переименованием
     for (const k of keys) {
       if (order.includes(k)) continue;
       if (k === UNCATEGORIZED) { order.push(k); continue; }
@@ -322,7 +322,8 @@ function showSyncSetup(p) {
   const installTools = lite.platform === 'darwin' ? 'brew install rsync' : 'sudo apt install openssh-client rsync';
   let checked = '';   // адрес, прошедший проверку: «Сохранить» — только для него
   inp.addEventListener('input', () => { bSave.disabled = inp.value.trim() !== checked || !checked; });
-  inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); if (!bSave.disabled) bSave.click(); else check(); } });
+  // Enter во время идущей проверки не запускает вторую (второй ssh-процесс, ответы вперемешку)
+  inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); if (!bSave.disabled) bSave.click(); else if (!bCheck.disabled) check(); } });
 
   const check = async () => {
     const server = inp.value.trim();
@@ -793,7 +794,9 @@ function renameCategory(old) {
     if (name === old || name === UNCATEGORIZED || name === ARCHIVE) return;
     saveCategories([...new Set(loadCategories().map((c) => (c === old ? name : c)))]);
     const order = loadSectionOrder();
-    if (order) saveSectionOrder(order.map((k) => (k === old ? name : k)));
+    // имя уже занятой категории = слияние (список выше схлопнут Set'ом) — порядок схлопываем так же,
+    // иначе в нём остались бы две записи одной категории и группа рисовалась бы дважды
+    if (order) saveSectionOrder([...new Set(order.map((k) => (k === old ? name : k)))]);
     for (const p of projects) if (p.category === old) p.category = name;
     saveProjects(); renderProjects();
   });
@@ -852,7 +855,9 @@ async function scanProjects() {
     if (!Array.isArray(entries)) continue;
     for (const ent of entries) {
       if (!ent.dir || ent.name.startsWith('.')) continue;
-      if (known.has(ent.path) || dismissed.has(ent.path)) continue;
+      // known снят до await: пока читалась папка, проект мог добавить второй скан (закрытие настроек
+      // во время стартового) или ручное открытие — сверяемся и с живым списком, иначе будет дубль с тем же id
+      if (known.has(ent.path) || dismissed.has(ent.path) || projects.some((p) => p.path === ent.path)) continue;
       projects.push({ id: projId(ent.path), name: ent.name, path: ent.path });
       known.add(ent.path); added = true;
     }
@@ -871,6 +876,19 @@ async function scanProjects() {
 // ---------------------------------------------------------------- notes / prompt cards (#4)
 // Модуль «Задачи» (notes) мигрирован в отдельное окно (renderer/module-entry.js, проектозависимый).
 // Здесь остаётся только sendNoteToTerminal — его зовёт редактор по editorBus (окно→редактор).
+// Текст, который редактор ВСТАВЛЯЕТ в терминал (заметки, промпты, «Спросить агента» из окон модулей,
+// «Вставить» из контекстного меню), — не нажатия клавиш. Если программа в терминале включила bracketed
+// paste (bash ≥ 5.1, zsh, fish, Claude Code — по умолчанию), оборачиваем его в маркеры вставки — ровно
+// как xterm при Ctrl+V. Иначе перевод строки внутри текста срабатывал как Enter: оболочка выполняла
+// строки заметки/промпта (а в них бывают чужие данные — имена файлов, ответы модели, сэмплы ошибок)
+// до того, как человек их увидел. Маркеры внутри текста вырезаем — ими нельзя «выйти» из вставки.
+// Режим не включён (свежий шелл ещё не ответил, программа без поддержки) — пишем как раньше.
+function writeAsPaste(id, text) {
+  const rec = terms.get(id) || extTerms.get(id);
+  const bracketed = !!(rec && rec.term && rec.term.modes && rec.term.modes.bracketedPasteMode);
+  const s = String(text);
+  lite.pty.write(id, bracketed ? '\x1b[200~' + s.replace(/\x1b\[20[01]~/g, '').replace(/\r?\n/g, '\r') + '\x1b[201~' : s);
+}
 function sendNoteToTerminal(p, text) {
   if (!text) return;
   const proj = projects.find((x) => x.id === p.id);
@@ -878,7 +896,11 @@ function sendNoteToTerminal(p, text) {
   ensureProjectTabs(proj);
   setActive(proj.id);
   const sid = (tabsByProj.get(proj.id) || {}).active;
-  if (sid) lite.pty.write(sid, text); // no trailing newline — review, then press Enter yourself
+  if (!sid) return;
+  // Терминал мог только что подняться (ensureProjectTabs) с отложенным автовводом — без отмены
+  // слово из настроек (`claude`) дописалось бы в ту же строку после текста заметки.
+  cancelPrefill(sid);
+  writeAsPaste(sid, text); // no trailing newline — review, then press Enter yourself
 }
 
 // Режим «один терминал»: карточка проектов сжимается в узкий рельс — буквы проектов со статусом,
@@ -973,6 +995,9 @@ function doCloseProject(id) {
       projState.delete(sid);
     }
     tabsByProj.delete(id);
+    // Сессии ушли из projState — пересчитать бейдж «N ждёт ответа» и трей. Без этого закрытый проект
+    // с ждущим агентом оставлял бейдж и отметку в трее до следующей смены состояния любой вкладки.
+    updateAttention();
   }
   const pt = { ...(STORE.projTabs || {}) }; delete pt[id]; persist('projTabs', pt);
   if (loadFavOrder().includes(id)) saveFavOrder(loadFavOrder().filter((x) => x !== id));
@@ -982,7 +1007,15 @@ function doCloseProject(id) {
   if (activeId === id) {
     activeId = null;
     if (projects.length) setActive(projects[0].id);
-    else { renderProjects(); showActiveTerminal(); } // нет проектов → окно вивера отреагирует на app:activeProject=null
+    else {
+      renderProjects(); showActiveTerminal();
+      // нет проектов → окна модулей (вивер, git, задачи…) получают app:activeProject=null и показывают
+      // пустое состояние. Раньше null никто не отправлял, и они продолжали работать с закрытым проектом.
+      try { Ext.notifyActiveProject(null); } catch (_) {}
+      pushActiveProject(null);
+      updateNotesBadge();
+      try { lite.errors.setContext(null); } catch (_) {} // новые ошибки не должны помечаться закрытым проектом
+    }
   } else {
     renderProjects();
   }
@@ -1479,6 +1512,9 @@ function ensureProjectTabs(proj) {
 function renderTabBar() {
   const bar = $('#term-tabs');
   if (!bar) return;
+  // вкладки пересоздаются: у снятой из DOM mouseleave уже не сработает, и тултип (например, после ✕
+  // по вкладке под курсором или Ctrl+Tab) висел бы над панелью до следующего наведения
+  hideTabTip();
   bar.innerHTML = '';
   const t = tabsByProj.get(activeId);
   // шапка видна всегда (в ней кнопки окна и за неё тянут окно); без проекта нет только вкладок и «+»
@@ -1632,7 +1668,7 @@ function scheduleTabScroll() {
 }
 async function pasteInto(id) {
   const text = await lite.readClipboard();
-  if (text) { cancelPrefill(id); lite.pty.write(id, text); }
+  if (text) { cancelPrefill(id); writeAsPaste(id, text); }
   // Reading the clipboard is async (IPC round-trip) and the right-click menu steals
   // focus — without this the terminal looks "frozen" until clicked. Refocus the xterm.
   const rec = isExtTerm(id) ? extTerms.get(id) : terms.get(id); // dev-терминал модуля живёт в extTerms
@@ -2036,7 +2072,13 @@ function showPanelSetup() {
   const render = () => {
     const mods = quickAllModules();
     const byId = new Map(mods.map((x) => [x.id, x]));
-    const sel = (Array.isArray(STORE.quickbar) ? STORE.quickbar : []).filter((id) => id === QUICK_SEP || byId.has(id));
+    // Показываем только известные модули, а правим ПОЛНЫЙ список из стора через их позиции (at):
+    // id модуля, которого сейчас нет (свой модуль сломан или ещё не догрузился после скана), в списке
+    // не виден, но и не должен выпадать из стора от перестановки соседей — как в renderQuickbar.
+    const stored = Array.isArray(STORE.quickbar) ? STORE.quickbar : [];
+    const at = [];
+    stored.forEach((id, j) => { if (id === QUICK_SEP || byId.has(id)) at.push(j); });
+    const sel = at.map((j) => stored[j]);
     box.replaceChildren();
     const h1 = el('div', 'qb-sec'); h1.append(el('b', null, 'На панели'), el('span', null, String(sel.filter((x) => x !== QUICK_SEP).length)));
     box.appendChild(h1);
@@ -2045,11 +2087,11 @@ function showPanelSetup() {
       const row = el('div', 'qrow');
       if (id === QUICK_SEP) row.append(el('span', 'qsep-l'), el('span', 'qt dim2', 'разделитель'));
       else { const mod = byId.get(id); const ri = el('span', 'ri'); ri.appendChild(icon(mod.icon, 16)); row.append(ri, el('span', 'qt', names(mod)[0])); }
-      const move = (d) => { const ids = sel.slice(); [ids[i], ids[i + d]] = [ids[i + d], ids[i]]; save(ids); render(); };
+      const move = (d) => { const ids = stored.slice(), a = at[i], b = at[i + d]; [ids[a], ids[b]] = [ids[b], ids[a]]; save(ids); render(); };
       row.append(
         gt('chevron-up', 'Левее на панели', () => move(-1), i === 0),
         gt('chevron-down', 'Правее на панели', () => move(1), i === sel.length - 1),
-        gt('x', 'Убрать с панели', () => { const ids = sel.slice(); ids.splice(i, 1); save(ids); render(); }),
+        gt('x', 'Убрать с панели', () => { const ids = stored.slice(); ids.splice(at[i], 1); save(ids); render(); }),
       );
       box.appendChild(row);
     });
@@ -2062,7 +2104,7 @@ function showPanelSetup() {
       row.append(ri, el('span', 'qt', name), el('span', 'qd', desc));
       const plus = el('span', 'gt'); plus.appendChild(icon('plus', 13));
       row.appendChild(plus);
-      row.onclick = () => { save([...sel, mod.id]); render(); };
+      row.onclick = () => { save([...stored, mod.id]); render(); };
       box.appendChild(row);
     }
   };
@@ -2304,7 +2346,7 @@ function showMoreMenu(anchor) {
   c1.appendChild(menuRow('palette', 'Оформление…', () => { closeMenus(); showLookPanel($('#app').classList.contains('single') ? $('#rail-look') : $('#btn-look')); }));
   c1.appendChild(menuRow('sparkles', 'Заставка «матрица»', go(() => startMatrix())));
   T(c1, 'Справка');
-  if (updateInfo && updateInfo.newer) c1.appendChild(menuRow('download', `Обновить до ${updateInfo.tag || 'новой версии'}`, go(onUpdateBadgeClick), '', { badge: 'новая' }));
+  if (updateInfo && updateInfo.newer) c1.appendChild(menuRow('download', `Обновить до ${updateInfo.tag || 'новой версии'}`, go(updateNow), '', { badge: 'новая' }));
   else c1.appendChild(menuRow('refresh', 'Проверить обновления', go(() => checkForUpdate({ manual: true }))));
   c1.appendChild(menuRow('github', 'Репозиторий на GitHub', go(openRepo), '', { ext: true }));
   c1.appendChild(menuRow('info', 'О программе', go(showAbout)));
@@ -2482,6 +2524,9 @@ function showModulesCatalog(start = 'all') {
 // Правка применяется сразу; запись и рассылка окнам модулей — с задержкой, чтобы ползунок не гонял IPC.
 const LOOK_ACCENTS = ['#3ecf8e', '#5b9cff', '#3dc8dc', '#a98cf0', '#e06fae', '#e0af68', '#d97757'];
 let lookSaveT = null;
+// Свои таймеры у ширины панели и шрифта: общий с lookSaveT отменял бы чужую отложенную запись
+// (сдвинули цвет, а через 200 мс ширину — палитра не сохранялась и не уезжала в окна модулей).
+let lookLayoutT = null, lookFontT = null;
 function lookLive() {
   applyLook(settings);
   for (const rec of terms.values()) { try { rec.term.options.theme = termTheme(); } catch (_) {} }
@@ -2538,9 +2583,9 @@ function showLookPanel(anchor) {
   const RANGES = [
     ['alpha', 'Непрозрачность фона', 60, 100, 1, '%', () => lookOf(settings).alpha, (v) => editLook((l) => { l.alpha = v; })],
     ['r', 'Скругление', 4, 22, 1, 'px', () => lookOf(settings).r, (v) => editLook((l) => { l.r = v; })],
-    ['side', 'Ширина панели', 240, 440, 2, 'px', () => layout.sidebar, (v) => { layout.sidebar = v; applyLayout(); refitActiveTerminal(); clearTimeout(lookSaveT); lookSaveT = setTimeout(saveLayout, 250); }],
+    ['side', 'Ширина панели', 240, 440, 2, 'px', () => layout.sidebar, (v) => { layout.sidebar = v; applyLayout(); refitActiveTerminal(); clearTimeout(lookLayoutT); lookLayoutT = setTimeout(saveLayout, 250); }],
     ['row', 'Строка проекта', 28, 42, 1, 'px', () => lookOf(settings).row, (v) => editLook((l) => { l.row = v; })],
-    ['font', 'Шрифт терминала', 9, 24, 1, 'px', () => settings.fontSize, (v) => { settings.fontSize = v; applyFontSize(); clearTimeout(lookSaveT); lookSaveT = setTimeout(saveSettings, 250); }],
+    ['font', 'Шрифт терминала', 9, 24, 1, 'px', () => settings.fontSize, (v) => { settings.fontSize = v; applyFontSize(); clearTimeout(lookFontT); lookFontT = setTimeout(saveSettings, 250); }],
   ];
   const draw = () => {
     const l = lookOf(settings), tok = lookTokens(l);
@@ -2617,8 +2662,13 @@ function showLookPanel(anchor) {
       let o = null;
       try { o = JSON.parse(String(raw || '').trim()); } catch (_) {}
       if (!o || typeof o !== 'object' || (!o.base && !o.accent)) { toast('В буфере обмена нет темы — сначала скопируйте её', { kind: 'warn' }); return; }
-      settings.look = { accent: o.accent, r: o.r, row: o.row, alpha: o.alpha, base: o.base, status: o.status, over: o.over };
-      settings.look = lookOf(settings);                                   // проверка значений: мусор отбрасывается
+      // Проверка значений ДО записи в settings: lookOf отбрасывает мусор, но на значении-массиве
+      // (["#aabbcc"] проходит HEX.test) бросает — сырой объект остался бы в settings.look, ушёл бы на диск
+      // со следующим saveSettings и ронял бы применение темы (и init) при каждом запуске.
+      let look;
+      try { look = lookOf({ look: { accent: o.accent, r: o.r, row: o.row, alpha: o.alpha, base: o.base, status: o.status, over: o.over } }); }
+      catch (_) { toast('В буфере обмена нет темы — сначала скопируйте её', { kind: 'warn' }); return; }
+      settings.look = look;
       if (Number.isFinite(+o.side)) { layout.sidebar = +o.side; applyLayout(); saveLayout(); }
       if (Number.isFinite(+o.font)) { settings.fontSize = Math.max(9, Math.min(24, +o.font)); applyFontSize(); }
       lookLive(); draw(); refitActiveTerminal();
@@ -2698,7 +2748,9 @@ function refreshGitChip(delay = 400) {
     if (seq !== gitChipSeq) return;          // пока ждали, проект сменился — ответ устарел
     if (!info || !info.repo) { gitChip = { projId: p.id, repo: false, branch: '', files: [] }; renderChips(); return; }
     const base = p.path.replace(/[\\/]+$/, '');
-    const files = Object.entries((st && st.files) || {}).map(([abs, code]) => ({ abs, code, rel: abs.startsWith(base) ? abs.slice(base.length + 1) : abs }));
+    // префикс — с разделителем: иначе у проекта /repo/app файл /repo/app-old/x показывался бы как «old/x»
+    const inBase = (abs) => abs.startsWith(base + '/') || abs.startsWith(base + '\\');
+    const files = Object.entries((st && st.files) || {}).map(([abs, code]) => ({ abs, code, rel: inBase(abs) ? abs.slice(base.length + 1) : abs }));
     gitChip = { projId: p.id, repo: true, branch: info.branch || 'HEAD', ahead: info.ahead || 0, behind: info.behind || 0, files };
     renderChips();
   }, delay);
@@ -2803,7 +2855,8 @@ function newPromptId() { return 'ps_' + Date.now().toString(36) + Math.floor(Mat
 // Вставка промпта в конкретную сессию (sid). Хвостовые переводы строк срезаем — ничего не запускаем.
 function insertPrompt(sid, body) {
   const text = String(body || '').replace(/[\r\n]+$/, '');
-  if (text) lite.pty.write(sid, text);
+  // как pasteInto: в свежем терминале отложенный автоввод («claude») иначе допишется следом за промптом
+  if (text) { cancelPrefill(sid); writeAsPaste(sid, text); }
   const rec = terms.get(sid);
   if (rec && rec.term) { try { rec.term.focus(); } catch (_) {} }
 }
@@ -3037,6 +3090,8 @@ function showAbout() {
         // Уже скачано в фоне — сразу к перезапуску; иначе качаем и предлагаем перезапуск по готовности.
         if (updPhase.phase === 'ready') return confirmAndInstall();
         setSt('— загружаю…');
+        // фоновая автозагрузка уже идёт — второй запрос main отклонил бы ошибкой «загрузка уже идёт»
+        if (updPhase.phase === 'downloading') return;
         const d = await startUpdateDownload({ manual: true });
         if (d && d.ok) { close(); confirmAndInstall(); } else setSt('— не удалось загрузить', 'err');
       };
@@ -3264,7 +3319,11 @@ function showLogs() {
     if (!p) { toast('Нет активного проекта — открой проект, чтобы передать в его терминал', { kind: 'err', ttl: 7000 }); return; }
     const open = errEntries.filter((e) => e.status === 'open' && (!e.project || e.project === p.path));
     if (!open.length) { toast('Открытых ошибок для этого проекта нет'); return; }
-    const lines = open.slice(0, 40).map((e) => `- [${e.level}] ${e.source}: ${e.sample} (×${e.count}, id ${e.id})`).join('\n');
+    // Сэмплы — недоверенный текст (стеки, ответы серверов, имена файлов), а пишется он в PTY как
+    // нажатия клавиш: \r отправил бы агенту недочитанный текст, Ctrl+C/ESC — сработали бы как клавиши,
+    // переводы строк стека разорвали бы список. Схлопываем управляющие символы — одна строка на ошибку.
+    const oneLine = (s) => String(s == null ? '' : s).replace(/[\x00-\x1f\x7f-\x9f]+/g, ' ').trim();
+    const lines = open.slice(0, 40).map((e) => `- [${oneLine(e.level)}] ${oneLine(e.source)}: ${oneLine(e.sample)} (×${e.count}, id ${oneLine(e.id)})`).join('\n');
     const text = `В логе редактора есть открытые ошибки (реестр ~/.LiteEditorAI/errors.json). Разберись и почини; что устранил — отметь в errors.json по правилу из CLAUDE.md (для записи по id выставить "status":"resolved" + "note" + "commit"). Открытые сейчас:\n${lines}\n`;
     sendNoteToTerminal(p, text);
     toast('Передано в терминал: ' + open.length);
@@ -3358,7 +3417,8 @@ function showSettings(start = 'look') {
       ld.appendChild(dirLink);
       body.appendChild(row('Язык интерфейса', ld, lang));
       body.appendChild(row('Цвета и размеры', 'Фон, панели, текст, акцент, состояния, скругление, ширина панели, шрифт терминала — всё настраивается.',
-        button('Настроить…', 'palette', () => { close(); showLookPanel($('#app').classList.contains('single') ? $('#rail-look') : $('#btn-look')); })));
+        // stopPropagation — как у кнопки-палитры: иначе клик всплывёт до document и closeMenus() сразу закроет панель
+        button('Настроить…', 'palette', (e) => { e.stopPropagation(); close(); showLookPanel($('#app').classList.contains('single') ? $('#rail-look') : $('#btn-look')); })));
       body.appendChild(row('Размер шрифта терминала', 'На ходу — Ctrl + «+» / «−».', number(settings.fontSize, 9, 24, 1, (v) => { settings.fontSize = v; save(); applyFontSize(); })));
       // Рамка окна — живой предпросмотр: применяется сразу и уезжает в окна модулей (шина settingsChanged).
       const frameLive = () => { save(); applyFrame(settings); try { lite.app.settingsChanged(settings); } catch (_) {} };
@@ -3441,7 +3501,7 @@ function showSettings(start = 'look') {
       const newer = updateInfo && updateInfo.newer;
       body.appendChild(row(newer ? 'Доступна новая версия' : 'Проверить прямо сейчас', '', button(newer ? 'Обновить' : 'Проверить', newer ? 'download' : 'refresh', async (e) => {
         const b = e.currentTarget;
-        if (newer) { close(); onUpdateBadgeClick(); return; }
+        if (newer) { close(); updateNow(); return; }
         b.disabled = true;
         try { await checkForUpdate({ manual: true }); } finally { b.disabled = false; }
         if (cur === 'upd') draw();
@@ -3550,7 +3610,9 @@ function showPalette() {
       const row = el('div', 'pal-row' + (i === sel ? ' sel' : ''));
       row.appendChild(el('span', 'pal-label', a.label));
       if (a.hint) row.appendChild(el('span', 'pal-hint', a.hint));
-      row.addEventListener('click', () => { close(); a.run(); });
+      // Клик не должен всплыть до document: там closeMenus() тут же закрыл бы выпадашку,
+      // которую открыло само действие («Оформление — цвета и размеры»).
+      row.addEventListener('click', (e) => { e.stopPropagation(); close(); a.run(); });
       list.appendChild(row);
     });
   };
@@ -3560,9 +3622,11 @@ function showPalette() {
     sel = 0; render();
   };
   input.addEventListener('input', filter);
+  // список ограничен по высоте (.pal-list) — выбранная стрелками строка должна оставаться в виду
+  const reveal = () => { const r = list.children[sel]; if (r) r.scrollIntoView({ block: 'nearest' }); };
   input.addEventListener('keydown', (e) => {
-    if (e.key === 'ArrowDown') { e.preventDefault(); sel = Math.min(sel + 1, shown.length - 1); render(); }
-    else if (e.key === 'ArrowUp') { e.preventDefault(); sel = Math.max(sel - 1, 0); render(); }
+    if (e.key === 'ArrowDown') { e.preventDefault(); sel = Math.min(sel + 1, shown.length - 1); render(); reveal(); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); sel = Math.max(sel - 1, 0); render(); reveal(); }
     else if (e.key === 'Enter') { e.preventDefault(); const a = shown[sel]; if (a) { close(); a.run(); } }
   });
   render();
@@ -3665,6 +3729,14 @@ async function onUpdateBadgeClick() {
   }
   updBusy = true;
   try { await startUpdateDownload({ manual: true }); } finally { updBusy = false; }
+}
+// «Обновить» из меню «Ещё» и из настроек. Это не переключатель, как плашка: если загрузка уже идёт
+// (фоновая автозагрузка), нажатие не должно её молча отменять — только напомнить, что она идёт
+// (в режиме «один терминал» плашки с прогрессом не видно).
+function updateNow() {
+  if (updPhase.phase === 'downloading') { toast(`Обновление уже загружается — ${Math.max(0, Math.min(100, updPhase.pct || 0))} %`); return; }
+  if (updPhase.phase === 'installing') return;
+  onUpdateBadgeClick();
 }
 
 // Скачать обновление. Тихо при автозагрузке: фоновая закачка не должна сыпать тостами.
@@ -4041,6 +4113,12 @@ function init() {
     e.preventDefault();
     const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
     if (!f) return;
+    // Проект — это папка: брошенный файл превращался в «проект» с путём к файлу, терминал в нём не
+    // стартует, а запись остаётся в списке. Папку от файла отличает webkitGetAsEntry (синхронно, только
+    // внутри drop); нет entry — ведём себя как раньше.
+    let entry = null;
+    try { const it = [...(e.dataTransfer.items || [])].find((x) => x.kind === 'file'); entry = it && it.webkitGetAsEntry ? it.webkitGetAsEntry() : null; } catch (_) {}
+    if (entry && !entry.isDirectory) { toast('Перетащите папку — файл нельзя открыть как проект', { kind: 'warn' }); return; }
     const p = f.path || lite.pathForFile(f);
     if (p) openByPath(p, baseName(p));
   });
@@ -4077,9 +4155,18 @@ function init() {
     // иначе они остались бы видны и просвечивали сквозь прозрачный фон активного
     for (const pid of [...adoptPtys.keys()]) {
       const p = projects.find((x) => x.id === pid);
-      if (p) ensureProjectTabs(p);
+      if (!p) continue;
+      const t = tabsByProj.get(pid);
+      if (!t) { ensureProjectTabs(p); continue; }
+      // Гонка: проект активировали (клик по карточке, Ctrl+1…) раньше ответа adoptable — его вкладки уже
+      // созданы свежими, и ensureProjectTabs живые терминалы не заберёт: main погасил бы их через
+      // ORPHAN_TTL вместе с работающим агентом. Садим их дополнительными вкладками.
+      const ids = adoptPtys.get(pid); adoptPtys.delete(pid);
+      for (const id of ids) createSession(p, tt('Терминал {0}', t.sessions.length + 1), false, id);
+      saveProjTabs();
     }
-    if (first) setActive(first);
+    // Проект уже выбран руками (та же гонка) — не перескакивать; showActiveTerminal спрячет лишние вкладки.
+    if (first && !activeId) setActive(first);
     else showActiveTerminal();
   });
 

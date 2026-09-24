@@ -33,10 +33,14 @@ const TARGET_ID = resolveTargetId();
 const agendaFile = () => path.join(AGENDA_DIR, String(TARGET_ID).replace(/[^\w.-]/g, '_') + '.json');
 
 // ---- чтение/запись (атомарно: tmp + rename) ----
+// Файла нет — список пуст. Файл есть, но не читается или не разбирается (правка руками, сбой диска) —
+// null: писать поверх нельзя, иначе add/complete молча заменили бы все напоминания проекта одним.
 function readItems() {
-  try { const a = JSON.parse(fs.readFileSync(agendaFile(), 'utf8')); return Array.isArray(a) ? a : []; }
-  catch { return []; }
+  let raw;
+  try { raw = fs.readFileSync(agendaFile(), 'utf8'); } catch (e) { return e && e.code === 'ENOENT' ? [] : null; }
+  try { const a = JSON.parse(raw); return Array.isArray(a) ? a : null; } catch { return null; }
 }
+const unreadable = () => ({ content: [{ type: 'text', text: 'Ошибка: файл напоминаний не читается или повреждён (' + agendaFile() + '). Ничего не изменено.' }], isError: true });
 function writeItems(items) {
   fs.mkdirSync(AGENDA_DIR, { recursive: true });
   const f = agendaFile();
@@ -46,20 +50,27 @@ function writeItems(items) {
 }
 const genId = () => 'r' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
 
+// Даты — в ЛОКАЛЬНОМ времени, как у окна «Календарь» (renderer/modules/notes-agenda.js) и тикера
+// напоминаний в main: «весь день» = локальная полночь. new Date('YYYY-MM-DD') по стандарту даёт
+// полночь UTC — западнее Гринвича напоминание уезжало на день раньше (и в ленте, и в уведомлении).
 function parseAt(s) {
   if (!s) return { at: null, allDay: false };
-  const hasTime = /\d{1,2}:\d{2}/.test(String(s));
-  const d = new Date(s);
+  const str = String(s).trim();
+  const hasTime = /\d{1,2}:\d{2}/.test(str);
+  const d = new Date(/^\d{4}-\d{2}-\d{2}$/.test(str) ? str + 'T00:00' : str); // дата-время без смещения — локальное
   if (isNaN(d)) return { at: null, allDay: false };
   return { at: d.toISOString(), allDay: !hasTime };
 }
+const pad2 = (n) => String(n).padStart(2, '0');
+const localDay = (d) => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
 function fmtItem(r) {
   const parts = [];
   const title = String(r.text || '').split('\n')[0].trim() || '(без названия)';
   parts.push(r.done ? `[✓] ${title}` : `[ ] ${title}`);
   if (r.at) {
     const d = new Date(r.at);
-    if (!isNaN(d)) parts.push(r.allDay ? d.toISOString().slice(0, 10) : d.toISOString().slice(0, 16).replace('T', ' '));
+    // тот же формат, что принимает add_reminder («YYYY-MM-DD» / «YYYY-MM-DD HH:mm»), — локальное время
+    if (!isNaN(d)) parts.push(r.allDay ? localDay(d) : `${localDay(d)} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`);
   }
   if (r.remind) parts.push('напомнить: ' + r.remind);
   parts.push('id=' + r.id);
@@ -88,7 +99,7 @@ const TOOLS = [
       type: 'object',
       properties: {
         text: { type: 'string', description: 'Текст напоминания. Первая строка — заголовок.' },
-        at: { type: 'string', description: 'Срок: ISO 8601 или "YYYY-MM-DD" (весь день) или "YYYY-MM-DD HH:mm". Необязателен.' },
+        at: { type: 'string', description: 'Срок в локальном времени пользователя: ISO 8601 или "YYYY-MM-DD" (весь день) или "YYYY-MM-DD HH:mm". Необязателен.' },
         remind: { type: 'string', enum: REMIND, description: 'За сколько до срока уведомить: at (в момент), 10m, 1h, 1d. Необязателен.' },
       },
       required: ['text'],
@@ -111,11 +122,14 @@ function toolListReminders(args) {
   const sod = new Date(); sod.setHours(0, 0, 0, 0);
   const eod = sod.getTime() + 86400000;
   let items = readItems();
+  if (!items) return unreadable();
   const has = (r) => r && r.at && !isNaN(new Date(r.at));
+  // «Весь день» просрочен только со следующего дня — как в ленте Календаря (bucketOf), а не с полуночи самого дня
+  const due = (r) => (r.allDay ? sod.getTime() : now);
   if (when === 'open') items = items.filter((r) => !r.done);
-  else if (when === 'overdue') items = items.filter((r) => !r.done && has(r) && new Date(r.at).getTime() < now);
+  else if (when === 'overdue') items = items.filter((r) => !r.done && has(r) && new Date(r.at).getTime() < due(r));
   else if (when === 'today') items = items.filter((r) => !r.done && has(r) && new Date(r.at).getTime() < eod && new Date(r.at).getTime() >= sod.getTime());
-  else if (when === 'upcoming') items = items.filter((r) => !r.done && has(r) && new Date(r.at).getTime() >= now);
+  else if (when === 'upcoming') items = items.filter((r) => !r.done && has(r) && new Date(r.at).getTime() >= due(r));
   items.sort((a, b) => (a.at ? new Date(a.at).getTime() : Infinity) - (b.at ? new Date(b.at).getTime() : Infinity));
   if (!items.length) return { content: [{ type: 'text', text: 'Напоминаний нет (фильтр: ' + when + ').' }] };
   return { content: [{ type: 'text', text: `Напоминаний: ${items.length} (${when})\n` + items.map(fmtItem).join('\n') }] };
@@ -127,6 +141,7 @@ function toolAddReminder(args) {
   const remind = REMIND.includes(args && args.remind) ? args.remind : null;
   const item = { id: genId(), text, at, allDay, remind, done: false, tag: '', notifiedAt: null, createdAt: new Date().toISOString() };
   const items = readItems();
+  if (!items) return unreadable();
   items.unshift(item);
   writeItems(items);
   return { content: [{ type: 'text', text: 'Создано напоминание: ' + fmtItem(item) }] };
@@ -135,6 +150,7 @@ function toolCompleteReminder(args) {
   const id = args && args.id;
   if (!id) return { content: [{ type: 'text', text: 'Ошибка: не задан id.' }], isError: true };
   const items = readItems();
+  if (!items) return unreadable();
   const r = items.find((x) => x && x.id === id);
   if (!r) return { content: [{ type: 'text', text: 'Напоминание с id=' + id + ' не найдено.' }], isError: true };
   r.done = true; r.notifiedAt = r.notifiedAt || new Date().toISOString();
@@ -154,6 +170,10 @@ function reply(id, result) { send({ jsonrpc: '2.0', id, result }); }
 function replyErr(id, code, message) { send({ jsonrpc: '2.0', id, error: { code, message } }); }
 
 function handle(msg) {
+  // Не объект (строка «null», число, null внутри пакета) — не JSON-RPC-сообщение. Деструктуризация null
+  // бросала вне try, прямо в обработчике stdin, и роняла весь процесс: агент терял инструменты до
+  // перезапуска сессии.
+  if (!msg || typeof msg !== 'object') return;
   const { id, method, params } = msg;
   const isReq = id !== undefined && id !== null;
   try {
