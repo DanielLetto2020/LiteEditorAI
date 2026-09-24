@@ -1238,6 +1238,10 @@ ipcMain.on('tp:run', (e, { reqId, agent, prompt, mode, cwd } = {}) => {
     else safeSend(sender, 'tp:error', { reqId, error: errOut.trim() || ('агент завершился с кодом ' + code) });
   });
   if (plan.viaStdin) { try { child.stdin.write(prompt || ''); child.stdin.end(); } catch (_) {} }
+  // Промпт в аргументе (агент-режим, gemini) — stdin всё равно закрываем: CLI, который при не-TTY
+  // stdin дочитывает его до EOF, чтобы приклеить к промпту (так работает `cat f | claude -p …`), с
+  // открытым pipe ждал бы до таймаута в 4/15 минут. Пустой вход промпт из аргумента не меняет.
+  else { try { child.stdin.end(); } catch (_) {} }
 });
 
 // Остановить работающего агента. В агент-режиме это не удобство, а необходимость: до сих пор
