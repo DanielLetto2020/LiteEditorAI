@@ -6774,6 +6774,9 @@ ipcMain.handle('containers:logsStart', (e, { engine, id, streamId, tail } = {}) 
   catch (e2) { return { error: String(e2.message || e2) }; }
   const sender = e.sender; // окно-владелец (редактор ИЛИ окно модуля «Контейнеры») — стрим уходит туда
   const send = (d) => safeSend(sender, 'containers:logsData', { streamId, data: d.toString('utf8') });
+  // Декодер потока, а не Buffer.toString на каждый чанк: чанк пайпа (до 64 КБ) рвёт многобайтный
+  // символ — кириллица в логах на стыке превращалась в «��».
+  cp.stdout.setEncoding('utf8'); cp.stderr.setEncoding('utf8');
   cp.stdout.on('data', send); cp.stderr.on('data', send);
   cp.on('error', (err) => send('\n[ошибка logs: ' + (err.message || err) + ']\n'));
   cp.on('close', () => { cLogProcs.delete(streamId); safeSend(sender, 'containers:logsExit', { streamId }); });
