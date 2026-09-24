@@ -1333,6 +1333,9 @@ ipcMain.on('dbai:run', (e, { reqId, agent, prompt } = {}) => {
   try { child = spawn(conf.cmd, args, { cwd: os.homedir(), env: tpEnv() }); }
   catch (err) { safeSend(sender, 'dbai:error', { reqId, error: 'не запустить «' + conf.cmd + '»: ' + (err.message || err) }); return; }
   dbaiTrack(sender, reqId, child);
+  // Декодируем поток целиком (StringDecoder): русская буква — два байта, и на границе чанков
+  // c.toString() давал «��» в ответе агента (так же в tp:run/openrouter)
+  child.stdout.setEncoding('utf8'); child.stderr.setEncoding('utf8');
   let errOut = '', any = false, buf = '', sawDelta = false;
   const to = setTimeout(() => { if (dbaiReqs.has(reqId)) { dbaiReqs.delete(reqId); try { child.kill(); } catch (_) {} safeSend(sender, 'dbai:error', { reqId, error: 'таймаут (агент не ответил вовремя)' }); } }, 300000);
   const emit = (chunk) => { if (!chunk) return; any = true; safeSend(sender, 'dbai:data', { reqId, chunk }); };
@@ -1382,6 +1385,7 @@ ipcMain.handle('dbai:apiModels', async (_e, { baseUrl, key } = {}) => {
     let u; try { u = new URL(String(baseUrl).replace(/\/$/, '') + '/models'); } catch (_) { return resolve({ error: 'неверный адрес' }); }
     const headers = { 'Accept': 'application/json', ...(key ? { Authorization: 'Bearer ' + key } : {}) };
     const req = dbaiHttpMod(u).request(u, { method: 'GET', headers }, (res) => {
+      res.setEncoding('utf8');   // многобайтный символ на границе чанков не бьётся
       let data = ''; res.on('data', (c) => { data += c; });
       // обрыв посреди ответа даёт только 'close' без 'end' — иначе invoke висел бы вечно
       res.on('close', () => { if (!res.complete) resolve({ error: 'соединение с сервером оборвалось' }); });
@@ -1406,6 +1410,7 @@ ipcMain.on('dbai:apiRun', (e, { reqId, baseUrl, key, model, messages, usage, pro
   const body = JSON.stringify({ model, messages: msgs, stream: true, ...(usage ? { stream_options: { include_usage: true } } : {}) });
   const headers = { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body), ...(key ? { Authorization: 'Bearer ' + key } : {}) };
   const req = dbaiHttpMod(u).request(u, { method: 'POST', headers }, (res) => {
+    res.setEncoding('utf8');   // SSE-кадры с русским текстом: буква на границе чанков иначе превращалась в «��»
     if (res.statusCode >= 400) { let err = ''; res.on('data', (c) => { err += c; }); res.on('end', () => { let msg = 'HTTP ' + res.statusCode; try { const j = JSON.parse(err); if (j.error && j.error.message) msg = j.error.message; } catch (_) {} if (!dbaiReqs.has(reqId)) return; dbaiReqs.delete(reqId); safeSend(sender, 'dbai:error', { reqId, error: msg }); }); return; }
     let buf = '', any = false;
     res.on('data', (chunk) => {
