@@ -6300,16 +6300,24 @@ ipcMain.handle('git:revertHunk', async (_e, { root, patch } = {}) => {
 // A7: git blame файла (--line-porcelain) → массив пер-строчных {hash,author,time,summary} (1:1 строкам файла).
 ipcMain.handle('git:blame', async (_e, { root, file } = {}) => {
   if (!root || !file) return { error: 'no root/file' };
-  const out = await git(root, ['blame', '--line-porcelain', '--', file]);
+  // --porcelain, а не --line-porcelain: тот повторяет ~12 строк шапки коммита на КАЖДУЮ строку файла,
+  // и уже у полуторамегабайтного файла (в пределах лимита вивера) вывод перерастал maxBuffer 8 МБ —
+  // blame падал с ложным «файл не отслеживается». Здесь шапка коммита идёт один раз — кэшируем по хешу.
+  const out = await git(root, ['blame', '--porcelain', '--', file]);
   if (out == null) return { error: 'не git-репозиторий или файл не отслеживается' };
   const lines = [];
+  const byHash = new Map();
   let cur = null;
   for (const ln of out.split('\n')) {
-    if (/^[0-9a-f]{40} /.test(ln)) { cur = { hash: ln.slice(0, 8), uncommitted: /^0{40} /.test(ln) }; }
+    if (/^[0-9a-f]{40} /.test(ln)) {
+      const h = ln.slice(0, 40);
+      cur = byHash.get(h);
+      if (!cur) { cur = { hash: h.slice(0, 8), uncommitted: /^0{40}$/.test(h) }; byHash.set(h, cur); }
+    }
     else if (cur && ln.startsWith('author ')) cur.author = ln.slice(7);
     else if (cur && ln.startsWith('author-time ')) cur.time = parseInt(ln.slice(12), 10) || 0;
     else if (cur && ln.startsWith('summary ')) cur.summary = ln.slice(8);
-    else if (cur && ln.startsWith('\t')) { lines.push(cur); cur = null; }
+    else if (cur && ln.startsWith('\t')) { lines.push({ ...cur }); cur = null; }
   }
   return { ok: true, lines };
 });
