@@ -700,7 +700,9 @@ export function initContainers(host) {
     setText(sec.querySelector('.dsec-count'), String(items.length));
     if (!items.length) return setSectionPlaceholder(body, 'docker-empty', 'Нет контейнеров.');
     clearSectionPlaceholder(body);
-    const groups = {};
+    // Без прототипа: имя compose-проекта — чужая метка, а «constructor» (валидное имя проекта) в {}
+    // находило Object и роняло .push — список не рисовался, полл не стартовал.
+    const groups = Object.create(null);
     for (const c of items) { const g = c.project || ''; (groups[g] = groups[g] || []).push(c); }
     const byName = (a, b) => (a.service || a.name || a.id).localeCompare(b.service || b.name || b.id);
     for (const g of Object.keys(groups)) groups[g].sort(byName); // stable row order across polls
