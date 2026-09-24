@@ -876,6 +876,19 @@ async function scanProjects() {
 // ---------------------------------------------------------------- notes / prompt cards (#4)
 // Модуль «Задачи» (notes) мигрирован в отдельное окно (renderer/module-entry.js, проектозависимый).
 // Здесь остаётся только sendNoteToTerminal — его зовёт редактор по editorBus (окно→редактор).
+// Текст, который редактор ВСТАВЛЯЕТ в терминал (заметки, промпты, «Спросить агента» из окон модулей,
+// «Вставить» из контекстного меню), — не нажатия клавиш. Если программа в терминале включила bracketed
+// paste (bash ≥ 5.1, zsh, fish, Claude Code — по умолчанию), оборачиваем его в маркеры вставки — ровно
+// как xterm при Ctrl+V. Иначе перевод строки внутри текста срабатывал как Enter: оболочка выполняла
+// строки заметки/промпта (а в них бывают чужие данные — имена файлов, ответы модели, сэмплы ошибок)
+// до того, как человек их увидел. Маркеры внутри текста вырезаем — ими нельзя «выйти» из вставки.
+// Режим не включён (свежий шелл ещё не ответил, программа без поддержки) — пишем как раньше.
+function writeAsPaste(id, text) {
+  const rec = terms.get(id) || extTerms.get(id);
+  const bracketed = !!(rec && rec.term && rec.term.modes && rec.term.modes.bracketedPasteMode);
+  const s = String(text);
+  lite.pty.write(id, bracketed ? '\x1b[200~' + s.replace(/\x1b\[20[01]~/g, '').replace(/\r?\n/g, '\r') + '\x1b[201~' : s);
+}
 function sendNoteToTerminal(p, text) {
   if (!text) return;
   const proj = projects.find((x) => x.id === p.id);
@@ -887,7 +900,7 @@ function sendNoteToTerminal(p, text) {
   // Терминал мог только что подняться (ensureProjectTabs) с отложенным автовводом — без отмены
   // слово из настроек (`claude`) дописалось бы в ту же строку после текста заметки.
   cancelPrefill(sid);
-  lite.pty.write(sid, text); // no trailing newline — review, then press Enter yourself
+  writeAsPaste(sid, text); // no trailing newline — review, then press Enter yourself
 }
 
 // Режим «один терминал»: карточка проектов сжимается в узкий рельс — буквы проектов со статусом,
@@ -1655,7 +1668,7 @@ function scheduleTabScroll() {
 }
 async function pasteInto(id) {
   const text = await lite.readClipboard();
-  if (text) { cancelPrefill(id); lite.pty.write(id, text); }
+  if (text) { cancelPrefill(id); writeAsPaste(id, text); }
   // Reading the clipboard is async (IPC round-trip) and the right-click menu steals
   // focus — without this the terminal looks "frozen" until clicked. Refocus the xterm.
   const rec = isExtTerm(id) ? extTerms.get(id) : terms.get(id); // dev-терминал модуля живёт в extTerms
@@ -2843,7 +2856,7 @@ function newPromptId() { return 'ps_' + Date.now().toString(36) + Math.floor(Mat
 function insertPrompt(sid, body) {
   const text = String(body || '').replace(/[\r\n]+$/, '');
   // как pasteInto: в свежем терминале отложенный автоввод («claude») иначе допишется следом за промптом
-  if (text) { cancelPrefill(sid); lite.pty.write(sid, text); }
+  if (text) { cancelPrefill(sid); writeAsPaste(sid, text); }
   const rec = terms.get(sid);
   if (rec && rec.term) { try { rec.term.focus(); } catch (_) {} }
 }
