@@ -4294,13 +4294,35 @@ function smFetch(rawUrl, opts = {}) {
 }
 
 // ── рендер страницы в скрытом окне: innerText + textContent нужных селекторов (для SPA / DOM-чеков) ──
+// Окно грузит ПРОИЗВОЛЬНЫЙ сайт, и ему не положено ничего, кроме отрисовки. Своя сессия в памяти: общий
+// обработчик разрешений defaultSession (guardExternalProtocols) выдаёт всё, кроме внешних протоколов, —
+// страница молча брала бы микрофон/камеру и слала системные уведомления от имени редактора. Здесь любые
+// разрешения отклонены, загрузки отменены (иначе — диалог «Сохранить» на каждой проверке), а cookies и кэш
+// проверяемых сайтов не оседают в профиле редактора.
+const SM_RENDER_PARTITION = 'sitemon-render';
+let smRenderSesReady = false;
+function smRenderSession(ses) {
+  if (smRenderSesReady || !ses) return;
+  smRenderSesReady = true;
+  try {
+    ses.setPermissionRequestHandler((_wc, _perm, cb) => cb(false));
+    ses.setPermissionCheckHandler(() => false);
+    ses.on('will-download', (e) => e.preventDefault());
+  } catch (_) {}
+}
 function smRenderCapture(url, selectors, timeoutMs) {
   return new Promise((resolve) => {
     let win = null, done = false;
     const finish = (r) => { if (done) return; done = true; try { if (win && !win.isDestroyed()) win.destroy(); } catch (_) {} resolve(r); };
     const to = setTimeout(() => finish({ error: 'таймаут рендера' }), (timeoutMs || 15000) + 3000);
     try {
-      win = new BrowserWindow({ show: false, width: 1280, height: 900, webPreferences: { offscreen: false, images: false, contextIsolation: true, sandbox: true, nodeIntegration: false, javascript: true } });
+      // disableDialogs — alert/confirm/prompt сайта иначе всплывают нативным окном поверх рабочего стола
+      win = new BrowserWindow({ show: false, width: 1280, height: 900, webPreferences: { offscreen: false, images: false, contextIsolation: true, sandbox: true, nodeIntegration: false, javascript: true, partition: SM_RENDER_PARTITION, disableDialogs: true } });
+      smRenderSession(win.webContents.session);
+      // В Electron нет блокировщика всплывающих окон: window.open со страницы открывал ВИДИМОЕ окно без хозяина,
+      // которое переживало и проверку, и уничтожение скрытого окна. Навигация — только по http(s).
+      win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+      win.webContents.on('will-navigate', (e, navUrl) => { if (!/^https?:/i.test(String((e && e.url) || navUrl || ''))) e.preventDefault(); });
       try { win.webContents.setAudioMuted(true); } catch (_) {}
       win.webContents.on('did-finish-load', async () => {
         try {
