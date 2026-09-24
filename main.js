@@ -809,6 +809,15 @@ ipcMain.handle('update:cancel', () => {
   return { ok: true };
 });
 
+// Жёсткий выход под обновление. app.exit() не поднимает before-quit, поэтому его уборку делаем
+// здесь: иначе демон синхронизации переживал редактор сиротой со старым кодом (новая версия свой
+// уже не запустит — daemon.pid занят), а реестр ошибок терял последние отложенные правки.
+function updHardExit() {
+  try { errledger.flush(); } catch (_) {}
+  stopSyncDaemon();
+  app.exit(0);
+}
+
 // Применить обновление и перезапуститься. После этого вызова приложение закрывается — ответ
 // рендерер получает только при неудаче.
 ipcMain.handle('update:install', async () => {
@@ -823,7 +832,7 @@ ipcMain.handle('update:install', async () => {
     if (!r.ok) { updSet({ phase: 'ready', error: r.canceled ? '' : r.error }); return r; }
     logger.log('info', 'update', 'пакет установлен, перезапуск');
     app.relaunch();
-    app.exit(0);
+    updHardExit();
     return { ok: true };
   }
 
@@ -843,7 +852,7 @@ ipcMain.handle('update:install', async () => {
   logger.log('info', 'update', `стейджер запущен, выходим для подмены ${inst.appDir}`);
   // Стейджер ждёт смерти этого процесса, поэтому выходим сразу и жёстко: обычный quit может
   // упереться в диалог «сохранить файл?» и оставить стейджер крутиться впустую.
-  setTimeout(() => app.exit(0), 300);
+  setTimeout(updHardExit, 300);
   return { ok: true };
 });
 // Key balance: GET /key → credit limit + usage (so the card can show «израсходовано / лимит»).
