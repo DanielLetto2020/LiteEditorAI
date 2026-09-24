@@ -1178,14 +1178,23 @@ export function initCtx(host) {
       if (p.path !== regPath) { toast(t('Проект сменился — правила не записаны, выберите их заново'), { kind: 'warn' }); return; }
       const payload = items.map((r) => ({ placement: placeOf(r), title: r.title, detail: r.detail }));
       let res; try { res = await lite.ctxmine.apply(p.path, payload); } catch (e) { res = { ok: false, error: String((e && e.message) || e) }; }
-      if (res && res.ok) {
-        for (const r of items) { r.applied = true; mine.sel.delete(ruleKey(r)); }
+      // Частичный сбой (глобальный файл записан, проектный — нет, или наоборот): main отвечает ok:false,
+      // но applied перечисляет записанные цели. Раньше их правила не помечались «записано», и повторное
+      // «Применить» дописывало их в тот же файл второй раз.
+      const okPl = new Set(((res && res.applied) || []).map((a) => a.placement));
+      if (okPl.size) {
+        for (const r of items) if (okPl.has(placeOf(r))) { r.applied = true; mine.sel.delete(ruleKey(r)); }
         mineSave();
         try { const c = await lite.ctxmine.context(p.path); if (c && c.ok) { mine.ctx = c; markExists(); } } catch (_) {}
         renderMine();
+      }
+      if (res && res.ok) {
         const n = (res.applied || []).reduce((s, a) => s + a.count, 0);
         toast(t('Записано: {0} {1}', n, plural(n, 'правило', 'правила', 'правил')), { kind: 'ok' });
-      } else { toast((res && res.error) || 'Не удалось записать', { kind: 'err' }); }
+      } else {
+        const why = (res && (res.error || (res.errors || []).map((x) => x && x.error).filter(Boolean).join('; '))) || '?';
+        toast(t('Не удалось записать: {0}', why), { kind: 'err' });
+      }
     });
   }
 
