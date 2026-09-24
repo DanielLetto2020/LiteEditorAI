@@ -6058,7 +6058,11 @@ ipcMain.handle('git:log', async (_e, { root, limit } = {}) => {
   }
   return { repo: true, commits };
 });
-ipcMain.handle('git:checkout', async (_e, { root, branch }) => gitRun(root, ['checkout', branch]));
+// Имя ветки приходит из UI: ведущий '-' git принял бы за флаг, а завершающий '--' не даёт git
+// трактовать НЕ-ветку как путь — иначе устаревшее имя из списка (ветку удалили в терминале),
+// совпавшее с каталогом/файлом, молча откатывало его незакоммиченные правки (checkout <path>).
+ipcMain.handle('git:checkout', async (_e, { root, branch }) =>
+  BAD_REF(branch) ? { ok: false, error: 'Недопустимое имя ветки' } : gitRun(root, ['checkout', branch, '--']));
 ipcMain.handle('git:fetch', async (_e, root) => gitRun(root, ['fetch', '--all', '--prune']));
 // Откат правок — тоже перезапись файла рукой редактора, значит по контракту локальной истории
 // (см. histSnapshot) состояние ДО неё надо снять: `git checkout --` стирает несохранённую в
@@ -6072,6 +6076,7 @@ ipcMain.handle('git:discardFile', async (_e, { root, file }) => {
 // Current branch can't be ff-fetched into → use pull --ff-only instead.
 ipcMain.handle('git:branchUpdate', async (_e, { root, branch, current }) => {
   if (current) return gitRun(root, ['pull', '--ff-only']);
+  if (BAD_REF(branch)) return { ok: false, error: 'Недопустимое имя ветки' };
   const remote = ((await git(root, ['config', `branch.${branch}.remote`])) || '').trim() || 'origin';
   const rb = ((await git(root, ['config', `branch.${branch}.merge`])) || '').trim().replace('refs/heads/', '') || branch;
   return gitRun(root, ['fetch', remote, `${rb}:${branch}`]);
@@ -6082,7 +6087,10 @@ ipcMain.handle('git:branchCreate', async (_e, { root, name, base, checkout }) =>
   // Имя из пользовательского ввода: ведущий '-' git примет за флаг (как в git:clone выше),
   // а пробелы/спецсимволы — невалидный ref. Отсекаем до вызова с понятной ошибкой.
   if (!nm || nm.startsWith('-') || /[\s~^:?*[\\]/.test(nm) || nm.includes('..')) return { ok: false, error: 'Недопустимое имя ветки' };
-  return gitRun(root, checkout ? ['checkout', '-b', nm, base] : ['branch', nm, base]);
+  // База — тоже позиционный аргумент: '-…' ушло бы в git флагом; не задана — ветка от HEAD.
+  if (base != null && base !== '' && BAD_REF(base)) return { ok: false, error: 'Недопустимая базовая ветка' };
+  const from = base ? [base] : [];
+  return gitRun(root, checkout ? ['checkout', '-b', nm, ...from] : ['branch', nm, ...from]);
 });
 ipcMain.handle('git:init', async (_e, root) => gitRun(root, ['init']));
 // Clone INTO the (empty) project folder. Longer timeout than other mutations — fetching
@@ -6188,7 +6196,8 @@ ipcMain.handle('git:conflicts', async (_e, root) => {
   return { repo: true, files };
 });
 // Слить ветку в текущую. Конфликт → ok:false (UI откроет модалку разрешения по git:conflicts).
-ipcMain.handle('git:merge', async (_e, { root, branch }) => gitRun(root, ['merge', '--no-edit', branch]));
+ipcMain.handle('git:merge', async (_e, { root, branch }) =>
+  BAD_REF(branch) ? { ok: false, error: 'Недопустимое имя ветки' } : gitRun(root, ['merge', '--no-edit', branch]));
 ipcMain.handle('git:mergeAbort', async (_e, root) => gitRun(root, ['merge', '--abort']));
 ipcMain.handle('git:push', async (_e, root) => gitPush(root));
 ipcMain.handle('git:pull', async (_e, root) => gitRun(root, ['pull', '--ff-only']));
@@ -6334,7 +6343,7 @@ ipcMain.handle('git:checkoutRemote', async (_e, { root, remoteBranch } = {}) => 
   const local = rb.replace(/^[^/]+\//, '');   // origin/foo → foo
   if (BAD_REF(local)) return { ok: false, error: 'Недопустимое имя ветки' };
   const exists = await git(root, ['rev-parse', '--verify', '--quiet', 'refs/heads/' + local]);
-  if (exists != null) return gitRun(root, ['checkout', local]);
+  if (exists != null) return gitRun(root, ['checkout', local, '--']);
   return gitRun(root, ['checkout', '-b', local, '--track', rb]);
 });
 ipcMain.handle('git:rebaseOnto', async (_e, { root, onto } = {}) => BAD_REF(onto) ? { ok: false, error: 'плохая ветка' } : gitRun(root, ['rebase', onto]));
@@ -6366,7 +6375,7 @@ ipcMain.handle('git:branchCompare', async (_e, { root, branch } = {}) => {
 // Diff выбранной ветки vs рабочее дерево (показать в центре вивера).
 ipcMain.handle('git:branchDiffWorktree', async (_e, { root, branch } = {}) => {
   if (BAD_REF(branch)) return { error: 'плохая ветка' };
-  const out = await git(root, ['diff', '--no-color', branch]);
+  const out = await git(root, ['diff', '--no-color', branch, '--']);   // '--': ветка, совпавшая с именем файла, не двусмысленна
   return { diff: out || '' };
 });
 
