@@ -5,6 +5,7 @@
 // #log-pane); host — window-host из module-entry.js; действия редактора идут через lite.editorBus.
 import { el, icon, toast, showConfirm, showPrompt, baseName, makeModal, extOf, fileTypeSvg, folderTypeSvg } from '../ui.js';
 import { languageFor, ensureLanguage, mergeRoExtensions, liteEditorTheme } from '../codeedit.js';
+import { t, t as tr } from '../i18n.js';   // tr — там, где t занято локальным таймером
 import { initGit } from './git.js';
 import { EditorView, keymap, lineNumbers, highlightActiveLine, highlightActiveLineGutter, drawSelection, gutter, GutterMarker, rectangularSelection, crosshairCursor, Decoration, ViewPlugin, WidgetType } from '@codemirror/view';
 import { EditorState, Compartment, StateField, StateEffect, RangeSet } from '@codemirror/state';
@@ -41,6 +42,10 @@ export function initFiles(host) {
   let autosaveTimer = null;          // debounce автосохранения (PhpStorm-style, через AUTOSAVE_MS после ввода)
   const AUTOSAVE_MS = 400;
   const langComp = new Compartment();
+  // Файл не в UTF-8 (notUtf8 от fs:readFile) — только просмотр: сохранение перекодировало бы его в UTF-8 с «�».
+  const roComp = new Compartment();
+  let fileReadOnly = false;
+  const roExt = () => (fileReadOnly ? [EditorState.readOnly.of(true), EditorView.editable.of(false)] : []);
   let openSeq = 0;                   // монотонный токен открытия — против гонки при быстром переключении файлов
   let dragSrcPath = null;            // путь перетаскиваемого узла (внутренний drag дерево→дерево)
   // ---- навигация/поиск/закладки вивера (этапы «привычного»)
@@ -279,6 +284,7 @@ export function initFiles(host) {
         minimapComp.of(settings.minimap ? minimapExt : []),
         authComp.of([]),
         langComp.of([]),
+        roComp.of([]),
         keymap.of([
           { key: 'Mod-s', preventDefault: true, run: () => { saveCurrent(); return true; } },
           // операции со строками + комментарии (явные биндинги — устойчивы к раскладке и порядку keymap'ов)
@@ -569,6 +575,7 @@ export function initFiles(host) {
       currentFile = filePath;
       commitOpenUI(filePath, kind);
       afterOpen(filePath);
+      setReadOnly(false);
       setEditorText('', []); markDirty(false); clearGitGutter();
       await showPreview('image', filePath, '');
       return;
@@ -587,9 +594,11 @@ export function initFiles(host) {
     diskBase = normEol(res.content);
     commitOpenUI(filePath, kind);
     afterOpen(filePath);
+    setReadOnly(!!res.notUtf8);
     // язык может грузиться лениво (первое открытие типа) → по готовности переконфигурируем, если файл ещё открыт
     setEditorText(res.content, languageFor(filePath, langOnLoad(filePath)));
     markDirty(false);
+    if (res.notUtf8) toast(t('Файл не в кодировке UTF-8 — открыт только для просмотра: сохранение из вивера испортило бы его текст'), { kind: 'warn', ttl: 8000 });
     updateGitGutter(filePath);
     refreshBlameIfOn();                              // A7: подгрузить blame нового файла, если режим включён
     if (splitMode) { const k = previewKind(filePath); if (k === 'markdown' || k === 'html') refreshSplitPreview(); else exitSplit(); } // B15: сплит следует за файлом
@@ -893,6 +902,7 @@ export function initFiles(host) {
     docEol = eolOf(res.content);                        // агент мог сменить переводы строк — пишем дальше как на диске
     const text = normEol(res.content);                  // док CodeMirror — с '\n': сравниваем в тех же координатах
     diskBase = text;
+    if (!!res.notUtf8 !== fileReadOnly) setReadOnly(!!res.notUtf8);   // агент мог сменить кодировку файла
     if (text === oldText) { markDirty(false); hideReloadBar(); return; } // эхо нашего же автосейва — не перезаливаем док (иначе сброс folds/курсора)
     setEditorText(res.content, languageFor(f, langOnLoad(f)));
     markDirty(false);
@@ -914,6 +924,10 @@ export function initFiles(host) {
   }
   // Колбэк ленивой загрузки языка: переконфигурировать редактор, если этот файл всё ещё открыт.
   const langOnLoad = (path) => (sup) => { if (currentFile === path && editor) editor.dispatch({ effects: langComp.reconfigure(sup) }); };
+  function setReadOnly(on) {
+    fileReadOnly = !!on;
+    if (editor) editor.dispatch({ effects: roComp.reconfigure(roExt()) });
+  }
   function setEditorText(text, lang) {
     loadingDoc = true;
     // git-метки чистим В ТОЙ ЖЕ транзакции: иначе при полной замене дока старые маппятся на строку 1 и
@@ -983,6 +997,7 @@ export function initFiles(host) {
   }
   async function writeCurrentDoc() {
     const file = currentFile;
+    if (fileReadOnly) { toast(t('Файл не в кодировке UTF-8 — вивер его не сохраняет'), { kind: 'warn' }); return false; }
     for (let pass = 0; pass < 3; pass++) {             // печатать без пауз три записи подряд человек не может
       const text = editor.state.doc.toString();
       let res;
@@ -1712,6 +1727,7 @@ export function initFiles(host) {
       closeOverlay();
       fileListCache = null;                                // содержимое проекта изменилось
       toast(`Заменено: ${shortCountRu(r.lines, 'строка', 'строки', 'строк')} в ${shortCountRu(r.files, 'файле', 'файлах', 'файлах')}`);
+      if (r.skipped && r.skipped.length) toast(tr('Не тронуты — файлы не в кодировке UTF-8: {0}', r.skipped.slice(0, 5).join(', ') + (r.skipped.length > 5 ? '…' : '')), { kind: 'warn', ttl: 9000 });
       // открытый файл перечитается вотчером; при несохранённых правках покажется плашка-конфликт
     };
     inp.addEventListener('input', () => { clearTimeout(t); t = setTimeout(run, 250); });
@@ -2384,6 +2400,15 @@ export function initFiles(host) {
     onFsChange,                 // fs:changed активного проекта → live-обновление дерева/файла/диффа
     // dirty-guard на закрытие окна вивера: несохранённый файл → спросить (сохранить/не сохранять).
     confirmClose: (proceed) => { cancelAutosave(); clearTimeout(splitTimer); clearTimeout(fsTimer); guardDirty(proceed); },
+    // Выход из редактора сносит окно мимо guardDirty. Правку без конфликта дописываем на диск (как это
+    // сделал бы автосейв через 400 мс), правку при открытой плашке «изменён на диске» не пишем — поверх
+    // чужой записи её кладёт только человек; её называем, и редактор спросит.
+    quitCheck: async () => {
+      try { if (git && git.flushDraft) git.flushDraft(); } catch (_) {}   // черновик сообщения коммита
+      cancelAutosave();
+      if (dirty && currentFile && !previewMode && !diffMode && $('#viewer-reload-bar').classList.contains('hidden')) await saveCurrent();
+      return (dirty && currentFile) ? [baseName(currentFile)] : [];
+    },
     // «Git» из редактора → переключить левую секцию на «Коммит».
     focusGit: () => { if (!viewerOpen) setViewerOpen(true); showSection('commit'); },
   };

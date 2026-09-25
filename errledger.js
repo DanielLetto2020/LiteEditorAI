@@ -65,10 +65,40 @@ function init(dir) {
 // Тег проекта для новых ошибок (рендерер шлёт при смене активного проекта).
 function setContext(p) { currentProject = p || null; }
 
+// Файл изменили снаружи (агент отметил ошибку исправленной по схеме из скилла), а мы ещё не
+// перечитали его — watch() ждёт 200 мс, отложенная запись 700 мс. Без слияния наша запись легла бы
+// поверх, и отметка агента пропадала молча. Слияние трёхстороннее, база — то, что мы записали сами
+// (lastWritten): извне берём только поля, которые снаружи ИЗМЕНИЛИСЬ, — иначе правка человека в UI,
+// сделанная в эти же миллисекунды, откатывалась бы файловой копией. Записи, которых нет у нас, но
+// были в нашей последней записи, — удалены у нас (clearResolved), их не возвращаем. Повторение ПОСЛЕ
+// внешней отметки «исправлено» — регрессия, её не прячем.
+const STATUS_FIELDS = ['status', 'note', 'commit', 'resolvedAt', 'regressed'];
+function mergeExternal() {
+  let raw;
+  try { raw = fs.readFileSync(file, 'utf8'); } catch (_) { return; }
+  if (raw === lastWritten) return;
+  let parsed;
+  try { parsed = sanitize(JSON.parse(raw)); } catch (_) { return; }
+  if (!parsed) return;
+  let base = {};
+  try { const b = sanitize(JSON.parse(lastWritten)); if (b) base = b.entries; } catch (_) { /* нашей записи ещё не было */ }
+  const own = (o, id) => (Object.prototype.hasOwnProperty.call(o, id) ? o[id] : null);
+  for (const [id, ext] of Object.entries(parsed.entries)) {
+    const mine = own(data.entries, id), was = own(base, id);
+    if (!mine) { if (!was) data.entries[id] = ext; continue; }   // новая снаружи — берём; удалённую у нас — нет
+    const changed = STATUS_FIELDS.some((k) => !was || JSON.stringify(ext[k]) !== JSON.stringify(was[k]));
+    if (!changed) continue;                                       // снаружи эту запись не трогали — наше главнее
+    const recurred = ext.status === 'resolved' && ext.resolvedAt && mine.lastSeen > ext.resolvedAt;
+    for (const k of STATUS_FIELDS) mine[k] = ext[k];
+    if (recurred) { mine.status = 'open'; mine.regressed = true; mine.resolvedAt = null; }
+  }
+}
+
 function flush() {
   if (!file) return;
   if (writeTimer) { clearTimeout(writeTimer); writeTimer = null; }
   try {
+    mergeExternal();
     const str = serialize();
     // Имя уникально по процессу: errors.json пишет и редактор, и (по документированной схеме)
     // агент из своего процесса — с общим `X.tmp` две записи слились бы в одну мешанину.
@@ -184,6 +214,9 @@ function watch() {
       reloadTimer = setTimeout(reloadExternal, 200);
       if (reloadTimer.unref) reloadTimer.unref();
     });
+    // Без слушателя 'error' (каталог удалили) — uncaughtException, и логгер положил бы его сюда же
+    // FATAL-записью. Сам модуль не логирует (см. шапку): просто перестаём следить.
+    watcher.on('error', () => { try { if (watcher) watcher.close(); } catch (_) {} watcher = null; });
   } catch (_) {}
 }
 function onChange(cb) { if (typeof cb === 'function') changeCbs.push(cb); }

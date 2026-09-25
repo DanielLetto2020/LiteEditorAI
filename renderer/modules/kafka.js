@@ -1204,10 +1204,16 @@ export function initKafka(host) {
         catch (_) { toast('Headers — не валидный JSON-объект', { kind: 'err' }); return; }
       }
       status.textContent = 'Отправляю…'; status.className = 'db-test-status';
-      const r = await lite.kafka.produce(activeId, {
-        topic: tSel.value, key: keyI.value.trim() || null, value: payload.value,
-        partition: partI.value.trim(), headers,
-      });
+      // Кнопка — на время запроса выключена: двойной клик отправлял сообщение дважды (в бою — двойная обработка).
+      if (send.disabled) return;
+      send.disabled = true;
+      let r;
+      try {
+        r = await lite.kafka.produce(activeId, {
+          topic: tSel.value, key: keyI.value.trim() || null, value: payload.value,
+          partition: partI.value.trim(), headers,
+        });
+      } finally { send.disabled = false; }
       if (r && r.ok) {
         kafkaUi.prodHist = kafkaUi.prodHist || {};
         const arr = kafkaUi.prodHist[activeId] = kafkaUi.prodHist[activeId] || [];

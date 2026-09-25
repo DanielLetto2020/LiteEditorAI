@@ -68,6 +68,11 @@ contextBridge.exposeInMainWorld('lite', {
     // чтобы dirty-guard модуля успел спросить про несохранённые изменения. confirmClose() = «закрывай».
     onCloseRequest: (cb) => { const h = () => cb(); ipcRenderer.on('win:closeRequest', h); return () => ipcRenderer.removeListener('win:closeRequest', h); },
     confirmClose: () => ipcRenderer.send('win:confirmClose'),
+    // Редактор закрывается (или ставит обновление) и сносит окна модулей в обход их dirty-guard.
+    // Перед этим main спрашивает каждое окно: модуль дописывает то, что можно сохранить молча, и
+    // отвечает списком того, что сохранить не удалось, — о нём редактор спросит человека.
+    onQuitCheck: (cb) => { const h = (_e, p) => cb(p && p.id); ipcRenderer.on('win:quitCheck', h); return () => ipcRenderer.removeListener('win:quitCheck', h); },
+    quitCheckReply: (id, unsaved) => ipcRenderer.send('win:quitCheckReply', { id, unsaved }),
   },
 
   tray: { update: (attention) => ipcRenderer.send('tray:update', { attention }) },
@@ -343,8 +348,9 @@ contextBridge.exposeInMainWorld('lite', {
     setData: (projId, data) => ipcRenderer.invoke('company:setData', { projId, data }),    // → {ok}|{ok:false,error}
     listRoles: (projPath) => ipcRenderer.invoke('company:listRoles', { projPath }),        // → {roles:[…]} (с диска)
     boardGet: (projPath) => ipcRenderer.invoke('company:boardGet', { projPath }),          // → {text}
-    notesGet: (projPath) => ipcRenderer.invoke('company:notesGet', { projPath }),          // → {text} (память компании)
-    notesSet: (projPath, text) => ipcRenderer.invoke('company:notesSet', { projPath, text }), // → {ok}|{ok:false,error}
+    notesGet: (projPath) => ipcRenderer.invoke('company:notesGet', { projPath }),          // → {text}|{text,error} (память компании)
+    // expect — текст, который окно показало; изменился на диске (директор дописал) → {ok:false, stale:true}
+    notesSet: (projPath, text, expect) => ipcRenderer.invoke('company:notesSet', { projPath, text, expect }), // → {ok}|{ok:false,error}
     diff: (projPath) => ipcRenderer.invoke('company:diff', { projPath }),                  // → {ok,stat,files}|{ok:false,error}
     run: (opts) => ipcRenderer.send('company:run', opts),                                   // {reqId,projPath,goal,roles,director,limitUsd,permission}
     stop: (reqId) => ipcRenderer.send('company:stop', { reqId }),
@@ -510,7 +516,6 @@ contextBridge.exposeInMainWorld('lite', {
     save: (account) => ipcRenderer.invoke('jira:save', { account }),
     delete: (id) => ipcRenderer.invoke('jira:delete', { id }),
     test: (account) => ipcRenderer.invoke('jira:test', { account }),
-    search: (id, preset, jql, limit) => ipcRenderer.invoke('jira:search', { id, preset, jql, limit }),
     searchAll: (ids, preset, jql, limit) => ipcRenderer.invoke('jira:searchAll', { ids, preset, jql, limit }),
     issue: (id, key) => ipcRenderer.invoke('jira:issue', { id, key }),
     boards: (id, withIssues) => ipcRenderer.invoke('jira:boards', { id, withIssues }),
@@ -556,6 +561,7 @@ contextBridge.exposeInMainWorld('lite', {
     test: (conn) => ipcRenderer.invoke('st:test', { conn }),
     buckets: (id) => ipcRenderer.invoke('st:buckets', { id }),
     ls: (id, bucket, prefix, token) => ipcRenderer.invoke('st:ls', { id, bucket, prefix, token }),
+    exists: (id, bucket, keys) => ipcRenderer.invoke('st:exists', { id, bucket, keys }),   // какие ключи уже есть (HEAD)
     read: (id, bucket, key) => ipcRenderer.invoke('st:read', { id, bucket, key }),
     presign: (id, bucket, key, ttl, method) => ipcRenderer.invoke('st:presign', { id, bucket, key, ttl, method }),
     publicUrl: (id, bucket, key) => ipcRenderer.invoke('st:publicUrl', { id, bucket, key }),

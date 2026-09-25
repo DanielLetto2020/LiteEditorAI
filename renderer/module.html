@@ -172,7 +172,8 @@
             <div class="tp-canvas">
               <div class="tp-page">
                 <div id="doc-editor-wysiwyg" class="tp-doc" contenteditable="true" spellcheck="false"></div>
-                <div id="doc-editor-md" class="tp-doc tp-doc-md" contenteditable="true" spellcheck="false" hidden></div>
+                <!-- plaintext-only: в обычном contenteditable Enter создаёт <p>/<div>, а сохраняется textContent, который их не видит, — набранный перенос строки пропадал при записи. Здесь Enter вставляет «\n» текстом. -->
+                <div id="doc-editor-md" class="tp-doc tp-doc-md" contenteditable="plaintext-only" spellcheck="false" hidden></div>
               </div>
             </div>
 

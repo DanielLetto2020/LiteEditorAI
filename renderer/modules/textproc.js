@@ -74,6 +74,13 @@ function formulaInlineHtml(tex, delim) {
     + renderFormulaHtml(tex, false) + '</span>';
 }
 
+// Концы строк файла. Внутри окна текст живёт в LF: визуальный режим (htmlToMd) отдаёт только LF, а в
+// исходнике старые строки держали бы \r\n, новые (Enter) — \n. CRLF-файл после сохранения оказывался
+// переведён в LF целиком или, хуже, со смешанными концами строк. Запоминаем при чтении, возвращаем при записи.
+const eolOf = (s) => (/\r\n/.test(String(s)) ? '\r\n' : '\n');
+const toLF = (s) => String(s).replace(/\r\n/g, '\n');
+const withEol = (s, eol) => (eol === '\r\n' ? String(s).replace(/\r?\n/g, '\r\n') : String(s));
+
 // YAML front matter (`---` … `---` в самом начале файла) — НЕ markdown: marked видит в нём
 // горизонтальную линию и setext-заголовок, и после первого же сохранения шапка файла оказывалась
 // переписана как «## owner: ...». А front matter несут и правила проекта, и роли агентов в
@@ -238,6 +245,25 @@ function htmlToMd(root) {
   return out.replace(/\n{3,}/g, '\n\n').trim() + '\n';
 }
 
+// Можно ли править файл в визуальном режиме, не переписав его. Визуальный режим сохраняет через
+// htmlToMd, а круг «исходник → HTML → исходник» без потерь не для каждого файла: экранирование _ и *
+// («snake_case» → «snake\_case»), маркеры списков, выравнивание таблиц, setext-заголовки, HTML-вставки,
+// CRLF. Сохранение идёт автосейвом через 1,5 с после первой правки — такой файл переписывался молча.
+function mdRoundTripsCleanly(src) {
+  try {
+    const d = document.createElement('div');
+    d.innerHTML = mdToHtml(src);
+    return htmlToMd(d).replace(/\s+$/, '') === String(src).replace(/\s+$/, '');
+  } catch (_) { return false; }
+}
+// Тот же вопрос для HTML: сохраняется htmlDocWrap(<body> после DOMPurify) — всё прочее (head, стили,
+// скрипты, атрибуты html/body) пропадает. Без потерь — только документы, которые «Обработка текста» и писала.
+const HTML_DOC_HEAD = '<!doctype html><html><head><meta charset="utf-8"></head><body>';
+function htmlRoundTripsCleanly(src) {
+  try { return (HTML_DOC_HEAD + DOMPurify.sanitize(src, SANITIZE) + '</body></html>') === String(src).replace(/\s+$/, ''); }
+  catch (_) { return false; }
+}
+
 export function initTextProc(host) {
   const { el, toast, showConfirm, settings, saveSettings, saveUiState, refitActiveTerminal, closeOtherPanels, layout, GUTTER } = host;
   const lite = window.lite;
@@ -281,6 +307,17 @@ export function initTextProc(host) {
   }
   
   let dynamicRoles = ['Без роли'];
+  // Роли по умолчанию живут в памяти. Раньше отсутствие Roles/ лечилось созданием папки с четырьмя
+  // файлами — в КАЖДОМ проекте, на который переключались при открытом окне (даже при скрытом сайдбаре):
+  // файлы всплывали в git status и уезжали в коммиты агента (в этом репозитории их прятали в .gitignore).
+  // Папка появляется, только когда человек сам добавляет, правит или удаляет роль.
+  const DEFAULT_ROLES = {
+    'Редактор': 'Исправь ошибки и опечатки.',
+    'Корректор': 'Сделай текст более профессиональным.',
+    'Переводчик': 'Переведи текст на английский язык.',
+    'Юрист': 'Перепиши текст в строгом юридическом стиле.',
+  };
+  let rolesOnDisk = false;   // у активного проекта есть своя папка Roles/
 
   const SYMBOLS = [
     { label: 'x²', tex: '^{}' }, { label: 'x₂', tex: '_{}' }, { label: '½', tex: '\\frac{}{}' }, { label: '√', tex: '\\sqrt{}' },
@@ -295,7 +332,7 @@ export function initTextProc(host) {
   function getActiveEditor() { return mode === 'wysiwyg' ? $('#doc-editor-wysiwyg') : $('#doc-editor-md'); }
   function currentMarkdown() { return mode === 'wysiwyg' ? htmlToMd($('#doc-editor-wysiwyg')) : $('#doc-editor-md').textContent; }
   function currentHtml() { return mode === 'wysiwyg' ? $('#doc-editor-wysiwyg').innerHTML : mdToHtml($('#doc-editor-md').textContent); }
-  function htmlDocWrap(inner) { return '<!doctype html><html><head><meta charset="utf-8"></head><body>' + inner + '</body></html>'; }
+  function htmlDocWrap(inner) { return HTML_DOC_HEAD + inner + '</body></html>'; }
   function markDirty() {
     dirty = true;
     scheduleOutline();
@@ -582,6 +619,11 @@ export function initTextProc(host) {
   // ---- режимы/вкладки ----
   function setMode(m) {
     if (m === mode) return;
+    // Файл открыт исходником, потому что визуальный режим его переписал бы (см. mdRoundTripsCleanly) —
+    // переключиться можно, но человек должен знать, чем это кончится при сохранении.
+    if (m === 'wysiwyg' && currentFile && !/\.html?$/i.test(currentFile) && !mdRoundTripsCleanly($('#doc-editor-md').textContent)) {
+      toast('Визуальный режим перепишет разметку этого файла при сохранении — если это важно, правьте исходником', { kind: 'warn', ttl: 8000 });
+    }
     if (m === 'markdown') { const md = htmlToMd($('#doc-editor-wysiwyg')); $('#doc-editor-md').textContent = md; }
     else { $('#doc-editor-wysiwyg').innerHTML = DOMPurify.sanitize(mdToHtml($('#doc-editor-md').textContent), SANITIZE); }
     mode = m;
@@ -719,15 +761,17 @@ export function initTextProc(host) {
     if (!res.ok) { toast(res.error || 'Не удалось открыть файл', { kind: 'err' }); return; }
     openProjectFile(res.file);
   }
+  function tabEol(tabId) { const tab = openTabs.find((x) => x.id === tabId); return (tab && tab.eol) || '\n'; }
   async function saveFile() {
     if (!currentFile) return saveFileAs();
     const tabId = activeTabId, file = currentFile;
     const isHtml = /\.html?$/i.test(file);
     // Ровно та же осторожность, что в автосейве: снимаем «не сохранено» только с того текста,
     // который реально ушёл на диск, и только со СВОЕЙ вкладки (см. комментарий в scheduleAutosave).
+    const eol = tabEol(tabId);
     for (let pass = 0; pass < 3; pass++) {
       const content = isHtml ? htmlDocWrap(currentHtml()) : currentMarkdown();
-      const r = await lite.fs.writeFile(file, content);
+      const r = await lite.fs.writeFile(file, withEol(content, eol));
       if (!r || r.error) { toast('Ошибка сохранения: ' + ((r && r.error) || 'ошибка записи'), { kind: 'err' }); return false; }
       if (activeTabId !== tabId) return true;
       if (content !== (isHtml ? htmlDocWrap(currentHtml()) : currentMarkdown())) continue; // печатали во время записи
@@ -746,8 +790,9 @@ export function initTextProc(host) {
     // Формат — по тому, что открыто (как в saveFile): раньше «Сохранить как» всегда отдавал markdown,
     // и открытый .html молча превращался в md-текст.
     const wasHtml = /\.html?$/i.test(currentFile || currentName || '');
+    const eol = tabEol(activeTabId);
     const r = await lite.tp.saveFileAs({
-      content: wasHtml ? htmlDocWrap(currentHtml()) : currentMarkdown(),
+      content: withEol(wasHtml ? htmlDocWrap(currentHtml()) : currentMarkdown(), eol),
       name: currentName, ext: wasHtml ? 'html' : 'md',
     });
     if (!r || r.canceled) return false;
@@ -756,7 +801,7 @@ export function initTextProc(host) {
     const nowHtml = /\.html?$/i.test(r.file || '');
     if (nowHtml !== wasHtml) {
       const fixed = nowHtml ? htmlDocWrap(currentHtml()) : currentMarkdown();
-      const w = await lite.fs.writeFile(r.file, fixed);
+      const w = await lite.fs.writeFile(r.file, withEol(fixed, eol));
       if (w && w.error) { toast('Ошибка сохранения: ' + w.error, { kind: 'err' }); return false; }
     }
     currentFile = r.file; currentName = r.name; dirty = false;
@@ -782,7 +827,7 @@ export function initTextProc(host) {
       const tabId = activeTabId, file = currentFile;
       const isHtml = /\.html?$/i.test(file);
       const content = isHtml ? htmlDocWrap(currentHtml()) : currentMarkdown();
-      const r = await lite.fs.writeFile(file, content);
+      const r = await lite.fs.writeFile(file, withEol(content, tabEol(tabId)));
       if (!r || r.error) return;
       // Пока шла запись, человек мог печатать дальше или уйти на другую вкладку. `dirty` и
       // saveCurrentTabState() относятся к АКТИВНОЙ вкладке — снимать флаг вслепую нельзя:
@@ -807,7 +852,7 @@ export function initTextProc(host) {
     else if (isHtml) content = htmlDocWrap(tab.html);
     else if (tab.mode === 'markdown') content = tab.md;
     else { const d = document.createElement('div'); d.innerHTML = tab.html; content = htmlToMd(d); } // wysiwyg-снапшот → md
-    const r = await lite.fs.writeFile(tab.absPath, content);
+    const r = await lite.fs.writeFile(tab.absPath, withEol(content, tab.eol));
     if (r && r.error) { toast('Ошибка сохранения: ' + r.error, { kind: 'err' }); return false; }
     tab.dirty = false;
     if (tab.id === activeTabId) dirty = false;
@@ -916,7 +961,8 @@ export function initTextProc(host) {
       // fs:readFile резолвится {content}|{error} и не реджектится — в промпт идёт СОДЕРЖИМОЕ, не объект
       try {
         const r = await lite.fs.readFile(`${activeProj.path}/Roles/${chatRole}.md`);
-        parts.push(`Действуй в роли: ${chatRole}` + (r && r.content != null ? `\n${r.content}` : ''));
+        const body = r && r.content != null ? r.content : (!rolesOnDisk && DEFAULT_ROLES[chatRole]) || null;   // роль по умолчанию — из памяти
+        parts.push(`Действуй в роли: ${chatRole}` + (body != null ? `\n${body}` : ''));
       } catch (e) {
         parts.push(`Действуй в роли: ${chatRole}`);
       }
@@ -942,20 +988,35 @@ export function initTextProc(host) {
     if (!r || r.error) { toast(tf('Агент отработал, но файл не перечитать: {0}', (r && r.error) || '—'), { kind: 'err' }); return; }
     const tab = openTabs.find((t) => t.absPath === file);
     if (!tab) return;                         // вкладку закрыли — держать в окне нечего, на диске уже новое
+    // Агент перекодировал файл или сделал его двоичным — такое в окно не берём (см. openProjectFileInner):
+    // вкладку с путём первая же правка записала бы поверх.
+    if (r.notUtf8 || r.content.includes('\0')) {
+      tab.absPath = null; tab.name = tf('{0} (копия)', tab.name);
+      if (tab.id === activeTabId) currentFile = null;
+      renderTabsUI();
+      toast('Агент записал файл не в UTF-8 — вкладка отвязана от файла, чтобы сохранение его не испортило', { kind: 'warn', ttl: 9000 });
+      return;
+    }
+    tab.eol = eolOf(r.content);
+    const text = toLF(r.content);
+    // Визуальный режим переписал бы то, что агент внёс в разметку, — такую вкладку переводим на исходник.
+    const toSource = !/\.html?$/i.test(file) && tab.mode === 'wysiwyg' && !mdRoundTripsCleanly(text);
+    if (toSource) { tab.mode = 'markdown'; if (tab.id === activeTabId) { mode = 'markdown'; updateModeUI(); } }
     // .html — как при открытии (openProjectFileInner): НЕ через marked. Иначе строка с отступом после
     // пустой строки (обычное дело в свёрстанном агентом HTML) становилась блоком кода с экранированными
     // тегами, и первый же автосейв записывал этот мусор в файл.
-    let html, md = r.content;
+    let html, md = text;
     if (/\.html?$/i.test(file)) {
-      html = DOMPurify.sanitize(r.content, SANITIZE);
+      html = DOMPurify.sanitize(text, SANITIZE);
       const root = document.createElement('div');
       root.innerHTML = html;
       md = htmlToMd(root);
-    } else html = mdToHtml(r.content);
+    } else html = mdToHtml(text);
     tab.html = html; tab.md = md; tab.dirty = false;
+    if (tab.mode === 'markdown' && !/\.html?$/i.test(file)) tab.md = text;   // исходник — как на диске (в LF, см. eolOf)
     if (tab.id === activeTabId) {
       $('#doc-editor-wysiwyg').innerHTML = DOMPurify.sanitize(html, SANITIZE);
-      $('#doc-editor-md').textContent = md;
+      $('#doc-editor-md').textContent = tab.md;
       dirty = false;
       updateStatus(tf('Обновлён агентом · {0}', new Date().toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })));
       if (activeInspectorTab === 'outline') renderOutline();
@@ -1015,7 +1076,11 @@ export function initTextProc(host) {
     const cleanup = () => { busyReq = null; updateSendButton(); try { offData(); offDone(); offErr(); } catch (_) {} };
 
     busyReq = am.reqId;
-    const prompt = agentMode ? composeAgentPrompt(instruction) : await composePrompt(sel, instruction);
+    let prompt;
+    // Сбор промпта асинхронный (роли читаются с диска): его бросок оставлял бы подписки висеть,
+    // а кнопку — навсегда в «Стоп», хотя агент так и не запускался.
+    try { prompt = agentMode ? composeAgentPrompt(instruction) : await composePrompt(sel, instruction); }
+    catch (e) { am.busy = false; am.failed = true; am.text = 'Ошибка: ' + String((e && e.message) || e); cleanup(); renderChatLog(); return; }
     lite.tp.run({ reqId: am.reqId, agent: chatAgent, prompt, mode: agentMode ? 'agent' : 'chat', cwd: agentMode ? dirOf(currentFile) : undefined });
   }
   // Пока агент работает, кнопка отправки становится «Стоп»: до сих пор запущенный процесс нельзя
@@ -1141,22 +1206,36 @@ export function initTextProc(host) {
       toast('Список агентов обновлён');
     };
   }
+  // Папку ролей завести по явному действию человека: с ролями по умолчанию, кроме skip (её удаляют).
+  async function ensureRolesDir(skip) {
+    if (!activeProj || rolesOnDisk) return true;
+    const rolesPath = activeProj.path + '/Roles';
+    if (await lite.fs.exists(rolesPath)) { rolesOnDisk = true; return true; }
+    const mk = await lite.fs.mkdir(activeProj.path, 'Roles');
+    if (mk && mk.error) { toast('Ошибка: ' + mk.error, { kind: 'err' }); return false; }
+    for (const [name, body] of Object.entries(DEFAULT_ROLES)) {
+      if (name === skip) continue;
+      const w = await lite.fs.writeFile(rolesPath + '/' + name + '.md', body);
+      if (w && w.error) { toast('Ошибка записи: ' + w.error, { kind: 'err' }); return false; }
+    }
+    rolesOnDisk = true;
+    return true;
+  }
+  let rolesSeq = 0;
   async function loadRoles() {
     if (!activeProj) return;
+    const seq = ++rolesSeq;
+    rolesOnDisk = false;   // до ответа — «не знаем»: ensureRolesDir сам проверит папку на диске
     try {
       const rolesPath = activeProj.path + '/Roles';
-      const hasDir = await lite.fs.exists(rolesPath);
-      if (!hasDir) {
-        await lite.fs.mkdir(activeProj.path, 'Roles');
-        await lite.fs.writeFile(rolesPath + '/Редактор.md', 'Исправь ошибки и опечатки.');
-        await lite.fs.writeFile(rolesPath + '/Корректор.md', 'Сделай текст более профессиональным.');
-        await lite.fs.writeFile(rolesPath + '/Переводчик.md', 'Переведи текст на английский язык.');
-        await lite.fs.writeFile(rolesPath + '/Юрист.md', 'Перепиши текст в строгом юридическом стиле.');
-      }
       const entries = await lite.fs.readDir(rolesPath);
+      // Проект успели переключить: ответ по прежнему подменил бы роли и rolesOnDisk нового.
+      if (seq !== rolesSeq) return;
       dynamicRoles = ['Без роли'];
-      // fs:readDir отдаёт {name, path, dir} (не isDir); при ошибке — {error}, не массив
-      for (const ent of (Array.isArray(entries) ? entries : [])) {
+      // fs:readDir отдаёт {name, path, dir} (не isDir); при ошибке (папки нет) — {error}, не массив
+      rolesOnDisk = Array.isArray(entries);
+      if (!rolesOnDisk) dynamicRoles.push(...Object.keys(DEFAULT_ROLES));
+      for (const ent of (rolesOnDisk ? entries : [])) {
         if (!ent.dir && ent.name.endsWith('.md')) {
           dynamicRoles.push(ent.name.replace(/\.md$/, ''));
         }
@@ -1185,13 +1264,16 @@ export function initTextProc(host) {
           host.closeMenus();
           const dd = host.el('div', 'menu-dropdown');
           dd.style.minWidth = '180px';
-          dd.appendChild(host.menuRow('pencil', 'Редактировать', () => {
+          dd.appendChild(host.menuRow('pencil', 'Редактировать', async () => {
             host.closeMenus();
+            if (!(await ensureRolesDir())) return;   // роль по умолчанию — сперва файлом на диск
             openProjectFile(`${activeProj.path}/Roles/${r}.md`);
           }));
           dd.appendChild(host.menuRow('trash', 'Удалить', async () => {
             host.closeMenus();
             try {
+              // Роль по умолчанию (папки ещё нет): заводим папку без неё — удалять с диска нечего.
+              if (!rolesOnDisk) { await ensureRolesDir(r); await loadRoles(); return; }
               // fs:trash не бросает, а отвечает {error} (нет корзины на этой ФС, нет прав) — без
               // проверки роль молча оставалась на месте
               const t = await lite.fs.trash(`${activeProj.path}/Roles/${r}.md`);
@@ -1225,6 +1307,7 @@ export function initTextProc(host) {
         // молча заменял инструкцию готовой роли заглушкой, а «../README» писал за пределы Roles/.
         if (/[\\/]/.test(newName)) return { error: 'недопустимое имя' };
         try {
+          if (!(await ensureRolesDir())) return;   // роли по умолчанию — тоже в папку, иначе пропали бы из списка
           const c = await lite.fs.create(`${activeProj.path}/Roles`, newName + '.md', false);
           if (!c || c.error) return c || { error: 'Не удалось создать' }; // покажет диалог («уже существует»)
           const res = await lite.fs.writeFile(`${activeProj.path}/Roles/${newName}.md`, 'Действуй в роли...');
@@ -1302,6 +1385,14 @@ export function initTextProc(host) {
       },
       'Закрыть без сохранения', proceed,
     );
+  }
+  // Выход из редактора (окно снесут мимо confirmClose): вкладки с файлом дописываем на диск — это
+  // то, что сделал бы автосейв; безымянные записать некуда — их называем, и редактор спросит.
+  async function quitCheck() {
+    clearTimeout(autosaveT);
+    saveCurrentTabState();
+    for (const t of openTabs.filter((x) => x.dirty && x.absPath)) { try { await saveTabToDisk(t); } catch (_) {} }
+    return openTabs.filter((x) => x.dirty).map((x) => '«' + x.name + '»');
   }
 
   // ---- Sidebar & Tabs Logic ----
@@ -1532,33 +1623,46 @@ export function initTextProc(host) {
       toast('Ошибка чтения файла', { kind: 'err' });
       return;
     }
+    // Двоичный файл (.docx — это zip), файл не в UTF-8: текст в окне был бы мусором или с «�» вместо
+    // букв, и первая же правка автосейвом записала бы его поверх исходного файла.
+    if (/\.docx?$/i.test(absPath)) { toast('Документ Word «Обработка текста» не открывает: сохранение записало бы текст поверх файла', { kind: 'warn', ttl: 8000 }); return; }
+    if (r.notUtf8 || r.content.includes('\0')) { toast('Файл не текстовый или не в кодировке UTF-8 — «Обработка текста» его не открывает: сохранение испортило бы его', { kind: 'warn', ttl: 8000 }); return; }
+    const eol = eolOf(r.content), text = toLF(r.content);
 
     // Create new tab
     const id = nextTabId++;
     const name = baseName(absPath);
     const isHtml = /\.html?$/i.test(name);
+    // Чужой HTML (не записанный этим модулем) при сохранении потерял бы head, стили и скрипты —
+    // открываем его копией без пути: править можно, а записать — только «Сохранить как».
+    const htmlCopy = isHtml && !htmlRoundTripsCleanly(text);
+    // .txt и markdown, который визуальный режим переписал бы, — исходником: там сохраняется ровно видимое.
+    const startMode = (!isHtml && (!/\.(md|markdown)$/i.test(name) || !mdRoundTripsCleanly(text))) ? 'markdown' : 'wysiwyg';
     // HTML с диска = внешний контент: санитизация ДО хранения (иначе innerHTML в switchToTab исполнит
     // разметку с onerror и т.п.); htmlToMd ждёт DOM-корень, не строку.
-    let safeHtml = null, mdSrc = r.content;
+    let safeHtml = null, mdSrc = text;
     if (isHtml) {
-      safeHtml = DOMPurify.sanitize(r.content, SANITIZE);
+      safeHtml = DOMPurify.sanitize(text, SANITIZE);
       const root = document.createElement('div');
       root.innerHTML = safeHtml;
       mdSrc = htmlToMd(root);
     }
     const tab = {
       id,
-      absPath,
-      name,
-      html: isHtml ? safeHtml : mdToHtml(r.content),
-      md: mdSrc,
-      mode: 'wysiwyg',
+      absPath: htmlCopy ? null : absPath,
+      name: htmlCopy ? tf('{0} (копия)', name) : name,
+      html: isHtml ? safeHtml : mdToHtml(text),
+      md: startMode === 'markdown' ? text : mdSrc,
+      mode: startMode,
+      eol,
       dirty: false
     };
     
     openTabs.push(tab);
     renderTabsUI();
     switchToTab(id);
+    if (htmlCopy) toast('HTML открыт копией: сохранение переписало бы файл без стилей и скриптов. Записать правки можно через «Сохранить как»', { kind: 'warn', ttl: 9000 });
+    else if (startMode === 'markdown' && /\.(md|markdown)$/i.test(name)) updateStatus('Открыт исходником: визуальный режим изменил бы разметку файла');
   }
 
   function renderTabsUI() {
@@ -1682,5 +1786,6 @@ export function initTextProc(host) {
     setOpen: setDocOpen,
     toggle: () => setDocOpen(!docOpen),
     confirmClose,
+    quitCheck,
   };
 }

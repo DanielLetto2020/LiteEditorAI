@@ -32,12 +32,8 @@ const SYNC_CLI = path.join(HERE, 'lite-sync.js');
 const STATE_DIR = process.env.LITE_SYNC_DIR || path.join(os.homedir(), '.lite-sync');
 const CONFIG_FILE = path.join(STATE_DIR, 'config.json');
 
-const SSH_OPTS = [
-  '-C', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10',
-  '-o', 'ControlMaster=auto',
-  '-o', `ControlPath=${path.join(os.tmpdir(), 'lite-sync-%r@%h:%p')}`,
-  '-o', 'ControlPersist=120s',
-];
+// Опции ssh — общие с утилитой (сокет мультиплексора в своём каталоге, keepalive; см. lite-sync.js).
+const SSH_OPTS = sync.SSH_OPTS;
 
 // Экранирование пути для удалённой оболочки — то же, что у самой утилиты (см. shq в lite-sync.js):
 // путь в двойных кавычках оболочка всё равно развернула бы через $(...).
@@ -54,12 +50,27 @@ function safePath(projectPath) {
 }
 
 function sshRun(target, command, timeout = 60_000) {
+  sync.ensureMuxDir();
   const res = spawnSync('ssh', [...SSH_OPTS, target, command], { encoding: 'utf8', timeout });
   return { ok: res.status === 0, out: (res.stdout || '').trim(), err: (res.stderr || '').trim() };
 }
 
 function readConfig() {
   try { return JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8')); } catch { return { projects: [] }; }
+}
+
+// Для правки: повреждённый или нечитаемый конфиг — ошибка, а не «пусто». Иначе подключение проекта
+// записало бы { projects: [этот один] } поверх всех подключённых проектов и адреса сервера.
+function readConfigForEdit() {
+  let raw;
+  try { raw = fs.readFileSync(CONFIG_FILE, 'utf8'); }
+  catch (e) { if (e && e.code === 'ENOENT') return { projects: [] }; throw e; }
+  let cfg = null;
+  try { cfg = JSON.parse(raw); } catch { /* ниже */ }
+  if (!cfg || typeof cfg !== 'object' || Array.isArray(cfg)) {
+    throw new Error('настройки синхронизации (~/.lite-sync/config.json) повреждены — поправьте или удалите файл, изменения не записаны');
+  }
+  return cfg;
 }
 
 function writeConfig(cfg) {
@@ -104,6 +115,7 @@ function checkServer(server) {
   if (!res.tools.ssh || !res.tools.rsync) { res.reason = 'local-tools'; return res; }
   if (!sync.validServer(res.server)) { res.reason = 'address'; return res; }
   const probe = 'date +%s; echo "$HOME"; for c in rsync find md5sum du; do command -v "$c" >/dev/null 2>&1 || echo "missing:$c"; done';
+  sync.ensureMuxDir();
   const r = spawnSync('ssh', [...SSH_OPTS, '-o', 'StrictHostKeyChecking=accept-new', res.server, probe], { encoding: 'utf8', timeout: 40_000 });
   if (r.status !== 0) {
     const err = (r.stderr || '').trim() || (r.error ? r.error.message : '');
@@ -127,7 +139,7 @@ function checkServer(server) {
 function setServer(server, { runner = 'editor' } = {}) {
   const value = String(server || '').trim();
   if (!sync.validServer(value)) throw new Error('негодный адрес сервера');
-  const cfg = readConfig();
+  const cfg = readConfigForEdit();
   cfg.server = value;
   cfg.projects = Array.isArray(cfg.projects) ? cfg.projects : [];
   if (runner && !cfg.runner) cfg.runner = runner;
@@ -238,6 +250,7 @@ function runCli(args, onLine) {
     const child = spawn(process.execPath, [SYNC_CLI, ...args], { env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' } });
     let out = '';
     const take = (d) => { out += d; if (onLine) onLine(String(d)); };
+    child.stdout?.setEncoding('utf8'); child.stderr?.setEncoding('utf8');   // кириллица на стыке чанков
     child.stdout?.on('data', take);
     child.stderr?.on('data', take);
     child.on('close', (code) => resolve({ ok: code === 0, out }));
@@ -246,7 +259,7 @@ function runCli(args, onLine) {
 }
 
 function addToConfig(projectPath) {
-  const cfg = readConfig();
+  const cfg = readConfigForEdit();
   cfg.projects = Array.isArray(cfg.projects) ? cfg.projects : [];
   if (!cfg.projects.some((p) => (typeof p === 'string' ? p : p && p.path) === projectPath)) {
     // поля по умолчанию может добавить дополнение (например, возить память агента)
@@ -299,6 +312,9 @@ async function link(projectPath, { prefer = null, onStep = () => {} } = {}) {
       step('project', 'bad', reason);
       return { ok: false, reason, report };
     }
+    // Старый манифест (проект подключали раньше) объявил бы удалённым на сервере всё, что в нём
+    // записано, и первая же сверка унесла бы проект с ПК в корзину. С новой стороной — первая сверка.
+    try { sync.forgetManifest(projectPath); } catch (_) { /* нет — и не надо */ }
     step('project', 'ok', 'на сервере папки не было — создал');
   } else if (report.direction === 'pull' && !report.local.exists) {
     try { fs.mkdirSync(projectPath, { recursive: true }); } catch (e) {
@@ -306,6 +322,7 @@ async function link(projectPath, { prefer = null, onStep = () => {} } = {}) {
       step('project', 'bad', reason);
       return { ok: false, reason, report };
     }
+    try { sync.forgetManifest(projectPath); } catch (_) { /* см. выше: старый манифест стёр бы сервер */ }
     step('project', 'ok', 'на ПК папки не было — создал');
   } else if (report.differ > 0 && !prefer) {
     // Останавливаемся и спрашиваем: молча затирать чужую работу нельзя.

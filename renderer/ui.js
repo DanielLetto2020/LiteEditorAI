@@ -320,6 +320,20 @@ export function makeModal(innerHtml, onClose) {
   m.addEventListener('keydown', (e) => { if (e.key === 'Escape') close(); });
   return { overlay, m, close };
 }
+// makeModal закрывает модалку по Esc и по клику мимо неё — в обход вопроса «Закрыть без сохранения?»:
+// набранный текст пропадал молча (а Esc жмут рефлекторно — снять выделение, закрыть поиск). Пока есть
+// несохранённое (isDirty()), оба пути ведут в ask(). Слушатели в фазе захвата и stopImmediatePropagation —
+// срабатывают раньше makeModal и обработчиков полей внутри модалки.
+export function guardDirtyClose(overlay, m, isDirty, ask) {
+  m.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape' || !isDirty()) return;
+    e.preventDefault(); e.stopImmediatePropagation(); ask();
+  }, true);
+  overlay.addEventListener('mousedown', (e) => {
+    if (e.target !== overlay || !isDirty()) return;
+    e.stopImmediatePropagation(); ask();
+  }, true);
+}
 // Optional middle button (altLabel/onAlt) turns this into a 3-way prompt
 // (e.g. Save / Don't save / Cancel).
 export function showConfirm(title, text, yesLabel, onYes, altLabel, onAlt) {

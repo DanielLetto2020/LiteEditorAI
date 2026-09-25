@@ -67,6 +67,50 @@ const GAP = 900;   // чуть больше дебаунса реестра (700
   ok(cleared && cleared.ok && cleared.removed === 1, 'clearResolved() не падает на мусоре');
   fs.rmSync(dir2, { recursive: true, force: true });
 
+  // --- Агент отметил ошибку в файле, а у редактора отложенная запись своей копии: отметка не теряется ---
+  const dir3 = fs.mkdtempSync(path.join(os.tmpdir(), 'errledger-'));
+  errledger.init(dir3);
+  errledger.record({ level: 'error', source: 'x', message: 'boom' });
+  errledger.flush();
+  const f3 = path.join(dir3, 'errors.json');
+  const j3 = JSON.parse(fs.readFileSync(f3, 'utf8'));
+  const id3 = Object.keys(j3.entries)[0];
+  Object.assign(j3.entries[id3], { status: 'resolved', resolvedAt: Date.now() + 60000, note: 'fixed', commit: 'abc' });
+  fs.writeFileSync(f3, JSON.stringify(j3));                 // правка агента, ещё не перечитанная watch()
+  errledger.record({ level: 'error', source: 'y', message: 'другая' });
+  errledger.flush();
+  const k3 = JSON.parse(fs.readFileSync(f3, 'utf8'));
+  ok(k3.entries[id3].status === 'resolved' && k3.entries[id3].note === 'fixed', 'отметка агента пережила запись редактора');
+  ok(Object.keys(k3.entries).length === 2, 'новая ошибка редактора тоже записана');
+  // повторение ПОСЛЕ отметки — регрессия, а не «исправлено»
+  j3.entries[id3].resolvedAt = 1; fs.writeFileSync(f3, JSON.stringify({ version: 1, entries: { [id3]: { ...k3.entries[id3], resolvedAt: 1 } } }));
+  errledger.record({ level: 'error', source: 'x', message: 'boom' });
+  errledger.flush();
+  const r3 = JSON.parse(fs.readFileSync(f3, 'utf8'));
+  ok(r3.entries[id3].status === 'open' && r3.entries[id3].regressed === true, 'повтор после отметки — регрессия');
+  fs.rmSync(dir3, { recursive: true, force: true });
+
+  // --- Правка человека в UI в те же миллисекунды, что и внешняя правка агента: обе живы ---
+  const dir4 = fs.mkdtempSync(path.join(os.tmpdir(), 'errledger-'));
+  errledger.init(dir4);
+  errledger.record({ level: 'error', source: 'a', message: 'A' });
+  errledger.record({ level: 'error', source: 'b', message: 'B' });
+  errledger.flush();
+  const f4 = path.join(dir4, 'errors.json');
+  const j4 = JSON.parse(fs.readFileSync(f4, 'utf8'));
+  const idA = Object.keys(j4.entries).find((k) => j4.entries[k].source === 'a');
+  const idB = Object.keys(j4.entries).find((k) => j4.entries[k].source === 'b');
+  Object.assign(j4.entries[idA], { status: 'resolved', resolvedAt: Date.now() + 60000 });
+  fs.writeFileSync(f4, JSON.stringify(j4));                 // агент отметил A
+  errledger.setStatus(idB, 'ignored');                       // человек в UI — B, до перечитывания файла
+  const k4 = JSON.parse(fs.readFileSync(f4, 'utf8'));
+  ok(k4.entries[idA].status === 'resolved', 'отметка агента по A сохранилась');
+  ok(k4.entries[idB].status === 'ignored', 'правка человека по B не откатилась файловой копией');
+  errledger.clearResolved();
+  const left4 = JSON.parse(fs.readFileSync(f4, 'utf8')).entries;
+  ok(!left4[idA] && !left4[idB], 'очистка не возвращает удалённые записи');
+  fs.rmSync(dir4, { recursive: true, force: true });
+
   fs.rmSync(dir, { recursive: true, force: true });
   console.log(`✓ errledger: ${passed} проверок пройдено`);
   process.exit(0);

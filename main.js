@@ -22,6 +22,7 @@ const dns = require('dns');
 const crypto = require('crypto');
 const vm = require('vm'); // песочница для пользовательских предикатов «Мониторинга сайтов»
 const { pathToFileURL } = require('url');
+const { isUtf8 } = require('buffer');
 const pty = require('node-pty');
 const logger = require('./logger');
 const { safeChildName } = require('./lib/safe-name'); // анти-traversal для имён папок/файлов
@@ -121,7 +122,7 @@ try {
   const legacy = path.join(os.homedir(), '.LiteEditor');
   if (!fs.existsSync(storeDir) && fs.existsSync(legacy)) fs.cpSync(legacy, storeDir, { recursive: true });
 } catch (_) {}
-const STORE_KEYS = ['projects', 'settings', 'layout', 'recents', 'lastParent', 'categories', 'sectionOrder', 'favOrder', 'accordions', 'dismissed', 'projTabs', 'openrouter', 'dockerUi', 'dbConnections', 'dbUi', 'rhConnections', 'rhUi', 'extData', 'extEnabled', 'quickbar', 'seoSites', 'moduleWins', 'mwLeft', 'mwLogH', 'gitFav', 'commitDrafts', 'bookmarks', 'promptSnippets', 'pomodoro', 'pomodoroLog', 'dbaiProviders', 'sessionSnaps', 'siteMon', 'rmqConnections', 'rmqUi', 'kafkaConnections', 'kafkaUi', 'stConnections', 'stUi', 'jiraAccounts', 'jiraUi', 'gsearch', 'gsearchHist', 'voice', 'voiceClips'];
+const STORE_KEYS = ['projects', 'settings', 'layout', 'recents', 'lastParent', 'categories', 'sectionOrder', 'favOrder', 'accordions', 'dismissed', 'projTabs', 'openrouter', 'dockerUi', 'dbConnections', 'dbUi', 'rhConnections', 'rhUi', 'extData', 'extEnabled', 'quickbar', 'seoSites', 'moduleWins', 'mwLeft', 'mwLogH', 'gitFav', 'commitDrafts', 'bookmarks', 'promptSnippets', 'pomodoro', 'pomodoroLog', 'dbaiProviders', 'sessionSnaps', 'siteMon', 'rmqConnections', 'rmqUi', 'kafkaConnections', 'kafkaUi', 'stConnections', 'stUi', 'jiraAccounts', 'jiraUi', 'gsearch', 'gsearchHist', 'voice', 'voiceClips', 'toolsUi', 'sitemonUi'];
 // Профили подключений с зашифрованными секретами (passEnc/tokenEnc…) — только для main: модули
 // получают их через свои IPC (publicConn — без секретов), а рендерер эти ключи не читает и не пишет.
 // В общем снимке стора они уходили во ВСЕ окна (при недоступном safeStorage — base64, то есть по сути
@@ -131,10 +132,36 @@ const MAIN_ONLY_KEYS = new Set(['dbConnections', 'rhConnections', 'rmqConnection
 const rendererStoreKey = (key) => STORE_KEYS.includes(key) && !MAIN_ONLY_KEYS.has(key);
 function ensureStoreDir() { try { fs.mkdirSync(storeDir, { recursive: true }); } catch (_) {} }
 function storeFile(key) { return path.join(storeDir, String(key).replace(/[^\w.-]/g, '_') + '.json'); }
+// Ключи, которые не прочитались (права, EMFILE, EIO). Кто получил вместо них «пусто» (дефолты, пустой
+// список проектов), рано или поздно запишет это «пусто» — например, открытый проект сохранил бы список
+// из ОДНОГО проекта поверх всех. Поэтому такие ключи не пишем:
+//   • storeReadFailed — последнее чтение в main не удалось; снимается следующим удачным чтением
+//     (main перечитывает ключ перед каждой правкой, разовый сбой не должен глушить запись навсегда);
+//   • storeSnapshotBroken — «пусто» ушло в снимок окна (store:loadAll): окно держит его до перезапуска.
+const storeReadFailed = new Set();
+const storeSnapshotBroken = new Set();
 function readStoreKey(key) {
-  try { return JSON.parse(fs.readFileSync(storeFile(key), 'utf8')); }
-  // ENOENT just means "never written yet" (normal); anything else (bad JSON, perms) is worth logging.
-  catch (e) { if (e && e.code !== 'ENOENT') logger.log('error', 'store', `read '${key}' failed`, e); return undefined; }
+  const f = storeFile(key);
+  let raw;
+  try { raw = fs.readFileSync(f, 'utf8'); }
+  catch (e) {
+    if (e && e.code === 'ENOENT') { storeReadFailed.delete(String(key)); return undefined; }   // «ещё не записывали» — нормально
+    storeReadFailed.add(String(key));
+    logger.log('error', 'store', `read '${key}' failed`, e);
+    return undefined;
+  }
+  let value;
+  try { value = JSON.parse(raw); }
+  catch (e) {
+    // Не разбирается — откладываем рядом, а не затираем при следующей записи: данные остаются на
+    // диске для ручного восстановления. Не отложилось — блокируем запись, как при ошибке чтения.
+    const aside = f + '.corrupt-' + Date.now();
+    try { fs.renameSync(f, aside); storeReadFailed.delete(String(key)); logger.log('warn', 'store', `повреждённый файл отложен: ${aside} (${(e && e.message) || e})`); }
+    catch (_) { storeReadFailed.add(String(key)); logger.log('error', 'store', `read '${key}' failed`, e); }
+    return undefined;
+  }
+  storeReadFailed.delete(String(key));
+  return value;
 }
 // Crash-safe write: write a sibling .tmp then rename(2) over the target. rename is atomic
 // on the same filesystem, so a crash / OOM-kill / power-loss mid-write can never leave a
@@ -184,12 +211,39 @@ function readSettingsCached() {
   if (mtime !== settingsCache.mtime) settingsCache = { mtime, value: readStoreKey('settings') };
   return settingsCache.value || {};
 }
-function writeStoreKey(key, value) {
+// fromWindow — значение пришло из окна целиком: окно с исправным снимком — источник правды, и разовый
+// сбой чтения в main (storeReadFailed) его запись не глушит; глушит только испорченный снимок.
+function writeStoreKey(key, value, fromWindow) {
+  if (storeSnapshotBroken.has(String(key)) || (!fromWindow && storeReadFailed.has(String(key)))) {
+    logger.log('error', 'store', `write '${key}' skipped: файл не прочитался в этой сессии — запись затёрла бы его`);
+    return false;
+  }
   ensureStoreDir();
   try { atomicWriteSync(storeFile(key), JSON.stringify(value)); return true; }
   catch (e) { logger.log('error', 'store', `write '${key}' failed`, e); return false; }
 }
 ensureStoreDir();
+
+// Чтение пользовательских данных, которые окно потом перезапишет целиком (задачи, напоминания, история
+// чата, штат компании). Раньше любая ошибка давала «пусто»: окно показывало пустой список, и первое же
+// действие записывало его поверх файла — все задачи пропадали из-за одной запятой, поставленной руками,
+// или временного EACCES/EMFILE. Теперь:
+//   • файла нет — fallback (это «ещё не создавали»);
+//   • файл не разбирается — откладываем его рядом (<файл>.corrupt-<время>) и отдаём fallback: окно
+//     начинает с чистого листа, а данные остаются на диске для ручного восстановления;
+//   • прочитать не вышло — { error }: окно ничего не пишет, пока чтение не удастся.
+function readJsonForEdit(file, fallback) {
+  let raw;
+  try { raw = fs.readFileSync(file, 'utf8'); }
+  catch (e) { if (e && e.code === 'ENOENT') return fallback; return { error: String((e && e.message) || e), readFailed: true }; }
+  try { return JSON.parse(raw); }
+  catch (e) {
+    const aside = file + '.corrupt-' + Date.now();
+    try { fs.renameSync(file, aside); } catch (_) { return { error: i18n.t('Файл данных повреждён и не откладывается: {0}', file), readFailed: true }; }
+    logger.log('warn', 'store', `повреждённый файл отложен: ${aside} (${(e && e.message) || e})`);
+    return fallback;
+  }
+}
 
 // ── Централизованная обвязка ошибок IPC (см. CLAUDE.md → «Логирование ошибок») ──────────────
 // ВСЕ модули (текущие и будущие, включая db/remotehost ниже) общаются с бэкендом через
@@ -247,6 +301,7 @@ storageBackend.registerStorageIpc({
   ipcMain, safeStorage, dialog,
   getConnections: () => readStoreKey('stConnections'),
   setConnections: (v) => writeStoreKey('stConnections', v),
+  stageDir: () => viewStageDir(),   // копии объектов для вивера — туда же, где их убирают на выходе
 });
 
 // «Jira» backend (мульти-аккаунт + REST API v2, без зависимостей) — lib/jira.js.
@@ -316,8 +371,9 @@ ipcMain.handle('logs:clearOld', () => ({ ok: true, removed: logger.clearOld() })
 // Редактор синхронизацией не управляет: демон (scripts/server-sync/) живёт своей
 // жизнью, здесь мы только читаем его конфиг. Сопоставление делает главный процесс —
 // у рендерера нет fs, а сравнивать нужно разрешённые пути (симлинки, см. lib/sync.js).
-ipcMain.handle('sync:match', (_e, paths) => {
-  try { return { paths: syncmark.match(paths), available: syncAvailable() }; } catch (e) { return { paths: [], available: false, error: String(e) }; }
+ipcMain.handle('sync:match', async (_e, paths) => {
+  // асинхронно: realpathSync проекта на отвалившейся сетевой ФС подвесил бы весь главный процесс
+  try { return { paths: await syncmark.matchAsync(paths), available: syncAvailable() }; } catch (e) { return { paths: [], available: false, error: String(e) }; }
 });
 
 // Подключение проекта к синхронизации. Процедура одна на оба редактора и живёт
@@ -440,7 +496,12 @@ errledger.watch();
 
 ipcMain.on('store:loadAll', (e) => {
   const o = {};
-  for (const k of STORE_KEYS) { if (MAIN_ONLY_KEYS.has(k)) continue; const v = readStoreKey(k); if (v !== undefined) o[k] = v; }
+  for (const k of STORE_KEYS) {
+    if (MAIN_ONLY_KEYS.has(k)) continue;
+    const v = readStoreKey(k);
+    if (v !== undefined) o[k] = v;
+    else if (storeReadFailed.has(k)) storeSnapshotBroken.add(k);   // окно получило «пусто» вместо данных
+  }
   o.noteCounts = {}; // project id -> number of ACTIVE (не выполненных) задач, for card badges
   try {
     const nd = path.join(storeDir, 'notes');
@@ -458,9 +519,10 @@ ipcMain.on('store:loadAll', (e) => {
       try { const a = JSON.parse(fs.readFileSync(path.join(ad, f), 'utf8')); const n = agendaAttentionCount(a); if (n) o.agendaCounts[f.slice(0, -5)] = n; } catch (_) {}
     }
   } catch (_) {}
+  if (storeSnapshotBroken.size) o.__readFailed = [...storeSnapshotBroken];   // окно предупредит человека
   e.returnValue = o; // synchronous: renderer loads the snapshot once at startup
 });
-ipcMain.on('store:set', (_e, { key, value }) => { if (rendererStoreKey(key)) writeStoreKey(key, value); });
+ipcMain.on('store:set', (_e, { key, value }) => { if (rendererStoreKey(key)) writeStoreKey(key, value, true); });
 // settings пишут несколько окон, поэтому для него — патч по полям, а не объект целиком: иначе
 // побеждала последняя запись из устаревшей копии окна (renderer/settings-sync.js). Вливаем патч
 // в файл и рассылаем его остальным окнам — они применят его к своему объекту.
@@ -481,11 +543,8 @@ function patchStoreKey(key, set, unset, exceptWc) {
 ipcMain.on('store:patch', (e, { key, set, unset } = {}) => { if (PATCH_KEYS.has(key)) patchStoreKey(key, set, unset, e.sender); });
 // Синхронный вариант — для записи на beforeunload (снимки сессий, идея 7): обычный send может
 // не успеть флашнуться до сноса рендерера, sendSync гарантирует запись до выхода.
-ipcMain.on('store:setSync', (e, { key, value } = {}) => { if (rendererStoreKey(key)) writeStoreKey(key, value); e.returnValue = true; });
-ipcMain.handle('store:notesGet', (_e, id) => {
-  try { return JSON.parse(fs.readFileSync(path.join(storeDir, 'notes', String(id).replace(/[^\w.-]/g, '_') + '.json'), 'utf8')); }
-  catch { return []; }
-});
+ipcMain.on('store:setSync', (e, { key, value } = {}) => { if (rendererStoreKey(key)) writeStoreKey(key, value, true); e.returnValue = true; });
+ipcMain.handle('store:notesGet', (_e, id) => readJsonForEdit(path.join(storeDir, 'notes', String(id).replace(/[^\w.-]/g, '_') + '.json'), []));
 ipcMain.handle('store:notesSet', (_e, { id, notes }) => {
   try {
     fs.mkdirSync(path.join(storeDir, 'notes'), { recursive: true });
@@ -583,12 +642,15 @@ function startAgendaWatch() {
   try { fs.mkdirSync(path.join(storeDir, 'agenda'), { recursive: true }); } catch (_) {}
   const timers = new Map();
   try {
-    fs.watch(path.join(storeDir, 'agenda'), (_event, filename) => {
+    const w = fs.watch(path.join(storeDir, 'agenda'), (_event, filename) => {
       if (!filename || !String(filename).endsWith('.json')) return;
       const id = String(filename).slice(0, -5);
       clearTimeout(timers.get(id));
       timers.set(id, setTimeout(() => agendaBroadcastChanged(id), 150)); // дебаунс rename+change
     });
+    // Каталог удалили/отмонтировали: без слушателя 'error' — uncaughtException (FATAL «сбой приложения»
+    // в реестре ошибок) при уже мёртвом вотчере. Как в ctx:watchOutputs.
+    w.on('error', (e) => { logger.log('warn', 'agenda', `слежение за agenda/ остановлено: ${(e && e.message) || e}`); try { w.close(); } catch (_) {} });
   } catch (e) { logger.log('warn', 'agenda', 'fs.watch недоступен: ' + e.message); }
 }
 
@@ -617,16 +679,15 @@ ipcMain.handle('agenda:mcpConnect', async (_e, { projId, projPath } = {}) => {
     // Без таймаута зависший `claude mcp add` (спросил что-то в stdin и ждёт) держал бы промис
     // IPC навсегда: кнопка в модалке крутилась бы вечно, процесс жил бы до выхода из редактора.
     to = setTimeout(() => { try { cp.kill(); } catch (_) {} finish({ ok: false, error: 'таймаут: «claude mcp add» не ответил за 30 с' }); }, 30000);
+    if (cp.stdout) cp.stdout.setEncoding('utf8');   // русские сообщения CLI не бьются на стыке чанков
+    if (cp.stderr) cp.stderr.setEncoding('utf8');
     cp.stdout && cp.stdout.on('data', (d) => { stdout += d; });
     cp.stderr && cp.stderr.on('data', (d) => { stderr += d; });
     cp.on('error', (err) => finish({ ok: false, error: err.code === 'ENOENT' ? 'CLI «claude» не найден в PATH' : String(err.message || err) }));
     cp.on('exit', (code) => finish(code === 0 ? { ok: true, out: stdout.trim() } : { ok: false, error: (stderr || stdout).trim() || ('claude завершился с кодом ' + code) }));
   });
 });
-ipcMain.handle('store:agendaGet', (_e, id) => {
-  try { return JSON.parse(fs.readFileSync(agendaPath(id), 'utf8')); }
-  catch { return []; }
-});
+ipcMain.handle('store:agendaGet', (_e, id) => readJsonForEdit(agendaPath(id), []));
 ipcMain.handle('store:agendaSet', (_e, { id, agenda }) => {
   try {
     fs.mkdirSync(path.join(storeDir, 'agenda'), { recursive: true });
@@ -665,9 +726,7 @@ function sendTo(target, channel, payload) {
 }
 function safeSend(sender, channel, payload) { return sendTo(sender, channel, payload); }
 function orChatFile(id) { return path.join(storeDir, 'orchats', String(id).replace(/[^\w.-]/g, '_') + '.json'); }
-ipcMain.handle('openrouter:histGet', (_e, id) => {
-  try { return JSON.parse(fs.readFileSync(orChatFile(id), 'utf8')); } catch { return []; }
-});
+ipcMain.handle('openrouter:histGet', (_e, id) => readJsonForEdit(orChatFile(id), []));
 ipcMain.handle('openrouter:histSet', (_e, { id, messages } = {}) => {
   // Рендерер пишет сессии чата объектом { sessions, active } (массив — только старый формат и
   // очистка при удалении ключа). Пропуская лишь массив, main молча заменял сессии на [] — история
@@ -719,6 +778,7 @@ ipcMain.handle('openrouter:models', async (_e, { key } = {}) => {
 // phase: idle | available | downloading | ready | installing
 let updState = { phase: 'idle', pct: 0 };
 let updAbort = null;   // { onAbort } — заполняет lib/updater при активной загрузке
+let updQuitCheck = false; // update:install ждёт ответа окон модулей о несохранённом
 let updStaged = null;  // { tag, file, root } — что уже скачано и распаковано, готово к применению
 
 function updSet(patch) {
@@ -849,10 +909,16 @@ function updHardExit() {
 
 // Применить обновление и перезапуститься. После этого вызова приложение закрывается — ответ
 // рендерер получает только при неудаче.
-ipcMain.handle('update:install', async () => {
+ipcMain.handle('update:install', async (e) => {
   if (!updStaged) return { ok: false, error: 'обновление ещё не загружено' };
   // Второй вызов (двойное подтверждение, второе окно) запустил бы второй стейджер/pkexec поверх первого.
-  if (updState.phase === 'installing') return { ok: false, error: 'установка уже идёт' };
+  if (updState.phase === 'installing' || updQuitCheck) return { ok: false, error: 'установка уже идёт' };
+  // Выход под обновление жёсткий (app.exit) и сносит окна модулей мимо их dirty-guard: безымянный
+  // документ «Обработки текста» или правка удалённого файла пропали бы молча. Сначала спрашиваем окна.
+  updQuitCheck = true;
+  let go;
+  try { go = await confirmDiscardUnsaved(senderWin(e) || mainWindow); } finally { updQuitCheck = false; }
+  if (!go) return { ok: false, canceled: true };
   const inst = updInstallInfo();
   updSet({ phase: 'installing' });
 
@@ -1233,7 +1299,8 @@ ipcMain.on('tp:run', (e, { reqId, agent, prompt, mode, cwd } = {}) => {
   child.stdout.on('data', (c) => { const chunk = c.toString('utf8'); out += chunk; safeSend(sender, 'tp:data', { reqId, chunk }); });
   child.stderr.on('data', (c) => { errOut += c.toString('utf8'); });
   child.on('error', (err) => {
-    if (!tpReqs.has(reqId)) return; tpReqs.delete(reqId); clearTimeout(to);
+    clearTimeout(to);
+    if (!tpReqs.has(reqId)) return; tpReqs.delete(reqId);
     safeSend(sender, 'tp:error', { reqId, error: 'агент «' + conf.cmd + '» не найден/не запустился: ' + (err.message || err) });
   });
   child.on('close', (code) => {
@@ -1287,12 +1354,9 @@ const DBAI_AGENTS = {
 // сохранении раскладки модуля. Формат файла: { sessions: [...], activeId }.
 const dbaiDir = () => path.join(storeDir, 'dbai');
 const dbaiFile = (connId) => path.join(dbaiDir(), String(connId).replace(/[^\w.-]/g, '_') + '.json');
-ipcMain.handle('dbai:sessionsGet', (_e, { connId } = {}) => {
-  const file = dbaiFile(connId);
-  if (!fs.existsSync(file)) return null;   // истории просто ещё нет — это не ошибка
-  try { return JSON.parse(fs.readFileSync(file, 'utf8')); }
-  catch (e) { return { error: String(e.message || e) }; }
-});
+// Нет файла — null (истории ещё нет); битый — откладывается рядом, окно начинает с чистого листа;
+// не прочитался — { error }: окно в него не пишет (см. readJsonForEdit).
+ipcMain.handle('dbai:sessionsGet', (_e, { connId } = {}) => readJsonForEdit(dbaiFile(connId), null));
 ipcMain.handle('dbai:sessionsSet', (_e, { connId, data } = {}) => {
   try {
     fs.mkdirSync(dbaiDir(), { recursive: true });
@@ -1691,9 +1755,10 @@ ipcMain.on('ctxmine:analyze', (e, { reqId, projPath, capChars, done, only } = {}
   child.stdout.setEncoding('utf8'); child.stderr.setEncoding('utf8');
   child.stdout.on('data', (c) => { buf += c.toString('utf8'); let nl; while ((nl = buf.indexOf('\n')) >= 0) { handleLine(buf.slice(0, nl)); buf = buf.slice(nl + 1); } });
   child.stderr.on('data', (c) => { errOut += c.toString('utf8'); });
-  child.on('error', (err) => { if (!ctxmineReqs.has(reqId)) return; ctxmineReqs.delete(reqId); clearTimeout(to); safeSend(sender, 'ctxmine:error', { reqId, error: 'claude не найден/не запустился: ' + ((err && err.message) || err) }); });
+  child.on('error', (err) => { clearTimeout(to); if (!ctxmineReqs.has(reqId)) return; ctxmineReqs.delete(reqId); safeSend(sender, 'ctxmine:error', { reqId, error: 'claude не найден/не запустился: ' + ((err && err.message) || err) }); });
   child.on('close', (code) => {
-    if (!ctxmineReqs.has(reqId)) return; ctxmineReqs.delete(reqId); clearTimeout(to);
+    clearTimeout(to);   // и после «Отмены»/закрытия окна: иначе 5-минутный таймер держал процесс и весь дистиллят
+    if (!ctxmineReqs.has(reqId)) return; ctxmineReqs.delete(reqId);
     if (buf.trim()) handleLine(buf);
     if (!full.trim()) { safeSend(sender, 'ctxmine:error', { reqId, error: errOut.trim() || ('claude завершился с кодом ' + code) }); return; }
     let parsed;
@@ -1758,9 +1823,10 @@ ipcMain.handle('ctxmine:apply', (_e, { projPath, items } = {}) => {
         return '- ' + t + (d ? '\n  ' + d.replace(/\n/g, '\n  ') : '');
       }).join('\n');
       const base = cur.replace(/\s*$/, '');
-      const next = cur.includes(CTXMINE_APPLY_HEADER)
+      let next = cur.includes(CTXMINE_APPLY_HEADER)
         ? base + '\n' + bullets + '\n'
         : (base ? base + '\n\n' : '') + CTXMINE_APPLY_HEADER + '\n' + bullets + '\n';
+      if (/\r\n/.test(cur)) next = next.replace(/\r?\n/g, '\r\n');   // файл в CRLF — дописанное тоже, без смеси концов строк
       ctxbkPush(file, 'claude-file');   // как и любая перезапись из модуля — сначала копия (глобальный CLAUDE.md иначе без отката)
       atomicWriteSync(file, next);
       applied.push({ placement: pl, file, count: arr.length });
@@ -1881,22 +1947,41 @@ ipcMain.handle('ctxmem:list', (_e, { projPath, scope } = {}) => {
 // чтобы восстановление вернуло и файл, и запись в индексе на прежнее место.
 const CTXMEM_TRASH = path.join(os.homedir(), '.claude', 'custom-trash-memory');
 const ctxmemTrashIndex = () => path.join(CTXMEM_TRASH, 'trash.json');
-function ctxmemTrashLoad() {
-  try { const d = JSON.parse(fs.readFileSync(ctxmemTrashIndex(), 'utf8')); if (d && Array.isArray(d.list)) return d; } catch (_) {}
+// Индексы корзины памяти и бэкапов (trash.json, index.json). Битый файл раньше читался как пустой
+// список, и первая же запись затирала все прежние записи: файлы в корзине и копии оставались на диске,
+// но восстановить их из окна было уже нечем. Теперь битый откладывается рядом (.corrupt-<время>),
+// а нечитаемый (права, EMFILE) даёт null — тогда в индекс ничего не пишем.
+function ctxListLoad(file) {
+  let raw;
+  try { raw = fs.readFileSync(file, 'utf8'); }
+  catch (e) {
+    if (e && e.code === 'ENOENT') return { list: [] };
+    logger.log('error', 'store', `не прочитать ${file}`, e);
+    return null;
+  }
+  try { const d = JSON.parse(raw); if (d && Array.isArray(d.list)) return d; } catch (_) {}
+  try { fs.renameSync(file, file + '.corrupt-' + Date.now()); } catch (_) { return null; }
+  logger.log('warn', 'store', `повреждённый индекс отложен рядом: ${file}`);
   return { list: [] };
 }
+const CTX_INDEX_UNREADABLE = 'служебный список не читается — ничего не изменено, подробности в «Логах»';
+function ctxmemTrashLoad() { return ctxListLoad(ctxmemTrashIndex()); }
 function ctxmemTrashSave(d) { fs.mkdirSync(CTXMEM_TRASH, { recursive: true }); atomicWriteSync(ctxmemTrashIndex(), JSON.stringify(d, null, 1)); }
 // Вырезать/вставить строку файла в MEMORY.md. Возвращает {line, pos} — что было вырезано и откуда.
-function ctxmemIndexCut(dir, file) {
+// ctxmemIndexFind только ищет (ничего не пишет); ctxmemIndexCut вырезает найденное.
+function ctxmemIndexFind(dir, file) {
   const f = path.join(dir, 'MEMORY.md');
   let raw; try { raw = fs.readFileSync(f, 'utf8'); } catch (_) { return { line: '', pos: -1 }; }
   const lines = raw.replace(/\r\n?/g, '\n').split('\n');
   const pos = lines.findIndex((l) => { const m = l.match(/^\s*[-*]\s*\[.+?\]\((.+?)\)/); return m && m[1].trim() === file; });
   if (pos < 0) return { line: '', pos: -1 };
-  const line = lines[pos];
-  lines.splice(pos, 1);
-  atomicWriteSync(f, lines.join('\n'));
-  return { line, pos };
+  return { line: lines[pos], pos, lines, f };
+}
+function ctxmemIndexCut(found) {
+  if (!found || found.pos < 0) return;
+  const lines = found.lines.slice();
+  lines.splice(found.pos, 1);
+  atomicWriteSync(found.f, lines.join('\n'));
 }
 function ctxmemIndexPut(dir, line, pos) {
   if (!line) return;
@@ -1917,23 +2002,38 @@ ipcMain.handle('ctxmem:delete', (_e, { projPath, scope, file } = {}) => {
   if (!dir) return { ok: false, error: 'нет каталога памяти' };
   const src = path.join(dir, file);
   if (!fs.existsSync(src)) return { ok: false, error: 'файла уже нет' };
+  // Порядок — от безопасного к необратимому: копия в корзину → запись о ней → строка индекса →
+  // исходник. Раньше строку MEMORY.md вырезали первой, и сбой копирования (ENOSPC) терял её
+  // насовсем, а сбой записи trash.json оставлял файл в корзине без записи — восстановить нечем.
+  const d = ctxmemTrashLoad();
+  if (!d) return { ok: false, error: CTX_INDEX_UNREADABLE };
+  const id = 'tm' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5);
+  const dst = path.join(CTXMEM_TRASH, id + '.md');
+  let copied = false, recorded = false, found = null;
   try {
     fs.mkdirSync(CTXMEM_TRASH, { recursive: true });
-    const id = 'tm' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5);
-    const dst = path.join(CTXMEM_TRASH, id + '.md');
     const text = fs.readFileSync(src, 'utf8');
-    const cut = ctxmemIndexCut(dir, file);          // сначала индекс — иначе при сбое останется запись без файла
-    fs.writeFileSync(dst, text);
-    fs.rmSync(src, { force: true });
-    const d = ctxmemTrashLoad();
+    found = ctxmemIndexFind(dir, file);
+    try { fs.writeFileSync(dst, text, { flag: 'wx' }); copied = true; }
+    catch (e) { if (!e || e.code !== 'EEXIST') copied = true; throw e; }   // недописанную копию уберёт откат; чужую (EEXIST) не трогаем
     const { front } = ctxmemFront(text);
-    d.list.push({ id, file, name: String(front.name || file.replace(/\.md$/i, '')), dir, base: base || '', scope: scope === 'home' ? 'home' : 'project', ts: Date.now(), chars: text.length, indexLine: cut.line, indexPos: cut.pos });
+    d.list.push({ id, file, name: String(front.name || file.replace(/\.md$/i, '')), dir, base: base || '', scope: scope === 'home' ? 'home' : 'project', ts: Date.now(), chars: text.length, indexLine: found.line, indexPos: found.pos });
     ctxmemTrashSave(d);
+    recorded = true;
+    ctxmemIndexCut(found);
+    fs.rmSync(src, { force: true });   // force: исходник, пропавший сам, не повод откатывать и терять копию
     return { ok: true, id, trashDir: CTXMEM_TRASH };
-  } catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
+  } catch (e) {
+    // Откат: файл остаётся на месте со своей строкой индекса, в корзине — ни копии, ни записи.
+    if (found && found.line) { try { ctxmemIndexPut(dir, found.line, found.pos); } catch (_) {} }   // не дублирует, если строка на месте
+    if (recorded) { try { const cur = ctxmemTrashLoad(); if (cur) { cur.list = cur.list.filter((r) => r.id !== id); ctxmemTrashSave(cur); } } catch (_) {} }
+    if (copied) { try { fs.rmSync(dst, { force: true }); } catch (_) {} }
+    return { ok: false, error: String((e && e.message) || e) };
+  }
 });
 ipcMain.handle('ctxmem:trash', () => {
   const d = ctxmemTrashLoad();
+  if (!d) return { ok: false, error: CTX_INDEX_UNREADABLE };
   // Помечаем записи, чей файл в корзине пропал (кто-то почистил папку руками) — восстановить их нечем.
   const list = d.list.map((r) => ({ ...r, gone: !fs.existsSync(path.join(CTXMEM_TRASH, r.id + '.md')) })).sort((a, b) => b.ts - a.ts);
   return { ok: true, dir: CTXMEM_TRASH, list };
@@ -2163,6 +2263,10 @@ ipcMain.handle('ctxfs:write', (_e, { scope, projPath, rel, text } = {}) => {
   if (!abs) return { ok: false, error: 'путь вне разрешённой папки' };
   const body = String(text == null ? '' : text);
   if (Buffer.byteLength(body, 'utf8') > CTXFS_EDIT_MAX) return { ok: false, error: 'слишком большой текст' };
+  // Файл больше предела правки отдаётся только окнами (ctxfs:read) — целиком его у окна нет. Запись
+  // поверх такого файла — это текст одного окна вместо всего файла, то есть обрезка. Проверяем здесь,
+  // а не только во фронте: путей открыть редактор файла несколько.
+  try { if (fs.statSync(abs).size > CTXFS_EDIT_MAX) return { ok: false, error: 'файл больше 512 КБ — он открыт частями и правится только снаружи' }; } catch (_) { /* файла нет — создаём */ }
   try {
     fs.mkdirSync(path.dirname(abs), { recursive: true });
     const backup = ctxbkPush(abs, 'claude-file');
@@ -2205,14 +2309,13 @@ ipcMain.handle('ctxmem:save', (_e, { projPath, scope, file, text } = {}) => {
 const CTXBK_DIR = path.join(os.homedir(), '.claude', 'custom-backups');
 const CTXBK_KEEP = 10;
 const ctxbkIndex = () => path.join(CTXBK_DIR, 'index.json');
-function ctxbkLoad() {
-  try { const d = JSON.parse(fs.readFileSync(ctxbkIndex(), 'utf8')); if (d && Array.isArray(d.list)) return d; } catch (_) {}
-  return { list: [] };
-}
+function ctxbkLoad() { return ctxListLoad(ctxbkIndex()); }   // null — индекс не читается (см. ctxListLoad)
 function ctxbkSave(d) { fs.mkdirSync(CTXBK_DIR, { recursive: true }); atomicWriteSync(ctxbkIndex(), JSON.stringify(d, null, 1)); }
 // Снять копию файла ПЕРЕД перезаписью. Нет файла (создаём новый) — бэкапить нечего.
 function ctxbkPush(file, kind) {
   let text; try { text = fs.readFileSync(file, 'utf8'); } catch (_) { return null; }
+  const d = ctxbkLoad();
+  if (!d) return null;   // индекс не читается: копия без записи в нём была бы недоступна из окна
   try {
     fs.mkdirSync(CTXBK_DIR, { recursive: true });
     const id = 'bk' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5);
@@ -2221,7 +2324,6 @@ function ctxbkPush(file, kind) {
     // 0o600 — владелец копию в любом случае читает (иначе восстановление с «копия пропала»).
     let mode; try { mode = (fs.statSync(file).mode & 0o777) | 0o600; } catch (_) {}
     fs.writeFileSync(path.join(CTXBK_DIR, id + '.bak'), text, mode == null ? undefined : { mode });
-    const d = ctxbkLoad();
     d.list.push({ id, file, kind: kind || '', ts: Date.now(), chars: text.length });
     // ротация: у каждого пути остаются CTXBK_KEEP свежих копий
     const mine = d.list.filter((r) => r.file === file).sort((a, b) => b.ts - a.ts);
@@ -2235,6 +2337,7 @@ function ctxbkPush(file, kind) {
 }
 ipcMain.handle('ctxbk:list', (_e, { file } = {}) => {
   const d = ctxbkLoad();
+  if (!d) return { ok: false, error: CTX_INDEX_UNREADABLE };
   const list = d.list
     .filter((r) => !file || r.file === file)
     .map((r) => ({ ...r, gone: !fs.existsSync(path.join(CTXBK_DIR, r.id + '.bak')) }))
@@ -2243,6 +2346,7 @@ ipcMain.handle('ctxbk:list', (_e, { file } = {}) => {
 });
 ipcMain.handle('ctxbk:read', (_e, { id } = {}) => {
   const d = ctxbkLoad();
+  if (!d) return { ok: false, error: CTX_INDEX_UNREADABLE };
   const rec = d.list.find((r) => r.id === id);
   if (!rec) return { ok: false, error: 'копии нет в списке' };
   try { return { ok: true, text: fs.readFileSync(path.join(CTXBK_DIR, id + '.bak'), 'utf8'), rec }; }
@@ -2252,6 +2356,7 @@ ipcMain.handle('ctxbk:read', (_e, { id } = {}) => {
 // поэтому «откатил и передумал» не теряет текущую версию).
 ipcMain.handle('ctxbk:restore', (_e, { id } = {}) => {
   const d = ctxbkLoad();
+  if (!d) return { ok: false, error: CTX_INDEX_UNREADABLE };
   const rec = d.list.find((r) => r.id === id);
   if (!rec) return { ok: false, error: 'копии нет в списке' };
   let text; try { text = fs.readFileSync(path.join(CTXBK_DIR, id + '.bak'), 'utf8'); } catch (_) { return { ok: false, error: 'копия пропала с диска' }; }
@@ -2265,21 +2370,30 @@ ipcMain.handle('ctxbk:restore', (_e, { id } = {}) => {
 
 ipcMain.handle('ctxmem:restore', (_e, { id } = {}) => {
   const d = ctxmemTrashLoad();
+  if (!d) return { ok: false, error: CTX_INDEX_UNREADABLE };
   const rec = d.list.find((r) => r.id === id);
   if (!rec) return { ok: false, error: 'записи нет в корзине' };
   const src = path.join(CTXMEM_TRASH, rec.id + '.md');
   if (!fs.existsSync(src)) return { ok: false, error: 'файл из корзины пропал — восстанавливать нечего' };
   const dst = path.join(rec.dir, rec.file);
   if (fs.existsSync(dst)) return { ok: false, error: 'файл с таким именем уже есть — сначала разберитесь с ним' };
-  try {
-    fs.mkdirSync(rec.dir, { recursive: true });
-    fs.writeFileSync(dst, fs.readFileSync(src, 'utf8'));
-    ctxmemIndexPut(rec.dir, rec.indexLine, rec.indexPos);
-    fs.rmSync(src, { force: true });
-    d.list = d.list.filter((r) => r.id !== id);
-    ctxmemTrashSave(d);
-    return { ok: true, file: dst };
-  } catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
+  let text;
+  try { text = fs.readFileSync(src, 'utf8'); } catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
+  // wx: файл не должен появиться между проверкой выше и записью. Недописанный (ENOSPC) убираем, иначе
+  // повтор упирался бы в «файл с таким именем уже есть», а в нём — обрезок.
+  try { fs.mkdirSync(rec.dir, { recursive: true }); fs.writeFileSync(dst, text, { flag: 'wx' }); }
+  catch (e) {
+    if (e && e.code !== 'EEXIST') { try { fs.rmSync(dst, { force: true }); } catch (_) {} }
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+  try { ctxmemIndexPut(rec.dir, rec.indexLine, rec.indexPos); }
+  catch (e) { try { fs.rmSync(dst, { force: true }); } catch (_) {} return { ok: false, error: String((e && e.message) || e) }; }
+  // Файл и строка индекса уже на месте — дальше только уборка корзины. Не удалась запись trash.json —
+  // копию оставляем: запись о ней ещё жива, а файл без записи восстановить было бы нечем.
+  try { d.list = d.list.filter((r) => r.id !== id); ctxmemTrashSave(d); }
+  catch (e) { logger.log('warn', 'ctxmem', `restore: запись корзины не обновилась (${(e && e.message) || e})`); return { ok: true, file: dst }; }
+  try { fs.rmSync(src, { force: true }); } catch (_) {}
+  return { ok: true, file: dst };
 });
 
 // ---------------------------------------------------------------- «ИИ компания» (company)
@@ -2294,9 +2408,7 @@ const companyDir = path.join(storeDir, 'company');
 const companySafe = (s) => String(s).replace(/[^\w.-]/g, '_');
 const companyDataFile = (projId) => path.join(companyDir, companySafe(projId) + '.json');
 
-ipcMain.handle('company:getData', (_e, { projId } = {}) => {
-  try { return JSON.parse(fs.readFileSync(companyDataFile(projId), 'utf8')); } catch { return null; }
-});
+ipcMain.handle('company:getData', (_e, { projId } = {}) => readJsonForEdit(companyDataFile(projId), null));
 ipcMain.handle('company:setData', (_e, { projId, data } = {}) => {
   try {
     fs.mkdirSync(companyDir, { recursive: true });
@@ -2311,10 +2423,13 @@ ipcMain.handle('company:boardGet', (_e, { projPath } = {}) => {
 });
 // Разбор сабагента .claude/agents/<name>.md в роль (для отображения штата, в т.ч. нанятых директором).
 function companyParseRole(raw, file) {
-  const role = { name: file.replace(/\.md$/, ''), description: '', model: '', tools: '', prompt: (raw || '').trim(), source: 'disk' };
+  // Служебную метку модуля (см. COMPANY_ROLE_MARK) из промпта убираем: иначе роль, взятая с диска
+  // в штат, при следующем запуске записалась бы с меткой дважды, и так при каждом круге.
+  const unmark = (s) => s.split(COMPANY_ROLE_MARK).join('').trim();
+  const role = { name: file.replace(/\.md$/, ''), description: '', model: '', tools: '', prompt: unmark(raw || ''), source: 'disk' };
   const m = /^---\s*\n([\s\S]*?)\n---\s*\n?([\s\S]*)$/.exec(raw || '');
   if (m) {
-    role.prompt = m[2].trim();
+    role.prompt = unmark(m[2]);
     for (const ln of m[1].split('\n')) {
       const kv = /^([A-Za-z_]+):\s*(.*)$/.exec(ln.trim());
       if (!kv) continue;
@@ -2338,12 +2453,14 @@ ipcMain.handle('company:listRoles', (_e, { projPath } = {}) => {
     return { roles };
   } catch { return { roles: [] }; }
 });
-// Роль штата → markdown-сабагент Claude.
+// Роль штата → markdown-сабагент Claude. Метка в конце отличает файл, созданный модулем, от
+// собственного субагента человека с тем же именем (reviewer, coder — имена ходовые).
+const COMPANY_ROLE_MARK = '<!-- lite-company: managed by LiteEditor (AI company module); editing the staff there overwrites this file -->';   // латиницей: служебная метка, не текст интерфейса
 function companyRoleMd(role) {
   const L = ['---', 'name: ' + companySafe(role.name), 'description: ' + JSON.stringify(role.description || '')];
   if (role.model) L.push('model: ' + role.model);
   if ((role.tools || '').trim()) L.push('tools: ' + role.tools.trim());
-  L.push('---', '', (role.prompt || '').trim(), '');
+  L.push('---', '', (role.prompt || '').trim(), '', COMPANY_ROLE_MARK, '');
   return L.join('\n');
 }
 // Система-промпт директора: роль, цель, команда, правила доски, право нанимать, память компании.
@@ -2379,10 +2496,18 @@ function companyDirectorPrompt(goal, roles, notes) {
 // Память компании (.lite/company/notes.md) и обзор изменений (git diff --stat) — отдельные каналы.
 function companyNotesPath(projPath) { return path.join(projPath, '.lite', 'company', 'notes.md'); }
 ipcMain.handle('company:notesGet', (_e, { projPath } = {}) => {
-  try { return { text: fs.readFileSync(companyNotesPath(projPath), 'utf8') }; } catch { return { text: '' }; }
+  try { return { text: fs.readFileSync(companyNotesPath(projPath), 'utf8') }; }
+  catch (e) { return e && e.code === 'ENOENT' ? { text: '' } : { text: '', error: String((e && e.message) || e) }; }   // не прочиталось — не «пусто»
 });
-ipcMain.handle('company:notesSet', (_e, { projPath, text } = {}) => {
+// Память дописывает и директор по итогам прогона. expect — то, что показало окно: если файл с тех пор
+// изменился, запись поверх стёрла бы дописанное, поэтому отказываем (окно спросит, перезаписывать ли).
+ipcMain.handle('company:notesSet', (_e, { projPath, text, expect } = {}) => {
   try {
+    if (typeof expect === 'string') {
+      let cur = '';
+      try { cur = fs.readFileSync(companyNotesPath(projPath), 'utf8'); } catch (e) { if (!e || e.code !== 'ENOENT') throw e; }
+      if (cur !== expect) return { ok: false, stale: true, error: 'память изменилась на диске, пока окно было открыто' };
+    }
     fs.mkdirSync(path.dirname(companyNotesPath(projPath)), { recursive: true });
     atomicWriteSync(companyNotesPath(projPath), String(text || ''));
     return { ok: true };
@@ -2416,15 +2541,27 @@ ipcMain.on('company:run', (e, { reqId, projPath, goal, roles, director, limitUsd
   let projStat = null;
   try { projStat = fs.statSync(projPath); } catch (_) { /* ниже */ }
   if (!projStat || !projStat.isDirectory()) { safeSend(sender, 'company:error', { reqId, error: `каталог проекта не найден: ${projPath}` }); return; }
-  // материализуем штат в .claude/agents/ (нативные сабагенты)
+  // материализуем штат в .claude/agents/ (нативные сабагенты). Файл без нашей метки — собственный
+  // субагент человека (у многих есть свой reviewer.md): его не трогаем, Claude возьмёт его как есть.
+  // Раньше запуск молча затирал такой файл ролью по умолчанию — без копии.
+  const kept = [];
   try {
     const agDir = path.join(projPath, '.claude', 'agents');
     fs.mkdirSync(agDir, { recursive: true });
     for (const r of (roles || [])) {
       if (!r || !r.name) continue;
-      atomicWriteSync(path.join(agDir, companySafe(r.name) + '.md'), companyRoleMd(r));
+      const f = path.join(agDir, companySafe(r.name) + '.md');
+      let cur = null;
+      try { cur = fs.readFileSync(f, 'utf8'); }
+      catch (e) { if (!e || e.code !== 'ENOENT') { kept.push(companySafe(r.name)); continue; } }   // файла нет — создаём; не прочитался — не трогаем
+      if (cur != null && !cur.includes(COMPANY_ROLE_MARK)) { kept.push(companySafe(r.name)); continue; }
+      const md = companyRoleMd(r);
+      if (cur !== md) atomicWriteSync(f, md);
     }
   } catch (err) { safeSend(sender, 'company:error', { reqId, error: 'не записать роли: ' + (err.message || err) }); return; }
+  if (kept.length) {
+    safeSend(sender, 'company:event', { reqId, ev: { type: 'lite-note', text: i18n.t('В .claude/agents уже есть свои файлы ролей: {0} — они не перезаписаны, работают как есть', kept.join(', ')) } });
+  }
 
   let notes = '';
   if (memoryOn) { try { notes = fs.readFileSync(companyNotesPath(projPath), 'utf8'); } catch (_) {} }
@@ -2461,7 +2598,8 @@ ipcMain.on('company:run', (e, { reqId, projPath, goal, roles, director, limitUsd
   child.stderr.on('data', (c) => { bump(); errOut += c.toString('utf8'); });
   child.stdin.on('error', () => {}); // claude не стартовал → async EPIPE на stdin не должен ронять main
   child.on('error', (err) => {
-    if (!companyReqs.has(reqId)) return; companyReqs.delete(reqId); clearTimeout(idle);
+    clearTimeout(idle);
+    if (!companyReqs.has(reqId)) return; companyReqs.delete(reqId);
     safeSend(sender, 'company:error', { reqId, error: '«claude» не найден/не запустился: ' + (err.message || err) });
   });
   child.on('close', (code, signal) => {
@@ -2511,6 +2649,12 @@ function ctxSeenWrite(projId, text) {
   try { fs.mkdirSync(ctxAgentDir(projId), { recursive: true }); atomicWriteSync(ctxSeenFile(projId), String(text == null ? '' : text)); } catch (_) {}
 }
 function ctxReadFileSafe(f) { try { return fs.readFileSync(f, 'utf8'); } catch (_) { return null; } }
+// Для самого CLAUDE.md «не прочитался» ≠ «нет файла»: иначе канва открывалась пустой, а сохранение
+// шло веткой «Создание файла» и записывало пару строк поверх настоящего (недоступного на чтение) файла.
+function ctxReadTarget(f) {
+  try { return { text: fs.readFileSync(f, 'utf8') }; }
+  catch (e) { return e && e.code === 'ENOENT' ? { text: null } : { text: null, error: String((e && e.message) || e) }; }
+}
 const ctxTarget = (projPath) => path.join(projPath, CTX_FILE);
 function ctxHash(s) { let h = 0; const str = String(s || ''); for (let i = 0; i < str.length; i++) h = (h * 31 + str.charCodeAt(i)) | 0; return h + ':' + str.length; }
 
@@ -2539,10 +2683,15 @@ function ctxSaveGraph(projId, graph) {
 }
 
 // --- История версий --------------------------------------------------------------------------
+// Для правки: битый список откладывается рядом (ctxListLoad), нечитаемый — исключение. Раньше и то
+// и другое давало пустой список, и первая же правка затирала записи всех версий, включая залоченные.
 function ctxLoadPoints(projId) {
-  try { const p = JSON.parse(fs.readFileSync(ctxPointsFile(projId), 'utf8')); if (p && Array.isArray(p.list)) return p; } catch (_) {}
-  return { list: [] };
+  const p = ctxListLoad(ctxPointsFile(projId));
+  if (!p) throw new Error(CTX_INDEX_UNREADABLE);
+  return p;
 }
+// Для показа: нечитаемый список — просто пустой, ничего не пишем.
+function ctxPointsList(projId) { const p = ctxListLoad(ctxPointsFile(projId)); return p ? p.list : []; }
 function ctxSavePoints(projId, p) { fs.mkdirSync(ctxAgentDir(projId), { recursive: true }); atomicWriteSync(ctxPointsFile(projId), JSON.stringify(p)); }
 // Ротация: лимит считается ТОЛЬКО по незалоченным. Залоченные не удаляются и в счёт не идут —
 // это и есть «отложить версию от ротации», о чём просил владелец.
@@ -2569,7 +2718,9 @@ function ctxAddPoint(projId, name, content, opts = {}) {
 ipcMain.handle('ctx:state', (_e, { projId, projPath } = {}) => {
   if (!projId || !projPath) return { ok: false, error: 'bad args' };
   const file = ctxTarget(projPath);
-  const text = ctxReadFileSafe(file);
+  const rd = ctxReadTarget(file);
+  if (rd.error) return { ok: false, error: rd.error };
+  const text = rd.text;
   let mtime = 0; try { mtime = fs.statSync(file).mtimeMs; } catch (_) {}
   const graph = ctxLoadGraph(projId) || { v: 2, layout: [], view: { x: 0, y: 0, z: 1 } };
   // Первое открытие после обновления модуля: снимаем копию ДО того, как канва что-то перестроит,
@@ -2590,14 +2741,16 @@ ipcMain.handle('ctx:state', (_e, { projId, projPath } = {}) => {
     }
   } catch (e) { logger.log('error', 'ctx', 'история версий недоступна: ' + ((e && e.message) || e)); }
   return { ok: true, file, exists: text != null, text: text == null ? '' : text,
-    chars: text ? text.length : 0, mtime, hash: ctxHash(text), graph, points: ctxLoadPoints(projId).list, keep: CTX_KEEP };
+    chars: text ? text.length : 0, mtime, hash: ctxHash(text), graph, points: ctxPointsList(projId), keep: CTX_KEEP };
 });
 // Запись файла ЦЕЛИКОМ + копия в историю. Фронт собирает текст из блоков сам — он знает порядок.
 ipcMain.handle('ctx:save', (_e, { projId, projPath, text, name, note, expectHash } = {}) => {
   if (!projId || !projPath) return { ok: false, error: 'bad args' };
   const file = ctxTarget(projPath);
   const body = String(text == null ? '' : text);
-  const cur = ctxReadFileSafe(file);
+  const rd = ctxReadTarget(file);
+  if (rd.error) return { ok: false, error: rd.error };
+  const cur = rd.text;
   // Файл успели изменить снаружи между чтением и записью — не затираем молча.
   // Проверяем и случай cur == null: ctxHash(null) === ctxHash('') === '0:0', поэтому «файла не было
   // и нет» проходит, а «файла не было, но он появился» честно упирается в stale.
@@ -2611,7 +2764,7 @@ ipcMain.handle('ctx:save', (_e, { projId, projPath, text, name, note, expectHash
     atomicWriteSync(file, body);
     ctxSeenWrite(projId, body);   // своя запись — не «правка снаружи»
     let mtime = 0; try { mtime = fs.statSync(file).mtimeMs; } catch (_) {}
-    return { ok: true, file, chars: body.length, hash: ctxHash(body), mtime, points: ctxLoadPoints(projId).list };
+    return { ok: true, file, chars: body.length, hash: ctxHash(body), mtime, points: ctxPointsList(projId) };
   } catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
 });
 // Только раскладка — файл не трогаем (перетаскивание блоков по канве его не меняет).
@@ -2622,14 +2775,16 @@ ipcMain.handle('ctx:layout', (_e, { projId, graph } = {}) => {
 });
 ipcMain.handle('ctx:points', (_e, { projId } = {}) => {
   if (!projId) return { ok: false, error: 'no projId' };
-  return { ok: true, list: ctxLoadPoints(projId).list, keep: CTX_KEEP };
+  const p = ctxListLoad(ctxPointsFile(projId));
+  if (!p) return { ok: false, error: CTX_INDEX_UNREADABLE };
+  return { ok: true, list: p.list, keep: CTX_KEEP };
 });
 ipcMain.handle('ctx:pointRead', (_e, { projId, id } = {}) => {
   const t = ctxReadFileSafe(ctxPointFile(projId, id));
   return { ok: t != null, text: t == null ? '' : t, exists: t != null, chars: t ? t.length : 0 };
 });
 ipcMain.handle('ctx:pointDelete', (_e, { projId, id } = {}) => {
-  const p = ctxLoadPoints(projId);
+  let p; try { p = ctxLoadPoints(projId); } catch (e) { return { ok: false, error: e.message }; }
   const pt = p.list.find((x) => x.id === id);
   if (!pt) return { ok: false, error: 'нет такой версии' };
   if (pt.locked) return { ok: false, error: 'версия защищена замком — сначала снимите замок' };
@@ -2639,7 +2794,7 @@ ipcMain.handle('ctx:pointDelete', (_e, { projId, id } = {}) => {
 });
 // Замок — обычный тумблер на ЛЮБОЙ версии (защита от ротации), а не эксклюзивный «Оригинал».
 ipcMain.handle('ctx:pointLock', (_e, { projId, id, locked } = {}) => {
-  const p = ctxLoadPoints(projId);
+  let p; try { p = ctxLoadPoints(projId); } catch (e) { return { ok: false, error: e.message }; }
   const pt = p.list.find((x) => x.id === id);
   if (!pt) return { ok: false, error: 'нет такой версии' };
   pt.locked = !!locked;
@@ -2648,7 +2803,7 @@ ipcMain.handle('ctx:pointLock', (_e, { projId, id, locked } = {}) => {
   return { ok: true, list: p.list };
 });
 ipcMain.handle('ctx:pointNote', (_e, { projId, id, note } = {}) => {
-  const p = ctxLoadPoints(projId);
+  let p; try { p = ctxLoadPoints(projId); } catch (e) { return { ok: false, error: e.message }; }
   const pt = p.list.find((x) => x.id === id);
   if (!pt) return { ok: false, error: 'нет такой версии' };
   pt.note = String(note || '').slice(0, 400);
@@ -2803,10 +2958,10 @@ ipcMain.handle('settings:export', async () => {
 });
 // Notes export/import: generic JSON file save/open (assembly + merge happen in the renderer,
 // which owns the project list and notesGet/notesSet). Mirrors the settings handlers above.
-ipcMain.handle('notes:exportFile', async (_e, { json, name }) => {
+ipcMain.handle('notes:exportFile', async (e, { json, name }) => {
   const safe = String(name || 'lite-notes').replace(/[/\\:*?"<>|]+/g, '_').slice(0, 80);
   const last = loadState().lastOpenDir;
-  const res = await dialog.showSaveDialog(mainWindow, {
+  const res = await dialog.showSaveDialog(senderWin(e) || mainWindow, {   // зовут из окна модуля: с mainWindow диалог открывался за ним
     title: 'Экспорт заметок',
     defaultPath: path.join(last && fs.existsSync(last) ? last : os.homedir(), `${safe}_${backupStamp()}.json`),
     filters: [{ name: 'JSON', extensions: ['json'] }],
@@ -2818,8 +2973,8 @@ ipcMain.handle('notes:exportFile', async (_e, { json, name }) => {
     return { ok: true, file: res.filePath };
   } catch (e) { return { error: String(e.message || e) }; }
 });
-ipcMain.handle('notes:importFile', async () => {
-  const res = await dialog.showOpenDialog(mainWindow, {
+ipcMain.handle('notes:importFile', async (e) => {
+  const res = await dialog.showOpenDialog(senderWin(e) || mainWindow, {   // зовут из окна модуля: с mainWindow диалог открывался за ним
     title: 'Импорт заметок', properties: ['openFile'],
     filters: [{ name: 'JSON', extensions: ['json'] }], ...lastDirOpts(),
   });
@@ -2852,6 +3007,10 @@ ipcMain.handle('settings:import', async () => {
   if (!data || data._format !== 'lite-settings' || !data.store || typeof data.store !== 'object' || Array.isArray(data.store)) {
     return { error: 'Это не файл настроек LiteEditor.' };
   }
+  // Окна модулей держат свой снимок стора и пишут свои ключи из него: после импорта они затёрли бы
+  // импортированное старым. Поэтому: сперва их несохранённое (как при выходе), после записи — перезагрузка
+  // окон на новый стор.
+  if (!(await confirmDiscardUnsaved(mainWindow))) return { canceled: true };
   try {
     ensureStoreDir();
     // writeStoreKey logs+swallows its own errors, so track its boolean result here:
@@ -2871,6 +3030,7 @@ ipcMain.handle('settings:import', async () => {
     }
     if (data.windowState && typeof data.windowState === 'object') saveState(data.windowState);
     saveState({ lastOpenDir: path.dirname(file) });
+    for (const w of moduleWindows.values()) { try { if (!w.isDestroyed()) w.webContents.reload(); } catch (_) {} }
     // Surface partial failure instead of a false "success" so the renderer can warn the user.
     if (failedKeys.length || failedNotes) return { ok: true, partial: true, failedKeys, failedNotes, file };
     return { ok: true, file };
@@ -2965,9 +3125,10 @@ function createWindow() {
   mainWindow.on('resize', debounce(persist, 400));
   mainWindow.on('move', debounce(persist, 400));
   mainWindow.on('close', persist);
-  // Закрытие редактора закрывает все окна модулей (освобождение памяти). После этого
-  // window-all-closed штатно убивает PTY/db/rh и завершает приложение.
-  mainWindow.on('close', () => closeAllModuleWindows());
+  // Закрытие редактора закрывает все окна модулей (освобождение памяти) — сперва спросив их о
+  // несохранённом (guardMainWindowClose). После этого window-all-closed штатно убивает PTY/db/rh
+  // и завершает приложение.
+  guardMainWindowClose(mainWindow);
   mainWindow.on('maximize', () => sendTo(mainWindow, 'win:maximized', true));
   mainWindow.on('unmaximize', () => sendTo(mainWindow, 'win:maximized', false));
 
@@ -3063,7 +3224,9 @@ function saveModuleBounds(modId, win) {
   else { const b = win.getBounds(); all[modId] = { x: b.x, y: b.y, width: b.width, height: b.height, maximized: false }; }
   writeStoreKey('moduleWins', all);
 }
+let closingAllModules = false;     // closeAllModuleWindows() в процессе: набор окон не переписываем
 function broadcastModuleOpenSet() {
+  if (closingAllModules) return;
   const ids = [...moduleWindows.keys()];
   sendTo(mainWindow, 'module:openSet', { ids });
   // запоминаем набор открытых окон — чтобы переоткрыть его при следующем запуске редактора
@@ -3227,8 +3390,81 @@ function openModuleWindow(modId) {
   });
   broadcastModuleOpenSet();
 }
+// ── Выход из редактора при несохранённом в окнах модулей ──────────────────────────────────────
+// Закрытие редактора сносит окна модулей destroy() — мимо их dirty-guard (иначе выход упирался бы
+// в N диалогов по окнам). Поэтому перед сносом спрашиваем окна: модуль дописывает то, что можно
+// сохранить молча (автосейв вивера, документы с файлом, транскрипты AI-DB), и называет остальное —
+// безымянный документ, правку при конфликте с диском, файл удалённого хоста. Об этом спрашиваем
+// человека одним диалогом. Зависшее или ещё не загруженное окно ждём не дольше QUIT_CHECK_MS.
+const QUIT_CHECK_MS = 5000;
+let quitCheckSeq = 0;
+const quitCheckWaiters = new Map();   // id запроса → resolve
+ipcMain.on('win:quitCheckReply', (_e, { id, unsaved } = {}) => {
+  const done = quitCheckWaiters.get(id);
+  if (done) done(Array.isArray(unsaved) ? unsaved.map(String).slice(0, 20) : []);
+});
+function askModulesUnsaved() {
+  const wins = [...moduleWindows.values()].filter((w) => w && !w.isDestroyed());
+  return Promise.all(wins.map((w) => new Promise((resolve) => {
+    const id = ++quitCheckSeq;
+    const timer = setTimeout(() => done([]), QUIT_CHECK_MS);
+    function done(list) { clearTimeout(timer); quitCheckWaiters.delete(id); resolve({ win: w, unsaved: list }); }
+    quitCheckWaiters.set(id, done);
+    if (!sendTo(w, 'win:quitCheck', { id })) done([]);
+  }))).then((rs) => rs.filter((r) => r.unsaved.length));
+}
+// true — можно закрывать (несохранённого нет или человек согласился его бросить).
+async function confirmDiscardUnsaved(parent) {
+  const dirty = await askModulesUnsaved();
+  if (!dirty.length) return true;
+  const title = (w) => { try { return i18n.t(String(w.getTitle() || '').replace(/^LiteEditorAI\s*—\s*/, '')); } catch (_) { return ''; } };
+  /** @type {Electron.MessageBoxOptions} */
+  const opts = {
+    type: 'warning', title: 'LiteEditorAI',
+    message: i18n.t('В окнах модулей есть несохранённые правки'),
+    detail: dirty.map((d) => `${title(d.win)}: ${d.unsaved.join(', ')}`).join('\n') + '\n\n' + i18n.t('Если закрыть сейчас, они пропадут.'),
+    buttons: [i18n.t('Вернуться к правкам'), i18n.t('Закрыть без сохранения')],
+    defaultId: 0, cancelId: 0, noLink: true,
+  };
+  const par = parent && !parent.isDestroyed() ? parent : null;
+  const { response } = await (par ? dialog.showMessageBox(par, opts) : dialog.showMessageBox(opts));
+  if (response === 1) return true;
+  const w = dirty[0].win;
+  if (w && !w.isDestroyed()) { if (w.isMinimized()) w.restore(); w.show(); w.focus(); }
+  return false;
+}
+// Выход через app.quit() (трей «Выход», Cmd+Q): после согласия выходим снова тем же путём, а не только
+// закрываем окно — на macOS приложение без окон иначе осталось бы жить.
+let quitViaApp = false;
+app.on('before-quit', () => { quitViaApp = true; });
+function guardMainWindowClose(win) {
+  let approved = false, checking = false;
+  win.on('close', (e) => {
+    const live = [...moduleWindows.values()].some((w) => w && !w.isDestroyed());
+    if (approved || !live) { closeAllModuleWindows(); return; }
+    e.preventDefault();
+    if (checking) return;
+    checking = true;
+    confirmDiscardUnsaved(win).then((ok) => {
+      checking = false;
+      const viaApp = quitViaApp; quitViaApp = false;
+      if (!ok || win.isDestroyed()) return;
+      approved = true;
+      // Уже согласовано — сносим окна модулей сразу: app.quit() закрывал бы их поодиночке, и dirty-guard
+      // окна (preventDefault в его 'close') отменил бы выход повторно.
+      closeAllModuleWindows();
+      if (viaApp) app.quit(); else win.close();
+    }, () => { checking = false; quitViaApp = false; });
+  });
+}
+// destroy() поднимает 'closed' синхронно, и обработчик каждого окна записывал в __open остаток карты:
+// к концу выхода там оставался [] — и следующий запуск не переоткрывал ни одного окна. Набор на момент
+// выхода уже лежит в сторе (пишется на каждое открытие/закрытие), поэтому здесь его просто не трогаем.
 function closeAllModuleWindows() {
-  for (const w of [...moduleWindows.values()]) { try { if (w && !w.isDestroyed()) w.destroy(); } catch (_) {} }
+  closingAllModules = true;
+  try {
+    for (const w of [...moduleWindows.values()]) { try { if (w && !w.isDestroyed()) w.destroy(); } catch (_) {} }
+  } finally { closingAllModules = false; }
   moduleWindows.clear();
 }
 
@@ -3382,7 +3618,11 @@ function createTray() {
 // GPU/utility child processes dying (the other half of a "trap int3" crash).
 app.on('child-process-gone', (_e, d) =>
   logger.log(d && d.reason === 'clean-exit' ? 'info' : 'error', 'child-process-gone', JSON.stringify(d)));
-app.on('before-quit', () => { try { errledger.flush(); } catch (_) {} stopSyncDaemon(); logger.log('info', 'app', 'before-quit'); });
+app.on('before-quit', () => { logger.log('info', 'app', 'before-quit'); });
+// Уборка — на will-quit, а не на before-quit: выход может быть отменён (окно с несохранённым,
+// guardMainWindowClose), и демон синхронизации, погашенный на before-quit, до конца сессии
+// уже не поднимался бы (syncDaemonStopping не сбрасывается).
+app.on('will-quit', () => { try { errledger.flush(); } catch (_) {} stopSyncDaemon(); });
 
 app.whenReady().then(() => {
   // Язык интерфейса — до создания окон: рендерер забирает словарь синхронно при старте.
@@ -3507,10 +3747,10 @@ ipcMain.handle('pomodoro:skip', () => { if (POMO.running) pomoAdvance(true); ret
 ipcMain.handle('pomodoro:getState', () => pomoSnapshot());
 ipcMain.handle('pomodoro:history', () => readPomoLog());
 // Экспорт/импорт своих техник (JSON-файл через системный диалог).
-ipcMain.handle('pomodoro:exportFile', async (_e, { json, name } = {}) => {
+ipcMain.handle('pomodoro:exportFile', async (e, { json, name } = {}) => {
   const safe = String(name || 'lite-pomodoro').replace(/[/\\:*?"<>|]+/g, '_').slice(0, 80);
   const last = loadState().lastOpenDir;
-  const res = await dialog.showSaveDialog(mainWindow, {
+  const res = await dialog.showSaveDialog(senderWin(e) || mainWindow, {   // зовут из окна модуля: с mainWindow диалог открывался за ним
     title: 'Экспорт техник помодоро',
     defaultPath: path.join(last && fs.existsSync(last) ? last : os.homedir(), `${safe}_${backupStamp()}.json`),
     filters: [{ name: 'JSON', extensions: ['json'] }],
@@ -3519,8 +3759,8 @@ ipcMain.handle('pomodoro:exportFile', async (_e, { json, name } = {}) => {
   try { atomicWriteSync(res.filePath, String(json)); saveState({ lastOpenDir: path.dirname(res.filePath) }); return { ok: true, file: res.filePath }; }
   catch (e) { return { ok: false, error: String(e.message || e) }; }
 });
-ipcMain.handle('pomodoro:importFile', async () => {
-  const res = await dialog.showOpenDialog(mainWindow, {
+ipcMain.handle('pomodoro:importFile', async (e) => {
+  const res = await dialog.showOpenDialog(senderWin(e) || mainWindow, {   // зовут из окна модуля: с mainWindow диалог открывался за ним
     title: 'Импорт техник помодоро', properties: ['openFile'],
     filters: [{ name: 'JSON', extensions: ['json'] }], ...lastDirOpts(),
   });
@@ -3631,6 +3871,7 @@ ipcMain.handle('rh:fsOpenInViewer', async (_e, { id, path: p } = {}) => {
   try {
     const r = await rhApi.readFile(id, p);
     if (!r || r.error) return { ok: false, error: (r && r.error) || 'не удалось прочитать файл' };
+    if (r.notUtf8) return { ok: false, error: 'Файл не в кодировке UTF-8 — правка в вивере испортила бы его. Скачайте файл' };
     if (r.binary) return { ok: false, error: 'Бинарный файл — в вивере не редактируется' };
     const file = stageTextForViewer(path.posix.basename(String(p || '')) || 'remote.txt', r.content || '');
     remoteViewerFiles.set(file, { rhId: id, remotePath: p });
@@ -3759,7 +4000,12 @@ function trayMenu() {
   return Menu.buildFromTemplate([
     { label: i18n.t('Показать LiteEditor'), click: showWindow },
     { type: 'separator' },
-    { label: i18n.t('Выход'), click: () => app.quit() },
+    // Через закрытие окна редактора: оно одно спросит окна модулей о несохранённом. app.quit() начал бы
+    // закрывать окна модулей поодиночке, и каждое со своим dirty-guard показало бы свой диалог.
+    { label: i18n.t('Выход'), click: () => {
+      const live = [...moduleWindows.values()].some((w) => w && !w.isDestroyed());
+      if (live && mainWindow && !mainWindow.isDestroyed()) { quitViaApp = true; mainWindow.close(); } else app.quit();
+    } },
   ]);
 }
 function setTrayMenu() { if (tray) { try { tray.setContextMenu(trayMenu()); } catch (_) {} } }
@@ -4006,7 +4252,9 @@ ipcMain.handle('monitor:sample', () => {
   try { if (mainWindow && !mainWindow.isDestroyed()) pidLabel.set(mainWindow.webContents.getOSProcessId(), { label: 'Главное окно', kind: 'window' }); } catch (_) {}
   for (const [modId, w] of moduleWindows) {
     if (!w || w.isDestroyed()) continue;
-    try { pidLabel.set(w.webContents.getOSProcessId(), { label: 'Окно: ' + (MODULE_TITLES[modId] || modId), kind: 'window' }); } catch (_) {}
+    // Заголовок окна — запасной источник имени: словарь выше знает не все модули (sitemon, voice, kafka…).
+    const title = MODULE_TITLES[modId] || String(w.getTitle() || '').replace(/^LiteEditorAI\s*—\s*/, '') || modId;
+    try { pidLabel.set(w.webContents.getOSProcessId(), { label: 'Окно: ' + title, kind: 'window' }); } catch (_) {}
   }
   const TYPE_RU = { GPU: 'GPU', Utility: 'Служебный', Browser: 'Ядро (main)', Tab: 'Renderer', Pepper: 'Плагин' };
   const electron = (app.getAppMetrics() || []).map((m) => {
@@ -4091,7 +4339,9 @@ function ensureKdbx() {
 }
 let kpDb = null; let kpClipTimer = null; let kpClipClear = null;
 let kpDbFile = null, kpDbName = null; // путь/имя открытой базы (status + запись новых записей)
+let kpDbStamp = null;                   // mtime+size файла на момент открытия/своей записи — ловим чужие правки
 const kpEntryById = new Map(); // uuid.id -> entry (живёт в main, в рендерер не отдаём)
+function kpFileStamp(f) { try { const s = fs.statSync(f); return s.mtimeMs + ':' + s.size; } catch (_) { return null; } }
 function kpVal(en, field) { const v = en.fields.get(field); return v && typeof v.getText === 'function' ? v.getText() : (v == null ? '' : String(v)); }
 // Метаданные записей открытой базы (секретные значения полей НЕ отдаём) + перестройка kpEntryById.
 function kpListEntries() {
@@ -4142,11 +4392,12 @@ ipcMain.handle('keepass:open', async (e, { path: file, password } = {}) => {
   try {
     if (!file || !fs.existsSync(file)) return { ok: false, error: 'Файл не найден' };
     const kw = ensureKdbx();
+    const stamp = kpFileStamp(file);   // до чтения: правка между чтением и stat иначе прошла бы незамеченной
     const buf = fs.readFileSync(file);
     const ab = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
     const cred = new kw.Credentials(kw.ProtectedValue.fromString(String(password || '')));
     const db = await kw.Kdbx.load(ab, cred);   // мастер-пароль использован только здесь, не сохраняем
-    kpDb = db; kpDbFile = file; kpDbName = path.basename(file);
+    kpDb = db; kpDbFile = file; kpDbName = path.basename(file); kpDbStamp = stamp;
     kpBindOwner(e.sender, db);
     return { ok: true, name: kpDbName, entries: kpListEntries() };
   } catch (err) {
@@ -4187,23 +4438,52 @@ ipcMain.handle('keepass:cred', (_e, { id } = {}) => {
 });
 // Новая запись в открытую базу (кнопка «в сейф» в формах подключений). Перед записью — бэкап
 // рядом с базой (страховка от порчи ценного файла), затем kdbxweb save → перезапись .kdbx.
-ipcMain.handle('keepass:add', async (_e, { title, username, password, url, notes } = {}) => {
+// Добавления — строго по одному. Двойной клик по «в сейф» давал два параллельных kpDb.save() над одним
+// объектом базы: каждое сохранение заново генерирует соли заголовка и долго считает KDF, и файл мог
+// получить заголовок одного прохода и шифротекст другого (не открывается), а запись, сохранённая
+// раньше, — лечь на диск последней и потерять вторую.
+let kpAddChain = Promise.resolve();
+ipcMain.handle('keepass:add', (_e, args) => {
+  const run = kpAddChain.then(() => kpAddEntry(args || {}));
+  kpAddChain = run.then(() => {}, () => {});
+  return run;
+});
+/** @param {{ title?: string, username?: string, password?: string, url?: string, notes?: string }} entry */
+async function kpAddEntry({ title, username, password, url, notes } = {}) {
   if (!kpDb || !kpDbFile) return { ok: false, closed: true, error: 'База не открыта' };
+  // База и её файл — на момент вызова: пока идёт save() (KDF — до секунды), человек может закрыть
+  // сейф или открыть другую базу, и запись по глобальным kpDb/kpDbFile легла бы содержимым прежней
+  // базы поверх файла новой.
+  const db = kpDb, file = kpDbFile;
   try {
     const kw = ensureKdbx();
-    const en = kpDb.createEntry(kpDb.getDefaultGroup());
+    // База в памяти — снимок на момент открытия. Если файл с тех пор сохранила другая программа
+    // (KeePassXC, синхронизация), запись снимка поверх молча стёрла бы её правки.
+    if (kpFileStamp(file) !== kpDbStamp) return { ok: false, error: 'Файл базы изменился на диске после открытия — откройте его заново, иначе запись затрёт чужие правки' };
+    const en = db.createEntry(db.getDefaultGroup());
     en.fields.set('Title', String(title || 'Без названия'));
     if (username) en.fields.set('UserName', String(username));
     if (password) en.fields.set('Password', kw.ProtectedValue.fromString(String(password)));
     if (url) en.fields.set('URL', String(url));
     if (notes) en.fields.set('Notes', String(notes));
-    try { fs.copyFileSync(kpDbFile, kpDbFile + '.lite-bak'); } catch (_) {} // best-effort бэкап
-    const ab = await kpDb.save();
-    atomicWriteSync(kpDbFile, Buffer.from(ab));   // не обычный writeFile: обрыв посреди записи убил бы .kdbx целиком
-    kpListEntries(); // перестроить карту id → entry (включая новую запись)
+    try { fs.copyFileSync(file, file + '.lite-bak'); } catch (_) {} // best-effort бэкап
+    try {
+      const ab = await db.save();
+      atomicWriteSync(file, Buffer.from(ab));   // не обычный writeFile: обрыв посреди записи убил бы .kdbx целиком
+    } catch (e2) {
+      // Не записалось — убираем запись из снимка в памяти: иначе её не было бы в файле, но она уехала бы
+      // в него со следующим «в сейф» уже без ведома человека.
+      const g = en.parentGroup, i = g ? g.entries.indexOf(en) : -1;
+      if (i >= 0) g.entries.splice(i, 1);
+      throw e2;
+    }
+    if (kpDb === db) {   // сейф за это время не закрыли и не сменили
+      kpDbStamp = kpFileStamp(file);
+      kpListEntries(); // перестроить карту id → entry (включая новую запись)
+    }
     return { ok: true };
   } catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
-});
+}
 
 // ---------------------------------------------------------------- заставка «матрица» (кросс-оконный простой)
 // Активность ЛЮБОГО окна (редактор + окна модулей) шлёт screensaver:activity → обновляем метку простоя
@@ -4560,6 +4840,7 @@ function smMigrateOld(s) {
 }
 function smLoad() {
   const raw = readStoreKey('siteMon');
+  if (raw === undefined && storeReadFailed.has('siteMon')) storeSnapshotBroken.add('siteMon');   // держим «пусто» до перезапуска — не пишем его
   if (!Array.isArray(raw)) { smTargets = []; return; }
   smTargets = raw.map((x) => {
     if (x && Array.isArray(x.checks)) return { id: x.id || smNewId('t'), name: x.name, url: x.url, intervalSec: smClampInt(x.intervalSec), render: !!x.render, insecureTls: !!x.insecureTls, headers: x.headers || null, checks: x.checks.map((c) => Object.assign({}, c, { pend: null })), checking: false, nextAt: 0 };
@@ -4689,7 +4970,11 @@ ipcMain.handle('fs:readFile', async (_e, file) => {
     // Сокеты/FIFO/девайсы — не открываем: socket даёт ENXIO, а readFile FIFO повис бы навсегда.
     if (!stat.isFile()) return { error: 'Это не обычный файл (сокет/FIFO/каталог)' };
     if (stat.size > MAX_VIEW_BYTES) return { error: `Файл слишком большой (${Math.round(stat.size / 1024)} КБ)` };
-    return { content: await fs.promises.readFile(file, 'utf8') };
+    const buf = await fs.promises.readFile(file);
+    // Файл не в UTF-8 (windows-1251, latin1): в декодированном тексте вместо букв «�», и запись его назад
+    // (автосейв вивера через 400 мс после любой правки) уничтожала исходный текст безвозвратно. Флаг
+    // говорит вивера и модулям не давать такой файл править.
+    return isUtf8(buf) ? { content: buf.toString('utf8') } : { content: buf.toString('utf8'), notUtf8: true };
   } catch (err) { return { error: String(err.message || err) }; }
 });
 // Запись файла ЧЕЛОВЕКА: во временный файл-сосед, потом rename(2) поверх цели. rename атомарен в
@@ -4720,7 +5005,20 @@ async function writeFileCrashSafe(file, content) {
     await fs.promises.writeFile(target, content, 'utf8');
   }
 }
-ipcMain.handle('fs:writeFile', async (_e, { file, content }) => {
+// Записи ОДНОГО пути — строго по очереди прихода. Запись — это снимок истории, сосед и rename (плюс
+// заливка на хост), и у двух параллельных вызовов (автосейв и Ctrl+S «Обработки текста», два окна над
+// одним файлом) шаги разной длины: более ранний вызов мог завершиться последним, и на диске оставался
+// старый текст, а окно уже считало файл сохранённым. Две заливки по SFTP ещё и перемешивали бы байты.
+const fileWriteChains = new Map();   // абсолютный путь → хвост очереди записей
+function serialFileWrite(file, job) {
+  const key = path.resolve(String(file));
+  const run = (fileWriteChains.get(key) || Promise.resolve()).then(job, job);
+  const tail = run.then(() => {}, () => {});
+  fileWriteChains.set(key, tail);
+  tail.then(() => { if (fileWriteChains.get(key) === tail) fileWriteChains.delete(key); });
+  return run;
+}
+ipcMain.handle('fs:writeFile', (_e, { file, content }) => serialFileWrite(file, async () => {
   try {
     await histSnapshotFromDisk(file, 'save');   // локальная история: состояние ДО записи (best-effort)
     await writeFileCrashSafe(file, content);
@@ -4734,7 +5032,7 @@ ipcMain.handle('fs:writeFile', async (_e, { file, content }) => {
     }
     return { ok: true };
   } catch (err) { return { error: String(err.message || err) }; }
-});
+}));
 ipcMain.handle('fs:mkdir', async (_e, { parent, name }) => {
   const safe = safeChildName(name);                       // блокируем ../ и сепараторы (PC-3)
   if (!safe) return { error: 'недопустимое имя' };
@@ -4962,31 +5260,43 @@ ipcMain.handle('files:replace', async (_e, { root, query, opts, replacement, tar
     for (const ln of t.lines) job.lines.add(ln | 0);
   }
   let files = 0, lines = 0;
+  const skipped = [];   // файлы не в UTF-8 — не тронуты
   for (const t of jobs.values()) {
     const full = t.full;
-    let st; try { st = await fs.promises.stat(full); } catch { continue; }
-    if (!st.isFile() || st.size > FILES_SEARCH_FILE_MAX) continue;
-    let text; try { text = await fs.promises.readFile(full, 'utf8'); } catch { continue; }
-    if (text.includes('\0')) continue;
-    const rows = text.split('\n');
-    let touched = 0;
-    for (const ln of t.lines) {
-      const i = ln - 1;
-      if (i < 0 || i >= rows.length) continue;
-      re.lastIndex = 0;
-      const next = rows[i].replace(re, repl);
-      if (next !== rows[i]) { rows[i] = next; touched++; }
-    }
-    if (!touched) continue;
-    try {
-      // локальная история: состояние до замены — мимо троттла, иначе после автосейва <45 с назад
-      // замену по проекту было не откатить: версии «до» в истории не оставалось
-      await histSnapshot(full, text, 'save', { force: true });
-      await writeFileCrashSafe(full, rows.join('\n'));   // как и вивер: обрыв не оставляет обрезанный файл
-      files++; lines += touched;
-    } catch (err) { return { error: String(err.message || err) + ' (' + t.file + ')', files, lines }; }
+    // Прочитать-заменить-записать — в общей очереди записей пути (serialFileWrite): сохранение из вивера,
+    // пришедшее между чтением и записью, иначе затиралось бы заменой.
+    const res = await serialFileWrite(full, async () => {
+      let st; try { st = await fs.promises.stat(full); } catch { return null; }
+      if (!st.isFile() || st.size > FILES_SEARCH_FILE_MAX) return null;
+      let buf; try { buf = await fs.promises.readFile(full); } catch { return null; }
+      // Не UTF-8 (windows-1251 и т.п.): замена записала бы файл уже в UTF-8 с «�» вместо всех букв.
+      if (!isUtf8(buf)) return { skipped: true };
+      const text = buf.toString('utf8');
+      if (text.includes('\0')) return null;
+      const rows = text.split('\n');
+      let touched = 0;
+      for (const ln of t.lines) {
+        const i = ln - 1;
+        if (i < 0 || i >= rows.length) continue;
+        re.lastIndex = 0;
+        const next = rows[i].replace(re, repl);
+        if (next !== rows[i]) { rows[i] = next; touched++; }
+      }
+      if (!touched) return null;
+      try {
+        // локальная история: состояние до замены — мимо троттла, иначе после автосейва <45 с назад
+        // замену по проекту было не откатить: версии «до» в истории не оставалось
+        await histSnapshot(full, text, 'save', { force: true });
+        await writeFileCrashSafe(full, rows.join('\n'));   // как и вивер: обрыв не оставляет обрезанный файл
+        return { touched };
+      } catch (err) { return { error: String(err.message || err) }; }
+    });
+    if (!res) continue;
+    if (res.skipped) { skipped.push(t.file); continue; }
+    if (res.error) return { error: res.error + ' (' + t.file + ')', files, lines, skipped };
+    files++; lines += res.touched;
   }
-  return { ok: true, files, lines };
+  return { ok: true, files, lines, skipped };
 });
 ipcMain.handle('files:diffPair', async (_e, { a, b } = {}) => {
   if (!a || !b) return { error: 'нужны два файла' };
@@ -5111,7 +5421,9 @@ ipcMain.handle('gsearch:start', (e, { runId, query, opts, roots } = {}) => {
           if (fileHits) files++;
           if (total >= GSX_TOTAL_CAP) capped = true;
           flush();
-        }, () => run.cancelled || total >= GSX_TOTAL_CAP);
+        // Окно ушло (перезагрузка, закрытие) — обход всех проектов дальше вхолостую не гоняем. Проверкой,
+        // а не подпиской на 'destroyed': слушатель на каждый поиск копился бы на окне редактора.
+        }, () => { if (e.sender.isDestroyed()) run.cancelled = true; return run.cancelled || total >= GSX_TOTAL_CAP; });
       }
     } catch (err) { error = String((err && err.message) || err); }
     flush(true);
@@ -5592,14 +5904,15 @@ ipcMain.handle('audit:scan', async (_e, { root, opts }) => {
 });
 
 // Экспорт отчёта аудита в файл (md/json) через системный диалог сохранения.
-ipcMain.handle('audit:export', async (_e, { content, defaultName }) => {
+ipcMain.handle('audit:export', async (e, { content, defaultName }) => {
   try {
-    const r = await dialog.showSaveDialog({
+    // Родитель — окно «Аудита»: без него диалог открывался за окном модуля.
+    const r = await dialog.showSaveDialog(senderWin(e) || mainWindow, {
       defaultPath: defaultName || 'audit-report.md',
       filters: [{ name: 'Markdown', extensions: ['md'] }, { name: 'JSON', extensions: ['json'] }, { name: 'Все файлы', extensions: ['*'] }],
     });
     if (r.canceled || !r.filePath) return { canceled: true };
-    fs.writeFileSync(r.filePath, String(content == null ? '' : content));
+    atomicWriteSync(r.filePath, String(content == null ? '' : content));   // поверх существующего — без обрезки на ENOSPC
     return { ok: true, file: r.filePath };
   } catch (e) { return { error: String((e && e.message) || e) }; }
 });
@@ -6145,14 +6458,14 @@ ipcMain.handle('seo:devServers', async () => {
 });
 
 // Экспорт отчёта в файл (как audit:export).
-ipcMain.handle('seo:export', async (_e, { content, defaultName }) => {
+ipcMain.handle('seo:export', async (e, { content, defaultName }) => {
   try {
-    const r = await dialog.showSaveDialog({
+    const r = await dialog.showSaveDialog(senderWin(e) || mainWindow, {   // родитель — окно модуля, иначе диалог за ним
       defaultPath: defaultName || 'seo-report.md',
       filters: [{ name: 'Markdown', extensions: ['md'] }, { name: 'JSON', extensions: ['json'] }, { name: 'Все файлы', extensions: ['*'] }],
     });
     if (r.canceled || !r.filePath) return { canceled: true };
-    fs.writeFileSync(r.filePath, String(content == null ? '' : content));
+    atomicWriteSync(r.filePath, String(content == null ? '' : content));   // поверх существующего — без обрезки на ENOSPC
     return { ok: true, file: r.filePath };
   } catch (e) { return { error: String((e && e.message) || e) }; }
 });
