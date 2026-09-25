@@ -1101,7 +1101,7 @@ export function initStorage(host) {
     if (!curBucket) { toast('Сначала откройте бакет', { kind: 'err' }); return; }
     const bucket = curBucket, prefix = curPrefix; // куда РЕАЛЬНО грузим — для точечного рефреша по завершении
     // Объект с таким же ключом будет перезаписан безвозвратно — у S3 нет корзины, поэтому спрашиваем.
-    const existing = paths.map((p) => baseName(p)).filter((nm) => listing.files.some((f) => f.name === nm));
+    let existing = paths.map((p) => baseName(p)).filter((nm) => listing.files.some((f) => f.name === nm));
     const run = () => {
       for (const p of paths) {
         const name = baseName(p);
@@ -1114,7 +1114,17 @@ export function initStorage(host) {
       }
       paintTransfersBar();
     };
-    const start = () => {
+    const start = async () => {
+      // В окне — первая страница листинга (S3 отдаёт до 1000 ключей): остальные имена спрашиваем у
+      // хранилища, иначе одноимённый объект со следующей страницы перезаписался бы без вопроса.
+      if (listing.nextToken) {
+        const rest = paths.map((p) => baseName(p)).filter((nm) => !existing.includes(nm));
+        if (rest.length) {
+          const r = await lite.storage.exists(activeId, bucket, rest.map((nm) => prefix + nm)).catch((e) => ({ ok: false, error: String(e) }));
+          if (r && r.ok) existing = existing.concat((r.exists || []).map((k) => k.slice(prefix.length)));
+          else existing = existing.concat(rest);   // проверить не вышло — спрашиваем обо всех
+        }
+      }
       if (!existing.length) { run(); return; }
       const list = existing.slice(0, 5).join(', ') + (existing.length > 5 ? ` и ещё ${existing.length - 5}` : '');
       guardedConfirm('Перезаписать существующие объекты?',

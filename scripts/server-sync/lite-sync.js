@@ -90,13 +90,31 @@ const addon = loadAddon();
 
 // Одно соединение на все вызовы: без мультиплексирования каждый запуск тратил бы
 // секунды на рукопожатия, а демон дёргает сервер часто.
+// Сокет мультиплексора — в своём каталоге (0700), а не в общем /tmp: там его мог заранее создать
+// другой пользователь машины, и наши ssh подключались бы к ЕГО мастеру — он отдавал бы нам
+// подложные листинги, а по ним синхронизация удаляла бы файлы. %C — хеш параметров соединения:
+// короткое имя укладывается в предел длины пути unix-сокета.
+// ServerAlive: повисшее соединение (уснул ноутбук, сменилась сеть) обрывается за ~минуту, а не
+// держит spawnSync бесконечно — иначе демон навсегда считал проект «занятым».
+const MUX_DIR = path.join(STATE_DIR, 'ssh');
+// Лениво, перед первым ssh: модуль грузит и сам редактор (метка «sync» в плашке) — у тех, кто
+// синхронизацией не пользуется, каталогов в домашней папке появляться не должно.
+function ensureMuxDir() {
+  try { fs.mkdirSync(MUX_DIR, { recursive: true, mode: 0o700 }); fs.chmodSync(MUX_DIR, 0o700); } catch { /* нет прав — ssh сам скажет */ }
+}
 const SSH_OPTS = [
   '-C',
   '-o', 'BatchMode=yes',
+  '-o', 'ConnectTimeout=10',
+  '-o', 'ServerAliveInterval=15',
+  '-o', 'ServerAliveCountMax=4',
   '-o', 'ControlMaster=auto',
-  '-o', `ControlPath=${path.join(os.tmpdir(), 'lite-sync-%r@%h:%p')}`,
+  '-o', `ControlPath=${path.join(MUX_DIR, 'cm-%C')}`,
   '-o', 'ControlPersist=120s',
 ];
+// Те же опции — и rsync (-e): без них он ходил отдельным ssh без BatchMode и keepalive. Кавычки —
+// по правилам rsync (он сам режет строку по пробелам, понимает кавычки, но не обратную косую).
+const RSYNC_SSH = ['ssh', ...SSH_OPTS].map((a) => (/[\s']/.test(a) && !a.includes('"') ? `"${a}"` : a)).join(' ');
 
 // Строка, безопасная для оболочки. JSON.stringify для этого не годится: он даёт
 // ДВОЙНЫЕ кавычки, а внутри них sh по-прежнему разворачивает подстановку команд —
@@ -108,6 +126,7 @@ function shq(value) {
 // soft: сервера нет — вернуть null вместо остановки. Годится только для работы,
 // без которой можно обойтись (уборка в корзине); обмен файлами без сервера бессмыслен.
 function ssh(target, command, { input = null, encoding = 'utf8', maxBuffer = 256 * 1024 * 1024, soft = false } = {}) {
+  ensureMuxDir();
   const res = spawnSync('ssh', [...SSH_OPTS, target, command], { input, encoding: /** @type {BufferEncoding} */ (encoding), maxBuffer });
   if (res.status !== 0) {
     if (soft) return null;
@@ -128,6 +147,9 @@ function parseListing(raw) {
     if (!record) continue;
     const [type, filePath, size, mtime] = record.split('\t');
     if (!filePath) continue;
+    // Имя с переводом строки не пройдёт через списки rsync --files-from и удаления построчно:
+    // «a⏎src» там превратилось бы в два пути, и удаление задело бы чужой каталог «src». Не трогаем такое.
+    if (filePath.includes('\n')) continue;
     files.set(filePath, {
       type,                               // f — файл, d — каталог, l — ссылка
       size: Number(size),
@@ -157,8 +179,18 @@ function listLocal(dir) {
   return parseListing(res.stdout);
 }
 
+// Каталога на сервере нет или он не открывается — это НЕ «на сервере всё удалили». Раньше `|| true`
+// превращал такой отказ в пустой листинг, и сверка уносила в корзину весь проект на ПК.
+const NODIR_MARK = '__LITE_SYNC_NODIR__';
+/** @returns {Map<string, any> & { missing?: boolean }} */
+function parseRemoteListing(raw) {
+  /** @type {Map<string, any> & { missing?: boolean }} */
+  const files = parseListing(raw === NODIR_MARK ? '' : raw);
+  if (raw === NODIR_MARK) files.missing = true;
+  return files;
+}
 function listRemote(target, dir) {
-  return parseListing(ssh(target, `cd ${shq(dir)} 2>/dev/null && ${FIND} || true`));
+  return parseRemoteListing(ssh(target, `cd ${shq(dir)} 2>/dev/null || { printf '%s' ${NODIR_MARK}; exit 0; }; ${FIND} || true`));
 }
 
 // Дешёвый пульс: если сводка не изменилась, полный список тянуть незачем.
@@ -190,7 +222,42 @@ function saveManifest(projectPath, files, keepConflicts) {
   // спорные файлы намеренно оставляем в прежнем виде: пока их не разрулили,
   // они должны определяться как спорные и в следующий раз
   for (const [key, value] of keepConflicts) plain[key] = value;
-  fs.writeFileSync(file, JSON.stringify({ syncedAt: Date.now(), files: plain }, null, 0));
+  // через tmp + rename: оборванная запись оставила бы манифест битым, и следующий прогон считал бы
+  // синхронизацию первой
+  const tmp = `${file}.${process.pid}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify({ syncedAt: Date.now(), files: plain }, null, 0));
+  fs.renameSync(tmp, file);
+}
+
+// Забыть манифест: следующая сверка — первая, без удалений. Нужен, когда одна сторона заведена
+// заново (процедура подключения создала пустой каталог), — иначе старый манифест объявил бы
+// удалённым с той стороны всё, что в нём записано.
+function forgetManifest(projectPath) {
+  fs.rmSync(manifestPath(projectPath), { force: true });
+}
+
+// Одна сторона пуста целиком, а в манифесте файлы есть. Так выглядит не «человек удалил всё», а
+// несмонтированный диск (пустая точка монтирования), пропавший или переименованный каталог,
+// переустановленный сервер. Удаление по такому листингу унесло бы весь проект с другой стороны.
+// Направление, которое удалений в эту сторону не делает (push при пустом сервере, pull при
+// пустом ПК), не опасно и разрешено. Возвращает текст отказа или null.
+/**
+ * @param {Map<string, any>} local
+ * @param {Map<string, any> & { missing?: boolean }} remote
+ * @param {number} manifestSize
+ * @param {string} command
+ */
+function wipeRisk(local, remote, manifestSize, command) {
+  if (!manifestSize || command === 'status' || command === 'adopt') return null;
+  if (remote.size === 0 && command !== 'push') {
+    return `на сервере каталог проекта ${remote.missing ? 'не найден' : 'пуст'}, а до этого там было ${manifestSize} — по такому списку удалилось бы всё здесь. `
+      + 'Если сервер ещё не готов (диск, путь) — поправьте его. Если копию на сервере нужно создать заново — выполните push';
+  }
+  if (local.size === 0 && command !== 'pull') {
+    return `каталог проекта на ПК пуст, а до этого там было ${manifestSize} — по такому списку удалилось бы всё на сервере. `
+      + 'Проверьте, смонтирован ли диск. Если копию на ПК нужно восстановить с сервера — выполните pull';
+  }
+  return null;
 }
 
 // --------------------------------------------------------------- сравнение
@@ -283,9 +350,14 @@ function analyze(local, remote, manifest, prefer = null) {
 // --------------------------------------------------------------- передача
 
 function withFilesList(paths, action) {
-  const listFile = path.join(os.tmpdir(), `lite-sync-${process.pid}-${Math.abs(paths.length)}.list`);
-  fs.writeFileSync(listFile, `${paths.join('\n')}\n`);
-  try { return action(listFile); } finally { fs.rmSync(listFile, { force: true }); }
+  // Свой каталог (mkdtemp, 0700), а не предсказуемое имя в общем /tmp: туда другой пользователь мог
+  // заранее положить ссылку, и запись списка перезаписала бы файл, на который она указывает.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lite-sync-'));
+  const listFile = path.join(dir, 'files.list');
+  try {
+    fs.writeFileSync(listFile, `${paths.join('\n')}\n`);   // внутри try: при ENOSPC каталог тоже убирается
+    return action(listFile);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 }
 
 function trashDir(projectPath) {
@@ -299,6 +371,7 @@ function trashDir(projectPath) {
 const RSYNC_PARTIAL = new Set([23, 24]);
 
 function runRsync(args) {
+  ensureMuxDir();
   const res = spawnSync('rsync', args, { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
   if (res.status !== 0 && !RSYNC_PARTIAL.has(res.status)) {
     fail(`rsync не справился: ${(res.stderr || '').trim()}`);
@@ -328,7 +401,8 @@ function transfer({ direction, target, projectPath, paths, dry, remoteHome }) {
     : trashDir(projectPath);
 
   const send = (list, backupDir) => withFilesList(list, (listFile) => {
-    const args = ['-a', '--relative', '--files-from', listFile];
+    // --timeout: rsync сам обрывает обмен, по которому 5 минут не шло ни байта
+    const args = ['-a', '--relative', '--timeout=300', '-e', RSYNC_SSH, '--files-from', listFile];
     if (backupDir) args.push('--backup', `--backup-dir=${backupDir}`);
     if (dry) args.push('--dry-run');
     args.push(direction === 'push' ? localDir : remoteDir);
@@ -478,6 +552,8 @@ function main() {
   const local = listLocal(projectPath);
   const remote = listRemote(target, projectPath);
   const manifest = loadManifest(projectPath);
+  const risk = wipeRisk(local, remote, manifest.files.size, command);
+  if (risk) fail(risk);
   const plan = analyze(local, remote, manifest, prefer);
 
   console.log(`### файлов: здесь ${local.size}, на сервере ${remote.size}, в манифесте ${manifest.files.size}`);
@@ -649,4 +725,4 @@ if (require.main === module) {
   }
 }
 
-module.exports = { SyncError, validServer, readConfigFile, addon, STATE_DIR, listLocal, listRemote, parseListing, analyze, sideDelta, same, encodeName, remoteSummary, resolveTarget, ssh, shq, CLOCK_TOLERANCE_S, isAppendOnlyLog, transfer, pruneLocalTrash, duePrune, TRASH_KEEP_DAYS };
+module.exports = { SyncError, validServer, readConfigFile, addon, STATE_DIR, SSH_OPTS, ensureMuxDir, listLocal, listRemote, parseListing, parseRemoteListing, NODIR_MARK, wipeRisk, forgetManifest, manifestPath, analyze, sideDelta, same, encodeName, remoteSummary, resolveTarget, ssh, shq, CLOCK_TOLERANCE_S, isAppendOnlyLog, transfer, pruneLocalTrash, duePrune, TRASH_KEEP_DAYS };

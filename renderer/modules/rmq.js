@@ -1077,7 +1077,12 @@ export function initRmq(host) {
       const props = { delivery_mode: +dmSel.value };
       if (ctI.value.trim()) props.content_type = ctI.value.trim();
       const vhTarget = pre.vhost || vhost || (activeConn && activeConn.vhost) || '/'; // приоритет — vhost строки, из которой открыли
-      const r = await lite.rmq.publish(activeId, vhTarget, exSel.value, rk.value.trim(), payload.value, props);
+      // Кнопка — на время запроса выключена: двойной клик публиковал сообщение дважды (в бою — двойная обработка).
+      if (send.disabled) return;
+      send.disabled = true;
+      let r;
+      try { r = await lite.rmq.publish(activeId, vhTarget, exSel.value, rk.value.trim(), payload.value, props); }
+      finally { send.disabled = false; }
       if (r && r.ok) {
         rmqUi.pubHist = rmqUi.pubHist || {};
         const arr = rmqUi.pubHist[activeId] = rmqUi.pubHist[activeId] || [];

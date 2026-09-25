@@ -8,7 +8,8 @@
 //   Первая строка text = заголовок (всегда виден); остальное = тело.
 // Изоляция: всё из ядра — через host (activeProject/sendNoteToTerminal/applyLayoutSwap); UI-хелперы — из ui.js.
 // Счётчик «требует внимания» (просрочено + сегодня) считает ЯДРО по app:agendaChanged; тут лишь broadcast.
-import { el, icon, iconBtn, makeModal, showConfirm, toast } from '../ui.js';
+import { el, icon, iconBtn, makeModal, showConfirm, toast, guardDirtyClose } from '../ui.js';
+import { t } from '../i18n.js';
 
 const lite = window.lite;
 const GLOBAL_ID = '__global__';
@@ -102,7 +103,11 @@ export function createAgendaView(host) {
   let subView = (settings && settings.agendaView === 'month') ? 'month' : 'agenda'; // лента / месяц
   let monthCursor = null; // Date на 1-е число отображаемого месяца (null → текущий)
   let selectedDay = null; // 'YYYY-MM-DD' выбранный день в виде «Месяц»
-  let lastLocalSave = 0;  // время своей записи — чтобы не перерисовываться на эхо fs.watch (и не терять фокус)
+  // Что окно записало последним (JSON). Эхо своей записи (fs.watch в main шлёт agendaChanged всем окнам)
+  // узнаём по содержимому, а не по времени: раньше внешние изменения 1,5 с после своей записи
+  // пропускались целиком, и напоминание, поставленное агентом через MCP в это окно, затиралось
+  // следующей записью окна.
+  let lastSavedJson = null;
 
   // Куда смотрит вкладка: активный проект, иначе — общий список («Личные»).
   function target() {
@@ -110,19 +115,28 @@ export function createAgendaView(host) {
     return p ? { id: p.id, name: p.name, proj: p, kind: 'project' } : { id: GLOBAL_ID, name: 'Личные', kind: 'global' };
   }
 
+  // Файл напоминаний, который не прочитался (права, EMFILE — store:agendaGet отдаёт { error }). В него не
+  // пишем: раньше ошибка выглядела пустым списком, и первое же напоминание затирало все прежние.
+  let blockedId = null;
+  const readErr = (v) => (v && !Array.isArray(v) && typeof v === 'object' && v.error ? String(v.error) : null);
+  const blockedToast = (err) => toast(t('Не прочитать напоминания: {0} — список не изменится, пока файл не прочитается', err || '?'), { kind: 'err', ttl: 9000 });
   async function load(id) {
     const seq = ++loadSeq;
     let arr = await lite.store.agendaGet(id);
     if (seq !== loadSeq) return false;
+    const err = readErr(arr);
+    if (err) { items = []; loadedId = null; blockedId = id; blockedToast(err); return true; }
+    blockedId = null;
     if (!Array.isArray(arr)) arr = [];
-    items = arr.map(normalize);
+    items = arr.filter((r) => r && typeof r === 'object').map(normalize);
     loadedId = id;
     return true;
   }
   function save() {
     const id = loadedId || target().id; // на случай записи до завершения первой загрузки
+    if (id === blockedId) { blockedToast(); return false; }
     loadedId = id;
-    lastLocalSave = Date.now();
+    lastSavedJson = JSON.stringify(items);
     lite.store.agendaSet(id, items);
     try { lite.app.agendaChanged(id); } catch (_) {}
   }
@@ -132,7 +146,10 @@ export function createAgendaView(host) {
   // ---------------- модалка (новое/правка) ----------------
   function openModal(item) {
     const isNew = !item;
-    const { m, close } = makeModal(`
+    // Список, из которого открыли: пока модалка открыта, окно может перечитать файл (агент через MCP,
+    // тикер напоминаний) или уйти на другой проект — сохраняем туда и по id (см. notes.js openTaskModal).
+    const listId = loadedId;
+    const { overlay, m, close } = makeModal(`
       <h2>${isNew ? 'Новое напоминание' : 'Редактировать'}</h2>
       <textarea class="nt-modal-ta ag-modal-ta" placeholder="Что не забыть… Первая строка — заголовок."></textarea>
       <div class="ag-modal-grid">
@@ -166,7 +183,12 @@ export function createAgendaView(host) {
       if (cur && allDayIn.checked) atIn.value = cur.slice(0, 10);
     });
 
-    const commit = () => {
+    const snap = () => JSON.stringify([ta.value, atIn.value, allDayIn.checked, remindSel.value]);
+    const initial = snap();
+    guardDirtyClose(overlay, m, () => snap() !== initial, () => showConfirm('Закрыть без сохранения?', 'Набранное напоминание пропадёт.', 'Закрыть', close));
+    let committing = false;
+    const commit = async () => {
+      if (committing) return;
       const text = ta.value.trim();
       if (!text) { close(); return; }
       let at = null, allDay = !!allDayIn.checked;
@@ -175,13 +197,27 @@ export function createAgendaView(host) {
         if (!isNaN(d)) at = d.toISOString();
       } else { allDay = false; }
       const remind = remindSel.value || null;
-      if (isNew) {
-        items.unshift(normalize({ text, at, allDay, remind, done: false }));
-      } else {
-        item.text = text; item.at = at; item.allDay = allDay; item.remind = remind;
-        item.notifiedAt = null; // срок мог измениться → разрешить уведомить заново
+      const apply = (arr) => {
+        if (isNew) { arr.unshift(normalize({ text, at, allDay, remind, done: false })); return; }
+        let cur = arr.find((r) => r.id === item.id);
+        if (!cur) { cur = normalize(item); arr.unshift(cur); }   // удалили, пока правили, — правку не теряем
+        cur.text = text; cur.at = at; cur.allDay = allDay; cur.remind = remind;
+        cur.notifiedAt = null; // срок мог измениться → разрешить уведомить заново
+      };
+      if (!listId && target().id === blockedId) { blockedToast(); return; }   // модалка остаётся — текст не пропадает
+      if (!listId || loadedId === listId) { apply(items); save(); }
+      else {
+        committing = true;                               // окно ушло на другой список — пишем прямо в свой файл
+        try {
+          let arr = await lite.store.agendaGet(listId);
+          if (readErr(arr)) { blockedToast(readErr(arr)); return; }
+          arr = Array.isArray(arr) ? arr.filter((r) => r && typeof r === 'object').map(normalize) : [];
+          apply(arr);
+          await lite.store.agendaSet(listId, arr);
+          try { lite.app.agendaChanged(listId); } catch (_) {}
+        } finally { committing = false; }
       }
-      save(); close(); paint();
+      close(); paint();
     };
     m.querySelector('[data-swap]').onclick = () => applyLayoutSwap(ta);
     m.querySelector('[data-cancel]').onclick = () => close();
@@ -199,9 +235,12 @@ export function createAgendaView(host) {
     const atVal = bar.querySelector('[data-qdate]').value;
     const remind = bar.querySelector('[data-qremind]').value || null;
     if (!text) { toast('Введите текст'); return; }
+    if ((loadedId || target().id) === blockedId) { blockedToast(); return; }   // поле не чистим — текст не пропадает
     let at = null;
     if (atVal) { const d = new Date(atVal); if (!isNaN(d)) at = d.toISOString(); }
     items.unshift(normalize({ text, at, allDay: false, remind, done: false }));
+    // поля — пустыми: paint() переносит недописанный ввод через перерисовку, а этот уже записан
+    bar.querySelector('[data-qtext]').value = ''; bar.querySelector('[data-qdate]').value = ''; bar.querySelector('[data-qremind]').value = '';
     save(); paint();
   }
 
@@ -255,6 +294,9 @@ export function createAgendaView(host) {
     if (!container) return;
     const now = new Date();
     const t = target();
+    // Перерисовка (правка агентом через MCP, тикер) не должна стирать недописанную быструю запись.
+    const prevQ = container.querySelector('[data-qtext]'), prevD = container.querySelector('[data-qdate]'), prevR = container.querySelector('[data-qremind]');
+    const keep = prevQ ? { text: prevQ.value, date: prevD ? prevD.value : '', remind: prevR ? prevR.value : '', focus: document.activeElement === prevQ } : null;
     container.replaceChildren();
 
     // быстрый ввод
@@ -267,6 +309,7 @@ export function createAgendaView(host) {
     qtext.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); quickAdd(bar); } });
     qadd.addEventListener('click', () => quickAdd(bar));
     bar.append(qtext, qdate, qremind, qadd);
+    if (keep) { qtext.value = keep.text; qdate.value = keep.date; qremind.value = keep.remind; }
 
     // чипы быстрой даты
     const chips = el('div', 'ag-chips');
@@ -308,6 +351,7 @@ export function createAgendaView(host) {
 
     // фокусные удобства
     if (t.kind === 'global') qtext.placeholder = 'Личное напоминание… (Enter — добавить)';
+    if (keep && keep.focus) { try { qtext.focus(); } catch (_) {} }
   }
 
   // перерисовать только список (поиск), без сброса полей быстрого ввода
@@ -476,9 +520,13 @@ export function createAgendaView(host) {
       paint();               // тот же источник — рисуем из текущего состояния
     }
   }
-  function reload() {
-    // эхо своей записи через fs.watch (main шлёт agendaChanged всем окнам) — не дёргаем UI и не крадём фокус
-    if (Date.now() - lastLocalSave < 1500) return;
+  async function reload() {
+    // Эхо своей записи через fs.watch — не дёргаем UI и не крадём фокус. Узнаём его по содержимому файла.
+    const id = loadedId;
+    if (id && lastSavedJson != null) {
+      let arr; try { arr = await lite.store.agendaGet(id); } catch (_) { arr = null; }
+      if (Array.isArray(arr) && JSON.stringify(arr.map(normalize)) === lastSavedJson) return;
+    }
     loadedId = null;
     if (container) render(container);
   }

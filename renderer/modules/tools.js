@@ -39,7 +39,9 @@ function hexDump(t) {
 // ---- HTML-сущности ----
 function htmlEncode(t, all) {
   let r = t.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-  if (all) r = r.replace(/[\u0080-\uffff]/g, (c) => '&#' + c.charCodeAt(0) + ';');
+  // По кодовым точкам (флаг u): эмодзи и прочее вне BMP иначе уходило парой суррогатов «&#55357;&#56832;»,
+  // а HTML декодирует ссылку на суррогат как «�» — закодированный текст был испорчен.
+  if (all) r = r.replace(/[\u0080-\u{10FFFF}]/gu, (c) => '&#' + c.codePointAt(0) + ';');
   return r;
 }
 function htmlDecode(t) { const ta = document.createElement('textarea'); ta.innerHTML = t; return ta.value; } // textarea не исполняет — безопасно
@@ -168,7 +170,7 @@ function cronField(expr, min, max) {
     let lo, hi;
     if (range === '*') { lo = min; hi = max; }
     else if (range.includes('-')) { const ab = range.split('-'); lo = parseInt(ab[0], 10); hi = parseInt(ab[1], 10); }
-    else { lo = hi = parseInt(range, 10); }
+    else { lo = hi = parseInt(range, 10); if (sl.length === 2) hi = max; }   // «5/15» = с 5-й каждые 15 (5,20,35,50), а не только 5
     if (isNaN(lo) || isNaN(hi) || isNaN(step) || step < 1) throw new Error('Поле cron не разобрано: «' + part + '»');
     // Значения вне диапазона поля — ошибка, а не тихо пустое множество: раньше «60 * * * *»
     // молча превращалось в «нет запусков в ближайшие 5 лет» вместо внятной подсказки.
@@ -1091,9 +1093,17 @@ export function initTools(host) {
     setTimeout(refitActiveTerminal, 150);
   }
 
+  // Закрытие окна и выход из редактора: ввод последних 400 мс дебаунса иначе не доезжал до стора.
+  function flushUi() {
+    if (!persistTimer) return;
+    clearTimeout(persistTimer); persistTimer = null;
+    try { lite.store.setSync('toolsUi', st); } catch (_) { try { persist('toolsUi', st); } catch (_e) {} }
+  }
   return {
     isOpen: () => toolsOpen,
     setOpen: setToolsOpen,
     toggle: () => setToolsOpen(!toolsOpen),
+    confirmClose: (proceed) => { flushUi(); proceed(); },
+    quitCheck: () => { flushUi(); return []; },
   };
 }

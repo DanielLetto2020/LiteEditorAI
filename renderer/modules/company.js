@@ -7,6 +7,7 @@
 // Изоляция по образцу audit.js/notes.js: ядро — только через host; UI — из ui.js; бэкенд — lite.*.
 // host: { layout, GUTTER, saveUiState, refitActiveTerminal, activeProject, closeOtherPanels, openInViewer }
 import { el, icon, iconBtn, toast, makeModal, showConfirm } from '../ui.js';
+import { t } from '../i18n.js';
 
 const $ = (sel) => document.querySelector(sel);
 const lite = window.lite;
@@ -72,9 +73,13 @@ export function initCompany(host) {
   // ---------------- данные ----------------
   async function loadData(projId) {
     if (dataByProj.has(projId)) return dataByProj.get(projId);
-    let d = null;
-    try { d = await lite.company.getData(projId); } catch (_) {}
+    let d = null, readFailed = null;
+    try { d = await lite.company.getData(projId); } catch (e) { readFailed = String((e && e.message) || e); }
+    if (d && d.readFailed) { readFailed = d.error || '?'; d = null; }
     if (!d || !Array.isArray(d.roles)) d = defaultData();
+    // Файл компании не прочитался (права, EMFILE): показываем штат по умолчанию, но на диск его не пишем —
+    // иначе первая же правка затёрла бы настоящий штат, очередь и историю прогонов.
+    if (readFailed) { Object.defineProperty(d, '__readFailed', { value: readFailed, enumerable: false }); toast(t('Не прочитать данные компании: {0} — изменения не сохранятся, пока файл не прочитается', readFailed), { kind: 'err', ttl: 9000 }); }
     if (!Array.isArray(d.queue)) d.queue = [];
     if (!Array.isArray(d.history)) d.history = [];
     if (typeof d.memoryOn !== 'boolean') d.memoryOn = true;
@@ -83,6 +88,7 @@ export function initCompany(host) {
   }
   async function saveData(projId) {
     const d = dataByProj.get(projId); if (!d) return;
+    if (d.__readFailed) { dataByProj.delete(projId); return; }   // см. loadData: в нечитаемый файл не пишем; следующий показ перечитает
     const r = await lite.company.setData(projId, d);
     if (r && r.ok === false) toast('Не сохранить настройки: ' + (r.error || ''), { kind: 'err' });
   }
@@ -152,6 +158,8 @@ export function initCompany(host) {
       }
     } else if (ev.type === 'result') {
       if (typeof ev.total_cost_usd === 'number') st.cost = ev.total_cost_usd;
+    } else if (ev.type === 'lite-note' && ev.text) {
+      pushLine(projId, 'tool', String(ev.text));   // сообщение самого редактора (не директора)
     }
   }
   function onToolUse(projId, c) {
@@ -460,17 +468,30 @@ export function initCompany(host) {
   // Память компании.
   async function showMemory(p) {
     const r = await lite.company.notesGet(p.path);
+    // Не прочиталось (права) — не открываем пустым: «Сохранить» затёр бы настоящую память.
+    if (r && r.error) { toast(t('Не прочитать память компании: {0}', r.error), { kind: 'err', ttl: 9000 }); return; }
+    const shown = (r && r.text) || '';
     const { m, close } = makeModal('<h2 class="co-mtitle"></h2><div id="cof"></div>');
     m.classList.add('co-modal');
     m.querySelector('.co-mtitle').textContent = 'Память компании — ' + p.name;
     const root = m.querySelector('#cof');
     root.appendChild(el('div', 'co-field-hint', 'Уроки, стек проекта и договорённости. Директор читает это перед работой и дополняет по итогам прогона.'));
-    const ta = el('textarea'); ta.style.minHeight = '220px'; ta.value = (r && r.text) || '';
+    const ta = el('textarea'); ta.style.minHeight = '220px'; ta.value = shown;
     root.appendChild(ta);
     const acts = el('div', 'gm-actions'); acts.style.marginTop = '12px';
     const cancel = el('button', 'btn', 'Отмена'); cancel.onclick = close;
     const save = el('button', 'btn primary', 'Сохранить');
-    save.onclick = async () => { const res = await lite.company.notesSet(p.path, ta.value); if (res && res.ok === false) { toast('Не сохранить: ' + (res.error || ''), { kind: 'err' }); return; } close(); toast('Память сохранена'); };
+    const write = async (expect) => {
+      const res = await lite.company.notesSet(p.path, ta.value, expect);
+      if (res && res.stale) {
+        // Директор дописал память, пока окно было открыто: молча перезаписать — стереть его уроки.
+        showConfirm('Память изменилась', 'Пока окно было открыто, файл памяти изменили (директор дописал итоги прогона). Перезаписать его вашей версией? Дописанное пропадёт.', 'Перезаписать', () => { void write(undefined); });
+        return;
+      }
+      if (res && res.ok === false) { toast(t('Не сохранить: {0}', res.error || ''), { kind: 'err' }); return; }
+      close(); toast('Память сохранена');
+    };
+    save.onclick = () => { void write(shown); };
     acts.append(cancel, save); root.appendChild(acts);
   }
 

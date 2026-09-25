@@ -18,6 +18,9 @@ const lite = window.lite;
 // Менеджер профилей подключений + живые SSH-сессии-вкладки (ssh2 shell ↔ xterm).
 // Два вида внутри панели: 'list' (список хостов) и 'session' (открытый терминал). Вкладки
 // сессий живут поверх обоих видов; «+» возвращает к списку для нового подключения.
+// Преобладающий перевод строки текста (как eolOf во вивере): CRLF, если им закончена хотя бы половина строк.
+function rhEolOf(s) { const crlf = (s.match(/\r\n/g) || []).length; return crlf && crlf * 2 >= (s.match(/\n/g) || []).length ? '\r\n' : '\n'; }
+
 export function initRh(host) {
   const { STORE, persist, settings, layout, GUTTER, saveUiState, refitActiveTerminal, closeOtherPanels, termTheme, applyUnicode11, loadFastRenderer, copySelection } = host;
 
@@ -625,7 +628,10 @@ export function initRh(host) {
     if (!rhFiles || rhFiles.connId !== connId || rhView !== 'files' || !rhFiles.file || rhFiles.file.path !== full) return;
     rhFiles.file = {
       name: ent.name, path: full, entry: ent, loading: false, dirty: false,
-      error: r.error, tooBig: r.tooBig, binary: r.binary, content: r.content, size: r.size != null ? r.size : ent.size, meta: r.meta || null,
+      error: r.error, tooBig: r.tooBig, binary: r.binary, notUtf8: !!r.notUtf8, content: r.content, size: r.size != null ? r.size : ent.size, meta: r.meta || null,
+      // Перевод строки файла: CodeMirror держит строки через '\n', и без возврата CRLF при записи
+      // сохранение переводило Windows-файл на хосте в LF целиком (правило — как у вивера, files.js).
+      eol: rhEolOf(r.content || ''),
     };
     if (r.error) toast(r.error, { kind: 'err', ttl: 8000 });
     renderRhFiles();
@@ -636,16 +642,26 @@ export function initRh(host) {
   async function rhSaveFile() {
     const f = rhFiles && rhFiles.file;
     if (!f || !rhFiles.ed) return false;
-    const content = rhFiles.ed.getValue();
-    const r = await lite.rh.fsWrite(rhFiles.connId, f.path, content);
-    if (!r || !r.ok) { toast((r && r.error) || 'Не удалось сохранить файл на хосте', { kind: 'err', ttl: 9000 }); return false; }
-    f.dirty = false; f.content = content;
-    const dot = $('#rh-dirty'); if (dot) dot.style.display = 'none';
-    // перечитать каталог файла — иначе размер и дата в дереве остаются от версии до сохранения
-    const dir = rhJoin(f.path, '..');
-    if (rhFiles.dirs.has(dir)) rhLoadDir(dir);
-    toast(t('Сохранено на хосте: {0}', f.name));
-    return true;
+    const ed = rhFiles.ed, connId = rhFiles.connId;
+    // Пока файл летит на хост (по SFTP — секунды), человек может печатать дальше: «сохранено» — только
+    // если в редакторе ровно то, что ушло, иначе пишем ещё раз (как writeCurrentDoc во вивере). Без этого
+    // набранное за время записи считалось сохранённым, и «Сохранить и продолжить» закрывало файл без него.
+    for (let pass = 0; pass < 3; pass++) {
+      const text = ed.getValue();
+      const content = f.eol === '\r\n' ? text.replace(/\n/g, '\r\n') : text;
+      const r = await lite.rh.fsWrite(connId, f.path, content);
+      if (!r || !r.ok) { toast((r && r.error) || 'Не удалось сохранить файл на хосте', { kind: 'err', ttl: 9000 }); return false; }
+      f.content = content;
+      if (ed.getValue() !== text) continue;
+      f.dirty = false;
+      const dot = $('#rh-dirty'); if (dot) dot.style.display = 'none';
+      // перечитать каталог файла — иначе размер и дата в дереве остаются от версии до сохранения
+      const dir = rhJoin(f.path, '..');
+      if (rhFiles && rhFiles.dirs.has(dir)) rhLoadDir(dir);
+      toast(t('Сохранено на хосте: {0}', f.name));
+      return true;
+    }
+    return false;
   }
   async function rhDownload(fullPath) {
     if (!rhFiles) return;
@@ -716,6 +732,7 @@ export function initRh(host) {
       if (f.tooBig) view.appendChild(el('div', 'rh-hint', 'Файл больше 2 МБ — в редакторе не открывается, но его можно скачать кнопкой ↓ в шапке.'));
       return view;
     }
+    if (f.notUtf8) { view.appendChild(el('div', 'rh-hint', 'Файл не в кодировке UTF-8 (например, windows-1251) — правка здесь испортила бы его текст. Скачайте файл кнопкой ↓ в шапке.')); return view; }
     if (f.binary) { view.appendChild(el('div', 'rh-hint', 'Бинарный файл — текстовый редактор не показывает его содержимое. Скачайте файл кнопкой ↓ в шапке.')); return view; }
     const host = el('div', 'rh-fed');
     view.appendChild(host);
@@ -763,6 +780,9 @@ export function initRh(host) {
   // Закрытие окна (✕ / Alt+F4) — через тот же гард несохранённого удалённого файла, что и уход из вида:
   // без него правки в открытом файле пропадали молча.
   function confirmClose(proceed) { rhGuardDirty(proceed); }
+  // Выход из редактора: правку файла на удалённом хосте молча не пишем (запись по SFTP может висеть
+  // секундами и упасть) — называем файл, и редактор спросит.
+  function quitCheck() { const f = rhFiles && rhFiles.file; return (f && f.dirty) ? [f.name] : []; }
 
-  return { isOpen: () => rhOpen, setOpen: setRhOpen, renderPanel: renderRhPanel, goList: rhGoList, refitSession: refitRhSession, bindEvents, applyFontSize, applyTermTheme, confirmClose };
+  return { isOpen: () => rhOpen, setOpen: setRhOpen, renderPanel: renderRhPanel, goList: rhGoList, refitSession: refitRhSession, bindEvents, applyFontSize, applyTermTheme, confirmClose, quitCheck };
 }

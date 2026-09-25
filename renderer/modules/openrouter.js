@@ -58,6 +58,8 @@ export function initOpenRouter(host) {
   }
   function saveOrHist(cardId) {
     const st = orChats.get(cardId); if (!st) return;
+    // История карточки ещё не прочитана (или не прочиталась): запись пустых сессий затёрла бы её на диске.
+    if (!st.loaded) return;
     lite.openrouter.histSet(cardId, { sessions: st.sessions, active: st.active });
   }
   // model cost/size formatting (pricing is USD per token → show per 1M tokens)
@@ -264,8 +266,14 @@ export function initOpenRouter(host) {
     $('#chat-session-pop').classList.add('hidden');
     setChatSending(st.streaming);
     if (!st.loaded) { // pull history from disk on first open of this card
-      let doc = null;
-      try { doc = await lite.openrouter.histGet(id); } catch (_) {}
+      let doc;
+      try { doc = await lite.openrouter.histGet(id); } catch (e) { doc = { readFailed: true, error: String((e && e.message) || e) }; }
+      // Не прочиталось (права, EMFILE): карточку не считаем загруженной — ни отправка, ни правка сессий
+      // не запишут пустую историю поверх настоящей. Следующее открытие попробует снова.
+      if (doc && doc.readFailed) {
+        if (activeCardId === id) { toast(t('Не прочитать историю чата: {0}', doc.error || '?'), { kind: 'err', ttl: 9000 }); showChatPlaceholder(); }
+        return;
+      }
       if (Array.isArray(doc)) st.sessions = doc.length ? [{ id: newSessId(), name: 'Сессия 1', messages: doc }] : []; // legacy
       else if (doc && Array.isArray(doc.sessions)) { st.sessions = doc.sessions; st.active = doc.active; }
       // backfill per-session contextN (older data kept it per-card) so the setting binds to the session
@@ -336,6 +344,8 @@ export function initOpenRouter(host) {
     if (!text) return;
     const st = getOrChat(card.id);
     if (st.streaming) return;
+    // История ещё грузится: сообщение в пустую сессию записалось бы поверх всей сохранённой истории.
+    if (!st.loaded) { toast(t('История чата ещё загружается — отправьте через секунду')); return; }
     const sess = ensureSession(st);
     ta.value = ''; ta.style.height = 'auto';
     sess.messages.push({ role: 'user', content: text });

@@ -76,12 +76,8 @@ function target() {
   return sync.resolveTarget();
 }
 
-const SSH_OPTS = [
-  '-C', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10',
-  '-o', 'ControlMaster=auto',
-  '-o', `ControlPath=${path.join(os.tmpdir(), 'lite-sync-%r@%h:%p')}`,
-  '-o', 'ControlPersist=120s',
-];
+// Опции ssh — общие с утилитой (сокет мультиплексора в своём каталоге, keepalive; см. lite-sync.js).
+const SSH_OPTS = sync.SSH_OPTS;
 
 // Таймаут обязателен: ConnectTimeout спасает только от «не дозвонились», а
 // повисшее уже установленное соединение (уснул ноутбук, сеть сменилась) держит
@@ -91,6 +87,7 @@ const SSH_TIMEOUT_MS = 60_000;
 function sshQuiet(command, input = null, timeout = SSH_TIMEOUT_MS) {
   let host;
   try { host = target(); } catch { return null; }   // адреса нет — для демона это «сервер недоступен»
+  sync.ensureMuxDir();
   const res = spawnSync('ssh', [...SSH_OPTS, host, command], {
     input, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024, timeout,
   });
@@ -186,6 +183,8 @@ function runSync(projectPath, reason, opts = [], command = 'auto') {
 
   const child = runNode([command, projectPath, '--go', ...opts]);
   let out = '';
+  // строки, а не Buffer: русская буква на стыке чанков иначе билась в «��» в журнале ошибок
+  child.stdout?.setEncoding('utf8'); child.stderr?.setEncoding('utf8');
   child.stdout?.on('data', (d) => { out += d; });
   child.stderr?.on('data', (d) => { out += d; });
 

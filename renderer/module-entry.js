@@ -348,6 +348,12 @@ async function boot() {
       else proceed();
     } catch (_) { proceed(); }
   });
+  // Выход из редактора: модуль дописывает сохранимое и называет то, что осталось несохранённым.
+  lite.win.onQuitCheck(async (id) => {
+    let unsaved = [];
+    try { if (mod && typeof mod.quitCheck === 'function') unsaved = (await mod.quitCheck()) || []; } catch (_) {}
+    lite.win.quitCheckReply(id, Array.isArray(unsaved) ? unsaved.map(String) : []);
+  });
   // project-dependent modules re-render when the editor switches projects (подписка — тоже до
   // загрузки, чтобы смена проекта во время загрузки не потерялась)
   if (def.project) {

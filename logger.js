@@ -16,6 +16,12 @@ const RETENTION_DAYS = 5;
 // перезапускалась, каталог не разрастается бесконтрольно. Сверх — режем самые старые.
 const MAX_TOTAL_BYTES = 30 * 1024 * 1024; // 30 MB
 const PRUNE_INTERVAL_MS = 6 * 60 * 60 * 1000; // перепрунинг каждые 6 ч (а не только на старте)
+// Сегодняшний файл потолок объёма не режет (живая сессия), поэтому у него свой предел: зацикленная
+// ошибка в любом окне (console-message, log:renderer, unhandledrejection) иначе растила его до
+// заполнения диска. Сверх потолка пишем только fatal. И предел на строку: рендерер может прислать
+// многомегабайтную строку (вывод терминала, ответ модели в ошибке) — в лог нужно начало, а не всё.
+const MAX_DAY_BYTES = 50 * 1024 * 1024;
+const MAX_LINE_CHARS = 16 * 1024;
 // matches both the structured log (lite-) and the raw launcher capture (launch-)
 const FILE_RE = /^(lite|launch)-\d{4}-\d{2}-\d{2}\.log$/;
 
@@ -28,6 +34,7 @@ let dirReady = false;   // каталог логов уже создан — mkd
 const PAUSE_MS = 60 * 1000;
 let fileOffUntil = 0;   // файл лога не трогаем до этого момента
 let stdOffUntil = 0;    // запасной stderr — тоже
+let dayFile = '', dayBytes = 0, dayCapNoted = false;   // учёт объёма сегодняшнего файла (MAX_DAY_BYTES)
 
 function pad(n, w = 2) { return String(n).padStart(w, '0'); }
 function dayStamp(d = new Date()) { return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; }
@@ -45,7 +52,8 @@ function fmt(a) {
 
 // One log line. Synchronous append guarantees durability right before a crash.
 function write(level, src, parts) {
-  const body = parts.map(fmt).join(' ');
+  let body = parts.map(fmt).join(' ');
+  if (body.length > MAX_LINE_CHARS) body = body.slice(0, MAX_LINE_CHARS) + ` … [обрезано ${body.length - MAX_LINE_CHARS} символов]`;
   const line = `${ts()} [${String(level).toUpperCase()}] [${src}] ${body}\n`;
   // Питаем реестр ошибок (warn/error/fatal схлопываются по сигнатуре). Не должно влиять на
   // запись лога и не должно бросать — реестр сам глушит ошибки.
@@ -59,7 +67,21 @@ function write(level, src, parts) {
   if (now >= fileOffUntil) {
     try {
       if (!dirReady) { fs.mkdirSync(logDir, { recursive: true }); dirReady = true; }
-      fs.appendFileSync(logPath(), line);
+      const file = logPath();
+      if (file !== dayFile) {   // новый день или первый вызов: сколько уже лежит в файле
+        dayFile = file; dayCapNoted = false;
+        try { dayBytes = fs.statSync(file).size; } catch (_) { dayBytes = 0; }
+      }
+      if (dayBytes >= MAX_DAY_BYTES && lvl !== 'fatal') {
+        if (!dayCapNoted) {
+          dayCapNoted = true;
+          const cap = `${ts()} [WARN] [logger] лог за сегодня достиг ${Math.round(MAX_DAY_BYTES / 1048576)} МБ — дальше до полуночи пишутся только fatal\n`;
+          fs.appendFileSync(file, cap); dayBytes += Buffer.byteLength(cap);
+        }
+        return line;
+      }
+      fs.appendFileSync(file, line);
+      dayBytes += Buffer.byteLength(line);
       return line;
     } catch (e) {
       dirReady = false;

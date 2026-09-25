@@ -35,9 +35,10 @@ export function initGit(host) {
     clearTimeout(draftTimer);
     draftTimer = setTimeout(() => { draftTimer = null; if (host.persist) host.persist('commitDrafts', commitDraft); }, 400);
   }
-  window.addEventListener('beforeunload', () => {
+  function flushDraft() {
     if (draftTimer) { clearTimeout(draftTimer); draftTimer = null; try { lite.store.setSync('commitDrafts', commitDraft); } catch (_) {} }
-  });
+  }
+  window.addEventListener('beforeunload', flushDraft);
 
   const STATUS_LABEL = {
     conflict: 'Конфликты',
@@ -1021,6 +1022,8 @@ export function initGit(host) {
     const fname = baseName(fileAbs);
     const read = await lite.fs.readFile(fileAbs);
     if (read.error) { toast(read.error || 'не удалось прочитать файл', { kind: 'err' }); return; }
+    // Не UTF-8: «Сохранить разрешение» записало бы файл в UTF-8 с «�» вместо букв.
+    if (read.notUtf8) { toast('Файл не в кодировке UTF-8 — разрешите конфликт во внешнем редакторе', { kind: 'warn', ttl: 8000 }); return; }
     const raw = read.content || '';
     // CodeMirror хранит документ с '\n' — без возврата исходного перевода строки «Сохранить разрешение»
     // переводило CRLF-файл в LF целиком (весь файл — одна сплошная правка). Правило — как у вивера (files.js).
@@ -1154,5 +1157,6 @@ export function initGit(host) {
     setTimeout(() => { edResult.view.focus(); gotoCurrent(); }, 30);
   }
 
-  return { setContainers, renderPanel: renderGitPanel };
+  // flushDraft — для выхода из редактора: окно сносят destroy(), и beforeunload не приходит.
+  return { setContainers, renderPanel: renderGitPanel, flushDraft };
 }

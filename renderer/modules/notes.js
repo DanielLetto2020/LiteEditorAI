@@ -12,9 +12,10 @@
 // модуль лишь шлёт broadcastChange после каждой записи. Сам модуль счётчик нигде не хранит.
 // host: { settings, saveSettings, applyLayoutSwap, sendNoteToTerminal,
 //         layout, GUTTER, saveUiState, refitActiveTerminal, activeProject, closeOtherPanels, getProjects }
-import { el, icon, iconBtn, makeModal, showConfirm, toast } from '../ui.js';
+import { el, icon, iconBtn, makeModal, showConfirm, toast, guardDirtyClose } from '../ui.js';
 import { marked } from 'marked';
 import { createAgendaView } from './notes-agenda.js';
+import { t } from '../i18n.js';
 
 const $ = (sel) => document.querySelector(sel);
 const lite = window.lite;
@@ -30,6 +31,9 @@ const KANBAN_GROW = 380;                            // насколько рас
 const titleOf = (t) => { const s = (t || '').trim(); const i = s.indexOf('\n'); return (i < 0 ? s : s.slice(0, i)).trim(); };
 const bodyOf = (t) => { const s = (t || ''); const i = s.indexOf('\n'); return i < 0 ? '' : s.slice(i + 1).trim(); };
 const genId = () => 'n' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+// store:notesGet отдаёт { error }, когда файл задач прочитать не удалось (права, EMFILE): тогда в него
+// ничего не пишем — раньше это выглядело пустым списком, и первая же задача затирала все прежние.
+const readErr = (v) => (v && !Array.isArray(v) && typeof v === 'object' && v.error ? String(v.error) : null);
 const escAttr = (s) => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
 
 // markdown тела задачи (defense-in-depth поверх CSP: вырезаем активные узлы/обработчики; ссылки — наружу).
@@ -102,7 +106,10 @@ export function initNotes(host) {
     const seq = ++loadSeq;
     let arr = await lite.store.notesGet(id);
     if (seq !== loadSeq) return false; // более новая загрузка уже идёт
+    const err = readErr(arr);
+    if (err) { notes = []; loadedId = null; toast(t('Не прочитать список задач: {0} — он не изменится, пока файл не прочитается', err), { kind: 'err', ttl: 9000 }); return true; }
     if (!Array.isArray(arr)) arr = [];
+    arr = arr.filter((n) => n && typeof n === 'object');   // правка руками могла оставить null — он ронял загрузку
     // Миграция без потери данных: старым заметкам {id,text} проставляем дефолты status/prio (и id, если нет —
     // нужен для аккордеона/точечного обновления, иначе все безыдентификаторные слиплись бы в один тоггл).
     arr.forEach((n) => {
@@ -160,7 +167,11 @@ export function initNotes(host) {
   // ---------------- модалка задачи (новая / правка + подзадачи) ----------------
   function openTaskModal(note) {
     const isNew = !note;
-    const { m, close } = makeModal(`
+    // Список, из которого открыли модалку. Пока она открыта, окно может перечитать список (правка
+    // из другого окна) или переключиться на другой проект — сохранять надо туда, откуда открывали,
+    // и по id задачи: ссылка note к тому времени указывает на объект выброшенного списка.
+    const listId = loadedId;
+    const { overlay, m, close } = makeModal(`
       <h2>${isNew ? 'Новая задача' : 'Редактировать задачу'}</h2>
       <textarea class="nt-modal-ta" placeholder="Описание задачи… Первая строка — заголовок."></textarea>
       <div class="nt-modal-hint">Первая строка = заголовок · Ctrl+Enter — сохранить · Esc — отмена</div>
@@ -197,13 +208,39 @@ export function initNotes(host) {
       subState.push({ id: genId(), text: '', done: false }); renderSubs();
       const inps = subsBox.querySelectorAll('.nt-sub-input'); if (inps.length) inps[inps.length - 1].focus();
     };
-    const commit = () => {
+    const initial = JSON.stringify([ta.value, subState]);
+    const isDirty = () => JSON.stringify([ta.value, subState]) !== initial;
+    // Клик мимо модалки и Esc — тоже закрытие: с набранным текстом сначала спрашиваем.
+    guardDirtyClose(overlay, m, isDirty, () => showConfirm('Закрыть без сохранения?', 'Набранный текст задачи пропадёт.', 'Закрыть', close));
+    let committing = false;
+    const commit = async () => {
+      if (committing) return;
       const text = ta.value.trim();
       const subs = subState.filter((s) => (s.text || '').trim()).map((s) => ({ id: s.id, text: s.text.trim(), done: !!s.done }));
       if (!text && !subs.length) { close(); return; }
-      if (isNew) { notes.unshift({ id: genId(), text, status: 'todo', prio: 0, subtasks: subs }); if (filter === 'done') filter = 'active'; }
-      else { note.text = text; note.subtasks = subs; }
-      save(); close(); renderList();
+      if (!listId) { toast('Список задач ещё не загрузился — сохраните ещё раз', { kind: 'err' }); return; }   // модалку не закрываем: текст на месте
+      const apply = (arr) => {
+        if (isNew) { arr.unshift({ id: genId(), text, status: 'todo', prio: 0, subtasks: subs }); return; }
+        const cur = arr.find((n) => n.id === note.id);
+        if (cur) { cur.text = text; cur.subtasks = subs; }
+        else arr.unshift({ ...note, text, subtasks: subs });   // задачу удалили, пока правили, — правку не теряем
+      };
+      if (listId && loadedId === listId) {
+        apply(notes);
+        if (isNew && filter === 'done') filter = 'active';
+        save();
+      } else {
+        committing = true;                               // список сменился — пишем прямо в файл, откуда открывали
+        try {
+          let arr = await lite.store.notesGet(listId);
+          if (readErr(arr)) { toast(t('Не прочитать список задач: {0} — он не изменится, пока файл не прочитается', readErr(arr)), { kind: 'err', ttl: 9000 }); return; }   // модалка остаётся открытой
+          if (!Array.isArray(arr)) arr = [];
+          apply(arr);
+          await lite.store.notesSet(listId, arr);
+          broadcastChange(listId);
+        } finally { committing = false; }
+      }
+      close(); renderList();
     };
     m.querySelector('[data-swap]').onclick = () => applyLayoutSwap(ta);
     m.querySelector('[data-cancel]').onclick = () => close();
@@ -503,6 +540,7 @@ export function initNotes(host) {
     if (target.kind === 'project') { destId = GLOBAL_ID; destName = 'Общие'; }
     else { const p = activeProject(); if (!p) { toast('Нет активного проекта — некуда перенести'); return; } destId = p.id; destName = p.name; }
     let dest = await lite.store.notesGet(destId);
+    if (readErr(dest)) { toast(t('Не прочитать список задач: {0} — он не изменится, пока файл не прочитается', readErr(dest)), { kind: 'err', ttl: 9000 }); return; }
     if (!Array.isArray(dest)) dest = [];
     dest.unshift({ id: note.id, text: note.text, status: note.status, prio: note.prio, subtasks: note.subtasks || [] });
     await lite.store.notesSet(destId, dest);
@@ -564,8 +602,9 @@ export function initNotes(host) {
   async function mergeInto(id, incoming) {
     if (!Array.isArray(incoming)) return 0;
     let cur = await lite.store.notesGet(id);
+    if (readErr(cur)) throw new Error(readErr(cur));   // дописать «без потерь» в нечитаемый файл — значит затереть его
     if (!Array.isArray(cur)) cur = [];
-    const seen = new Set(cur.map((n) => n.id));
+    const seen = new Set(cur.map((n) => n && n.id));
     let added = 0;
     for (const n of incoming) {
       if (!n || typeof n.text !== 'string') continue;
@@ -625,8 +664,8 @@ export function initNotes(host) {
     let lists = 0, total = 0;
     const handle = async (id, arr) => {
       if (!Array.isArray(arr)) return;
-      lists++;
-      total += await (mode === 'replace' ? replaceInto(id, arr) : mergeInto(id, arr));
+      try { total += await (mode === 'replace' ? replaceInto(id, arr) : mergeInto(id, arr)); lists++; }
+      catch (e) { toast(t('Список {0} не тронут: {1}', id, (e && e.message) || e), { kind: 'err', ttl: 9000 }); }
     };
     if (Array.isArray(data.global)) await handle(GLOBAL_ID, data.global);
     if (data.projects && typeof data.projects === 'object') {

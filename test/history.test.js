@@ -104,6 +104,15 @@ fs.promises.readFile = function (p, ...rest) { if (p === watched) reads++; retur
   ok(!fs.existsSync(a), 'самый старый по изменению каталог удалён первым');
   ok(fs.existsSync(c), 'самый свежий каталог остался');
 
+  // --- файл не в UTF-8 не снимается: строка-снимок хранила бы «�», и откат к нему портил бы файл ---
+  const hu = createHistory({ dir: store, now: () => clock });
+  const cp = path.join(proj, 'cp1251.txt');
+  fs.writeFileSync(cp, Buffer.from([0xcf, 0xf0, 0xe8, 0xe2, 0xe5, 0xf2, 0x0a]));   // «Привет» в windows-1251
+  ok(await hu.snapshotFromDisk(cp, 'ext', { force: true }) === false, 'не-UTF-8 файл не снят в историю');
+  ok((await hu.list(cp)).length === 0, 'снимков не-UTF-8 файла нет');
+  fs.writeFileSync(cp, 'Привет\n');
+  ok(await hu.snapshotFromDisk(cp, 'ext', { force: true }) === true, 'тот же файл в UTF-8 снимается');
+
   fs.promises.readFile = realRead;
   fs.rmSync(root, { recursive: true, force: true });
   console.log(`history: ${passed} проверок пройдено`);
