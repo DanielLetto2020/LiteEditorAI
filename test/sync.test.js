@@ -60,5 +60,17 @@ const gone = path.join(work, 'projects', 'home', 'deleted-project');
 write({ projects: [{ path: gone }] });
 ok(load().match([gone]).includes(gone), 'удалённая папка — путь всё равно сопоставляется');
 
-fs.rmSync(work, { recursive: true, force: true });
-console.log(`sync.test.js: ${passed} проверок пройдено`);
+// --- асинхронный вариант (главный процесс) отвечает так же, как синхронный ---
+(async () => {
+  write({ projects: [{ path: realDir }] });
+  sync = load();
+  const asked = [linked, plain, outside, realDir, null];
+  const a = await sync.matchAsync(asked);
+  ok(JSON.stringify(a) === JSON.stringify(sync.match(asked)), 'matchAsync = match: ' + JSON.stringify(a));
+  write({ projects: [{ path: gone }] });
+  ok((await load().matchAsync([gone])).includes(gone), 'matchAsync: удалённая папка сопоставляется как есть');
+  write({ enabled: false, projects: [{ path: realDir }] });
+  ok((await load().matchAsync([linked])).length === 0, 'matchAsync: enabled:false — меток нет');
+  fs.rmSync(work, { recursive: true, force: true });
+  console.log(`sync.test.js: ${passed} проверок пройдено`);
+})().catch((e) => { console.error(e); process.exit(1); });

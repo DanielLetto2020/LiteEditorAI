@@ -29,7 +29,7 @@ import { openGlobalSearch } from './gsearch.js';
 import { initExtensions } from './modules/extensions.js';
 // initFiles — вивер+дерево мигрированы в отдельное окно (renderer/module-entry.js).
 
-const APP_VERSION = 'alpha v1.1.204';
+const APP_VERSION = 'alpha v1.1.205';
 const GUTTER = 8; // зазор между карточками окна — он же разделитель, за который тянется ширина
 // Системный терминал («Система · ~») мигрирован в отдельное окно (renderer/modules/scratch.js):
 // его id `__scratch__::tN` маршрутизируются main'ом в окно-владельца, в ядре их больше не обрабатываем.
@@ -41,7 +41,11 @@ const $ = (sel) => document.querySelector(sel);
 // ---------------------------------------------------------------- global store (~/.LiteEditor)
 // Synchronous snapshot loaded once; reads are in-memory, writes go through to disk.
 const STORE = lite.store.loadAll();
-function persist(key, value) { STORE[key] = value; lite.store.set(key, value); }
+// После импорта настроек стор на диске — уже импортированный, а окно ещё держит старое состояние до
+// перезагрузки: смена заголовка вкладки (projTabs), раскладки и т. п. за эти сотни миллисекунд
+// переписала бы импортированное старым. С этого момента окно в стор не пишет.
+let storeFrozen = false;
+function persist(key, value) { STORE[key] = value; if (!storeFrozen) lite.store.set(key, value); }
 // One-time import from the old localStorage layout (builds before ~/.LiteEditor).
 (function migrateLocalStorage() {
   if (STORE.projects !== undefined) return;
@@ -62,7 +66,7 @@ let settings = loadSettings();
 // Пишем только изменённые поля, чужие изменения (окна модулей, смена языка) вливаются в settings —
 // см. renderer/settings-sync.js. base = то, что на диске: первый save запишет и дефолты, как раньше.
 const settingsSync = syncSettings(lite, settings, { base: STORE.settings });
-function saveSettings() { STORE.settings = settings; settingsSync.save(); }
+function saveSettings() { STORE.settings = settings; if (!storeFrozen) settingsSync.save(); }
 
 // ---------------------------------------------------------------- state
 let projects = [];
@@ -2287,6 +2291,7 @@ async function importSettings() {
       const r = await lite.settings.import();
       if (!r || r.canceled) return;
       if (r.error) { toast('Ошибка импорта: ' + r.error); return; }
+      storeFrozen = true;   // до перезагрузки — ни одной записи старого состояния поверх импорта
       if (r.partial) {
         const parts = [];
         if (r.failedKeys && r.failedKeys.length) parts.push(`настройки: ${r.failedKeys.join(', ')}`);
@@ -3902,6 +3907,11 @@ function applyRestGuard(s) {
 
 function init() {
   hydrateIcons(); // fill the static [data-icon] buttons (titlebar / pane toolbars) with SVG
+  // Часть стора не прочиталась (права, нехватка дескрипторов): main эти ключи до перезапуска не пишет,
+  // чтобы «пусто» не легло поверх настоящих данных. Человеку — сказать, что правки там не сохранятся.
+  if (Array.isArray(STORE.__readFailed) && STORE.__readFailed.length) {
+    setTimeout(() => toast(tt('Не прочитались данные редактора ({0}) — изменения в них не сохранятся до перезапуска. Подробности — в «Логах»', STORE.__readFailed.join(', ')), { kind: 'err', ttl: 15000 }), 800);
+  }
   renderUpdateBadge(); // номер версии в подвале боковой карточки (+ точка «есть обновление»)
   // вивер живёт в отдельном окне (module.html#files) — в редакторе его DOM/редактор больше нет.
   applyLayout();

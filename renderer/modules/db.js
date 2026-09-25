@@ -4,6 +4,7 @@
 // автокомплит SQL по схеме, ER-диаграмма, конструктор запросов, сравнение схем, история.
 // Изоляция по образцу textproc.js: ядро — через host; UI-хелперы — из ui.js; бэкенд — window.lite.db.*.
 import { el, icon, iconBtn, toast, makeModal, showConfirm, showPrompt } from '../ui.js';
+import { t } from '../i18n.js';
 import { kpFormButtons } from '../kpicker.js';
 import { marked } from 'marked';
 import Chart from 'chart.js/auto';   // static import: chart.js/auto auto-registers all controllers
@@ -1026,12 +1027,12 @@ export function initDb(host) {
       const set = entries.map(([col, val]) => { params.push(val); return `${qIdent(col)} = ${ph()}`; }).join(', ');
       const where = pkWhere(meta, rows[ri], cols, ph, params);
       const setPrev = entries.map(([col, val]) => `${qIdent(col)} = ${lit(val)}`).join(', ');
-      out.push({ sql: `UPDATE ${tq} SET ${set} WHERE ${where}`, params, preview: `UPDATE ${tq} SET ${setPrev} WHERE ${pkWherePreview(meta, rows[ri], cols)};` });
+      out.push({ expect: 1, sql: `UPDATE ${tq} SET ${set} WHERE ${where}`, params, preview: `UPDATE ${tq} SET ${setPrev} WHERE ${pkWherePreview(meta, rows[ri], cols)};` });
     }
     for (const ri of b.deletes) {
       const ph = phFactory(); const params = [];
       const where = pkWhere(meta, rows[ri], cols, ph, params);
-      out.push({ sql: `DELETE FROM ${tq} WHERE ${where}`, params, preview: `DELETE FROM ${tq} WHERE ${pkWherePreview(meta, rows[ri], cols)};` });
+      out.push({ expect: 1, sql: `DELETE FROM ${tq} WHERE ${where}`, params, preview: `DELETE FROM ${tq} WHERE ${pkWherePreview(meta, rows[ri], cols)};` });
     }
     for (const obj of b.inserts) {
       const keys = Object.keys(obj); if (!keys.length) continue;
@@ -1050,7 +1051,15 @@ export function initDb(host) {
     const apply = el('button', 'btn primary', 'Применить'); apply.onclick = () => {
       const stmts = buildChangeStatements(t, meta); if (!stmts.length) return;
       // в БД уезжают { sql, params } — значения отдельно от текста; preview нужен только для показа
-      const doApply = async () => { const r = await lite.db.transaction(dbActiveId, stmts.map(({ sql, params }) => ({ sql, params }))); if (r && r.ok) { toast(`Применено: ${r.count}`); clearBuffer(t); t._force = true; renderTabBody($('#db-tabbody')); } else toast((r && r.error) || 'Ошибка применения', { kind: 'err' }); };
+      // Пока пачка применяется, повторный «Применить» не идёт: двойной клик вставил бы новые строки дважды.
+      const doApply = async () => {
+        if (t._applying) return;
+        t._applying = true; apply.disabled = true;
+        let r;
+        try { r = await lite.db.transaction(dbActiveId, stmts.map(({ sql, params, expect }) => ({ sql, params, expect }))); }
+        finally { t._applying = false; apply.disabled = false; }
+        if (r && r.ok) { toast(`Применено: ${r.count}`); clearBuffer(t); t._force = true; renderTabBody($('#db-tabbody')); } else toast((r && r.error) || 'Ошибка применения', { kind: 'err' });
+      };
       prodGuard(stmtsPreview(stmts), doApply);
     };
     const roll = el('button', 'btn', 'Откатить'); roll.onclick = () => { clearBuffer(t); renderTabBody($('#db-tabbody')); };
@@ -1528,13 +1537,19 @@ export function initDb(host) {
     setTimeout(() => ins[names[0]].focus(), 30);
   }
   async function execSql(t, text) {
+    // Пока запрос вкладки выполняется, второй не запускаем: двойной Ctrl+Enter выполнял INSERT/UPDATE
+    // дважды (подключение исполняет их по очереди — оба доходили до базы). Сначала «Отмена» или ожидание.
+    if (t._running) { toast('Запрос ещё выполняется — дождитесь его или нажмите «Отмена»', { kind: 'warn' }); return; }
     pushHistory(text);
     const res = t.resultEl; if (!res) return;
     res.innerHTML = '<div class="git-loading">Выполняю…</div>';
     t.lastResult = null;
     if (t.cancelBtn && dbActiveConn.type !== 'sqlite') t.cancelBtn.style.display = '';
     const seq = ++execSeq; t._seq = seq; const t0 = performance.now();
-    const r = await lite.db.query(dbActiveId, text);
+    t._running = true;
+    let r;
+    try { r = await lite.db.query(dbActiveId, text); }
+    finally { t._running = false; }
     if (t._seq !== seq) return;
     if (t.cancelBtn) t.cancelBtn.style.display = 'none';
     const ms = Math.round(performance.now() - t0);
@@ -2148,6 +2163,9 @@ export function initDb(host) {
   // Транскрипты лежат в ~/.LiteEditorAI/dbai/<connId>.json (см. dbai:sessionsGet/Set), а не в dbUi:
   // там они переписывались целиком при каждом сохранении раскладки модуля.
   const aiLoaded = new Set();       // connId, для которых транскрипт уже прочитан с диска
+  // connId, чей файл истории не прочитался (права, EMFILE): чат показываем, но на диск не пишем —
+  // раньше первое же сообщение записывало новую пустую сессию поверх всей истории чатов с базой.
+  const aiReadFailed = new Set();
   const aiSaveTimers = new Map();   // connId → таймер отложенной записи
   const AI_KEEP_MSGS = 200;         // сколько последних сообщений сессии храним на диске
   function aiNewSessionObj() { return { id: 's' + (++aiSeq), title: 'Новый чат', ts: Date.now(), pinned: false, systemNote: '', pinTables: [], extraConns: [], usage: null, messages: [] }; }
@@ -2164,10 +2182,12 @@ export function initDb(host) {
   async function aiLoadSessions(connId) {
     if (aiLoaded.has(connId)) return;
     const r = await lite.dbai.sessionsGet(connId);
-    if (r && r.error) toast('Не удалось прочитать историю чатов: ' + r.error, { kind: 'err' });
-    let saved = (r && !r.error && Array.isArray(r.sessions)) ? r : null;
+    const readErr = r && r.error ? String(r.error) : null;
+    if (readErr) { aiReadFailed.add(connId); toast(t('Не прочитать историю чатов: {0} — новые сообщения не сохранятся до повторного открытия окна', readErr), { kind: 'err', ttl: 9000 }); }
+    else aiReadFailed.delete(connId);
+    let saved = (r && !readErr && Array.isArray(r.sessions)) ? r : null;
     let migrated = false;
-    if (!saved) {
+    if (!saved && !readErr) {
       const legacy = (dbUi.aiSessions && dbUi.aiSessions[connId]) || null;
       if (legacy && legacy.length) { saved = { sessions: legacy, activeId: (dbUi.aiActive || {})[connId] || null }; migrated = true; }
     }
@@ -2246,13 +2266,13 @@ export function initDb(host) {
   // где идёт диалог, иначе последний ответ жил бы только в памяти и терялся при закрытии окна.
   function aiPersist(connId = dbActiveId) {
     const d = aiChats.get(connId);
-    if (!d || !aiLoaded.has(connId)) return;   // до загрузки не пишем — затёрли бы историю на диске
+    if (!d || !aiLoaded.has(connId) || aiReadFailed.has(connId)) return;   // до загрузки (или в нечитаемый файл) не пишем — затёрли бы историю на диске
     const prev = aiSaveTimers.get(connId); if (prev) clearTimeout(prev);
     aiSaveTimers.set(connId, setTimeout(() => { aiSaveTimers.delete(connId); void aiFlush(connId); }, 400));
   }
   // никогда не отклоняется: зовут её и из «закрываем панель», где обрабатывать отказ уже некому
   async function aiFlush(connId) {
-    const d = aiChats.get(connId); if (!d || !aiLoaded.has(connId)) return;
+    const d = aiChats.get(connId); if (!d || !aiLoaded.has(connId) || aiReadFailed.has(connId)) return;
     try {
       const r = await lite.dbai.sessionsSet(connId, aiSerializeState(d));
       if (!r || !r.ok) toast('Не удалось сохранить историю чата' + (r && r.error ? ': ' + r.error : ''), { kind: 'err' });
@@ -3444,5 +3464,7 @@ blockquote{border-left:3px solid #c9ced4;margin:0;padding:.2rem 0 .2rem .8rem;co
     for (const [connId, timer] of pending) { clearTimeout(timer); await aiFlush(connId); }
     proceed();
   }
-  return { isOpen: () => dbOpen, setOpen: setDbOpen, refresh, openFromContainer, openSqlFromViewer, confirmClose };
+  // Выход из редактора: те же отложенные транскрипты AI-DB дописываем, спрашивать не о чем.
+  async function quitCheck() { await confirmClose(() => {}); return []; }
+  return { isOpen: () => dbOpen, setOpen: setDbOpen, refresh, openFromContainer, openSqlFromViewer, confirmClose, quitCheck };
 }

@@ -8,7 +8,7 @@
 //
 // Изолирован по канону: всё из ядра — через host-колбэки, UI — из ui.js, бэкенд — window.lite.*.
 // host: { layout, GUTTER, saveUiState, refitActiveTerminal, activeProject, closeOtherPanels }
-import { el, icon, toast, makeModal, showConfirm, showPrompt } from '../ui.js';
+import { el, icon, toast, makeModal, showConfirm, showPrompt, guardDirtyClose } from '../ui.js';
 import { MergeView } from '@codemirror/merge';
 import { marked } from 'marked';
 import { t } from '../i18n.js';
@@ -39,20 +39,11 @@ function renderSafeMarkdown(target, src) {
   });
   target.replaceChildren(...tpl.content.childNodes);
 }
-// makeModal закрывает модалку по Esc и по клику мимо неё — в обход вопроса «Закрыть без сохранения?»,
-// который задают кнопки «Закрыть»/✕ редакторов: набранный текст пропадал молча (а Esc жмут
-// рефлекторно — снять выделение, закрыть поиск). Пока есть несохранённое, оба пути ведут в тот же
-// вопрос. Слушатели в фазе захвата и stopImmediatePropagation — срабатывают раньше makeModal.
-function guardDirtyClose(overlay, m, isDirty, ask) {
-  m.addEventListener('keydown', (e) => {
-    if (e.key !== 'Escape' || !isDirty()) return;
-    e.preventDefault(); e.stopImmediatePropagation(); ask();
-  }, true);
-  overlay.addEventListener('mousedown', (e) => {
-    if (e.target !== overlay || !isDirty()) return;
-    e.stopImmediatePropagation(); ask();
-  }, true);
-}
+// Преобладающий перевод строки текста (правило как у вивера, files.js eolOf). Канва и редактор файла
+// работают в '\n' (CodeMirror и splitSections режут CRLF), и без возврата CRLF при записи первая же
+// правка переводила Windows-файл (CLAUDE.md, настройки .claude) в LF целиком — сплошной дифф.
+const eolOf = (s) => { const t = String(s || ''); const crlf = (t.match(/\r\n/g) || []).length; return crlf && crlf * 2 >= (t.match(/\n/g) || []).length ? '\r\n' : '\n'; };
+const withEol = (s, eol) => (eol === '\r\n' ? String(s).replace(/\r?\n/g, '\r\n') : s);
 const fmtTok = (chars) => {
   const t = Math.round((chars || 0) / 4);
   return '≈' + (t >= 1000 ? (t / 1000).toFixed(1).replace(/\.0$/, '') + 'k' : t) + ' тк';
@@ -290,7 +281,7 @@ export function initCtx(host) {
     if (loadedProj !== proj.id) { toast(t('Канва ещё не перечитана под этот проект'), { kind: 'warn' }); return false; }   // пустое/чужое состояние в файл не пишем
     busy = true;
     try {
-      const text = assemble();
+      const text = withEol(assemble(), eolOf(fileText));
       const r = await lite.ctx.save({ projId: proj.id, projPath: proj.path, text, name, note, expectHash: fileHash });
       if (!r || !r.ok) {
         if (r && r.stale) { // агент успел записать файл первым — не затираем, показываем расхождение
@@ -1587,7 +1578,9 @@ export function initCtx(host) {
     const cancelBtn = m.querySelector('#fed-cancel');
     const prevBox = m.querySelector('#fed-prev');
     const host = m.querySelector('#fed-ed');
-    let orig = String(text == null ? '' : text);
+    const eol = eolOf(text);
+    // Сравниваем в координатах редактора ('\n'): иначе CRLF-файл считался бы изменённым с первого символа.
+    let orig = String(text == null ? '' : text).replace(/\r\n?/g, '\n');
     const recheck = () => {
       const dirty = !!editor && editor.getValue() !== orig;
       markDirty(dirtyKey, dirty);
@@ -1658,7 +1651,7 @@ export function initCtx(host) {
     }
     const doSave = async () => {
       const body = editor.getValue();
-      const r = await onSave(body);
+      const r = await onSave(withEol(body, eol));
       if (!r || !r.ok) { toast(t('Не сохранить: {0}', (r && r.error) || '?'), { kind: 'err' }); return false; }
       orig = body; recheck();
       toast(t('Сохранено: {0}', subtitle || file || ''), { ttl: 5000 });
@@ -2268,5 +2261,9 @@ export function initCtx(host) {
       'Закрыть без сохранения', proceed);
   }
 
-  return { isOpen: () => open, setOpen, toggle, onProjectChange, confirmClose };
+  // Выход из редактора: открытый редактор с несохранённым текстом записать молча нельзя (раздел
+  // канвы пишется через ctx:save с проверкой версии) — называем его, и редактор спросит.
+  const quitCheck = () => (dirtyEditors.size ? [t('открытый редактор с несохранёнными правками')] : []);
+
+  return { isOpen: () => open, setOpen, toggle, onProjectChange, confirmClose, quitCheck };
 }

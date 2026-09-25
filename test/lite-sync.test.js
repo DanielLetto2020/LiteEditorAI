@@ -93,5 +93,30 @@ const expected = { path: '/home/me/app', ...((sync.addon && sync.addon.projectDe
 ok(JSON.stringify(cfg.projects[0]) === JSON.stringify(expected), 'запись проекта — путь (+ поля дополнения, если оно есть)');
 ok(linker.isLinked('/home/me/app') && !linker.isLinked('/home/me/other'), 'isLinked по конфигу');
 
+// --- защита от удаления всего проекта по пустому листингу одной стороны ---
+const two = new Map([['a', f(1, 1)], ['b', f(2, 2)]]);
+const none = new Map();
+const gone = sync.parseRemoteListing(sync.NODIR_MARK);
+ok(gone.size === 0 && gone.missing === true, 'каталога на сервере нет — пустой список с пометкой missing');
+ok(sync.parseRemoteListing('').missing !== true, 'пустой, но существующий каталог — без пометки');
+ok(sync.wipeRisk(two, gone, 2, 'auto') !== null, 'сервер без каталога при непустом манифесте — auto отказывает');
+ok(sync.wipeRisk(two, none, 2, 'pull') !== null, 'пустой сервер — pull тоже удалил бы всё здесь, отказ');
+ok(sync.wipeRisk(two, none, 2, 'push') === null, 'пустой сервер — push разрешён (восстановить копию на сервере)');
+ok(sync.wipeRisk(none, two, 2, 'auto') !== null, 'пустой ПК (несмонтированный диск) — auto отказывает');
+ok(sync.wipeRisk(none, two, 2, 'pull') === null, 'пустой ПК — pull разрешён (вернуть с сервера)');
+ok(sync.wipeRisk(none, none, 0, 'auto') === null, 'первая синхронизация (манифеста нет) — не мешаем');
+ok(sync.wipeRisk(none, two, 2, 'status') === null, 'status ничего не меняет — не мешаем');
+ok(sync.wipeRisk(two, two, 2, 'auto') === null, 'обе стороны на месте — не мешаем');
+
+// --- имя с переводом строки в листинг не попадает (списки для rsync и удаления — построчные) ---
+const nl = sync.parseListing('f\tok.txt\t1\t1\0f\tbad\nsrc\t1\t1\0');
+ok(nl.has('ok.txt') && nl.size === 1, 'имя с \\n пропущено');
+
+// --- забыть манифест ---
+const mf = sync.manifestPath('/home/me/app');
+fs.mkdirSync(path.dirname(mf), { recursive: true }); fs.writeFileSync(mf, '{}');
+sync.forgetManifest('/home/me/app');
+ok(!fs.existsSync(mf), 'манифест удалён — следующая сверка первая, без удалений');
+
 fs.rmSync(work, { recursive: true, force: true });
 console.log(`lite-sync.test.js: ${passed} проверок пройдено`);

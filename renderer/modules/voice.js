@@ -717,8 +717,9 @@ export function initVoice(host) {
           ? `${Math.round(got / 1048576)} из ${Math.round(total / 1048576)} МБ`
           : `${Math.round(got / 1048576)} МБ`;
       });
-      const r = await lite.tts.downloadModel();
-      off();
+      let r;
+      // finally: отказ invoke (бросок в main) оставлял бы подписку на прогресс и кнопку выключенной навсегда
+      try { r = await lite.tts.downloadModel(); } catch (e) { r = { ok: false, error: (e && e.message) || String(e) }; } finally { off(); }
       dl.disabled = false;
       if (!r || r.ok !== true) { dlStatus.textContent = ''; toast(`Не удалось скачать модель: ${(r && r.error) || ''}`, { kind: 'err' }); return; }
       dlStatus.textContent = 'Готово';
@@ -848,6 +849,16 @@ export function initVoice(host) {
     openSettings,
     clearHistory,
     onExternalText,
+    // Выход из редактора: только дописать правку и историю (выход ещё могут отменить — слежение
+    // за буфером и звук не трогаем), спрашивать не о чем.
+    quitCheck: () => {
+      try {
+        saveActiveText();
+        state.clips = trimClips(state.clips);
+        try { lite.store.setSync('voiceClips', state.clips); } catch (_) { host.persist('voiceClips', state.clips); }
+      } catch (_) {}
+      return [];
+    },
     // Окно закрывается: забрать правку, дописать историю синхронно (обычная запись — send,
     // она могла не долететь до закрытия), снять слежение и оборвать звук.
     confirmClose: (proceed) => {
