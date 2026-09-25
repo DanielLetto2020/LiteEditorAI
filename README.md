@@ -78,7 +78,9 @@ The **Project** window keeps the code viewer and git side by side, PhpStorm-styl
 itself while the agent edits, syntax highlighting for every language, minimap, autocomplete, **blame**
 annotations, **side-by-side diff vs HEAD**, project-wide replace, an **agent-review mode** (authorship layer
 over the code, "ask the agent" from the context menu) and — the safety net — **local file history with
-rollback** for everything the agent changed before you committed.
+rollback** for everything the agent changed before you committed. Around the code: a toolbar with the branch and
+Pull / Push commit counters, `Ctrl+P` to jump to a file by name, open files as a vertical tab list and a status bar
+with position, indentation, encoding and line endings.
 
 Git lives in the same window: selective staging by checkbox, amend, commit / push / pull / fetch, stash,
 per-file history, cherry-pick / revert, three-pane conflict resolution, branch management.
@@ -226,7 +228,7 @@ text to share it.
 
 **Alpha**, actively developed. A project can keep as many terminal tabs as you need and their **names** survive
 a restart (the processes do not; they do survive a reload of the window, so a crashed window does not stop
-your agents). The viewer opens one file at a time and skips files over 2 MB. It is a viewer
+your agents). The viewer keeps open files as a vertical tab list and skips files over 2 MB. It is a viewer
 with editing, not a replacement for your IDE's refactoring engine — that's on purpose.
 
 **Removed after v1.1.173: the Android remote and its relay.** The `.apk`, the PC-side relay client and the

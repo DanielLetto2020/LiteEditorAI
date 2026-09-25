@@ -8,6 +8,7 @@
 //         gitDiff(projPath, file, label) — показать дифф файла в центре вивера }
 import { el, icon, toast, showConfirm, showPrompt, baseName, makeModal } from '../ui.js';
 import { ensureLanguage } from '../codeedit.js';
+import { t as tr } from '../i18n.js';   // tr: имя t в этом файле занято локальными переменными
 
 const lite = window.lite;
 
@@ -348,7 +349,7 @@ export function initGit(host) {
     if (opts) renderOpts = { commit: !!opts.commit, log: !!opts.log };
     const wantCommit = renderOpts.commit, wantLog = renderOpts.log;
     const { topbar, commit, branchlog } = containers;
-    if (!p) { topbar.classList.add('hidden'); topbar.replaceChildren(); commit.innerHTML = ''; branchlog.innerHTML = ''; return; }
+    if (!p) { topbar.classList.add('hidden'); topbar.replaceChildren(); commit.innerHTML = ''; branchlog.innerHTML = ''; if (host.onInfo) host.onInfo(null); return; }
     if (p.path !== lastPath) { excluded.clear(); selectedChangeFile = null; selectedCommit = null; lastPath = p.path; } // новый проект — выбор с нуля
     const reqPath = p.path;
     const seq = ++gitRenderSeq;
@@ -357,6 +358,7 @@ export function initGit(host) {
     if (wantLog) branchlog.innerHTML = '<div class="git-loading">Загрузка…</div>';
     const info = await lite.git.info(p.path);
     if (stale()) return;
+    if (host.onInfo) host.onInfo(info);   // ветка — в строку состояния окна вивера
 
     if (!info.repo) {
       topbar.classList.add('hidden'); topbar.replaceChildren();
@@ -440,7 +442,7 @@ export function initGit(host) {
     const dd = el('div', 'gm-branchdd');
     const ddBtn = el('button', 'gm-branchsel');
     ddBtn.type = 'button';
-    ddBtn.title = 'Текущая ветка — нажмите для переключения и действий';
+    ddBtn.title = tr('Текущая ветка — переключить, создать, слить, сравнить');
     ddBtn.append(icon('git', 14), el('span', 'gm-branchsel-txt', info.branch), icon('chevron-down', 14));
     const pop = el('div', 'gm-branchpop hidden');
     dd.append(ddBtn, pop);
@@ -461,20 +463,26 @@ export function initGit(host) {
     ddBtn.onclick = () => (popOpen ? closePop() : openPop());
     bar.appendChild(dd);
 
-    // ahead/behind vs upstream
-    if (info.upstream) {
-      const sync = el('span', 'git-chip' + ((info.ahead || info.behind) ? ' warn' : ' ok'), (info.ahead || info.behind) ? ('↑' + info.ahead + ' ↓' + info.behind) : 'up to date');
-      sync.title = 'Относительно upstream ' + info.upstream;
-      bar.appendChild(sync);
-    } else bar.appendChild(el('span', 'git-chip muted', info.hasRemote ? 'нет upstream' : 'без remote'));
+    // Нет upstream / нет remote — приглушённая пометка у ветки (счётчики pull/push тогда не считаются).
+    if (!info.upstream) {
+      const note = el('span', 'vcs-note', info.hasRemote ? tr('ветка не связана с сервером') : tr('без удалённого репозитория'));
+      note.title = info.hasRemote ? tr('У ветки нет upstream: Push создаст её на сервере') : tr('В репозитории нет remote — отправлять некуда');
+      bar.appendChild(note);
+    }
 
-    bar.appendChild(el('div', 'drag-space-static'));
-
-    // fetch / pull / push прямо в полосе
+    // fetch / pull / push: подписи и счётчики коммитов — сколько забрать (↓) и отправить (↑)
     const runAction = async (btn, fn) => { btn.disabled = true; btn.classList.add('loading'); try { await fn(); } finally { btn.classList.remove('loading'); } };
-    const fetchBtn = gitTool('refresh', null, 'git fetch --all --prune');
-    const pull = gitTool('download', null, 'git pull --ff-only');
-    const push = gitTool('upload', null, 'git push');
+    const fetchBtn = gitTool('refresh', null, tr('Проверить сервер на новые коммиты (git fetch)'), 'ico');
+    const pull = gitTool('download', 'Pull', info.upstream
+      ? (info.behind ? tr('Забрать с сервера коммитов: {0} (git pull --ff-only)', info.behind) : tr('Забрать новые коммиты с сервера (git pull --ff-only) — сейчас нечего'))
+      : tr('Забрать новые коммиты с сервера (git pull --ff-only)'));
+    const push = gitTool('upload', 'Push', info.upstream
+      ? (info.ahead ? tr('Отправить на сервер коммитов: {0} (git push)', info.ahead) : tr('Отправить коммиты на сервер (git push) — сейчас нечего'))
+      : tr('Отправить коммиты на сервер (git push)'));
+    if (info.upstream && info.behind) pull.appendChild(el('span', 'git-count', '↓' + info.behind));
+    if (info.upstream && info.ahead) push.appendChild(el('span', 'git-count', '↑' + info.ahead));
+    pull.classList.toggle('has-count', !!(info.upstream && info.behind));
+    push.classList.toggle('has-count', !!(info.upstream && info.ahead));
     fetchBtn.onclick = () => runAction(fetchBtn, async () => { const r = await lite.git.fetch(p.path); toast(r.ok ? 'Fetch готов' : (r.error || 'fetch не прошёл'), { kind: r.ok ? undefined : 'err', ttl: 8000 }); renderGitPanel(p); });
     pull.onclick = () => runAction(pull, async () => { const r = await lite.git.pull(p.path); toast(r.ok ? 'Pull готов' : (r.error || 'pull не прошёл'), { kind: r.ok ? undefined : 'err', ttl: 8000 }); renderGitPanel(p); renderProjects(); });
     push.onclick = () => runAction(push, async () => { const r = await lite.git.push(p.path); toast(r.ok ? 'Запушено' : (r.error || 'push не прошёл'), { kind: r.ok ? undefined : 'err', ttl: 8000 }); renderGitPanel(p); });
@@ -496,25 +504,35 @@ export function initGit(host) {
 
     let commit = null, commitPush = null, commitCount = null, amendCb = null;
 
-    // ---- тулбар НАД списком (PhpStorm-style, иконки): stash · список stash · вкл/снять все · откат · обновить
-    const toolbar = el('div', 'git-commit-toolbar');
-    const stashBtn = miniIcon('layers', 'Спрятать все изменения (git stash -u)');
-    const stashListBtn = miniIcon('archive', 'Список stash — применить / вернуть / удалить');
-    const includeAll = miniIcon('check', 'Включить все файлы в коммит');
-    const excludeAll = miniIcon('x', 'Снять все галочки');
-    const discAll = miniIcon('eraser', 'Откатить все отслеживаемые правки', 'gm-disc');
-    const refreshBtn = miniIcon('refresh', 'Обновить список изменений');
+    // ---- шапка раздела: общий флажок (все файлы в коммит / ни одного) · «Изменения · N» · действия
+    const toolbar = el('div', 'git-commit-head');
+    const master = el('input', 'gm-check gm-master'); master.type = 'checkbox';
+    master.title = tr('Включить в коммит все файлы или снять все');
+    master.disabled = !committableKeys.length;
+    const syncMaster = () => {
+      const on = committableKeys.filter((k) => !excluded.has(k)).length;
+      master.checked = committableKeys.length > 0 && on === committableKeys.length;
+      master.indeterminate = on > 0 && on < committableKeys.length;
+    };
+    syncMaster();
+    master.onclick = () => {
+      const all = committableKeys.every((k) => !excluded.has(k));
+      for (const f of committableKeys) { if (all) excluded.add(f); else excluded.delete(f); }
+      renderGitPanel(p);
+    };
+    const refreshBtn = miniIcon('refresh', tr('Обновить список изменений'));
+    const stashBtn = miniIcon('layers', tr('Спрятать все изменения во временное хранилище (git stash -u)'));
+    const stashListBtn = miniIcon('archive', tr('Спрятанные изменения: вернуть или удалить (git stash)'));
+    const discAll = miniIcon('eraser', tr('Отменить все правки в отслеживаемых файлах'), 'gm-disc');
     stashBtn.disabled = !keys.length; discAll.disabled = !keys.length;
-    includeAll.disabled = !committableKeys.length; excludeAll.disabled = !committableKeys.length;
-    toolbar.append(stashBtn, stashListBtn, el('span', 'gm-tsep'), includeAll, excludeAll, el('span', 'gm-tsep'), discAll, refreshBtn);
+    toolbar.append(master, el('span', 'git-commit-title', tr('Изменения')), el('span', 'git-commit-num', keys.length ? String(keys.length) : ''),
+      el('div', 'drag-space-static'), refreshBtn, stashBtn, stashListBtn, discAll);
     content.appendChild(toolbar);
 
     const runAction = async (btn, fn) => { btn.disabled = true; btn.classList.add('loading'); try { await fn(); } finally { btn.classList.remove('loading'); } };
     stashBtn.onclick = () => runAction(stashBtn, async () => { const r = await lite.git.stash(p.path); toast(r.ok ? 'Изменения спрятаны в stash' : (r.error || 'stash не прошёл'), { kind: r.ok ? undefined : 'err', ttl: 8000 }); renderGitPanel(p); renderProjects(); });
     stashListBtn.onclick = () => openStashList(p);
     refreshBtn.onclick = () => renderGitPanel(p);
-    includeAll.onclick = () => { for (const f of committableKeys) excluded.delete(f); renderGitPanel(p); };
-    excludeAll.onclick = () => { for (const f of committableKeys) excluded.add(f); renderGitPanel(p); };
     discAll.onclick = () => showConfirm('Откатить все правки?', 'Изменения во всех отслеживаемых файлах будут отменены. Новые (неотслеживаемые) файлы останутся на месте.', 'Откатить всё', async () => {
       const rr = await lite.git.discardAll(p.path);
       if (rr.ok) { selectedChangeFile = null; toast('Правки откачены'); renderGitPanel(p); renderProjects(); } else toast(rr.error || 'не удалось', { kind: 'err' });
@@ -536,7 +554,8 @@ export function initGit(host) {
         commit.title = title;
         commitPush.title = blockedByConflicts ? title : 'Закоммитить выбранное и сразу запушить';
       }
-      if (commitCount) commitCount.textContent = n + ' из ' + committableKeys.length + ' файлов' + (conflictSet.size ? ' · ' + conflictSet.size + ' конфл.' : '');
+      if (commitCount) commitCount.textContent = tr('В коммит: {0} из {1}', n, committableKeys.length) + (conflictSet.size ? ' · ' + tr('конфликтов: {0}', conflictSet.size) : '');
+      syncMaster();
     };
     const paintSelection = () => {
       changes.querySelectorAll('.gm-file').forEach((row) => row.classList.toggle('open', row._file === selectedChangeFile));
@@ -635,12 +654,12 @@ export function initGit(host) {
     }
 
     // ---- панель коммита СНИЗУ: счётчик + сообщение + Commit / Commit & Push (PhpStorm: сообщение под списком)
-    const msg = el('textarea', 'gm-msg'); msg.placeholder = 'Сообщение коммита…';
+    const msg = el('textarea', 'gm-msg'); msg.placeholder = tr('Сообщение коммита… (Ctrl+Enter — закоммитить)');
     msg.value = commitDraft[p.path] || '';           // восстановить черновик (re-render/перезапуск не теряет ввод)
     msg.addEventListener('input', () => setDraft(p.path, msg.value));
     const commitPanel = el('div', 'git-commit-panel');
     const commitTop = el('div', 'git-commit-top');
-    commitTop.append(el('div', 'git-sec', 'Сообщение коммита'), (commitCount = el('div', 'git-commit-count')));
+    commitTop.append(el('div', 'git-sec', tr('Сообщение')), (commitCount = el('div', 'git-commit-count')));
     commitPanel.append(commitTop, msg);
     const commitRow = el('div', 'git-tools git-tools-commit');
     commit = gitTool('check', 'Commit', 'Закоммитить выбранные изменения', 'primary');
@@ -681,6 +700,10 @@ export function initGit(host) {
     };
     commit.onclick = () => doCommit(false);
     commitPush.onclick = () => doCommit(true);
+    // Ctrl+Enter в поле сообщения — закоммитить (как в PhpStorm), Ctrl+Shift+Enter — с пушем.
+    msg.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); const b = e.shiftKey ? commitPush : commit; if (!b.disabled) doCommit(e.shiftKey); }
+    });
     commitRow.append(commit, commitPush, amendLb);
     commitPanel.appendChild(commitRow);
     content.appendChild(commitPanel);
@@ -796,22 +819,24 @@ export function initGit(host) {
       renderCommitFilesTree(filesSide, p, c);
     };
     for (const c of commits) {
+      // Одна строка, как в логе PhpStorm: хеш · сообщение (+ метки веток и тегов) · автор · когда.
       const cr = el('div', 'git-commit' + (c.hash === selectedCommit ? ' sel' : ''));
-      cr.title = c.subject + '\n' + c.hash;
-      const main = el('div', 'git-commit-main');
-      main.appendChild(el('span', 'gm-hash', c.hash));
+      cr.title = c.subject + '\n' + c.hash + ' · ' + c.author + ' · ' + c.when;
+      cr.appendChild(el('span', 'gm-hash', c.hash));
+      const main = el('span', 'git-commit-main');
       main.appendChild(el('span', 'git-csubj', c.subject));
-      cr.appendChild(main);
-      const meta = el('div', 'git-commit-meta');
-      meta.appendChild(el('span', null, c.when));
-      meta.appendChild(el('span', null, c.author));
-      cr.appendChild(meta);
-      if (c.refs) {
-        const refs = el('div', 'git-ref-list');
-        for (const ref of c.refs.split(',').map((x) => x.trim()).filter(Boolean).slice(0, 4)) refs.appendChild(el('span', 'git-refs', ref));
-        cr.appendChild(refs);
+      if (c.refs) {   // метки веток и тегов — после сообщения: сообщение важнее, метки ужимаются первыми
+        const refs = el('span', 'git-refs-box');
+        for (const ref of c.refs.split(',').map((x) => x.trim()).filter(Boolean).slice(0, 4)) {
+          const head = /^HEAD\b/.test(ref), remote = /^origin\/|^[\w.-]+\/HEAD$/.test(ref), tag = /^tag:/.test(ref);
+          refs.appendChild(el('span', 'git-refs' + (head ? ' head' : remote ? ' remote' : tag ? ' tag' : ''), ref.replace(/^tag:\s*/, '')));
+        }
+        main.appendChild(refs);
       }
-      const copyBtn = miniIcon('copy', 'Скопировать хеш');
+      cr.appendChild(main);
+      cr.appendChild(el('span', 'git-cauthor', c.author));
+      cr.appendChild(el('span', 'git-cwhen', c.when));
+      const copyBtn = miniIcon('copy', tr('Скопировать хеш'));
       copyBtn.onclick = (e) => { e.stopPropagation(); lite.copyText(c.hash); toast('Хеш скопирован: ' + c.hash); };
       const acts = el('div', 'git-commit-acts'); acts.appendChild(copyBtn); cr.appendChild(acts);
       cr.addEventListener('click', () => selectCommit(c, cr));
