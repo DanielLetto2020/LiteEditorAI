@@ -86,8 +86,7 @@ export function initFiles(host) {
   }
   // B16: Zen-режим — скрыть всё кроме кода (дерево/табы/стрип/git/лог); Esc или повтор кнопки — выход.
   function toggleZen() {
-    const on = document.body.classList.toggle('viewer-zen');
-    $('#viewer-zen').classList.toggle('on', on);
+    document.body.classList.toggle('viewer-zen');
     setTimeout(() => { try { editor && editor.requestMeasure(); } catch (_) {} if (settings.minimap) kickMinimap(); }, 60);
   }
   function exitZen() { if (document.body.classList.contains('viewer-zen')) toggleZen(); }
@@ -98,7 +97,6 @@ export function initFiles(host) {
       editor.dispatch({ effects: minimapComp.reconfigure(settings.minimap ? minimapExt : []) });
       if (settings.minimap) kickMinimap();   // включили → форсим первый render (иначе гаттер width:0)
     }
-    $('#viewer-minimap').classList.toggle('on', settings.minimap);
   }
   // A10: сворачивание парных маркеров #region/#endregion (поверх стандартного codeFolding по скобкам).
   // foldService спрашивается на старте каждой строки; начало региона → ищем парный конец с учётом вложенности.
@@ -381,24 +379,49 @@ export function initFiles(host) {
     if (editor) updateStatus(editor.state);
   }
   function refreshBlameIfOn() { if (blameOn) loadBlame().then(() => { updateBlameGutter(); if (editor) updateStatus(editor.state); }); }
-  // Нижняя статус-строка вивера: позиция курсора (строка:колонка), число строк, выделение, blame, язык.
+  // Отступы открытого файла для строки состояния: табы или пробелы (шаг — самая частая разница отступов
+  // соседних строк). Считается один раз на загрузку файла (setEditorText), не на каждое движение курсора.
+  let docIndent = '';
+  function detectIndent(text) {
+    const lines = String(text).split('\n', 4000);
+    let tabs = 0, spaces = 0, prev = 0;
+    const steps = new Map();
+    for (const ln of lines) {
+      if (!ln.trim()) continue;
+      if (ln[0] === '\t') { tabs++; continue; }
+      const n = ln.length - ln.trimStart().length;
+      if (n) spaces++;
+      const d = Math.abs(n - prev);
+      if (d >= 2 && d <= 8) steps.set(d, (steps.get(d) || 0) + 1);
+      prev = n;
+    }
+    if (!tabs && !spaces) return '';
+    if (tabs > spaces) return tr('Табы');
+    let best = 0, bestN = 0; for (const [d, n] of steps) if (n > bestN) { best = d; bestN = n; }
+    return best ? tr('Пробелы: {0}', best) : tr('Пробелы');
+  }
+  // Строка состояния окна (низ, на всю ширину): позиция курсора, выделение, отступы, кодировка, концы
+  // строк, язык; слева — автор текущей строки при включённом blame. Без открытого файла поля пустые.
   function updateStatus(state) {
-    const bar = $('#viewer-status'); if (!bar) return;
-    if (!currentFile || previewMode || diffMode) { bar.classList.add('hidden'); return; }
-    bar.classList.remove('hidden');
+    syncEmptyState();
+    const set = (sel, txt, title) => { const n = $(sel); if (!n) return; n.textContent = txt || ''; n.classList.toggle('hidden', !txt); n.title = title || ''; };
+    if (!currentFile || previewMode || diffMode || !state) {
+      for (const sel of ['#vs-pos', '#vs-sel', '#st-indent', '#st-enc', '#st-eol', '#vs-lang', '#vs-blame']) set(sel, '');
+      return;
+    }
     const sel = state.selection.main;
     const line = state.doc.lineAt(sel.head);
     const col = sel.head - line.from + 1;
     const selLen = sel.to - sel.from;
-    const posEl = $('#vs-pos'), selEl = $('#vs-sel'), langEl = $('#vs-lang'), blameEl = $('#vs-blame');
-    if (posEl) posEl.textContent = `Стр ${line.number}, кол ${col}`;
-    if (selEl) selEl.textContent = selLen ? `(выбрано ${selLen})` : '';
-    if (langEl) langEl.textContent = (LANG_LABEL[extOf(currentFile)] || 'Текст') + ' · ' + state.doc.lines + ' стр';
-    if (blameEl) {
-      const b = (blameOn && blameData) ? blameData[line.number - 1] : null;
-      blameEl.textContent = !b ? '' : (b.uncommitted ? '● не закоммичено' : `● ${b.author || '?'} · ${fmtAgo(b.time)} · ${(b.summary || '').slice(0, 42)}`);
-      blameEl.title = b && !b.uncommitted ? (b.hash + ' · ' + (b.summary || '')) : '';
-    }
+    set('#vs-pos', tr('Стр {0}, кол {1}', line.number, col), tr('Строк в файле: {0}', state.doc.lines));
+    set('#vs-sel', selLen ? tr('Выделено: {0}', selLen) : '');
+    set('#st-indent', docIndent);
+    set('#st-enc', fileReadOnly ? tr('Не UTF-8 · только чтение') : 'UTF-8', fileReadOnly ? tr('Файл не в кодировке UTF-8: вивер показывает его, но не сохраняет') : '');
+    set('#st-eol', docEol === '\r\n' ? 'CRLF' : 'LF', tr('Концы строк сохраняются как в файле'));
+    set('#vs-lang', LANG_LABEL[extOf(currentFile)] || tr('Текст'));
+    const b = (blameOn && blameData) ? blameData[line.number - 1] : null;
+    set('#vs-blame', !b ? '' : (b.uncommitted ? tr('Строка не закоммичена') : `${b.author || '?'} · ${fmtAgo(b.time)} · ${(b.summary || '').slice(0, 60)}`),
+      b && !b.uncommitted ? (b.hash + ' · ' + (b.summary || '')) : '');
   }
   // ---- git-маркеры в гаттере вивера: цветная полоса слева для строк, изменённых относительно HEAD.
   // Данные берём из `git diff HEAD -- file` (тот же источник, что diff-режим), парсим ханки в пер-строчные метки.
@@ -500,7 +523,6 @@ export function initFiles(host) {
   // иначе при ошибке вивер показывал имя/подсветку файла без живого currentFile (рассинхрон).
   function commitOpenUI(filePath, kind) {
     $('#viewer-filename').textContent = baseName(filePath);
-    const runSql = $('#viewer-runsql'); if (runSql) runSql.style.display = extOf(filePath) === 'sql' ? '' : 'none'; // .sql → «Выполнить в БД»
     updatePreviewBar(kind);
     document.querySelectorAll('.tree-row.open').forEach((r) => r.classList.remove('open'));
     const row = document.querySelector(`.tree-row[data-path="${cssEscape(filePath)}"]`);
@@ -532,18 +554,12 @@ export function initFiles(host) {
     }
     m.appendChild(list);
   }
-  // Контекст-бар просмотра (низ колонки табов): Превью/Рядом/Оригинал (радио-группа режимов) для md·html,
-  // Во весь экран·В браузере — только html. Оригинал — режим по умолчанию (файл открывается исходником).
-  // Картинки не рендерятся как исходник — у них превью и так единственный вид, тогглы не нужны → бар скрыт.
+  // Переключатель режима просмотра в шапке редактора («Код · Рядом · Превью») — только для md·html.
+  // Код — режим по умолчанию (файл открывается исходником). Картинки и так показываются превью — без
+  // переключателя. «Во весь экран» и «В браузере» для html — в меню «⋯».
   function updatePreviewBar(kind) {
-    const foot = $('#tabs-foot'); if (!foot) return;
-    const showable = kind === 'markdown' || kind === 'html';
-    foot.style.display = showable ? '' : 'none';
-    $('#viewer-preview').style.display = showable ? '' : 'none';
-    $('#viewer-split').style.display = showable ? '' : 'none';
-    $('#viewer-original').style.display = showable ? '' : 'none';
-    $('#viewer-full').style.display = (kind === 'html') ? '' : 'none';
-    $('#viewer-browser').style.display = (kind === 'html') ? '' : 'none';
+    const seg = $('#view-modes'); if (!seg) return;
+    seg.style.display = (kind === 'markdown' || kind === 'html') ? '' : 'none';
     updateViewButtons();
   }
   // Подсветка активного режима в радио-группе Превью/Рядом/Оригинал — единственное место, где ставится .on.
@@ -935,11 +951,16 @@ export function initFiles(host) {
     editor.dispatch({ changes: { from: 0, to: editor.state.doc.length, insert: text }, effects: [langComp.reconfigure(lang), setGitGutterEffect.of([])] });
     loadingDoc = false;
     symCacheFile = null;
+    docIndent = detectIndent(text);
     updateStatus(editor.state);
     updateBreadcrumb(editor.state);
     refreshBookmarkGutter();          // канонический момент загрузки дока → маркеры закладок по НОВОМУ содержимому
   }
-  function markDirty(v) { dirty = v; $('#viewer-dirty').classList.toggle('show', v); }
+  function markDirty(v) {
+    dirty = v;
+    $('#viewer-dirty').classList.toggle('show', v);
+    const tab = document.querySelector('.ftab.active'); if (tab) tab.classList.toggle('dirty', v);   // точка на вкладке — без перерисовки списка
+  }
   // Перевод строки файла на диске. Док CodeMirror всегда с '\n' (CRLF/CR он режет при загрузке), и без
   // этого каждое сохранение молча переводило CRLF-файл в LF целиком: дифф на все строки, чужие переводы
   // строк в Windows-репозитории. Запоминаем преобладающий при загрузке и возвращаем его при записи.
@@ -1132,10 +1153,11 @@ export function initFiles(host) {
 
   // ---------------------------------------------------------------- git status (tree decorations)
   async function loadGitStatus(proj, seq) {
-    if (!proj) { gitFiles = {}; return; }
+    if (!proj) { gitFiles = {}; updateGitStatusBar(); return; }
     const res = await lite.git.status(proj.path);
     if (seq !== treeSeq) return;                        // обогнала более свежая перерисовка дерева — её статус новее
     gitFiles = res && res.files ? res.files : {};
+    updateGitStatusBar();
     // освежить гаттер после внешних git-операций (коммит/checkout → tree refresh); только при чистом буфере —
     // иначе перерисовали бы метки по диск-vs-HEAD, не совпадающие с несохранёнными правками в редакторе
     if (currentFile && !dirty) updateGitGutter(currentFile);
@@ -1160,6 +1182,7 @@ export function initFiles(host) {
     exitPreview();
     currentFile = null;
     clearGitDiff();
+    emptyShown = false;             // проект сменился — карточку пустого редактора (проект, недавние) нарисовать заново
     setEditorText('', []);          // setEditorText сам обновит гаттер закладок (currentFile=null → пусто)
     clearGitGutter();
     hideReloadBar();
@@ -1192,7 +1215,9 @@ export function initFiles(host) {
   }
   // Заглушка вивера, когда нет выбранного проекта (открыта категория/чат OpenRouter).
   function showViewerPlaceholder() {
-    $('#tree-title').textContent = 'ДЕРЕВО';
+    $('#tree-title').textContent = tr('Файлы');
+    $('#tb-project-name').textContent = '—';
+    statusBranch = null; gitFiles = {}; updateGitStatusBar();
     ++treeSeq;                                          // идущая перерисовка прошлого проекта не должна лечь поверх заглушки
     const root = $('#tree');
     root.innerHTML = '';
@@ -1238,7 +1263,8 @@ export function initFiles(host) {
   let treeSeq = 0;                   // токен перерисовки дерева: вотчер, ⟳, git и смена проекта идут внахлёст
   async function renderTree(proj) {
     const seq = ++treeSeq;
-    $('#tree-title').textContent = proj.name.toUpperCase();
+    $('#tree-title').textContent = tr('Файлы');           // имя проекта — в панели инструментов, здесь не дублируем
+    $('#tb-project-name').textContent = proj.name;
     await loadGitStatus(proj, seq);
     if (seq !== treeSeq) return;
     // Строим в отвязанный фрагмент и подменяем разом. Раньше #tree чистился и наполнялся по ходу
@@ -1527,10 +1553,28 @@ export function initFiles(host) {
     const rel = p ? relTo(p.path, currentFile) : baseName(currentFile);
     const segs = rel.split('/');
     bar.replaceChildren();
-    segs.forEach((s, i) => { if (i) bar.appendChild(el('span', 'crumb-sep', '›')); bar.appendChild(el('span', 'crumb' + (i === segs.length - 1 ? ' crumb-file' : ''), s)); });
+    // Папки кликабельны — показывают себя в дереве; имя файла — сам файл в дереве; символ — структура файла.
+    segs.forEach((s, i) => {
+      if (i) bar.appendChild(el('span', 'crumb-sep', '›'));
+      const last = i === segs.length - 1;
+      const c = el('span', 'crumb' + (last ? ' crumb-file' : ''), s);
+      if (p) {
+        // разделитель — как в путях дерева (на Windows «\\»), иначе строка папки не найдётся
+        const sep = p.path.includes('\\') ? '\\' : '/';
+        const target = last ? currentFile : p.path.replace(/[/\\]+$/, '') + sep + segs.slice(0, i + 1).join(sep);
+        c.title = tr('Показать в дереве');
+        c.addEventListener('click', () => revealInTree(target, !last));
+      }
+      bar.appendChild(c);
+    });
     const ln = state.doc.lineAt(state.selection.main.head).number;
     let cur = null; for (const s of currentSymbols()) { if (s.line <= ln) cur = s; else break; }
-    if (cur) { bar.appendChild(el('span', 'crumb-sep', '›')); bar.appendChild(el('span', 'crumb crumb-sym', cur.name)); }
+    if (cur) {
+      bar.appendChild(el('span', 'crumb-sep', '›'));
+      const c = el('span', 'crumb crumb-sym', cur.name); c.title = tr('Структура файла (Ctrl+Shift+O)');
+      c.addEventListener('click', showOutline);
+      bar.appendChild(c);
+    }
   }
 
   // --- A6: sticky scroll — заголовок области (функция/класс), чей заголовок ушёл вверх за экран, закреплён сверху.
@@ -1912,7 +1956,7 @@ export function initFiles(host) {
     closeMenus();
     const dd = el('div', 'menu-dropdown'); dd.style.minWidth = '190px';
     dd.addEventListener('click', (e) => e.stopPropagation());
-    dd.appendChild(menuRow(pinnedTabs.has(t) ? 'x' : 'flag', pinnedTabs.has(t) ? 'Открепить' : 'Закрепить', () => { closeMenus(); togglePin(t); }));
+    dd.appendChild(menuRow('pin', pinnedTabs.has(t) ? 'Открепить' : 'Закрепить', () => { closeMenus(); togglePin(t); }));
     dd.appendChild(el('div', 'menu-sep'));
     dd.appendChild(menuRow('x', 'Закрыть', () => { closeMenus(); closeTab(t); }));
     dd.appendChild(menuRow('eraser', 'Закрыть другие', () => { closeMenus(); closeOtherTabs(t); }));
@@ -1922,22 +1966,28 @@ export function initFiles(host) {
   }
   function renderTabs() {
     const pane = $('#tabs-pane'); if (!pane) return;
-    const list = $('#tabs-list') || pane;   // табы — в список; футер-бар просмотра (#tabs-foot) НЕ трогаем
+    const list = $('#tabs-list') || pane;
     const root = $('#module-root');
     list.replaceChildren();
     for (const t of [...pinnedTabs]) if (!openTabs.includes(t)) pinnedTabs.delete(t);  // прунинг исчезнувших
     // Колонку показываем только когда есть открытые файлы; иначе ширина 0 (грид-колонка схлопывается).
-    if (root) root.style.setProperty('--tabs-w', openTabs.length ? '184px' : '0px');
+    if (root) root.style.setProperty('--tabs-w', openTabs.length ? '196px' : '0px');
     pane.classList.toggle('empty', !openTabs.length);
+    const cnt = $('#tabs-count'); if (cnt) cnt.textContent = openTabs.length ? String(openTabs.length) : '';
+    // Одноимённые файлы (два index.js) различаем папкой — серой подписью справа от имени.
+    const nameCount = new Map();
+    for (const t of openTabs) nameCount.set(baseName(t), (nameCount.get(baseName(t)) || 0) + 1);
     for (const t of orderedTabs()) {
-      const tab = el('div', 'ftab' + (t === currentFile ? ' active' : '') + (pinnedTabs.has(t) ? ' pinned' : ''));
+      const tab = el('div', 'ftab' + (t === currentFile ? ' active' : '') + (pinnedTabs.has(t) ? ' pinned' : '') + (t === currentFile && dirty ? ' dirty' : ''));
       tab.title = t;
       const gc = gitClassFor(t); // та же цветовая кодировка статуса, что и в дереве
       const nm = el('span', 'ftab-name' + (gc ? ' ' + gc : ''), baseName(t));
       tab.appendChild(fileTypeSvg(t));
       tab.appendChild(nm);
-      const x = el('button', 'ftab-x'); x.title = pinnedTabs.has(t) ? 'Закреплён (ПКМ — меню)' : 'Закрыть';
-      x.appendChild(icon(pinnedTabs.has(t) ? 'flag' : 'x', 12));
+      if (nameCount.get(baseName(t)) > 1) tab.appendChild(el('span', 'ftab-dir', baseName(dirName(t))));
+      tab.appendChild(el('span', 'ftab-dot'));   // точка «не сохранено» (класс .dirty у вкладки)
+      const x = el('button', 'ftab-x'); x.title = pinnedTabs.has(t) ? tr('Закреплена — нажмите, чтобы открепить') : tr('Закрыть (средняя кнопка мыши)');
+      x.appendChild(icon(pinnedTabs.has(t) ? 'pin' : 'x', 12));
       x.addEventListener('click', (e) => { e.stopPropagation(); if (pinnedTabs.has(t)) togglePin(t); else closeTab(t); });
       tab.appendChild(x);
       tab.addEventListener('click', () => { if (t !== currentFile) openFileGuarded(t); });
@@ -2136,6 +2186,160 @@ export function initFiles(host) {
     });
   }
 
+  // ================================================================ оболочка окна: пустой редактор, меню, статус
+  // Пустой редактор (нет файла, не дифф и не превью): не голая строка «1», а подсказка, как начать, и
+  // недавние файлы. Перерисовываем только при появлении — список недавних меняется лишь при открытии файла.
+  let emptyShown = false;
+  function syncEmptyState() {
+    const box = $('#viewer-empty'); if (!box) return;
+    const show = !currentFile && !diffMode && !previewMode;
+    box.classList.toggle('hidden', !show);
+    $('#viewer-pane').classList.toggle('no-file', show);   // шапка без подписи и действий над файлом
+    $('#editor').classList.toggle('is-empty', show);
+    if (show && !emptyShown) renderEmptyState(box);
+    emptyShown = show;
+  }
+  function renderEmptyState(box) {
+    const p = activeProject();
+    box.replaceChildren();
+    const card = el('div', 've-card');
+    card.appendChild(el('div', 've-title', p ? tr('Файл не открыт') : tr('Проект не выбран')));
+    card.appendChild(el('div', 've-sub', p ? tr('Выберите файл в дереве слева или найдите его по имени.') : tr('Выберите проект в главном окне редактора — здесь появятся его файлы.')));
+    if (p) {
+      const acts = el('div', 've-actions');
+      const act = (ic, label, keys, fn) => {
+        const b = el('button', 've-act'); b.type = 'button';
+        b.append(icon(ic, 15), el('span', 've-act-lbl', label), el('kbd', null, keys));
+        b.addEventListener('click', fn);
+        acts.appendChild(b);
+      };
+      act('search', tr('Найти файл по имени'), 'Ctrl+P', openPalette);
+      act('list', tr('Найти текст в проекте'), 'Ctrl+Shift+F', openProjectSearch);
+      if (statusBranch) {   // пункты git — только в репозитории (ветку сообщает git-компонент через onInfo)
+        act('check', tr('Изменённые файлы'), '', () => showSection('commit'));
+        act('git', tr('История коммитов'), '', () => showSection('branches'));
+      }
+      card.appendChild(acts);
+      const recent = recentFiles.filter((f) => pathInside(f, p.path)).slice(0, 8);
+      if (recent.length) {
+        card.appendChild(el('div', 've-head', tr('Недавние файлы')));
+        const list = el('div', 've-recent');
+        for (const f of recent) {
+          const r = el('button', 've-file'); r.type = 'button'; r.title = f;
+          r.append(fileTypeSvg(f), el('span', 've-file-name', baseName(f)), el('span', 've-file-dir', dirName(relTo(p.path, f)) === relTo(p.path, f) ? '' : dirName(relTo(p.path, f))));
+          r.addEventListener('click', () => openFileGuarded(f));
+          list.appendChild(r);
+        }
+        card.appendChild(list);
+      }
+    }
+    box.appendChild(card);
+  }
+  // Показать файл или папку в дереве: раскрыть предков, прокрутить к строке и коротко подсветить её.
+  // expand — раскрыть и саму папку (клик по папке в «хлебных крошках» — значит, нужно её содержимое).
+  async function revealInTree(target, expand) {
+    const p = activeProject(); if (!p || !target || !pathInside(target, p.path)) return;
+    if (curSection !== 'files') applySection('files');
+    if (expand && target !== p.path) expandedDirs.add(target);
+    for (let d = dirName(target), guard = 0; d && d !== p.path && pathInside(d, p.path) && guard < 64; guard++) {
+      expandedDirs.add(d);
+      const up = dirName(d); if (up === d) break;   // путь без разделителя — выше идти некуда
+      d = up;
+    }
+    await renderTree(p);
+    const row = document.querySelector(`.tree-row[data-path="${cssEscape(target)}"]`);
+    if (!row) return;
+    row.scrollIntoView({ block: 'center' });
+    row.classList.add('flash');
+    setTimeout(() => row.classList.remove('flash'), 1200);
+  }
+  function collapseAllTree() { expandedDirs.clear(); const p = activeProject(); if (p) renderTree(p); }
+  // Меню «⋯» шапки редактора: всё, что нужно реже, чем дифф/авторы/история, — с горячими клавишами.
+  function showMoreMenu(x, y) {
+    closeMenus();
+    const dd = el('div', 'menu-dropdown'); dd.style.minWidth = '250px';
+    dd.addEventListener('click', (e) => e.stopPropagation());
+    // keys — сочетание клавиш: серым справа (стиль .menu-kbd), не в тексте пункта
+    const add = (ic, label, fn, keys) => { const r = menuRow(ic, label, () => { closeMenus(); fn(); }); if (keys) r.appendChild(el('span', 'menu-kbd', keys)); dd.appendChild(r); };
+    const sep = () => dd.appendChild(el('div', 'menu-sep'));
+    const kind = currentFile ? previewKind(currentFile) : null;
+    if (currentFile) {
+      add('save', tr('Сохранить'), saveCurrent, 'Ctrl+S');
+      add('braces', tr('Структура файла'), showOutline, 'Ctrl+Shift+O');
+      add('bookmark', tr('Закладка на строке'), toggleBookmarkHere, 'Ctrl+F2');
+      sep();
+    }
+    add(settings.minimap ? 'check' : 'square', tr('Миникарта кода'), toggleMinimap);
+    add(document.body.classList.contains('viewer-zen') ? 'check' : 'square', tr('Только код'), toggleZen, tr('Esc — выйти'));
+    if (kind === 'html') {
+      sep();
+      add('maximize', tr('Превью во весь экран'), togglePreviewFull);
+      add('globe', tr('Открыть в браузере'), () => lite.openInBrowser(currentFile).then((r) => { if (r && r.error) toast(r.error, { kind: 'err' }); }));
+    }
+    if (currentFile && extOf(currentFile) === 'sql') { sep(); add('database', tr('Выполнить в «Базах данных»…'), runSqlInDb); }
+    if (currentFile) {
+      sep();
+      add('locate', tr('Показать в дереве'), () => revealInTree(currentFile));
+      add('copy', tr('Копировать путь'), () => { lite.copyText(currentFile); toast(tr('Путь скопирован')); });
+      const p = activeProject();
+      if (p) add('copy', tr('Копировать путь от корня проекта'), () => { lite.copyText(relTo(p.path, currentFile)); toast(tr('Путь скопирован')); });
+      add('folder', tr('Показать в проводнике'), () => revealEntry(currentFile));
+    }
+    placeMenu(dd, x, y);
+  }
+  // Кнопка «История» шапки: локальные версии (автосейв, внешние правки) или коммиты git этого файла.
+  function showHistoryMenu(x, y) {
+    if (!currentFile) { toast(tr('Нет открытого файла')); return; }
+    closeMenus();
+    const dd = el('div', 'menu-dropdown'); dd.style.minWidth = '230px';
+    dd.addEventListener('click', (e) => e.stopPropagation());
+    const f = currentFile;
+    dd.appendChild(menuRow('clock', tr('Локальная история…'), () => { closeMenus(); showLocalHistory(f); }));
+    dd.appendChild(menuRow('git', tr('История в git…'), () => { closeMenus(); showFileGitHistory(f); }));
+    placeMenu(dd, x, y);
+  }
+  // Меню у кнопки: под ней, выровнено по правому краю (кнопки шапки прижаты вправо). Клик гасим: окно
+  // закрывает меню любым кликом по document (module-entry), и всплывший клик снял бы только что открытое.
+  function menuUnder(e, fn) { e.stopPropagation(); const r = e.currentTarget.getBoundingClientRect(); fn(Math.max(8, r.right - 250), r.bottom + 4); }
+  // После git-операции (коммит, checkout, stash, откат, pull) статус файлов меняется без события на диске —
+  // коммит трогает только .git, а его вотчер не видит. Перечитываем статус и точечно перекрашиваем дерево,
+  // вкладки и git-метки открытого файла (без перерисовки дерева). Иначе после коммита «изменёнными»
+  // оставались уже закоммиченные файлы — и в дереве, и в счётчиках.
+  let gitMarksSeq = 0;
+  async function refreshGitMarks() {
+    const p = activeProject(); if (!p) return;
+    const seq = ++gitMarksSeq;
+    let res; try { res = await lite.git.status(p.path); } catch (_) { return; }
+    if (seq !== gitMarksSeq || activeProject() !== p || !res || res.error) return;
+    const next = res.files || {};
+    if (JSON.stringify(next) === JSON.stringify(gitFiles)) return;
+    gitFiles = next;
+    updateGitStatusBar();
+    document.querySelectorAll('#tree .tree-row').forEach((row) => {
+      const name = row.querySelector('.tree-name'); if (!name || !row.dataset.path) return;
+      name.classList.remove('g-add', 'g-mod', 'g-del');
+      const gc = row.classList.contains('dir') ? dirGitClass(row.dataset.path) : gitClassFor(row.dataset.path);
+      if (gc) name.classList.add(gc);
+    });
+    renderTabs();
+    if (currentFile && !dirty) updateGitGutter(currentFile);
+  }
+  // Git в строке состояния и счётчик изменений на полосе инструментов. Ветку сообщает git-компонент
+  // (onInfo после git info), число изменений — статус дерева (gitFiles).
+  let statusBranch = null;
+  function updateGitStatusBar() {
+    const n = Object.keys(gitFiles).length;
+    const badge = $('#strip-commit-badge');
+    if (badge) { badge.textContent = n > 99 ? '99+' : String(n); badge.classList.toggle('hidden', !n); }
+    const br = $('#st-branch'), ch = $('#st-changes');
+    if (br) { br.classList.toggle('hidden', !statusBranch); $('#st-branch-name').textContent = statusBranch || ''; }
+    if (ch) {
+      ch.classList.toggle('hidden', !statusBranch);
+      ch.textContent = n ? tr('Изменено файлов: {0}', n) : tr('Изменений нет');
+      ch.classList.toggle('has', !!n);
+    }
+  }
+
   // ================================================================ встроенный Git (секции вивера)
   // Стрип: «Файлы»/«Коммит» — радио для ЛЕВОЙ колонки; «Ветки·История» — тогл НИЖНЕЙ панели (#log-pane).
   // Коммит (слева) и лог (снизу) могут быть открыты одновременно — git.renderPanel рендерит обе по флагам.
@@ -2236,7 +2440,7 @@ export function initFiles(host) {
   // Ресайз левой колонки (дерево/коммит) перетаскиванием разделителя; ширина персистится.
   function wireLeftResize() {
     const g = $('#mw-gutter'), root = $('#module-root'); if (!g || !root) return;
-    const STRIP_W = 42, MIN = 180, MAX = 640;
+    const STRIP_W = 44, MIN = 180, MAX = 640;   // STRIP_W — ширина полосы инструментов (grid-template-columns)
     const saved = host.STORE && host.STORE.mwLeft;
     if (saved) root.style.setProperty('--mw-left', Math.max(MIN, Math.min(MAX, saved)) + 'px');
     let dragging = false;
@@ -2293,46 +2497,53 @@ export function initFiles(host) {
       // открыть изменённый файл из списка коммита в вивере (контекст-меню git-секции)
       openFile: (abs, line) => openFileGuarded(abs, line),
       menuRow, placeMenu, closeMenus, // меню-слой окна вивера — для контекст-меню строки файла
+      // git info прочитан (или проект не репозиторий — null): ветка в строку состояния окна
+      onInfo: (info) => {
+        const was = statusBranch;
+        statusBranch = info && info.repo ? info.branch : null;
+        updateGitStatusBar();
+        if (info && info.repo) refreshGitMarks();
+        if (emptyShown && !!was !== !!statusBranch) renderEmptyState($('#viewer-empty'));   // появился/пропал git — пункты карточки
+      },
     });
-    git.setContainers({ topbar: $('#vcs-topbar'), commit: $('#commit-body'), branchlog: $('#branchlog-body') });
-    document.querySelectorAll('.vcs-strip .strip-btn').forEach((b) => b.addEventListener('click', () => showSection(b.dataset.section)));
+    git.setContainers({ topbar: $('#vcs-git'), commit: $('#commit-body'), branchlog: $('#branchlog-body') });
+    // Полоса инструментов: разделы (data-section) и действия.
+    document.querySelectorAll('.vcs-strip .strip-btn[data-section]').forEach((b) => b.addEventListener('click', () => showSection(b.dataset.section)));
+    $('#viewer-find').addEventListener('click', openProjectSearch);
+    $('#viewer-find').addEventListener('contextmenu', (e) => { e.preventDefault(); openProjectReplace(); }); // ПКМ — замена по проекту
+    $('#viewer-outline').addEventListener('click', showOutline);
+    $('#viewer-todos').addEventListener('click', showTodos);
+    $('#viewer-bookmarks').addEventListener('click', showBookmarks);
+    $('#viewer-agent').addEventListener('click', toggleAgentMode);
+    // Панель инструментов: проект (к дереву) и поиск файла по имени.
+    $('#tb-project').addEventListener('click', () => showSection('files'));
+    $('#tb-search').addEventListener('click', openPalette);
     $('#log-close').addEventListener('click', closeLog);
     wireLeftResize();
     wireLogResize();
-    $('#viewer-save').addEventListener('click', saveCurrent);
+    // Шапка редактора.
     $('#viewer-back').addEventListener('click', navBack);
     $('#viewer-fwd').addEventListener('click', navFwd);
-    $('#viewer-find').addEventListener('click', openProjectSearch);
-    $('#viewer-find').addEventListener('contextmenu', (e) => { e.preventDefault(); openProjectReplace(); }); // ПКМ — замена по проекту
-    $('#viewer-find').title = 'Найти в проекте (Ctrl+Shift+F) · ПКМ — заменить (Ctrl+Shift+R)';
-    $('#viewer-outline').addEventListener('click', showOutline);
-    $('#viewer-todos').addEventListener('click', showTodos);
-    $('#viewer-blame').addEventListener('click', toggleBlame);
-    $('#viewer-hist').addEventListener('click', () => { if (currentFile) showLocalHistory(currentFile); else toast('Нет открытого файла'); });
-    $('#viewer-hist').addEventListener('contextmenu', (e) => { e.preventDefault(); if (currentFile) showFileGitHistory(currentFile); else toast('Нет открытого файла'); });
-    $('#viewer-hist').title = 'Локальная история файла · ПКМ — история файла в git';
-    $('#viewer-zen').addEventListener('click', toggleZen);
-    $('#viewer-agent').addEventListener('click', toggleAgentMode);
-    $('#viewer-runsql').addEventListener('click', runSqlInDb);
-    // C20: контекстное меню кода (агентские действия по выделению + копировать)
-    editor.contentDOM.addEventListener('contextmenu', (e) => { e.preventDefault(); showEditorContextMenu(e.clientX, e.clientY); });
-    $('#viewer-bookmark').addEventListener('click', toggleBookmarkHere);
-    $('#viewer-bookmark').addEventListener('contextmenu', (e) => { e.preventDefault(); showBookmarks(); });
     $('#viewer-diff').addEventListener('click', toggleDiff);
-    // Контекст-бар просмотра под колонкой табов: строим «иконка + подпись» в JS (иконка идёт ПЕРЕД текстом).
-    for (const [sel, ic, label] of [['#viewer-preview', 'eye', 'Превью'], ['#viewer-split', 'grid', 'Рядом'],
-      ['#viewer-original', 'code', 'Оригинал'], ['#viewer-full', 'maximize', 'Во весь экран'], ['#viewer-browser', 'globe', 'В браузере']]) {
-      const b = $(sel); if (b) b.append(icon(ic, 15), el('span', 'tfoot-lbl', label));
-    }
+    $('#viewer-blame').addEventListener('click', toggleBlame);
+    $('#viewer-hist').addEventListener('click', (e) => menuUnder(e, showHistoryMenu));
+    $('#viewer-more').addEventListener('click', (e) => menuUnder(e, showMoreMenu));
     $('#viewer-preview').addEventListener('click', () => setViewMode('preview'));
     $('#viewer-split').addEventListener('click', () => setViewMode('split'));
     $('#viewer-original').addEventListener('click', () => setViewMode('original'));
+    // C20: контекстное меню кода (агентские действия по выделению + копировать)
+    editor.contentDOM.addEventListener('contextmenu', (e) => { e.preventDefault(); showEditorContextMenu(e.clientX, e.clientY); });
     // B17: зеркало выделения превью → исходник (сплит md); дебаунс внутри
     document.addEventListener('selectionchange', () => { if (splitMode) scheduleMirrorFromPreview(); });
-    $('#viewer-full').addEventListener('click', togglePreviewFull);
-    $('#viewer-browser').addEventListener('click', () => { if (currentFile) lite.openInBrowser(currentFile).then((r) => { if (r && r.error) toast(r.error, { kind: 'err' }); }); });
-    $('#viewer-minimap').addEventListener('click', toggleMinimap);
-    $('#viewer-minimap').classList.toggle('on', settings.minimap);
+    // Шапки дерева и колонки открытых файлов.
+    $('#tree-locate').addEventListener('click', () => { if (currentFile) revealInTree(currentFile); else toast(tr('Нет открытого файла')); });
+    $('#tree-collapse').addEventListener('click', collapseAllTree);
+    $('#tabs-close-all').addEventListener('click', closeAllTabs);
+    // Строка состояния: ветка — история и ветки, изменения — «Коммит».
+    $('#st-branch').addEventListener('click', () => showSection('branches'));
+    $('#st-changes').addEventListener('click', () => showSection('commit'));
+    updateGitStatusBar();
+    syncEmptyState();
     $('#viewer-reload-apply').addEventListener('click', () => { hideReloadBar(); reloadCurrentFile(); });
     $('#viewer-reload-dismiss').addEventListener('click', () => hideReloadBar());
     $('#tree-refresh').addEventListener('click', () => { const p = activeProject(); if (p) renderTree(p); });

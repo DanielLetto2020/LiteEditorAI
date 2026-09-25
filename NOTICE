@@ -10,3 +10,9 @@ You may obtain a copy of the License at
 This product includes software developed by Максим Кузьминский.
 When redistributing this software or derivative works, you must retain
 this attribution and the contents of the NOTICE file, per the License.
+
+Bundled fonts (renderer/fonts/), licensed under the SIL Open Font License 1.1:
+  Inter — Copyright 2016 The Inter Project Authors (https://github.com/rsms/inter);
+          license text: renderer/fonts/OFL-Inter.txt
+  JetBrains Mono — Copyright 2020 The JetBrains Mono Project Authors
+          (https://github.com/JetBrains/JetBrainsMono); license text: renderer/fonts/OFL-JetBrainsMono.txt
