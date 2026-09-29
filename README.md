@@ -59,6 +59,11 @@ next one. Notifications included. For Claude Code the light doesn't guess from t
 own state, so status-line redraws and typing never start the spinner, and amber means it is asking for
 permission, asking a question or showing a dialog.
 
+Lots of projects, but agents busy in only two or three? The **eye** in the *Favourites* header keeps only the
+projects where an agent (Claude Code, Codex, Gemini, Aider…) is actually running in a terminal, not just an open
+shell. The button next to it closes terminals with nothing running in them, so a shell opened by a stray click
+stops glowing green. The project itself stays in the list.
+
 An optional **time scale** runs down the left edge of the terminal. It marks when you sent a command, when
 output resumed after a pause, and every new minute — so an hour of agent output stops being an undated wall
 of text. It is a separate layer, not text in the buffer: the agent's own rendering stays intact, and the
