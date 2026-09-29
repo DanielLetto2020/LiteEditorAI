@@ -33,7 +33,7 @@ const { watchTree } = require('./lib/tree-watch'); // слежение за де
 const { createHistory } = require('./lib/history'); // локальная история файлов: снимки, троттл, срок и объём
 const { createBatcher } = require('./lib/ptybatch'); // склейка вывода PTY перед отправкой в окно
 const { foregroundKind } = require('./lib/proctree'); // индикатор активности: состояние группы переднего плана
-const { agentState } = require('./lib/agentstate'); // индикатор: отчёт Claude Code о своей сессии
+const { agentState, agentOf } = require('./lib/agentstate'); // индикатор: отчёт Claude Code о своей сессии; какой агент в терминале
 
 app.setName('LiteEditorAI');
 app.setAppUserModelId('com.mletto.liteeditorai'); // Windows: имя/иконка/группировка в панели задач и уведомлениях
@@ -122,7 +122,7 @@ try {
   const legacy = path.join(os.homedir(), '.LiteEditor');
   if (!fs.existsSync(storeDir) && fs.existsSync(legacy)) fs.cpSync(legacy, storeDir, { recursive: true });
 } catch (_) {}
-const STORE_KEYS = ['projects', 'settings', 'layout', 'recents', 'lastParent', 'categories', 'sectionOrder', 'favOrder', 'accordions', 'dismissed', 'projTabs', 'openrouter', 'dockerUi', 'dbConnections', 'dbUi', 'rhConnections', 'rhUi', 'extData', 'extEnabled', 'quickbar', 'seoSites', 'moduleWins', 'mwLeft', 'mwLogH', 'gitFav', 'commitDrafts', 'bookmarks', 'promptSnippets', 'pomodoro', 'pomodoroLog', 'dbaiProviders', 'sessionSnaps', 'siteMon', 'rmqConnections', 'rmqUi', 'kafkaConnections', 'kafkaUi', 'stConnections', 'stUi', 'jiraAccounts', 'jiraUi', 'gsearch', 'gsearchHist', 'voice', 'voiceClips', 'toolsUi', 'sitemonUi'];
+const STORE_KEYS = ['projects', 'settings', 'layout', 'recents', 'lastParent', 'categories', 'sectionOrder', 'favOrder', 'favAgentsOnly', 'accordions', 'dismissed', 'projTabs', 'openrouter', 'dockerUi', 'dbConnections', 'dbUi', 'rhConnections', 'rhUi', 'extData', 'extEnabled', 'quickbar', 'seoSites', 'moduleWins', 'mwLeft', 'mwLogH', 'gitFav', 'commitDrafts', 'bookmarks', 'promptSnippets', 'pomodoro', 'pomodoroLog', 'dbaiProviders', 'sessionSnaps', 'siteMon', 'rmqConnections', 'rmqUi', 'kafkaConnections', 'kafkaUi', 'stConnections', 'stUi', 'jiraAccounts', 'jiraUi', 'gsearch', 'gsearchHist', 'voice', 'voiceClips', 'toolsUi', 'sitemonUi'];
 // Профили подключений с зашифрованными секретами (passEnc/tokenEnc…) — только для main: модули
 // получают их через свои IPC (publicConn — без секретов), а рендерер эти ключи не читает и не пишет.
 // В общем снимке стора они уходили во ВСЕ окна (при недоступном safeStorage — base64, то есть по сути
@@ -4201,6 +4201,18 @@ ipcMain.handle('pty:foregroundState', (_e, { id }) => {
 ipcMain.handle('pty:agentState', (_e, { id }) => {
   const p = ptys.get(id);
   return p ? agentState(p.pid) : null;
+});
+// Какой агент на переднем плане каждого из терминалов ids и можно ли закрыть терминал без потерь
+// (lib/agentstate.js agentOf) — для фильтра «только проекты с агентом» в «Избранном» и закрытия
+// случайно открытых терминалов. { [id]: { fg, agent, idle } }; вне Linux ответа по терминалу нет.
+ipcMain.handle('pty:agents', (_e, { ids } = {}) => {
+  const out = {};
+  for (const id of Array.isArray(ids) ? ids.slice(0, 500) : []) {
+    const p = ptys.get(id);
+    const r = p ? agentOf(p.pid) : null;
+    if (r) out[id] = r;
+  }
+  return out;
 });
 
 // ---------------------------------------------------------------- Монитор ресурсов

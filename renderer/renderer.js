@@ -29,7 +29,7 @@ import { openGlobalSearch } from './gsearch.js';
 import { initExtensions } from './modules/extensions.js';
 // initFiles — вивер+дерево мигрированы в отдельное окно (renderer/module-entry.js).
 
-const APP_VERSION = 'alpha v1.1.206';
+const APP_VERSION = 'alpha v1.1.207';
 const GUTTER = 8; // зазор между карточками окна — он же разделитель, за который тянется ширина
 // Системный терминал («Система · ~») мигрирован в отдельное окно (renderer/modules/scratch.js):
 // его id `__scratch__::tN` маршрутизируются main'ом в окно-владельца, в ядре их больше не обрабатываем.
@@ -88,6 +88,10 @@ const adoptPtys = new Map();
 // шелла старой страницы — возможно, чужого проекта (pty:create отвечает existed и цепляет его).
 const BOOT_ID = Date.now().toString(36);
 const projState = new Map(); // sessionId -> 'quiet' | 'busy' | 'waiting'
+let agentScan = new Map();   // sessionId -> { fg, agent, idle } — последний опрос pty:agents (см. «агенты в терминалах»)
+let agentSig = '';           // что видел список проектов при прошлом опросе: перерисовываем только при смене
+let agentScanTimer = null;
+let agentScanSeq = 0;        // опросы идут внахлёст (таймер + смена состояния): старый ответ не перетирает свежий
 const missing = new Set();   // ids of projects whose folder no longer exists on disk
 // Состояние вивера+дерева (expandedDirs/gitFiles/currentFile/dirty/…) живёт в отдельном ОКНЕ —
 // renderer/modules/files.js (initFiles) + module-entry.js. Ядро его не держит (см. WINDOW_MODULES).
@@ -165,6 +169,15 @@ function saveFavOrder(ids) { persist('favOrder', ids); }
 function sortFavs(list) {
   const idx = new Map(loadFavOrder().map((id, i) => [id, i]));
   return list.slice().sort((a, b) => (idx.has(a.id) ? idx.get(a.id) : Infinity) - (idx.has(b.id) ? idx.get(b.id) : Infinity));
+}
+// Глаз в заголовке «Избранного»: показывать только проекты, где в терминале агент (см. «агенты в терминалах»).
+// Под поиском по списку не действует — найденное показываем всё.
+function favAgentsOnly() { return STORE.favAgentsOnly === true; }
+function setFavAgentsOnly(on) {
+  persist('favAgentsOnly', !!on);
+  if (on && isCollapsed(FAV_KEY)) setCollapsed(FAV_KEY, false);   // включили, чтобы увидеть, — свёрнутой группа не поможет
+  renderProjects();
+  if (on) refreshAgents();
 }
 
 // Section display order. Default = "избранное / <категории> / все"; persisted once
@@ -573,9 +586,11 @@ function renderProjects() {
 // всегда и только проявляются, поэтому заголовок не прыгает при наведении.
 function renderSection(s, index, sections) {
   const total = sections.length;
-  const { label, key, list, pinned } = s;
+  const { label, key, pinned } = s;
   const collapsed = projFilter ? false : isCollapsed(key);   // под фильтром секции всегда раскрыты
-  const sec = el('div', 'pgroup' + (pinned ? ' pinned' : '') + (collapsed ? ' closed' : '') + (list.length ? '' : ' empty'));
+  const agentsOnly = key === FAV_KEY && favAgentsOnly() && !projFilter;
+  const list = agentsOnly ? s.list.filter((p) => projHasAgent(p.id)) : s.list;
+  const sec = el('div', 'pgroup' + (pinned ? ' pinned' : '') + (collapsed ? ' closed' : '') + (list.length ? '' : ' empty') + (agentsOnly ? ' agents-only' : ''));
   const head = el('div', 'pgroup-head');
   head.appendChild(el('span', 'pgroup-name', label));
   const tools = el('div', 'pgroup-tools');
@@ -594,7 +609,21 @@ function renderSection(s, index, sections) {
     tools.append(up, down);
   }
   head.appendChild(tools);
-  head.appendChild(el('span', 'pgroup-count', String(list.length)));
+  if (key === FAV_KEY) {
+    // Закрыть случайно открытые терминалы (во всех проектах, кроме активного): кнопка видна, только когда есть что закрывать.
+    const idle = idleProjects();
+    if (idle.length) {
+      const sweep = iconBtn('pgroup-arrow pgroup-sweep', 'power', `Закрыть терминалы без агента: ${idle.length}`, 12);
+      sweep.addEventListener('click', (e) => { e.stopPropagation(); closeIdleTerms(); });
+      head.appendChild(sweep);
+    }
+    const eye = iconBtn('pgroup-arrow pgroup-eye' + (favAgentsOnly() ? ' on' : ''), 'eye',
+      favAgentsOnly() ? 'Показаны только проекты с агентом — показать все' : 'Показать только проекты с агентом (Claude, Codex…)', 13);
+    eye.setAttribute('aria-pressed', String(favAgentsOnly()));
+    eye.addEventListener('click', (e) => { e.stopPropagation(); setFavAgentsOnly(!favAgentsOnly()); });
+    head.appendChild(eye);
+  }
+  head.appendChild(el('span', 'pgroup-count', agentsOnly ? `${list.length}/${s.list.length}` : String(list.length)));
   const chev = el('span', 'pgroup-chev');
   chev.appendChild(icon('chevron-down', 12));
   head.appendChild(chev);
@@ -612,6 +641,7 @@ function renderSection(s, index, sections) {
     if (key === FAV_KEY) enableFavDnD(c, body);
     body.appendChild(c);
   }
+  if (agentsOnly && !list.length) body.appendChild(el('div', 'pgroup-note', 'Агентов сейчас нет'));
   sec.appendChild(head); sec.appendChild(body);
   return sec;
 }
@@ -631,7 +661,7 @@ function enableFavDnD(card, body) {
     if (!favDragCard) return;
     favDragCard = null;
     if (e.dataTransfer.dropEffect !== 'none') // 'none' = отмена (Esc/мимо) — порядок не трогаем
-      saveFavOrder([...body.querySelectorAll('.card')].map((c) => c.dataset.id));
+      saveFavOrder(mergeFavOrder([...body.querySelectorAll('.card')].map((c) => c.dataset.id)));
     renderProjects();
   });
   card.addEventListener('dragover', (e) => {
@@ -647,6 +677,13 @@ function enableFavDnD(card, body) {
     body.addEventListener('dragover', (e) => { if (favDragCard) { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; } });
     body.addEventListener('drop', (e) => { if (favDragCard) e.preventDefault(); });
   }
+}
+// Новый порядок видимых карточек поверх полного: под глазом «только с агентом» скрытые карточки
+// остаются на своих местах, а не съезжают в конец группы.
+function mergeFavOrder(visible) {
+  const shown = new Set(visible);
+  let i = 0;
+  return sortFavs(projects.filter((p) => p.favorite)).map((p) => (shown.has(p.id) ? visible[i++] : p.id));
 }
 // Строка проекта: индикатор · облачко синхронизации · имя · (★ ⋮ — по наведению и у активного).
 // Путь — в подсказке имени и в чипе папки под терминалом.
@@ -756,6 +793,12 @@ function buildCardMenuMain(dd, p) {
   else
     dd.appendChild(menuRow('archive', 'В архив', () => { closeMenus(); archiveProject(p.id); }));
   dd.appendChild(el('div', 'menu-sep'));
+  // терминалы поднимались (в том числе случайным кликом) — закрыть их, оставив проект в списке
+  if (tabsByProj.has(p.id) && p.id !== activeId) {
+    const row = menuRow('power', 'Закрыть терминалы', () => { closeMenus(); closeProjectTerms(p); });
+    row.appendChild(el('span', 'menu-desc', projHasAgent(p.id) ? 'работает агент' : 'погасит индикатор'));
+    dd.appendChild(row);
+  }
   dd.appendChild(menuRow('x', 'Закрыть проект', () => { closeMenus(); closeProject(p.id); }, 'danger'));
 }
 const ACCENTS = ['#2fbf71', '#3dc8dc', '#7aa2f7', '#a98cf0', '#e06fae', '#e0af68', '#f7768e', '#8aa79a'];
@@ -992,12 +1035,7 @@ function doCloseProject(id) {
   if (closing && watchedRoot === closing.path) { lite.fs.unwatch(closing.path); watchedRoot = null; }
   const tabs = tabsByProj.get(id);
   if (tabs) {
-    for (const sid of tabs.sessions) {
-      lite.pty.kill(sid);
-      const rec = terms.get(sid);
-      if (rec) { clearTimeout(rec.idleTimer); clearTimeout(rec.prefillTimer); stopClaudeProbe(rec); releaseRenderer(rec.term); try { rec.timeline.dispose(); } catch (_) {} try { rec.term.dispose(); } catch (_) {} rec.container.remove(); terms.delete(sid); }
-      projState.delete(sid);
-    }
+    for (const sid of tabs.sessions) disposeSession(sid);
     tabsByProj.delete(id);
     // Сессии ушли из projState — пересчитать бейдж «N ждёт ответа» и трей. Без этого закрытый проект
     // с ждущим агентом оставлял бейдж и отметку в трее до следующей смены состояния любой вкладки.
@@ -1069,6 +1107,7 @@ function setProjState(sid, state) {
   document.querySelectorAll(`.tab[data-sid="${sid}"] .tab-dot`).forEach((d) => { d.className = 'tab-dot pind ' + state; });
   if (rec) refreshProjIndicator(rec.projId); // card/rail show the project aggregate
   updateAttention();
+  scheduleAgentScan();                         // агент мог запуститься или выйти — глаз «Избранного» догонит
 }
 function markActivity(id, data) {
   const rec = terms.get(id);
@@ -1332,8 +1371,99 @@ function refreshProjIndicator(projId) {
   const st = projAggState(projId);
   document.querySelectorAll(`.pind[data-id="${projId}"]`).forEach((i) => { i.className = 'pind ' + st; });
 }
+// ---- агенты в терминалах: глаз «только с агентом» в «Избранном» и закрытие простаивающих терминалов ----
+// Зелёный индикатор горит и у терминала, открытого случайным кликом: шелл на приглашении — тоже «готов».
+// Какой агент в терминале, знает main по процессам переднего плана (pty:agents, только Linux); запасной
+// признак — заголовок терминала от Claude (rec.claude): он же узнаёт Claude на сервере через ssh.
+function sessionAgent(sid) {
+  const r = agentScan.get(sid);
+  if (r && r.agent) return r.agent;
+  const rec = terms.get(sid);
+  return rec && rec.claude ? 'claude' : null;
+}
+function projHasAgent(projId) { return projSessions(projId).some((s) => sessionAgent(s)); }
+// Терминалы проекта закрываются без потерь: в каждой вкладке шелл на приглашении без потомков или шелл
+// уже завершился. Активный проект не трогаем — его терминал на экране.
+function projIdle(projId) {
+  const ss = projSessions(projId);
+  return projId !== activeId && ss.length > 0 && ss.every((s) => {
+    const rec = terms.get(s), r = agentScan.get(s);
+    return (rec && rec.exited) || (r && r.idle && !sessionAgent(s));
+  });
+}
+function idleProjects() { return projects.filter((p) => projIdle(p.id)); }
+async function refreshAgents() {
+  clearTimeout(agentScanTimer); agentScanTimer = null;
+  if (!lite.pty.agents) return;
+  const ids = [...tabsByProj.values()].flatMap((t) => t.sessions);
+  const seq = ++agentScanSeq;
+  let res = {};
+  try { if (ids.length) res = (await lite.pty.agents(ids)) || {}; } catch (_) { return; }
+  if (seq !== agentScanSeq) return;
+  agentScan = new Map(Object.entries(res));
+  const sig = projects.map((p) => p.id + (projHasAgent(p.id) ? '+a' : '') + (projIdle(p.id) ? '+i' : '')).join(',');
+  // Перерисовка пересоздаёт карточки: посреди перетаскивания она сорвала бы его, а у открытого меню
+  // сняла бы подсветку. Тогда ждём следующего опроса — подпись не запоминаем.
+  if (sig === agentSig || favDragCard || $('#menu-layer').firstChild) return;
+  agentSig = sig;
+  renderProjects();
+}
+// Сверка вскоре после смены состояния вкладки: агент запустился или вышел — фильтр догоняет за полсекунды.
+function scheduleAgentScan(delay = 500) {
+  if (!agentScanTimer) agentScanTimer = setTimeout(refreshAgents, delay);
+}
+// Снять вкладку-сессию: процесс, xterm, таймеры, состояние индикатора.
+function disposeSession(sid) {
+  lite.pty.kill(sid);
+  const rec = terms.get(sid);
+  if (rec) { clearTimeout(rec.idleTimer); clearTimeout(rec.prefillTimer); stopClaudeProbe(rec); releaseRenderer(rec.term); try { rec.timeline.dispose(); } catch (_) {} try { rec.term.dispose(); } catch (_) {} rec.container.remove(); terms.delete(sid); }
+  projState.delete(sid);
+  agentScan.delete(sid);
+}
+// Закрыть терминалы проекта, не закрывая сам проект: индикатор возвращается в «терминал не запускали».
+// Имена вкладок остаются в projTabs — при следующем открытии проекта вкладки поднимутся с ними.
+function unloadProjectTerms(id) {
+  const t = tabsByProj.get(id);
+  if (!t || id === activeId) return false;
+  saveProjTabs();
+  for (const sid of t.sessions) disposeSession(sid);
+  tabsByProj.delete(id);
+  refreshProjIndicator(id);
+  updateAttention();
+  return true;
+}
+// Кнопка у глаза: закрыть терминалы всех проектов, где ничего не запущено. Перед закрытием —
+// свежий опрос: за время диалога в терминале могли что-то запустить.
+function closeIdleTerms() {
+  const list = idleProjects();
+  if (!list.length) return;
+  showConfirm('Закрыть терминалы без агента?',
+    `Проекты: ${list.map((p) => p.name).join(', ')}. В их терминалах ничего не запущено — закроются только шеллы, проекты останутся в списке.`,
+    'Закрыть терминалы', async () => {
+      await refreshAgents();
+      const n = list.filter((p) => projIdle(p.id) && unloadProjectTerms(p.id)).length;
+      renderProjects();
+      if (n) toast(`Закрыты терминалы проектов: ${n}`);
+    });
+}
+// Пункт меню проекта. Шелл без дела закрывается сразу; агент или программа — только после подтверждения.
+async function closeProjectTerms(p) {
+  if (!tabsByProj.has(p.id) || p.id === activeId) return;
+  await refreshAgents();
+  const go = () => { if (unloadProjectTerms(p.id)) renderProjects(); };
+  if (projIdle(p.id)) { go(); return; }
+  const agent = projSessions(p.id).map(sessionAgent).find(Boolean);
+  showConfirm(`Закрыть терминалы проекта «${p.name}»?`,
+    agent ? `В терминале работает агент ${agent} — он будет остановлен. Проект останется в списке.`
+      : 'В терминале может работать программа — она будет остановлена. Проект останется в списке.',
+    'Закрыть терминалы', go);
+}
 function saveProjTabs() {
   const out = {};
+  // Проекты без поднятых терминалов (не открывали в этом запуске или закрыли терминалы) — имена их
+  // вкладок из прежней записи: иначе первое же сохранение стирало бы их у всех, кроме открытых.
+  const prev = STORE.projTabs || {};
+  for (const p of projects) if (!tabsByProj.has(p.id) && prev[p.id]) out[p.id] = prev[p.id];
   for (const [pid, t] of tabsByProj) {
     out[pid] = { names: t.sessions.map((s) => (terms.get(s) || {}).name || 'Терминал'), custom: t.sessions.map((s) => !!(terms.get(s) || {}).customName), active: t.sessions.indexOf(t.active) };
   }
@@ -1601,10 +1731,7 @@ function addTab() {
 }
 function closeTab(sid) {
   const t = tabsByProj.get(activeId); if (!t || t.sessions.length <= 1) return; // keep ≥1 tab
-  lite.pty.kill(sid);
-  const rec = terms.get(sid);
-  if (rec) { clearTimeout(rec.idleTimer); clearTimeout(rec.prefillTimer); stopClaudeProbe(rec); releaseRenderer(rec.term); try { rec.timeline.dispose(); } catch (_) {} try { rec.term.dispose(); } catch (_) {} rec.container.remove(); terms.delete(sid); }
-  projState.delete(sid);
+  disposeSession(sid);
   const i = t.sessions.indexOf(sid);
   t.sessions.splice(i, 1);
   if (t.active === sid) t.active = t.sessions[Math.max(0, i - 1)];
@@ -1724,7 +1851,7 @@ function restartTerminal(id) {
   try { rec.timeline.reset(); } catch (_) {}
   rec.sawBell = false; rec.tail = ''; rec.busyStart = Date.now();
   clearTimeout(rec.idleTimer);
-  rec.claude = null; stopClaudeProbe(rec);
+  rec.claude = null; rec.exited = false; stopClaudeProbe(rec);
   setProjState(sid, 'busy');
   lite.pty.restart({ id: sid, cwd: proj.path, cols: rec.term.cols, rows: rec.term.rows });
   rec.term.focus();
@@ -3582,6 +3709,8 @@ function paletteActions() {
   acts.push({ label: 'Помодоро — таймер работы/отдыха', run: () => openModule('pomodoro') });
   acts.push({ label: 'Озвучка — читать скопированный текст голосом', run: () => openModule('voice') });
   acts.push({ label: 'Jira — свои задачи из нескольких аккаунтов', run: () => openModule('jira') });
+  acts.push({ label: 'Избранное: только проекты с агентом — вкл/выкл', hint: favAgentsOnly() ? 'сейчас включено' : 'сейчас выключено', run: () => setFavAgentsOnly(!favAgentsOnly()) });
+  acts.push({ label: 'Закрыть терминалы без агента', run: async () => { await refreshAgents(); if (idleProjects().length) closeIdleTerms(); else toast('Закрывать нечего — простаивающих терминалов нет'); } });
   acts.push({ label: 'Режим «один терминал»', run: toggleSingle });
   acts.push({ label: 'Поиск в терминале', hint: 'Ctrl+F', run: openTermSearch });
   acts.push({ label: 'Найти во всех проектах — файлы и терминалы', hint: 'Ctrl+Shift+F', run: () => showGlobalSearch() });
@@ -3961,7 +4090,7 @@ function init() {
     const rec = terms.get(id);
     if (!rec) return;   // сессия прежней загрузки окна (или уже закрытая вкладка) — не наша
     cancelPrefill(id); rec.term.write('\r\n\x1b[90m[процесс завершён — закрой и переоткрой проект]\x1b[0m\r\n');
-    clearTimeout(rec.idleTimer); rec.claude = null; stopClaudeProbe(rec);
+    clearTimeout(rec.idleTimer); rec.claude = null; rec.exited = true; stopClaudeProbe(rec);   // exited — терминал закрывается без потерь
     setProjState(id, 'quiet');
   });
   // RemoteHost — SSH-сессии (отдельный канал, не PTY): пишем вывод в соответствующий xterm.
@@ -4144,6 +4273,10 @@ function init() {
   // Конфиг синхронизации меняется руками и редко — раз в полминуты достаточно.
   refreshSynced();
   setInterval(refreshSynced, 30000);
+  // Какие терминалы заняты агентом и какие можно закрыть: опрос раз в 3 с (≈1,5 мс в main на десяток
+  // терминалов), пока окно на виду; список перерисовывается, только если ответ изменился.
+  setInterval(() => { if (!document.hidden) refreshAgents(); }, 3000);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) scheduleAgentScan(100); });
   // Окно перезагрузилось (падение, импорт настроек), а терминалы прежней страницы живы — забираем их:
   // агенты продолжают работать. Терминалы закрытых с тех пор проектов гасим.
   lite.pty.adoptable().catch(() => []).then((ids) => {

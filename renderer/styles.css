@@ -588,6 +588,12 @@ body.mw-files .diff-viewbtn.on { background: var(--raised); color: var(--text-hi
 .pgroup-arrow:hover:not(:disabled) { background: var(--raised); color: var(--text); }
 .pgroup-arrow:disabled { opacity: .3; cursor: default; }
 .pgroup-body { display: flex; flex-direction: column; gap: 1px; }
+/* «Избранное»: глаз «только проекты с агентом» и кнопка закрытия простаивающих терминалов — видны всегда */
+.pgroup-eye.on { color: var(--accent); background: var(--accent-soft); }
+.pgroup-eye.on:hover:not(:disabled) { color: var(--accent); background: var(--accent-soft); filter: brightness(1.2); }
+.pgroup-sweep:hover:not(:disabled) { color: var(--danger); background: var(--danger-soft); }
+.pgroup.agents-only .pgroup-head .pgroup-count { display: inline; font-variant-numeric: tabular-nums; }
+.pgroup-note { color: var(--text-mute); font-size: 12px; padding: 4px 10px 6px 34px; }
 
 /* строка проекта: индикатор · облачко синхронизации · имя · (★ ⋮ при наведении / у активного) */
 .card {
