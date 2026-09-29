@@ -670,6 +670,7 @@ contextBridge.exposeInMainWorld('lite', {
     restart: (opts) => ipcRenderer.invoke('pty:restart', opts),
     foregroundState: (id) => ipcRenderer.invoke('pty:foregroundState', { id }),
     agentState: (id) => ipcRenderer.invoke('pty:agentState', { id }), // + отчёт Claude Code о сессии
+    agents: (ids) => ipcRenderer.invoke('pty:agents', { ids }), // какой агент в каждом терминале + можно ли закрыть
     onData: (cb) => {
       const h = (_e, payload) => cb(payload);
       ipcRenderer.on('pty:data', h);

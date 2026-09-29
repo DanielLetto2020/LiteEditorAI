@@ -75,6 +75,17 @@ function writePresence(dir, pid, extra) {
     eq(as.claudePresence(999999999, tmp), null, 'несуществующий процесс — null');
     eq(as.agentState(process.pid, 'darwin'), null, 'не Linux — null (индикатор идёт по заголовку и экрану)');
 
+    // --- какой агент: по comm нативной сборки или по имени скрипта интерпретатора ---
+    eq(as.agentName(process.pid), null, 'node с тестом — не агент');
+    eq(as.agentName(999999999), null, 'несуществующий процесс — null');
+    const script = path.join(tmp, 'codex.js');
+    fs.writeFileSync(script, 'setTimeout(() => {}, 30000);');
+    const c = spawn(process.execPath, ['--no-warnings', script], { detached: true, stdio: 'ignore' });
+    kids.push(c);
+    await wait(150);
+    eq(as.agentName(c.pid), 'codex', 'node …/codex.js — codex (флаги интерпретатора пропущены)');
+    eq(as.agentOf(process.pid, 'darwin'), null, 'agentOf вне Linux — null');
+
     // --- настоящий терминал: Claude-подобный процесс на переднем плане интерактивного bash ---
     // Под Stryker тест с терминалом только удлинял бы прогон (как в proctree.test.js).
     if (__dirname.includes('.stryker-tmp') || process.env.STRYKER_MUTATOR_WORKER) return;
@@ -87,13 +98,26 @@ function writePresence(dir, pid, extra) {
     await wait(300);
     const bash = pt.descendants(s.pid).find((p) => { const st = pt.readProcStat(p); return st && st.comm === 'bash'; });
     eq(as.agentState(bash), { fg: 'shell', claude: null }, 'голый шелл — Claude нет');
+    eq(as.agentOf(bash), { fg: 'shell', agent: null, idle: true }, 'голый шелл без потомков — можно закрыть');
     s.stdin.write('sleep 30\n');
     await wait(400);
     const g = pt.foregroundGroup(bash);
     eq(g.kind, 'waiting', 'sleep на переднем плане → waiting');
     eq(as.agentState(bash), { fg: 'waiting', claude: null }, 'программа без файла присутствия — не Claude');
+    eq(as.agentOf(bash), { fg: 'waiting', agent: null, idle: false }, 'sleep на переднем плане — не агент, закрывать нельзя');
     writePresence(term, g.pids[0], { status: 'waiting', waitingFor: 'input needed' });
     eq(as.agentState(bash), { fg: 'waiting', claude: { status: 'waiting', waitingFor: 'input needed' } }, 'Claude на переднем плане найден по группе');
+    // агент на переднем плане, затем — фоновая задача у голого шелла
+    s.stdin.write('\x03');
+    await wait(200);
+    s.stdin.write(`${process.execPath} ${script}\n`);
+    await wait(400);
+    eq(as.agentOf(bash), { fg: 'waiting', agent: 'codex', idle: false }, 'codex на переднем плане найден');
+    s.stdin.write('\x03');
+    await wait(200);
+    s.stdin.write('sleep 30 &\n');
+    await wait(300);
+    eq(as.agentOf(bash), { fg: 'shell', agent: null, idle: false }, 'фоновая задача — закрывать нельзя');
   } finally {
     cleanup();
   }
