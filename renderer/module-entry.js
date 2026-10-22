@@ -25,6 +25,7 @@ const initTools = () => import('./modules/tools.js').then((m) => m.initTools);
 const initIterflow = () => import('./modules/iterflow.js').then((m) => m.initIterflow);
 const initSeo = () => import('./modules/seo.js').then((m) => m.initSeo);
 const initAudit = () => import('./modules/audit.js').then((m) => m.initAudit);
+const initGitGraph = () => import('./modules/gitgraph.js').then((m) => m.initGitGraph);
 const initMonitor = () => import('./modules/monitor.js').then((m) => m.initMonitor);
 const initKeepass = () => import('./modules/keepass.js').then((m) => m.initKeepass);
 const initSitemon = () => import('./modules/sitemon.js').then((m) => m.initSitemon);
@@ -95,6 +96,16 @@ const MODULES = {
   audit: {
     title: 'Аудит проекта', load: initAudit, project: true,
     wire: (mod) => { bind('#audit-rescan', () => mod.rescan()); },
+  },
+  // «Граф Git»: история веток схемой на канве. Только просмотр; следует за активным проектом.
+  gitgraph: {
+    title: 'Граф Git', load: initGitGraph, project: true,
+    wire: (mod) => {
+      bind('#gitgraph-head', () => mod.toHead());
+      bind('#gitgraph-fit', () => mod.fit());
+      bind('#gitgraph-refresh', () => mod.refresh());
+      document.addEventListener('keydown', (e) => { if ((e.ctrlKey || e.metaKey) && (e.key === 'f' || e.key === 'F' || e.key === 'а' || e.key === 'А')) { e.preventDefault(); mod.focusSearch(); } });
+    },
   },
   monitor: {
     title: 'Монитор ресурсов', load: initMonitor, project: false,
@@ -227,6 +238,7 @@ const MODULES = {
     wire: (mod) => {
       lite.editorBus.onOpenInViewer((abs, line) => { try { mod.openFile(abs, line); } catch (_) {} });
       lite.editorBus.onFocusGit(() => { try { mod.focusGit(); } catch (_) {} }); // «Git» из редактора → секция «Коммит»
+      bind('#strip-gitgraph', () => lite.module.open('gitgraph')); // полоса инструментов → окно «Граф Git»
       lite.editorBus.onRefreshTree(() => { try { if (activeProj) mod.renderTree(activeProj); } catch (_) {} });
       // живые изменения на диске активного проекта (агент тронул файл) → обновить дерево/перечитать
       lite.fs.onChange(({ root, files }) => { try { if (activeProj && activeProj.path === root) mod.onFsChange(activeProj, files); } catch (_) {} });

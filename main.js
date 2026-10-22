@@ -122,7 +122,7 @@ try {
   const legacy = path.join(os.homedir(), '.LiteEditor');
   if (!fs.existsSync(storeDir) && fs.existsSync(legacy)) fs.cpSync(legacy, storeDir, { recursive: true });
 } catch (_) {}
-const STORE_KEYS = ['projects', 'settings', 'layout', 'recents', 'lastParent', 'categories', 'sectionOrder', 'favOrder', 'favAgentsOnly', 'accordions', 'dismissed', 'projTabs', 'openrouter', 'dockerUi', 'dbConnections', 'dbUi', 'rhConnections', 'rhUi', 'extData', 'extEnabled', 'quickbar', 'seoSites', 'moduleWins', 'mwLeft', 'mwLogH', 'gitFav', 'commitDrafts', 'bookmarks', 'promptSnippets', 'pomodoro', 'pomodoroLog', 'dbaiProviders', 'sessionSnaps', 'siteMon', 'rmqConnections', 'rmqUi', 'kafkaConnections', 'kafkaUi', 'stConnections', 'stUi', 'jiraAccounts', 'jiraUi', 'gsearch', 'gsearchHist', 'voice', 'voiceClips', 'toolsUi', 'sitemonUi'];
+const STORE_KEYS = ['projects', 'settings', 'layout', 'recents', 'lastParent', 'categories', 'sectionOrder', 'favOrder', 'favAgentsOnly', 'accordions', 'dismissed', 'projTabs', 'openrouter', 'dockerUi', 'dbConnections', 'dbUi', 'rhConnections', 'rhUi', 'extData', 'extEnabled', 'quickbar', 'seoSites', 'moduleWins', 'mwLeft', 'mwLogH', 'gitFav', 'commitDrafts', 'bookmarks', 'promptSnippets', 'pomodoro', 'pomodoroLog', 'dbaiProviders', 'sessionSnaps', 'siteMon', 'rmqConnections', 'rmqUi', 'kafkaConnections', 'kafkaUi', 'stConnections', 'stUi', 'jiraAccounts', 'jiraUi', 'gsearch', 'gsearchHist', 'voice', 'voiceClips', 'toolsUi', 'sitemonUi', 'gitGraphUi'];
 // Профили подключений с зашифрованными секретами (passEnc/tokenEnc…) — только для main: модули
 // получают их через свои IPC (publicConn — без секретов), а рендерер эти ключи не читает и не пишет.
 // В общем снимке стора они уходили во ВСЕ окна (при недоступном safeStorage — base64, то есть по сути
@@ -4229,7 +4229,7 @@ const MODULE_TITLES = {
   tools: 'Инструменты', iterflow: 'IterFlow', seo: 'WEB/SEO аудит', audit: 'Аудит',
   pomodoro: 'Помодоро', company: 'ИИ компания', notes: 'Задачи', db: 'Базы данных',
   chat: 'OpenRouter', doc: 'Обработка текста', docker: 'Контейнеры', rh: 'Удалённые хосты',
-  ctx: 'Контекст', scratch: 'Система · ~', files: 'Проект', monitor: 'Монитор',
+  ctx: 'Контекст', scratch: 'Система · ~', files: 'Проект', monitor: 'Монитор', gitgraph: 'Граф Git',
 };
 let monPrev = null;   // { total, perSid: Map<sid,jiffies> } — для расчёта CPU% деревьев PTY
 
@@ -6654,6 +6654,55 @@ ipcMain.handle('git:log', async (_e, { root, limit } = {}) => {
   }
   return { repo: true, commits };
 });
+// ---------------------------------------------------------------- git: граф веток (модуль-окно «Граф Git»)
+// Только чтение. История порциями в topo-порядке (дети раньше родителей — на этом стоит раскладка
+// дорожек в renderer/modules/gitgraph.js) по локальным веткам + HEAD, по желанию — удалённые и теги.
+// refs/stash не берём: «ветка» стэша только запутала бы схему. -z разделяет записи нулём, поля — 0x1F:
+// тема коммита может содержать что угодно, кроме этих двух байтов.
+ipcMain.handle('git:graph', async (_e, { root, skip, limit, remotes, tags } = {}) => {
+  if (!root || !fs.existsSync(root)) return { ok: false, error: 'no root' };
+  const top = await git(root, ['rev-parse', '--show-toplevel']);
+  if (top == null) return { repo: false, commits: [] };
+  const head = ((await git(root, ['rev-parse', '--verify', '-q', 'HEAD'])) || '').trim();
+  const branch = ((await git(root, ['rev-parse', '--abbrev-ref', 'HEAD'])) || '').trim();
+  if (!head) return { repo: true, empty: true, commits: [], head: '', branch, more: false }; // репозиторий без коммитов
+  const n = Math.max(1, Math.min(1000, parseInt(limit, 10) || 400));
+  const s = Math.max(0, parseInt(skip, 10) || 0);
+  // --decorate=full: в %D полные имена (refs/heads/feature/x и refs/remotes/origin/x) — иначе
+  // локальную ветку со слешем в имени не отличить от удалённой.
+  const args = ['log', '-z', '--topo-order', '--date-order', '--decorate=full', `--skip=${s}`, `-n${n}`,
+    '--format=%H%x1f%P%x1f%an%x1f%ae%x1f%at%x1f%s%x1f%D', '--branches', 'HEAD'];
+  if (remotes) args.push('--remotes');
+  if (tags) args.push('--tags');
+  const out = await git(root, args);
+  if (out == null) return { ok: false, error: 'git log не выполнился' };
+  const commits = [];
+  for (const rec of out.split('\0')) {
+    if (!rec.trim()) continue;
+    const [h, p, an, ae, at, subj, refs] = rec.replace(/^\n+/, '').split('\x1f');
+    if (!h) continue;
+    commits.push({ h, p: p ? p.split(' ').filter(Boolean) : [], an: an || '', ae: ae || '', at: +at || 0, s: subj || '', refs: (refs || '').trim() });
+  }
+  return { ok: true, repo: true, commits, head, branch, more: commits.length === n };
+});
+// Подпись состояния ref'ов: окно графа сверяет её при фокусе и перечитывает историю, только если
+// что-то сдвинулось (коммит, checkout, fetch, новая ветка или тег).
+ipcMain.handle('git:refsSig', async (_e, root) => {
+  if (!root || !fs.existsSync(root)) return { sig: '' };
+  const refs = await git(root, ['for-each-ref', '--format=%(objectname) %(refname)']);
+  if (refs == null) return { sig: '' };
+  const head = (await git(root, ['rev-parse', '-q', '--verify', 'HEAD'])) || '';
+  const sym = (await git(root, ['symbolic-ref', '-q', 'HEAD'])) || '';
+  return { sig: crypto.createHash('sha1').update(refs + '|' + head + '|' + sym).digest('hex') };
+});
+// Подробности коммита для панели деталей графа: полное сообщение, автор и коммиттер, родители.
+ipcMain.handle('git:commitDetail', async (_e, { root, hash } = {}) => {
+  if (!OK_HASH(hash)) return { ok: false, error: 'bad hash' };
+  const out = await git(root, ['show', '-s', '--format=%H%x1f%P%x1f%an%x1f%ae%x1f%at%x1f%cn%x1f%ce%x1f%ct%x1f%D%x1f%B', String(hash).trim()]);
+  if (out == null) return { ok: false, error: 'коммит не найден' };
+  const [h, p, an, ae, at, cn, ce, ct, refs, ...body] = out.split('\x1f');
+  return { ok: true, h, p: p ? p.split(' ').filter(Boolean) : [], an, ae, at: +at || 0, cn, ce, ct: +ct || 0, refs: (refs || '').trim(), body: body.join('\x1f').trim() };
+});
 // Имя ветки приходит из UI: ведущий '-' git принял бы за флаг, а завершающий '--' не даёт git
 // трактовать НЕ-ветку как путь — иначе устаревшее имя из списка (ветку удалили в терминале),
 // совпавшее с каталогом/файлом, молча откатывало его незакоммиченные правки (checkout <path>).
@@ -6903,22 +6952,24 @@ ipcMain.handle('git:stashDrop', async (_e, { root, index } = {}) => { const r = 
 
 // ---------------------------------------------------------------- git: commit details (changed-files tree for the log)
 // Файлы, изменённые в коммите (--name-status), для дерева изменённых файлов в логе.
-ipcMain.handle('git:commitFiles', async (_e, { root, hash } = {}) => {
+// firstParent: у слияния собственных изменений обычно нет — «Граф Git» показывает, что слияние
+// принесло в ветку (разница с первым родителем, -m --first-parent работает и на старых git).
+ipcMain.handle('git:commitFiles', async (_e, { root, hash, firstParent } = {}) => {
   const h = String(hash || '').trim();
   if (!/^[0-9a-fA-F]{4,40}$/.test(h)) return { ok: false, error: 'bad hash' };
   // -z: пути как есть. Без него юникод-имена приходили «"\320\277…"» — в дереве лога мусор, а
   // git:commitFilePair/commitFileDiff с таким rel не находили файл (тот же класс, что B5 в git:status).
-  const out = await git(root, ['show', '--no-color', '--name-status', '-z', '--format=', h]);
+  const out = await git(root, ['show', '--no-color', ...(firstParent ? ['-m', '--first-parent'] : []), '--name-status', '-z', '--format=', h]);
   const files = parseNameStatusZ(out).map((e) => ({ code: e.code, rel: e.rel }));
   return { ok: true, files };
 });
 // Дифф одного файла в коммите (показать в центре вивера при выборе файла в логе).
-ipcMain.handle('git:commitFileDiff', async (_e, { root, hash, file } = {}) => {
+ipcMain.handle('git:commitFileDiff', async (_e, { root, hash, file, firstParent } = {}) => {
   const h = String(hash || '').trim();
   if (!/^[0-9a-fA-F]{4,40}$/.test(h)) return { error: 'bad hash' };
   // --format= убирает заголовок коммита из вывода — в центре вивера нужен чистый дифф
   // (сообщение и так видно в списке истории и в имени вкладки).
-  const out = await git(root, ['show', '--no-color', '--format=', h, '--', file]);
+  const out = await git(root, ['show', '--no-color', ...(firstParent ? ['-m', '--first-parent'] : []), '--format=', h, '--', file]);
   return { diff: out || '' };
 });
 

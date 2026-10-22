@@ -496,6 +496,19 @@
         <div id="monitor-body" class="monitor-body"></div>
       </section>
 
+      <!-- «Граф Git»: ветки и коммиты схемой на канве (следует за активным проектом редактора, только просмотр) -->
+      <div id="gutter-gitgraph" class="gutter hidden" data-resize="gitgraph"></div>
+      <section id="gitgraph-pane" class="hidden">
+        <div class="pane-head">
+          <span id="gitgraph-proj" class="gg-proj">Граф Git</span>
+          <div class="drag-space-static"></div>
+          <button id="gitgraph-head" class="icon-btn" title="К HEAD (H)" data-icon="locate"></button>
+          <button id="gitgraph-fit" class="icon-btn" title="Вписать по ширине (F)" data-icon="maximize"></button>
+          <button id="gitgraph-refresh" class="icon-btn" title="Перечитать историю" data-icon="refresh"></button>
+        </div>
+        <div id="gitgraph-body" class="gitgraph-body"></div>
+      </section>
+
       <!-- Audit module: базовый аудит активного проекта (следует за активным проектом редактора) -->
       <div id="gutter-audit" class="gutter hidden" data-resize="audit"></div>
       <section id="audit-pane" class="hidden">
@@ -608,6 +621,7 @@
         <button id="strip-files" class="strip-btn active" type="button" title="Проект — дерево файлов" data-section="files" data-icon="folder"></button>
         <button id="strip-commit" class="strip-btn" type="button" title="Коммит — изменённые файлы" data-section="commit" data-icon="check"><span id="strip-commit-badge" class="strip-badge hidden"></span></button>
         <button id="strip-branches" class="strip-btn" type="button" title="Git — история коммитов и ветки" data-section="branches" data-icon="git"></button>
+        <button id="strip-gitgraph" class="strip-btn" type="button" title="Граф Git — ветки и коммиты схемой (отдельное окно)" data-icon="gitgraph"></button>
         <span class="strip-sep"></span>
         <button id="viewer-find" class="strip-btn" type="button" title="Найти в проекте (Ctrl+Shift+F) · правая кнопка — заменить (Ctrl+Shift+R)" data-icon="search"></button>
         <button id="viewer-outline" class="strip-btn" type="button" title="Структура файла (Ctrl+Shift+O)" data-icon="braces"></button>

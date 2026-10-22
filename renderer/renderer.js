@@ -29,7 +29,7 @@ import { openGlobalSearch } from './gsearch.js';
 import { initExtensions } from './modules/extensions.js';
 // initFiles — вивер+дерево мигрированы в отдельное окно (renderer/module-entry.js).
 
-const APP_VERSION = 'alpha v1.1.207';
+const APP_VERSION = 'alpha v1.1.208';
 const GUTTER = 8; // зазор между карточками окна — он же разделитель, за который тянется ширина
 // Системный терминал («Система · ~») мигрирован в отдельное окно (renderer/modules/scratch.js):
 // его id `__scratch__::tN` маршрутизируются main'ом в окно-владельца, в ядре их больше не обрабатываем.
@@ -2026,7 +2026,7 @@ const panels = new Map(); // id -> { isOpen(), setOpen(open, opts) }
 // Правый слот редактора теперь держит только «Мои модули» (ext); всё остальное — отдельные окна.
 const PANEL_ORDER = [];
 // Модули, мигрированные в отдельные окна (открываются через lite.module.open, не как панель правого слота).
-const WINDOW_MODULES = new Set(['tools', 'iterflow', 'seo', 'audit', 'company', 'notes', 'db', 'rmq', 'kafka', 'chat', 'doc', 'docker', 'rh', 'ctx', 'scratch', 'files', 'pomodoro', 'monitor', 'keepass', 'sitemon', 'storage', 'jira', 'voice']);
+const WINDOW_MODULES = new Set(['tools', 'iterflow', 'seo', 'audit', 'company', 'notes', 'db', 'rmq', 'kafka', 'chat', 'doc', 'docker', 'rh', 'ctx', 'scratch', 'files', 'pomodoro', 'monitor', 'keepass', 'sitemon', 'storage', 'jira', 'voice', 'gitgraph']);
 function registerPanel(id, api) { panels.set(id, api); }
 function closeOtherPanels(selfId) {
   for (const id of PANEL_ORDER) {
@@ -2084,6 +2084,7 @@ function openModule(id) {
 const QUICK_SEP = '|';
 const QUICK_BUILTIN = [
   { id: 'files',   icon: 'eye',      label: 'Проект — вивер, дерево, Git' },
+  { id: 'gitgraph', icon: 'gitgraph', label: 'Граф Git — ветки и коммиты схемой' },
   { id: 'ctx',     icon: 'graph',    label: 'Контекст — граф контекста агента' },
   { id: 'docker',  icon: 'box',      label: 'Контейнеры — Docker / Podman' },
   { id: 'db',      icon: 'database', label: 'Базы данных — Postgres / MySQL / SQLite' },
@@ -2515,6 +2516,7 @@ function showMoreMenu(anchor) {
 // проектом редактора (см. MODULES в module-entry.js), остальные — самостоятельные.
 const BUILTIN_MODS = [
   { id: 'files',    icon: 'eye',      title: 'Проект',             desc: 'вивер кода, дерево, Git', project: true },
+  { id: 'gitgraph', icon: 'gitgraph', title: 'Граф Git',          desc: 'ветки и коммиты схемой на канве', project: true },
   { id: 'ctx',      icon: 'graph',    title: 'Контекст',           desc: 'граф контекста агента', project: true },
   { id: 'notes',    icon: 'note',     title: 'Задачи',             desc: 'заметки проекта и общие', project: true },
   { id: 'audit',    icon: 'grid',     title: 'Аудит',              desc: 'типы файлов, крупные файлы, медиа', project: true },
@@ -2933,9 +2935,13 @@ function showBranchMenu(anchor) {
   const btns = el('div', 'pbtns');
   const gitBtn = el('button', 'btn'); gitBtn.append(icon('git', 14), el('span', null, 'Открыть Git'));
   gitBtn.onclick = () => { closeMenus(); openModule('git'); };
+  // «Граф веток» — отдельное окно «Граф Git»: история веток и коммитов схемой (только просмотр)
+  const graphBtn = el('button', 'btn'); graphBtn.append(icon('gitgraph', 14), el('span', null, 'Граф веток'));
+  graphBtn.title = 'Ветки и коммиты схемой — отдельное окно «Граф Git»';
+  graphBtn.onclick = () => { closeMenus(); openModule('gitgraph'); };
   const upd = el('button', 'btn'); upd.append(icon('refresh', 14), el('span', null, 'Обновить'));
   upd.onclick = () => { closeMenus(); refreshGitChip(0); };
-  btns.append(gitBtn, upd);
+  btns.append(gitBtn, graphBtn, upd);
   dd.appendChild(btns);
   placeMenuAbove(dd, anchor);
 }
@@ -3700,6 +3706,7 @@ function paletteActions() {
   acts.push({ label: 'Открыть папку…', run: openProjectDialog });
   acts.push({ label: 'Создать папку…', run: showCreateFolder });
   acts.push({ label: 'Проект — вивер, дерево, Git (открыть окно)', run: () => openModule('files') });
+  acts.push({ label: 'Граф Git — ветки и коммиты схемой', run: () => openModule('gitgraph') });
   acts.push({ label: 'Контекст — граф контекста агента', run: () => openModule('ctx') });
   acts.push({ label: 'Контейнеры (Docker / Podman)', run: () => openModule('docker') });
   acts.push({ label: 'Базы данных (Postgres / MySQL / SQLite)', run: () => openModule('db') });

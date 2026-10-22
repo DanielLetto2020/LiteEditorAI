@@ -63,6 +63,8 @@
   --warn: #e8a33d; --warn-t: #ecb15a; --warn-soft: #e8a33d24; --warn-ring: #e8a33d3d; --star: #e8a33d;
   --ok: #4cc38a; --ok-soft: #4cc38a24; --add: #4cc38a;
   --danger: #e5746b; --danger-soft: #e5746b24; --info: #7aa2f7;
+  /* «Граф Git»: опознавательные цвета дорожек веток (gg-1 — акцент: main/master) */
+  --gg-1: #3ecf8e; --gg-2: #7aa2f7; --gg-3: #e8a33d; --gg-4: #c678dd; --gg-5: #e5746b; --gg-6: #4fc1c9; --gg-7: #e06c9f; --gg-8: #a3be5c;
   /* форма */
   --radius: 16px; --r2: 10px; --r3: 8px; --row-h: 34px;
   --card-shadow: none; --card-active-bg: #252529; --card-active-shadow: none;
@@ -3680,7 +3682,9 @@ details.look-s[open] > summary { padding-bottom: 8px; }
 .chg .f { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; }
 .pbtns { display: flex; gap: 6px; padding: 6px 6px 4px; }
 .pbtns .btn { flex: 1; padding: 6px 10px; font-size: 12.5px; }
-.menu-dropdown.branch-pop { width: 340px; }
+/* три кнопки (Git · Граф веток · Обновить) — в строку, без переноса подписи */
+.branch-pop .pbtns .btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 6px 8px; white-space: nowrap; }
+.menu-dropdown.branch-pop { width: 380px; }
 
 /* ---------------- быстрая панель: настройка состава ---------------- */
 .modal.qb-modal { width: min(560px, calc(100vw - 32px)); }
@@ -5700,3 +5704,130 @@ body.win-frame.win-frame-pulse::before {
 .voice-path-hint.is-bad { color: var(--warn); }
 .voice-dl { display: flex; align-items: center; gap: 10px; margin-top: 16px; font-size: 12px; color: var(--text-dim); }
 .voice-progress.is-paused { color: var(--warn); font-weight: 600; }
+
+/* ============================================================================================
+   «Граф Git» (модуль-окно gitgraph): канва с панорамой и масштабом. Мир — SVG (дорожки, кружки,
+   коннекторы) + слой HTML-карточек; цвет дорожки — токены --gg-1…8 через классы .gg-c1…8.
+   ============================================================================================ */
+#gitgraph-pane { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; }
+.gg-proj { display: inline-flex; align-items: center; gap: 7px; min-width: 0; white-space: nowrap; overflow: hidden; }
+.gg-proj .gg-dot { color: var(--text-mute); }
+.gg-proj .gg-pname { color: var(--text2); font-weight: 500; overflow: hidden; text-overflow: ellipsis; }
+.gg-pbranch { display: inline-flex; align-items: center; gap: 4px; padding: 1px 8px; border-radius: 20px; background: var(--accent-soft); color: var(--green-bright); font-size: 11.5px; font-weight: 500; }
+.gitgraph-body { flex: 1 1 auto; min-height: 0; position: relative; overflow: hidden; }
+
+.gg-canvas { position: absolute; inset: 0; overflow: hidden; cursor: grab; outline: none; touch-action: none;
+  background: radial-gradient(circle, var(--border-strong) 1px, transparent 1px) 0 0 / 26px 26px; }
+.gg-canvas.panning { cursor: grabbing; }
+.gg-canvas.panning .gg-card { pointer-events: none; }
+.gg-world { position: absolute; left: 0; top: 0; transform-origin: 0 0; will-change: transform; }
+.gg-svg { position: absolute; left: 0; top: 0; overflow: visible; pointer-events: none; }
+.gg-svg .gg-node { pointer-events: auto; cursor: pointer; }
+.gg-cards { position: absolute; left: 0; top: 0; }
+
+.gg-c1 { --c: var(--gg-1); } .gg-c2 { --c: var(--gg-2); } .gg-c3 { --c: var(--gg-3); } .gg-c4 { --c: var(--gg-4); }
+.gg-c5 { --c: var(--gg-5); } .gg-c6 { --c: var(--gg-6); } .gg-c7 { --c: var(--gg-7); } .gg-c8 { --c: var(--gg-8); }
+.gg-e { fill: none; stroke: var(--c); stroke-width: 4; stroke-linecap: round; stroke-linejoin: round; transition: opacity .15s, stroke-width .15s; }
+.gg-e.open { stroke-dasharray: 4 7; }
+.gg-link { stroke: var(--c); stroke-width: 1.5; stroke-dasharray: 2 4; opacity: .45; transition: opacity .15s; }
+.gg-node .gg-dot { fill: var(--c); stroke: var(--panel); stroke-width: 3; transition: r .12s; }
+.gg-node.merge .gg-dot { fill: var(--panel); stroke: var(--c); stroke-width: 3; }
+.gg-node .gg-halo { fill: none; stroke: var(--c); stroke-width: 2; opacity: .9; filter: drop-shadow(0 0 6px var(--c)); }
+.gg-node.sel .gg-dot { stroke: var(--text-hi); }
+.gg-node:hover .gg-dot { r: 8; }
+.gg-node, .gg-card { transition: opacity .15s; }
+
+/* подсветка цепочки под курсором: остальное приглушается */
+.gg-world.hl .gg-e:not(.on), .gg-world.hl .gg-link:not(.on) { opacity: .16; }
+.gg-world.hl .gg-node:not(.on), .gg-world.hl .gg-card:not(.on) { opacity: .4; }
+.gg-world.hl .gg-e.on { stroke-width: 5; }
+.gg-world.hl .gg-link.on { opacity: .8; }
+
+.gg-card { position: absolute; width: 440px; height: 42px; box-sizing: border-box; padding: 5px 12px 5px 14px;
+  display: flex; flex-direction: column; justify-content: center; gap: 3px;
+  background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--r2);
+  box-shadow: var(--card-shadow); cursor: pointer; user-select: none; overflow: hidden; }
+.gg-card::before { content: ""; position: absolute; left: 0; top: 7px; bottom: 7px; width: 3px; border-radius: 0 3px 3px 0; background: var(--gg-lane); }
+.gg-card:hover { border-color: color-mix(in srgb, var(--gg-lane) 55%, var(--border-strong)); background: var(--raised); }
+.gg-card.sel { border-color: var(--gg-lane); box-shadow: 0 0 0 1.5px color-mix(in srgb, var(--gg-lane) 40%, transparent), var(--card-shadow); background: var(--raised); }
+.gg-card.head { border-color: color-mix(in srgb, var(--gg-lane) 45%, var(--border-strong)); }
+.gg-card.match { border-color: var(--warn); }
+.gg-card.cur { box-shadow: 0 0 0 2px var(--warn-ring); }
+.gg-ctop { display: flex; align-items: center; gap: 5px; min-width: 0; }
+.gg-subj { flex: 1 1 auto; min-width: 0; font-size: 12.5px; font-weight: 500; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.gg-cmeta { display: flex; align-items: center; gap: 5px; min-width: 0; font-size: 11px; color: var(--text-dim); white-space: nowrap; overflow: hidden; }
+.gg-hash { font-family: "JetBrains Mono", monospace; color: var(--text3); }
+.gg-sep { color: var(--text-mute); }
+.gg-author { overflow: hidden; text-overflow: ellipsis; max-width: 180px; }
+.gg-mergetag { color: var(--text-mute); }
+.gg-ref { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 3px; max-width: 170px; padding: 0 7px; height: 17px; border-radius: 9px;
+  font-size: 10.5px; font-weight: 600; line-height: 17px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  color: var(--gg-lane, var(--text2)); background: color-mix(in srgb, var(--gg-lane, var(--text2)) 16%, transparent);
+  border: 1px solid color-mix(in srgb, var(--gg-lane, var(--text2)) 35%, transparent); }
+.gg-ref > span { overflow: hidden; text-overflow: ellipsis; }
+.gg-ref.cur { color: var(--accent-contrast); background: var(--gg-lane, var(--accent)); border-color: transparent; }
+.gg-ref.remote { color: var(--text-dim); background: transparent; border-style: dashed; border-color: var(--border-strong); font-weight: 500; }
+.gg-ref.tag { color: var(--warn-t); background: var(--warn-soft); border-color: var(--warn-ring); }
+
+/* плавающие панели поверх канвы */
+.gg-bar { position: absolute; left: 12px; top: 10px; display: flex; align-items: center; gap: 6px; padding: 5px; z-index: 3;
+  background: var(--bg-pop); border: 1px solid var(--border-strong); border-radius: var(--r2); box-shadow: var(--shadow); }
+.gg-search { display: flex; align-items: center; gap: 6px; height: 28px; padding: 0 8px; border-radius: var(--r3); background: var(--bg-input); border: 1px solid var(--input-b); color: var(--icon); }
+.gg-search:focus-within { border-color: var(--border-accent); }
+.gg-search.none { border-color: var(--danger); }
+.gg-search input { width: 220px; background: transparent; border: none; outline: none; color: var(--text); font: inherit; font-size: 12.5px; }
+.gg-scount { font-size: 11px; color: var(--text-dim); font-variant-numeric: tabular-nums; }
+.gg-toggle { height: 28px; padding: 0 10px; border-radius: var(--r3); border: 1px solid var(--border-strong); background: transparent; color: var(--text-dim); font: inherit; font-size: 12px; cursor: pointer; }
+.gg-toggle:hover { background: var(--hover-2); color: var(--text); }
+.gg-toggle.on { background: var(--accent-soft); border-color: var(--border-accent); color: var(--green-bright); }
+.gg-zoom { position: absolute; left: 12px; bottom: 36px; display: flex; align-items: center; gap: 2px; padding: 3px; z-index: 3;
+  background: var(--bg-pop); border: 1px solid var(--border-strong); border-radius: var(--r2); box-shadow: var(--shadow); }
+.gg-zoom .icon-btn { width: 26px; height: 26px; }
+.gg-zlbl { min-width: 48px; height: 26px; border: none; background: transparent; color: var(--text2); font: inherit; font-size: 12px; font-variant-numeric: tabular-nums; cursor: pointer; border-radius: var(--r3); }
+.gg-zlbl:hover { background: var(--hover-2); }
+.gg-mini { position: absolute; right: 12px; top: 10px; z-index: 2; border-radius: var(--r3); background: var(--bg-pop); border: 1px solid var(--border-strong); box-shadow: var(--shadow); cursor: pointer; opacity: .92; }
+.gg-mini:hover { opacity: 1; }
+.gg-status { position: absolute; left: 0; right: 0; bottom: 0; height: 26px; display: flex; align-items: center; gap: 6px; padding: 0 14px; z-index: 3;
+  font-size: 11.5px; color: var(--text-dim); border-top: 1px solid var(--border); background: var(--app-bg); }
+.gg-status .gg-hint { color: var(--text-mute); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.gg-empty { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; color: var(--text-mute); text-align: center; padding: 20px; }
+.gg-empty-t { font-size: 15px; font-weight: 600; color: var(--text2); }
+.gg-empty-s { font-size: 12.5px; color: var(--text-dim); max-width: 420px; }
+
+/* панель деталей коммита — поверх канвы справа */
+.gg-details { position: absolute; right: 12px; top: 10px; bottom: 36px; width: 380px; max-width: calc(100% - 24px); z-index: 4;
+  display: flex; flex-direction: column; overflow: auto; padding: 12px 14px 14px;
+  background: var(--bg-pop); border: 1px solid var(--border-strong); border-radius: var(--radius); box-shadow: var(--shadow);
+  animation: menu-in .14s ease-out; }
+.gg-dhead { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.gg-dhead .grow { flex: 1; }
+.gg-dlane { width: 10px; height: 10px; border-radius: 50%; background: var(--gg-lane); box-shadow: 0 0 8px var(--gg-lane); }
+.gg-dttl { font-size: 11.5px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--text-dim); }
+.gg-dsubj { font-size: 14.5px; font-weight: 600; color: var(--text-hi); line-height: 1.35; word-break: break-word; }
+.gg-dmsg { margin-top: 8px; font-size: 12.5px; color: var(--text2); line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
+.gg-dmeta { margin-top: 12px; display: flex; flex-direction: column; gap: 6px; padding: 10px 0; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
+.gg-kv { display: grid; grid-template-columns: 92px 1fr; gap: 8px; align-items: baseline; font-size: 12px; }
+.gg-k { color: var(--text-mute); }
+.gg-v { color: var(--text2); min-width: 0; word-break: break-word; }
+.gg-v.mono, .gg-hashfull { font-family: "JetBrains Mono", monospace; font-size: 11.5px; }
+.gg-hrow { display: inline-flex; align-items: center; gap: 4px; min-width: 0; }
+.gg-hashfull { overflow: hidden; text-overflow: ellipsis; }
+.gg-copy { width: 22px; height: 22px; flex: 0 0 auto; }
+.gg-dchips { display: flex; flex-wrap: wrap; gap: 4px; }
+.gg-parent { font-family: "JetBrains Mono", monospace; font-size: 11px; padding: 1px 7px; border-radius: 9px; border: 1px solid var(--border-strong); background: var(--surface-2); color: var(--text2); cursor: pointer; }
+.gg-parent:hover { border-color: var(--border-accent); color: var(--text); }
+.gg-dacts { display: flex; gap: 6px; margin-top: 10px; }
+.gg-dacts .btn { flex: 1; display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 6px 8px; font-size: 12px; white-space: nowrap; }
+.gg-dsec { display: flex; align-items: center; gap: 6px; margin-top: 14px; margin-bottom: 6px; font-size: 11.5px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--text-dim); }
+.gg-fcount { padding: 0 6px; border-radius: 8px; background: var(--surface-2); color: var(--text3); font-size: 10.5px; letter-spacing: 0; }
+.gg-files { display: flex; flex-direction: column; gap: 1px; }
+.gg-file { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 4px 6px; border: none; border-radius: var(--r3); background: transparent; color: var(--text2); font: inherit; font-size: 12px; text-align: left; cursor: pointer; }
+.gg-file:hover { background: var(--hover-2); color: var(--text); }
+.gg-fk { flex: 0 0 16px; font-family: "JetBrains Mono", monospace; font-size: 11px; font-weight: 700; text-align: center; color: var(--info); }
+.gg-fk.kA { color: var(--add); } .gg-fk.kD { color: var(--danger); } .gg-fk.kR, .gg-fk.kC { color: var(--warn); }
+.gg-fname { flex: 0 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.gg-fdir { flex: 1 1 0; min-width: 0; color: var(--text-mute); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; direction: rtl; text-align: left; }
+.gg-muted { color: var(--text-mute); font-size: 12px; padding: 4px 6px; }
+.modal.gg-diff-modal { width: 980px; max-width: 94vw; height: 82vh; display: flex; flex-direction: column; overflow: hidden; }
+.gg-diff { flex: 1; min-height: 0; overflow: auto; padding: 6px 0; border: 1px solid var(--border); border-radius: var(--r2); background: var(--bg-input);
+  font-family: "JetBrains Mono", monospace; font-size: 12.5px; line-height: 1.45; }

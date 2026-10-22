@@ -87,6 +87,8 @@ export function lookTokens(look) {
     warn: s.warn, 'warn-t': mixHex(s.warn, '#ffffff', 0.15), 'warn-soft': alpha(s.warn, 0.14), 'warn-ring': alpha(s.warn, 0.24),
     ok: s.ok, 'ok-soft': alpha(s.ok, 0.14), add: s.ok, star: s.warn,
     danger: s.danger, 'danger-soft': alpha(s.danger, 0.14), info: '#7aa2f7',
+    // «Граф Git»: цвета дорожек веток — первая следует акценту (main/master), остальные опознавательные
+    'gg-1': acc, 'gg-2': '#7aa2f7', 'gg-3': s.warn, 'gg-4': '#c678dd', 'gg-5': s.danger, 'gg-6': '#4fc1c9', 'gg-7': '#e06c9f', 'gg-8': '#a3be5c',
     // форма
     radius: look.r + 'px', r2: Math.round(look.r * 0.62) + 'px', r3: Math.round(look.r * 0.5) + 'px', 'row-h': look.row + 'px',
     'card-shadow': 'none', 'card-active-bg': b.raised, 'card-active-shadow': 'none',
