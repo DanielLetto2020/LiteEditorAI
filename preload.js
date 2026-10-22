@@ -400,6 +400,10 @@ contextBridge.exposeInMainWorld('lite', {
     fileDiff: (root, file) => ipcRenderer.invoke('git:fileDiff', { root, file }),
     info: (root) => ipcRenderer.invoke('git:info', root),
     log: (root, limit) => ipcRenderer.invoke('git:log', { root, limit }),
+    // «Граф Git»: история порциями (opts: { skip, limit, remotes, tags }), подпись ref'ов, детали коммита
+    graph: (root, opts) => ipcRenderer.invoke('git:graph', { root, ...(opts || {}) }),
+    refsSig: (root) => ipcRenderer.invoke('git:refsSig', root),
+    commitDetail: (root, hash) => ipcRenderer.invoke('git:commitDetail', { root, hash }),
     init: (root) => ipcRenderer.invoke('git:init', root),
     clone: (root, url) => ipcRenderer.invoke('git:clone', { root, url }),
     commit: (root, message, push, files, amend) => ipcRenderer.invoke('git:commit', { root, message, push, files, amend }),
@@ -430,8 +434,8 @@ contextBridge.exposeInMainWorld('lite', {
     stashPopIndex: (root, index) => ipcRenderer.invoke('git:stashPopIndex', { root, index }),
     stashDrop: (root, index) => ipcRenderer.invoke('git:stashDrop', { root, index }),
     // лог: файлы коммита (дерево) + дифф файла в коммите
-    commitFiles: (root, hash) => ipcRenderer.invoke('git:commitFiles', { root, hash }),
-    commitFileDiff: (root, hash, file) => ipcRenderer.invoke('git:commitFileDiff', { root, hash, file }),
+    commitFiles: (root, hash, firstParent) => ipcRenderer.invoke('git:commitFiles', { root, hash, firstParent }),
+    commitFileDiff: (root, hash, file, firstParent) => ipcRenderer.invoke('git:commitFileDiff', { root, hash, file, firstParent }),
     // пары «до/после» для side-by-side диффа
     filePair: (root, file) => ipcRenderer.invoke('git:filePair', { root, file }),
     commitFilePair: (root, hash, file) => ipcRenderer.invoke('git:commitFilePair', { root, hash, file }),
