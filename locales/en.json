@@ -4758,5 +4758,17 @@
  "Теги": "Tags",
  "тяните канву мышью · колесо — прокрутка · Ctrl+колесо — масштаб": "drag the canvas · wheel — scroll · Ctrl+wheel — zoom",
  "Хеш": "Hash",
- "git log не выполнился": "git log failed"
+ "git log не выполнился": "git log failed",
+ "Архив готов: {0} — файлов: {1}, {2}": "Archive ready: {0} — files: {1}, {2}",
+ "битая ссылка": "broken link",
+ "Не попали в архив ({0}): {1}": "Not included in the archive ({0}): {1}",
+ "не удалось скачать папку": "failed to download the folder",
+ "Не удалось скачать папку": "Failed to download the folder",
+ "Отменено": "Cancelled",
+ "Отменить упаковку": "Cancel archiving",
+ "Скачать папку как ZIP": "Download folder as ZIP",
+ "Скачать эту папку как ZIP": "Download this folder as ZIP",
+ "ссылка на каталог": "link to a directory",
+ "Файл вырос больше 4 ГБ во время скачивания": "File grew beyond 4 GB during download",
+ "файлов: {0} · {1}": "files: {0} · {1}"
 }

@@ -3155,6 +3155,13 @@ textarea.sm-hdr { font-family: var(--mono, ui-monospace, monospace); font-size: 
 .rh-fbar { display: flex; align-items: center; gap: 6px; padding-bottom: 7px; border-bottom: 1px solid var(--border); background: var(--panel); z-index: 1; }
 .rh-fpath { flex: 1; min-width: 0; font-size: 11.5px; color: var(--text-dim); font-family: "JetBrains Mono", monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; direction: rtl; text-align: left; }
 .rh-fwrap { flex: 1; min-height: 0; display: flex; margin: 0 -10px; }
+/* идущие упаковки «Скачать папку как ZIP» — строка на архив под панелью пути */
+.rh-zips:empty { display: none; }
+.rh-zips { display: flex; flex-direction: column; gap: 4px; padding: 6px 0; border-bottom: 1px solid var(--border); }
+.rh-zip { display: flex; align-items: center; gap: 7px; font-size: 11.5px; color: var(--text-dim); }
+.rh-zip > svg { flex: 0 0 auto; color: var(--green-bright); }
+.rh-zipname { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
+.rh-zipinfo { flex: 1; min-width: 0; color: var(--text-mute); font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 /* контейнер-запросы: колонки метаданных уступают место имени, когда дерево узкое
    (сплит с открытым файлом). Полный набор данных всегда есть в подсказке строки. */
 .rh-tree { flex: 1; min-width: 0; overflow: auto; padding: 6px 6px 12px; container-type: inline-size; }

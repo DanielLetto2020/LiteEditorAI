@@ -653,6 +653,10 @@ contextBridge.exposeInMainWorld('lite', {
     fsList: (id, path) => ipcRenderer.invoke('rh:fsList', { id, path }),   // → {ok,path,entries:[{name,dir,link,size,perms,mode,owner,group,mtime}]}
     fsRead: (id, path) => ipcRenderer.invoke('rh:fsRead', { id, path }),   // → {ok,content|binary,size,meta?} | {error,tooBig?}
     fsDownload: (id, path) => ipcRenderer.invoke('rh:fsDownload', { id, path }), // диалог «сохранить как» + выгрузка (бинарники тоже)
+    // каталог целиком в ZIP: диалог «сохранить как», прогресс — onZipProgress по opId, отмена — zipCancel
+    fsDownloadZip: (id, path, opId) => ipcRenderer.invoke('rh:fsDownloadZip', { id, path, opId }), // → {ok,file,files,bytes,skipped}|{canceled}|{ok:false,error}
+    zipCancel: (opId) => ipcRenderer.send('rh:zipCancel', { opId }),
+    onZipProgress: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('rh:zipProgress', h); return () => ipcRenderer.removeListener('rh:zipProgress', h); },
     fsClose: (id) => ipcRenderer.send('rh:fsClose', { id }),
     // Запись файла на хост (SFTP/FTP) + открытие удалённого файла в вивере (tmp-копия, save-back в main).
     fsWrite: (id, path, content) => ipcRenderer.invoke('rh:fsWrite', { id, path, content }),

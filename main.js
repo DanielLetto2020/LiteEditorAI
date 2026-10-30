@@ -3894,6 +3894,33 @@ ipcMain.handle('rh:fsDownload', async (e, { id, path: p } = {}) => {
   saveState({ lastOpenDir: path.dirname(res.filePath) });
   return { ok: true, file: res.filePath };
 });
+// «Скачать папку как ZIP»: диалог сохранения → обход каталога на хосте с упаковкой на лету.
+// Прогресс — событиями rh:zipProgress окну-отправителю, отмена — rh:zipCancel по opId.
+const rhZipOps = new Map(); // opId -> AbortController
+ipcMain.handle('rh:fsDownloadZip', async (e, { id, path: p, opId } = {}) => {
+  const base = path.posix.basename(String(p || '').replace(/\/+$/, '')) || 'root';
+  const last = loadState().lastOpenDir;
+  const res = await dialog.showSaveDialog(senderWin(e) || mainWindow, {
+    title: 'Скачать папку как ZIP',
+    defaultPath: path.join(last && fs.existsSync(last) ? last : os.homedir(), base + '.zip'),
+    filters: [{ name: 'ZIP', extensions: ['zip'] }],
+  });
+  if (res.canceled || !res.filePath) return { canceled: true };
+  const ac = new AbortController();
+  rhZipOps.set(opId, ac);
+  const sender = e.sender;
+  saveState({ lastOpenDir: path.dirname(res.filePath) });
+  try {
+    const r = await rhApi.downloadZip(id, p, res.filePath, {
+      signal: ac.signal,
+      onProgress: (pr) => { if (!sender.isDestroyed()) sender.send('rh:zipProgress', { opId, file: res.filePath, ...pr }); },
+    });
+    if (r && r.canceled) return { canceled: true };
+    if (!r || !r.ok) return { ok: false, error: (r && r.error) || 'не удалось скачать папку' };
+    return { ok: true, file: res.filePath, files: r.files, bytes: r.bytes, skipped: r.skipped };
+  } finally { rhZipOps.delete(opId); }
+});
+ipcMain.on('rh:zipCancel', (_e, { opId } = {}) => { const ac = rhZipOps.get(opId); if (ac) ac.abort(); });
 ipcMain.on('editor:refreshTree', (_e, payload) => { const w = filesWindow(); if (w) sendTo(w, 'editor:refreshTree', payload); });
 // «Git» из редактора: открыть окно вивера (если закрыто) и переключить его на секцию «Коммит».
 ipcMain.on('editor:focusGit', () => {
