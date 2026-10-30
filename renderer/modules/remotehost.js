@@ -33,6 +33,10 @@ export function initRh(host) {
   let rhSeq = 0, rhRenderSeq = 0;
   // активный браузер файлов: { connId, name, type, root, dirs:Map, expanded:Set, sel, file, mounted }
   let rhFiles = null;
+  // идущие упаковки «Скачать папку как ZIP»: opId -> { name, files, bytes, current }.
+  // Живут вне rhFiles: архив докачивается, даже если человек ушёл из браузера файлов.
+  const rhZips = new Map();
+  let rhZipSeq = 0;
   let rhUi = (STORE.rhUi && typeof STORE.rhUi === 'object') ? STORE.rhUi : {}; // { catCollapsed }
   function setRhOpen(open, opts = {}) {
     if (open === rhOpen) { if (open) renderRhPanel(); return; }
@@ -533,8 +537,12 @@ export function initRh(host) {
     copyPath.onclick = () => { lite.copyText(rhFiles.root || ''); toast('Путь скопирован'); };
     const refresh = iconBtn('drow-act', 'refresh', 'Обновить дерево', 14);
     refresh.onclick = () => rhRefreshTree();
-    bar.append(up, pathEl, copyPath, refresh);
+    const zipRoot = iconBtn('drow-act', 'archive', 'Скачать эту папку как ZIP', 14);
+    zipRoot.onclick = () => rhDownloadZip(rhFiles.root);
+    bar.append(up, pathEl, copyPath, zipRoot, refresh);
     body.appendChild(bar);
+    body.appendChild(el('div', 'rh-zips'));
+    renderRhZips();
     const wrap = el('div', 'rh-fwrap' + (rhFiles.file ? ' has-file' : ''));
     wrap.appendChild(el('div', 'rh-tree'));
     if (rhFiles.file) wrap.appendChild(rhFileView());
@@ -590,6 +598,12 @@ export function initRh(host) {
       const ed = iconBtn('drow-act', 'code', 'Открыть в вивере редактора', 13);
       ed.onclick = (e) => { e.stopPropagation(); rhEditInViewer(full); };
       acts.append(dl, ed);
+    } else if (!ent.link) { // каталог-ссылку обход архива не раскрывает — и кнопку не предлагаем
+      const zipBtn = iconBtn('drow-act', 'archive', 'Скачать папку как ZIP', 13);
+      zipBtn.onclick = (e) => { e.stopPropagation(); rhDownloadZip(full); };
+      const rootBtn = iconBtn('drow-act', 'folder', 'Сделать корнем дерева', 13);
+      rootBtn.onclick = (e) => { e.stopPropagation(); rhSetRoot(full); };
+      acts.append(zipBtn, rootBtn);
     } else {
       const rootBtn = iconBtn('drow-act', 'folder', 'Сделать корнем дерева', 13);
       rootBtn.onclick = (e) => { e.stopPropagation(); rhSetRoot(full); };
@@ -670,6 +684,43 @@ export function initRh(host) {
     if (!r.ok) { toast(r.error || 'Не удалось скачать файл', { kind: 'err', ttl: 9000 }); return; }
     toast(t('Скачано: {0}', r.file), { ttl: 6000 });
   }
+  // Папка целиком одним архивом. Прогресс — строкой под панелью пути (с отменой), итог — тостом;
+  // пропущенные файлы (нет прав, битые ссылки) перечисляются в итоге, а не теряются молча.
+  async function rhDownloadZip(dirPath) {
+    if (!rhFiles || !dirPath) return;
+    const opId = 'z' + (++rhZipSeq) + '.' + Date.now();
+    const name = String(dirPath).replace(/\/+$/, '').split('/').pop() || '/';
+    rhZips.set(opId, { name, files: 0, bytes: 0, current: '', waiting: true });
+    const r = await lite.rh.fsDownloadZip(rhFiles.connId, dirPath, opId);
+    rhZips.delete(opId);
+    renderRhZips();
+    if (!r || r.canceled) return;
+    if (!r.ok) { toast(r.error || 'Не удалось скачать папку', { kind: 'err', ttl: 9000 }); return; }
+    toast(t('Архив готов: {0} — файлов: {1}, {2}', r.file, r.files, rhHumanSize(r.bytes)), { ttl: 8000 });
+    const sk = r.skipped || [];
+    if (sk.length) {
+      const list = sk.slice(0, 5).map((x) => `${x.path} (${x.error})`).join('; ');
+      toast(t('Не попали в архив ({0}): {1}', sk.length, list + (sk.length > 5 ? '…' : '')), { kind: 'warn', ttl: 15000 });
+    }
+  }
+  function renderRhZips() {
+    const box = $('#rh-conns .rh-zips');
+    if (!box) return;
+    box.innerHTML = '';
+    for (const [opId, z] of rhZips) {
+      if (z.waiting) continue; // ещё открыт диалог «сохранить как»
+      const row = el('div', 'rh-zip');
+      row.append(icon('archive', 13), el('span', 'rh-zipname', z.name + '.zip'));
+      const info = el('span', 'rh-zipinfo', t('файлов: {0} · {1}', z.files, rhHumanSize(z.bytes)));
+      if (z.current) info.title = z.current;
+      row.appendChild(info);
+      const stop = iconBtn('drow-act', 'x', 'Отменить упаковку', 13);
+      stop.onclick = () => lite.rh.zipCancel(opId);
+      row.appendChild(stop);
+      box.appendChild(row);
+    }
+  }
+
   // Копируем выделение, а если его нет — весь файл (как «скопировать содержимое» в IDE).
   function rhCopyOpen() {
     const f = rhFiles && rhFiles.file;
@@ -766,6 +817,11 @@ export function initRh(host) {
   // Глобальные IPC-подписки на поток данных SSH-сессий (вызывается ядром из init, как раньше).
   function bindEvents() {
     lite.rh.onData(({ id, data }) => { const rec = rhTerms.get(id); if (rec) rec.term.write(data); });
+    lite.rh.onZipProgress(({ opId, files, bytes, current }) => {
+      const z = rhZips.get(opId); if (!z) return;
+      Object.assign(z, { files, bytes, current, waiting: false });
+      renderRhZips();
+    });
     lite.rh.onExit(({ id }) => { const rec = rhTerms.get(id); if (rec) rec.term.write('\r\n\x1b[90m[соединение закрыто — закрой вкладку или подключись заново]\x1b[0m\r\n'); });
   }
   // Размер шрифта всем SSH-терминалам (вызывается ядром из applyFontSize).
