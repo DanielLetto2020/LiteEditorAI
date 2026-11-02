@@ -3150,6 +3150,13 @@ textarea.sm-hdr { font-family: var(--mono, ui-monospace, monospace); font-size: 
 .rh-name-line { display: flex; align-items: center; gap: 7px; }
 .rh-live { font-size: 9.5px; font-weight: 700; letter-spacing: .03em; color: var(--accent-contrast); background: var(--green); border-radius: 7px; padding: 1px 6px; }
 .rh-hint { font-size: 11.5px; line-height: 1.45; color: var(--text-mute); background: var(--hover); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; }
+/* ключ SSH-хоста: отпечаток в профиле и окно «ключ изменился» */
+.rh-hk-pinned { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+.rh-hk-pinned code, .rh-hk-line code { font-family: var(--mono, ui-monospace, monospace); font-size: 11.5px; color: var(--text); word-break: break-all; }
+.rh-hk-forget { padding: 2px 8px; font-size: 11.5px; margin-left: auto; }
+.rh-hk-fp { margin: 10px 0 4px; padding: 8px 10px; border-radius: 8px; background: var(--bg-input); border: 1px solid var(--border); display: flex; flex-direction: column; gap: 4px; }
+.rh-hk-line { display: flex; gap: 8px; align-items: baseline; }
+.rh-hk-label { color: var(--text-mute); font-size: 11.5px; min-width: 56px; }
 /* remote files: дерево каталогов слева + редактор открытого файла справа */
 #rh-conns.rh-fsmode { overflow: hidden; gap: 0; padding: 10px 10px 0; }
 .rh-fbar { display: flex; align-items: center; gap: 6px; padding-bottom: 7px; border-bottom: 1px solid var(--border); background: var(--panel); z-index: 1; }

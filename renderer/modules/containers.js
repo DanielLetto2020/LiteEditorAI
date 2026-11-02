@@ -965,5 +965,26 @@ export function initContainers(host) {
   // (оболочка окна зовёт applyFontSize, если модуль его отдаёт; раньше размер менялся лишь при новом входе).
   function applyFontSize() { if (dockerExecTerm) { try { dockerExecTerm.options.fontSize = settings.fontSize; } catch (_) {} refitExec(); } }
 
-  return { isOpen: () => dockerOpen, setOpen: setDockerOpen, refitExec, refresh, applyTermTheme, applyFontSize };
+  // Параметр открытия окна (lite.module.open('docker', arg)): { rhId } — контейнеры этого SSH-хоста,
+  // { rhId: null } — локальные. Так «Серверы» открывают полное окно контейнеров на нужном сервере.
+  async function handleArg(arg) {
+    if (!arg || typeof arg !== 'object' || !('rhId' in arg)) return;
+    await ensureRemoteStatus();
+    const want = typeof arg.rhId === 'string' && arg.rhId ? arg.rhId : null;
+    if ((dockerRemote ? dockerRemote.rhId : null) === want) { // уже там — только вернуться к списку
+      if (dockerView !== 'list') backToDockerList();
+      return;
+    }
+    let label = typeof arg.label === 'string' ? arg.label : '';
+    if (want && !label) {
+      let r; try { r = await lite.rh.list(); } catch (_) { r = null; }
+      const c = r && (r.connections || []).find((x) => x.id === want);
+      if (!c) { toast('Профиль подключения не найден', { kind: 'err' }); return; }
+      label = c.name || c.host;
+    }
+    if (dockerView !== 'list') { closeDockerDetail(); dockerView = 'list'; }
+    await applyContainersHost(want, label);
+  }
+
+  return { isOpen: () => dockerOpen, setOpen: setDockerOpen, refitExec, refresh, applyTermTheme, applyFontSize, handleArg };
 }

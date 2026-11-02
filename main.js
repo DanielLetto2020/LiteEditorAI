@@ -122,7 +122,7 @@ try {
   const legacy = path.join(os.homedir(), '.LiteEditor');
   if (!fs.existsSync(storeDir) && fs.existsSync(legacy)) fs.cpSync(legacy, storeDir, { recursive: true });
 } catch (_) {}
-const STORE_KEYS = ['projects', 'settings', 'layout', 'recents', 'lastParent', 'categories', 'sectionOrder', 'favOrder', 'favAgentsOnly', 'accordions', 'dismissed', 'projTabs', 'openrouter', 'dockerUi', 'dbConnections', 'dbUi', 'rhConnections', 'rhUi', 'extData', 'extEnabled', 'quickbar', 'seoSites', 'moduleWins', 'mwLeft', 'mwLogH', 'gitFav', 'commitDrafts', 'bookmarks', 'promptSnippets', 'pomodoro', 'pomodoroLog', 'dbaiProviders', 'sessionSnaps', 'siteMon', 'rmqConnections', 'rmqUi', 'kafkaConnections', 'kafkaUi', 'stConnections', 'stUi', 'jiraAccounts', 'jiraUi', 'gsearch', 'gsearchHist', 'voice', 'voiceClips', 'toolsUi', 'sitemonUi', 'gitGraphUi'];
+const STORE_KEYS = ['projects', 'settings', 'layout', 'recents', 'lastParent', 'categories', 'sectionOrder', 'favOrder', 'favAgentsOnly', 'accordions', 'dismissed', 'projTabs', 'openrouter', 'dockerUi', 'dbConnections', 'dbUi', 'rhConnections', 'rhUi', 'extData', 'extEnabled', 'quickbar', 'seoSites', 'moduleWins', 'mwLeft', 'mwLogH', 'gitFav', 'commitDrafts', 'bookmarks', 'promptSnippets', 'pomodoro', 'pomodoroLog', 'dbaiProviders', 'sessionSnaps', 'siteMon', 'rmqConnections', 'rmqUi', 'kafkaConnections', 'kafkaUi', 'stConnections', 'stUi', 'jiraAccounts', 'jiraUi', 'gsearch', 'gsearchHist', 'voice', 'voiceClips', 'toolsUi', 'sitemonUi', 'gitGraphUi', 'sshHostKeys'];
 // Профили подключений с зашифрованными секретами (passEnc/tokenEnc…) — только для main: модули
 // получают их через свои IPC (publicConn — без секретов), а рендерер эти ключи не читает и не пишет.
 // В общем снимке стора они уходили во ВСЕ окна (при недоступном safeStorage — base64, то есть по сути
@@ -310,6 +310,19 @@ jiraBackend.registerJiraIpc({
   ipcMain, safeStorage, storeDir,
   getAccounts: () => readStoreKey('jiraAccounts'),
   setAccounts: (v) => writeStoreKey('jiraAccounts', v),
+});
+
+// Ключи SSH-хостов (TOFU + ~/.ssh/known_hosts) для всех ssh2-подключений: «Удалённые хосты», пул
+// «Серверов», туннели «Баз данных». Закрепление и отказ уходят во ВСЕ окна событием rh:hostKey —
+// окно «Удалённые хосты» показывает отпечаток и предлагает принять новый ключ.
+require('./lib/hostkeys').init({
+  get: () => readStoreKey('sshHostKeys'),
+  set: (v) => writeStoreKey('sshHostKeys', v),
+  onEvent: (ev) => {
+    logger.log(ev.kind === 'mismatch' ? 'warn' : 'info', 'hostkey', `${ev.kind} ${ev.hp} ${ev.fp}${ev.expected ? ' (ожидался ' + ev.expected + ')' : ''} [${ev.source}]`);
+    sendTo(mainWindow, 'rh:hostKey', ev);
+    for (const w of moduleWindows.values()) sendTo(w, 'rh:hostKey', ev);
+  },
 });
 
 // «RemoteHost» backend (интерактивные SSH-сессии + safeStorage-секреты) — lib/remotehost.js.
@@ -3310,9 +3323,20 @@ function hardenNavigation(win) {
   });
 }
 
-function openModuleWindow(modId) {
+// Параметр открытия окна модуля (openModule('rh', {connId, view}) и т.п.): окну, которое уже
+// подписалось (module:ready), уходит сразу событием module:arg; новое или ещё грузящееся окно получает
+// его по module:ready. Хранится последний параметр на модуль — повторный клик заменяет прежний.
+const pendingModuleArgs = new Map(); // modId -> arg
+function deliverModuleArg(modId, arg) {
+  if (arg == null) return;
+  const w = moduleWindows.get(modId);
+  if (w && !w.isDestroyed() && w.__modReady) sendTo(w, 'module:arg', arg);
+  else pendingModuleArgs.set(modId, arg);
+}
+function openModuleWindow(modId, arg) {
   const existing = moduleWindows.get(modId);
-  if (existing && !existing.isDestroyed()) { if (existing.isMinimized()) existing.restore(); existing.focus(); return; }
+  if (existing && !existing.isDestroyed()) { if (existing.isMinimized()) existing.restore(); existing.focus(); deliverModuleArg(modId, arg); return; }
+  deliverModuleArg(modId, arg);
   const saved = readModuleWins()[modId] || {};
   const iconPng = path.join(__dirname, 'assets', 'icon.png');
   const opts = {
@@ -3345,6 +3369,7 @@ function openModuleWindow(modId) {
   });
   win.on('closed', () => {
     moduleWindows.delete(modId);
+    pendingModuleArgs.delete(modId); // параметр недоставленному окну — не следующему открытию
     if (modId === 'files') filesViewerReady = false; // окно вивера закрыто → следующее openInViewer переоткроет и переждёт готовность
     if (modId === 'db') dbPanelReady = false;        // окно БД закрыто → следующий openFromContainer переоткроет и переждёт готовность
     if (modId === 'rmq') rmqPanelReady = false;      // аналогично для окна RabbitMQ
@@ -3736,7 +3761,23 @@ ipcMain.handle('win:isMaximized', (e) => { const w = senderWin(e); return !!(w &
 ipcMain.on('win:show', showWindow);
 
 // ── Окна модулей: open/close/реестр открытых ──────────────────────────────────────────
-ipcMain.on('module:open', (_e, { modId } = {}) => { if (modId) openModuleWindow(String(modId)); });
+// arg — только простые данные (JSON): уходит в окно модуля как есть, модуль сам проверяет поля.
+ipcMain.on('module:open', (_e, { modId, arg } = {}) => {
+  if (!modId) return;
+  let a = null;
+  if (arg != null) { try { a = JSON.parse(JSON.stringify(arg)); } catch (_) { a = null; } }
+  openModuleWindow(String(modId), a);
+});
+// Окно модуля подписалось на module:arg — отдать отложенный параметр.
+ipcMain.on('module:ready', (e) => {
+  for (const [id, w] of moduleWindows) {
+    if (w.isDestroyed() || w.webContents !== e.sender) continue;
+    w.__modReady = true;
+    const a = pendingModuleArgs.get(id);
+    if (a != null) { pendingModuleArgs.delete(id); sendTo(w, 'module:arg', a); }
+    break;
+  }
+});
 
 // ── Помодоро: пульт окна модуля управляет движком таймера в main ──────────────────────
 ipcMain.handle('pomodoro:start', (_e, { tech } = {}) => pomoStart(tech));

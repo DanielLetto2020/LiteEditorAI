@@ -79,7 +79,10 @@ contextBridge.exposeInMainWorld('lite', {
 
   // Окна модулей (v1.1+): открыть/сфокусировать, закрыть, подписка на набор открытых.
   module: {
-    open: (modId) => ipcRenderer.send('module:open', { modId }),
+    // arg — параметр открытия (простые данные): окно получит его через onArg (и уже открытое — тоже)
+    open: (modId, arg) => ipcRenderer.send('module:open', { modId, arg }),
+    ready: () => ipcRenderer.send('module:ready'),
+    onArg: (cb) => { const h = (_e, a) => cb(a); ipcRenderer.on('module:arg', h); return () => ipcRenderer.removeListener('module:arg', h); },
     onOpenSet: (cb) => { const h = (_e, p) => cb(p && p.ids || []); ipcRenderer.on('module:openSet', h); return () => ipcRenderer.removeListener('module:openSet', h); },
   },
 
@@ -667,6 +670,11 @@ contextBridge.exposeInMainWorld('lite', {
     tunnelOpen: (id, rhost, rport, label, lport) => ipcRenderer.invoke('rh:tunnelOpen', { id, rhost, rport, label, lport }), // → {ok,tunId,port}; lport — предпочитаемый локальный
     tunnelList: () => ipcRenderer.invoke('rh:tunnelList'),                            // → {ok,tunnels:[...]}
     tunnelClose: (tunId) => ipcRenderer.invoke('rh:tunnelClose', { tunId }),
+    // Ключ SSH-хоста: { id } профиля или { hp: 'host:port' } → {pinned,rejected}; принять отклонённый; забыть.
+    hostKeyInfo: (a) => ipcRenderer.invoke('rh:hostKeyInfo', a || {}),
+    hostKeyTrust: (a) => ipcRenderer.invoke('rh:hostKeyTrust', a || {}),
+    hostKeyForget: (a) => ipcRenderer.invoke('rh:hostKeyForget', a || {}),
+    onHostKey: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('rh:hostKey', h); return () => ipcRenderer.removeListener('rh:hostKey', h); },
   },
 
   pty: {

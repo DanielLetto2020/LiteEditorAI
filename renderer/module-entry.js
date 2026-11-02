@@ -399,6 +399,18 @@ async function boot() {
   });
 
   if (def.wire) { try { def.wire(mod); } catch (e) { try { lite.log('error', '[module:' + modId + '] wire', String(e)); } catch (_) {} } }
+
+  // Параметр открытия окна (lite.module.open(id, arg) из редактора или другого окна): «Удалённые хосты»
+  // на нужном профиле, «Контейнеры» на нужном хосте и т.п. Подписка — после init/wire, затем ready:
+  // main отдаст отложенный параметр только подписанному окну.
+  lite.module.onArg((arg) => {
+    if (!mod || typeof mod.handleArg !== 'function') return;
+    Promise.resolve().then(() => mod.handleArg(arg)).catch((e) => {
+      try { lite.log('error', '[module:' + modId + '] handleArg', String((e && e.stack) || e)); } catch (_) {}
+      toast(`Не удалось открыть: ${(e && e.message) || e}`, { kind: 'err' });
+    });
+  });
+  lite.module.ready();
 }
 
 // fetch the editor's current project first, then boot
