@@ -6061,3 +6061,8 @@ body.win-frame.win-frame-pulse::before {
 .srv-lmarks { display: flex; gap: 4px; flex-wrap: wrap; justify-content: flex-end; }
 .srv-pre-sm { max-height: 260px; font-size: 11px; }
 .srv-cmd { margin: 8px 0; white-space: pre-wrap; }
+.srv-ev { display: grid; grid-template-columns: 8px 92px 1fr; align-items: center; gap: 8px; font-size: 12px; padding: 3px 0; }
+.srv-ev-t { color: var(--text-mute); font-variant-numeric: tabular-nums; }
+.srv-ev-x { color: var(--text2); min-width: 0; word-break: break-word; }
+.srv-status-row > .srv-cstate { flex: 0 0 auto; min-width: 96px; }
+.srv-status-row > .srv-link { flex: 1; }

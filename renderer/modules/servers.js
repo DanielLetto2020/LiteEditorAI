@@ -508,6 +508,7 @@ export function initServers(host) {
     if (failed.length) { const b = el('button', 'btn srv-btn-sm', 'К сервисам'); b.onclick = () => go('server', s.id, 'services'); st('warn', 'warning', t('Упавшие сервисы: {0}', failed.map((u) => u.unit).join(', ')), b); }
     else if (s.failed) st('ok', 'check', t('Упавших сервисов нет'));
     sys.appendChild(lines);
+    agentSection(c, s);
     // диски кратко
     if (s.disks && s.disks.length) {
       const dbox = section(c, 'Диски');
@@ -537,6 +538,51 @@ export function initServers(host) {
     tabState.hist = tabState.range === '1h' ? r.fast : r.minute.concat(r.fast.length ? [r.fast[r.fast.length - 1]] : []);
     tabState.histFor = key; tabState.histAt = Date.now();
     draw();
+  }
+  // ---- агент на сервере (не ИИ): скрипт-сборщик, копит метрики и события, пока редактор закрыт
+  const AG_MODE = { systemd: 'таймер systemd (переживает перезагрузку)', cron: 'cron (переживает перезагрузку)', loop: 'фоновый цикл — не переживёт перезагрузку сервера' };
+  function agentSection(c, s) {
+    if (!s.agent) return;
+    const a = s.agent;
+    const box = section(c, 'Агент на сервере');
+    const st = el('div', 'srv-status');
+    const row = (kind, ic, text, ...btns) => { const r = el('div', 'srv-status-row ' + kind); r.append(icon(ic, 14), el('span', null, text)); for (const b of btns) if (b) r.appendChild(b); st.appendChild(r); };
+    const btn = (label, fn, cls) => { const b = el('button', 'btn srv-btn-sm' + (cls ? ' ' + cls : ''), label); b.onclick = () => fn(b); return b; };
+    const install = (b) => {
+      cmdConfirm(t('Установить агента на «{0}»?', s.name),
+        t('Маленький скрипт (sh + awk) раз в минуту записывает метрики и события в ~/.local/share/lite-agent, пока редактор закрыт. Портов не открывает, root не нужен, ничего не отправляет наружу — редактор сам дочитывает накопленное по SSH. Запуск: таймер systemd пользователя, если нет — cron, если нет — фоновый цикл.'),
+        '~/.local/share/lite-agent/agent.sh  +  ~/.config/systemd/user/lite-agent.timer', null, t('Установить'), async () => {
+          b.disabled = true;
+          const r = await lite.servers.agentInstall(s.id).catch((e) => ({ ok: false, error: String(e) }));
+          b.disabled = false;
+          if (!r || !r.ok) toast(t('Агент: {0}', (r && r.error) || 'ошибка'), { kind: 'err', ttl: 9000 });
+          else toast(t('Агент установлен: {0}', t(AG_MODE[r.mode] || r.mode)), { ttl: 6000 });
+        });
+    };
+    const remove = () => showConfirm(t('Удалить агента с «{0}»?', s.name), t('Таймер/cron остановится, каталог ~/.local/share/lite-agent удалится вместе с накопленной историей. История, уже перенесённая в редактор, останется.'), t('Удалить'), async () => {
+      const r = await lite.servers.agentUninstall(s.id).catch((e) => ({ ok: false, error: String(e) }));
+      if (!r || !r.ok) toast(t('Агент: {0}', (r && r.error) || 'ошибка'), { kind: 'err', ttl: 9000 }); else toast('Агент удалён', { ttl: 3000 });
+    });
+    if (!a.installed) {
+      row('info', 'info', t('Не установлен — пока редактор закрыт, история и события не копятся.'), btn('Установить', install, 'primary'));
+    } else {
+      const fresh = a.last ? t('последняя запись {0}', fmtAgo(a.last)) : t('записей пока нет');
+      row(a.stale ? 'warn' : 'ok', a.stale ? 'warning' : 'check', t('Работает: {0} · {1}', t(AG_MODE[a.mode] || a.mode || '?'), fresh) + (a.first ? ' · ' + t('история с {0}', new Date(a.first).toLocaleString()) : ''),
+        !a.current ? btn('Обновить агента', install) : null, btn('Удалить', remove, 'danger'));
+      if (a.stale) row('warn', 'warning', a.mode === 'loop' ? t('Запись остановилась — фоновый цикл, скорее всего, не пережил перезагрузку. Переустановите агента.') : t('Запись остановилась больше 5 минут назад — проверьте таймер: systemctl --user status lite-agent.timer'));
+      if (a.mode === 'loop' && !a.stale) row('warn', 'warning', t('Ни systemd пользователя (linger), ни cron не нашлись — агент работает фоновым циклом и после перезагрузки сервера не запустится сам.'));
+    }
+    box.appendChild(st);
+    const ev = (s.agentEvents || []).slice().reverse();
+    if (ev.length) {
+      const eb = section(c, 'События с сервера');
+      for (const e of ev.slice(0, 15)) {
+        const k = e.sev === 'ok' ? 'ok' : e.sev === 'crit' ? 'crit' : e.sev === 'info' ? 'info' : 'warn';
+        const r = el('div', 'srv-ev');
+        r.append(dot(k), el('span', 'srv-ev-t', fmtTime(e.t, true)), el('span', 'srv-ev-x', e.text));
+        eb.appendChild(r);
+      }
+    }
   }
   function copyCmd(cmd) { try { lite.copyText(cmd); toast(t('Команда скопирована: {0}', cmd), { ttl: 6000 }); } catch (_) {} }
 
