@@ -398,11 +398,14 @@ export function initRh(host) {
     const url = scheme + '://' + h + ':' + svc.port;
     let sites = [];
     try { const l = await lite.sitemon.list(); if (Array.isArray(l)) sites = l; } catch (_) {}
-    if (sites.some((s) => s && s.url === url)) { toast(`Уже наблюдается: ${url}`, { ttl: 5000 }); lite.module.open('sitemon'); return; }
-    const a = await lite.sitemon.addTarget({ name: `${c.name || c.host}:${svc.port}`, url });
+    if (sites.some((s) => s && s.url === url)) { toast(`Уже наблюдается: ${url}`, { ttl: 5000 }); lite.module.open('servers', { view: 'sites' }); return; }
+    // сервер «Серверов» на этом же профиле — сайт сразу привязывается к нему
+    let serverId = null;
+    try { const r = await lite.servers.list(); const sv = ((r && r.servers) || []).find((x) => x.rhId === c.id); if (sv) serverId = sv.id; } catch (_) {}
+    const a = await lite.sitemon.addTarget({ name: `${c.name || c.host}:${svc.port}`, url, serverId });
     if (!a || !a.ok) { toast((a && a.error) || 'Не удалось добавить в мониторинг', { kind: 'err', ttl: 8000 }); return; }
-    toast(`${url} — добавлен в «Мониторинг сайтов»`, { ttl: 5000 });
-    lite.module.open('sitemon');
+    toast(`${url} — добавлен в «Серверы → Сайты»`, { ttl: 5000 });
+    lite.module.open('servers', { view: 'sites' });
   }
   function showHostServices(c) {
     const { m, close } = makeModal('<h2></h2>');

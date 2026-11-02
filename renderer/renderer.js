@@ -29,7 +29,7 @@ import { openGlobalSearch } from './gsearch.js';
 import { initExtensions } from './modules/extensions.js';
 // initFiles — вивер+дерево мигрированы в отдельное окно (renderer/module-entry.js).
 
-const APP_VERSION = 'alpha v1.1.211';
+const APP_VERSION = 'alpha v1.1.212';
 const GUTTER = 8; // зазор между карточками окна — он же разделитель, за который тянется ширина
 // Системный терминал («Система · ~») мигрирован в отдельное окно (renderer/modules/scratch.js):
 // его id `__scratch__::tN` маршрутизируются main'ом в окно-владельца, в ядре их больше не обрабатываем.
@@ -2026,7 +2026,7 @@ const panels = new Map(); // id -> { isOpen(), setOpen(open, opts) }
 // Правый слот редактора теперь держит только «Мои модули» (ext); всё остальное — отдельные окна.
 const PANEL_ORDER = [];
 // Модули, мигрированные в отдельные окна (открываются через lite.module.open, не как панель правого слота).
-const WINDOW_MODULES = new Set(['tools', 'iterflow', 'seo', 'audit', 'company', 'notes', 'db', 'rmq', 'kafka', 'chat', 'doc', 'docker', 'rh', 'ctx', 'scratch', 'files', 'pomodoro', 'monitor', 'keepass', 'sitemon', 'storage', 'jira', 'voice', 'gitgraph', 'servers']);
+const WINDOW_MODULES = new Set(['tools', 'iterflow', 'seo', 'audit', 'company', 'notes', 'db', 'rmq', 'kafka', 'chat', 'doc', 'docker', 'rh', 'ctx', 'scratch', 'files', 'pomodoro', 'monitor', 'keepass', 'storage', 'jira', 'voice', 'gitgraph', 'servers']);
 function registerPanel(id, api) { panels.set(id, api); }
 function closeOtherPanels(selfId) {
   for (const id of PANEL_ORDER) {
@@ -2092,7 +2092,7 @@ const QUICK_BUILTIN = [
   { id: 'kafka',   icon: 'kafka',    label: 'Kafka — топики, группы, live-tail' },
   { id: 'storage', icon: 'cloud',    label: 'Внешние хранилища — S3, бакеты, объекты' },
   { id: 'rh',      icon: 'globe',    label: 'Удалённые хосты — SSH-сессии' },
-  { id: 'servers', icon: 'server',   label: 'Серверы — дашборд: ресурсы, проблемы, контейнеры, сервисы' },
+  { id: 'servers', icon: 'server',   label: 'Серверы — дашборд: ресурсы, проекты, сеть, контейнеры, сайты' },
   { id: 'notes',   icon: 'note',     label: 'Задачи — заметки проекта' },
   { id: 'audit',   icon: 'grid',     label: 'Аудит — анализ проекта' },
   { id: 'company', icon: 'users',    label: 'ИИ компания — команда агентов над проектом' },
@@ -2529,7 +2529,7 @@ const BUILTIN_MODS = [
   { id: 'kafka',    icon: 'kafka',    title: 'Kafka',              desc: 'топики · группы · live-tail' },
   { id: 'storage',  icon: 'cloud',    title: 'Внешние хранилища',  desc: 'S3 · бакеты · публичные ссылки', project: true },
   { id: 'rh',       icon: 'globe',    title: 'Удалённые хосты',    desc: 'SSH-сессии к серверам' },
-  { id: 'servers',  icon: 'server',   title: 'Серверы',            desc: 'дашборд: ресурсы · проблемы · контейнеры · сервисы' },
+  { id: 'servers',  icon: 'server',   title: 'Серверы',            desc: 'дашборд: ресурсы · проекты · сеть · контейнеры · сайты' },
   { id: 'iterflow', icon: 'layers',   title: 'IterFlow',           desc: 'задачи итераций из трекера' },
   { id: 'jira',     icon: 'jira',     title: 'Jira',               desc: 'свои задачи из нескольких аккаунтов' },
   { id: 'seo',      icon: 'globe',    title: 'WEB/SEO аудит',      desc: 'сайт: безопасность, SEO, сеть' },
@@ -2540,7 +2540,6 @@ const BUILTIN_MODS = [
   { id: 'scratch',  icon: 'terminal', title: 'Системный терминал', desc: 'шелл вне проектов' },
   { id: 'monitor',  icon: 'graph',    title: 'Монитор ресурсов',   desc: 'память/CPU редактора и агентов' },
   { id: 'keepass',  icon: 'key',      title: 'Сейф паролей',       desc: 'KeePass .kdbx: пароли и токены' },
-  { id: 'sitemon',  icon: 'globe',    title: 'Мониторинг сайтов',  desc: 'доступность сайтов + уведомления' },
 ];
 // Каталог модулей («Модули» в боковой карточке): плитки с живым поиском и вкладками
 // «Все · Для проекта · Самостоятельные · Мои модули». На плитке — «на быструю панель» и «открывать при запуске».

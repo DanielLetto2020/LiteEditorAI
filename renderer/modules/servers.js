@@ -180,6 +180,7 @@ export function initServers(host) {
     renderSide();
     if (ui.view === 'all') renderAll(true);
     else if (ui.view === 'issues') renderIssues(true);
+    else if (ui.view === 'sites') { /* «Мониторинг сайтов» обновляется своим каналом */ }
     else if (ui.view === 'server' && ui.selId === s.id) renderServer(true);
   }
 
@@ -194,8 +195,8 @@ export function initServers(host) {
     }
     renderSide();
     if (!loaded) { main().innerHTML = '<div class="srv-empty">' + t('Загрузка…') + '</div>'; return; }
-    if (!list.length) { renderWelcome(); return; }
-    if (ui.view === 'issues') renderIssues(); else if (ui.view === 'server' && sel()) renderServer(); else { ui.view = 'all'; renderAll(); }
+    if (!list.length && ui.view !== 'sites') { renderWelcome(); return; }
+    if (ui.view === 'issues') renderIssues(); else if (ui.view === 'sites') renderSites(); else if (ui.view === 'server' && sel()) renderServer(); else { ui.view = 'all'; renderAll(); }
   }
   const main = () => body().querySelector('.srv-main');
   // перерисовать содержимое, сохранив прокрутку (обновления приходят каждые 10 с)
@@ -221,6 +222,8 @@ export function initServers(host) {
     const crit = all.filter((i) => i.sev === 'crit').length, warn = all.filter((i) => i.sev === 'warn').length;
     nav('all', 'grid', 'Все серверы', list.length ? [list.length, 'n'] : null, () => go('all'), ui.view === 'all');
     nav('issues', 'warning', 'Проблемы', crit + warn ? [crit + warn, crit ? 'crit' : 'warn'] : null, () => go('issues'), ui.view === 'issues');
+    const siteBad = list.flatMap((x) => x.sites || []).filter((t) => t.state === 'triggered' || t.state === 'error').length;
+    nav('sites', 'globe', 'Сайты', siteBad ? [siteBad, 'crit'] : null, () => go('sites'), ui.view === 'sites');
     const groups = new Map();
     for (const s of list) { const g = s.group || t('Без группы'); if (!groups.has(g)) groups.set(g, []); groups.get(g).push(s); }
     for (const [g, arr] of groups) {
@@ -303,6 +306,7 @@ export function initServers(host) {
     if (iss.length) chips.appendChild(chip('warning', t('проблем: {0}', iss.length), iss.some((i) => i.sev === 'crit') ? 'crit' : 'warn'));
     if (s.pkg && s.pkg.count) chips.appendChild(chip('download', t('обновлений: {0}', s.pkg.count), s.pkg.security ? 'warn' : ''));
     if (s.reboot && s.reboot.required) chips.appendChild(chip('power', 'нужна перезагрузка', 'warn'));
+    if (s.sites && s.sites.length) { const bad = s.sites.filter((x) => x.state === 'triggered' || x.state === 'error').length; chips.appendChild(chip('globe', t('сайты {0}/{1}', s.sites.length - bad, s.sites.length), bad ? 'crit' : '')); }
     if (s.live && s.live.uptime) chips.appendChild(chip('clock', fmtDur(s.live.uptime), ''));
     c.appendChild(chips);
     c.onclick = () => go('server', s.id);
@@ -347,6 +351,8 @@ export function initServers(host) {
     return r;
   }
   function tabForIssue(i) {
+    if (/^(cert|site):/.test(i.key)) return 'projects';
+    if (/^exposed:/.test(i.key)) return 'network';
     if (/^(ctr|hc:)/.test(i.key)) return 'containers';
     if (/^unit:/.test(i.key)) return 'services';
     if (/^(disk|inode):/.test(i.key)) return 'disks';
@@ -369,7 +375,7 @@ export function initServers(host) {
   }
 
   // ---------------------------------------------------------------- страница сервера
-  const TABS = [['overview', 'Обзор'], ['containers', 'Контейнеры'], ['services', 'Сервисы'], ['disks', 'Диски'], ['logs', 'Логи']];
+  const TABS = [['overview', 'Обзор'], ['projects', 'Проекты'], ['containers', 'Контейнеры'], ['network', 'Сеть'], ['services', 'Сервисы'], ['disks', 'Диски'], ['logs', 'Логи']];
   function renderServer(fromUpdate) {
     const s = sel(); if (!s) { go('all'); return; }
     const m = main();
@@ -388,12 +394,15 @@ export function initServers(host) {
       if (id === 'containers') { const c = ctrCounts(s); if (c.total) n = c.bad ? [c.bad, 'warn'] : [c.total, 'n']; }
       if (id === 'services') { const f = (s.failed || []).filter((u) => !u.helper).length; if (f) n = [f, 'warn']; }
       if (id === 'disks') { const d = maxDisk(s); if (d && d.pct >= ((s.thresholds || {}).disk || 90)) n = [d.pct + '%', 'warn']; }
+      if (id === 'projects' && s.projects) { const bad = s.projects.filter((p) => !p.hidden && (p.status === 'bad' || p.status === 'warn')).length; n = bad ? [bad, 'warn'] : [s.projects.filter((p) => !p.hidden).length, 'n']; }
       if (n) b.appendChild(el('span', 'srv-badge ' + n[1], String(n[0])));
       b.onclick = () => { if (ui.tab === id) return; ui.tab = id; saveUi(); subscribe(); renderServer(); content.scrollTop = 0; };
       tabsBox.appendChild(b);
     }
     // вкладки с вводом (логи, du, поиск) не перерисовываем целиком на каждом обновлении
     if (fromUpdate && ui.tab === 'logs') return;
+    if (ui.tab === 'projects') { tabProjects(content, s, fromUpdate); return; }
+    if (ui.tab === 'network') { tabNetwork(content, s, fromUpdate); return; }
     if (ui.tab === 'overview') fill(content, (c) => tabOverview(c, s));
     else if (ui.tab === 'containers') tabContainers(content, s, fromUpdate);
     else if (ui.tab === 'services') tabServices(content, s, fromUpdate);
@@ -463,6 +472,10 @@ export function initServers(host) {
       }
       const hbox = section(c, 'История', rng);
       histInto(hbox, s);
+    }
+    if (s.sites && s.sites.length) {
+      const sb = section(c, 'Сайты');
+      for (const t1 of s.sites) sb.appendChild(siteRow(t1));
     }
     // информация
     const info = section(c, 'Сервер');
@@ -628,6 +641,25 @@ export function initServers(host) {
     m.querySelector('[data-x]').onclick = close;
     ok.onclick = () => { if (inp.value.trim() !== expect) return; close(); onOk(); };
     setTimeout(() => inp.focus(), 30);
+  }
+  // Подтверждение с точной командой, которая уйдёт на сервер; expect — ввести имя сервера (опасные действия)
+  function cmdConfirm(title, text, cmd, expect, okLabel, onOk) {
+    const { m, close } = makeModal('<h2></h2><div class="about-desc"></div><pre class="srv-pre srv-pre-sm srv-cmd"></pre><div class="srv-typed-wrap"></div><div class="modal-actions"><button class="btn" data-x>Отмена</button><button class="btn" data-ok></button></div>');
+    m.classList.add('srv-modal-wide');
+    m.querySelector('h2').textContent = title;
+    m.querySelector('.about-desc').textContent = text;
+    m.querySelector('.srv-cmd').textContent = cmd;
+    const ok = m.querySelector('[data-ok]'); ok.textContent = okLabel; ok.classList.add(expect ? 'danger' : 'primary');
+    let inp = null;
+    if (expect) {
+      const w = m.querySelector('.srv-typed-wrap');
+      w.appendChild(el('div', 'rh-hint', t('Чтобы подтвердить, введите имя сервера: {0}', expect)));
+      inp = el('input', 'srv-typed'); inp.placeholder = expect; w.appendChild(inp);
+      ok.disabled = true; inp.oninput = () => { ok.disabled = inp.value.trim() !== expect; };
+    }
+    m.querySelector('[data-x]').onclick = close;
+    ok.onclick = () => { if (inp && inp.value.trim() !== expect) return; close(); onOk(); };
+    setTimeout(() => (inp || m.querySelector('[data-x]')).focus(), 30);
   }
   function textModal(title, loader, opts = {}) {
     const { m, close } = makeModal('<h2></h2><div class="srv-mtools"></div><pre class="srv-pre"></pre>');
@@ -898,6 +930,337 @@ export function initServers(host) {
     if (L.paint) L.paint();
   }
 
+  // ---------------------------------------------------------------- «Сайты» (встроенный «Мониторинг сайтов»)
+  let sitesNode = null, sitesMod = null;
+  async function renderSites() {
+    const m = main(); m.innerHTML = ''; m.dataset.sid = '';
+    if (!sitesNode) sitesNode = el('div', 'sitemon-body srv-sites');
+    m.appendChild(sitesNode);
+    await ensureSites();
+  }
+  async function ensureSites() {
+    if (sitesMod) return sitesMod;
+    try {
+      const mod = await import('./sitemon.js');
+      if (!sitesNode) sitesNode = el('div', 'sitemon-body srv-sites');
+      sitesMod = mod.initSitemon({ STORE, persist, body: sitesNode, embedded: true });
+      sitesMod.setOpen(true);
+    } catch (e) { toast(t('Не удалось загрузить «Сайты»: {0}', (e && e.message) || e), { kind: 'err' }); }
+    return sitesMod;
+  }
+  const SITE_ST = { ok: ['ok', 'в норме'], triggered: ['crit', 'тревога'], warn: ['warn', 'внимание'], error: ['crit', 'ошибка проверки'], unknown: ['wait', 'проверяется…'], info: ['info', 'инфо'] };
+  function siteRow(x) {
+    const r = el('div', 'srv-status-row');
+    const [k, l] = SITE_ST[x.state] || SITE_ST.unknown;
+    const st = el('span', 'srv-cstate srv-state-' + k); st.append(dot(k), el('span', null, l));
+    const a = el('a', 'srv-link', x.name || x.url); a.href = '#'; a.title = x.url; a.onclick = (e) => { e.preventDefault(); lite.openExternal(x.url); };
+    r.append(st, a);
+    const go1 = el('button', 'btn srv-btn-sm', 'К сайтам'); go1.onclick = () => go('sites'); r.appendChild(go1);
+    return r;
+  }
+
+  // ---------------------------------------------------------------- вкладка «Проекты»
+  const PST = { ok: ['ok', 'работает'], partial: ['warn', 'частично'], stopped: ['off', 'остановлен'], bad: ['crit', 'проблема'], warn: ['warn', 'внимание'], static: ['info', 'без контейнеров'] };
+  const PKIND = { compose: 'compose', pod: 'pod', container: 'контейнер', static: 'статика', proxy: 'прокси', manual: 'вручную' };
+  function tabProjects(c, s, fromUpdate) {
+    let tools = c.querySelector('.srv-tools'), box = c.querySelector('.srv-proj-list');
+    if (!fromUpdate || !tools || !box) {
+      c.innerHTML = '';
+      tools = el('div', 'srv-tools');
+      const q = el('input', 'srv-search'); q.placeholder = t('Поиск: проект, домен, сервис…'); q.value = tabState.projQ || '';
+      q.oninput = () => { tabState.projQ = q.value; projList(box, sel()); };
+      const hid = el('label', 'srv-check'); const hc = el('input'); hc.type = 'checkbox'; hc.checked = !!tabState.projHidden;
+      hc.onchange = () => { tabState.projHidden = hc.checked; projList(box, sel()); };
+      hid.append(hc, el('span', null, 'скрытые'));
+      const cert = el('button', 'btn srv-btn-sm', 'Проверить сертификаты');
+      cert.onclick = async () => { cert.disabled = true; await lite.servers.certCheck(s.id).catch(() => {}); cert.disabled = false; };
+      const add = el('button', 'btn srv-btn-sm'); add.append(icon('plus', 13), el('span', null, 'Проект вручную'));
+      add.onclick = () => projectModal(sel(), null);
+      tools.append(q, hid, el('span', 'srv-grow'), cert, add);
+      box = el('div', 'srv-proj-list');
+      c.append(tools, box);
+    }
+    const st = c.scrollTop; projList(box, s); c.scrollTop = st;
+  }
+  function projList(box, s) {
+    box.innerHTML = '';
+    if (!s.projects) { box.appendChild(el('div', 'srv-empty', s.state === 'online' ? 'Проекты собираются…' : 'Нет данных — сервер не на связи.')); return; }
+    const q = (tabState.projQ || '').trim().toLowerCase();
+    const arr = s.projects.filter((p) => (tabState.projHidden || !p.hidden) && (!q || [p.title, p.name, p.workdir, ...p.domains, ...p.containers.map((x) => x.service || x.name)].join(' ').toLowerCase().includes(q)));
+    const hidden = s.projects.filter((p) => p.hidden).length;
+    box.appendChild(el('div', 'srv-ctr-sum', t('проектов: {0}', s.projects.length - hidden) + (hidden ? ' · ' + t('скрыто: {0}', hidden) : '') + (s.certAt ? ' · ' + t('сертификаты проверены {0}', fmtAgo(s.certAt)) : '')));
+    if (!arr.length) { box.appendChild(el('div', 'srv-empty', 'Ничего не найдено')); return; }
+    for (const p of arr) box.appendChild(projCard(s, p));
+  }
+  function certChip(cert) {
+    if (!cert || (cert.days == null && !cert.error)) return null;
+    if (cert.error) { const c1 = el('span', 'srv-chip', t('TLS: {0}', cert.error)); c1.title = t('Сертификат не получен с этой машины'); return c1; }
+    const kind = cert.days < 3 ? 'crit' : cert.days < 14 ? 'warn' : '';
+    const c1 = el('span', 'srv-chip' + (kind ? ' ' + kind : ''), cert.days < 0 ? t('TLS истёк') : t('TLS {0} дн.', cert.days));
+    c1.title = t('Издатель: {0} · до {1}{2}', cert.issuer || '?', new Date(cert.validTo).toLocaleDateString(), cert.trusted ? '' : ' · ' + t('не доверенный: {0}', cert.trustError));
+    if (!cert.trusted && !kind) c1.classList.add('warn');
+    return c1;
+  }
+  function projCard(s, p) {
+    const card1 = el('div', 'srv-proj' + (p.hidden ? ' hidden-p' : ''));
+    const head = el('div', 'srv-proj-head');
+    const [k, l] = PST[p.status] || PST.ok;
+    const st = el('span', 'srv-cstate srv-state-' + k); st.append(dot(k), el('span', null, l));
+    head.append(st, el('span', 'srv-proj-name', p.title || p.name));
+    if (p.title && p.title !== p.name) head.appendChild(el('span', 'srv-crow-sub', p.name));
+    head.appendChild(el('span', 'srv-chip', PKIND[p.kind] || p.kind));
+    if (p.counts.total) head.appendChild(el('span', 'srv-proj-cnt', t('{0}/{1} контейнеров', p.counts.running, p.counts.total)));
+    if (p.counts.running) head.appendChild(el('span', 'srv-proj-cnt', `${fmtPct(p.cpu)} · ${fmtBytes(p.mem)}`));
+    card1.appendChild(head);
+    const meta = [p.workdir || (p.dirs[0] || ''), p.files.length ? p.files.join(', ') : '', p.via ? p.via + (p.file ? ': ' + p.file : '') : '', p.target ? '→ ' + p.target : ''].filter(Boolean).join(' · ');
+    if (meta) card1.appendChild(el('div', 'srv-crow-meta', meta));
+    if (p.notes) card1.appendChild(el('div', 'srv-proj-notes', p.notes));
+    // домены: ссылка, сертификат, сайт из «Сайтов»
+    if (p.domains.length) {
+      const dl = el('div', 'srv-proj-doms');
+      const certs = new Map(p.certs.map((x) => [x.domain, x]));
+      const sites = new Map(p.sites.map((x) => [(() => { try { return new URL(x.url).hostname; } catch (_) { return ''; } })(), x]));
+      const show = tabState.projOpen && tabState.projOpen[p.key] ? p.domains : p.domains.slice(0, 6);
+      for (const d of show) {
+        const row = el('div', 'srv-dom');
+        const a = el('a', 'srv-link', d); a.href = '#'; a.onclick = (e) => { e.preventDefault(); lite.openExternal('https://' + d.replace(/^\*\./, '')); };
+        row.appendChild(a);
+        const cc = certChip(certs.get(d)); if (cc) row.appendChild(cc);
+        const site = sites.get(d);
+        if (site) { const [sk, sl] = SITE_ST[site.state] || SITE_ST.unknown; const sc = el('span', 'srv-chip' + (sk === 'crit' ? ' crit' : sk === 'warn' ? ' warn' : ''), t('сайт: {0}', t(sl))); row.appendChild(sc); }
+        else if (!d.startsWith('*.')) {
+          const w = el('button', 'srv-mini', 'наблюдать'); w.title = t('Добавить в «Сайты» с привязкой к этому серверу');
+          w.onclick = async () => { const m1 = await ensureSites(); if (m1) m1.addSiteFor('https://' + d + '/', s.id); };
+          row.appendChild(w);
+        }
+        dl.appendChild(row);
+      }
+      if (p.domains.length > show.length) {
+        const more = el('button', 'srv-mini', t('ещё {0}', p.domains.length - show.length));
+        more.onclick = () => { tabState.projOpen = { ...(tabState.projOpen || {}), [p.key]: true }; projList(card1.parentNode, sel()); };
+        dl.appendChild(more);
+      }
+      card1.appendChild(dl);
+    }
+    if (p.containers.length) {
+      const cl = el('div', 'srv-proj-ctrs');
+      for (const x of p.containers) {
+        const kk = x.health === 'unhealthy' ? 'crit' : (CTR_STATE[x.state] || ['off'])[0];
+        const ch = el('span', 'srv-proj-ctr'); ch.append(dot(kk), el('span', null, x.service || x.name)); ch.title = `${x.name} · ${x.image} · ${t((CTR_STATE[x.state] || ['', x.state])[1])}`;
+        cl.appendChild(ch);
+      }
+      card1.appendChild(cl);
+    }
+    const pubPorts = p.ports.filter((x) => x.hostPort);
+    if (pubPorts.length) card1.appendChild(el('div', 'srv-crow-meta', t('порты: {0}', pubPorts.map((x) => `${x.hostIp ? x.hostIp + ':' : ''}${x.hostPort}→${x.container}`).join(', '))));
+    if (p.unitInfo.length) card1.appendChild(el('div', 'srv-crow-meta', t('юниты: {0}', p.unitInfo.map((u) => u.unit + (u.active ? ' (' + u.active + ')' : '')).join(', '))));
+    const acts = el('div', 'srv-proj-acts');
+    const b = (ic, label, fn, cls) => { const x = el('button', 'btn srv-btn-sm' + (cls ? ' ' + cls : '')); x.append(icon(ic, 13), el('span', null, label)); x.onclick = fn; acts.appendChild(x); return x; };
+    if (p.containers.length) b('list', 'Логи', () => textModal(t('Логи проекта: {0}', p.title || p.name), (n) => lite.servers.projectLogs(s.id, p.key, n), { tails: [50, 200, 1000] }));
+    if (p.kind === 'compose') {
+      b('refresh', 'Перезапустить', () => projDo(s, p, 'restart'));
+      b('download', 'Обновить', () => projDo(s, p, 'update'));
+      if (p.counts.running) b('stop', 'Остановить', () => projDo(s, p, 'stop'), 'danger');
+      else b('play', 'Запустить', () => projDo(s, p, 'start'));
+    }
+    const dir = p.workdir || p.dirs[0];
+    if (dir) b('folder', 'Файлы', () => lite.module.open('rh', { connId: s.rhId, view: 'files', path: dir }));
+    b('pencil', 'Изменить', () => projectModal(s, p));
+    b(p.hidden ? 'eye' : 'eye-off', p.hidden ? 'Показать' : 'Скрыть', () => lite.servers.projectSave(s.id, p.key, { hidden: !p.hidden }));
+    card1.appendChild(acts);
+    return card1;
+  }
+  async function projDo(s, p, action) {
+    let pc; try { pc = await lite.servers.projectCommand(s.id, p.key, action); } catch (e) { pc = { ok: false, error: String(e) }; }
+    if (!pc || !pc.ok) { toast((pc && pc.error) || 'Ошибка', { kind: 'err', ttl: 9000 }); return; }
+    const verb = { restart: 'Перезапустить', update: 'Обновить', stop: 'Остановить', start: 'Запустить' }[action];
+    const title = t('{0} проект «{1}» на «{2}»?', t(verb), pc.project, s.name);
+    const what = action === 'update'
+      ? t('Скачает свежие образы и пересоздаст контейнеры проекта — сервисы перезапустятся. Если проект поднимали с особыми флагами (профили, env-файлы), сверьте команду. Будет выполнено на сервере:')
+      : action === 'stop' ? t('Все сервисы проекта станут недоступны. Будет выполнено на сервере:') : t('Будет выполнено на сервере:');
+    const run = () => runProject(s, p, action, pc);
+    const typed = action === 'update' || action === 'stop' || VPN_RE.test(p.name + ' ' + p.containers.map((x) => x.image).join(' '));
+    cmdConfirm(title, what, pc.cmd, typed ? s.name : null, t(verb), run);
+  }
+  async function runProject(s, p, action, pc) {
+    const { m, close } = makeModal('<h2></h2><div class="srv-mtools"></div><pre class="srv-pre"></pre>');
+    m.classList.add('srv-modal-wide');
+    m.querySelector('h2').textContent = t('{0}: {1}', pc.project, t({ restart: 'перезапуск', update: 'обновление', stop: 'остановка', start: 'запуск' }[action]));
+    const pre = m.querySelector('.srv-pre'); pre.textContent = '$ ' + pc.cmd + '\n\n' + t('Выполняется… (обновление образов может занять несколько минут)');
+    const x = iconBtn('icon-btn', 'x', 'Закрыть', 15); x.onclick = close; m.querySelector('.srv-mtools').append(el('span', 'srv-grow'), x);
+    let r; try { r = await lite.servers.projectAction(s.id, p.key, action); } catch (e) { r = { ok: false, error: String(e) }; }
+    pre.textContent = '$ ' + pc.cmd + '\n\n' + ((r && r.text) || '') + '\n' + (r && r.ok ? t('✓ Готово') : t('✗ Ошибка: {0}', (r && r.error) || '?'));
+    pre.scrollTop = pre.scrollHeight;
+    if (!r || !r.ok) toast(t('Проект {0}: {1}', pc.project, (r && r.error) || 'ошибка'), { kind: 'err', ttl: 9000 }); else toast(t('Готово: {0}', pc.project), { ttl: 3000 });
+  }
+  function projectModal(s, p) {
+    const manualNew = !p;
+    const { m, close } = makeModal(`<h2>${manualNew ? t('Новый проект') : t('Проект: {0}', p.title || p.name)}</h2><div class="db-form srv-form"></div>`);
+    m.classList.add('db-modal');
+    const f = m.querySelector('.srv-form');
+    const field = (label, node, hint) => { const w = el('div', 'db-field'); w.append(el('label', null, label), node); if (hint) w.appendChild(el('div', 'rh-hint', hint)); f.appendChild(w); return node; };
+    const inp = (v, ph) => { const i = el('input'); i.type = 'text'; if (v != null) i.value = v; if (ph) i.placeholder = ph; return i; };
+    const title = field('Название', inp(p ? (p.title || '') : '', p ? p.name : 'например: лендинг'));
+    const domains = field('Дополнительные домены', inp('', 'a.ru, b.ru'), p && p.domains.length ? t('Найдены сами: {0}', p.domains.join(', ')) : 'Через запятую — для них проверяются сертификаты');
+    const dirs = field('Каталоги', inp(manualNew ? '' : '', '/var/www/site'), 'Абсолютные пути через запятую — откроются в «Файлах»');
+    const units = field('Сервисы systemd', inp('', 'my-app.service'), 'Через запятую — их состояние видно в проекте');
+    const notes = el('textarea'); notes.rows = 3; notes.value = (p && p.notes) || ''; field('Заметки', notes);
+    const row = el('div', 'gm-actions'); row.style.marginTop = '12px';
+    const save = el('button', 'btn primary', manualNew ? 'Добавить' : 'Сохранить');
+    save.onclick = async () => {
+      const patch = { title: title.value, notes: notes.value };
+      if (domains.value.trim() || manualNew) patch.domains = domains.value;
+      if (dirs.value.trim() || manualNew) patch.dirs = dirs.value;
+      if (units.value.trim() || manualNew) patch.units = units.value;
+      if (manualNew) patch.manual = true;
+      const r = await lite.servers.projectSave(s.id, p ? p.key : '', patch).catch((e) => ({ ok: false, error: String(e) }));
+      if (!r || !r.ok) { toast((r && r.error) || 'Не удалось сохранить', { kind: 'err' }); return; }
+      close();
+    };
+    const cancel = el('button', 'btn', 'Отмена'); cancel.onclick = close;
+    row.append(save, cancel);
+    if (p) {
+      const reset = el('button', 'btn danger', p.kind === 'manual' ? 'Удалить проект' : 'Сбросить правки');
+      reset.onclick = () => showConfirm(p.kind === 'manual' ? t('Удалить проект «{0}»?', p.title || p.name) : t('Сбросить ручные правки «{0}»?', p.title || p.name),
+        t('На сервере ничего не изменится — только описание проекта в редакторе.'), t('Да'), async () => { close(); await lite.servers.projectSave(s.id, p.key, null, true); });
+      row.append(el('span', 'srv-grow'), reset);
+    }
+    f.appendChild(row);
+    setTimeout(() => title.focus(), 30);
+  }
+
+  // ---------------------------------------------------------------- вкладка «Сеть»
+  function tabNetwork(c, s, fromUpdate) {
+    const st = c.scrollTop;
+    c.innerHTML = '';
+    const nm = s.net;
+    if (!nm) { c.appendChild(el('div', 'srv-empty', s.state === 'online' ? 'Сеть опрашивается…' : 'Нет данных — сервер не на связи.')); return; }
+    const head = el('div', 'srv-tools');
+    head.appendChild(el('span', 'srv-ctr-sum', s.netAt ? t('обновлено {0}', fmtAgo(s.netAt)) : ''));
+    head.appendChild(el('span', 'srv-grow'));
+    const eg = el('button', 'btn srv-btn-sm', 'Исходящий адрес'); eg.title = t('С какого внешнего адреса сервер ходит в интернет по умолчанию');
+    eg.onclick = () => egressCheck(s, '', eg);
+    const rf = iconBtn('icon-btn', 'refresh', 'Обновить', 14); rf.onclick = () => lite.servers.refresh(s.id, 'net');
+    head.append(eg, rf);
+    c.appendChild(head);
+    if (nm.policyRouting) c.appendChild(el('div', 'srv-note', 'На сервере есть свои правила маршрутизации (policy routing) — трафик с разных адресов может уходить разными путями. Проверьте «Исходящий адрес» у каждого адреса.'));
+    // адреса
+    const ab = section(c, 'Адреса');
+    const rates = (s.live && s.live.ifRates) || {};
+    for (const i of nm.ifaces.filter((x) => !x.virt)) {
+      const r1 = el('div', 'srv-if');
+      const top = el('div', 'srv-if-top');
+      const k = i.state === 'up' ? 'ok' : i.state === 'unknown' ? 'info' : 'off';
+      top.append(dot(k), el('span', 'srv-crow-name', i.name), el('span', 'srv-crow-meta', [i.state, i.mac].filter(Boolean).join(' · ')));
+      const rt1 = rates[i.name]; if (rt1) top.appendChild(el('span', 'srv-if-rate', `↓ ${fmtRate(rt1.rx)} · ↑ ${fmtRate(rt1.tx)}`));
+      r1.appendChild(top);
+      for (const a of i.addrs.filter((x) => x.scope !== 'link')) {
+        const ar = el('div', 'srv-if-addr');
+        ar.appendChild(el('code', null, `${a.addr}/${a.prefix}`));
+        const lab = (s.ipLabels || {})[a.addr];
+        const lb = el('button', 'srv-mini' + (lab ? ' on' : ''), lab || t('подпись'));
+        lb.title = t('Подпись адреса: «основной», «VPN», «почта»…');
+        lb.onclick = () => labelPrompt(s, a.addr, lab);
+        ar.appendChild(lb);
+        const out = el('span', 'srv-crow-meta');
+        const e1 = el('button', 'srv-mini', 'исходящий'); e1.title = t('Каким адресом сервер выходит в интернет с этого адреса'); e1.onclick = () => egressCheck(s, a.addr, e1, out);
+        ar.append(e1, out);
+        r1.appendChild(ar);
+      }
+      ab.appendChild(r1);
+    }
+    // слушающие порты
+    const lb = section(c, 'Кто слушает');
+    const fwKind = nm.fw && nm.fw.kind;
+    for (const g of nm.groups) {
+      const gh = el('div', 'srv-cgroup');
+      const gname = g.ip ? g.ip : t('Все адреса (0.0.0.0 / ::)');
+      gh.append(el('span', 'srv-cgroup-n', gname));
+      if (g.label) gh.appendChild(el('span', 'srv-chip', g.label));
+      if (/^(127\.|::1)/.test(g.ip)) gh.appendChild(el('span', 'srv-chip', 'только локально'));
+      gh.appendChild(el('span', 'srv-cgroup-c', String(g.rows.length)));
+      lb.appendChild(gh);
+      for (const r2 of g.rows) {
+        const row = el('div', 'srv-lrow');
+        row.appendChild(el('span', 'srv-lport', `${r2.port}/${r2.proto}`));
+        const who = el('div', 'srv-crow-main');
+        const top = el('div', 'srv-crow-top');
+        if (r2.container) { top.append(icon('box', 12), el('span', 'srv-crow-name', r2.container.service || r2.container.name)); if (r2.container.project) top.appendChild(el('span', 'srv-crow-sub', r2.container.project)); }
+        else top.appendChild(el('span', 'srv-crow-name', r2.procs.join(', ') || t('процесс скрыт (нужен sudo)')));
+        who.appendChild(top);
+        if (r2.domains.length) {
+          const dl = el('div', 'srv-crow-meta');
+          dl.textContent = r2.domains.length > 4 ? t('{0} и ещё {1}', r2.domains.slice(0, 4).join(', '), r2.domains.length - 4) : r2.domains.join(', ');
+          dl.title = r2.domains.join('\n');
+          who.appendChild(dl);
+        }
+        row.appendChild(who);
+        const marks = el('div', 'srv-lmarks');
+        if (r2.scope === 'all') {
+          const ex = nm.exposed.find((x) => x.port === r2.port && x.proto === r2.proto);
+          if (ex && ex.fwAllowed === false) marks.appendChild(el('span', 'srv-chip', t('закрыт фаерволом')));
+          else marks.appendChild(el('span', 'srv-chip warn', ex && ex.fwAllowed ? t('открыт наружу') : t('на всех адресах')));
+        }
+        row.appendChild(marks);
+        lb.appendChild(row);
+      }
+    }
+    if (fwKind !== 'ufw') lb.appendChild(el('div', 'srv-note', 'Фаервол не ufw (или нет sudo) — открыт ли порт снаружи, не проверить; «на всех адресах» значит, что сервис принимает подключения с любого адреса сервера.'));
+    // домены
+    if (nm.domains.length) {
+      const db = section(c, 'Домены');
+      const certs = s.certs || {};
+      for (const d of nm.domains) {
+        const row = el('div', 'srv-lrow');
+        const a = el('a', 'srv-link', d.domain); a.href = '#'; a.onclick = (e) => { e.preventDefault(); lite.openExternal('https://' + d.domain.replace(/^\*\./, '')); };
+        const who = el('div', 'srv-crow-main');
+        who.append(a, el('div', 'srv-crow-meta', `${d.via} → ${d.target || '?'}${d.project ? ' · ' + d.project : ''}${d.file ? ' · ' + d.file : ''}`));
+        row.append(icon('globe', 13), who);
+        const marks = el('div', 'srv-lmarks'); const cc = certChip(certs[d.domain]); if (cc) marks.appendChild(cc);
+        row.appendChild(marks);
+        db.appendChild(row);
+      }
+    }
+    // маршрутизация
+    const rb = section(c, 'Маршрутизация');
+    if (nm.rules.length) {
+      const rl = el('div', 'srv-pre srv-pre-sm');
+      rl.textContent = nm.rules.map((x) => `${String(x.priority).padStart(5)}: ${x.text}${x.custom ? '   ← ' + t('своё правило') : ''}`).join('\n');
+      rb.appendChild(rl);
+    }
+    const rt2 = el('div', 'srv-pre srv-pre-sm');
+    rt2.textContent = nm.routes.map((x) => `${x.fam === 6 ? 'v6 ' : ''}${x.dst || 'default'}${x.via ? ' via ' + x.via : ''}${x.dev ? ' dev ' + x.dev : ''}${x.src ? ' src ' + x.src : ''}${x.metric != null ? ' metric ' + x.metric : ''}${x.table ? ' table ' + x.table : ''}${x.proto ? ' (' + x.proto + ')' : ''}`).join('\n');
+    rb.appendChild(rt2);
+    // фаервол
+    const fb = section(c, 'Фаервол');
+    const fw = nm.fw;
+    if (!fw || !fw.kind) fb.appendChild(el('div', 'srv-empty sm', 'Фаервол не найден или нужен sudo, чтобы его прочитать.'));
+    else {
+      const st1 = el('div', 'srv-status-row ' + (fw.active ? 'ok' : 'warn'));
+      st1.append(icon(fw.active ? 'check' : 'warning', 14), el('span', null, t('{0}: {1}', fw.kind, fw.active ? t('включён') : t('выключен'))));
+      fb.appendChild(st1);
+      if (fw.text) { const pre = el('div', 'srv-pre srv-pre-sm'); pre.textContent = fw.text; fb.appendChild(pre); }
+      if (fw.nftTables && fw.nftTables.length) fb.appendChild(el('div', 'srv-crow-meta', t('таблицы nftables: {0}', fw.nftTables.join(', '))));
+    }
+    c.scrollTop = st;
+  }
+  async function egressCheck(s, ip, btn, out) {
+    btn.disabled = true;
+    const r = await lite.servers.egress(s.id, ip || undefined).catch((e) => ({ ok: false, error: String(e) }));
+    btn.disabled = false;
+    if (!r || !r.ok) { toast(t('Исходящий адрес: {0}', (r && r.error) || 'ошибка'), { kind: 'err' }); return; }
+    if (out) out.textContent = '→ ' + r.ip; else toast(t('Сервер выходит в интернет с адреса {0}', r.ip), { ttl: 8000 });
+  }
+  function labelPrompt(s, ip, cur) {
+    const { m, close } = makeModal('<h2></h2><input class="srv-typed" type="text" maxlength="40"><div class="modal-actions"><button class="btn" data-x>Отмена</button><button class="btn primary" data-ok>Сохранить</button></div>');
+    m.querySelector('h2').textContent = t('Подпись адреса {0}', ip);
+    const inp = m.querySelector('.srv-typed'); inp.value = cur || ''; inp.placeholder = t('например: основной, VPN');
+    const save = async () => { const r = await lite.servers.ipLabel(s.id, ip, inp.value).catch((e) => ({ ok: false, error: String(e) })); if (!r || !r.ok) toast((r && r.error) || 'Ошибка', { kind: 'err' }); close(); };
+    m.querySelector('[data-x]').onclick = close; m.querySelector('[data-ok]').onclick = save;
+    inp.onkeydown = (e) => { if (e.key === 'Enter') save(); };
+    setTimeout(() => inp.focus(), 30);
+  }
+
   // ---------------------------------------------------------------- добавление / настройки сервера
   async function addServer() { serverModal(null); }
   async function serverModal(existing) {
@@ -979,6 +1342,7 @@ export function initServers(host) {
     if (!arg || typeof arg !== 'object') return;
     if (arg.serverId) { ui.selId = String(arg.serverId); ui.view = 'server'; if (arg.tab && TABS.some((x) => x[0] === arg.tab)) ui.tab = arg.tab; }
     else if (arg.view === 'issues') ui.view = 'issues';
+    else if (arg.view === 'sites') ui.view = 'sites';
     saveUi(); subscribe(); render();
   }
   function refreshAll() { lite.servers.refresh(null).catch(() => {}); toast('Опрашиваю все серверы…', { ttl: 2500 }); }

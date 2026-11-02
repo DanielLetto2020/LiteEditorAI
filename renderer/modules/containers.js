@@ -347,11 +347,14 @@ export function initContainers(host) {
     let sites = [];
     try { const l = await lite.sitemon.list(); if (Array.isArray(l)) sites = l; } catch (_) {}
     const exists = sites.find((s) => s && s.url === url);
-    if (exists) { toast(`Уже наблюдается: ${url}`, { ttl: 5000 }); lite.module.open('sitemon'); return; }
-    const a = await lite.sitemon.addTarget({ name: r.prefill.name, url });
+    if (exists) { toast(`Уже наблюдается: ${url}`, { ttl: 5000 }); lite.module.open('servers', { view: 'sites' }); return; }
+    // контейнеры удалённого хоста — сайт сразу привязывается к его серверу в «Серверах»
+    let serverId = null;
+    if (dockerRemote && dockerRemote.rhId) { try { const l = await lite.servers.list(); const sv = ((l && l.servers) || []).find((x) => x.rhId === dockerRemote.rhId); if (sv) serverId = sv.id; } catch (_) {} }
+    const a = await lite.sitemon.addTarget({ name: r.prefill.name, url, serverId });
     if (!a || !a.ok) { toast((a && a.error) || 'Не удалось добавить в мониторинг', { kind: 'err', ttl: 8000 }); return; }
-    toast(`${url} — добавлен в «Мониторинг сайтов»`, { ttl: 5000 });
-    lite.module.open('sitemon');
+    toast(`${url} — добавлен в «Серверы → Сайты»`, { ttl: 5000 });
+    lite.module.open('servers', { view: 'sites' });
   }
   // Клик по иконке Kafka: inspect → заготовка профиля → окно модуля «Kafka» (маршрут через main).
   async function openContainerKafka(c) {

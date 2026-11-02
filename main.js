@@ -342,6 +342,8 @@ const rhApi = rhBackend.registerRemoteIpc({
 const SRV_SEV_MARK = { crit: '🔴', warn: '🟡', ok: '✅' };
 const serversApi = require('./lib/servers').register({
   ipcMain, rhApi, readStoreKey, writeStoreKey, storeDir,
+  // сайты «Мониторинга сайтов» (вкладка «Сайты»): состояние чеков для страницы сервера и его проблем
+  getSites: () => { try { return smPublic(); } catch (_) { return []; } },
   broadcast: (ch, payload) => { for (const w of moduleWindows.values()) sendTo(w, ch, payload); },
   log: (lvl, src, msg) => logger.log(lvl, src, msg),
   notify: (s, sev, tpl, args) => {
@@ -3250,6 +3252,18 @@ let activeProjectInfo = null;       // {id,path,name,accent} — кэш акти
 const ownerBySession = new Map();   // sessionId -> webContents — маршрутизация стримов по окну-владельцу (этап D)
 
 function readModuleWins() { const v = readStoreKey('moduleWins'); return (v && typeof v === 'object') ? v : {}; }
+// Однократный перенос id 'sitemon' → 'servers' в наборе окон, квикбаре и автозапуске (окно «Мониторинг
+// сайтов» влилось в «Серверы»). Без него закреплённая кнопка и автозапуск указывали бы в никуда.
+(function migrateSitemonId() {
+  const swap = (arr) => { if (!Array.isArray(arr) || !arr.includes('sitemon')) return null; const out = []; for (const x of arr) { const y = x === 'sitemon' ? 'servers' : x; if (!out.includes(y)) out.push(y); } return out; };
+  try {
+    const mw = readModuleWins(); const o = swap(mw.__open);
+    if (o) { mw.__open = o; if (mw.sitemon && !mw.servers) mw.servers = mw.sitemon; delete mw.sitemon; writeStoreKey('moduleWins', mw); }
+    const qb = swap(readStoreKey('quickbar')); if (qb) writeStoreKey('quickbar', qb);
+    const st = readStoreKey('settings');
+    if (st && typeof st === 'object') { const al = swap(st.autoLaunchMods); if (al) { st.autoLaunchMods = al; writeStoreKey('settings', st); } }
+  } catch (e) { logger.log('warn', 'store', 'миграция sitemon → servers: ' + String((e && e.message) || e)); }
+})();
 function saveModuleBounds(modId, win) {
   if (!win || win.isDestroyed() || win.isFullScreen()) return; // F11 — не затираем обычные габариты размером экрана
   const all = readModuleWins();
@@ -3354,6 +3368,8 @@ function deliverModuleArg(modId, arg) {
   else pendingModuleArgs.set(modId, arg);
 }
 function openModuleWindow(modId, arg) {
+  // «Мониторинг сайтов» стал вкладкой «Сайты» окна «Серверы» (v1.1.212): старые вызовы ведут туда
+  if (modId === 'sitemon') { modId = 'servers'; if (arg == null) arg = { view: 'sites' }; }
   const existing = moduleWindows.get(modId);
   if (existing && !existing.isDestroyed()) { if (existing.isMinimized()) existing.restore(); existing.focus(); deliverModuleArg(modId, arg); return; }
   deliverModuleArg(modId, arg);
@@ -4923,11 +4939,12 @@ async function smCheckTarget(target) {
 
 // ── публичный вид / персист / загрузка (+ миграция старого плоского формата) ────────────────────────
 function smCheckPublic(c) { return { id: c.id, title: c.title, kind: c.kind, spec: c.spec, code: c.code, meta: c.meta, notify: c.notify !== false, debounce: c.debounce || 1, state: c.state || 'unknown', value: c.value, error: c.error, checkedAt: c.checkedAt, history: (c.history || []).slice(-SM_HISTORY), stats: (c.stats || []).slice(-31) }; }
-function smTargetPersist(t) { return { id: t.id, name: t.name, url: t.url, intervalSec: t.intervalSec, render: !!t.render, insecureTls: !!t.insecureTls, headers: t.headers || null, checks: (t.checks || []).map((c) => ({ id: c.id, title: c.title, kind: c.kind, spec: c.spec, code: c.code, meta: c.meta, notify: c.notify !== false, debounce: c.debounce || 1, state: c.state, value: c.value, error: c.error, baseline: c.baseline, checkedAt: c.checkedAt, history: (c.history || []).slice(-SM_HISTORY), stats: (c.stats || []).slice(-31) })) }; }
-function smPublic() { return smTargets.map((t) => ({ id: t.id, name: t.name, url: t.url, intervalSec: t.intervalSec, render: !!t.render, insecureTls: !!t.insecureTls, headers: t.headers || null, checks: (t.checks || []).map(smCheckPublic) })); }
+function smTargetPersist(t) { return { id: t.id, name: t.name, url: t.url, intervalSec: t.intervalSec, render: !!t.render, insecureTls: !!t.insecureTls, headers: t.headers || null, serverId: t.serverId || null, checks: (t.checks || []).map((c) => ({ id: c.id, title: c.title, kind: c.kind, spec: c.spec, code: c.code, meta: c.meta, notify: c.notify !== false, debounce: c.debounce || 1, state: c.state, value: c.value, error: c.error, baseline: c.baseline, checkedAt: c.checkedAt, history: (c.history || []).slice(-SM_HISTORY), stats: (c.stats || []).slice(-31) })) }; }
+function smPublic() { return smTargets.map((t) => ({ id: t.id, name: t.name, url: t.url, intervalSec: t.intervalSec, render: !!t.render, insecureTls: !!t.insecureTls, headers: t.headers || null, serverId: t.serverId || null, checks: (t.checks || []).map(smCheckPublic) })); }
 function smPersist() { try { writeStoreKey('siteMon', smTargets.map(smTargetPersist)); } catch (_) {} }
 function smBroadcast() {
   const p = smPublic();
+  try { serversApi.sitesChanged(); } catch (_) {}
   sendTo(mainWindow, 'sitemon:update', p);
   for (const w of moduleWindows.values()) { sendTo(w, 'sitemon:update', p); }
 }
@@ -4943,7 +4960,7 @@ function smLoad() {
   if (raw === undefined && storeReadFailed.has('siteMon')) storeSnapshotBroken.add('siteMon');   // держим «пусто» до перезапуска — не пишем его
   if (!Array.isArray(raw)) { smTargets = []; return; }
   smTargets = raw.map((x) => {
-    if (x && Array.isArray(x.checks)) return { id: x.id || smNewId('t'), name: x.name, url: x.url, intervalSec: smClampInt(x.intervalSec), render: !!x.render, insecureTls: !!x.insecureTls, headers: x.headers || null, checks: x.checks.map((c) => Object.assign({}, c, { pend: null })), checking: false, nextAt: 0 };
+    if (x && Array.isArray(x.checks)) return { id: x.id || smNewId('t'), name: x.name, url: x.url, intervalSec: smClampInt(x.intervalSec), render: !!x.render, insecureTls: !!x.insecureTls, headers: x.headers || null, serverId: smSid(x.serverId), checks: x.checks.map((c) => Object.assign({}, c, { pend: null })), checking: false, nextAt: 0 };
     return smMigrateOld(x || {});
   });
 }
@@ -4969,14 +4986,16 @@ function smSanitizeCheck(c) {
 
 // ── IPC ────────────────────────────────────────────────────────────────────────────────────────────
 ipcMain.handle('sitemon:list', () => smPublic());
-ipcMain.handle('sitemon:addTarget', (_e, { name, url, intervalSec, render, insecureTls, headers } = {}) => {
+// serverId — привязка сайта к серверу «Серверов» (необязательно): статус сайта виден на странице сервера
+const smSid = (v) => (typeof v === 'string' && /^[\w-]{1,64}$/.test(v) ? v : null);
+ipcMain.handle('sitemon:addTarget', (_e, { name, url, intervalSec, render, insecureTls, headers, serverId } = {}) => {
   const u = smNormUrl(url); if (!u) return { ok: false, error: 'Некорректный URL' };
-  const t = { id: smNewId('t'), name: String(name || '').trim() || new URL(u).hostname, url: u, intervalSec: smClampInt(intervalSec), render: !!render, insecureTls: !!insecureTls, headers: smCleanHeaders(headers),
+  const t = { id: smNewId('t'), name: String(name || '').trim() || new URL(u).hostname, url: u, intervalSec: smClampInt(intervalSec), render: !!render, insecureTls: !!insecureTls, headers: smCleanHeaders(headers), serverId: smSid(serverId),
     checks: [{ id: smNewId('c'), title: 'Доступность', kind: 'basic', spec: { source: 'status', cmp: 'up' }, notify: true, debounce: 1, state: 'unknown', history: [] }], checking: false, nextAt: 0 };
   smTargets.push(t); smPersist(); smBroadcast(); smCheckTarget(t);
   return { ok: true, id: t.id };
 });
-ipcMain.handle('sitemon:editTarget', (_e, { id, name, url, intervalSec, render, insecureTls, headers } = {}) => {
+ipcMain.handle('sitemon:editTarget', (_e, { id, name, url, intervalSec, render, insecureTls, headers, serverId } = {}) => {
   const t = smTargets.find((x) => x.id === id); if (!t) return { ok: false, error: 'нет цели' };
   if (name != null) t.name = String(name).trim() || t.name;
   if (url != null) { const u = smNormUrl(url); if (!u) return { ok: false, error: 'Некорректный URL' }; t.url = u; }
@@ -4984,6 +5003,7 @@ ipcMain.handle('sitemon:editTarget', (_e, { id, name, url, intervalSec, render, 
   if (render != null) t.render = !!render;
   if (insecureTls != null) t.insecureTls = !!insecureTls;
   if (headers !== undefined) t.headers = smCleanHeaders(headers);
+  if (serverId !== undefined) t.serverId = smSid(serverId);
   t.gen = (t.gen || 0) + 1; t.nextAt = 0; smPersist(); smBroadcast(); smCheckTarget(t); return { ok: true };
 });
 ipcMain.handle('sitemon:removeTarget', (_e, { id } = {}) => { smTargets = smTargets.filter((x) => x.id !== id); smPersist(); smBroadcast(); return { ok: true }; });

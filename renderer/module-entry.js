@@ -28,7 +28,6 @@ const initAudit = () => import('./modules/audit.js').then((m) => m.initAudit);
 const initGitGraph = () => import('./modules/gitgraph.js').then((m) => m.initGitGraph);
 const initMonitor = () => import('./modules/monitor.js').then((m) => m.initMonitor);
 const initKeepass = () => import('./modules/keepass.js').then((m) => m.initKeepass);
-const initSitemon = () => import('./modules/sitemon.js').then((m) => m.initSitemon);
 const initServers = () => import('./modules/servers.js').then((m) => m.initServers);
 const initPomodoro = () => import('./modules/pomodoro.js').then((m) => m.initPomodoro);
 const initVoice = () => import('./modules/voice.js').then((m) => m.initVoice);
@@ -120,10 +119,7 @@ const MODULES = {
     title: 'Серверы', load: initServers, project: false,
     wire: (mod) => { bind('#servers-add', () => mod.addServer()); bind('#servers-refresh', () => mod.refreshAll()); },
   },
-  sitemon: {
-    title: 'Мониторинг сайтов', load: initSitemon, project: false,
-    wire: (mod) => { bind('#sitemon-add', () => mod.addSite()); bind('#sitemon-check', () => mod.checkAll()); },
-  },
+
   pomodoro: {
     title: 'Помодоро', load: initPomodoro, project: false,
     wire: (mod) => { bind('#pomodoro-min', () => mod.toggleCompact()); },

@@ -182,7 +182,10 @@ export function initSitemon(host) {
   let targets = [];
   let unsub = null;
   let viewMode = ((STORE.sitemonUi && STORE.sitemonUi.viewMode) === 'charts') ? 'charts' : 'blocks';
-  const body = $('#sitemon-body');
+  // Встроенный режим (вкладка «Сайты» окна «Серверы»): свой контейнер вместо #sitemon-body и без
+  // переключения #sitemon-pane — та панель в общем module.html принадлежит отдельному окну.
+  const embedded = !!(host && host.embedded);
+  const body = (host && host.body) || $('#sitemon-body');
 
   async function reload() { try { targets = (await lite.sitemon.list()) || []; render(); } catch (_) {} }
   function smUi() { return (STORE.sitemonUi && typeof STORE.sitemonUi === 'object') ? STORE.sitemonUi : {}; }
@@ -226,11 +229,12 @@ export function initSitemon(host) {
   }
 
   // ── диалог цели (URL): добавить / править ───────────────────────────────────────────────────────────
-  function targetDialog(existing) {
+  // pre — префилл новой цели: { url, serverId } (из «Проектов» сервера)
+  function targetDialog(existing, pre) {
     const { m, close } = makeModal(`<h2>${existing ? 'Настройки цели' : 'Новая цель (URL)'}</h2><div class="sm-form"></div><div class="modal-actions"><button class="btn" id="sm-cancel">Отмена</button><button class="btn primary" id="sm-save">${existing ? 'Сохранить' : 'Добавить'}</button></div>`);
     m.classList.add('sm-modal'); addCloseX(m, close);
     const f = m.querySelector('.sm-form');
-    const url = el('input', 'sm-in'); url.placeholder = 'https://example.com/api'; url.value = existing ? existing.url : ''; url.spellcheck = false;
+    const url = el('input', 'sm-in'); url.placeholder = 'https://example.com/api'; url.value = existing ? existing.url : ((pre && pre.url) || ''); url.spellcheck = false;
     const name = el('input', 'sm-in'); name.placeholder = 'Название (необязательно)'; name.value = existing ? (existing.name || '') : '';
     const intv = el('input', 'sm-in'); intv.type = 'number'; intv.min = '15'; intv.max = '86400'; intv.value = existing ? existing.intervalSec : 60;
     const renderCb = el('input'); renderCb.type = 'checkbox'; renderCb.checked = existing ? !!existing.render : false;
@@ -244,10 +248,18 @@ export function initSitemon(host) {
     const ilab = el('label', 'sm-check'); ilab.appendChild(insecureCb); ilab.appendChild(el('span', null, 'Разрешить самоподписанный TLS-сертификат (небезопасно — MITM)')); f.appendChild(ilab);
     const hwrap = el('details', 'sm-adv'); hwrap.appendChild(el('summary', null, 'Заголовки запроса (авторизация и т.п.)')); hwrap.appendChild(hdr); f.appendChild(hwrap);
     if (existing && existing.headers) hwrap.open = true;
+    // привязка к серверу «Серверов»: статус сайта виден на странице сервера и в его проблемах
+    const srvSel = el('select', 'sm-in');
+    const none = document.createElement('option'); none.value = ''; none.textContent = 'не привязан'; srvSel.appendChild(none);
+    f.appendChild(el('label', 'sm-l', 'Сервер')); f.appendChild(srvSel);
+    lite.servers.list().then((r) => {
+      for (const sv of (r && r.servers) || []) { const o = document.createElement('option'); o.value = sv.id; o.textContent = sv.name; srvSel.appendChild(o); }
+      srvSel.value = (existing && existing.serverId) || (pre && pre.serverId) || '';
+    }).catch(() => {});
     function parseHeaders(txt) { const out = {}; for (const line of String(txt || '').split('\n')) { const i = line.indexOf(':'); if (i < 0) continue; const k = line.slice(0, i).trim(); const v = line.slice(i + 1).trim(); if (k) out[k] = v; } return Object.keys(out).length ? out : null; }
     m.querySelector('#sm-cancel').addEventListener('click', close);
     m.querySelector('#sm-save').addEventListener('click', async () => {
-      const payload = { name: name.value, url: url.value, intervalSec: parseInt(intv.value, 10) || 60, render: renderCb.checked, insecureTls: insecureCb.checked, headers: parseHeaders(hdr.value) };
+      const payload = { name: name.value, url: url.value, intervalSec: parseInt(intv.value, 10) || 60, render: renderCb.checked, insecureTls: insecureCb.checked, headers: parseHeaders(hdr.value), serverId: srvSel.value || null };
       const r = existing ? await lite.sitemon.editTarget(existing.id, payload) : await lite.sitemon.addTarget(payload);
       if (r && r.ok) { close(); reload(); } else toast((r && r.error) || 'Не удалось сохранить', { kind: 'err' });
     });
@@ -612,7 +624,7 @@ export function initSitemon(host) {
   function render() {
     if (!body) return; body.textContent = '';
     const head = el('div', 'sm-head');
-    head.appendChild(el('span', 'sm-h-title', 'Мониторинг сайтов'));
+    head.appendChild(el('span', 'sm-h-title', embedded ? 'Сайты' : 'Мониторинг сайтов'));
     const seg = el('div', 'sm-seg');
     const bBlk = el('button', 'sm-seg-b' + (viewMode === 'blocks' ? ' on' : ''), 'Блоки');
     const bCh = el('button', 'sm-seg-b' + (viewMode === 'charts' ? ' on' : ''), 'Графики');
@@ -634,11 +646,13 @@ export function initSitemon(host) {
 
   return {
     setOpen(open) {
-      const pane = $('#sitemon-pane'); if (pane) pane.classList.toggle('hidden', !open);
+      const pane = $('#sitemon-pane'); if (pane && !embedded) pane.classList.toggle('hidden', !open);
       if (open) { reload(); if (!unsub) unsub = lite.sitemon.onUpdate((list) => { targets = list || []; render(); }); }
     },
     isOpen: () => true,
     addSite: () => targetDialog(null),
+    // добавить сайт с готовым URL (из «Проектов» сервера): форма с префиллом и привязкой
+    addSiteFor: (url, serverId) => targetDialog(null, { url, serverId }),
     checkAll: () => lite.sitemon.checkNow(),
   };
 }

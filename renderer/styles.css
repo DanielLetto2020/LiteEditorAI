@@ -6028,3 +6028,36 @@ body.win-frame.win-frame-pulse::before {
 .srv-ylab { position: absolute; left: 0; width: 48px; text-align: right; font-size: 10px; line-height: 12px; color: var(--text-mute); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .srv-xlabs { display: flex; justify-content: space-between; font-size: 10px; color: var(--text-mute); margin-top: 2px; font-variant-numeric: tabular-nums; }
 .srv-content > .srv-tiles { margin-top: 12px; }
+/* «Серверы»: сайты, проекты, сеть */
+.srv-main > .srv-sites { flex: 1; min-height: 0; margin: -14px -18px -24px; }
+.srv-link { color: var(--accent); text-decoration: none; font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.srv-link:hover { text-decoration: underline; }
+.srv-mini { background: transparent; border: 1px solid var(--border-strong); color: var(--text-dim); border-radius: 6px; font-size: 10.5px; padding: 1px 7px; cursor: pointer; white-space: nowrap; }
+.srv-mini:hover { color: var(--text); border-color: var(--tline); }
+.srv-mini.on { color: var(--accent); border-color: var(--border-accent); }
+.srv-note { font-size: 11.5px; line-height: 1.45; color: var(--text-dim); background: var(--hover); border: 1px solid var(--border); border-radius: var(--r3); padding: 7px 10px; margin: 6px 0; }
+.srv-proj-list { display: flex; flex-direction: column; gap: 10px; }
+.srv-proj { background: var(--bg-input); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 14px; display: flex; flex-direction: column; gap: 6px; }
+.srv-proj.hidden-p { opacity: .6; }
+.srv-proj-head { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
+.srv-proj-name { font-size: 14px; font-weight: 650; color: var(--text-hi); }
+.srv-proj-cnt { font-size: 11px; color: var(--text-mute); font-variant-numeric: tabular-nums; }
+.srv-proj-notes { font-size: 12px; color: var(--text2); white-space: pre-wrap; }
+.srv-proj-doms { display: flex; flex-wrap: wrap; gap: 4px 14px; }
+.srv-dom { display: inline-flex; align-items: center; gap: 6px; min-width: 0; max-width: 100%; }
+.srv-proj-ctrs { display: flex; flex-wrap: wrap; gap: 4px; }
+.srv-proj-ctr { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: var(--text2); background: var(--hover); border-radius: 6px; padding: 2px 8px; }
+.srv-proj-acts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 2px; }
+.srv-proj-acts .btn { display: inline-flex; align-items: center; gap: 5px; }
+.srv-if { padding: 6px 2px 8px; border-bottom: 1px solid var(--border); }
+.srv-if-top { display: flex; align-items: center; gap: 8px; }
+.srv-if-rate { margin-left: auto; font-size: 11px; color: var(--text-dim); font-variant-numeric: tabular-nums; }
+.srv-if-addr { display: flex; align-items: center; gap: 8px; margin: 4px 0 0 16px; flex-wrap: wrap; }
+.srv-if-addr code { font-family: var(--mono, ui-monospace, monospace); font-size: 12px; color: var(--text); }
+.srv-lrow { display: grid; grid-template-columns: 84px 1fr auto; align-items: center; gap: 10px; padding: 6px 2px; border-bottom: 1px solid var(--border); }
+.srv-lrow > svg { color: var(--text-dim); }
+.srv-sec-box > .srv-lrow:has(> svg) { grid-template-columns: 16px 1fr auto; }
+.srv-lport { font-family: var(--mono, ui-monospace, monospace); font-size: 12px; color: var(--text); }
+.srv-lmarks { display: flex; gap: 4px; flex-wrap: wrap; justify-content: flex-end; }
+.srv-pre-sm { max-height: 260px; font-size: 11px; }
+.srv-cmd { margin: 8px 0; white-space: pre-wrap; }
