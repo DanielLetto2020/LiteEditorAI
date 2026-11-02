@@ -326,6 +326,29 @@ contextBridge.exposeInMainWorld('lite', {
     add: (entry) => ipcRenderer.invoke('keepass:add', entry),                // {title,username,password,url,notes} → {ok}
   },
   // Мониторинг сайтов (target → checks): цели + чеки над URL, фоновые проверки, сэмпл/предпросмотр.
+  // «Серверы» (lib/servers.js): дашборд серверов по SSH-профилям «Удалённых хостов».
+  servers: {
+    list: () => ipcRenderer.invoke('servers:list'),
+    save: (server) => ipcRenderer.invoke('servers:save', { server }),
+    remove: (id) => ipcRenderer.invoke('servers:remove', { id }),
+    reorder: (ids) => ipcRenderer.invoke('servers:reorder', { ids }),
+    refresh: (id, level) => ipcRenderer.invoke('servers:refresh', { id, level }),
+    history: (id) => ipcRenderer.invoke('servers:history', { id }),
+    units: (id) => ipcRenderer.invoke('servers:units', { id }),
+    mute: (id, key, hours) => ipcRenderer.invoke('servers:mute', { id, key, hours }),
+    subscribe: (focus) => ipcRenderer.invoke('servers:subscribe', { focus }),
+    unsubscribe: () => ipcRenderer.invoke('servers:unsubscribe'),
+    ctrAction: (id, engine, ctrId, action) => ipcRenderer.invoke('servers:ctrAction', { id, engine, ctrId, action }),
+    ctrLogs: (id, engine, ctrId, tail) => ipcRenderer.invoke('servers:ctrLogs', { id, engine, ctrId, tail }),
+    unitAction: (id, unit, user, action) => ipcRenderer.invoke('servers:unitAction', { id, unit, user, action }),
+    unitStatus: (id, unit, user) => ipcRenderer.invoke('servers:unitStatus', { id, unit, user }),
+    journal: (id, opts) => ipcRenderer.invoke('servers:journal', { id, ...(opts || {}) }),
+    du: (id, dir, sudo) => ipcRenderer.invoke('servers:du', { id, dir, sudo }),
+    engineDf: (id, engine) => ipcRenderer.invoke('servers:engineDf', { id, engine }),
+    reboot: (id) => ipcRenderer.invoke('servers:reboot', { id }),
+    onUpdate: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('servers:update', h); return () => ipcRenderer.removeListener('servers:update', h); },
+    onList: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('servers:list', h); return () => ipcRenderer.removeListener('servers:list', h); },
+  },
   sitemon: {
     list: () => ipcRenderer.invoke('sitemon:list'),
     addTarget: (opts) => ipcRenderer.invoke('sitemon:addTarget', opts || {}),

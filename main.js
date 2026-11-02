@@ -122,7 +122,7 @@ try {
   const legacy = path.join(os.homedir(), '.LiteEditor');
   if (!fs.existsSync(storeDir) && fs.existsSync(legacy)) fs.cpSync(legacy, storeDir, { recursive: true });
 } catch (_) {}
-const STORE_KEYS = ['projects', 'settings', 'layout', 'recents', 'lastParent', 'categories', 'sectionOrder', 'favOrder', 'favAgentsOnly', 'accordions', 'dismissed', 'projTabs', 'openrouter', 'dockerUi', 'dbConnections', 'dbUi', 'rhConnections', 'rhUi', 'extData', 'extEnabled', 'quickbar', 'seoSites', 'moduleWins', 'mwLeft', 'mwLogH', 'gitFav', 'commitDrafts', 'bookmarks', 'promptSnippets', 'pomodoro', 'pomodoroLog', 'dbaiProviders', 'sessionSnaps', 'siteMon', 'rmqConnections', 'rmqUi', 'kafkaConnections', 'kafkaUi', 'stConnections', 'stUi', 'jiraAccounts', 'jiraUi', 'gsearch', 'gsearchHist', 'voice', 'voiceClips', 'toolsUi', 'sitemonUi', 'gitGraphUi', 'sshHostKeys'];
+const STORE_KEYS = ['projects', 'settings', 'layout', 'recents', 'lastParent', 'categories', 'sectionOrder', 'favOrder', 'favAgentsOnly', 'accordions', 'dismissed', 'projTabs', 'openrouter', 'dockerUi', 'dbConnections', 'dbUi', 'rhConnections', 'rhUi', 'extData', 'extEnabled', 'quickbar', 'seoSites', 'moduleWins', 'mwLeft', 'mwLogH', 'gitFav', 'commitDrafts', 'bookmarks', 'promptSnippets', 'pomodoro', 'pomodoroLog', 'dbaiProviders', 'sessionSnaps', 'siteMon', 'rmqConnections', 'rmqUi', 'kafkaConnections', 'kafkaUi', 'stConnections', 'stUi', 'jiraAccounts', 'jiraUi', 'gsearch', 'gsearchHist', 'voice', 'voiceClips', 'toolsUi', 'sitemonUi', 'gitGraphUi', 'sshHostKeys', 'servers', 'serversUi'];
 // Профили подключений с зашифрованными секретами (passEnc/tokenEnc…) — только для main: модули
 // получают их через свои IPC (publicConn — без секретов), а рендерер эти ключи не читает и не пишет.
 // В общем снимке стора они уходили во ВСЕ окна (при недоступном safeStorage — base64, то есть по сути
@@ -336,6 +336,26 @@ const rhApi = rhBackend.registerRemoteIpc({
   getConnections: () => readStoreKey('rhConnections'),
   setConnections: (v) => writeStoreKey('rhConnections', v),
 });
+
+// «Серверы» — дашборд серверов (lib/servers.js): опрос по постоянному SSH-соединению rhApi, проблемы с
+// уведомлениями ОС (клик открывает окно на этом сервере), действия из белого списка.
+const SRV_SEV_MARK = { crit: '🔴', warn: '🟡', ok: '✅' };
+const serversApi = require('./lib/servers').register({
+  ipcMain, rhApi, readStoreKey, writeStoreKey, storeDir,
+  broadcast: (ch, payload) => { for (const w of moduleWindows.values()) sendTo(w, ch, payload); },
+  log: (lvl, src, msg) => logger.log(lvl, src, msg),
+  notify: (s, sev, tpl, args) => {
+    try {
+      if (Notification.isSupported && !Notification.isSupported()) return;
+      const n = new Notification({ title: (SRV_SEV_MARK[sev] || '') + ' ' + s.name, body: i18n.t(tpl, ...(args || [])), silent: false });
+      n.on('click', () => openModuleWindow('servers', { serverId: s.id }));
+      srvNotes.add(n); n.on('close', () => srvNotes.delete(n)); setTimeout(() => srvNotes.delete(n), 10 * 60 * 1000);
+      n.show();
+    } catch (_) {}
+  },
+});
+const srvNotes = new Set(); // держим ссылку до клика: собранный GC Notification отвязывает обработчик click
+app.on('will-quit', () => { try { serversApi.flush(); } catch (_) {} });
 
 // File logging lives next to the store, survives restarts, keeps 5 days.
 const logsDir = path.join(storeDir, 'logs');
@@ -4297,7 +4317,7 @@ const MODULE_TITLES = {
   tools: 'Инструменты', iterflow: 'IterFlow', seo: 'WEB/SEO аудит', audit: 'Аудит',
   pomodoro: 'Помодоро', company: 'ИИ компания', notes: 'Задачи', db: 'Базы данных',
   chat: 'OpenRouter', doc: 'Обработка текста', docker: 'Контейнеры', rh: 'Удалённые хосты',
-  ctx: 'Контекст', scratch: 'Система · ~', files: 'Проект', monitor: 'Монитор', gitgraph: 'Граф Git',
+  ctx: 'Контекст', scratch: 'Система · ~', files: 'Проект', monitor: 'Монитор', gitgraph: 'Граф Git', servers: 'Серверы',
 };
 let monPrev = null;   // { total, perSid: Map<sid,jiffies> } — для расчёта CPU% деревьев PTY
 

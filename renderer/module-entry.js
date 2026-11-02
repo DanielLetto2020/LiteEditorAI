@@ -29,6 +29,7 @@ const initGitGraph = () => import('./modules/gitgraph.js').then((m) => m.initGit
 const initMonitor = () => import('./modules/monitor.js').then((m) => m.initMonitor);
 const initKeepass = () => import('./modules/keepass.js').then((m) => m.initKeepass);
 const initSitemon = () => import('./modules/sitemon.js').then((m) => m.initSitemon);
+const initServers = () => import('./modules/servers.js').then((m) => m.initServers);
 const initPomodoro = () => import('./modules/pomodoro.js').then((m) => m.initPomodoro);
 const initVoice = () => import('./modules/voice.js').then((m) => m.initVoice);
 const initCompany = () => import('./modules/company.js').then((m) => m.initCompany);
@@ -114,6 +115,10 @@ const MODULES = {
   keepass: {
     title: 'Сейф паролей', load: initKeepass, project: false,
     wire: (mod) => { bind('#keepass-open', () => mod.openFile()); bind('#keepass-lock', () => mod.lock()); },
+  },
+  servers: {
+    title: 'Серверы', load: initServers, project: false,
+    wire: (mod) => { bind('#servers-add', () => mod.addServer()); bind('#servers-refresh', () => mod.refreshAll()); },
   },
   sitemon: {
     title: 'Мониторинг сайтов', load: initSitemon, project: false,
