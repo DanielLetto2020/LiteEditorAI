@@ -3,6 +3,26 @@
 Все заметные изменения LiteEditorAI. Формат — [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/),
 нумерация — [SemVer](https://semver.org/lang/ru/). Проект в стадии **alpha**.
 
+## [1.1.215] — 2026-11-05
+
+**Поддержка Windows и macOS прекращается: релизы теперь только для Linux.** Мы собираем и публикуем одну платформу,
+поэтому выпуски выходят проще и быстрее.
+
+### ⚠️ Важно для пользователей Windows и macOS
+
+- **Начиная с этой версии сборки для Windows и macOS не публикуются.** В каждом релизе два файла: `.deb` и
+  портативный `tar.gz` для Linux (x64).
+- **Последняя версия для Windows и macOS — [1.1.214](https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.1.214).**
+  Установленная у Вас сборка продолжит работать, но новых версий для неё не будет, а плашка обновления в редакторе
+  отправит на страницу релизов, где файла для Вашей системы уже нет.
+- Исходный код остаётся открытым: из исходников (`npm install && npm start`) редактор по-прежнему запускается,
+  но мы это не проверяем и поддержки не обещаем.
+
+### 🗑 Удалено
+
+- Из сборки релизов — Windows (`zip`) и macOS (`dmg`, `zip`), из `package.json` — их настройки и команды
+  `dist:win` / `dist:mac`, из README — разделы про эти системы.
+
 ## [1.1.214] — 2026-11-05
 
 **Синхронизация файлов с сервером удалена.** Раньше у проекта было облачко, которое подключало папку к вашему
@@ -16,13 +36,6 @@
 - **Фоновая синхронизация.** Демон, который запускался вместе с редактором, и сама утилита `scripts/server-sync`
   (подключение проекта, обмен файлами, юнит `systemd`) убраны из программы и из сборки.
 - Из словарей убраны строки интерфейса синхронизации, из README — раздел про тот же проект на сервере.
-
-### 🐧 Релизы — только для Linux
-
-- **Сборки для Windows и macOS больше не публикуются.** В каждом релизе теперь два файла: `.deb` и портативный
-  `tar.gz` для Linux (x64). Так релизы собираются проще и быстрее.
-- Если Вы пользовались Windows- или macOS-сборкой, она продолжит работать, но новых версий для неё не будет:
-  последняя — [1.1.209](https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.1.209).
 
 ### ℹ️ Что это значит для Вас
 
@@ -3161,6 +3174,7 @@ AGENTS.md как граф на канве), и **цветной пульт** —
 [1.0.97]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.0.97
 [1.0.96]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.0.96
 [1.1.123]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.1.123
+[1.1.215]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.1.215
 [1.1.214]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.1.214
 [1.1.209]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.1.209
 [1.1.208]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.1.208
