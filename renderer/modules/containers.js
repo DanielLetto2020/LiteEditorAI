@@ -347,11 +347,14 @@ export function initContainers(host) {
     let sites = [];
     try { const l = await lite.sitemon.list(); if (Array.isArray(l)) sites = l; } catch (_) {}
     const exists = sites.find((s) => s && s.url === url);
-    if (exists) { toast(`Уже наблюдается: ${url}`, { ttl: 5000 }); lite.module.open('sitemon'); return; }
-    const a = await lite.sitemon.addTarget({ name: r.prefill.name, url });
+    if (exists) { toast(`Уже наблюдается: ${url}`, { ttl: 5000 }); lite.module.open('servers', { view: 'sites' }); return; }
+    // контейнеры удалённого хоста — сайт сразу привязывается к его серверу в «Серверах»
+    let serverId = null;
+    if (dockerRemote && dockerRemote.rhId) { try { const l = await lite.servers.list(); const sv = ((l && l.servers) || []).find((x) => x.rhId === dockerRemote.rhId); if (sv) serverId = sv.id; } catch (_) {} }
+    const a = await lite.sitemon.addTarget({ name: r.prefill.name, url, serverId });
     if (!a || !a.ok) { toast((a && a.error) || 'Не удалось добавить в мониторинг', { kind: 'err', ttl: 8000 }); return; }
-    toast(`${url} — добавлен в «Мониторинг сайтов»`, { ttl: 5000 });
-    lite.module.open('sitemon');
+    toast(`${url} — добавлен в «Серверы → Сайты»`, { ttl: 5000 });
+    lite.module.open('servers', { view: 'sites' });
   }
   // Клик по иконке Kafka: inspect → заготовка профиля → окно модуля «Kafka» (маршрут через main).
   async function openContainerKafka(c) {
@@ -965,5 +968,26 @@ export function initContainers(host) {
   // (оболочка окна зовёт applyFontSize, если модуль его отдаёт; раньше размер менялся лишь при новом входе).
   function applyFontSize() { if (dockerExecTerm) { try { dockerExecTerm.options.fontSize = settings.fontSize; } catch (_) {} refitExec(); } }
 
-  return { isOpen: () => dockerOpen, setOpen: setDockerOpen, refitExec, refresh, applyTermTheme, applyFontSize };
+  // Параметр открытия окна (lite.module.open('docker', arg)): { rhId } — контейнеры этого SSH-хоста,
+  // { rhId: null } — локальные. Так «Серверы» открывают полное окно контейнеров на нужном сервере.
+  async function handleArg(arg) {
+    if (!arg || typeof arg !== 'object' || !('rhId' in arg)) return;
+    await ensureRemoteStatus();
+    const want = typeof arg.rhId === 'string' && arg.rhId ? arg.rhId : null;
+    if ((dockerRemote ? dockerRemote.rhId : null) === want) { // уже там — только вернуться к списку
+      if (dockerView !== 'list') backToDockerList();
+      return;
+    }
+    let label = typeof arg.label === 'string' ? arg.label : '';
+    if (want && !label) {
+      let r; try { r = await lite.rh.list(); } catch (_) { r = null; }
+      const c = r && (r.connections || []).find((x) => x.id === want);
+      if (!c) { toast('Профиль подключения не найден', { kind: 'err' }); return; }
+      label = c.name || c.host;
+    }
+    if (dockerView !== 'list') { closeDockerDetail(); dockerView = 'list'; }
+    await applyContainersHost(want, label);
+  }
+
+  return { isOpen: () => dockerOpen, setOpen: setDockerOpen, refitExec, refresh, applyTermTheme, applyFontSize, handleArg };
 }

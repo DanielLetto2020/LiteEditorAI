@@ -93,13 +93,6 @@ Git 就在同一个窗口里：用复选框选择性暂存、amend、commit / pu
 
 ![「更多」菜单](assets/screenshots/more.png)
 
-### 5. 服务器上的同一个项目
-
-让智能体在你自己的服务器上继续工作，回到家从它停下的地方接着干：项目旁的云朵图标会让两台机器上的
-项目文件夹保持一致。简短的设置会检查 SSH 密钥、`rsync` 和时钟，缺什么就直接给出要执行的命令。
-文件只通过你自己的 `ssh` 发送到你的服务器；被替换的文件不会消失，而是进入回收站。支持 Linux 和
-macOS，详见 [`scripts/server-sync`](scripts/server-sync/README.md)（英文）。
-
 ## 安装
 
 预编译的安装包在 [**Releases**](https://github.com/DanielLetto2020/LiteEditorAI/releases) 页面。

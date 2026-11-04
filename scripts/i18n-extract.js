@@ -26,8 +26,7 @@ const LOCALES = path.join(ROOT, 'locales');
 const CYR = /[А-Яа-яЁё]/;
 
 const INCLUDE_DIRS = ['renderer', 'lib'];
-// lite-sync-link.js — шаги подключения к синхронизации уходят в окно облачка как есть.
-const INCLUDE_FILES = ['main.js', 'preload.js', 'errledger.js', 'scripts/server-sync/lite-sync-link.js'];
+const INCLUDE_FILES = ['main.js', 'preload.js', 'errledger.js'];
 // lib/ttsnorm.js — не интерфейс, а словари для синтезатора речи (числительные, транслитерация
 // латиницы). Переводить их нельзя: это то, что произносит русский голос, а не то, что видит глаз.
 const SKIP_RE = /^(test|tmp|scripts|android|relay|mcp|module-kit|node_modules|dist|dist-release|release|assets|locales)[\\/]|[\\/]dist[\\/]|^lib[\\/]ttsnorm\.js$/;

@@ -27,7 +27,6 @@ const pty = require('node-pty');
 const logger = require('./logger');
 const { safeChildName } = require('./lib/safe-name'); // анти-traversal для имён папок/файлов
 const { resolveShell: resolveShellPure } = require('./lib/shell'); // выбор оболочки терминала
-const syncmark = require('./lib/sync');   // метка «sync» в плашке: что домашняя машина держит в синхронизации с сервером
 const updater = require('./lib/updater');  // самообновление: проверка релиза, загрузка, подмена каталога
 const { watchTree } = require('./lib/tree-watch'); // слежение за деревом проекта (на Linux — по наблюдению на каталог)
 const { createHistory } = require('./lib/history'); // локальная история файлов: снимки, троттл, срок и объём
@@ -122,7 +121,7 @@ try {
   const legacy = path.join(os.homedir(), '.LiteEditor');
   if (!fs.existsSync(storeDir) && fs.existsSync(legacy)) fs.cpSync(legacy, storeDir, { recursive: true });
 } catch (_) {}
-const STORE_KEYS = ['projects', 'settings', 'layout', 'recents', 'lastParent', 'categories', 'sectionOrder', 'favOrder', 'favAgentsOnly', 'accordions', 'dismissed', 'projTabs', 'openrouter', 'dockerUi', 'dbConnections', 'dbUi', 'rhConnections', 'rhUi', 'extData', 'extEnabled', 'quickbar', 'seoSites', 'moduleWins', 'mwLeft', 'mwLogH', 'gitFav', 'commitDrafts', 'bookmarks', 'promptSnippets', 'pomodoro', 'pomodoroLog', 'dbaiProviders', 'sessionSnaps', 'siteMon', 'rmqConnections', 'rmqUi', 'kafkaConnections', 'kafkaUi', 'stConnections', 'stUi', 'jiraAccounts', 'jiraUi', 'gsearch', 'gsearchHist', 'voice', 'voiceClips', 'toolsUi', 'sitemonUi', 'gitGraphUi'];
+const STORE_KEYS = ['projects', 'settings', 'layout', 'recents', 'lastParent', 'categories', 'sectionOrder', 'favOrder', 'favAgentsOnly', 'accordions', 'dismissed', 'projTabs', 'openrouter', 'dockerUi', 'dbConnections', 'dbUi', 'rhConnections', 'rhUi', 'extData', 'extEnabled', 'quickbar', 'seoSites', 'moduleWins', 'mwLeft', 'mwLogH', 'gitFav', 'commitDrafts', 'bookmarks', 'promptSnippets', 'pomodoro', 'pomodoroLog', 'dbaiProviders', 'sessionSnaps', 'siteMon', 'rmqConnections', 'rmqUi', 'kafkaConnections', 'kafkaUi', 'stConnections', 'stUi', 'jiraAccounts', 'jiraUi', 'gsearch', 'gsearchHist', 'voice', 'voiceClips', 'toolsUi', 'sitemonUi', 'gitGraphUi', 'sshHostKeys', 'servers', 'serversUi'];
 // Профили подключений с зашифрованными секретами (passEnc/tokenEnc…) — только для main: модули
 // получают их через свои IPC (publicConn — без секретов), а рендерер эти ключи не читает и не пишет.
 // В общем снимке стора они уходили во ВСЕ окна (при недоступном safeStorage — base64, то есть по сути
@@ -312,6 +311,19 @@ jiraBackend.registerJiraIpc({
   setAccounts: (v) => writeStoreKey('jiraAccounts', v),
 });
 
+// Ключи SSH-хостов (TOFU + ~/.ssh/known_hosts) для всех ssh2-подключений: «Удалённые хосты», пул
+// «Серверов», туннели «Баз данных». Закрепление и отказ уходят во ВСЕ окна событием rh:hostKey —
+// окно «Удалённые хосты» показывает отпечаток и предлагает принять новый ключ.
+require('./lib/hostkeys').init({
+  get: () => readStoreKey('sshHostKeys'),
+  set: (v) => writeStoreKey('sshHostKeys', v),
+  onEvent: (ev) => {
+    logger.log(ev.kind === 'mismatch' ? 'warn' : 'info', 'hostkey', `${ev.kind} ${ev.hp} ${ev.fp}${ev.expected ? ' (ожидался ' + ev.expected + ')' : ''} [${ev.source}]`);
+    sendTo(mainWindow, 'rh:hostKey', ev);
+    for (const w of moduleWindows.values()) sendTo(w, 'rh:hostKey', ev);
+  },
+});
+
 // «RemoteHost» backend (интерактивные SSH-сессии + safeStorage-секреты) — lib/remotehost.js.
 // send() лениво ссылается на mainWindow (создаётся позже), вызывается только при живой сессии.
 const rhApi = rhBackend.registerRemoteIpc({
@@ -323,6 +335,28 @@ const rhApi = rhBackend.registerRemoteIpc({
   getConnections: () => readStoreKey('rhConnections'),
   setConnections: (v) => writeStoreKey('rhConnections', v),
 });
+
+// «Серверы» — дашборд серверов (lib/servers.js): опрос по постоянному SSH-соединению rhApi, проблемы с
+// уведомлениями ОС (клик открывает окно на этом сервере), действия из белого списка.
+const SRV_SEV_MARK = { crit: '🔴', warn: '🟡', ok: '✅' };
+const serversApi = require('./lib/servers').register({
+  ipcMain, rhApi, readStoreKey, writeStoreKey, storeDir,
+  // сайты «Мониторинга сайтов» (вкладка «Сайты»): состояние чеков для страницы сервера и его проблем
+  getSites: () => { try { return smPublic(); } catch (_) { return []; } },
+  broadcast: (ch, payload) => { for (const w of moduleWindows.values()) sendTo(w, ch, payload); },
+  log: (lvl, src, msg) => logger.log(lvl, src, msg),
+  notify: (s, sev, tpl, args) => {
+    try {
+      if (Notification.isSupported && !Notification.isSupported()) return;
+      const n = new Notification({ title: (SRV_SEV_MARK[sev] || '') + ' ' + s.name, body: i18n.t(tpl, ...(args || [])), silent: false });
+      n.on('click', () => openModuleWindow('servers', { serverId: s.id }));
+      srvNotes.add(n); n.on('close', () => srvNotes.delete(n)); setTimeout(() => srvNotes.delete(n), 10 * 60 * 1000);
+      n.show();
+    } catch (_) {}
+  },
+});
+const srvNotes = new Set(); // держим ссылку до клика: собранный GC Notification отвязывает обработчик click
+app.on('will-quit', () => { try { serversApi.flush(); } catch (_) {} });
 
 // File logging lives next to the store, survives restarts, keeps 5 days.
 const logsDir = path.join(storeDir, 'logs');
@@ -366,124 +400,6 @@ ipcMain.handle('logs:read', (_e, name) => {
 // Удалить один лог-файл / очистить старые (сегодняшний живой файл сохраняется).
 ipcMain.handle('logs:delete', (_e, name) => ({ ok: logger.removeFile(name) }));
 ipcMain.handle('logs:clearOld', () => ({ ok: true, removed: logger.clearOld() }));
-
-// ── Метка синхронизации в плашке проекта ────────────────────────────────────────────────────
-// Редактор синхронизацией не управляет: демон (scripts/server-sync/) живёт своей
-// жизнью, здесь мы только читаем его конфиг. Сопоставление делает главный процесс —
-// у рендерера нет fs, а сравнивать нужно разрешённые пути (симлинки, см. lib/sync.js).
-ipcMain.handle('sync:match', async (_e, paths) => {
-  // асинхронно: realpathSync проекта на отвалившейся сетевой ФС подвесил бы весь главный процесс
-  try { return { paths: await syncmark.matchAsync(paths), available: syncAvailable() }; } catch (e) { return { paths: [], available: false, error: String(e) }; }
-});
-
-// Подключение проекта к синхронизации. Процедура одна на оба редактора и живёт
-// рядом с демоном (scripts/server-sync/lite-sync-link.js): здесь мы на домашней
-// машине, поэтому запускаем её сразу, без заявок через сервер. На Windows
-// синхронизации нет: утилита стоит на rsync, а его там нет.
-const SYNC_DIR = path.join(__dirname, 'scripts', 'server-sync');
-let linker = null;
-function linkerModule() {
-  if (!linker) linker = require('./scripts/server-sync/lite-sync-link.js');
-  return linker;
-}
-
-// Можно ли подключать проекты: задан ли сервер. Нет — облачко открывает мастер подключения.
-function syncAvailable() {
-  try {
-    return process.platform !== 'win32' && linkerModule().configured();
-  } catch (_) {
-    return false;
-  }
-}
-
-// Процедуры синхронизации ходят по ssh и считают du/find по дереву проекта — это секунды,
-// а на недоступном сервере и десятки секунд. В главном процессе такой вызов заморозил бы
-// все окна, поэтому они идут отдельным процессом (Electron в режиме node), а сюда
-// возвращаются строками JSON: {step} по ходу и {result} в конце.
-function linkerCall(method, args, onStep) {
-  return new Promise((resolve) => {
-    const script = `const l = require(${JSON.stringify(path.join(SYNC_DIR, 'lite-sync-link.js'))});
-      const out = (o) => process.stdout.write(JSON.stringify(o) + '\\n');
-      const [m, a] = JSON.parse(process.argv[1]);
-      if (m === 'link') a[1] = Object.assign({}, a[1], { onStep: (s) => out({ step: s }) });
-      Promise.resolve().then(() => l[m](...a)).then((r) => out({ result: r }), (e) => out({ result: { ok: false, reason: String(e && e.message || e) } }));`;
-    let child;
-    try {
-      child = spawn(process.execPath, ['-e', script, JSON.stringify([method, args])], { env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' } });
-    } catch (e) { resolve({ ok: false, reason: String(e && e.message ? e.message : e) }); return; }
-    let buf = '', err = '', result = null;
-    child.stdout.on('data', (d) => {
-      buf += d;
-      let i;
-      while ((i = buf.indexOf('\n')) >= 0) {
-        const line = buf.slice(0, i); buf = buf.slice(i + 1);
-        let msg = null; try { msg = JSON.parse(line); } catch (_) {}
-        if (msg && msg.step && onStep) onStep(msg.step);
-        if (msg && msg.result) result = msg.result;
-      }
-    });
-    child.stderr.on('data', (d) => { err += d; });
-    child.on('error', (e) => { err += e.message; });
-    child.on('close', () => resolve(result || { ok: false, reason: err.trim().split('\n').pop() || 'процедура синхронизации прервалась' }));
-  });
-}
-
-ipcMain.handle('sync:inspect', (_e, projectPath) => linkerCall('inspect', [String(projectPath || '')]));
-
-let linkRunning = false;
-ipcMain.handle('sync:link', async (_e, { path: projectPath, prefer } = {}) => {
-  // Процедура правит конфиг и переносит файлы — второй заход параллельно не пускаем.
-  if (linkRunning) return { ok: false, reason: 'подключение уже идёт' };
-  linkRunning = true;
-  try {
-    return await linkerCall('link', [String(projectPath || ''), { prefer: prefer === 'local' || prefer === 'remote' ? prefer : null }],
-      (step) => sendTo(mainWindow, 'sync:linkStep', step));
-  } finally {
-    linkRunning = false;
-  }
-});
-
-// Мастер подключения: что есть на этой машине, проверка адреса сервера, запись адреса.
-ipcMain.handle('sync:setupInfo', () => {
-  if (process.platform === 'win32') return { supported: false };
-  try { const l = linkerModule(); return { supported: true, tools: l.localTools(), configured: l.configured() }; } catch (e) { return { supported: false, reason: String(e && e.message ? e.message : e) }; }
-});
-ipcMain.handle('sync:checkServer', (_e, server) => linkerCall('checkServer', [String(server || '')]));
-ipcMain.handle('sync:setServer', (_e, server) => {
-  try { linkerModule().setServer(String(server || '')); } catch (e) { return { ok: false, reason: String(e && e.message ? e.message : e) }; }
-  startSyncDaemon();
-  return { ok: true };
-});
-
-// Демон синхронизации, которого включил мастер (runner: 'editor' в конфиге), живёт, пока
-// открыт редактор. У кого демон в systemd, поля нет — тогда редактор демона не трогает.
-// Второй экземпляр демон не пустит сам (daemon.pid) и выйдет нулём — такой выход не перезапускаем.
-let syncDaemon = null, syncDaemonTimer = null, syncDaemonFails = 0, syncDaemonStopping = false;
-function startSyncDaemon() {
-  if (syncDaemon || syncDaemonStopping || process.platform === 'win32') return;
-  let cfg;
-  try { cfg = linkerModule().readConfig(); } catch (_) { return; }
-  if (!cfg || cfg.runner !== 'editor' || cfg.enabled === false || !syncAvailable()) return;
-  clearTimeout(syncDaemonTimer);
-  const started = Date.now();
-  const child = spawn(process.execPath, [path.join(SYNC_DIR, 'lite-sync-daemon.js')], { env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' }, stdio: 'ignore' });
-  syncDaemon = child;
-  logger.log('info', 'sync', `демон синхронизации запущен (pid ${child.pid})`);
-  child.on('error', (e) => logger.log('warn', 'sync', `демон синхронизации не запустился: ${e.message}`));
-  child.on('exit', (code) => {
-    if (syncDaemon === child) syncDaemon = null;
-    if (syncDaemonStopping || code === 0) return;
-    syncDaemonFails = Date.now() - started > 60000 ? 0 : syncDaemonFails + 1;
-    const delay = Math.min(300000, 5000 * 2 ** syncDaemonFails);
-    logger.log('warn', 'sync', `демон синхронизации вышел (код ${code}) — перезапуск через ${Math.round(delay / 1000)} с`);
-    syncDaemonTimer = setTimeout(startSyncDaemon, delay);
-  });
-}
-function stopSyncDaemon() {
-  syncDaemonStopping = true;
-  clearTimeout(syncDaemonTimer);
-  if (syncDaemon) { try { syncDaemon.kill('SIGTERM'); } catch (_) {} syncDaemon = null; }
-}
 
 // ── Реестр ошибок (errors ledger) ───────────────────────────────────────────────────────────
 ipcMain.handle('errors:list', () => errledger.list());
@@ -894,11 +810,9 @@ ipcMain.handle('update:cancel', () => {
 });
 
 // Жёсткий выход под обновление. app.exit() не поднимает before-quit, поэтому его уборку делаем
-// здесь: иначе демон синхронизации переживал редактор сиротой со старым кодом (новая версия свой
-// уже не запустит — daemon.pid занят), а реестр ошибок терял последние отложенные правки.
+// здесь: иначе реестр ошибок терял бы последние отложенные правки.
 function updHardExit() {
   try { errledger.flush(); } catch (_) {}
-  stopSyncDaemon();
   // Агентов тоже гасим (как в window-all-closed, которое app.exit() не поднимает): директор «ИИ
   // компании» запущен detached — своей группой процессов — и пережил бы редактор, продолжая править
   // проект и тратить бюджет; claude/codex «Обработки текста», AI-DB и запросы чата — туда же.
@@ -3217,6 +3131,18 @@ let activeProjectInfo = null;       // {id,path,name,accent} — кэш акти
 const ownerBySession = new Map();   // sessionId -> webContents — маршрутизация стримов по окну-владельцу (этап D)
 
 function readModuleWins() { const v = readStoreKey('moduleWins'); return (v && typeof v === 'object') ? v : {}; }
+// Однократный перенос id 'sitemon' → 'servers' в наборе окон, квикбаре и автозапуске (окно «Мониторинг
+// сайтов» влилось в «Серверы»). Без него закреплённая кнопка и автозапуск указывали бы в никуда.
+(function migrateSitemonId() {
+  const swap = (arr) => { if (!Array.isArray(arr) || !arr.includes('sitemon')) return null; const out = []; for (const x of arr) { const y = x === 'sitemon' ? 'servers' : x; if (!out.includes(y)) out.push(y); } return out; };
+  try {
+    const mw = readModuleWins(); const o = swap(mw.__open);
+    if (o) { mw.__open = o; if (mw.sitemon && !mw.servers) mw.servers = mw.sitemon; delete mw.sitemon; writeStoreKey('moduleWins', mw); }
+    const qb = swap(readStoreKey('quickbar')); if (qb) writeStoreKey('quickbar', qb);
+    const st = readStoreKey('settings');
+    if (st && typeof st === 'object') { const al = swap(st.autoLaunchMods); if (al) { st.autoLaunchMods = al; writeStoreKey('settings', st); } }
+  } catch (e) { logger.log('warn', 'store', 'миграция sitemon → servers: ' + String((e && e.message) || e)); }
+})();
 function saveModuleBounds(modId, win) {
   if (!win || win.isDestroyed() || win.isFullScreen()) return; // F11 — не затираем обычные габариты размером экрана
   const all = readModuleWins();
@@ -3310,9 +3236,22 @@ function hardenNavigation(win) {
   });
 }
 
-function openModuleWindow(modId) {
+// Параметр открытия окна модуля (openModule('rh', {connId, view}) и т.п.): окну, которое уже
+// подписалось (module:ready), уходит сразу событием module:arg; новое или ещё грузящееся окно получает
+// его по module:ready. Хранится последний параметр на модуль — повторный клик заменяет прежний.
+const pendingModuleArgs = new Map(); // modId -> arg
+function deliverModuleArg(modId, arg) {
+  if (arg == null) return;
+  const w = moduleWindows.get(modId);
+  if (w && !w.isDestroyed() && w.__modReady) sendTo(w, 'module:arg', arg);
+  else pendingModuleArgs.set(modId, arg);
+}
+function openModuleWindow(modId, arg) {
+  // «Мониторинг сайтов» стал вкладкой «Сайты» окна «Серверы» (v1.1.212): старые вызовы ведут туда
+  if (modId === 'sitemon') { modId = 'servers'; if (arg == null) arg = { view: 'sites' }; }
   const existing = moduleWindows.get(modId);
-  if (existing && !existing.isDestroyed()) { if (existing.isMinimized()) existing.restore(); existing.focus(); return; }
+  if (existing && !existing.isDestroyed()) { if (existing.isMinimized()) existing.restore(); existing.focus(); deliverModuleArg(modId, arg); return; }
+  deliverModuleArg(modId, arg);
   const saved = readModuleWins()[modId] || {};
   const iconPng = path.join(__dirname, 'assets', 'icon.png');
   const opts = {
@@ -3345,6 +3284,7 @@ function openModuleWindow(modId) {
   });
   win.on('closed', () => {
     moduleWindows.delete(modId);
+    pendingModuleArgs.delete(modId); // параметр недоставленному окну — не следующему открытию
     if (modId === 'files') filesViewerReady = false; // окно вивера закрыто → следующее openInViewer переоткроет и переждёт готовность
     if (modId === 'db') dbPanelReady = false;        // окно БД закрыто → следующий openFromContainer переоткроет и переждёт готовность
     if (modId === 'rmq') rmqPanelReady = false;      // аналогично для окна RabbitMQ
@@ -3620,9 +3560,8 @@ app.on('child-process-gone', (_e, d) =>
   logger.log(d && d.reason === 'clean-exit' ? 'info' : 'error', 'child-process-gone', JSON.stringify(d)));
 app.on('before-quit', () => { logger.log('info', 'app', 'before-quit'); });
 // Уборка — на will-quit, а не на before-quit: выход может быть отменён (окно с несохранённым,
-// guardMainWindowClose), и демон синхронизации, погашенный на before-quit, до конца сессии
-// уже не поднимался бы (syncDaemonStopping не сбрасывается).
-app.on('will-quit', () => { try { errledger.flush(); } catch (_) {} stopSyncDaemon(); });
+// guardMainWindowClose).
+app.on('will-quit', () => { try { errledger.flush(); } catch (_) {} });
 
 app.whenReady().then(() => {
   // Язык интерфейса — до создания окон: рендерер забирает словарь синхронно при старте.
@@ -3634,7 +3573,6 @@ app.whenReady().then(() => {
   const gpu = !(process.env.LITE_NO_GPU === '1' || process.env.LITE_SOFTWARE_RENDER === '1');
   logger.log('info', 'app', `ready — electron ${process.versions.electron}, chrome ${process.versions.chrome}, node ${process.versions.node}, gpu=${gpu}`);
   probeLoginPath(); // фоном: PATH логин-шелла для CLI-агентов «Обработки текста»
-  setTimeout(startSyncDaemon, 3000); // демон синхронизации, если его включил мастер (runner: 'editor'); не мешаем старту окна
   // Своё меню мы рисуем в титлбаре, поэтому системное не нужно — но на macOS оно ещё и держит
   // системные ускорители: без меню в приложении не работают Cmd+C/V/X/A и Cmd+Q, а About/Hide
   // недоступны совсем. Поэтому там ставим минимальное меню из ролей (идея PR #10), на остальных
@@ -3736,7 +3674,23 @@ ipcMain.handle('win:isMaximized', (e) => { const w = senderWin(e); return !!(w &
 ipcMain.on('win:show', showWindow);
 
 // ── Окна модулей: open/close/реестр открытых ──────────────────────────────────────────
-ipcMain.on('module:open', (_e, { modId } = {}) => { if (modId) openModuleWindow(String(modId)); });
+// arg — только простые данные (JSON): уходит в окно модуля как есть, модуль сам проверяет поля.
+ipcMain.on('module:open', (_e, { modId, arg } = {}) => {
+  if (!modId) return;
+  let a = null;
+  if (arg != null) { try { a = JSON.parse(JSON.stringify(arg)); } catch (_) { a = null; } }
+  openModuleWindow(String(modId), a);
+});
+// Окно модуля подписалось на module:arg — отдать отложенный параметр.
+ipcMain.on('module:ready', (e) => {
+  for (const [id, w] of moduleWindows) {
+    if (w.isDestroyed() || w.webContents !== e.sender) continue;
+    w.__modReady = true;
+    const a = pendingModuleArgs.get(id);
+    if (a != null) { pendingModuleArgs.delete(id); sendTo(w, 'module:arg', a); }
+    break;
+  }
+});
 
 // ── Помодоро: пульт окна модуля управляет движком таймера в main ──────────────────────
 ipcMain.handle('pomodoro:start', (_e, { tech } = {}) => pomoStart(tech));
@@ -4256,7 +4210,7 @@ const MODULE_TITLES = {
   tools: 'Инструменты', iterflow: 'IterFlow', seo: 'WEB/SEO аудит', audit: 'Аудит',
   pomodoro: 'Помодоро', company: 'ИИ компания', notes: 'Задачи', db: 'Базы данных',
   chat: 'OpenRouter', doc: 'Обработка текста', docker: 'Контейнеры', rh: 'Удалённые хосты',
-  ctx: 'Контекст', scratch: 'Система · ~', files: 'Проект', monitor: 'Монитор', gitgraph: 'Граф Git',
+  ctx: 'Контекст', scratch: 'Система · ~', files: 'Проект', monitor: 'Монитор', gitgraph: 'Граф Git', servers: 'Серверы',
 };
 let monPrev = null;   // { total, perSid: Map<sid,jiffies> } — для расчёта CPU% деревьев PTY
 
@@ -4862,11 +4816,12 @@ async function smCheckTarget(target) {
 
 // ── публичный вид / персист / загрузка (+ миграция старого плоского формата) ────────────────────────
 function smCheckPublic(c) { return { id: c.id, title: c.title, kind: c.kind, spec: c.spec, code: c.code, meta: c.meta, notify: c.notify !== false, debounce: c.debounce || 1, state: c.state || 'unknown', value: c.value, error: c.error, checkedAt: c.checkedAt, history: (c.history || []).slice(-SM_HISTORY), stats: (c.stats || []).slice(-31) }; }
-function smTargetPersist(t) { return { id: t.id, name: t.name, url: t.url, intervalSec: t.intervalSec, render: !!t.render, insecureTls: !!t.insecureTls, headers: t.headers || null, checks: (t.checks || []).map((c) => ({ id: c.id, title: c.title, kind: c.kind, spec: c.spec, code: c.code, meta: c.meta, notify: c.notify !== false, debounce: c.debounce || 1, state: c.state, value: c.value, error: c.error, baseline: c.baseline, checkedAt: c.checkedAt, history: (c.history || []).slice(-SM_HISTORY), stats: (c.stats || []).slice(-31) })) }; }
-function smPublic() { return smTargets.map((t) => ({ id: t.id, name: t.name, url: t.url, intervalSec: t.intervalSec, render: !!t.render, insecureTls: !!t.insecureTls, headers: t.headers || null, checks: (t.checks || []).map(smCheckPublic) })); }
+function smTargetPersist(t) { return { id: t.id, name: t.name, url: t.url, intervalSec: t.intervalSec, render: !!t.render, insecureTls: !!t.insecureTls, headers: t.headers || null, serverId: t.serverId || null, checks: (t.checks || []).map((c) => ({ id: c.id, title: c.title, kind: c.kind, spec: c.spec, code: c.code, meta: c.meta, notify: c.notify !== false, debounce: c.debounce || 1, state: c.state, value: c.value, error: c.error, baseline: c.baseline, checkedAt: c.checkedAt, history: (c.history || []).slice(-SM_HISTORY), stats: (c.stats || []).slice(-31) })) }; }
+function smPublic() { return smTargets.map((t) => ({ id: t.id, name: t.name, url: t.url, intervalSec: t.intervalSec, render: !!t.render, insecureTls: !!t.insecureTls, headers: t.headers || null, serverId: t.serverId || null, checks: (t.checks || []).map(smCheckPublic) })); }
 function smPersist() { try { writeStoreKey('siteMon', smTargets.map(smTargetPersist)); } catch (_) {} }
 function smBroadcast() {
   const p = smPublic();
+  try { serversApi.sitesChanged(); } catch (_) {}
   sendTo(mainWindow, 'sitemon:update', p);
   for (const w of moduleWindows.values()) { sendTo(w, 'sitemon:update', p); }
 }
@@ -4882,7 +4837,7 @@ function smLoad() {
   if (raw === undefined && storeReadFailed.has('siteMon')) storeSnapshotBroken.add('siteMon');   // держим «пусто» до перезапуска — не пишем его
   if (!Array.isArray(raw)) { smTargets = []; return; }
   smTargets = raw.map((x) => {
-    if (x && Array.isArray(x.checks)) return { id: x.id || smNewId('t'), name: x.name, url: x.url, intervalSec: smClampInt(x.intervalSec), render: !!x.render, insecureTls: !!x.insecureTls, headers: x.headers || null, checks: x.checks.map((c) => Object.assign({}, c, { pend: null })), checking: false, nextAt: 0 };
+    if (x && Array.isArray(x.checks)) return { id: x.id || smNewId('t'), name: x.name, url: x.url, intervalSec: smClampInt(x.intervalSec), render: !!x.render, insecureTls: !!x.insecureTls, headers: x.headers || null, serverId: smSid(x.serverId), checks: x.checks.map((c) => Object.assign({}, c, { pend: null })), checking: false, nextAt: 0 };
     return smMigrateOld(x || {});
   });
 }
@@ -4908,14 +4863,16 @@ function smSanitizeCheck(c) {
 
 // ── IPC ────────────────────────────────────────────────────────────────────────────────────────────
 ipcMain.handle('sitemon:list', () => smPublic());
-ipcMain.handle('sitemon:addTarget', (_e, { name, url, intervalSec, render, insecureTls, headers } = {}) => {
+// serverId — привязка сайта к серверу «Серверов» (необязательно): статус сайта виден на странице сервера
+const smSid = (v) => (typeof v === 'string' && /^[\w-]{1,64}$/.test(v) ? v : null);
+ipcMain.handle('sitemon:addTarget', (_e, { name, url, intervalSec, render, insecureTls, headers, serverId } = {}) => {
   const u = smNormUrl(url); if (!u) return { ok: false, error: 'Некорректный URL' };
-  const t = { id: smNewId('t'), name: String(name || '').trim() || new URL(u).hostname, url: u, intervalSec: smClampInt(intervalSec), render: !!render, insecureTls: !!insecureTls, headers: smCleanHeaders(headers),
+  const t = { id: smNewId('t'), name: String(name || '').trim() || new URL(u).hostname, url: u, intervalSec: smClampInt(intervalSec), render: !!render, insecureTls: !!insecureTls, headers: smCleanHeaders(headers), serverId: smSid(serverId),
     checks: [{ id: smNewId('c'), title: 'Доступность', kind: 'basic', spec: { source: 'status', cmp: 'up' }, notify: true, debounce: 1, state: 'unknown', history: [] }], checking: false, nextAt: 0 };
   smTargets.push(t); smPersist(); smBroadcast(); smCheckTarget(t);
   return { ok: true, id: t.id };
 });
-ipcMain.handle('sitemon:editTarget', (_e, { id, name, url, intervalSec, render, insecureTls, headers } = {}) => {
+ipcMain.handle('sitemon:editTarget', (_e, { id, name, url, intervalSec, render, insecureTls, headers, serverId } = {}) => {
   const t = smTargets.find((x) => x.id === id); if (!t) return { ok: false, error: 'нет цели' };
   if (name != null) t.name = String(name).trim() || t.name;
   if (url != null) { const u = smNormUrl(url); if (!u) return { ok: false, error: 'Некорректный URL' }; t.url = u; }
@@ -4923,6 +4880,7 @@ ipcMain.handle('sitemon:editTarget', (_e, { id, name, url, intervalSec, render, 
   if (render != null) t.render = !!render;
   if (insecureTls != null) t.insecureTls = !!insecureTls;
   if (headers !== undefined) t.headers = smCleanHeaders(headers);
+  if (serverId !== undefined) t.serverId = smSid(serverId);
   t.gen = (t.gen || 0) + 1; t.nextAt = 0; smPersist(); smBroadcast(); smCheckTarget(t); return { ok: true };
 });
 ipcMain.handle('sitemon:removeTarget', (_e, { id } = {}) => { smTargets = smTargets.filter((x) => x.id !== id); smPersist(); smBroadcast(); return { ok: true }; });

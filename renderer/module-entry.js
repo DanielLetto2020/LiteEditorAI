@@ -28,7 +28,7 @@ const initAudit = () => import('./modules/audit.js').then((m) => m.initAudit);
 const initGitGraph = () => import('./modules/gitgraph.js').then((m) => m.initGitGraph);
 const initMonitor = () => import('./modules/monitor.js').then((m) => m.initMonitor);
 const initKeepass = () => import('./modules/keepass.js').then((m) => m.initKeepass);
-const initSitemon = () => import('./modules/sitemon.js').then((m) => m.initSitemon);
+const initServers = () => import('./modules/servers.js').then((m) => m.initServers);
 const initPomodoro = () => import('./modules/pomodoro.js').then((m) => m.initPomodoro);
 const initVoice = () => import('./modules/voice.js').then((m) => m.initVoice);
 const initCompany = () => import('./modules/company.js').then((m) => m.initCompany);
@@ -115,10 +115,11 @@ const MODULES = {
     title: 'Сейф паролей', load: initKeepass, project: false,
     wire: (mod) => { bind('#keepass-open', () => mod.openFile()); bind('#keepass-lock', () => mod.lock()); },
   },
-  sitemon: {
-    title: 'Мониторинг сайтов', load: initSitemon, project: false,
-    wire: (mod) => { bind('#sitemon-add', () => mod.addSite()); bind('#sitemon-check', () => mod.checkAll()); },
+  servers: {
+    title: 'Серверы', load: initServers, project: false,
+    wire: (mod) => { bind('#servers-add', () => mod.addServer()); bind('#servers-refresh', () => mod.refreshAll()); },
   },
+
   pomodoro: {
     title: 'Помодоро', load: initPomodoro, project: false,
     wire: (mod) => { bind('#pomodoro-min', () => mod.toggleCompact()); },
@@ -399,6 +400,18 @@ async function boot() {
   });
 
   if (def.wire) { try { def.wire(mod); } catch (e) { try { lite.log('error', '[module:' + modId + '] wire', String(e)); } catch (_) {} } }
+
+  // Параметр открытия окна (lite.module.open(id, arg) из редактора или другого окна): «Удалённые хосты»
+  // на нужном профиле, «Контейнеры» на нужном хосте и т.п. Подписка — после init/wire, затем ready:
+  // main отдаст отложенный параметр только подписанному окну.
+  lite.module.onArg((arg) => {
+    if (!mod || typeof mod.handleArg !== 'function') return;
+    Promise.resolve().then(() => mod.handleArg(arg)).catch((e) => {
+      try { lite.log('error', '[module:' + modId + '] handleArg', String((e && e.stack) || e)); } catch (_) {}
+      toast(`Не удалось открыть: ${(e && e.message) || e}`, { kind: 'err' });
+    });
+  });
+  lite.module.ready();
 }
 
 // fetch the editor's current project first, then boot

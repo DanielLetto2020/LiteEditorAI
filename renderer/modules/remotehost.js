@@ -235,6 +235,20 @@ export function initRh(host) {
       if (o.auth === 'password' && pass.value) o.password = pass.value;
       return o;
     };
+    // ключ хоста (только SSH/SFTP сохранённого профиля): что закреплено, и «Забыть» после переустановки сервера
+    if (existing && c.id && c.type !== 'ftp') {
+      const hk = el('div', 'rh-hint rh-hk-pinned');
+      f.appendChild(hk);
+      lite.rh.hostKeyInfo({ id: c.id }).then((r) => {
+        hk.innerHTML = '';
+        if (!r || !r.pinned) { hk.textContent = t('Ключ хоста ещё не закреплён — запомнится при первом подключении.'); return; }
+        hk.append(el('span', null, t('Ключ хоста:') + ' '), el('code', null, r.pinned.fp), el('span', null, ' '));
+        const forget = el('button', 'btn rh-hk-forget', 'Забыть ключ');
+        forget.title = t('Следующее подключение закрепит ключ заново. Нужно после переустановки сервера.');
+        forget.onclick = async () => { const x = await lite.rh.hostKeyForget({ id: c.id }); if (x && x.ok) { hk.textContent = t('Ключ забыт — запомнится при следующем подключении.'); } else toast((x && x.error) || 'Не удалось', { kind: 'err' }); };
+        hk.appendChild(forget);
+      }).catch(() => { hk.remove(); });
+    }
     const row = el('div', 'gm-actions'); row.style.marginTop = '12px';
     const status = el('span', 'db-test-status');
     const test = el('button', 'btn', 'Тест');
@@ -384,11 +398,14 @@ export function initRh(host) {
     const url = scheme + '://' + h + ':' + svc.port;
     let sites = [];
     try { const l = await lite.sitemon.list(); if (Array.isArray(l)) sites = l; } catch (_) {}
-    if (sites.some((s) => s && s.url === url)) { toast(`Уже наблюдается: ${url}`, { ttl: 5000 }); lite.module.open('sitemon'); return; }
-    const a = await lite.sitemon.addTarget({ name: `${c.name || c.host}:${svc.port}`, url });
+    if (sites.some((s) => s && s.url === url)) { toast(`Уже наблюдается: ${url}`, { ttl: 5000 }); lite.module.open('servers', { view: 'sites' }); return; }
+    // сервер «Серверов» на этом же профиле — сайт сразу привязывается к нему
+    let serverId = null;
+    try { const r = await lite.servers.list(); const sv = ((r && r.servers) || []).find((x) => x.rhId === c.id); if (sv) serverId = sv.id; } catch (_) {}
+    const a = await lite.sitemon.addTarget({ name: `${c.name || c.host}:${svc.port}`, url, serverId });
     if (!a || !a.ok) { toast((a && a.error) || 'Не удалось добавить в мониторинг', { kind: 'err', ttl: 8000 }); return; }
-    toast(`${url} — добавлен в «Мониторинг сайтов»`, { ttl: 5000 });
-    lite.module.open('sitemon');
+    toast(`${url} — добавлен в «Серверы → Сайты»`, { ttl: 5000 });
+    lite.module.open('servers', { view: 'sites' });
   }
   function showHostServices(c) {
     const { m, close } = makeModal('<h2></h2>');
@@ -473,13 +490,14 @@ export function initRh(host) {
     return 'Файл';
   }
 
-  async function rhOpenFiles(c) {
-    rhFiles = { connId: c.id, name: c.name || c.host, type: c.type || 'ssh', root: '~', dirs: new Map(), expanded: new Set(), file: null, sel: null, mounted: false };
+  async function rhOpenFiles(c, startPath) {
+    const start = (typeof startPath === 'string' && startPath) ? startPath : '~';
+    rhFiles = { connId: c.id, name: c.name || c.host, type: c.type || 'ssh', root: start, dirs: new Map(), expanded: new Set(), file: null, sel: null, mounted: false };
     rhView = 'files';
     renderRhPanel();
-    const r = await lite.rh.fsList(c.id, '~');
+    const r = await lite.rh.fsList(c.id, start);
     if (!rhFiles || rhFiles.connId !== c.id || rhView !== 'files') return;
-    if (r.error) { rhFiles.dirs.set('~', { error: r.error }); toast(r.error, { kind: 'err', ttl: 8000 }); }
+    if (r.error) { rhFiles.dirs.set(start, { error: r.error }); toast(r.error, { kind: 'err', ttl: 8000 }); }
     else { rhFiles.root = r.path; rhFiles.dirs.set(r.path, { entries: r.entries }); }
     renderRhFiles();
   }
@@ -823,6 +841,70 @@ export function initRh(host) {
       renderRhZips();
     });
     lite.rh.onExit(({ id }) => { const rec = rhTerms.get(id); if (rec) rec.term.write('\r\n\x1b[90m[соединение закрыто — закрой вкладку или подключись заново]\x1b[0m\r\n'); });
+    lite.rh.onHostKey(onHostKeyEvent);
+  }
+
+  // ---- ключ SSH-хоста (lib/hostkeys.js): закрепление при первом подключении и отказ при подмене
+  const hkModalOpen = new Set(); // hp, для которых уже открыто окно «ключ изменился»
+  function onHostKeyEvent(ev) {
+    if (!ev || !ev.hp) return;
+    if (ev.kind === 'pinned') {
+      // ключ из ~/.ssh/known_hosts уже проверен самим человеком — молча; новый — показать отпечаток
+      if (ev.source === 'first') toast(t('Запомнен ключ SSH-хоста {0}: {1}', ev.hp, ev.fp), { ttl: 9000 });
+      else if (ev.source === 'confirmed') toast(t('Принят новый ключ SSH-хоста {0}', ev.hp), { ttl: 6000 });
+      return;
+    }
+    if (ev.kind === 'mismatch') showHostKeyMismatch(ev);
+  }
+  function showHostKeyMismatch(ev) {
+    if (hkModalOpen.has(ev.hp)) return;
+    hkModalOpen.add(ev.hp);
+    const { m, close } = makeModal('<h2></h2><div class="about-desc rh-hk-text"></div><div class="rh-hk-fp"></div><div class="modal-actions"></div>');
+    const done = () => { hkModalOpen.delete(ev.hp); close(); };
+    m.querySelector('h2').textContent = t('Ключ SSH-хоста изменился');
+    m.querySelector('.rh-hk-text').textContent = ev.source === 'revoked'
+      ? t('Ключ хоста {0} отозван в ~/.ssh/known_hosts. Подключение отклонено.', ev.hp)
+      : t('Хост {0} прислал другой ключ, чем раньше. Подключение отклонено: так выглядит перехват соединения. Принимайте новый ключ, только если сервер переустанавливали или ключи меняли сами.', ev.hp);
+    const fp = m.querySelector('.rh-hk-fp');
+    const line = (label, val) => { const d = el('div', 'rh-hk-line'); d.append(el('span', 'rh-hk-label', label), el('code', null, val)); fp.appendChild(d); };
+    line('Было:', ev.expected || t('другой ключ в ~/.ssh/known_hosts'));
+    line('Сейчас:', ev.fp);
+    const acts = m.querySelector('.modal-actions');
+    const cancel = el('button', 'btn', 'Не принимать'); cancel.onclick = done;
+    acts.appendChild(cancel);
+    if (ev.source !== 'revoked') {
+      const ok = el('button', 'btn danger', 'Принять новый ключ');
+      ok.onclick = async () => {
+        let r; try { r = await lite.rh.hostKeyTrust({ hp: ev.hp }); } catch (e) { r = { ok: false, error: String(e) }; }
+        if (!r || !r.ok) { toast((r && r.error) || 'Не удалось принять ключ', { kind: 'err' }); return; }
+        done();
+      };
+      acts.appendChild(ok);
+    }
+    setTimeout(() => cancel.focus(), 30); // по умолчанию — безопасный выбор
+  }
+
+  // Параметр открытия окна (lite.module.open('rh', arg)): { connId, view: 'session'|'files', path?, newSession? }.
+  // «Серверы» открывают отсюда терминал и файлы нужного сервера, не дублируя их у себя.
+  async function handleArg(arg) {
+    if (!arg || typeof arg !== 'object' || typeof arg.connId !== 'string') return;
+    let r; try { r = await lite.rh.list(); } catch (_) { r = null; }
+    const c = r && (r.connections || []).find((x) => x.id === arg.connId);
+    if (!c) { toast('Профиль подключения не найден', { kind: 'err' }); return; }
+    rhConnsList = r.connections || [];
+    const filesOnly = c.type === 'ftp' || c.type === 'sftp';
+    if (arg.view === 'files' || filesOnly) {
+      rhGuardDirty(() => {
+        if (rhFiles && rhFiles.connId !== c.id) rhDropFiles();
+        rhOpenFiles(c, typeof arg.path === 'string' ? arg.path : undefined);
+      });
+      return;
+    }
+    if (!arg.newSession) { // уже есть живая вкладка этого профиля — просто показать её
+      const sid = rhSessions.find((x) => { const rec = rhTerms.get(x); return rec && rec.connId === c.id; });
+      if (sid) { switchRhTab(sid); return; }
+    }
+    rhConnect(c);
   }
   // Размер шрифта всем SSH-терминалам (вызывается ядром из applyFontSize).
   function applyFontSize() {
@@ -840,5 +922,5 @@ export function initRh(host) {
   // секундами и упасть) — называем файл, и редактор спросит.
   function quitCheck() { const f = rhFiles && rhFiles.file; return (f && f.dirty) ? [f.name] : []; }
 
-  return { isOpen: () => rhOpen, setOpen: setRhOpen, renderPanel: renderRhPanel, goList: rhGoList, refitSession: refitRhSession, bindEvents, applyFontSize, applyTermTheme, confirmClose, quitCheck };
+  return { isOpen: () => rhOpen, setOpen: setRhOpen, renderPanel: renderRhPanel, goList: rhGoList, refitSession: refitRhSession, bindEvents, applyFontSize, applyTermTheme, confirmClose, quitCheck, handleArg };
 }
