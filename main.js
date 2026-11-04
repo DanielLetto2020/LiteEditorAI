@@ -27,7 +27,6 @@ const pty = require('node-pty');
 const logger = require('./logger');
 const { safeChildName } = require('./lib/safe-name'); // анти-traversal для имён папок/файлов
 const { resolveShell: resolveShellPure } = require('./lib/shell'); // выбор оболочки терминала
-const syncmark = require('./lib/sync');   // метка «sync» в плашке: что домашняя машина держит в синхронизации с сервером
 const updater = require('./lib/updater');  // самообновление: проверка релиза, загрузка, подмена каталога
 const { watchTree } = require('./lib/tree-watch'); // слежение за деревом проекта (на Linux — по наблюдению на каталог)
 const { createHistory } = require('./lib/history'); // локальная история файлов: снимки, троттл, срок и объём
@@ -401,124 +400,6 @@ ipcMain.handle('logs:read', (_e, name) => {
 // Удалить один лог-файл / очистить старые (сегодняшний живой файл сохраняется).
 ipcMain.handle('logs:delete', (_e, name) => ({ ok: logger.removeFile(name) }));
 ipcMain.handle('logs:clearOld', () => ({ ok: true, removed: logger.clearOld() }));
-
-// ── Метка синхронизации в плашке проекта ────────────────────────────────────────────────────
-// Редактор синхронизацией не управляет: демон (scripts/server-sync/) живёт своей
-// жизнью, здесь мы только читаем его конфиг. Сопоставление делает главный процесс —
-// у рендерера нет fs, а сравнивать нужно разрешённые пути (симлинки, см. lib/sync.js).
-ipcMain.handle('sync:match', async (_e, paths) => {
-  // асинхронно: realpathSync проекта на отвалившейся сетевой ФС подвесил бы весь главный процесс
-  try { return { paths: await syncmark.matchAsync(paths), available: syncAvailable() }; } catch (e) { return { paths: [], available: false, error: String(e) }; }
-});
-
-// Подключение проекта к синхронизации. Процедура одна на оба редактора и живёт
-// рядом с демоном (scripts/server-sync/lite-sync-link.js): здесь мы на домашней
-// машине, поэтому запускаем её сразу, без заявок через сервер. На Windows
-// синхронизации нет: утилита стоит на rsync, а его там нет.
-const SYNC_DIR = path.join(__dirname, 'scripts', 'server-sync');
-let linker = null;
-function linkerModule() {
-  if (!linker) linker = require('./scripts/server-sync/lite-sync-link.js');
-  return linker;
-}
-
-// Можно ли подключать проекты: задан ли сервер. Нет — облачко открывает мастер подключения.
-function syncAvailable() {
-  try {
-    return process.platform !== 'win32' && linkerModule().configured();
-  } catch (_) {
-    return false;
-  }
-}
-
-// Процедуры синхронизации ходят по ssh и считают du/find по дереву проекта — это секунды,
-// а на недоступном сервере и десятки секунд. В главном процессе такой вызов заморозил бы
-// все окна, поэтому они идут отдельным процессом (Electron в режиме node), а сюда
-// возвращаются строками JSON: {step} по ходу и {result} в конце.
-function linkerCall(method, args, onStep) {
-  return new Promise((resolve) => {
-    const script = `const l = require(${JSON.stringify(path.join(SYNC_DIR, 'lite-sync-link.js'))});
-      const out = (o) => process.stdout.write(JSON.stringify(o) + '\\n');
-      const [m, a] = JSON.parse(process.argv[1]);
-      if (m === 'link') a[1] = Object.assign({}, a[1], { onStep: (s) => out({ step: s }) });
-      Promise.resolve().then(() => l[m](...a)).then((r) => out({ result: r }), (e) => out({ result: { ok: false, reason: String(e && e.message || e) } }));`;
-    let child;
-    try {
-      child = spawn(process.execPath, ['-e', script, JSON.stringify([method, args])], { env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' } });
-    } catch (e) { resolve({ ok: false, reason: String(e && e.message ? e.message : e) }); return; }
-    let buf = '', err = '', result = null;
-    child.stdout.on('data', (d) => {
-      buf += d;
-      let i;
-      while ((i = buf.indexOf('\n')) >= 0) {
-        const line = buf.slice(0, i); buf = buf.slice(i + 1);
-        let msg = null; try { msg = JSON.parse(line); } catch (_) {}
-        if (msg && msg.step && onStep) onStep(msg.step);
-        if (msg && msg.result) result = msg.result;
-      }
-    });
-    child.stderr.on('data', (d) => { err += d; });
-    child.on('error', (e) => { err += e.message; });
-    child.on('close', () => resolve(result || { ok: false, reason: err.trim().split('\n').pop() || 'процедура синхронизации прервалась' }));
-  });
-}
-
-ipcMain.handle('sync:inspect', (_e, projectPath) => linkerCall('inspect', [String(projectPath || '')]));
-
-let linkRunning = false;
-ipcMain.handle('sync:link', async (_e, { path: projectPath, prefer } = {}) => {
-  // Процедура правит конфиг и переносит файлы — второй заход параллельно не пускаем.
-  if (linkRunning) return { ok: false, reason: 'подключение уже идёт' };
-  linkRunning = true;
-  try {
-    return await linkerCall('link', [String(projectPath || ''), { prefer: prefer === 'local' || prefer === 'remote' ? prefer : null }],
-      (step) => sendTo(mainWindow, 'sync:linkStep', step));
-  } finally {
-    linkRunning = false;
-  }
-});
-
-// Мастер подключения: что есть на этой машине, проверка адреса сервера, запись адреса.
-ipcMain.handle('sync:setupInfo', () => {
-  if (process.platform === 'win32') return { supported: false };
-  try { const l = linkerModule(); return { supported: true, tools: l.localTools(), configured: l.configured() }; } catch (e) { return { supported: false, reason: String(e && e.message ? e.message : e) }; }
-});
-ipcMain.handle('sync:checkServer', (_e, server) => linkerCall('checkServer', [String(server || '')]));
-ipcMain.handle('sync:setServer', (_e, server) => {
-  try { linkerModule().setServer(String(server || '')); } catch (e) { return { ok: false, reason: String(e && e.message ? e.message : e) }; }
-  startSyncDaemon();
-  return { ok: true };
-});
-
-// Демон синхронизации, которого включил мастер (runner: 'editor' в конфиге), живёт, пока
-// открыт редактор. У кого демон в systemd, поля нет — тогда редактор демона не трогает.
-// Второй экземпляр демон не пустит сам (daemon.pid) и выйдет нулём — такой выход не перезапускаем.
-let syncDaemon = null, syncDaemonTimer = null, syncDaemonFails = 0, syncDaemonStopping = false;
-function startSyncDaemon() {
-  if (syncDaemon || syncDaemonStopping || process.platform === 'win32') return;
-  let cfg;
-  try { cfg = linkerModule().readConfig(); } catch (_) { return; }
-  if (!cfg || cfg.runner !== 'editor' || cfg.enabled === false || !syncAvailable()) return;
-  clearTimeout(syncDaemonTimer);
-  const started = Date.now();
-  const child = spawn(process.execPath, [path.join(SYNC_DIR, 'lite-sync-daemon.js')], { env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' }, stdio: 'ignore' });
-  syncDaemon = child;
-  logger.log('info', 'sync', `демон синхронизации запущен (pid ${child.pid})`);
-  child.on('error', (e) => logger.log('warn', 'sync', `демон синхронизации не запустился: ${e.message}`));
-  child.on('exit', (code) => {
-    if (syncDaemon === child) syncDaemon = null;
-    if (syncDaemonStopping || code === 0) return;
-    syncDaemonFails = Date.now() - started > 60000 ? 0 : syncDaemonFails + 1;
-    const delay = Math.min(300000, 5000 * 2 ** syncDaemonFails);
-    logger.log('warn', 'sync', `демон синхронизации вышел (код ${code}) — перезапуск через ${Math.round(delay / 1000)} с`);
-    syncDaemonTimer = setTimeout(startSyncDaemon, delay);
-  });
-}
-function stopSyncDaemon() {
-  syncDaemonStopping = true;
-  clearTimeout(syncDaemonTimer);
-  if (syncDaemon) { try { syncDaemon.kill('SIGTERM'); } catch (_) {} syncDaemon = null; }
-}
 
 // ── Реестр ошибок (errors ledger) ───────────────────────────────────────────────────────────
 ipcMain.handle('errors:list', () => errledger.list());
@@ -929,11 +810,9 @@ ipcMain.handle('update:cancel', () => {
 });
 
 // Жёсткий выход под обновление. app.exit() не поднимает before-quit, поэтому его уборку делаем
-// здесь: иначе демон синхронизации переживал редактор сиротой со старым кодом (новая версия свой
-// уже не запустит — daemon.pid занят), а реестр ошибок терял последние отложенные правки.
+// здесь: иначе реестр ошибок терял бы последние отложенные правки.
 function updHardExit() {
   try { errledger.flush(); } catch (_) {}
-  stopSyncDaemon();
   // Агентов тоже гасим (как в window-all-closed, которое app.exit() не поднимает): директор «ИИ
   // компании» запущен detached — своей группой процессов — и пережил бы редактор, продолжая править
   // проект и тратить бюджет; claude/codex «Обработки текста», AI-DB и запросы чата — туда же.
@@ -3681,9 +3560,8 @@ app.on('child-process-gone', (_e, d) =>
   logger.log(d && d.reason === 'clean-exit' ? 'info' : 'error', 'child-process-gone', JSON.stringify(d)));
 app.on('before-quit', () => { logger.log('info', 'app', 'before-quit'); });
 // Уборка — на will-quit, а не на before-quit: выход может быть отменён (окно с несохранённым,
-// guardMainWindowClose), и демон синхронизации, погашенный на before-quit, до конца сессии
-// уже не поднимался бы (syncDaemonStopping не сбрасывается).
-app.on('will-quit', () => { try { errledger.flush(); } catch (_) {} stopSyncDaemon(); });
+// guardMainWindowClose).
+app.on('will-quit', () => { try { errledger.flush(); } catch (_) {} });
 
 app.whenReady().then(() => {
   // Язык интерфейса — до создания окон: рендерер забирает словарь синхронно при старте.
@@ -3695,7 +3573,6 @@ app.whenReady().then(() => {
   const gpu = !(process.env.LITE_NO_GPU === '1' || process.env.LITE_SOFTWARE_RENDER === '1');
   logger.log('info', 'app', `ready — electron ${process.versions.electron}, chrome ${process.versions.chrome}, node ${process.versions.node}, gpu=${gpu}`);
   probeLoginPath(); // фоном: PATH логин-шелла для CLI-агентов «Обработки текста»
-  setTimeout(startSyncDaemon, 3000); // демон синхронизации, если его включил мастер (runner: 'editor'); не мешаем старту окна
   // Своё меню мы рисуем в титлбаре, поэтому системное не нужно — но на macOS оно ещё и держит
   // системные ускорители: без меню в приложении не работают Cmd+C/V/X/A и Cmd+Q, а About/Hide
   // недоступны совсем. Поэтому там ставим минимальное меню из ролей (идея PR #10), на остальных

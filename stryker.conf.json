@@ -17,9 +17,7 @@
     "!locales/**",
     "!package.json",
     "!errledger.js",
-    "!renderer/settings-sync.js",
-    "!scripts/server-sync/lite-sync.js",
-    "!scripts/server-sync/lite-sync-link.js"
+    "!renderer/settings-sync.js"
   ],
   "reporters": [
     "html",
@@ -41,7 +39,6 @@
     "lib/dbdetect.js",
     "lib/fsmeta.js",
     "lib/i18n.js",
-    "lib/sync.js",
     "lib/agentstate.js:18-41",
     "lib/updater.js:32-146",
     "lib/updater.js:285-336",
