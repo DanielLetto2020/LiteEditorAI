@@ -1,6 +1,6 @@
 {
   "name": "liteeditor-ai",
-  "version": "1.1.214-alpha",
+  "version": "1.1.215-alpha",
   "description": "Lightweight editor for working with AI coding agents in the terminal",
   "main": "main.js",
   "author": "Максим Кузьминский <i@m-letto.ru>",
@@ -23,8 +23,6 @@
     "gen-icons": "node scripts/gen-icons.js",
     "install-desktop": "node scripts/install-desktop.js",
     "dist:linux": "node build.js && electron-builder --linux deb tar.gz",
-    "dist:win": "node build.js && electron-builder --win zip",
-    "dist:mac": "node build.js && electron-builder --mac",
     "release": "node scripts/release.js"
   },
   "dependencies": {
@@ -112,7 +110,6 @@
       "buildResources": "assets"
     },
     "npmRebuild": false,
-    "afterPack": "scripts/afterPack-mac.js",
     "asarUnpack": [
       "**/node_modules/node-pty/**",
       "**/node_modules/sql.js/dist/sql-wasm.wasm",
@@ -161,37 +158,6 @@
     },
     "deb": {
       "artifactName": "${name}_${version}_${arch}.${ext}"
-    },
-    "win": {
-      "target": [
-        "zip"
-      ],
-      "icon": "assets/icon.png",
-      "signAndEditExecutable": true,
-      "asar": false
-    },
-    "mac": {
-      "target": [
-        {
-          "target": "dmg",
-          "arch": [
-            "arm64",
-            "x64"
-          ]
-        },
-        {
-          "target": "zip",
-          "arch": [
-            "arm64",
-            "x64"
-          ]
-        }
-      ],
-      "category": "public.app-category.developer-tools",
-      "icon": "assets/icon.png",
-      "identity": null,
-      "entitlements": "assets/entitlements.mac.plist",
-      "entitlementsInherit": "assets/entitlements.mac.plist"
     }
   }
 }

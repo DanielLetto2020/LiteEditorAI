@@ -9,7 +9,7 @@ A terminal-first desktop workspace for developers who **supervise AI coding agen
 
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache--2.0-green.svg)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/DanielLetto2020/LiteEditorAI?include_prereleases&sort=semver)](https://github.com/DanielLetto2020/LiteEditorAI/releases)
-[![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20Windows%20%7C%20macOS-blue.svg)](#install)
+[![Platform](https://img.shields.io/badge/platform-Linux-blue.svg)](#install)
 [![Built with Electron](https://img.shields.io/badge/Electron-42-47848F.svg?logo=electron&logoColor=white)](https://www.electronjs.org/)
 [![Status: alpha](https://img.shields.io/badge/status-alpha-orange.svg)](#status)
 
@@ -121,14 +121,12 @@ Prebuilt binaries live on the [**Releases**](https://github.com/DanielLetto2020/
 |---|---|
 | **Ubuntu / Debian** (x64) | `sudo apt install ./LiteEditorAI_*.deb` — system-wide install; updates ask for the administrator password once. |
 | **Linux portable** (x64) | Download `LiteEditorAI-*-linux-x64.tar.gz`, unpack it anywhere in your home directory, run `liteeditor-ai`. No root, and **updates apply in one click**. |
-| **Windows** (x64) | Download `LiteEditorAI_*-win.zip`, unpack anywhere, run `LiteEditorAI.exe`. No installer. Unsigned, so SmartScreen may warn: *More info → Run anyway*. |
-| **macOS** (arm64 / x64) | Download the matching `.dmg` (`-arm64` for M1–M4, `-x64` for Intel) and drag the app to Applications. Ad-hoc build without an Apple signature, so on first launch: *System Settings → Privacy & Security → Open anyway* (or `xattr -dr com.apple.quarantine /Applications/LiteEditorAI.app`). |
 | **From source** | `npm install && npm start` (Node.js 22+) |
 
 **Updating is one click.** The editor checks GitHub Releases in the background, downloads the new version
 and shows a **Restart** badge at the bottom of the sidebar (a dot next to the version number means a new
 release is out): press it and the editor closes and reopens already updated —
-no visit to the download page. The portable builds (Linux `tar.gz`, Windows `zip`, macOS `.app`) update
+no visit to the download page. The portable Linux build (`tar.gz`) updates
 without any password; the `.deb` install asks for the administrator password once, because it lives in a
 system directory. Update mode is in **Settings → Updates**.
 
@@ -243,7 +241,7 @@ npm install        # dependencies + node-pty rebuilt for Electron
 npm start          # bundle the frontend and launch
 ```
 
-Node.js 22+ (Linux / Windows x64; macOS builds are made on macOS only).
+Node.js 22+ (Linux x64). Releases are published for Linux only.
 More for developers: [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ### Pull requests
