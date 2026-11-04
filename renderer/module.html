@@ -461,17 +461,6 @@
         <div id="notes-body" class="notes-body"></div>
       </section>
 
-      <!-- Sitemon module: мониторинг доступности сайтов (фоновые проверки + уведомления) -->
-      <div id="gutter-sitemon" class="gutter hidden" data-resize="sitemon"></div>
-      <section id="sitemon-pane" class="hidden">
-        <div class="pane-head">
-          <span>Мониторинг сайтов</span>
-          <div class="drag-space-static"></div>
-          <button id="sitemon-add" class="icon-btn" title="Добавить сайт" data-icon="plus"></button>
-          <button id="sitemon-check" class="icon-btn" title="Проверить все" data-icon="refresh"></button>
-        </div>
-        <div id="sitemon-body" class="sitemon-body"></div>
-      </section>
 
       <!-- KeePass module: сейф паролей (.kdbx) — открыть, посмотреть, скопировать поле -->
       <div id="gutter-keepass" class="gutter hidden" data-resize="keepass"></div>
@@ -494,6 +483,18 @@
           <button id="monitor-copy" class="icon-btn" title="Скопировать снимок" data-icon="copy"></button>
         </div>
         <div id="monitor-body" class="monitor-body"></div>
+      </section>
+
+      <!-- «Серверы»: дашборд серверов по SSH-профилям «Удалённых хостов» (мониторинг, информация, управление) -->
+      <div id="gutter-servers" class="gutter hidden" data-resize="servers"></div>
+      <section id="servers-pane" class="hidden">
+        <div class="pane-head">
+          <span>Серверы</span>
+          <div class="drag-space-static"></div>
+          <button id="servers-add" class="icon-btn" title="Добавить сервер" data-icon="plus"></button>
+          <button id="servers-refresh" class="icon-btn" title="Опросить все серверы" data-icon="refresh"></button>
+        </div>
+        <div id="servers-body" class="srv-body"></div>
       </section>
 
       <!-- «Граф Git»: ветки и коммиты схемой на канве (следует за активным проектом редактора, только просмотр) -->

@@ -113,14 +113,6 @@ shows each agent's state.
 
 ![The More menu](assets/screenshots/more.png)
 
-### 5. The same project on your server
-
-Leave an agent working on your own server and pick up at home where it stopped — the cloud next to a project
-keeps its folder identical on both machines. A short setup checks your SSH key, `rsync` and the clocks and tells
-you the exact command if something is missing. Files go only to your server, over your own `ssh`; replaced files
-land in a trash folder instead of disappearing. Linux and macOS; details in
-[`scripts/server-sync`](scripts/server-sync/README.md).
-
 ## Install
 
 Prebuilt binaries live on the [**Releases**](https://github.com/DanielLetto2020/LiteEditorAI/releases) page.

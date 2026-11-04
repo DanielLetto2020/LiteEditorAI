@@ -18,24 +18,6 @@ contextBridge.exposeInMainWorld('lite', {
   // Forward renderer-side errors/events to the main-process file log.
   log: (level, ...args) => ipcRenderer.send('log:renderer', { level, args }),
 
-  // Какие из этих проектов домашняя машина синхронизирует с сервером. Сопоставление
-  // делает главный процесс: сравнивать надо разрешённые пути, здесь fs недоступен.
-  sync: {
-    match: (paths) => ipcRenderer.invoke('sync:match', paths),
-    // подключение проекта: осмотр (что произойдёт) и сама процедура по шагам
-    inspect: (projectPath) => ipcRenderer.invoke('sync:inspect', projectPath),
-    link: (projectPath, prefer) => ipcRenderer.invoke('sync:link', { path: projectPath, prefer }),
-    onLinkStep: (cb) => {
-      const h = (_e, step) => cb(step);
-      ipcRenderer.on('sync:linkStep', h);
-      return () => ipcRenderer.removeListener('sync:linkStep', h);
-    },
-    // мастер подключения: что есть на машине, проверка адреса сервера, запись адреса
-    setupInfo: () => ipcRenderer.invoke('sync:setupInfo'),
-    checkServer: (server) => ipcRenderer.invoke('sync:checkServer', server),
-    setServer: (server) => ipcRenderer.invoke('sync:setServer', server),
-  },
-
   // Локализация: словарь берём СИНХРОННО (до первого прохода по DOM — иначе
   // интерфейс мигнёт русским), смена языка приходит событием во все окна.
   i18n: {
@@ -79,7 +61,10 @@ contextBridge.exposeInMainWorld('lite', {
 
   // Окна модулей (v1.1+): открыть/сфокусировать, закрыть, подписка на набор открытых.
   module: {
-    open: (modId) => ipcRenderer.send('module:open', { modId }),
+    // arg — параметр открытия (простые данные): окно получит его через onArg (и уже открытое — тоже)
+    open: (modId, arg) => ipcRenderer.send('module:open', { modId, arg }),
+    ready: () => ipcRenderer.send('module:ready'),
+    onArg: (cb) => { const h = (_e, a) => cb(a); ipcRenderer.on('module:arg', h); return () => ipcRenderer.removeListener('module:arg', h); },
     onOpenSet: (cb) => { const h = (_e, p) => cb(p && p.ids || []); ipcRenderer.on('module:openSet', h); return () => ipcRenderer.removeListener('module:openSet', h); },
   },
 
@@ -323,6 +308,39 @@ contextBridge.exposeInMainWorld('lite', {
     add: (entry) => ipcRenderer.invoke('keepass:add', entry),                // {title,username,password,url,notes} → {ok}
   },
   // Мониторинг сайтов (target → checks): цели + чеки над URL, фоновые проверки, сэмпл/предпросмотр.
+  // «Серверы» (lib/servers.js): дашборд серверов по SSH-профилям «Удалённых хостов».
+  servers: {
+    list: () => ipcRenderer.invoke('servers:list'),
+    save: (server) => ipcRenderer.invoke('servers:save', { server }),
+    remove: (id) => ipcRenderer.invoke('servers:remove', { id }),
+    reorder: (ids) => ipcRenderer.invoke('servers:reorder', { ids }),
+    refresh: (id, level) => ipcRenderer.invoke('servers:refresh', { id, level }),
+    history: (id) => ipcRenderer.invoke('servers:history', { id }),
+    units: (id) => ipcRenderer.invoke('servers:units', { id }),
+    mute: (id, key, hours) => ipcRenderer.invoke('servers:mute', { id, key, hours }),
+    subscribe: (focus) => ipcRenderer.invoke('servers:subscribe', { focus }),
+    unsubscribe: () => ipcRenderer.invoke('servers:unsubscribe'),
+    ctrAction: (id, engine, ctrId, action) => ipcRenderer.invoke('servers:ctrAction', { id, engine, ctrId, action }),
+    ctrLogs: (id, engine, ctrId, tail) => ipcRenderer.invoke('servers:ctrLogs', { id, engine, ctrId, tail }),
+    unitAction: (id, unit, user, action) => ipcRenderer.invoke('servers:unitAction', { id, unit, user, action }),
+    unitStatus: (id, unit, user) => ipcRenderer.invoke('servers:unitStatus', { id, unit, user }),
+    journal: (id, opts) => ipcRenderer.invoke('servers:journal', { id, ...(opts || {}) }),
+    du: (id, dir, sudo) => ipcRenderer.invoke('servers:du', { id, dir, sudo }),
+    engineDf: (id, engine) => ipcRenderer.invoke('servers:engineDf', { id, engine }),
+    reboot: (id) => ipcRenderer.invoke('servers:reboot', { id }),
+    egress: (id, ip) => ipcRenderer.invoke('servers:egress', { id, ip }),
+    ipLabel: (id, ip, label) => ipcRenderer.invoke('servers:ipLabel', { id, ip, label }),
+    projectSave: (id, key, patch, remove) => ipcRenderer.invoke('servers:projectSave', { id, key, patch, remove }),
+    projectCommand: (id, key, action) => ipcRenderer.invoke('servers:projectCommand', { id, key, action }),
+    projectAction: (id, key, action) => ipcRenderer.invoke('servers:projectAction', { id, key, action }),
+    projectLogs: (id, key, tail) => ipcRenderer.invoke('servers:projectLogs', { id, key, tail }),
+    certCheck: (id) => ipcRenderer.invoke('servers:certCheck', { id }),
+    agentInstall: (id) => ipcRenderer.invoke('servers:agentInstall', { id }),
+    agentUninstall: (id) => ipcRenderer.invoke('servers:agentUninstall', { id }),
+    agentSync: (id) => ipcRenderer.invoke('servers:agentSync', { id }),
+    onUpdate: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('servers:update', h); return () => ipcRenderer.removeListener('servers:update', h); },
+    onList: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('servers:list', h); return () => ipcRenderer.removeListener('servers:list', h); },
+  },
   sitemon: {
     list: () => ipcRenderer.invoke('sitemon:list'),
     addTarget: (opts) => ipcRenderer.invoke('sitemon:addTarget', opts || {}),
@@ -667,6 +685,11 @@ contextBridge.exposeInMainWorld('lite', {
     tunnelOpen: (id, rhost, rport, label, lport) => ipcRenderer.invoke('rh:tunnelOpen', { id, rhost, rport, label, lport }), // → {ok,tunId,port}; lport — предпочитаемый локальный
     tunnelList: () => ipcRenderer.invoke('rh:tunnelList'),                            // → {ok,tunnels:[...]}
     tunnelClose: (tunId) => ipcRenderer.invoke('rh:tunnelClose', { tunId }),
+    // Ключ SSH-хоста: { id } профиля или { hp: 'host:port' } → {pinned,rejected}; принять отклонённый; забыть.
+    hostKeyInfo: (a) => ipcRenderer.invoke('rh:hostKeyInfo', a || {}),
+    hostKeyTrust: (a) => ipcRenderer.invoke('rh:hostKeyTrust', a || {}),
+    hostKeyForget: (a) => ipcRenderer.invoke('rh:hostKeyForget', a || {}),
+    onHostKey: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('rh:hostKey', h); return () => ipcRenderer.removeListener('rh:hostKey', h); },
   },
 
   pty: {

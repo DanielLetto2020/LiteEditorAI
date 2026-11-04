@@ -29,7 +29,7 @@ import { openGlobalSearch } from './gsearch.js';
 import { initExtensions } from './modules/extensions.js';
 // initFiles — вивер+дерево мигрированы в отдельное окно (renderer/module-entry.js).
 
-const APP_VERSION = 'alpha v1.1.209';
+const APP_VERSION = 'alpha v1.1.214';
 const GUTTER = 8; // зазор между карточками окна — он же разделитель, за который тянется ширина
 // Системный терминал («Система · ~») мигрирован в отдельное окно (renderer/modules/scratch.js):
 // его id `__scratch__::tN` маршрутизируются main'ом в окно-владельца, в ядре их больше не обрабатываем.
@@ -70,13 +70,6 @@ function saveSettings() { STORE.settings = settings; if (!storeFrozen) settingsS
 
 // ---------------------------------------------------------------- state
 let projects = [];
-// Пути проектов, которые демон синхронизации держит в согласии с сервером: по ним
-// в плашке появляется метка «sync». Держим множеством, потому что makeCard —
-// синхронный, а ответ главного процесса приходит обещанием.
-let syncedPaths = new Set();
-// Задан ли сервер синхронизации. Нет — облачко серое и открывает мастер подключения
-// (showSyncSetup), а не подключение проекта: до этого редактор ни с каким сервером не соединяется.
-let syncAvailable = false;
 let activeId = null;
 const terms = new Map();          // sessionId -> { term, fit, search, container, projId, name, ... }
 const tabsByProj = new Map();     // projId -> { sessions: [sessionId...], active: sessionId }
@@ -227,352 +220,6 @@ function moveSection(key, dir) {
   saveSectionOrder(order); renderProjects();
 }
 
-// Спрашиваем главный процесс, какие из открытых проектов синхронизируются, и
-// перерисовываем список ТОЛЬКО если ответ изменился: опрос идёт по таймеру, а
-// перерисовка списка на каждый тик гасила бы наведение и открытые меню.
-async function refreshSynced() {
-  try {
-    const paths = projects.map((p) => p.path).filter(Boolean);
-    if (!paths.length) { if (syncedPaths.size) { syncedPaths = new Set(); renderProjects(); } return; }
-    const res = await window.lite?.sync?.match(paths);
-    const next = new Set(res && Array.isArray(res.paths) ? res.paths : []);
-    const nowAvailable = Boolean(res && res.available);
-    const same = next.size === syncedPaths.size && [...next].every((x) => syncedPaths.has(x)) && nowAvailable === syncAvailable;
-    if (!same) { syncedPaths = next; syncAvailable = nowAvailable; renderProjects(); }
-  } catch (_) { /* синхронизации на этой машине нет — плашки просто без метки */ }
-}
-
-// Подключение проекта к синхронизации. Здесь мы на домашней машине, поэтому
-// процедура идёт сразу: главный процесс запускает её и присылает шаги событиями.
-// Те же шаги видит веб-версия — процедура у них общая (scripts/server-sync/lite-sync-link.js).
-// Ключи шагов и состояний — латиницей: они уходят в className и в словарь
-// локализации, а переводить служебное значение незачем (в UI идут заголовки ниже).
-const LINK_TITLES = {
-  link: 'Связь с сервером',
-  project: 'Проект на второй стороне',
-  transfer: 'Первая передача файлов',
-  done: 'Запись в настройки синхронизации',
-};
-const LINK_ORDER = ['link', 'project', 'transfer', 'done'];
-
-// Русское согласование числа: 1 файл · 2 файла · 5 файлов.
-function plural(n, one, few, many) {
-  const a = Math.abs(n) % 100, b = a % 10;
-  if (a > 10 && a < 20) return many;
-  if (b === 1) return one;
-  return b > 1 && b < 5 ? few : many;
-}
-function humanSize(bytes) {
-  if (!bytes) return '0 МБ';
-  const mb = bytes / 1048576;
-  return mb >= 1024 ? `${(mb / 1024).toFixed(1)} ГБ` : `${mb.toFixed(mb < 10 ? 1 : 0)} МБ`;
-}
-
-// Окно синхронизации ПК ↔ сервер: одно на оба состояния.
-//  · проект не синхронизируется — осмотр обеих сторон до согласия → «Подключить» → шаги процедуры
-//    (scripts/server-sync/lite-sync-link.js, события sync:linkStep) → при расхождении вопрос, чью версию взять;
-//  · уже синхронизируется — состояние сторон и расхождений (тот же осмотр), без кнопок, которых нет в процедуре.
-// Всё собирается узлами, а не строкой HTML: имя проекта = имя ПАПКИ, и `<`/`&` в нём ломали бы разметку.
-// Сервер ещё не задан: мастер подключения. Проверяет эту машину (ssh, rsync) и сервер (вход по
-// ключу, программы на нём, часы), записывает адрес и передаёт дальше — в обычное подключение
-// проекта. До «Сохранить» редактор ни с каким сервером не соединяется, кроме проверки по кнопке.
-function showSyncSetup(p) {
-  const { m, close } = makeModal(`
-    <div class="sy-head"><span class="sy-ic"></span><div class="sy-t"><b>Синхронизация с сервером</b><span></span></div><button class="icon-btn" id="sy-x" title="Закрыть" aria-label="Закрыть"></button></div>
-    <div class="sy-body">
-      <div class="sy-lead">Синхронизация держит папку проекта одинаковой на этом компьютере и на вашем сервере: агент на сервере продолжает там, где остановился агент на ПК, и наоборот. Заменённые файлы не пропадают, а уезжают в корзину.</div>
-      <div class="sy-h sy-need">Что для неё нужно</div>
-      <ul class="sy-list">
-        <li data-ic="server"><div><b>Свой сервер с доступом по SSH-ключу.</b> <span>По паролю синхронизация не работает.</span></div></li>
-        <li data-ic="folder"><div><b>Один и тот же путь к проекту</b> <span>на компьютере и на сервере — папку на сервере редактор создаст сам.</span></div></li>
-        <li data-ic="refresh"><div><b>rsync на обеих машинах.</b> <span>Остальное — обычные программы Linux и macOS.</span></div></li>
-      </ul>
-      <div class="sy-h">Адрес сервера</div>
-      <input type="text" id="sy-srv" class="sy-srv" placeholder="user@example.com" autocomplete="off" spellcheck="false">
-      <div class="sy-hint">Как в команде ssh: пользователь@сервер или имя хоста из ~/.ssh/config (так задаётся нестандартный порт).</div>
-      <div class="sy-res"></div>
-    </div>
-    <div class="modal-actions"><button class="btn" id="sy-cancel">Отмена</button><span class="grow"></span><button class="btn" id="sy-check">Проверить</button><button class="btn primary" id="sy-save" disabled>Сохранить и продолжить</button></div>`);
-  m.classList.add('sync-modal');
-  m.querySelector('.sy-ic').appendChild(icon('cloud', 21));
-  m.querySelector('.sy-t span').textContent = p.path;
-  m.querySelector('#sy-x').appendChild(icon('x', 16));
-  m.querySelector('#sy-x').onclick = close;
-  m.querySelector('#sy-cancel').onclick = close;
-  m.querySelectorAll('.sy-list li').forEach((li) => li.prepend(icon(li.dataset.ic, 15)));
-  const inp = m.querySelector('#sy-srv'), res = m.querySelector('.sy-res');
-  const bCheck = m.querySelector('#sy-check'), bSave = m.querySelector('#sy-save');
-  const note = (kind, glyph, ...parts) => {
-    const n = el('div', 'sy-note ' + kind);
-    const t = el('div');
-    parts.filter(Boolean).forEach((x) => t.appendChild(typeof x === 'string' ? el('div', null, x) : x));
-    n.append(icon(glyph, 15), t);
-    return n;
-  };
-  const cmd = (text) => {
-    const c = el('div', 'sy-cmd');
-    c.setAttribute('data-no-i18n', '');
-    const b = iconBtn('', 'copy', 'Копировать', 13);
-    b.onclick = () => { lite.copyText(text); toast('Скопировано'); };
-    c.append(el('code', null, text), b);
-    return c;
-  };
-  const detail = (text) => { if (!text) return null; const d = el('div', 'sy-detail', text); d.setAttribute('data-no-i18n', ''); return d; };
-  // тот же вид, что у шагов подключения проекта (.lk-steps)
-  const checklist = (items) => {
-    const ol = el('ol', 'lk-steps');
-    for (const [state, title, what] of items) {
-      const li = el('li', state);
-      const mark = el('span', 'mark');
-      if (state === 'run') mark.appendChild(el('span', 'sy-spin'));
-      else if (state === 'ok') mark.appendChild(icon('check', 13));
-      else if (state === 'bad') mark.appendChild(icon('x', 12));
-      else mark.textContent = '·';
-      const sc = el('div', 'sc');
-      sc.appendChild(el('div', 'title', title));
-      if (what) sc.appendChild(el('div', 'what', what));
-      li.append(mark, sc);
-      ol.appendChild(li);
-    }
-    return ol;
-  };
-  const installTools = lite.platform === 'darwin' ? 'brew install rsync' : 'sudo apt install openssh-client rsync';
-  let checked = '';   // адрес, прошедший проверку: «Сохранить» — только для него
-  inp.addEventListener('input', () => { bSave.disabled = inp.value.trim() !== checked || !checked; });
-  // Enter во время идущей проверки не запускает вторую (второй ssh-процесс, ответы вперемешку)
-  inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); if (!bSave.disabled) bSave.click(); else if (!bCheck.disabled) check(); } });
-
-  const check = async () => {
-    const server = inp.value.trim();
-    if (!server) { inp.focus(); return; }
-    checked = ''; bSave.disabled = true; bCheck.disabled = true;
-    m.classList.add('sy-checked');   // вводная прочитана — место под результат, без прокрутки окна
-    res.replaceChildren(checklist([['run', 'Проверяю сервер…', server]]));
-    let r;
-    try { r = await lite.sync.checkServer(server); } catch (e) { r = { ok: false, reason: 'ssh', detail: String(e.message || e) }; }
-    bCheck.disabled = false;
-    if (!m.isConnected || inp.value.trim() !== server) return;
-    const at = { 'local-tools': 0, address: 1, resolve: 1, unreachable: 1, auth: 1, hostkey: 1, ssh: 1, 'remote-tools': 2, clock: 3 }[r.reason];
-    const failAt = r.ok ? 99 : (at === undefined ? 1 : at);
-    const st = (i) => (i < failAt ? 'ok' : i === failAt ? 'bad' : 'wait');
-    res.replaceChildren(checklist([
-      [st(0), 'Этот компьютер', failAt === 0 ? 'нет ssh или rsync' : 'ssh и rsync на месте'],
-      [st(1), 'Вход по ключу', server],
-      [st(2), 'Программы на сервере', failAt === 2 ? tt('не хватает: {0}', (r.missing || []).join(', ')) : 'rsync, find, md5sum, du'],
-      [st(3), 'Часы', failAt >= 3 ? tt('расходятся на {0} с', r.drift || 0) : ''],
-    ]));
-    const host = server.split('@').pop();
-    if (r.ok) {
-      checked = server; bSave.disabled = false;
-      res.appendChild(note('good', 'check', 'Сервер подходит. Нажмите «Сохранить и продолжить» — дальше редактор покажет, что есть на обеих сторонах, и подключит проект.'));
-      return;
-    }
-    const why = {
-      'local-tools': ['На этом компьютере нет ssh или rsync — без них синхронизации не будет. Установите их:', cmd(installTools)],
-      address: ['Адрес не подходит: нужен вид пользователь@сервер или имя хоста из ~/.ssh/config.'],
-      resolve: ['Такой сервер не найден — проверьте адрес.', detail(r.detail)],
-      unreachable: ['Сервер не отвечает по SSH: он выключен, закрыт порт или нет сети.', detail(r.detail)],
-      auth: ['Сервер не пускает по ключу. Добавьте на него свой ключ — один раз, из терминала:', cmd('ssh-copy-id ' + server), 'Если ключа ещё нет, сначала создайте его:', cmd('ssh-keygen -t ed25519')],
-      hostkey: ['Ключ сервера не совпадает с запомненным. Так бывает после переустановки сервера — но и при подмене. Если сервер переустанавливали, удалите старую запись и проверьте снова:', cmd('ssh-keygen -R ' + host)],
-      'remote-tools': [tt('На сервере не хватает программ: {0}. На Debian и Ubuntu их ставит команда:', (r.missing || []).join(', ')), cmd('sudo apt install rsync')],
-      clock: [tt('Часы компьютера и сервера расходятся на {0} с. Включите синхронизацию времени (NTP): иначе не понять, где правка свежее.', r.drift || 0)],
-    }[r.reason] || ['SSH не соединился.', detail(r.detail)];
-    res.appendChild(note('bad', 'warning', ...why));
-  };
-  bCheck.onclick = check;
-  bSave.onclick = async () => {
-    const server = inp.value.trim();
-    if (!server || server !== checked) return;
-    bSave.disabled = true;
-    let r;
-    try { r = await lite.sync.setServer(server); } catch (e) { r = { ok: false, reason: String(e.message || e) }; }
-    if (!r || !r.ok) { bSave.disabled = false; res.appendChild(note('bad', 'warning', r?.reason || 'Не удалось сохранить адрес.')); return; }
-    syncAvailable = true;
-    close();
-    refreshSynced();
-    showSyncDialog(p);
-  };
-
-  (async () => {
-    let info = null;
-    try { info = await lite.sync.setupInfo(); } catch (_) {}
-    if (!m.isConnected) return;
-    if (!info || !info.supported) {
-      inp.disabled = true; bCheck.disabled = true;
-      res.replaceChildren(note('warn', 'info', lite.platform === 'win32'
-        ? 'На Windows синхронизация пока не работает: ей нужен rsync, а в Windows его нет.'
-        : 'Утилита синхронизации не найдена в этой сборке редактора.'));
-      return;
-    }
-    if (info.tools && (!info.tools.ssh || !info.tools.rsync)) {
-      res.replaceChildren(note('bad', 'warning', 'На этом компьютере нет ssh или rsync — без них синхронизации не будет. Установите их:', cmd(installTools)));
-    }
-    res.appendChild(note('info', 'info', 'Файлы уходят только на этот сервер и только через ваш ssh. Сверяет их демон синхронизации — он работает, пока открыт редактор.'));
-    inp.focus();
-  })();
-}
-
-function showSyncDialog(p) {
-  if (!syncAvailable) { showSyncSetup(p); return; }
-  let stopListen = null;
-  const { m, close } = makeModal(`
-    <div class="sy-head"><span class="sy-ic"></span><div class="sy-t"><b></b><span></span></div><button class="icon-btn" id="sy-x" title="Закрыть" aria-label="Закрыть"></button></div>
-    <div class="sy-body"></div>
-    <div class="modal-actions"></div>`, () => { if (stopListen) { stopListen(); stopListen = null; } });
-  m.classList.add('sync-modal');
-  const head = m.querySelector('.sy-ic'), title = m.querySelector('.sy-t b'), body = m.querySelector('.sy-body'), foot = m.querySelector('.modal-actions');
-  head.appendChild(icon('cloud', 21));
-  m.querySelector('.sy-t span').textContent = p.path;
-  { const x = m.querySelector('#sy-x'); x.appendChild(icon('x', 16)); x.onclick = close; }
-  const btn = (text, cls, onClick, glyph) => {
-    const b = el('button', 'btn' + (cls ? ' ' + cls : ''));
-    if (glyph) b.appendChild(icon(glyph, 14));
-    b.appendChild(el('span', null, text));
-    if (onClick) b.onclick = onClick;
-    return b;
-  };
-  const note = (kind, glyph, ...lines) => {
-    const n = el('div', 'sy-note ' + kind);
-    n.appendChild(icon(glyph, 15));
-    const t = el('div');
-    lines.forEach((ln, i) => { if (i) t.appendChild(el('br')); t.appendChild(typeof ln === 'string' ? el('span', null, ln) : ln); });
-    n.appendChild(t);
-    return n;
-  };
-  const side = (label, glyph, s, emptyHint) => {
-    const box = el('div', 'sy-side');
-    const h = el('div', 'h'); h.append(icon(glyph, 14), el('span', null, label));
-    box.appendChild(h);
-    if (s && s.exists) {
-      const n = s.files || 0;
-      const v = el('div', 'v'); v.append(el('span', null, n.toLocaleString('ru-RU')), document.createTextNode(' '), el('span', null, plural(n, 'файл', 'файла', 'файлов')));
-      box.append(v, el('div', 's', humanSize(s.bytes)));
-    } else box.append(el('div', 'v none', 'проекта нет'), el('div', 's', emptyHint || ''));
-    return box;
-  };
-  const sides = (info) => {
-    const g = el('div', 'sy-sides');
-    const mid = el('div', 'sy-mid'); mid.appendChild(icon('swap', 18));
-    g.append(side('На ПК', 'laptop', info.local), mid, side('На сервере', 'server', info.remote, 'создам при подключении'));
-    return g;
-  };
-  const skeleton = (text) => { const s = el('div', 'sy-skel'); s.append(el('span', 'sy-spin'), el('span', null, text)); body.replaceChildren(s); };
-  const inspect = async () => {
-    try { return await lite.sync.inspect(p.path); } catch (e) { return { ok: false, reason: String(e.message || e) }; }
-  };
-  const setLinkedLook = (on) => {
-    head.classList.toggle('on', on);
-    title.textContent = on ? 'Синхронизируется с сервером' : 'Подключить к синхронизации';
-  };
-
-  // ---- уже синхронизируется: состояние сторон
-  const showLinked = async () => {
-    setLinkedLook(true);
-    skeleton('Сверяю обе стороны…');
-    foot.replaceChildren(el('span', 'grow'), btn('Готово', 'primary', close));
-    const info = await inspect();
-    if (!m.isConnected) return;
-    if (!info || !info.ok) {
-      body.replaceChildren(note('bad', 'warning', 'Сервер сейчас недоступен — состояние не проверить.', info?.reason || ''));
-    } else {
-      body.replaceChildren(sides(info));
-      if (info.differ) body.appendChild(note('warn', 'warning', `Сейчас различаются файлы: ${info.differ}.`, 'Демон синхронизации сведёт их при следующей сверке.'));
-      else body.appendChild(note('good', 'check', 'Расхождений нет.'));
-      body.appendChild(note('info', 'info', 'Файлы сверяются сами при изменениях. Заменённое уезжает в корзину, а не пропадает.'));
-    }
-    foot.replaceChildren(btn('Проверить ещё раз', '', showLinked, 'refresh'), el('span', 'grow'), btn('Готово', 'primary', close));
-  };
-
-  // ---- подключение: осмотр до согласия → шаги → (вопрос о расхождении) → готово
-  const steps = LINK_ORDER.map((key) => ({ key, state: 'wait', text: '' }));
-  let stepsBox = null;
-  const drawSteps = () => {
-    if (!stepsBox || !stepsBox.isConnected) { stepsBox = el('ol', 'lk-steps'); body.replaceChildren(stepsBox); }
-    stepsBox.replaceChildren();
-    steps.forEach((s, i) => {
-      const li = el('li', s.state);
-      const mark = el('span', 'mark');
-      if (s.state === 'run') mark.appendChild(el('span', 'sy-spin'));
-      else if (s.state === 'ok') mark.appendChild(icon('check', 13));
-      else if (s.state === 'bad') mark.appendChild(icon('x', 12));
-      else mark.textContent = s.state === 'ask' ? '?' : String(i + 1);
-      const sc = el('div', 'sc');
-      sc.appendChild(el('div', 'title', LINK_TITLES[s.key] || s.key));
-      if (s.text) sc.appendChild(el('div', 'what', s.text));
-      li.append(mark, sc);
-      stepsBox.appendChild(li);
-    });
-  };
-  const takeStep = (step) => {
-    if (!step || !step.key) return;
-    const s = steps.find((x) => x.key === step.key);
-    if (s) { s.state = step.state || 'run'; s.text = step.text || ''; } else steps.push({ key: step.key, state: step.state || 'run', text: step.text || '' });
-    drawSteps();
-  };
-  // Файлы разошлись — спрашиваем, чью сторону взять: молча затирать нельзя.
-  const askPrefer = (result) => {
-    const ask = el('div', 'lk-ask');
-    const differ = result.report?.differ || 0;
-    ask.appendChild(el('div', 'q', `Файлы различаются: ${differ}. Чью версию взять за верную?`));
-    const examples = result.report?.differExamples || [];
-    if (examples.length) { const f = el('div', 'files'); for (const x of examples.slice(0, 6)) f.appendChild(el('code', null, x)); ask.appendChild(f); }
-    const opts = el('div', 'lk-opts');
-    for (const [label, hint, glyph, prefer] of [
-      ['Версия ПК', 'На сервер уедут файлы с этого компьютера', 'laptop', 'local'],
-      ['Версия сервера', 'На ПК придут файлы с сервера', 'server', 'remote'],
-    ]) {
-      const b = el('button', 'lk-opt');
-      const bt = el('b'); bt.append(icon(glyph, 15), el('span', null, label));
-      b.append(bt, el('span', null, hint));
-      b.onclick = () => { ask.remove(); run(prefer); };
-      opts.appendChild(b);
-    }
-    ask.appendChild(opts);
-    body.appendChild(ask);
-    foot.replaceChildren(el('span', 'grow'), btn('Отмена', '', close), btn('Нужно ваше решение', 'primary', null));
-    foot.lastChild.disabled = true;
-  };
-  const run = async (prefer = null) => {
-    const go = btn('Подключаю…', 'primary', null); go.disabled = true;
-    foot.replaceChildren(el('span', 'grow'), go);
-    for (const s of steps) if (!prefer || s.key !== 'link') { s.state = 'wait'; s.text = ''; }
-    drawSteps();
-    stopListen = lite.sync.onLinkStep?.(takeStep) || null;
-    let result;
-    try { result = await lite.sync.link(p.path, prefer); } catch (e) { result = { ok: false, reason: String(e.message || e) }; }
-    if (stopListen) { stopListen(); stopListen = null; }
-    if (!m.isConnected) { if (result && result.ok) refreshSynced(); return; }
-    if (result.need === 'prefer') { askPrefer(result); return; }
-    if (result.ok) {
-      setLinkedLook(true);
-      body.appendChild(note('good', 'check', 'Готово: проект синхронизируется.'));
-      foot.replaceChildren(el('span', 'grow'), btn('Закрыть', 'primary', close));
-      refreshSynced();
-      return;
-    }
-    body.appendChild(note('bad', 'warning', result.reason || 'Подключить не удалось.'));
-    foot.replaceChildren(el('span', 'grow'), btn('Отмена', '', close), btn('Повторить', 'primary', () => run(prefer)));
-  };
-  const showConnect = async () => {
-    setLinkedLook(false);
-    skeleton('Смотрю, что есть на обеих сторонах…');
-    const go = btn('Подключить', 'primary', () => run(null)); go.disabled = true;
-    foot.replaceChildren(el('span', 'grow'), btn('Отмена', '', close), go);
-    const info = await inspect();
-    if (!m.isConnected) return;
-    if (!info || !info.ok) {
-      body.replaceChildren(note('bad', 'warning', 'Подключение сейчас невозможно.', info?.reason || 'не удалось осмотреть проект'));
-      return;
-    }
-    body.replaceChildren(sides(info));
-    if (info.differ) body.appendChild(note('warn', 'warning', `Файлы различаются: ${info.differ} — перед передачей спрошу, чью версию взять.`));
-    body.appendChild(note('info', 'info', 'Заменённое уедет в корзину, как при обычной сверке.'));
-    go.disabled = false;
-  };
-
-  if (syncedPaths.has(p.path)) showLinked(); else showConnect();
-}
-
 function renderProjects() {
   const box = $('#projects');
   box.innerHTML = '';
@@ -704,15 +351,6 @@ function makeCard(p) {
     ind.dataset.id = p.id;
     card.appendChild(ind);
   }
-  // Облачко: зелёное — проект синхронизируется; серое — нет (или синхронизации на машине нет вовсе —
-  // тогда клик объясняет, что это и что для неё нужно).
-  if (!gone) {
-    const linked = syncAvailable && syncedPaths.has(p.path);
-    const tip = linked ? 'Синхронизируется с сервером' : syncAvailable ? 'Не синхронизируется — нажмите, чтобы подключить' : 'Синхронизация с сервером — что это и как подключить';
-    const cl = iconBtn('card-sync' + (linked ? ' on' : ''), 'cloud', tip, 14);
-    cl.addEventListener('click', (e) => { e.stopPropagation(); showSyncDialog(p); });
-    card.appendChild(cl);
-  }
   card.appendChild(el('span', 'card-title', p.name));
   const acts = el('div', 'card-acts');
   if (!gone) {
@@ -779,11 +417,6 @@ function buildCardMenuMain(dd, p) {
   dd.appendChild(menuRow('folder', 'Открыть в проводнике', () => { closeMenus(); lite.openInFileManager(p.path); }));
   dd.appendChild(menuRow('copy', 'Копировать путь', () => { closeMenus(); lite.copyText(p.path); toast('Путь скопирован'); }));
   dd.appendChild(menuRow('star', p.favorite ? 'Убрать из избранного' : 'В избранное', () => { closeMenus(); toggleFavorite(p.id); }));
-  if (!missing.has(p.id)) {
-    const row = menuRow('cloud', 'Синхронизация…', () => { closeMenus(); showSyncDialog(p); });
-    row.appendChild(el('span', 'menu-desc', !syncAvailable ? 'не подключена' : syncedPaths.has(p.path) ? 'включена' : 'выключена'));
-    dd.appendChild(row);
-  }
   dd.appendChild(el('div', 'menu-sep'));
   dd.appendChild(menuRow('pencil', 'Переименовать проект…', () => { closeMenus(); renameProject(p.id); }));
   dd.appendChild(menuRow('palette', 'Цвет проекта…', () => buildCardMenuColor(dd, p)));
@@ -1066,7 +699,7 @@ function doCloseProject(id) {
 // Flag projects whose folder was deleted on disk so the user can close them.
 // Один запрос на все пути (раньше — по IPC на проект, подряд) и перерисовка только если набор
 // пропавших изменился: проверка идёт на каждый возврат фокуса в окно, а полная перерисовка списка
-// гасит наведение и открытые меню (refreshSynced ради этого тоже перерисовывает лишь по изменению).
+// гасит наведение и открытые меню.
 async function checkProjectsExistence() {
   const list = projects.slice();
   let exists;
@@ -2026,7 +1659,7 @@ const panels = new Map(); // id -> { isOpen(), setOpen(open, opts) }
 // Правый слот редактора теперь держит только «Мои модули» (ext); всё остальное — отдельные окна.
 const PANEL_ORDER = [];
 // Модули, мигрированные в отдельные окна (открываются через lite.module.open, не как панель правого слота).
-const WINDOW_MODULES = new Set(['tools', 'iterflow', 'seo', 'audit', 'company', 'notes', 'db', 'rmq', 'kafka', 'chat', 'doc', 'docker', 'rh', 'ctx', 'scratch', 'files', 'pomodoro', 'monitor', 'keepass', 'sitemon', 'storage', 'jira', 'voice', 'gitgraph']);
+const WINDOW_MODULES = new Set(['tools', 'iterflow', 'seo', 'audit', 'company', 'notes', 'db', 'rmq', 'kafka', 'chat', 'doc', 'docker', 'rh', 'ctx', 'scratch', 'files', 'pomodoro', 'monitor', 'keepass', 'storage', 'jira', 'voice', 'gitgraph', 'servers']);
 function registerPanel(id, api) { panels.set(id, api); }
 function closeOtherPanels(selfId) {
   for (const id of PANEL_ORDER) {
@@ -2092,6 +1725,7 @@ const QUICK_BUILTIN = [
   { id: 'kafka',   icon: 'kafka',    label: 'Kafka — топики, группы, live-tail' },
   { id: 'storage', icon: 'cloud',    label: 'Внешние хранилища — S3, бакеты, объекты' },
   { id: 'rh',      icon: 'globe',    label: 'Удалённые хосты — SSH-сессии' },
+  { id: 'servers', icon: 'server',   label: 'Серверы — дашборд: ресурсы, проекты, сеть, контейнеры, сайты' },
   { id: 'notes',   icon: 'note',     label: 'Задачи — заметки проекта' },
   { id: 'audit',   icon: 'grid',     label: 'Аудит — анализ проекта' },
   { id: 'company', icon: 'users',    label: 'ИИ компания — команда агентов над проектом' },
@@ -2301,7 +1935,6 @@ function initShell() {
   $('#btn-settings').addEventListener('click', () => showSettings());
   $('#chip-folder').addEventListener('click', stop((b) => showFolderMenu(b)));
   $('#chip-branch').addEventListener('click', stop((b) => showBranchMenu(b)));
-  $('#chip-sync').addEventListener('click', () => { const p = activeProject(); if (p) showSyncDialog(p); });
   $('#qb-more').addEventListener('click', () => showModulesCatalog());
   const tl = $('#term-timeline');
   const markTl = () => { const on = settings.termTimeline === true; tl.classList.toggle('on', on); tl.title = on ? 'Скрыть шкалу времени' : 'Шкала времени слева'; };
@@ -2528,6 +2161,7 @@ const BUILTIN_MODS = [
   { id: 'kafka',    icon: 'kafka',    title: 'Kafka',              desc: 'топики · группы · live-tail' },
   { id: 'storage',  icon: 'cloud',    title: 'Внешние хранилища',  desc: 'S3 · бакеты · публичные ссылки', project: true },
   { id: 'rh',       icon: 'globe',    title: 'Удалённые хосты',    desc: 'SSH-сессии к серверам' },
+  { id: 'servers',  icon: 'server',   title: 'Серверы',            desc: 'дашборд: ресурсы · проекты · сеть · контейнеры · сайты' },
   { id: 'iterflow', icon: 'layers',   title: 'IterFlow',           desc: 'задачи итераций из трекера' },
   { id: 'jira',     icon: 'jira',     title: 'Jira',               desc: 'свои задачи из нескольких аккаунтов' },
   { id: 'seo',      icon: 'globe',    title: 'WEB/SEO аудит',      desc: 'сайт: безопасность, SEO, сеть' },
@@ -2538,7 +2172,6 @@ const BUILTIN_MODS = [
   { id: 'scratch',  icon: 'terminal', title: 'Системный терминал', desc: 'шелл вне проектов' },
   { id: 'monitor',  icon: 'graph',    title: 'Монитор ресурсов',   desc: 'память/CPU редактора и агентов' },
   { id: 'keepass',  icon: 'key',      title: 'Сейф паролей',       desc: 'KeePass .kdbx: пароли и токены' },
-  { id: 'sitemon',  icon: 'globe',    title: 'Мониторинг сайтов',  desc: 'доступность сайтов + уведомления' },
 ];
 // Каталог модулей («Модули» в боковой карточке): плитки с живым поиском и вкладками
 // «Все · Для проекта · Самостоятельные · Мои модули». На плитке — «на быструю панель» и «открывать при запуске».
@@ -2847,10 +2480,10 @@ function shortPath(p) {
 }
 function renderChips() {
   const p = activeProject();
-  const fb = $('#chip-folder'), bb = $('#chip-branch'), sb = $('#chip-sync');
+  const fb = $('#chip-folder'), bb = $('#chip-branch');
   if (!fb) return;
   fb.classList.toggle('hidden', !p);
-  if (!p) { bb.classList.add('hidden'); sb.classList.add('hidden'); return; }
+  if (!p) { bb.classList.add('hidden'); return; }
   fb.replaceChildren(icon('folder', 14), el('span', 'ct', shortPath(p.path)));
   fb.title = p.path;
   fb.setAttribute('data-no-i18n', '');
@@ -2862,13 +2495,6 @@ function renderChips() {
     if (n) bb.appendChild(el('span', 'cn', '· ' + n));
     bb.setAttribute('data-no-i18n', '');
     bb.title = n ? `Git: ветка ${g.branch}, изменено файлов: ${n}` : `Git: ветка ${g.branch}, изменений нет`;
-  }
-  sb.classList.toggle('hidden', !syncAvailable || missing.has(p.id));
-  if (syncAvailable) {
-    const on = syncedPaths.has(p.path);
-    sb.classList.toggle('off', !on);
-    sb.replaceChildren(el('span', 'sdot'), el('span', 'ct', on ? 'Синхронизирован' : 'Без синхронизации'));
-    sb.title = on ? 'Синхронизируется с сервером — подробности' : 'Не синхронизируется — нажмите, чтобы подключить';
   }
 }
 function refreshGitChip(delay = 400) {
@@ -4277,9 +3903,6 @@ function init() {
   applyFontSize();
   projects = loadProjectsFromDisk();
   renderProjects();
-  // Конфиг синхронизации меняется руками и редко — раз в полминуты достаточно.
-  refreshSynced();
-  setInterval(refreshSynced, 30000);
   // Какие терминалы заняты агентом и какие можно закрыть: опрос раз в 3 с (≈1,5 мс в main на десяток
   // терминалов), пока окно на виду; список перерисовывается, только если ответ изменился.
   setInterval(() => { if (!document.hidden) refreshAgents(); }, 3000);
