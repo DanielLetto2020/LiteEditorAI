@@ -15,7 +15,7 @@ npm start          # собрать фронт и запустить
 npm run watch      # esbuild в watch-режиме для фронта
 ```
 
-Требуется Node.js 22+ (x64, Linux или Windows).
+Требуется Node.js 22+ (x64, Linux).
 
 ## Архитектура (кратко)
 
