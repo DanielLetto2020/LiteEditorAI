@@ -19,8 +19,9 @@ async function waitFor(pred, what, ms = 3000) {
   while (Date.now() < until) { if (pred()) return; await sleep(20); }
   throw new Error('не дождался: ' + what);
 }
-// Сколько inotify-наблюдений реально держит процесс — счёт ядра, а не наш.
-function kernelWatches() {
+// Сколько inotify-наблюдений реально держит ЭТОТ тест — счёт ядра за вычетом унаследованных fd
+// родительского процесса (терминал/IDE без FD_CLOEXEC может передать свой anon_inode:inotify).
+function rawKernelWatches() {
   let n = 0;
   for (const fd of fs.readdirSync('/proc/self/fd')) {
     try {
@@ -30,6 +31,8 @@ function kernelWatches() {
   }
   return n;
 }
+const baseKernelWatches = rawKernelWatches();
+const kernelWatches = () => rawKernelWatches() - baseKernelWatches;
 const touch = (p) => { fs.mkdirSync(path.dirname(p), { recursive: true }); fs.writeFileSync(p, String(Date.now())); };
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lite-treewatch-'));

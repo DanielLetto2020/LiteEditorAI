@@ -79,16 +79,22 @@ single-terminal mode. [Full-size video](assets/screenshots/demo.mp4).
 
 ![Code and git in one window](assets/screenshots/workspace.png)
 
-The **Project** window keeps the code viewer and git side by side, PhpStorm-style: a file tree that refreshes
-itself while the agent edits, syntax highlighting for every language, minimap, autocomplete, **blame**
-annotations, **side-by-side diff vs HEAD**, project-wide replace, an **agent-review mode** (authorship layer
-over the code, "ask the agent" from the context menu) and — the safety net — **local file history with
-rollback** for everything the agent changed before you committed. Around the code: a toolbar with the branch and
-Pull / Push commit counters, `Ctrl+P` to jump to a file by name, open files as a vertical tab list and a status bar
-with position, indentation, encoding and line endings.
+The **Project** window (or the dockable right panel **`Ctrl+Shift+E`** right inside the main window) keeps a
+lightweight IDE editor and Git side by side with the terminal: a file tree that refreshes itself while the
+agent edits, syntax highlighting for 35+ languages, minimap, symbol and import-path autocomplete, go to
+definition (`F12`), in-file rename (`F2`), **blame** annotations, an editable **side-by-side diff vs HEAD**
+with per-hunk revert, clickable change bars in the gutter (`F7` / 1-click hunk revert), side panels
+(project search/replace, outline, TODOs, bookmarks), an **agent-review mode** (authorship layer over the
+code, "ask the agent" from the context menu) and — the safety net — **local file history with rollback**
+for everything the agent changed before you committed. Around the code: a toolbar with the branch and Pull / Push
+commit counters, universal `Ctrl+P` (files, `#project` symbols, `@file` symbols, `:line`), command palette
+`Ctrl+Shift+P`, horizontal tabs with preview/pin modes, **Split Right**, path & symbol breadcrumbs, and a
+status bar with position, indentation, encoding and line endings.
 
-Git lives in the same window: selective staging by checkbox, amend, commit / push / pull / fetch, stash,
-per-file history, cherry-pick / revert, three-pane conflict resolution, branch management.
+Git lives in the same window: a "Commit" panel (flat list or tree, selective staging by checkbox, commit prefixes,
+message history, amend, commit / push / pull / fetch) and a bottom Git panel featuring a **colour SVG branch
+graph** in History, commit details, per-file history, cherry-pick / revert, three-pane conflict resolution,
+branches and stash.
 
 ### 3. Keep the agent's context in order
 
@@ -119,7 +125,7 @@ Prebuilt binaries live on the [**Releases**](https://github.com/DanielLetto2020/
 
 | OS | How |
 |---|---|
-| **Ubuntu / Debian** (x64) | `sudo apt install ./LiteEditorAI_*.deb` — system-wide install; updates ask for the administrator password once. |
+| **Ubuntu / Debian** (x64) | `sudo apt install ./liteeditor-ai_*.deb` — system-wide install; updates ask for the administrator password once. |
 | **Linux portable** (x64) | Download `LiteEditorAI-*-linux-x64.tar.gz`, unpack it anywhere in your home directory, run `liteeditor-ai`. No root, and **updates apply in one click**. |
 | **From source** | `npm install && npm start` (Node.js 22+) |
 
@@ -213,7 +219,10 @@ text to share it.
 | `Ctrl+Enter` | newline in the terminal (continue input, don't run) |
 | `Ctrl+C` / `Ctrl+V` | copy selection / paste (any keyboard layout) |
 | `Ctrl+\` | single-terminal mode |
+| `Ctrl+Shift+D` | toggle vertical terminal split |
+| `Ctrl+Shift+E` | toggle Project dock inside the main window |
 | `Ctrl+K` | command palette |
+| `Ctrl+P` / `Ctrl+Shift+P` | Quick Open (files, `#symbols`, `@outline`, `:line`) / editor command palette (Project) |
 | `Ctrl+F` / `Ctrl+Shift+F` | search in the terminal or file / find in all projects (files and terminal output) |
 | `Ctrl+S` | save file |
 | `Ctrl+Shift+R` | project-wide replace (Project window) |
@@ -223,9 +232,10 @@ text to share it.
 ## Status
 
 **Alpha**, actively developed. A project can keep as many terminal tabs as you need and their **names** survive
-a restart (the processes do not; they do survive a reload of the window, so a crashed window does not stop
-your agents). The viewer keeps open files as a vertical tab list and skips files over 2 MB. It is a viewer
-with editing, not a replacement for your IDE's refactoring engine — that's on purpose.
+a full restart, while live sessions and the last 128 KB of terminal screen are restored seamlessly after a
+window reload (with confirmation protection before closing the app while agents are running). The Project IDE
+viewer keeps open files in horizontal tabs with split panes and unsaved-edit protection, skipping files over
+2 MB — designed as a fast workspace alongside the terminal rather than a heavy LSP-driven IDE.
 
 **Removed after v1.1.173: the Android remote and its relay.** The `.apk`, the PC-side relay client and the
 self-hosted relay under `relay/` are gone from the project. The last release that shipped them is

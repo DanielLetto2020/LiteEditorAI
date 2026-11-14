@@ -11,10 +11,9 @@
     "без него — сотни. Гейт, который нельзя сделать зелёным, отключают в первый же день, поэтому",
     "в проверку берутся только области, проходящие начисто.",
     "",
-    "СЕЙЧАС ПОД ПРОВЕРКОЙ: весь Node-слой — main.js, preload.js, lib/**, scripts/**, test/**.",
-    "ОСТАЛОСЬ (карта долга на 2026-07-27): renderer/** — ~279 ошибок в 32 файлах из 34. Починил файл —",
-    "добавь его в include; проверка подтягивает и импорты, поэтому файл вводится вместе со своими",
-    "зависимостями."
+    "СЕЙЧАС ПОД ПРОВЕРКОЙ: весь Node-слой (main.js, preload.js, lib/**, scripts/**, test/**)",
+    "и ядро рендерера (renderer.js, ui.js, i18n.js, themes.js, frame.js, termutil.js, termtimeline.js,",
+    "gsearch.js, codeedit.js, settings-sync.js) + контракт IPC-моста types/window-lite.d.ts."
   ],
   "compilerOptions": {
     "target": "ES2022",
@@ -36,7 +35,18 @@
     "main.js",
     "preload.js",
     "errledger.js",
-    "logger.js"
+    "logger.js",
+    "renderer/renderer.js",
+    "renderer/ui.js",
+    "renderer/i18n.js",
+    "renderer/themes.js",
+    "renderer/frame.js",
+    "renderer/termutil.js",
+    "renderer/termtimeline.js",
+    "renderer/gsearch.js",
+    "renderer/codeedit.js",
+    "renderer/settings-sync.js",
+    "renderer/proj-tabs.js"
   ],
   "exclude": [
     "node_modules",

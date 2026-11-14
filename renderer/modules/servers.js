@@ -65,7 +65,6 @@ function maxDisk(s) { let m = null; for (const d of s.disks || []) if (!m || (d.
 function activeIssues(s) { return (s.issues || []).filter((i) => !i.muted); }
 function issueText(i) { return t(i.tpl, ...(i.args || [])); }
 function hostLine(s) { return s.host ? `${s.host.user ? s.host.user + '@' : ''}${s.host.host}${s.host.port && +s.host.port !== 22 ? ':' + s.host.port : ''}` : t('профиль не найден'); }
-function mainIps(s) { return (s.ips || []).filter((i) => !i.virt && i.fam === 4).map((i) => i.addr); }
 
 // ---------------------------------------------------------------- график (SVG, наведение — линия + подсказка)
 // points: [[t, ...]]; series: [{ idx, label, cls, fmt }]; opts: { h, max, min, compact, fmtT }
@@ -1176,7 +1175,7 @@ export function initServers(host) {
   }
 
   // ---------------------------------------------------------------- вкладка «Сеть»
-  function tabNetwork(c, s, fromUpdate) {
+  function tabNetwork(c, s, _fromUpdate) {
     const st = c.scrollTop;
     c.innerHTML = '';
     const nm = s.net;

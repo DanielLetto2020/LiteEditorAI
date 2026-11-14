@@ -1,7 +1,16 @@
 // Bridge between the sandboxed renderer and the main process: window.lite.
 const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
-contextBridge.exposeInMainWorld('lite', {
+// В сабфреймах (iframe) мост window.lite выдаётся ТОЛЬКО встроенной панели модуля (?embed=1):
+// любые внешние/пользовательские iframe (превью HTML, blob:, data:, about:blank) его не получают.
+function canExposeLiteBridge() {
+  if (process.isMainFrame) return true;
+  const loc = /** @type {{ href?: string } | undefined} */ (/** @type {any} */ (globalThis).location);
+  const href = String((loc && loc.href) || '');
+  return /^file:\/\/\/.*\/renderer\/module\.html\?[^#]*\bembed=1\b/i.test(href);
+}
+
+if (canExposeLiteBridge()) contextBridge.exposeInMainWorld('lite', {
   platform: process.platform,   // 'win32' | 'linux' | 'darwin' — для платформо-зависимого UI (выбор шелла)
   homeDir: (process.env && (process.env.HOME || process.env.USERPROFILE)) || '', // «~» в путях интерфейса (чип папки)
   openProject: () => ipcRenderer.invoke('dialog:openProject'),
@@ -105,6 +114,10 @@ contextBridge.exposeInMainWorld('lite', {
     onSendToTerminal: (cb) => { const h = (_e, p) => cb(p && p.text); ipcRenderer.on('editor:sendToTerminal', h); return () => ipcRenderer.removeListener('editor:sendToTerminal', h); },
     onSendNoteToTerminal: (cb) => { const h = (_e, p) => cb(p && p.projId, p && p.text); ipcRenderer.on('editor:sendNoteToTerminal', h); return () => ipcRenderer.removeListener('editor:sendNoteToTerminal', h); },
     onRefreshTree: (cb) => { const h = () => cb(); ipcRenderer.on('editor:refreshTree', h); return () => ipcRenderer.removeListener('editor:refreshTree', h); },
+    dockFiles: (docked) => ipcRenderer.send('editor:dockFiles', { docked: !!docked }),
+    filesDockState: (open) => ipcRenderer.send('editor:filesDockState', { open: !!open }),
+    closeFilesDock: () => ipcRenderer.send('editor:closeFilesDock', {}),
+    onEnsureFilesDock: (cb) => { const h = (_e, p) => cb(p || {}); ipcRenderer.on('editor:ensureFilesDock', h); return () => ipcRenderer.removeListener('editor:ensureFilesDock', h); },
     // Помодоро: оверлей отдыха в окне редактора. main шлёт состояние (показать/обновить/скрыть);
     // кнопка «Пропустить» с оверлея → пропустить текущую фазу (движок таймера в main).
     onRestGuard: (cb) => { const h = (_e, p) => cb(p || {}); ipcRenderer.on('editor:restGuard', h); return () => ipcRenderer.removeListener('editor:restGuard', h); },
@@ -129,7 +142,7 @@ contextBridge.exposeInMainWorld('lite', {
   },
 
   store: {
-    loadAll: () => ipcRenderer.sendSync('store:loadAll'),       // sync snapshot at startup
+    loadAll: (modId) => ipcRenderer.sendSync('store:loadAll', modId ? { modId: String(modId) } : undefined), // sync snapshot at startup (filtered per window)
     set: (key, value) => ipcRenderer.send('store:set', { key, value }),
     setSync: (key, value) => ipcRenderer.sendSync('store:setSync', { key, value }), // гарантированная запись (beforeunload)
     // Общий ключ settings пишут несколько окон: только изменённые поля (renderer/settings-sync.js),
@@ -696,6 +709,7 @@ contextBridge.exposeInMainWorld('lite', {
     adoptable: () => ipcRenderer.invoke('pty:adoptable'), // терминалы, пережившие перезагрузку окна
     create: (opts) => ipcRenderer.invoke('pty:create', opts),
     write: (id, data) => ipcRenderer.send('pty:write', { id, data }),
+    ack: (id, bytes) => ipcRenderer.send('pty:ack', { id, bytes }), // подтверждение разбора чанка xterm (flow control)
     resize: (id, cols, rows) => ipcRenderer.send('pty:resize', { id, cols, rows }),
     kill: (id) => ipcRenderer.send('pty:kill', { id }),
     restart: (opts) => ipcRenderer.invoke('pty:restart', opts),

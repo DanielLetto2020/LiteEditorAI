@@ -315,7 +315,7 @@ export function initGitGraph(host) {
   // Ref'ы сдвинулись (коммит, checkout, fetch) — перечитать. Дёшево: одна подпись for-each-ref.
   async function checkFresh() {
     if (!open || !proj || loading) return;
-    let s = '';
+    let s;
     try { s = (await lite.git.refsSig(proj.path)).sig || ''; } catch (_) { return; }
     if (s && s !== sig) reload(true);
   }

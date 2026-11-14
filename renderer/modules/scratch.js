@@ -9,7 +9,7 @@ import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { SearchAddon } from '@xterm/addon-search';
 import { WebLinksAddon } from '@xterm/addon-web-links';
-import { applyUnicode11, loadFastRenderer, copySelection } from '../termutil.js';
+import { applyUnicode11, loadFastRenderer, copySelection, writeTermWithAck, creditPtyAck, dropPtyAck } from '../termutil.js';
 
 const $ = (sel) => document.querySelector(sel);
 const lite = window.lite;
@@ -133,6 +133,7 @@ export function initScratch(host) {
   function closeScratchTab(sid) {
     if (scratchSessions.length <= 1) return; // keep ≥1
     lite.pty.kill(sid);
+    dropPtyAck(sid);
     const rec = scratchTerms.get(sid);
     if (rec) { try { rec.term.dispose(); } catch (_) {} rec.container.remove(); scratchTerms.delete(sid); }
     const i = scratchSessions.indexOf(sid); scratchSessions.splice(i, 1);
@@ -160,6 +161,7 @@ export function initScratch(host) {
     const sid = (id && scratchTerms.has(id)) ? id : scratchActiveId;
     const rec = scratchTerms.get(sid); if (!rec) return;
     try { rec.term.reset(); } catch (_) {}
+    dropPtyAck(sid);
     lite.pty.restart({ id: sid, cols: rec.term.cols, rows: rec.term.rows }); // no cwd → ~
     rec.term.focus();
   }
@@ -180,7 +182,12 @@ export function initScratch(host) {
   }
 
   // вывод PTY этого окна (main маршрутизирует scratch-сессии сюда по owner)
-  lite.pty.onData(({ id, data }) => { if (isScratch(id)) { const r = scratchTerms.get(id); if (r) r.term.write(data); } });
+  lite.pty.onData(({ id, data }) => {
+    if (!isScratch(id)) return;
+    const r = scratchTerms.get(id);
+    if (r) writeTermWithAck(r.term, id, data);
+    else creditPtyAck(id, data ? data.length : 0);
+  });
   lite.pty.onExit(({ id }) => { if (isScratch(id)) { const r = scratchTerms.get(id); if (r) r.term.write('\r\n\x1b[90m[шелл завершён — ⟳ для нового]\x1b[0m\r\n'); } });
 
   return {

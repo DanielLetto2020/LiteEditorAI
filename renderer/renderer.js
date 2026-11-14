@@ -12,9 +12,10 @@ import '@xterm/xterm/css/xterm.css';
 // В ядре остались только терминал (xterm) + темы/термутилы.
 import { initI18n, t as tt } from './i18n.js';
 import { syncSettings } from './settings-sync.js';
+import { planProjectTabs } from './proj-tabs.js';
 import { applyLook, termThemeFor, lookOf, lookTokens, LOOK_BASE_NAMES, LOOK_STATUS_NAMES, LOOK_TOKEN_NAMES, THEME_NAME } from './themes.js';
 import { FRAME_COLORS, frameConf, applyFrame } from './frame.js';
-import { prepareRenderer, activateRenderer, releaseRenderer, applyUnicode11, copySelection, ptyResizer } from './termutil.js';
+import { prepareRenderer, activateRenderer, releaseRenderer, applyUnicode11, copySelection, ptyResizer, writeTermWithAck, creditPtyAck, dropPtyAck } from './termutil.js';
 import { attachTimeline } from './termtimeline.js';
 // initTextProc — «Обработка текста» мигрирована в отдельное окно (renderer/module-entry.js).
 import { el, icon, iconBtn, hydrateIcons, toast, makeModal, showConfirm, showPrompt, baseName, ICONS, setErrorSink } from './ui.js';
@@ -29,7 +30,7 @@ import { openGlobalSearch } from './gsearch.js';
 import { initExtensions } from './modules/extensions.js';
 // initFiles — вивер+дерево мигрированы в отдельное окно (renderer/module-entry.js).
 
-const APP_VERSION = 'alpha v1.1.215';
+const APP_VERSION = 'alpha v1.1.240';
 const GUTTER = 8; // зазор между карточками окна — он же разделитель, за который тянется ширина
 // Системный терминал («Система · ~») мигрирован в отдельное окно (renderer/modules/scratch.js):
 // его id `__scratch__::tN` маршрутизируются main'ом в окно-владельца, в ядре их больше не обрабатываем.
@@ -40,7 +41,7 @@ const $ = (sel) => document.querySelector(sel);
 
 // ---------------------------------------------------------------- global store (~/.LiteEditor)
 // Synchronous snapshot loaded once; reads are in-memory, writes go through to disk.
-const STORE = lite.store.loadAll();
+const STORE = lite.store.loadAll('__editor__');
 // После импорта настроек стор на диске — уже импортированный, а окно ещё держит старое состояние до
 // перезагрузки: смена заголовка вкладки (projTabs), раскладки и т. п. за эти сотни миллисекунд
 // переписала бы импортированное старым. С этого момента окно в стор не пишет.
@@ -60,18 +61,22 @@ function persist(key, value) { STORE[key] = value; if (!storeFrozen) lite.store.
 function projId(p) { let h = 5381; for (let i = 0; i < p.length; i++) h = ((h << 5) + h + p.charCodeAt(i)) >>> 0; return 'p' + h.toString(36); }
 
 // ---------------------------------------------------------------- settings (tiny on purpose)
-const DEFAULT_SETTINGS = { notifications: true, sound: false, idleMs: 1200, fontSize: 13, workingDir: '', scanDirs: [], onboarded: false, shell: '', minimap: true, notesTab: 'project', frameOn: true, frameColor: 'green', framePulse: true, framePeriodS: 6, termTimeline: false, termPrefill: 'claude' };
+const DEFAULT_SETTINGS = { notifications: true, sound: false, idleMs: 1200, fontSize: 13, workingDir: '', scanDirs: [], onboarded: false, shell: '', minimap: true, notesTab: 'project', frameOn: true, frameColor: 'green', framePulse: true, framePeriodS: 6, termTimeline: false, termPrefill: 'claude', dockFiles: false, confirmQuitWithAgents: true };
 function loadSettings() { return { ...DEFAULT_SETTINGS, ...(STORE.settings || {}) }; }
 let settings = loadSettings();
 // Пишем только изменённые поля, чужие изменения (окна модулей, смена языка) вливаются в settings —
 // см. renderer/settings-sync.js. base = то, что на диске: первый save запишет и дефолты, как раньше.
-const settingsSync = syncSettings(lite, settings, { base: STORE.settings });
+const settingsSync = syncSettings(lite, settings, {
+  base: STORE.settings,
+  onRemote: ({ set }) => { if (set && 'fontSize' in set) applyFontSize({ notify: false }); },
+});
 function saveSettings() { STORE.settings = settings; if (!storeFrozen) settingsSync.save(); }
 
 // ---------------------------------------------------------------- state
 let projects = [];
 let activeId = null;
 const terms = new Map();          // sessionId -> { term, fit, search, container, projId, name, ... }
+const lazyTabs = new Map();       // sessionId -> { projId, name, customName, autoTitled } — отложенные фоновые вкладки (без xterm/PTY до клика)
 const tabsByProj = new Map();     // projId -> { sessions: [sessionId...], active: sessionId }
 let sessionSeq = 0;
 // Терминалы прежней страницы, пережившие перезагрузку окна (pty:adoptable): projId → [sessionId…] по порядку вкладок.
@@ -83,6 +88,7 @@ const BOOT_ID = Date.now().toString(36);
 const projState = new Map(); // sessionId -> 'quiet' | 'busy' | 'waiting'
 let agentScan = new Map();   // sessionId -> { fg, agent, idle } — последний опрос pty:agents (см. «агенты в терминалах»)
 let agentSig = '';           // что видел список проектов при прошлом опросе: перерисовываем только при смене
+let agentFavSig = '';        // подпись набора избранных проектов с агентами (для режима «только с агентом»)
 let agentScanTimer = null;
 let agentScanSeq = 0;        // опросы идут внахлёст (таймер + смена состояния): старый ответ не перетирает свежий
 const missing = new Set();   // ids of projects whose folder no longer exists on disk
@@ -100,7 +106,7 @@ const isExtTerm = (id) => typeof id === 'string' && id.startsWith(EXT_TERM_ID);
 const extTerms = new Map(); // ptyId -> { term, fit, search, container }
 let extTermSeq = 0;
 
-const DEFAULT_LAYOUT = { sidebar: 300, viewer: 520, tree: 240, scratch: 420, ctx: 740, docker: 460, db: 560, rh: 520, ext: 420, notes: 480, audit: 460, iterflow: 480, seo: 480, tools: 560, chat: 600, doc: 640 };
+const DEFAULT_LAYOUT = { sidebar: 300, viewer: 520, tree: 240, filesDock: 680, termSplit: 0.5, scratch: 420, ctx: 740, docker: 460, db: 560, rh: 520, ext: 420, notes: 480, audit: 460, iterflow: 480, seo: 480, tools: 560, chat: 600, doc: 640 };
 let layout = loadLayout();
 let lastParent = STORE.lastParent || '';
 
@@ -126,7 +132,10 @@ const SIDEBAR_MIN = 240, SIDEBAR_MAX = 480; // уже 240 не влезают к
 function applyLayout() {
   layout.sidebar = Math.max(SIDEBAR_MIN, Math.min(SIDEBAR_MAX, +layout.sidebar || DEFAULT_LAYOUT.sidebar));
   $('#sidebar').style.flexBasis = layout.sidebar + 'px';
-  // вивер/дерево живут в своём окне — в редакторе этих панелей больше нет.
+  layout.filesDock = Math.max(360, Math.min(1400, +layout.filesDock || DEFAULT_LAYOUT.filesDock));
+  { const fd = $('#files-dock'); if (fd) fd.style.flexBasis = layout.filesDock + 'px'; }
+  layout.termSplit = Math.max(0.2, Math.min(0.8, Number.isFinite(+layout.termSplit) ? +layout.termSplit : 0.5));
+  { const tb = $('#term-body'); if (tb) tb.style.setProperty('--split-pct', (layout.termSplit * 100).toFixed(2) + '%'); }
   $('#ext-pane').style.flexBasis = layout.ext + 'px';
 }
 function loadRecents() { return Array.isArray(STORE.recents) ? STORE.recents : []; }
@@ -209,6 +218,39 @@ function buildSections() {
   // под фильтром пустая категория — шум: показываем только секции, где что-то нашлось
   return secs.map((s) => ({ ...s, list: s.list.filter(matchesFilter) })).filter((s) => s.list.length);
 }
+// Плоский список проектов в точном визуальном порядке карточек боковой панели (или рельса #mini-rail
+// в режиме «один терминал»): учитывает порядок секций, ручную сортировку «Избранного», фильтр
+// «только с агентом», текстовый фильтр и пропускает свёрнутые группы (включая «Архив»).
+function visibleOrderedProjects() {
+  const appEl = $('#app');
+  const single = !!(appEl && appEl.classList.contains('single'));
+  const keepFilter = projFilter;
+  if (single) projFilter = '';
+  const secs = buildSections();
+  if (single) projFilter = keepFilter;
+
+  const out = [];
+  const seen = new Set();
+  for (const s of secs) {
+    if (single) {
+      if (s.key === ARCHIVE && isCollapsed(ARCHIVE)) continue;
+      for (const p of s.list) if (!seen.has(p.id)) { seen.add(p.id); out.push(p); }
+      continue;
+    }
+    const collapsed = projFilter ? false : isCollapsed(s.key);
+    if (collapsed) continue;
+    const agentsOnly = s.key === FAV_KEY && favAgentsOnly() && !projFilter;
+    const list = agentsOnly ? s.list.filter((p) => projHasAgent(p.id)) : s.list;
+    for (const p of list) if (!seen.has(p.id)) { seen.add(p.id); out.push(p); }
+  }
+  if (!out.length) {
+    for (const s of secs) {
+      if (s.key === ARCHIVE && isCollapsed(ARCHIVE) && !projFilter) continue;
+      for (const p of s.list) if (!seen.has(p.id)) { seen.add(p.id); out.push(p); }
+    }
+  }
+  return out.length ? out : projects.slice();
+}
 function moveSection(key, dir) {
   if (key === ARCHIVE) return;            // Архив зафиксирован последним
   const visible = buildSections().map((s) => s.key);
@@ -220,13 +262,56 @@ function moveSection(key, dir) {
   saveSectionOrder(order); renderProjects();
 }
 
-function renderProjects() {
+function renderProjects({ skipRail = false } = {}) {
   const box = $('#projects');
-  box.innerHTML = '';
+  const frag = document.createDocumentFragment();
   const sections = buildSections();
-  sections.forEach((s, i) => box.appendChild(renderSection(s, i, sections)));
-  if (projFilter && !sections.length) box.appendChild(el('div', 'proj-empty', 'Ничего не найдено'));
-  renderMiniRail();
+  sections.forEach((s, i) => frag.appendChild(renderSection(s, i, sections)));
+  if (projFilter && !sections.length) frag.appendChild(el('div', 'proj-empty', 'Ничего не найдено'));
+  box.replaceChildren(frag);
+  agentSig = '';
+  agentFavSig = '';
+  if (!skipRail) renderMiniRail();
+  renderChips();
+}
+// Точечное обновление кнопки «Закрыть терминалы без агента: N» в шапке секции «Избранное» без пересборки списка.
+function syncFavHeaderSweep() {
+  const head = document.querySelector('#projects .pgroup.pinned > .pgroup-head');
+  if (!head) return;
+  const existing = head.querySelector('.pgroup-sweep');
+  const idle = idleProjects();
+  if (!idle.length) {
+    if (existing) existing.remove();
+    return;
+  }
+  const title = `Закрыть терминалы без агента: ${idle.length}`;
+  if (existing instanceof HTMLElement) {
+    if (existing.title !== title) existing.title = title;
+    return;
+  }
+  const sweep = iconBtn('pgroup-arrow pgroup-sweep', 'power', title, 12);
+  sweep.addEventListener('click', (e) => { e.stopPropagation(); closeIdleTerms(); });
+  const eye = head.querySelector('.pgroup-eye');
+  if (eye) head.insertBefore(sweep, eye);
+  else head.appendChild(sweep);
+}
+// Быстрое переключение активного проекта без сноса #projects и #mini-rail, если карточка уже отрендерена.
+function updateActiveProjectDom(prevId, nextId) {
+  const box = $('#projects');
+  const nextCards = box ? box.querySelectorAll(`.card[data-id="${nextId}"]`) : [];
+  if (!nextCards.length) {
+    renderProjects();
+    return;
+  }
+  if (prevId && prevId !== nextId) {
+    box.querySelectorAll(`.card[data-id="${prevId}"]`).forEach((c) => c.classList.remove('active'));
+    document.querySelectorAll(`#mini-rail .rail-btn[data-id="${prevId}"]`).forEach((b) => b.classList.remove('active'));
+    refreshProjIndicator(prevId);
+  }
+  nextCards.forEach((c) => c.classList.add('active'));
+  document.querySelectorAll(`#mini-rail .rail-btn[data-id="${nextId}"]`).forEach((b) => b.classList.add('active'));
+  refreshProjIndicator(nextId);
+  syncFavHeaderSweep();
   renderChips();
 }
 // Заголовок группы: имя · (✎ ↑ ↓ по наведению) · число · стрелка. Инструменты стоят в раскладке
@@ -576,7 +661,7 @@ function sendNoteToTerminal(p, text) {
   ensureProjectTabs(proj);
   setActive(proj.id);
   const sid = (tabsByProj.get(proj.id) || {}).active;
-  if (!sid) return;
+  if (!sid || !materializeSession(sid)) return;
   // Терминал мог только что подняться (ensureProjectTabs) с отложенным автовводом — без отмены
   // слово из настроек (`claude`) дописалось бы в ту же строку после текста заметки.
   cancelPrefill(sid);
@@ -606,6 +691,7 @@ function renderMiniRail() {
     seen.add(p.id);
     const st = projAggState(p.id);
     const btn = el('button', 'rail-btn' + (p.id === activeId ? ' active' : '') + (missing.has(p.id) ? ' missing' : ''), initials(p.name));
+    btn.dataset.id = p.id;
     btn.title = p.name;
     btn.setAttribute('data-no-i18n', '');
     if (p.accent) btn.style.color = p.accent;
@@ -787,6 +873,7 @@ async function settleProject(id) {
   const worked = rec.sawBell || (projState.get(id) === 'busy' && (Date.now() - (rec.busyStart || 0)) >= 1500);
   rec.sawBell = false;
   setProjState(id, waiting ? 'waiting' : 'quiet');
+  if (rec.projId === activeId) refreshGitChip(500); // ход окончен — освежить счётчик рабочих файлов в чипе даже без watchTree
   // notify per project when its turn ended on a non-visible tab (or app unfocused)
   if (worked && (id !== activeSessionId() || !document.hasFocus())) notifyAgent(rec.projId, waiting ? 'waiting' : 'quiet', id);
 }
@@ -919,6 +1006,7 @@ function setAgentState(id, st, reason) {
   rec.sawBell = false;
   setProjState(id, st);
   if (st === 'busy') return;
+  if (rec.projId === activeId) refreshGitChip(500);
   if ((st === 'waiting' || worked) && (id !== activeSessionId() || !document.hasFocus())) notifyAgent(rec.projId, st, id, reason);
 }
 
@@ -994,15 +1082,38 @@ async function openFromTerminal(projPath, raw) {
 // (projTabs store); PTYs don't, so tabs are recreated empty on next launch.
 function activeSessionId() { const t = tabsByProj.get(activeId); return t ? t.active : null; }
 function projSessions(projId) { const t = tabsByProj.get(projId); return t ? t.sessions : []; }
+function hasTabSession(sid) { return !!(sid && (terms.has(sid) || lazyTabs.has(sid))); }
+function tabMeta(sid) { return terms.get(sid) || lazyTabs.get(sid) || null; }
 function projAggState(projId) {
-  const ss = projSessions(projId).map((s) => projState.get(s));
-  if (!ss.length) return 'idle';   // терминал проекта ещё не поднимали в этом запуске
+  const live = projSessions(projId).filter((s) => terms.has(s));
+  if (!live.length) return 'idle';   // ни один терминал проекта ещё не поднимали в этом запуске
+  const ss = live.map((s) => projState.get(s));
   // «ждёт вас» важнее «работает»: вторая вкладка с крутилкой не должна прятать вопрос первой
   return ss.includes('waiting') ? 'waiting' : ss.includes('busy') ? 'busy' : 'quiet';
+}
+function syncMiniRailIndicator(projId, st = projAggState(projId)) {
+  document.querySelectorAll(`#mini-rail .rail-btn[data-id="${projId}"]`).forEach((btn) => {
+    const badge = btn.querySelector('.rail-st');
+    if (st === 'idle') {
+      if (badge) badge.remove();
+      return;
+    }
+    if (badge) {
+      const ind = badge.querySelector('.pind');
+      if (ind) ind.className = 'pind ' + st;
+      return;
+    }
+    const nextBadge = el('span', 'rail-st');
+    const ind = el('span', 'pind ' + st);
+    ind.dataset.id = projId;
+    nextBadge.appendChild(ind);
+    btn.appendChild(nextBadge);
+  });
 }
 function refreshProjIndicator(projId) {
   const st = projAggState(projId);
   document.querySelectorAll(`.pind[data-id="${projId}"]`).forEach((i) => { i.className = 'pind ' + st; });
+  syncMiniRailIndicator(projId, st);
 }
 // ---- агенты в терминалах: глаз «только с агентом» в «Избранном» и закрытие простаивающих терминалов ----
 // Зелёный индикатор горит и у терминала, открытого случайным кликом: шелл на приглашении — тоже «готов».
@@ -1015,11 +1126,11 @@ function sessionAgent(sid) {
   return rec && rec.claude ? 'claude' : null;
 }
 function projHasAgent(projId) { return projSessions(projId).some((s) => sessionAgent(s)); }
-// Терминалы проекта закрываются без потерь: в каждой вкладке шелл на приглашении без потомков или шелл
-// уже завершился. Активный проект не трогаем — его терминал на экране.
+// Терминалы проекта закрываются без потерь: в каждой живой вкладке шелл на приглашении без потомков или шелл
+// уже завершился (отложенные ленивые вкладки процессов ещё не запускали). Активный проект не трогаем.
 function projIdle(projId) {
-  const ss = projSessions(projId);
-  return projId !== activeId && ss.length > 0 && ss.every((s) => {
+  const live = projSessions(projId).filter((s) => terms.has(s));
+  return projId !== activeId && live.length > 0 && live.every((s) => {
     const rec = terms.get(s), r = agentScan.get(s);
     return (rec && rec.exited) || (r && r.idle && !sessionAgent(s));
   });
@@ -1028,26 +1139,41 @@ function idleProjects() { return projects.filter((p) => projIdle(p.id)); }
 async function refreshAgents() {
   clearTimeout(agentScanTimer); agentScanTimer = null;
   if (!lite.pty.agents) return;
-  const ids = [...tabsByProj.values()].flatMap((t) => t.sessions);
+  const ids = [...tabsByProj.values()].flatMap((t) => t.sessions).filter((s) => terms.has(s));
   const seq = ++agentScanSeq;
   let res = {};
   try { if (ids.length) res = (await lite.pty.agents(ids)) || {}; } catch (_) { return; }
   if (seq !== agentScanSeq) return;
   agentScan = new Map(Object.entries(res));
-  const sig = projects.map((p) => p.id + (projHasAgent(p.id) ? '+a' : '') + (projIdle(p.id) ? '+i' : '')).join(',');
-  // Перерисовка пересоздаёт карточки: посреди перетаскивания она сорвала бы его, а у открытого меню
-  // сняла бы подсветку. Тогда ждём следующего опроса — подпись не запоминаем.
-  if (sig === agentSig || favDragCard || $('#menu-layer').firstChild) return;
+  const favOnly = favAgentsOnly() && !projFilter;
+  const favSig = favOnly ? projects.filter((p) => p.favorite && projHasAgent(p.id)).map((p) => p.id).join(',') : '';
+  const idleSig = idleProjects().map((p) => p.id).join(',');
+  const sig = favSig + '|' + idleSig;
+  if (sig === agentSig) return;
+  if (favOnly && favSig !== agentFavSig) {
+    // Перерисовка пересоздаёт карточки: посреди перетаскивания она сорвала бы его, а у открытого меню
+    // сняла бы подсветку. Тогда ждём следующего опроса — подпись не запоминаем.
+    if (favDragCard || $('#menu-layer').firstChild) return;
+    renderProjects();
+    agentFavSig = favSig;
+    agentSig = sig;
+    return;
+  }
+  agentFavSig = favSig;
   agentSig = sig;
-  renderProjects();
+  syncFavHeaderSweep();
 }
 // Сверка вскоре после смены состояния вкладки: агент запустился или вышел — фильтр догоняет за полсекунды.
 function scheduleAgentScan(delay = 500) {
   if (!agentScanTimer) agentScanTimer = setTimeout(refreshAgents, delay);
 }
-// Снять вкладку-сессию: процесс, xterm, таймеры, состояние индикатора.
+// Снять вкладку-сессию: процесс, xterm, таймеры, состояние индикатора (либо отложенную ленивую запись).
 function disposeSession(sid) {
-  lite.pty.kill(sid);
+  const wasLazy = lazyTabs.delete(sid);
+  if (!wasLazy || terms.has(sid)) {
+    lite.pty.kill(sid);
+    dropPtyAck(sid);
+  }
   const rec = terms.get(sid);
   if (rec) { clearTimeout(rec.idleTimer); clearTimeout(rec.prefillTimer); stopClaudeProbe(rec); releaseRenderer(rec.term); try { rec.timeline.dispose(); } catch (_) {} try { rec.term.dispose(); } catch (_) {} rec.container.remove(); terms.delete(sid); }
   projState.delete(sid);
@@ -1098,7 +1224,17 @@ function saveProjTabs() {
   const prev = STORE.projTabs || {};
   for (const p of projects) if (!tabsByProj.has(p.id) && prev[p.id]) out[p.id] = prev[p.id];
   for (const [pid, t] of tabsByProj) {
-    out[pid] = { names: t.sessions.map((s) => (terms.get(s) || {}).name || 'Терминал'), custom: t.sessions.map((s) => !!(terms.get(s) || {}).customName), active: t.sessions.indexOf(t.active) };
+    const rec = {
+      names: t.sessions.map((s) => (tabMeta(s) || {}).name || 'Терминал'),
+      custom: t.sessions.map((s) => !!(tabMeta(s) || {}).customName),
+      active: t.sessions.indexOf(t.active),
+    };
+    if (Array.isArray(t.splitPair) && t.splitPair.length === 2) {
+      const i0 = t.sessions.indexOf(t.splitPair[0]);
+      const i1 = t.sessions.indexOf(t.splitPair[1]);
+      if (i0 >= 0 && i1 >= 0 && i0 !== i1) rec.split = [i0, i1];
+    }
+    out[pid] = rec;
   }
   persist('projTabs', out);
 }
@@ -1121,7 +1257,9 @@ const HOTKEYS = [
   { test: (e) => e.code === 'Minus' || e.code === 'NumpadSubtract', run: () => bumpFont(-1) },
   { test: (e) => e.code === 'Tab',                                  run: (e) => cycleProject(e.shiftKey ? -1 : 1) },
   { test: (e) => e.code === 'KeyF' && e.shiftKey,                   run: () => showGlobalSearch() }, // Ctrl+Shift+F — «Найти во всех проектах» (файлы + терминалы)
-  { test: (e) => /^Digit[1-9]$/.test(e.code) && !e.shiftKey,        run: (e) => { const p = projects[+e.code.slice(5) - 1]; if (p) setActive(p.id); } },
+  { test: (e) => e.code === 'KeyD' && e.shiftKey,                   run: () => toggleTermSplit() },  // Ctrl+Shift+D — разделить область терминала пополам
+  { test: (e) => e.code === 'KeyE' && e.shiftKey,                   run: () => openModule('files') }, // Ctrl+Shift+E — панель/окно «Проект»
+  { test: (e) => /^Digit[1-9]$/.test(e.code) && !e.shiftKey,        run: (e) => { const p = visibleOrderedProjects()[+e.code.slice(5) - 1]; if (p) setActive(p.id); } },
 ];
 // Поле ввода, где Ctrl-комбо должны доставаться самому полю (модалки, палитра, формы), — но НЕ
 // скрытая textarea xterm'а: она и есть ввод терминала, там перехват обязателен (это фикс B1,
@@ -1143,6 +1281,11 @@ function runGlobalHotkey(e) {
 // рендерер + PTY + базовый обработчик клавиш. Вызывающий передаёт id/cwd, хук ввода и
 // набор «своих» клавиш (onKey) поверх базовых. Это убрало ~90% дубля между
 // createSession и createExtTerminal, который раньше норовил разъехаться.
+/**
+ * @param {HTMLElement} container
+ * @param {string} id
+ * @param {{ cwd?: string, onInput?: (data: string) => boolean | void, onKey?: (e: KeyboardEvent) => boolean | void }} [opts]
+ */
 function buildXterm(container, id, { cwd, onInput, onKey } = {}) {
   const term = new Terminal({
     fontFamily: '"JetBrains Mono", "Fira Code", "Cascadia Code", Consolas, monospace',
@@ -1168,8 +1311,8 @@ function buildXterm(container, id, { cwd, onInput, onKey } = {}) {
     onGeometry: () => requestAnimationFrame(() => { try { fit.fit(); syncPty(); } catch (_) {} }),
   });
   fit.fit();
-  lite.pty.create({ id, cwd, cols: term.cols, rows: term.rows });
-  term.onData((data) => { timeline.markInput(data); if (onInput) onInput(data); lite.pty.write(id, data); });
+  const created = lite.pty.create({ id, cwd, cols: term.cols, rows: term.rows });
+  term.onData((data) => { if (onInput && onInput(data) === false) return; timeline.markInput(data); lite.pty.write(id, data); });
   term.onResize(syncPty);
   term.attachCustomKeyEventHandler((e) => {
     if (e.type !== 'keydown') return true;
@@ -1184,7 +1327,7 @@ function buildXterm(container, id, { cwd, onInput, onKey } = {}) {
     return true;
   });
   container.addEventListener('contextmenu', (e) => { e.preventDefault(); showTermMenu(e.clientX, e.clientY, term, id); });
-  return { term, fit, search, timeline, syncPty };
+  return { term, fit, search, timeline, syncPty, created };
 }
 // Вкл/выкл шкалы времени во ВСЕХ живых терминалах (настройка применяется на лету, без перезапуска).
 function applyTimeline() {
@@ -1222,30 +1365,80 @@ function firePrefill(id) {
   rec.lastInputAt = Date.now(); // это ввод, пусть и наш: эхо не должно считаться работой агента
   lite.pty.write(id, text);     // без \r — Enter жмёт человек
 }
+function newSessionId(projId) {
+  return projId + '::t' + (++sessionSeq) + '.' + BOOT_ID;
+}
+function createLazyTab(proj, name, custom) {
+  const id = newSessionId(proj.id);
+  lazyTabs.set(id, { projId: proj.id, name, customName: !!custom, autoTitled: false });
+  tabsByProj.get(proj.id).sessions.push(id);
+  return id;
+}
+// Материализовать отложенную вкладку в живой xterm + PTY на том же месте в t.sessions.
+function materializeSession(sid) {
+  if (!sid) return null;
+  if (terms.has(sid)) return sid;
+  const lazy = lazyTabs.get(sid);
+  if (!lazy) return null;
+  const proj = projects.find((p) => p.id === lazy.projId);
+  if (!proj) { lazyTabs.delete(sid); return null; }
+  lazyTabs.delete(sid);
+  return createSession(proj, lazy.name, lazy.customName, null, { existingSid: sid, pushToTabs: false, allowPrefill: true });
+}
 // adoptId — живой терминал прежней страницы (пережил перезагрузку окна): вкладка садится на него.
-function createSession(proj, name, custom, adoptId) {
-  const id = adoptId || (proj.id + '::t' + (++sessionSeq) + '.' + BOOT_ID);
+function createSession(proj, name, custom, adoptId, { existingSid = null, pushToTabs = true, allowPrefill = true } = {}) {
+  const id = adoptId || existingSid || newSessionId(proj.id);
   const container = el('div', 'term-instance');
+  container.addEventListener('mousedown', () => focusSplitSlot(id));
+  container.addEventListener('focusin', () => focusSplitSlot(id));
   $('#terminals').appendChild(container);
-  const { term, fit, search, timeline, syncPty } = buildXterm(container, id, {
+  const { term, fit, search, timeline, syncPty, created } = buildXterm(container, id, {
     cwd: proj.path,
-    onInput: () => { cancelPrefill(id); const r = terms.get(id); if (r) r.lastInputAt = Date.now(); },
+    onInput: (data) => {
+      const r = terms.get(id);
+      if (r && r.exited) { if (data === '\r' || data === '\n') restartTerminal(id); return false; }
+      cancelPrefill(id);
+      if (r) r.lastInputAt = Date.now();
+    },
     onKey: (e) => {
+      if (e.key === 'Enter' && !e.ctrlKey && !e.altKey && !e.shiftKey) {
+        const r = terms.get(id);
+        if (r && r.exited) { e.preventDefault(); restartTerminal(id); return false; }
+      }
       if (e.ctrlKey && e.shiftKey && e.code === 'KeyT') { addTab(); return false; }
       if (e.ctrlKey && e.shiftKey && e.code === 'KeyW') { const s = activeSessionId(); if (s) closeTab(s); return false; }
       if (e.ctrlKey && (e.key === 'PageDown' || e.key === 'PageUp')) { cycleTab(e.key === 'PageDown' ? 1 : -1); return false; }
-      if (e.ctrlKey && !e.altKey && !e.shiftKey && e.code === 'KeyF') { openTermSearch(); return false; } // Ctrl+F (без Shift) — поиск в этом терминале; Ctrl+Shift+F уходит в глобальный (реестр)
+      if (e.ctrlKey && !e.altKey && !e.shiftKey && e.code === 'KeyF') { focusSplitSlot(id); openTermSearch(); return false; } // Ctrl+F (без Shift) — поиск в этом терминале; Ctrl+Shift+F уходит в глобальный (реестр)
     },
   });
   term.registerLinkProvider(fileLinkProvider(term, proj.path));
-  const rec = { term, fit, search, timeline, syncPty, container, projId: proj.id, name, customName: !!custom, idleTimer: null, sawBell: false, tail: '', busyStart: 0, lastInputAt: 0, activitySeq: 0, prefill: '', prefillTimer: null, redraw: !!adoptId,
+  const rec = { term, fit, search, timeline, syncPty, container, projId: proj.id, name, customName: !!custom, autoTitled: false, idleTimer: null, sawBell: false, tail: '', busyStart: 0, lastInputAt: 0, activitySeq: 0, prefill: '', prefillTimer: null, redraw: false, needsFit: false,
+    adoptPending: /** @type {string[] | null} */ (adoptId ? [] : null),
     claude: null, probeTimer: null, probeDeadline: null, probeSeq: 0, claudeRetry: 0 }; // claude — см. «Claude Code» у индикатора
   terms.set(id, rec);
   if (adoptId) {
-    // прокрутка прежней страницы пропала вместе с ней; программу в терминале попросим перерисоваться при показе
-    term.write('\x1b[90m' + tt('[терминал подхвачен после перезагрузки окна — прежний вывод не сохранился]') + '\x1b[0m\r\n');
-  } else {
-    armPrefill(id, (settings.termPrefill || '').trim()); // автоввод слова из настроек (по умолчанию `claude`)
+    // Восстанавливаем последние 128 КБ вывода из кольцевого буфера main-процесса в строгом порядке
+    // перед любыми новыми чанками pty:data, а затем качаем размер (SIGWINCH) для TUI-агентов.
+    Promise.resolve(created).then((res) => {
+      const r = terms.get(id);
+      if (!r) return;
+      const queued = r.adoptPending || [];
+      r.adoptPending = null;
+      const backlog = res && typeof res.backlog === 'string' ? res.backlog : '';
+      if (backlog) r.term.write(backlog);
+      else r.term.write('\x1b[90m' + tt('[терминал подхвачен после перезагрузки окна]') + '\x1b[0m\r\n');
+      for (const chunk of queued) {
+        writeTermWithAck(r.term, id, chunk);
+        markActivity(id, chunk);
+      }
+      r.redraw = true;
+      if (isSessionVisible(id)) refitActiveTerminal();
+    }).catch(() => {
+      const r = terms.get(id);
+      if (r) { r.adoptPending = null; r.redraw = true; }
+    });
+  } else if (allowPrefill) {
+    armPrefill(id, (settings.termPrefill || '').trim()); // автоввод слова из настроек — только в открываемую вкладку
   }
   // Имя вкладки из заголовка терминала (OSC ]0;…): Claude/агент в промпте пишет туда
   // текущую задачу, шелл — user@host:cwd. Подхватываем как имя вкладки, пока пользователь
@@ -1253,29 +1446,133 @@ function createSession(proj, name, custom, adoptId) {
   // промпт шлёт одно и то же) отсекаем сравнением — без дёрганья tab-бара.
   // Он же — признак работы Claude Code для индикатора (onClaudeTitle).
   term.onTitleChange((t) => { onClaudeTitle(id, t); adoptTermTitle(id, t); });
-  tabsByProj.get(proj.id).sessions.push(id);
+  if (pushToTabs) tabsByProj.get(proj.id).sessions.push(id);
   return id;
 }
 // Ensure a project's sessions exist (restoring saved tab names on first open).
+// Фоновые вкладки остаются легковесными записями в lazyTabs до первого переключения на них:
+// при открытии проекта материализуются только активная вкладка (и второй слот сплита, если был сплит).
 function ensureProjectTabs(proj) {
   if (tabsByProj.has(proj.id)) return;
-  tabsByProj.set(proj.id, { sessions: [], active: null });
+  tabsByProj.set(proj.id, { sessions: [], active: null, splitPair: null });
   const saved = (STORE.projTabs || {})[proj.id];
-  const names = saved && Array.isArray(saved.names) && saved.names.length ? saved.names : ['Терминал 1'];
-  const custom = saved && Array.isArray(saved.custom) ? saved.custom : []; // какие имена задал пользователь руками — их заголовок терминала не перебивает
+  const plan = planProjectTabs(saved, tt('Терминал {0}', 1));
   const adopted = adoptPtys.get(proj.id);
   if (adopted && adopted.length) {
     // окно перезагрузилось, а терминалы проекта живы: вкладки садятся на них в прежнем порядке
     adoptPtys.delete(proj.id);
-    adopted.forEach((id, i) => createSession(proj, names[i] || tt('Терминал {0}', i + 1), custom[i], id));
+    adopted.forEach((id, i) => {
+      const pt = plan.tabs[i];
+      createSession(proj, pt ? pt.name : tt('Терминал {0}', i + 1), pt ? pt.customName : false, id);
+    });
+    for (let i = adopted.length; i < plan.tabs.length; i++) {
+      createLazyTab(proj, plan.tabs[i].name, plan.tabs[i].customName);
+    }
   } else {
-    names.forEach((n, i) => createSession(proj, n, custom[i])); // только имена вкладок; история до перезапуска НЕ восстанавливается
+    for (const pt of plan.tabs) {
+      if (pt.eager) createSession(proj, pt.name, pt.customName, null, { allowPrefill: pt.prefill });
+      else createLazyTab(proj, pt.name, pt.customName);
+    }
   }
   const t = tabsByProj.get(proj.id);
-  const ai = saved && Number.isInteger(saved.active) ? saved.active : 0;
-  t.active = t.sessions[Math.max(0, Math.min(ai, t.sessions.length - 1))] || t.sessions[0];
+  const actSid = t.sessions[Math.min(plan.activeIndex, t.sessions.length - 1)] || t.sessions[0];
+  materializeSession(actSid);
+  t.active = actSid;
+  if (plan.splitIndices) {
+    const s0 = t.sessions[plan.splitIndices[0]];
+    const s1 = t.sessions[plan.splitIndices[1]];
+    if (s0 && s1 && s0 !== s1) {
+      materializeSession(s0);
+      materializeSession(s1);
+      t.splitPair = [s0, s1];
+    }
+  }
   saveProjTabs();
 }
+let tabDragEl = null; // перетаскиваемая вкладка внутри #term-tabs
+function enableTabDnD(tab, bar, projId) {
+  tab.draggable = true;
+  tab.addEventListener('dragstart', (e) => {
+    hideTabTip();
+    tabDragEl = tab;
+    tab.classList.add('dragging');
+    if (e.dataTransfer) {
+      e.dataTransfer.effectAllowed = 'move';
+      try { e.dataTransfer.setData('text/plain', tab.dataset.sid || ''); } catch (_) {}
+    }
+  });
+  tab.addEventListener('dragover', (e) => {
+    if (!tabDragEl || tabDragEl === tab || tab.parentElement !== bar) return;
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+    const r = tab.getBoundingClientRect();
+    bar.insertBefore(tabDragEl, e.clientX < r.left + r.width / 2 ? tab : tab.nextSibling);
+  });
+  tab.addEventListener('dragend', (e) => {
+    tab.classList.remove('dragging');
+    if (!tabDragEl) return;
+    tabDragEl = null;
+    const t = tabsByProj.get(projId);
+    if (t && e.dataTransfer && e.dataTransfer.dropEffect !== 'none') {
+      const order = [...bar.querySelectorAll('.tab')]
+        .map((x) => (x instanceof HTMLElement ? x.dataset.sid : ''))
+        .filter((s) => s && t.sessions.includes(s));
+      if (order.length === t.sessions.length) {
+        t.sessions = order;
+        saveProjTabs();
+      }
+    }
+    renderTabBar();
+  });
+}
+
+function isProjSplit(t) {
+  return !!(t && Array.isArray(t.splitPair) && t.splitPair.length === 2
+    && t.splitPair[0] !== t.splitPair[1] && terms.has(t.splitPair[0]) && terms.has(t.splitPair[1]));
+}
+function isSessionVisible(sid) {
+  const t = tabsByProj.get(activeId);
+  if (!t || !sid) return false;
+  if (isProjSplit(t)) return t.splitPair.includes(sid);
+  return t.active === sid;
+}
+function focusSplitSlot(sid) {
+  const t = tabsByProj.get(activeId);
+  if (!isProjSplit(t) || !t.splitPair.includes(sid) || t.active === sid) return;
+  t.active = sid;
+  saveProjTabs();
+  for (const s of t.splitPair) {
+    const r = terms.get(s);
+    if (r) r.container.classList.toggle('slot-focused', s === sid);
+  }
+  renderTabBar();
+  syncTermSearchUI();
+}
+function toggleTermSplit() {
+  const proj = activeProject();
+  if (!proj) return;
+  ensureProjectTabs(proj);
+  const t = tabsByProj.get(proj.id);
+  if (!t) return;
+  if (isProjSplit(t)) {
+    t.splitPair = null;
+    saveProjTabs();
+    showActiveTerminal();
+    return;
+  }
+  const leftSid = (t.active && hasTabSession(t.active)) ? t.active : t.sessions[0];
+  materializeSession(leftSid);
+  let rightSid = t.sessions.find((s) => s !== leftSid && terms.has(s))
+    || t.sessions.find((s) => s !== leftSid && lazyTabs.has(s))
+    || null;
+  if (rightSid) materializeSession(rightSid);
+  else rightSid = createSession(proj, tt('Терминал {0}', t.sessions.length + 1));
+  t.splitPair = [leftSid, rightSid];
+  t.active = rightSid;
+  saveProjTabs();
+  showActiveTerminal();
+}
+
 function renderTabBar() {
   const bar = $('#term-tabs');
   if (!bar) return;
@@ -1284,24 +1581,43 @@ function renderTabBar() {
   hideTabTip();
   bar.innerHTML = '';
   const t = tabsByProj.get(activeId);
+  const splitOn = isProjSplit(t);
   // шапка видна всегда (в ней кнопки окна и за неё тянут окно); без проекта нет только вкладок и «+»
   $('#term-tab-add').classList.toggle('hidden', !activeId || !t);
+  {
+    const sb = $('#term-split-btn');
+    if (sb) {
+      sb.classList.toggle('hidden', !activeId || !t);
+      sb.classList.toggle('on', splitOn);
+      sb.title = splitOn ? 'Закрыть разделение терминала (Ctrl+Shift+D)' : 'Разделить терминал (Ctrl+Shift+D)';
+    }
+  }
   if (!activeId || !t || !t.sessions.length) { updateTabScroll(); return; }
+  const projId = activeId;
   t.sessions.forEach((sid) => {
-    const rec = terms.get(sid); if (!rec) return;
-    const tab = el('div', 'tab' + (sid === t.active ? ' active' : '') + (rec.autoTitled ? ' wide' : ''));
+    const rec = tabMeta(sid); if (!rec) return;
+    const isLive = terms.has(sid);
+    const isPeer = splitOn && sid !== t.active && t.splitPair.includes(sid);
+    const tab = el('div', 'tab' + (sid === t.active ? ' active' : (isPeer ? ' split-peer' : '')) + (rec.autoTitled ? ' wide' : ''));
     tab.dataset.sid = sid;
-    tab.appendChild(el('span', 'tab-dot pind ' + (projState.get(sid) || 'quiet')));
+    tab.appendChild(el('span', 'tab-dot pind ' + (isLive ? (projState.get(sid) || 'quiet') : 'idle')));
     const nameSpan = el('span', 'tab-name', rec.name);
     tab.appendChild(nameSpan);
     // Кастомный тултип с полным именем — только когда имя визуально обрезано многоточием.
-    tab.addEventListener('mouseenter', () => { if (nameSpan.scrollWidth > nameSpan.clientWidth + 1) showTabTip(tab, rec.name); });
+    tab.addEventListener('mouseenter', () => { if (!tabDragEl && nameSpan.scrollWidth > nameSpan.clientWidth + 1) showTabTip(tab, rec.name); });
     tab.addEventListener('mouseleave', hideTabTip);
     if (t.sessions.length > 1) {
       const x = iconBtn('tab-close', 'x', 'Закрыть вкладку (Ctrl+Shift+W)', 12);
       x.addEventListener('click', (e) => { e.stopPropagation(); closeTab(sid); });
       tab.appendChild(x);
+      enableTabDnD(tab, bar, projId);
     }
+    tab.addEventListener('mousedown', (e) => { if (e.button === 1) e.preventDefault(); });
+    tab.addEventListener('auxclick', (e) => {
+      if (e.button === 1 && t.sessions.length > 1) {
+        e.preventDefault(); e.stopPropagation(); hideTabTip(); closeTab(sid);
+      }
+    });
     tab.addEventListener('click', () => { hideTabTip(); switchTab(sid); });
     tab.addEventListener('dblclick', () => renameTab(sid));
     bar.appendChild(tab);
@@ -1352,24 +1668,69 @@ function ensureActiveTabVisible() {
 }
 function switchTab(sid) {
   const t = tabsByProj.get(activeId);
-  if (!t || !terms.has(sid)) return;
-  t.active = sid; saveProjTabs(); showActiveTerminal();
+  if (!t || !hasTabSession(sid)) return;
+  if (!terms.has(sid) && !materializeSession(sid)) return;
+  if (isProjSplit(t)) {
+    if (!t.splitPair.includes(sid)) {
+      const idx = t.splitPair[1] === t.active ? 1 : 0;
+      t.splitPair[idx] = sid;
+    }
+    t.active = sid;
+  } else {
+    t.active = sid;
+  }
+  saveProjTabs(); showActiveTerminal();
 }
 function addTab() {
   const proj = activeProject(); if (!proj) return;
   ensureProjectTabs(proj);
   const t = tabsByProj.get(proj.id);
   const sid = createSession(proj, tt('Терминал {0}', t.sessions.length + 1));
+  if (isProjSplit(t)) {
+    const idx = t.splitPair[1] === t.active ? 1 : 0;
+    t.splitPair[idx] = sid;
+  }
   t.active = sid; saveProjTabs(); showActiveTerminal();
 }
-function closeTab(sid) {
-  const t = tabsByProj.get(activeId); if (!t || t.sessions.length <= 1) return; // keep ≥1 tab
+function doCloseTab(projId, sid) {
+  const t = tabsByProj.get(projId);
+  if (!t || t.sessions.length <= 1 || !t.sessions.includes(sid)) return;
+  if (Array.isArray(t.splitPair) && t.splitPair.includes(sid)) {
+    const other = t.splitPair[0] === sid ? t.splitPair[1] : t.splitPair[0];
+    t.splitPair = null;
+    if (t.active === sid && other && other !== sid) t.active = other;
+  }
   disposeSession(sid);
   const i = t.sessions.indexOf(sid);
   t.sessions.splice(i, 1);
   if (t.active === sid) t.active = t.sessions[Math.max(0, i - 1)];
-  saveProjTabs(); showActiveTerminal();
-  refreshProjIndicator(activeId); updateAttention();
+  if (projId === activeId && t.active) materializeSession(t.active);
+  saveProjTabs();
+  if (projId === activeId) showActiveTerminal();
+  refreshProjIndicator(projId);
+  updateAttention();
+}
+async function closeTab(sid) {
+  const rec = terms.get(sid);
+  const meta = rec || lazyTabs.get(sid);
+  const projId = meta ? meta.projId : activeId;
+  const t = tabsByProj.get(projId);
+  if (!t || t.sessions.length <= 1 || !t.sessions.includes(sid)) return; // keep ≥1 tab
+  if (!rec || rec.exited) { doCloseTab(projId, sid); return; }
+  const rep = await agentReport(sid);
+  if (!terms.has(sid)) return;
+  const agent = sessionAgent(sid) || (rep && rep.claude ? 'claude' : null);
+  const st = projState.get(sid);
+  const activeProc = !!(agent || (rep && (rep.fg === 'running' || rep.fg === 'waiting')) || (!rep && (st === 'busy' || st === 'waiting')));
+  if (!activeProc) { doCloseTab(projId, sid); return; }
+  showConfirm(
+    `Закрыть вкладку «${rec.name}»?`,
+    agent
+      ? `В этой вкладке работает агент ${agent} — процесс будет остановлен.`
+      : 'В этой вкладке выполняется команда — процесс будет остановлен.',
+    'Закрыть вкладку',
+    () => doCloseTab(projId, sid),
+  );
 }
 function cycleTab(dir) {
   const t = tabsByProj.get(activeId); if (!t || t.sessions.length < 2) return;
@@ -1378,10 +1739,10 @@ function cycleTab(dir) {
   switchTab(t.sessions[i]);
 }
 function renameTab(sid) {
-  const rec = terms.get(sid); if (!rec) return;
+  const rec = tabMeta(sid); if (!rec) return;
   // Ручное имя «прибивает» вкладку: заголовок терминала больше её не перебивает (customName)
   // и вкладка возвращается к обычной ширине (autoTitled=false — не «переименована агентом»).
-  showPrompt('Переименовать вкладку', 'Название', rec.name, (v) => { rec.name = v; rec.customName = true; rec.autoTitled = false; saveProjTabs(); renderTabBar(); });
+  showPrompt('Переименовать вкладку', 'Название', rec.name, (v) => { rec.name = v; rec.customName = true; rec.autoTitled = false; saveProjTabs(); renderTabBar(); syncTermSearchUI(); });
 }
 // Дефолтный заголовок, который шлёт САМ шелл (bash/zsh): "user@host: ~/path", голый путь,
 // "C:\path". Это НЕ имя задачи агента — вкладка должна остаться "Терминал N", пока Claude/
@@ -1417,11 +1778,12 @@ function updateTabName(sid) {
   const rec = terms.get(sid);
   const t = tabsByProj.get(activeId);
   if (!rec || !t || !t.sessions.includes(sid)) return;
-  const tab = [...document.querySelectorAll('#term-tabs .tab')].find((x) => x.dataset.sid === sid);
+  const tab = [...document.querySelectorAll('#term-tabs .tab')].find((x) => x instanceof HTMLElement && x.dataset.sid === sid);
   if (!tab) { renderTabBar(); return; }
   tab.classList.toggle('wide', !!rec.autoTitled);
   const span = tab.querySelector('.tab-name');
   if (span && span.textContent !== rec.name) span.textContent = rec.name;
+  if (sid === t.active) syncTermSearchUI();
   scheduleTabScroll();
 }
 // Стрелки прокрутки панели вкладок зависят от ширины вкладок — пересчитываем раз в кадр, не на каждое имя.
@@ -1442,27 +1804,49 @@ async function pasteInto(id) {
 // Ctrl+C can still send SIGINT) and report handled; otherwise return false so the
 // keypress falls through to the PTY as the interrupt signal. Mirrors the menu's copy.
 function showActiveTerminal() {
+  const t = tabsByProj.get(activeId);
   const asid = activeSessionId();
+  const splitOn = isProjSplit(t);
   $('#empty-hint').style.display = activeId ? 'none' : 'flex';
-  for (const [sid, rec] of terms) rec.container.style.display = sid === asid ? 'block' : 'none';
-  const shown = asid && terms.get(asid);
-  if (shown) activateRenderer(shown.term);
+  $('#terminals').classList.toggle('is-split', splitOn);
+  { const sg = $('#term-split-gutter'); if (sg) sg.classList.toggle('hidden', !splitOn); }
+  for (const [sid, rec] of terms) {
+    rec.container.classList.remove('slot-left', 'slot-right', 'slot-focused');
+    if (splitOn && t.splitPair.includes(sid)) {
+      rec.container.style.display = 'block';
+      rec.container.classList.add(sid === t.splitPair[0] ? 'slot-left' : 'slot-right');
+      if (sid === asid) rec.container.classList.add('slot-focused');
+      activateRenderer(rec.term);
+    } else {
+      rec.container.style.display = (!splitOn && sid === asid) ? 'block' : 'none';
+      if (!splitOn && sid === asid) activateRenderer(rec.term);
+    }
+  }
   renderTabBar();
+  syncTermSearchUI();
   refitActiveTerminal(true);
 }
 function refitActiveTerminal(focusIt) {
   try { Ext.refitTerminal(); } catch (_) {} // dev-терминал модуля в #ext-pane
+  const t = tabsByProj.get(activeId);
   const asid = activeSessionId();
-  const rec = asid ? terms.get(asid) : null;
-  if (!rec) return;
+  const visibleIds = isProjSplit(t) ? t.splitPair.slice() : (asid ? [asid] : []);
+  if (!visibleIds.length) return;
   requestAnimationFrame(() => {
-    try { rec.fit.fit(); rec.syncPty(); if (focusIt) rec.term.focus(); } catch (_) {}
-    if (rec.redraw) {
-      // подхваченный терминал: размер мог не измениться, и программа не узнает, что экран пуст, —
-      // качнём ширину на колонку, это SIGWINCH, и агент (Claude Code и т. п.) перерисуется
-      rec.redraw = false;
-      const { cols, rows } = rec.term;
-      if (cols > 2) { lite.pty.resize(asid, cols - 1, rows); setTimeout(() => lite.pty.resize(asid, cols, rows), 120); }
+    for (const sid of visibleIds) {
+      const rec = terms.get(sid);
+      if (!rec) continue;
+      try {
+        rec.fit.fit();
+        rec.syncPty();
+        rec.needsFit = false;
+        if (focusIt && sid === asid) rec.term.focus();
+      } catch (_) {}
+      if (rec.redraw) {
+        rec.redraw = false;
+        const { cols, rows } = rec.term;
+        if (cols > 2) { lite.pty.resize(sid, cols - 1, rows); setTimeout(() => lite.pty.resize(sid, cols, rows), 120); }
+      }
     }
   });
 }
@@ -1482,6 +1866,7 @@ function restartTerminal(id) {
   if (!proj || !rec) return;
   try { rec.term.reset(); } catch (_) {}
   try { rec.timeline.reset(); } catch (_) {}
+  dropPtyAck(sid);
   rec.sawBell = false; rec.tail = ''; rec.busyStart = Date.now();
   clearTimeout(rec.idleTimer);
   rec.claude = null; rec.exited = false; stopClaudeProbe(rec);
@@ -1495,6 +1880,7 @@ function restartExtTerminal(id) {
   if (!r) return;
   try { r.term.reset(); } catch (_) {}
   try { r.timeline.reset(); } catch (_) {}
+  dropPtyAck(id);
   lite.pty.restart({ id, cwd: r.cwd, cols: r.term.cols, rows: r.term.rows });
   r.term.focus();
 }
@@ -1507,14 +1893,15 @@ function createExtTerminal(container, cwd) {
   // Без onKey: у dev-терминала модуля нет вкладок, а Ctrl+F открыл бы поиск ЧУЖОГО
   // (активного проектного) терминала — поэтому поиск здесь не перехватываем (как было).
   const { term, fit, search, timeline, syncPty } = buildXterm(container, id, { cwd });
-  extTerms.set(id, { term, fit, search, timeline, container, cwd }); // cwd — для «Перезапустить» из контекст-меню
+  const extRec = { term, fit, search, timeline, syncPty, container, cwd, needsFit: false }; // cwd — для «Перезапустить» из контекст-меню
+  extTerms.set(id, extRec);
   activateRenderer(term);   // dev-терминал модуля виден сразу, в панели «Мои модули»
   return {
     id,
     write: (s) => lite.pty.write(id, s),
     focus: () => { try { term.focus(); } catch (_) {} },
-    refit: () => requestAnimationFrame(() => { try { fit.fit(); syncPty(); } catch (_) {} }),
-    dispose: () => { lite.pty.kill(id); releaseRenderer(term); try { timeline.dispose(); } catch (_) {} try { term.dispose(); } catch (_) {} extTerms.delete(id); },
+    refit: () => requestAnimationFrame(() => { try { fit.fit(); syncPty(); extRec.needsFit = false; } catch (_) {} }),
+    dispose: () => { lite.pty.kill(id); dropPtyAck(id); releaseRenderer(term); try { timeline.dispose(); } catch (_) {} try { term.dispose(); } catch (_) {} extTerms.delete(id); },
   };
 }
 
@@ -1523,12 +1910,23 @@ function createExtTerminal(container, cwd) {
 
 // ---------------------------------------------------------------- font size
 let watchedRoot = null; // we live-watch only the active project to limit inotify use
-function applyFontSize() {
-  for (const rec of terms.values()) { rec.term.options.fontSize = settings.fontSize; try { rec.timeline.setFontSize(settings.fontSize); } catch (_) {} try { rec.fit.fit(); } catch (_) {} }
-  for (const rec of extTerms.values()) { rec.term.options.fontSize = settings.fontSize; try { rec.timeline.setFontSize(settings.fontSize); } catch (_) {} try { rec.fit.fit(); } catch (_) {} }
-  document.documentElement.style.setProperty('--editor-fs', settings.fontSize + 'px');
+function applyFontSize({ notify = true } = {}) {
+  const fsPx = settings.fontSize;
+  for (const [sid, rec] of terms) {
+    rec.term.options.fontSize = fsPx;
+    try { rec.timeline.setFontSize(fsPx); } catch (_) {}
+    if (!isSessionVisible(sid)) rec.needsFit = true;
+  }
+  for (const rec of extTerms.values()) {
+    rec.term.options.fontSize = fsPx;
+    try { rec.timeline.setFontSize(fsPx); } catch (_) {}
+    rec.needsFit = true;
+  }
+  document.documentElement.style.setProperty('--editor-fs', fsPx + 'px');
   refitActiveTerminal();
-  try { lite.app.settingsChanged(settings); } catch (_) {} // окно «Система · ~» подхватит размер шрифта
+  if (notify) {
+    try { lite.app.settingsChanged(settings); } catch (_) {} // окно «Система · ~» подхватит размер шрифта
+  }
 }
 function bumpFont(delta) {
   settings.fontSize = Math.max(9, Math.min(24, settings.fontSize + delta));
@@ -1536,23 +1934,61 @@ function bumpFont(delta) {
 }
 
 // ---------------------------------------------------------------- terminal search
+function isTermSearchOpen() {
+  const box = $('#term-search');
+  return !!(box && box.classList.contains('show'));
+}
+function clearAllTermSearchDecorations(exceptSid = null) {
+  for (const [sid, r] of terms) {
+    if (exceptSid && sid === exceptSid) continue;
+    try { r.search.clearDecorations(); } catch (_) {}
+  }
+}
+function syncTermSearchUI() {
+  const input = /** @type {HTMLInputElement | null} */ ($('#term-search-input'));
+  const t = tabsByProj.get(activeId);
+  const asid = activeSessionId();
+  const rec = asid ? terms.get(asid) : null;
+  if (input) {
+    if (isProjSplit(t) && rec) {
+      input.setAttribute('data-no-i18n', '');
+      input.placeholder = `${tt('Поиск в терминале…').replace(/…$/, '')} · ${rec.name}`;
+    } else {
+      input.removeAttribute('data-no-i18n');
+      input.placeholder = tt('Поиск в терминале…');
+    }
+  }
+  if (!isTermSearchOpen()) return;
+  if (!rec) {
+    $('#term-search').classList.remove('show');
+    clearAllTermSearchDecorations();
+    return;
+  }
+  // При переключении активного слота сплита или вкладки гасим подсветку в неактивных терминалах,
+  // чтобы декорации не оставались висеть в соседнем слоте.
+  clearAllTermSearchDecorations(asid);
+}
 function openTermSearch() {
   const rec = terms.get(activeSessionId());
   if (!rec) return;
   const box = $('#term-search');
   box.classList.add('show');
-  const input = $('#term-search-input');
+  syncTermSearchUI();
+  const input = /** @type {HTMLInputElement} */ ($('#term-search-input'));
   input.focus(); input.select();
 }
 function closeTermSearch() {
   $('#term-search').classList.remove('show');
+  clearAllTermSearchDecorations();
   const rec = terms.get(activeSessionId());
-  if (rec) { try { rec.search.clearDecorations(); } catch (_) {} rec.term.focus(); }
+  if (rec) rec.term.focus();
 }
 function runTermSearch(dir) {
-  const rec = terms.get(activeSessionId());
-  const q = $('#term-search-input').value;
+  const asid = activeSessionId();
+  const rec = terms.get(asid);
+  const q = /** @type {HTMLInputElement} */ ($('#term-search-input')).value;
   if (!rec || !q) return;
+  clearAllTermSearchDecorations(asid);
   // Метки overview-ruler берём из токенов активной темы, а не хардкодим (контракт тем):
   // --warn для совпадений, --add для активного — так они согласованы с любой темой.
   const css = getComputedStyle(document.documentElement);
@@ -1584,7 +2020,7 @@ function scanTermBuffer(term, q) {
 function jumpToSession(projId, sid) {
   setActive(projId);
   const t = tabsByProj.get(projId);
-  if (t && t.sessions.includes(sid)) { t.active = sid; saveProjTabs(); }
+  if (t && t.sessions.includes(sid)) { materializeSession(sid); t.active = sid; saveProjTabs(); }
   showActiveTerminal();
 }
 // Окно «Найти во всех проектах» (renderer/gsearch.js): содержимое и имена файлов через стриминговый
@@ -1616,6 +2052,7 @@ function setActive(id) {
 function doSetActive(id) {
   const proj = projects.find((p) => p.id === id);
   if (!proj) return;
+  const prevId = activeId;
   activeId = id;
   try { sessionStorage.setItem('lite.activeProject', id); } catch (_) {} // переживает перезагрузку окна (не перезапуск)
   try { lite.errors.setContext(proj.path); } catch (_) {} // тег проекта для новых ошибок в реестре
@@ -1627,9 +2064,8 @@ function doSetActive(id) {
     lite.fs.watch(proj.path); watchedRoot = proj.path;
   }
   ensureProjectTabs(proj);
-  renderProjects();
+  updateActiveProjectDom(prevId, id);
   showActiveTerminal();
-  applyFontSize();
   // вивер живёт в своём окне и следует за проектом через app:activeProject (pushActiveProject ниже)
   try { Ext.notifyActiveProject(activeId); } catch (_) {} // пользовательские модули: ctx.projects.onChange
   pushActiveProject(proj); // окна модулей (git/ctx/notes/audit): следовать за активным проектом редактора
@@ -1701,9 +2137,56 @@ const Ext = initExtensions({
 });
 registerPanel('ext', { isOpen: Ext.isOpen, setOpen: Ext.setOpen });
 PANEL_ORDER.push('ext');
-// Entry point used by the «Модули» menu / quickbar. Мигрированные модули открываются окном.
+
+// ---------------------------------------------------------------- встроенный док «Проект» (#files-dock)
+let filesDockOpen = false;
+let filesDockMounted = false;
+function ensureFilesDockFrame() {
+  const frame = /** @type {HTMLIFrameElement | null} */ ($('#files-dock-frame'));
+  if (!frame) return;
+  if (!filesDockMounted) {
+    filesDockMounted = true;
+    frame.src = 'module.html?embed=1#files';
+  }
+}
+function unmountFilesDock() {
+  filesDockOpen = false;
+  filesDockMounted = false;
+  const dock = $('#files-dock'), gut = $('#gutter-files');
+  if (dock) dock.classList.add('hidden');
+  if (gut) gut.classList.add('hidden');
+  const frame = /** @type {HTMLIFrameElement | null} */ ($('#files-dock-frame'));
+  if (frame) frame.src = 'about:blank';
+  try { if (lite.editorBus.filesDockState) lite.editorBus.filesDockState(false); } catch (_) {}
+  markOpenModules();
+  refitActiveTerminal();
+}
+function setFilesDockOpen(open) {
+  const want = !!open;
+  if (want === filesDockOpen && (!want || filesDockMounted)) return;
+  const alreadyMounted = filesDockMounted;
+  if (want) {
+    closeOtherPanels('files');
+    ensureFilesDockFrame();
+  }
+  filesDockOpen = want;
+  const dock = $('#files-dock'), gut = $('#gutter-files');
+  if (dock) dock.classList.toggle('hidden', !want);
+  if (gut) gut.classList.toggle('hidden', !want);
+  try { if (lite.editorBus.filesDockState) lite.editorBus.filesDockState(want); } catch (_) {}
+  if (want && alreadyMounted) { try { lite.editorBus.refreshTree(); } catch (_) {} }
+  applyLayout();
+  markOpenModules();
+  refitActiveTerminal();
+}
+function toggleFilesDock() { setFilesDockOpen(!filesDockOpen); }
+registerPanel('files', { isOpen: () => filesDockOpen, setOpen: setFilesDockOpen });
+PANEL_ORDER.push('files');
+
+// Entry point used by the «Модули» menu / quickbar. Мигрированные модули открываются окном (или доком для files).
 function openModule(id) {
-  if (id === 'git') { lite.editorBus.focusGit(); return; } // Git встроен в окно вивера → открыть его на секции «Коммит»
+  if (id === 'git') { lite.editorBus.focusGit(); return; } // Git встроен в вивер → открыть на секции «Коммит»
+  if (id === 'files' && settings.dockFiles) { toggleFilesDock(); return; }
   if (WINDOW_MODULES.has(id)) { lite.module.open(id); return; }
   const p = panels.get(id);
   if (p) p.setOpen(true);
@@ -1778,7 +2261,10 @@ function renderQuickbar() {
 let openModuleIds = new Set();
 function markOpenModules() {
   document.querySelectorAll('#quickbar .qb-btn').forEach((b) => {
-    b.classList.toggle('open', openModuleIds.has(b.dataset.mod));
+    if (!(b instanceof HTMLElement)) return;
+    const id = b.dataset.mod;
+    const isOpen = openModuleIds.has(id) || (id === 'files' && filesDockOpen);
+    b.classList.toggle('open', isOpen);
   });
 }
 // Бейдж активных (не выполненных) задач АКТИВНОГО проекта на кнопке «Задачи» квикбара. Источник —
@@ -1811,7 +2297,7 @@ async function refreshAgendaCount(id) {
   try {
     const arr = await lite.store.agendaGet(id);
     const eod = (() => { const d = new Date(); d.setHours(0, 0, 0, 0); return d.getTime() + 86400000; })();
-    const n = Array.isArray(arr) ? arr.filter((r) => r && !r.done && r.at && !isNaN(new Date(r.at)) && new Date(r.at).getTime() < eod).length : 0;
+    const n = Array.isArray(arr) ? arr.filter((r) => r && !r.done && r.at && !Number.isNaN(Date.parse(r.at)) && new Date(r.at).getTime() < eod).length : 0;
     if (!STORE.agendaCounts) STORE.agendaCounts = {};
     STORE.agendaCounts[id] = n;
     if (id === activeId || id === '__global__') updateNotesBadge();
@@ -1895,6 +2381,7 @@ renderQuickbar(); // стартовая отрисовка (пользовате
 // ---------------------------------------------------------------- gutters (resize)
 function initGutters() {
   document.querySelectorAll('.gutter').forEach((g) => {
+    if (!(g instanceof HTMLElement)) return;
     const target = g.dataset.resize;
     g.addEventListener('mousedown', (e) => {
       e.preventDefault();
@@ -1904,7 +2391,8 @@ function initGutters() {
       const onMove = (ev) => {
         const dx = ev.clientX - startX;
         let w = target === 'sidebar' ? startW + dx : startW - dx;
-        layout[target] = Math.max(150, Math.min(1000, w));
+        const maxW = target === 'filesDock' ? Math.max(480, window.innerWidth - 360) : 1000;
+        layout[target] = Math.max(150, Math.min(maxW, w));
         applyLayout();
         refitActiveTerminal();
       };
@@ -1918,6 +2406,36 @@ function initGutters() {
       document.addEventListener('mouseup', onUp);
     });
   });
+  const sg = $('#term-split-gutter');
+  if (sg) {
+    sg.addEventListener('mousedown', (e) => {
+      e.preventDefault();
+      const tb = $('#term-body');
+      if (!tb) return;
+      document.body.classList.add('resizing');
+      const onMove = (ev) => {
+        const rect = tb.getBoundingClientRect();
+        if (rect.width <= 0) return;
+        layout.termSplit = Math.max(0.2, Math.min(0.8, (ev.clientX - rect.left) / rect.width));
+        applyLayout();
+        refitActiveTerminal();
+      };
+      const onUp = () => {
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onUp);
+        document.body.classList.remove('resizing');
+        saveLayout();
+      };
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+    });
+    sg.addEventListener('dblclick', () => {
+      layout.termSplit = 0.5;
+      applyLayout();
+      refitActiveTerminal();
+      saveLayout();
+    });
+  }
 }
 
 // ---------------------------------------------------------------- оболочка: боковая карточка и нижняя полоса
@@ -2192,6 +2710,7 @@ function showModulesCatalog(start = 'all') {
   let tab = start, hl = 0, tiles = [];
   const quick = () => (Array.isArray(STORE.quickbar) ? STORE.quickbar : []);
   const userMods = () => Ext.list().filter((x) => x.ok).map((x) => ({ id: 'ext:' + x.id, extId: x.id, icon: 'layers', title: x.name, desc: 'мой модуль · панель справа', user: true }));
+  /** @type {Array<[string, string, () => number]>} */
   const TABS = [
     ['all', 'Все', () => BUILTIN_MODS.length + userMods().length],
     ['project', 'Для проекта', () => BUILTIN_MODS.filter((x) => x.project).length],
@@ -2347,6 +2866,7 @@ function showLookPanel(anchor) {
     });
     dd.querySelectorAll('.lk-sw').forEach((b) => b.classList.toggle('on', b.dataset.acc === l.accent));
   };
+  /** @type {Array<[string, string, number, number, number, string, () => number, (v: number) => void]>} */
   const RANGES = [
     ['alpha', 'Непрозрачность фона', 60, 100, 1, '%', () => lookOf(settings).alpha, (v) => editLook((l) => { l.alpha = v; })],
     ['r', 'Скругление', 4, 22, 1, 'px', () => lookOf(settings).r, (v) => editLook((l) => { l.r = v; })],
@@ -2501,12 +3021,12 @@ function refreshGitChip(delay = 400) {
   clearTimeout(gitChipT);
   gitChipT = setTimeout(async () => {
     const p = activeProject();
-    if (!p || missing.has(p.id)) { gitChip = { projId: p ? p.id : null, repo: false, branch: '', files: [] }; renderChips(); return; }
+    if (!p || missing.has(p.id)) { gitChip = { projId: p ? p.id : null, repo: false, branch: '', ahead: 0, behind: 0, files: [] }; renderChips(); return; }
     const seq = ++gitChipSeq;
     let info, st;
     try { [info, st] = await Promise.all([lite.git.info(p.path), lite.git.status(p.path)]); } catch (_) { info = null; }
     if (seq !== gitChipSeq) return;          // пока ждали, проект сменился — ответ устарел
-    if (!info || !info.repo) { gitChip = { projId: p.id, repo: false, branch: '', files: [] }; renderChips(); return; }
+    if (!info || !info.repo) { gitChip = { projId: p.id, repo: false, branch: '', ahead: 0, behind: 0, files: [] }; renderChips(); return; }
     const base = p.path.replace(/[\\/]+$/, '');
     // префикс — с разделителем: иначе у проекта /repo/app файл /repo/app-old/x показывался бы как «old/x»
     const inBase = (abs) => abs.startsWith(base + '/') || abs.startsWith(base + '\\');
@@ -3184,6 +3704,12 @@ function showSettings(start = 'look') {
         // stopPropagation — как у кнопки-палитры: иначе клик всплывёт до document и closeMenus() сразу закроет панель
         button('Настроить…', 'palette', (e) => { e.stopPropagation(); close(); showLookPanel($('#app').classList.contains('single') ? $('#rail-look') : $('#btn-look')); })));
       body.appendChild(row('Размер шрифта терминала', 'На ходу — Ctrl + «+» / «−».', number(settings.fontSize, 9, 24, 1, (v) => { settings.fontSize = v; save(); applyFontSize(); })));
+      body.appendChild(row('Панель «Проект» внутри главного окна', 'Дерево файлов, редактор кода и Git закрепляются справа от терминала вместо отдельного окна (Ctrl+Shift+E).', toggle(!!settings.dockFiles, (v) => {
+        settings.dockFiles = v;
+        save();
+        if (!v) unmountFilesDock();
+        try { lite.editorBus.dockFiles(v); } catch (_) {}
+      })));
       // Рамка окна — живой предпросмотр: применяется сразу и уезжает в окна модулей (шина settingsChanged).
       const frameLive = () => { save(); applyFrame(settings); try { lite.app.settingsChanged(settings); } catch (_) {} };
       const fc = frameConf(settings);
@@ -3213,14 +3739,12 @@ function showSettings(start = 'look') {
       const pre = el('input', 'set-txt mono'); pre.style.width = '220px'; pre.placeholder = 'claude'; pre.spellcheck = false; pre.value = settings.termPrefill || '';
       pre.addEventListener('change', () => { settings.termPrefill = pre.value.trim(); save(); });
       body.appendChild(row('Автоввод в новом терминале', 'Слово или команда само пишется в каждый новый терминал проекта — при открытии проекта и новой вкладке, но без Enter. Пусто — терминал открывается пустым.', pre));
-      // Оболочка — платформо-зависимо (Windows: PowerShell/cmd/свой; Linux: bash/свой).
-      const isWin = (lite.platform === 'win32');
-      const presets = isWin ? ['', 'cmd'] : [''];
+      // Оболочка Linux ($SHELL / /bin/bash по умолчанию либо пользовательский путь).
       const curShell = settings.shell || '';
-      const custom = curShell && !presets.includes(curShell);
+      const custom = Boolean(curShell);
       const path = el('input', 'set-txt mono'); path.placeholder = 'путь к исполняемому файлу'; path.spellcheck = false; path.value = custom ? curShell : '';
-      const shell = select(isWin ? [['', 'PowerShell (по умолчанию)'], ['cmd', 'cmd'], ['__custom__', 'Свой путь…']] : [['', 'bash (по умолчанию)'], ['__custom__', 'Свой путь…']],
-        custom ? '__custom__' : curShell, (v) => {
+      const shell = select([['', 'bash (по умолчанию)'], ['__custom__', 'Свой путь…']],
+        custom ? '__custom__' : '', (v) => {
           pathRow.style.display = v === '__custom__' ? '' : 'none';
           if (v !== '__custom__') { settings.shell = v; save(); } else if (path.value.trim()) { settings.shell = path.value.trim(); save(); }
         });
@@ -3231,6 +3755,8 @@ function showSettings(start = 'look') {
       body.appendChild(pathRow);
       body.appendChild(row('Шкала времени слева', 'Узкая полоса вдоль терминала: когда отправлена команда, когда вывод возобновился после паузы, смена минуты. Едет вместе с текстом и не попадает в копирование.',
         toggle(settings.termTimeline === true, (v) => { settings.termTimeline = v; save(); applyTimeline(); })));
+      body.appendChild(row('Предупреждать при выходе с активными терминалами', 'Спрашивать подтверждение при закрытии главного окна, если в терминалах работают агенты или выполняются команды.',
+        toggle(settings.confirmQuitWithAgents !== false, (v) => { settings.confirmQuitWithAgents = v; save(); })));
     },
     notif() {
       const subs = [];
@@ -3331,7 +3857,7 @@ function paletteActions() {
   for (const p of projects) acts.push({ label: `Проект: ${p.name}`, hint: p.path, run: () => setActive(p.id) });
   acts.push({ label: 'Открыть папку…', run: openProjectDialog });
   acts.push({ label: 'Создать папку…', run: showCreateFolder });
-  acts.push({ label: 'Проект — вивер, дерево, Git (открыть окно)', run: () => openModule('files') });
+  acts.push({ label: 'Проект — вивер, дерево, Git', hint: 'Ctrl+Shift+E', run: () => openModule('files') });
   acts.push({ label: 'Граф Git — ветки и коммиты схемой', run: () => openModule('gitgraph') });
   acts.push({ label: 'Контекст — граф контекста агента', run: () => openModule('ctx') });
   acts.push({ label: 'Контейнеры (Docker / Podman)', run: () => openModule('docker') });
@@ -3349,6 +3875,7 @@ function paletteActions() {
   acts.push({ label: 'Найти во всех проектах — файлы и терминалы', hint: 'Ctrl+Shift+F', run: () => showGlobalSearch() });
   acts.push({ label: 'Поиск по всем терминалам', run: () => showGlobalSearch({ mode: 'terms' }) });
   acts.push({ label: 'Очистить терминал', run: () => clearTerminal() });
+  acts.push({ label: 'Разделить терминал — вкл/выкл', hint: 'Ctrl+Shift+D', run: () => toggleTermSplit() });
   acts.push({ label: 'Шкала времени слева — вкл/выкл', hint: settings.termTimeline === true ? 'сейчас включена' : 'сейчас выключена', run: () => { settings.termTimeline = settings.termTimeline !== true; saveSettings(); applyTimeline(); } });
   acts.push({ label: 'Перезапустить терминал', run: () => restartTerminal() });
   acts.push({ label: 'Настройки…', run: () => showSettings() });
@@ -3654,7 +4181,7 @@ function applyRestGuard(s) {
     restGuardEl.appendChild(card);
     host.appendChild(restGuardEl);
     // снять фокус с терминала, чтобы клавиатура не уходила в xterm под оверлеем
-    try { if (document.activeElement && document.activeElement.blur) document.activeElement.blur(); } catch (_) {}
+    try { if (document.activeElement instanceof HTMLElement) document.activeElement.blur(); } catch (_) {}
     try { restGuardEl.focus(); } catch (_) {}
   }
   const done = s.total ? Math.max(0, Math.min(1, (s.total - s.remaining) / s.total)) : 0;
@@ -3711,10 +4238,15 @@ function init() {
   setInterval(() => { checkForUpdate().catch(() => {}); }, 3 * 60 * 60 * 1000);
 
   lite.pty.onData(({ id, data }) => {
-    if (isExtTerm(id)) { const r = extTerms.get(id); if (r) r.term.write(data); return; }
+    if (isExtTerm(id)) {
+      const r = extTerms.get(id);
+      if (r) writeTermWithAck(r.term, id, data); else creditPtyAck(id, data ? data.length : 0);
+      return;
+    }
     const rec = terms.get(id); // scratch-сессии маршрутизируются в своё окно (не приходят сюда)
-    if (!rec) return;
-    rec.term.write(data);
+    if (!rec) { creditPtyAck(id, data ? data.length : 0); return; }
+    if (rec.adoptPending) { rec.adoptPending.push(data); return; }
+    writeTermWithAck(rec.term, id, data);
     if (rec.prefill) nudgePrefill(id); // ждём паузы в выводе — тогда пишем автоввод
     markActivity(id, data);
   });
@@ -3722,7 +4254,7 @@ function init() {
     if (isExtTerm(id)) { const r = extTerms.get(id); if (r) r.term.write('\r\n\x1b[90m[шелл завершён]\x1b[0m\r\n'); return; }
     const rec = terms.get(id);
     if (!rec) return;   // сессия прежней загрузки окна (или уже закрытая вкладка) — не наша
-    cancelPrefill(id); rec.term.write('\r\n\x1b[90m[процесс завершён — закрой и переоткрой проект]\x1b[0m\r\n');
+    cancelPrefill(id); rec.term.write('\r\n\x1b[90m' + tt('[процесс завершён — нажмите Enter или ↻ для перезапуска]') + '\x1b[0m\r\n');
     clearTimeout(rec.idleTimer); rec.claude = null; rec.exited = true; stopClaudeProbe(rec);   // exited — терминал закрывается без потерь
     setProjState(id, 'quiet');
   });
@@ -3741,19 +4273,29 @@ function init() {
 
   // ── Фильтр списка проектов + вход в глобальный поиск ──────────────────────────────
   {
-    const q = $('#proj-filter'), clr = $('#proj-filter-clear');
-    const apply = () => {
-      projFilter = q.value.trim().toLowerCase();
+    const q = $('#proj-filter'), clr = $('#proj-filter-clear'), box = $('#projects');
+    let filterRaf = 0;
+    let savedScrollTop = 0;
+    const applyNow = () => {
+      if (filterRaf) { cancelAnimationFrame(filterRaf); filterRaf = 0; }
+      const next = q.value.trim().toLowerCase();
+      if (!projFilter && next && box) savedScrollTop = box.scrollTop;
+      const clearing = !!(projFilter && !next);
+      projFilter = next;
       clr.classList.toggle('hidden', !projFilter);
-      renderProjects();
+      renderProjects({ skipRail: true });
+      if (clearing && box) box.scrollTop = savedScrollTop;
     };
-    q.addEventListener('input', apply);
-    q.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape') { q.value = ''; apply(); q.blur(); }
-      // Enter — открыть первый найденный проект: фильтр работает и как быстрый переключатель
-      if (e.key === 'Enter') { const first = buildSections()[0]; if (first && first.list[0]) setActive(first.list[0].id); }
+    q.addEventListener('input', () => {
+      if (filterRaf) return;
+      filterRaf = requestAnimationFrame(applyNow);
     });
-    clr.addEventListener('click', () => { q.value = ''; apply(); q.focus(); });
+    q.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') { q.value = ''; applyNow(); q.blur(); }
+      // Enter — открыть первый найденный проект: фильтр работает и как быстрый переключатель
+      if (e.key === 'Enter') { applyNow(); const first = buildSections()[0]; if (first && first.list[0]) setActive(first.list[0].id); }
+    });
+    clr.addEventListener('click', () => { q.value = ''; applyNow(); q.focus(); });
     $('#proj-find').addEventListener('click', () => showGlobalSearch({ query: q.value.trim() }));
   }
 
@@ -3826,6 +4368,13 @@ function init() {
   lite.editorBus.onSendNoteToTerminal((projId, text) => { const proj = projects.find((x) => x.id === projId) || activeProject(); if (proj) sendNoteToTerminal(proj, text); });
   lite.editorBus.onRefreshProjects(() => { try { renderProjects(); } catch (_) {} }); // git в окне вивера сделал commit/checkout → освежить бейджи
   lite.editorBus.onRestGuard((s) => { try { applyRestGuard(s); } catch (e) { console.error(e); } }); // Помодоро: оверлей отдыха над терминалами
+  if (lite.editorBus.onEnsureFilesDock) {
+    lite.editorBus.onEnsureFilesDock((opts) => {
+      if (opts && opts.close) unmountFilesDock();
+      else if (opts && opts.toggle) toggleFilesDock();
+      else setFilesDockOpen(true);
+    });
+  }
   lite.pomodoro.onTick((s) => { try { updatePomoUI(s); } catch (_) {} });        // мини-таймер в титлбаре + бейдж квикбара
   lite.pomodoro.onChime(({ to }) => { try { pomoChime(to); } catch (_) {} });     // звон смены фазы
   // Набор открытых окон-модулей → подсветка кнопок квикбара (идея 3).
@@ -3836,9 +4385,22 @@ function init() {
   $('#term-restart').addEventListener('click', () => restartTerminal());
   // Панель вкладок терминалов: статичная «+» (всегда видна) + стрелки-прокрутка при переполнении.
   $('#term-tab-add').addEventListener('click', () => addTab());
+  { const sb = $('#term-split-btn'); if (sb) sb.addEventListener('click', () => toggleTermSplit()); }
+  { const fc = $('#files-dock-close'); if (fc) fc.addEventListener('click', () => setFilesDockOpen(false)); }
+  {
+    const fp = $('#files-dock-popout');
+    if (fp) fp.addEventListener('click', () => {
+      settings.dockFiles = false;
+      saveSettings();
+      unmountFilesDock();
+      try { lite.editorBus.dockFiles(false); } catch (_) {}
+    });
+  }
   $('#term-tabs-prev').addEventListener('click', () => scrollTabs(-1));
   $('#term-tabs-next').addEventListener('click', () => scrollTabs(1));
   $('#term-tabs').addEventListener('scroll', () => { updateTabScroll(); hideTabTip(); });
+  $('#term-tabs').addEventListener('dragover', (e) => { if (tabDragEl) { e.preventDefault(); if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'; } });
+  $('#term-tabs').addEventListener('drop', (e) => { if (tabDragEl) e.preventDefault(); });
   window.addEventListener('resize', updateTabScroll);
   // бейдж «N ждёт ответа»: клик — к следующему ждущему агенту (по кругу, если ждут несколько)
   $('#attention-badge').addEventListener('click', () => {
@@ -3851,7 +4413,11 @@ function init() {
   });
 
   // terminal search box
-  $('#term-search-input').addEventListener('keydown', (e) => {
+  const termSearchInput = /** @type {HTMLInputElement} */ ($('#term-search-input'));
+  termSearchInput.addEventListener('input', () => {
+    if (!termSearchInput.value) clearAllTermSearchDecorations();
+  });
+  termSearchInput.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') { e.preventDefault(); runTermSearch(e.shiftKey ? -1 : 1); }
     else if (e.key === 'Escape') { e.preventDefault(); closeTermSearch(); }
   });
@@ -3870,7 +4436,7 @@ function init() {
   const hideDrop = () => { clearTimeout(dropT); if (dropZone) { dropZone.remove(); dropZone = null; } };
   document.addEventListener('dragover', (e) => {
     e.preventDefault();
-    if (favDragCard || !e.dataTransfer || ![...(e.dataTransfer.types || [])].includes('Files')) return;
+    if (favDragCard || tabDragEl || !e.dataTransfer || ![...(e.dataTransfer.types || [])].includes('Files')) return;
     if (!dropZone) {
       dropZone = el('div', 'dropzone');
       const c = el('div', 'dz-card');
@@ -3900,7 +4466,7 @@ function init() {
   // scratch/rh ресайз теперь в окнах модулей — обрабатывается module-entry.js.
 
 
-  applyFontSize();
+  applyFontSize({ notify: false });
   projects = loadProjectsFromDisk();
   renderProjects();
   // Какие терминалы заняты агентом и какие можно закрыть: опрос раз в 3 с (≈1,5 мс в main на десяток
@@ -3966,9 +4532,10 @@ function autoLaunchModules() {
 }
 
 function cycleProject(dir) {
-  if (projects.length < 2) return;
-  const i = projects.findIndex((p) => p.id === activeId);
-  const next = projects[(i + dir + projects.length) % projects.length];
+  const list = visibleOrderedProjects();
+  if (list.length < 2) return;
+  const i = list.findIndex((p) => p.id === activeId);
+  const next = i < 0 ? list[dir > 0 ? 0 : list.length - 1] : list[(i + dir + list.length) % list.length];
   if (next) setActive(next.id);
 }
 
