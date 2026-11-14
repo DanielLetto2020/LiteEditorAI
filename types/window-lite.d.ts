@@ -163,6 +163,7 @@ export interface LiteBridge {
     adoptable(): Promise<string[]>;
     create(opts: { id: string; cwd?: string; cols?: number; rows?: number }): Promise<{ ok?: boolean; existed?: boolean; backlog?: string; error?: string }>;
     write(id: string, data: string): void;
+    ack?(id: string, bytes: number): void;
     resize(id: string, cols: number, rows: number): void;
     kill(id: string): void;
     restart(opts: { id: string; cwd?: string; cols?: number; rows?: number }): Promise<{ ok?: boolean; error?: string }>;

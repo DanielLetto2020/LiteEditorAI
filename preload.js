@@ -708,6 +708,7 @@ if (canExposeLiteBridge()) contextBridge.exposeInMainWorld('lite', {
     adoptable: () => ipcRenderer.invoke('pty:adoptable'), // терминалы, пережившие перезагрузку окна
     create: (opts) => ipcRenderer.invoke('pty:create', opts),
     write: (id, data) => ipcRenderer.send('pty:write', { id, data }),
+    ack: (id, bytes) => ipcRenderer.send('pty:ack', { id, bytes }), // подтверждение разбора чанка xterm (flow control)
     resize: (id, cols, rows) => ipcRenderer.send('pty:resize', { id, cols, rows }),
     kill: (id) => ipcRenderer.send('pty:kill', { id }),
     restart: (opts) => ipcRenderer.invoke('pty:restart', opts),

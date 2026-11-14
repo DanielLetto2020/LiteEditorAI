@@ -20,7 +20,7 @@ const updater = require('./lib/updater');  // самообновление: пр
 const { watchTree } = require('./lib/tree-watch'); // слежение за деревом проекта (на Linux — по наблюдению на каталог)
 const gitignore = require('./lib/gitignore');      // компиляция и кэш правил .gitignore проекта
 const { createHistory } = require('./lib/history'); // локальная история файлов: снимки, троттл, срок и объём
-const { createBatcher } = require('./lib/ptybatch'); // склейка вывода PTY перед отправкой в окно
+const { createBatcher, createFlowGate } = require('./lib/ptybatch'); // склейка вывода PTY + watermark flow-control
 const { createRingStore } = require('./lib/ptyring'); // кольцевой буфер вывода PTY для бесшовного подхвата вкладок
 const {
   WRITE_TMP_SUFFIX, STORE_KEYS, PATCH_KEYS, rendererStoreKey,
@@ -114,6 +114,7 @@ let tray = null;
 let growDesiredWidth = null;
 let growAppliedWidth = null;
 const ptys = new Map();     // projectId -> IPty
+const ptyFlows = new Map(); // sessionId -> FlowGate (pause/resume по watermark вывода в xterm)
 const ptyRings = createRingStore(128 * 1024); // кольцевой хвост вывода живых PTY (128 КБ на сессию)
 const watchers = new Map(); // project root path -> { watcher, timer, pending:Set }
 
@@ -2980,6 +2981,8 @@ let renderCrashes = [];
 function killPtysOwnedBy(wc) {
   for (const [id, p] of [...ptys]) {
     if (ownerBySession.get(id) !== wc) continue;
+    const g = ptyFlows.get(id); if (g) g.reset();
+    ptyFlows.delete(id);
     try { p.kill(); } catch (_) {}
     ptys.delete(id);
     ptyRings.delete(id);
@@ -2995,10 +2998,13 @@ function dropOrphan(id) { const t = orphanPtys.get(id); if (t) { clearTimeout(t)
 function orphanPtysOf(wc) {
   for (const [id] of ptys) {
     if (ownerBySession.get(id) !== wc || orphanPtys.has(id)) continue;
+    const g = ptyFlows.get(id); if (g) g.reset(); // страница ушла и ack больше не пришлёт — не держим шелл на паузе
     orphanPtys.set(id, setTimeout(() => {
       orphanPtys.delete(id);
       const p = ptys.get(id);
       if (!p) return;
+      const fg = ptyFlows.get(id); if (fg) fg.reset();
+      ptyFlows.delete(id);
       try { p.kill(); } catch (_) {}
       ptys.delete(id);
       ptyRings.delete(id);
@@ -3101,8 +3107,8 @@ function broadcastToModules(ch, payload) {
 // Маршрут стрима к окну-владельцу сессии (fallback — главное окно редактора).
 function sendToOwner(sessionId, ch, payload) {
   const wc = ownerBySession.get(sessionId);
-  if (sendTo(wc, ch, payload)) return;          // владелец мог умереть — тогда падаем на окно редактора
-  sendTo(mainWindow, ch, payload);
+  if (sendTo(wc, ch, payload)) return true;     // владелец мог умереть — тогда падаем на окно редактора
+  return sendTo(mainWindow, ch, payload);
 }
 // ── Навигация окон с мостом ───────────────────────────────────────────────────────────────────
 // preload применяется к КАЖДОМУ документу webContents, поэтому окно, ушедшее на внешний адрес,
@@ -3879,6 +3885,8 @@ function bindPtyOwner(proc, owner) {
     owner.once('destroyed', () => {
       for (const [id, p] of [...ptys]) {
         if (ptyOwner.get(p) !== owner) continue;
+        const g = ptyFlows.get(id); if (g) g.reset();
+        ptyFlows.delete(id);
         try { p.kill(); } catch (_) {}
         ptys.delete(id);
         ptyRings.delete(id);
@@ -3916,16 +3924,26 @@ function spawnPtyFor(id, cwd, cols, rows, owner) {
   }
   logger.log('info', 'pty', `spawned pid=${proc.pid}`);
   ptyRings.delete(id);
+  const oldGate = ptyFlows.get(id); if (oldGate) oldGate.reset();
+  const gate = createFlowGate({
+    onPause: () => { try { proc.pause(); } catch (_) {} },
+    onResume: () => { try { proc.resume(); } catch (_) {} },
+  });
+  ptyFlows.set(id, gate);
   // Вывод — окну-владельцу (редактор/scratch-окно), склеенный: после тишины кусок уходит сразу,
-  // под потоком — пачкой раз в 5 мс (lib/ptybatch.js). Хвост досылается перед pty:exit.
+  // под потоком — пачкой раз в 5 мс (lib/ptybatch.js) с паузой PTY при переполнении очереди xterm.
   const out = createBatcher((data) => {
     ptyRings.push(id, data);
-    sendToOwner(id, 'pty:data', { id, data });
+    if (sendToOwner(id, 'pty:data', { id, data })) {
+      gate.sent(data.length);
+    }
   });
   proc.onData((data) => out.push(data));
   proc.onExit(() => {
     out.flush();
     if (ptys.get(id) && ptys.get(id) !== proc) return; // replaced by a restart — suppress stale exit
+    const g = ptyFlows.get(id); if (g) g.reset();
+    ptyFlows.delete(id);
     ptys.delete(id);
     ptyRings.delete(id);
     sendToOwner(id, 'pty:exit', { id });
@@ -3939,6 +3957,7 @@ function spawnPtyFor(id, cwd, cols, rows, owner) {
 ipcMain.handle('pty:create', (e, { id, cwd, cols, rows }) => {
   if (ptys.has(id)) {
     dropOrphan(id);
+    const g = ptyFlows.get(id); if (g) g.reset();
     ownerBySession.set(id, e.sender);
     bindPtyOwner(ptys.get(id), e.sender);
     return { ok: true, existed: true, backlog: ptyRings.read(id) };
@@ -3948,18 +3967,23 @@ ipcMain.handle('pty:create', (e, { id, cwd, cols, rows }) => {
 // Kill the existing PTY (if any) and start a fresh one in the same cwd.
 ipcMain.handle('pty:restart', (e, { id, cwd, cols, rows }) => {
   dropOrphan(id);
+  const g = ptyFlows.get(id); if (g) g.reset();
+  ptyFlows.delete(id);
   ptyRings.delete(id);
   const old = ptys.get(id);
   if (old) { try { old.kill(); } catch (_) {} ptys.delete(id); }
   return spawnPtyFor(id, cwd, cols, rows, e.sender);
 });
 ipcMain.on('pty:write', (_e, { id, data }) => { const p = ptys.get(id); if (p) p.write(data); });
+ipcMain.on('pty:ack', (_e, { id, bytes } = {}) => { const g = ptyFlows.get(id); if (g) g.ack(Number(bytes) || 0); });
 ipcMain.on('pty:resize', (_e, { id, cols, rows }) => {
   const p = ptys.get(id);
   if (p && cols > 0 && rows > 0) { try { p.resize(cols, rows); } catch (_) {} }
 });
 ipcMain.on('pty:kill', (_e, { id }) => {
   dropOrphan(id);
+  const g = ptyFlows.get(id); if (g) g.reset();
+  ptyFlows.delete(id);
   ptyRings.delete(id);
   const p = ptys.get(id);
   if (p) { try { p.kill(); } catch (_) {} ptys.delete(id); }

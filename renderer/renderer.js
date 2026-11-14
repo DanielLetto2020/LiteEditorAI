@@ -14,7 +14,7 @@ import { initI18n, t as tt } from './i18n.js';
 import { syncSettings } from './settings-sync.js';
 import { applyLook, termThemeFor, lookOf, lookTokens, LOOK_BASE_NAMES, LOOK_STATUS_NAMES, LOOK_TOKEN_NAMES, THEME_NAME } from './themes.js';
 import { FRAME_COLORS, frameConf, applyFrame } from './frame.js';
-import { prepareRenderer, activateRenderer, releaseRenderer, applyUnicode11, copySelection, ptyResizer } from './termutil.js';
+import { prepareRenderer, activateRenderer, releaseRenderer, applyUnicode11, copySelection, ptyResizer, writeTermWithAck, creditPtyAck, dropPtyAck } from './termutil.js';
 import { attachTimeline } from './termtimeline.js';
 // initTextProc — «Обработка текста» мигрирована в отдельное окно (renderer/module-entry.js).
 import { el, icon, iconBtn, hydrateIcons, toast, makeModal, showConfirm, showPrompt, baseName, ICONS, setErrorSink } from './ui.js';
@@ -1084,6 +1084,7 @@ function scheduleAgentScan(delay = 500) {
 // Снять вкладку-сессию: процесс, xterm, таймеры, состояние индикатора.
 function disposeSession(sid) {
   lite.pty.kill(sid);
+  dropPtyAck(sid);
   const rec = terms.get(sid);
   if (rec) { clearTimeout(rec.idleTimer); clearTimeout(rec.prefillTimer); stopClaudeProbe(rec); releaseRenderer(rec.term); try { rec.timeline.dispose(); } catch (_) {} try { rec.term.dispose(); } catch (_) {} rec.container.remove(); terms.delete(sid); }
   projState.delete(sid);
@@ -1317,7 +1318,7 @@ function createSession(proj, name, custom, adoptId) {
       if (backlog) r.term.write(backlog);
       else r.term.write('\x1b[90m' + tt('[терминал подхвачен после перезагрузки окна]') + '\x1b[0m\r\n');
       for (const chunk of queued) {
-        r.term.write(chunk);
+        writeTermWithAck(r.term, id, chunk);
         markActivity(id, chunk);
       }
       r.redraw = true;
@@ -1730,6 +1731,7 @@ function restartTerminal(id) {
   if (!proj || !rec) return;
   try { rec.term.reset(); } catch (_) {}
   try { rec.timeline.reset(); } catch (_) {}
+  dropPtyAck(sid);
   rec.sawBell = false; rec.tail = ''; rec.busyStart = Date.now();
   clearTimeout(rec.idleTimer);
   rec.claude = null; rec.exited = false; stopClaudeProbe(rec);
@@ -1743,6 +1745,7 @@ function restartExtTerminal(id) {
   if (!r) return;
   try { r.term.reset(); } catch (_) {}
   try { r.timeline.reset(); } catch (_) {}
+  dropPtyAck(id);
   lite.pty.restart({ id, cwd: r.cwd, cols: r.term.cols, rows: r.term.rows });
   r.term.focus();
 }
@@ -1762,7 +1765,7 @@ function createExtTerminal(container, cwd) {
     write: (s) => lite.pty.write(id, s),
     focus: () => { try { term.focus(); } catch (_) {} },
     refit: () => requestAnimationFrame(() => { try { fit.fit(); syncPty(); } catch (_) {} }),
-    dispose: () => { lite.pty.kill(id); releaseRenderer(term); try { timeline.dispose(); } catch (_) {} try { term.dispose(); } catch (_) {} extTerms.delete(id); },
+    dispose: () => { lite.pty.kill(id); dropPtyAck(id); releaseRenderer(term); try { timeline.dispose(); } catch (_) {} try { term.dispose(); } catch (_) {} extTerms.delete(id); },
   };
 }
 
@@ -4048,11 +4051,15 @@ function init() {
   setInterval(() => { checkForUpdate().catch(() => {}); }, 3 * 60 * 60 * 1000);
 
   lite.pty.onData(({ id, data }) => {
-    if (isExtTerm(id)) { const r = extTerms.get(id); if (r) r.term.write(data); return; }
+    if (isExtTerm(id)) {
+      const r = extTerms.get(id);
+      if (r) writeTermWithAck(r.term, id, data); else creditPtyAck(id, data ? data.length : 0);
+      return;
+    }
     const rec = terms.get(id); // scratch-сессии маршрутизируются в своё окно (не приходят сюда)
-    if (!rec) return;
+    if (!rec) { creditPtyAck(id, data ? data.length : 0); return; }
     if (rec.adoptPending) { rec.adoptPending.push(data); return; }
-    rec.term.write(data);
+    writeTermWithAck(rec.term, id, data);
     if (rec.prefill) nudgePrefill(id); // ждём паузы в выводе — тогда пишем автоввод
     markActivity(id, data);
   });

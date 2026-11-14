@@ -2,7 +2,7 @@
 // пачками по окну или по размеру, flush досылает остаток, порядок данных сохраняется.
 // Запуск: node test/ptybatch.test.js
 const assert = require('assert');
-const { createBatcher } = require('../lib/ptybatch');
+const { createBatcher, createFlowGate } = require('../lib/ptybatch');
 
 let passed = 0;
 const ok = (c, m) => { assert.ok(c, m); passed++; };
@@ -61,4 +61,45 @@ advance(10); b2.flush();
 ok(out.join('') === expect, 'склеенный поток совпадает с исходным побайтно');
 ok(out.length < 1000 / 3, 'сообщений заметно меньше, чем кусков: ' + out.length);
 
-console.log(`ptybatch: ${passed} проверок пройдено`);
+// --- Flow Control (watermark backpressure) ---
+{
+  let pauses = 0, resumes = 0;
+  const g = createFlowGate({
+    highWater: 4096,
+    lowWater: 1024,
+    pauseTimeoutMs: 2000,
+    onPause: () => { pauses++; },
+    onResume: () => { resumes++; },
+    setTimer,
+    clearTimer,
+  });
+
+  g.sent(2000);
+  ok(!g.state().paused && pauses === 0, 'ниже highWater паузы нет');
+  g.sent(2500); // 4500 >= 4096
+  ok(g.state().paused && pauses === 1, 'при достижении highWater включается пауза');
+  g.sent(1000); // 5500 — повторный onPause не зовётся
+  ok(pauses === 1 && g.state().inFlight === 5500, 'повторный sent в паузе только копит счётчик');
+
+  g.ack(3000); // осталось 2500 > lowWater (1024)
+  ok(g.state().paused && resumes === 0, 'частичный ack выше lowWater держит паузу');
+  advance(1500); // таймер продлился при ack, ещё не истёк
+  ok(g.state().paused, 'живой частичный ack продлевает страховочный таймер');
+
+  g.ack(1600); // осталось 900 <= 1024
+  ok(!g.state().paused && resumes === 1 && g.state().inFlight === 900, 'падение до lowWater снимает паузу');
+
+  // Страховочный таймер: рендерер замолчал (перезагрузка окна / старый клиент)
+  g.sent(5000);
+  ok(g.state().paused && pauses === 2, 'снова на паузе под новой лавиной');
+  advance(2000);
+  ok(!g.state().paused && resumes === 2 && g.state().inFlight === 0, 'таймаут молчания автоматически снимает паузу');
+
+  // Принудительный reset (при переподхвате pty:create / закрытии)
+  g.sent(5000);
+  ok(g.state().paused && pauses === 3, 'третья пауза');
+  g.reset();
+  ok(!g.state().paused && resumes === 3 && g.state().inFlight === 0, 'reset мгновенно разблокирует поток');
+}
+
+console.log(`✓ ptybatch: ${passed} проверок пройдено`);
