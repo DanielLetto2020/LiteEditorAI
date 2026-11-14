@@ -1,6 +1,6 @@
 {
   "name": "liteeditor-ai",
-  "version": "1.1.239-alpha",
+  "version": "1.1.240-alpha",
   "description": "Lightweight editor for working with AI coding agents in the terminal",
   "main": "main.js",
   "author": "Максим Кузьминский <i@m-letto.ru>",
@@ -106,6 +106,7 @@
       "buildResources": "assets"
     },
     "npmRebuild": false,
+    "afterAllArtifactBuild": "./scripts/after-all-artifact-build.js",
     "asarUnpack": [
       "**/node_modules/node-pty/**",
       "**/node_modules/sql.js/dist/sql-wasm.wasm",

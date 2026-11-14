@@ -284,4 +284,32 @@ eq(path.basename(u.updatesDir('/home/u/.LiteEditorAI')), 'updates', 'подка�
   } finally { fs.rmSync(d, { recursive: true, force: true }); }
 }
 
+// --- портативный tar.gz: обёртка запуска с --no-sandbox (scripts/after-all-artifact-build.js) ---
+{
+  const { patchTarGz } = require('../scripts/after-all-artifact-build');
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'lite-ptar-'));
+  try {
+    const srcRoot = path.join(d, 'src');
+    const appSub = path.join(srcRoot, 'LiteEditorAI-1.1.240-linux-x64');
+    const tarPath = path.join(d, 'LiteEditorAI-1.1.240-alpha-linux-x64.tar.gz');
+    const unpackDir = path.join(d, 'out');
+    fs.mkdirSync(path.join(appSub, 'resources'), { recursive: true });
+    fs.writeFileSync(path.join(appSub, 'liteeditor-ai'), 'ELF-stub', { mode: 0o755 });
+    cp.execFileSync('tar', ['-czf', tarPath, '-C', srcRoot, 'LiteEditorAI-1.1.240-linux-x64']);
+
+    patchTarGz(tarPath);
+
+    const res = unpackSync(tarPath, unpackDir);
+    ok(res.ok, 'перепакованный tar.gz распаковывается штатно');
+    const wrapper = fs.readFileSync(path.join(res.root, 'liteeditor-ai'), 'utf8');
+    const wrappedBin = fs.readFileSync(path.join(res.root, 'liteeditor-ai.bin'), 'utf8');
+    eq(wrappedBin, 'ELF-stub', 'оригинальный ELF перенесён в liteeditor-ai.bin');
+    ok(wrapper.includes('liteeditor-ai.bin" --no-sandbox "$@"'), 'обёртка запускает бинарник с --no-sandbox');
+    ok((fs.statSync(path.join(res.root, 'liteeditor-ai')).mode & 0o111) !== 0, 'обёртка остаётся исполняемой');
+    const inst = u.describeInstall({ platform: 'linux', execPath: path.join(res.root, 'liteeditor-ai.bin'), isPackaged: true });
+    eq(inst.kind, 'portable', 'исполняемый liteeditor-ai.bin классифицируется как portable');
+    eq(inst.canSelfUpdate, true, 'portable в записываемом каталоге способен самообновляться');
+  } finally { fs.rmSync(d, { recursive: true, force: true }); }
+}
+
 console.log(`updater: ok (${passed} проверок)`);

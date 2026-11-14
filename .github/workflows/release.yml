@@ -16,8 +16,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Релизы — ТОЛЬКО Linux (с v1.1.214): .deb и портативный tar.gz. Windows и macOS не собираются.
-          - os: ubuntu-latest
+          # Релизы — ТОЛЬКО Linux (с v1.1.214): .deb и портативный tar.gz.
+          # Строго ubuntu-24.04 (не ubuntu-latest = 26.04!): иначе node-pty линкуется с GLIBC_2.42
+          # и падает при запуске на Ubuntu 22.04 / 24.04 и Debian 12.
+          - os: ubuntu-24.04
             target: --linux deb tar.gz
     runs-on: ${{ matrix.os }}
     steps:
