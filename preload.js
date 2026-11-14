@@ -1,7 +1,16 @@
 // Bridge between the sandboxed renderer and the main process: window.lite.
 const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
-contextBridge.exposeInMainWorld('lite', {
+// В сабфреймах (iframe) мост window.lite выдаётся ТОЛЬКО встроенной панели модуля (?embed=1):
+// любые внешние/пользовательские iframe (превью HTML, blob:, data:, about:blank) его не получают.
+function canExposeLiteBridge() {
+  if (process.isMainFrame) return true;
+  const loc = /** @type {{ href?: string } | undefined} */ (/** @type {any} */ (globalThis).location);
+  const href = String((loc && loc.href) || '');
+  return /^file:\/\/\/.*\/renderer\/module\.html\?[^#]*\bembed=1\b/i.test(href);
+}
+
+if (canExposeLiteBridge()) contextBridge.exposeInMainWorld('lite', {
   platform: process.platform,   // 'win32' | 'linux' | 'darwin' — для платформо-зависимого UI (выбор шелла)
   homeDir: (process.env && (process.env.HOME || process.env.USERPROFILE)) || '', // «~» в путях интерфейса (чип папки)
   openProject: () => ipcRenderer.invoke('dialog:openProject'),
@@ -105,6 +114,9 @@ contextBridge.exposeInMainWorld('lite', {
     onSendToTerminal: (cb) => { const h = (_e, p) => cb(p && p.text); ipcRenderer.on('editor:sendToTerminal', h); return () => ipcRenderer.removeListener('editor:sendToTerminal', h); },
     onSendNoteToTerminal: (cb) => { const h = (_e, p) => cb(p && p.projId, p && p.text); ipcRenderer.on('editor:sendNoteToTerminal', h); return () => ipcRenderer.removeListener('editor:sendNoteToTerminal', h); },
     onRefreshTree: (cb) => { const h = () => cb(); ipcRenderer.on('editor:refreshTree', h); return () => ipcRenderer.removeListener('editor:refreshTree', h); },
+    dockFiles: (docked) => ipcRenderer.send('editor:dockFiles', { docked: !!docked }),
+    closeFilesDock: () => ipcRenderer.send('editor:closeFilesDock', {}),
+    onEnsureFilesDock: (cb) => { const h = (_e, p) => cb(p || {}); ipcRenderer.on('editor:ensureFilesDock', h); return () => ipcRenderer.removeListener('editor:ensureFilesDock', h); },
     // Помодоро: оверлей отдыха в окне редактора. main шлёт состояние (показать/обновить/скрыть);
     // кнопка «Пропустить» с оверлея → пропустить текущую фазу (движок таймера в main).
     onRestGuard: (cb) => { const h = (_e, p) => cb(p || {}); ipcRenderer.on('editor:restGuard', h); return () => ipcRenderer.removeListener('editor:restGuard', h); },

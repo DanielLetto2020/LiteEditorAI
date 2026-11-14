@@ -76,6 +76,24 @@ if (process.env.LITE_NO_GPU === '1' || process.env.LITE_SOFTWARE_RENDER === '1')
 }
 
 let mainWindow = null;
+/** @type {Electron.WebFrameMain | null} */
+let filesDockFrame = null; // встроенный фрейм панели «Проект» внутри mainWindow (?embed=1#files)
+function liveFilesDockFrame() {
+  if (!filesDockFrame) return null;
+  try {
+    if (filesDockFrame.isDestroyed() || filesDockFrame.detached) { filesDockFrame = null; return null; }
+    return filesDockFrame;
+  } catch (_) { filesDockFrame = null; return null; }
+}
+function sendToFrame(frame, ch, payload) {
+  if (!frame) return false;
+  try {
+    if (frame.isDestroyed() || frame.detached) return false;
+    frame.send(ch, payload);
+    return true;
+  } catch (_) { return false; }
+}
+function isFilesDocked() { return !!(readSettingsCached() || {}).dockFiles; }
 let tray = null;
 // Virtual target width for win:growBy. Growth accumulates here UNCLAMPED, while the
 // real setBounds is clamped to the screen edge — so a growth cut short by the edge is
@@ -318,14 +336,20 @@ ipcMain.on('store:set', (_e, { key, value }) => { if (rendererStoreKey(key)) wri
 // settings пишут несколько окон, поэтому для него — патч по полям, а не объект целиком: иначе
 // побеждала последняя запись из устаревшей копии окна (renderer/settings-sync.js). Вливаем патч
 // в кэш/файл и рассылаем его остальным окнам — они применят его к своему объекту.
-function broadcastStoreChange(msg, exceptWc) {
-  for (const w of BrowserWindow.getAllWindows()) { if (!exceptWc || w.webContents !== exceptWc) sendTo(w, 'store:changed', msg); }
+function broadcastStoreChange(msg, exceptWc, exceptFrame) {
+  for (const w of BrowserWindow.getAllWindows()) {
+    if (!exceptWc || w.webContents !== exceptWc || (exceptFrame && w.webContents.mainFrame !== exceptFrame)) {
+      sendTo(w, 'store:changed', msg);
+    }
+  }
+  const df = liveFilesDockFrame();
+  if (df && df !== exceptFrame) sendToFrame(df, 'store:changed', msg);
 }
-function patchStoreKey(key, set, unset, exceptWc) {
+function patchStoreKey(key, set, unset, exceptWc, exceptFrame) {
   const res = appStore.patchStoreKey(key, set, unset);
-  broadcastStoreChange({ key: res.key, set: res.set, unset: res.unset }, exceptWc);
+  broadcastStoreChange({ key: res.key, set: res.set, unset: res.unset }, exceptWc, exceptFrame);
 }
-ipcMain.on('store:patch', (e, { key, set, unset } = {}) => { if (PATCH_KEYS.has(key)) patchStoreKey(key, set, unset, e.sender); });
+ipcMain.on('store:patch', (e, { key, set, unset } = {}) => { if (PATCH_KEYS.has(key)) patchStoreKey(key, set, unset, e.sender, e.senderFrame); });
 // Синхронный вариант — гарантирует запись на диск до выхода из рендерера (beforeunload).
 ipcMain.on('store:setSync', (e, { key, value } = {}) => {
   if (rendererStoreKey(key)) writeStoreKey(key, value, { fromWindow: true, sync: true });
@@ -2831,6 +2855,7 @@ function createWindow() {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
+      nodeIntegrationInSubFrames: true, // запускает preload в iframe встроенного дока (?embed=1); сам preload проверяет URL
     },
   };
   if (Number.isInteger(st.x) && Number.isInteger(st.y)) { opts.x = st.x; opts.y = st.y; }
@@ -3010,11 +3035,22 @@ function broadcastModuleOpenSet() {
 function reopenSavedModuleWindows() {
   try {
     const open = readModuleWins().__open;
-    if (Array.isArray(open)) for (const id of open) { if (id && typeof id === 'string') openModuleWindow(id); }
+    if (Array.isArray(open)) {
+      for (const id of open) {
+        if (!id || typeof id !== 'string') continue;
+        if (id === 'files' && isFilesDocked()) {
+          sendTo(mainWindow, 'editor:ensureFilesDock', { open: true });
+          continue;
+        }
+        openModuleWindow(id);
+      }
+    }
   } catch (_) {}
 }
 function broadcastToModules(ch, payload) {
   for (const w of moduleWindows.values()) { sendTo(w, ch, payload); }
+  const df = liveFilesDockFrame();
+  if (df) sendToFrame(df, ch, payload);
 }
 // Маршрут стрима к окну-владельцу сессии (fallback — главное окно редактора).
 function sendToOwner(sessionId, ch, payload) {
@@ -3133,7 +3169,7 @@ function openModuleWindow(modId, arg) {
   win.on('closed', () => {
     moduleWindows.delete(modId);
     pendingModuleArgs.delete(modId); // параметр недоставленному окну — не следующему открытию
-    if (modId === 'files') filesViewerReady = false; // окно вивера закрыто → следующее openInViewer переоткроет и переждёт готовность
+    if (modId === 'files' && !liveFilesDockFrame()) filesViewerReady = false; // окно вивера закрыто → следующее openInViewer переоткроет и переждёт готовность
     if (modId === 'db') dbPanelReady = false;        // окно БД закрыто → следующий openFromContainer переоткроет и переждёт готовность
     if (modId === 'rmq') rmqPanelReady = false;      // аналогично для окна RabbitMQ
     if (modId === 'kafka') kafkaPanelReady = false;  // аналогично для окна Kafka
@@ -3193,13 +3229,24 @@ ipcMain.on('win:quitCheckReply', (_e, { id, unsaved } = {}) => {
 });
 function askModulesUnsaved() {
   const wins = [...moduleWindows.values()].filter((w) => w && !w.isDestroyed());
-  return Promise.all(wins.map((w) => new Promise((resolve) => {
+  const df = liveFilesDockFrame();
+  const tasks = wins.map((w) => new Promise((resolve) => {
     const id = ++quitCheckSeq;
     const timer = setTimeout(() => done([]), QUIT_CHECK_MS);
     function done(list) { clearTimeout(timer); quitCheckWaiters.delete(id); resolve({ win: w, unsaved: list }); }
     quitCheckWaiters.set(id, done);
     if (!sendTo(w, 'win:quitCheck', { id })) done([]);
-  }))).then((rs) => rs.filter((r) => r.unsaved.length));
+  }));
+  if (df && mainWindow && !mainWindow.isDestroyed()) {
+    tasks.push(new Promise((resolve) => {
+      const id = ++quitCheckSeq;
+      const timer = setTimeout(() => done([]), QUIT_CHECK_MS);
+      function done(list) { clearTimeout(timer); quitCheckWaiters.delete(id); resolve({ win: mainWindow, unsaved: list }); }
+      quitCheckWaiters.set(id, done);
+      if (!sendToFrame(df, 'win:quitCheck', { id })) done([]);
+    }));
+  }
+  return Promise.all(tasks).then((rs) => rs.filter((r) => r.unsaved.length));
 }
 // true — можно закрывать (несохранённого нет или человек согласился его бросить).
 async function confirmDiscardUnsaved(parent) {
@@ -3228,7 +3275,7 @@ app.on('before-quit', () => { quitViaApp = true; });
 function guardMainWindowClose(win) {
   let approved = false, checking = false;
   win.on('close', (e) => {
-    const live = [...moduleWindows.values()].some((w) => w && !w.isDestroyed());
+    const live = [...moduleWindows.values()].some((w) => w && !w.isDestroyed()) || !!liveFilesDockFrame();
     if (approved || !live) { closeAllModuleWindows(); return; }
     e.preventDefault();
     if (checking) return;
@@ -3502,6 +3549,8 @@ ipcMain.handle('i18n:set', (_e, { code } = {}) => {
   patchStoreKey('settings', { lang: i18n.locale() }, [], null);
   const payload = i18nPayload();
   for (const w of BrowserWindow.getAllWindows()) sendTo(w, 'i18n:changed', payload);
+  const df = liveFilesDockFrame();
+  if (df) sendToFrame(df, 'i18n:changed', payload);
   try { setTrayMenu(); updateTrayTooltip(); } catch (_) {}   // пункты меню и подсказка — на новом языке
   return { ok: true, code: i18n.locale() };
 });
@@ -3531,6 +3580,12 @@ ipcMain.on('module:open', (_e, { modId, arg } = {}) => {
   if (!modId) return;
   let a = null;
   if (arg != null) { try { a = JSON.parse(JSON.stringify(arg)); } catch (_) { a = null; } }
+  if (String(modId) === 'files' && isFilesDocked() && mainWindow && !mainWindow.isDestroyed()) {
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.focus();
+    sendTo(mainWindow, 'editor:ensureFilesDock', { open: true });
+    return;
+  }
   openModuleWindow(String(modId), a);
 });
 // Окно модуля подписалось на module:arg — отдать отложенный параметр.
@@ -3609,6 +3664,15 @@ let pendingFocusGit = false;        // «Git» нажат до готовнос�
 function filesWindow() { const w = moduleWindows.get('files'); return (w && !w.isDestroyed()) ? w : null; }
 function docWindow() { const w = moduleWindows.get('doc'); return (w && !w.isDestroyed()) ? w : null; } // «Обработка текста»: сайдбар-дерево следит за диском
 function routeOpenInViewer(payload) {
+  if (isFilesDocked() && mainWindow && !mainWindow.isDestroyed()) {
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.focus();
+    sendTo(mainWindow, 'editor:ensureFilesDock', { open: true });
+    const df = liveFilesDockFrame();
+    if (df && filesViewerReady) sendToFrame(df, 'editor:openInViewer', payload);
+    else pendingViewerOpens.push(payload);
+    return;
+  }
   if (!filesWindow()) openModuleWindow('files'); // откроет окно (и переключит на активный проект)
   const w = filesWindow();
   if (w && filesViewerReady) sendTo(w, 'editor:openInViewer', payload);
@@ -3727,18 +3791,60 @@ ipcMain.handle('rh:fsDownloadZip', async (e, { id, path: p, opId } = {}) => {
   } finally { rhZipOps.delete(opId); }
 });
 ipcMain.on('rh:zipCancel', (_e, { opId } = {}) => { const ac = rhZipOps.get(opId); if (ac) ac.abort(); });
-ipcMain.on('editor:refreshTree', (_e, payload) => { const w = filesWindow(); if (w) sendTo(w, 'editor:refreshTree', payload); });
-// «Git» из редактора: открыть окно вивера (если закрыто) и переключить его на секцию «Коммит».
+ipcMain.on('editor:refreshTree', (_e, payload) => {
+  const w = filesWindow(); if (w) sendTo(w, 'editor:refreshTree', payload);
+  const df = liveFilesDockFrame(); if (df) sendToFrame(df, 'editor:refreshTree', payload);
+});
+// «Git» из редактора: открыть вивер (док или окно) и переключить его на секцию «Коммит».
 ipcMain.on('editor:focusGit', () => {
+  if (isFilesDocked() && mainWindow && !mainWindow.isDestroyed()) {
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.focus();
+    sendTo(mainWindow, 'editor:ensureFilesDock', { open: true });
+    const df = liveFilesDockFrame();
+    if (df && filesViewerReady) sendToFrame(df, 'editor:focusGit');
+    else pendingFocusGit = true;
+    return;
+  }
   if (!filesWindow()) openModuleWindow('files');
   const w = filesWindow();
   if (w && filesViewerReady) { if (w.isMinimized()) w.restore(); w.focus(); sendTo(w, 'editor:focusGit'); }
   else pendingFocusGit = true;
 });
-ipcMain.on('editor:viewerReady', () => {
+ipcMain.on('editor:viewerReady', (e) => {
+  const fromDock = !!(mainWindow && !mainWindow.isDestroyed() && e.sender === mainWindow.webContents
+    && e.senderFrame && e.senderFrame !== mainWindow.webContents.mainFrame);
+  if (fromDock) filesDockFrame = e.senderFrame;
   filesViewerReady = true;
-  while (pendingViewerOpens.length) { const p = pendingViewerOpens.shift(); const w = filesWindow(); if (w) sendTo(w, 'editor:openInViewer', p); }
-  if (pendingFocusGit) { pendingFocusGit = false; const w = filesWindow(); if (w) { w.focus(); sendTo(w, 'editor:focusGit'); } }
+  const sendViewer = (ch, p) => {
+    const df = liveFilesDockFrame();
+    if (df && (isFilesDocked() || fromDock)) { sendToFrame(df, ch, p); return; }
+    const w = filesWindow();
+    if (w) { if (ch === 'editor:focusGit') w.focus(); sendTo(w, ch, p); }
+  };
+  while (pendingViewerOpens.length) sendViewer('editor:openInViewer', pendingViewerOpens.shift());
+  if (pendingFocusGit) { pendingFocusGit = false; sendViewer('editor:focusGit'); }
+});
+ipcMain.on('editor:dockFiles', (_e, { docked } = {}) => {
+  const want = !!docked;
+  patchStoreKey('settings', { dockFiles: want }, [], null, null);
+  if (want) {
+    const w = filesWindow();
+    if (w) { w.__forceClose = true; try { w.close(); } catch (_) {} }
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.focus();
+      sendTo(mainWindow, 'editor:ensureFilesDock', { open: true });
+    }
+  } else {
+    filesDockFrame = null;
+    filesViewerReady = false;
+    if (mainWindow && !mainWindow.isDestroyed()) sendTo(mainWindow, 'editor:ensureFilesDock', { close: true });
+    openModuleWindow('files');
+  }
+});
+ipcMain.on('editor:closeFilesDock', () => {
+  if (mainWindow && !mainWindow.isDestroyed()) sendTo(mainWindow, 'editor:ensureFilesDock', { close: true });
 });
 // «Контейнеры» → «Базы данных»: открыть окно модуля БД с заготовкой подключения из контейнера.
 // Паттерн тот же, что у вивера выше: окно может быть не готово сразу → очередь до db:panelReady.
@@ -5152,6 +5258,7 @@ const isIgnoredPath = (rel) => rel.split(/[\\/]/).some((seg) => IGNORE_DIRS.has(
 // Окно редактора fs:watchEnded не слушает (дерево и вивер живут в окне «Проект») — ему не шлём.
 function notifyWatchEnded(root) {
   const fw = filesWindow(); if (fw) sendTo(fw, 'fs:watchEnded', { root });
+  const df = liveFilesDockFrame(); if (df) sendToFrame(df, 'fs:watchEnded', { root });
   const dw = docWindow(); if (dw) sendTo(dw, 'fs:watchEnded', { root });
 }
 // Потолок каталогов под слежением за одним проектом (Linux: одно inotify-наблюдение на каталог).
@@ -5200,6 +5307,7 @@ ipcMain.on('fs:watch', (_e, root) => {
     rec.timer = setTimeout(() => {
       const files = [...rec.pending]; rec.pending.clear();
       const fw = filesWindow(); if (fw) sendTo(fw, 'fs:changed', { root, files }); // окно вивера обновляет дерево/файл
+      const df = liveFilesDockFrame(); if (df) sendToFrame(df, 'fs:changed', { root, files }); // встроенный док «Проект»
       const dw = docWindow(); if (dw) sendTo(dw, 'fs:changed', { root, files }); // «Обработка текста»: сайдбар-дерево
       sendTo(mainWindow, 'fs:changed', { root, files }); // редактор: пересчитать чип git под терминалом (renderer.js, lite.fs.onChange)
       // локальная история: внешняя правка (агент/git). Большая пачка = массовая операция — шум, пропускаем.

@@ -60,7 +60,7 @@ function persist(key, value) { STORE[key] = value; if (!storeFrozen) lite.store.
 function projId(p) { let h = 5381; for (let i = 0; i < p.length; i++) h = ((h << 5) + h + p.charCodeAt(i)) >>> 0; return 'p' + h.toString(36); }
 
 // ---------------------------------------------------------------- settings (tiny on purpose)
-const DEFAULT_SETTINGS = { notifications: true, sound: false, idleMs: 1200, fontSize: 13, workingDir: '', scanDirs: [], onboarded: false, shell: '', minimap: true, notesTab: 'project', frameOn: true, frameColor: 'green', framePulse: true, framePeriodS: 6, termTimeline: false, termPrefill: 'claude' };
+const DEFAULT_SETTINGS = { notifications: true, sound: false, idleMs: 1200, fontSize: 13, workingDir: '', scanDirs: [], onboarded: false, shell: '', minimap: true, notesTab: 'project', frameOn: true, frameColor: 'green', framePulse: true, framePeriodS: 6, termTimeline: false, termPrefill: 'claude', dockFiles: false };
 function loadSettings() { return { ...DEFAULT_SETTINGS, ...(STORE.settings || {}) }; }
 let settings = loadSettings();
 // Пишем только изменённые поля, чужие изменения (окна модулей, смена языка) вливаются в settings —
@@ -100,7 +100,7 @@ const isExtTerm = (id) => typeof id === 'string' && id.startsWith(EXT_TERM_ID);
 const extTerms = new Map(); // ptyId -> { term, fit, search, container }
 let extTermSeq = 0;
 
-const DEFAULT_LAYOUT = { sidebar: 300, viewer: 520, tree: 240, scratch: 420, ctx: 740, docker: 460, db: 560, rh: 520, ext: 420, notes: 480, audit: 460, iterflow: 480, seo: 480, tools: 560, chat: 600, doc: 640 };
+const DEFAULT_LAYOUT = { sidebar: 300, viewer: 520, tree: 240, filesDock: 680, termSplit: 0.5, scratch: 420, ctx: 740, docker: 460, db: 560, rh: 520, ext: 420, notes: 480, audit: 460, iterflow: 480, seo: 480, tools: 560, chat: 600, doc: 640 };
 let layout = loadLayout();
 let lastParent = STORE.lastParent || '';
 
@@ -126,7 +126,10 @@ const SIDEBAR_MIN = 240, SIDEBAR_MAX = 480; // уже 240 не влезают к
 function applyLayout() {
   layout.sidebar = Math.max(SIDEBAR_MIN, Math.min(SIDEBAR_MAX, +layout.sidebar || DEFAULT_LAYOUT.sidebar));
   $('#sidebar').style.flexBasis = layout.sidebar + 'px';
-  // вивер/дерево живут в своём окне — в редакторе этих панелей больше нет.
+  layout.filesDock = Math.max(360, Math.min(1400, +layout.filesDock || DEFAULT_LAYOUT.filesDock));
+  { const fd = $('#files-dock'); if (fd) fd.style.flexBasis = layout.filesDock + 'px'; }
+  layout.termSplit = Math.max(0.2, Math.min(0.8, Number.isFinite(+layout.termSplit) ? +layout.termSplit : 0.5));
+  { const tb = $('#term-body'); if (tb) tb.style.setProperty('--split-pct', (layout.termSplit * 100).toFixed(2) + '%'); }
   $('#ext-pane').style.flexBasis = layout.ext + 'px';
 }
 function loadRecents() { return Array.isArray(STORE.recents) ? STORE.recents : []; }
@@ -1131,7 +1134,17 @@ function saveProjTabs() {
   const prev = STORE.projTabs || {};
   for (const p of projects) if (!tabsByProj.has(p.id) && prev[p.id]) out[p.id] = prev[p.id];
   for (const [pid, t] of tabsByProj) {
-    out[pid] = { names: t.sessions.map((s) => (terms.get(s) || {}).name || 'Терминал'), custom: t.sessions.map((s) => !!(terms.get(s) || {}).customName), active: t.sessions.indexOf(t.active) };
+    const rec = {
+      names: t.sessions.map((s) => (terms.get(s) || {}).name || 'Терминал'),
+      custom: t.sessions.map((s) => !!(terms.get(s) || {}).customName),
+      active: t.sessions.indexOf(t.active),
+    };
+    if (Array.isArray(t.splitPair) && t.splitPair.length === 2) {
+      const i0 = t.sessions.indexOf(t.splitPair[0]);
+      const i1 = t.sessions.indexOf(t.splitPair[1]);
+      if (i0 >= 0 && i1 >= 0 && i0 !== i1) rec.split = [i0, i1];
+    }
+    out[pid] = rec;
   }
   persist('projTabs', out);
 }
@@ -1154,6 +1167,8 @@ const HOTKEYS = [
   { test: (e) => e.code === 'Minus' || e.code === 'NumpadSubtract', run: () => bumpFont(-1) },
   { test: (e) => e.code === 'Tab',                                  run: (e) => cycleProject(e.shiftKey ? -1 : 1) },
   { test: (e) => e.code === 'KeyF' && e.shiftKey,                   run: () => showGlobalSearch() }, // Ctrl+Shift+F — «Найти во всех проектах» (файлы + терминалы)
+  { test: (e) => e.code === 'KeyD' && e.shiftKey,                   run: () => toggleTermSplit() },  // Ctrl+Shift+D — разделить область терминала пополам
+  { test: (e) => e.code === 'KeyE' && e.shiftKey,                   run: () => openModule('files') }, // Ctrl+Shift+E — панель/окно «Проект»
   { test: (e) => /^Digit[1-9]$/.test(e.code) && !e.shiftKey,        run: (e) => { const p = visibleOrderedProjects()[+e.code.slice(5) - 1]; if (p) setActive(p.id); } },
 ];
 // Поле ввода, где Ctrl-комбо должны доставаться самому полю (модалки, палитра, формы), — но НЕ
@@ -1264,6 +1279,7 @@ function firePrefill(id) {
 function createSession(proj, name, custom, adoptId) {
   const id = adoptId || (proj.id + '::t' + (++sessionSeq) + '.' + BOOT_ID);
   const container = el('div', 'term-instance');
+  container.addEventListener('mousedown', () => focusSplitSlot(id));
   $('#terminals').appendChild(container);
   const { term, fit, search, timeline, syncPty, created } = buildXterm(container, id, {
     cwd: proj.path,
@@ -1305,7 +1321,7 @@ function createSession(proj, name, custom, adoptId) {
         markActivity(id, chunk);
       }
       r.redraw = true;
-      if (id === activeSessionId()) refitActiveTerminal();
+      if (isSessionVisible(id)) refitActiveTerminal();
     }).catch(() => {
       const r = terms.get(id);
       if (r) { r.adoptPending = null; r.redraw = true; }
@@ -1325,7 +1341,7 @@ function createSession(proj, name, custom, adoptId) {
 // Ensure a project's sessions exist (restoring saved tab names on first open).
 function ensureProjectTabs(proj) {
   if (tabsByProj.has(proj.id)) return;
-  tabsByProj.set(proj.id, { sessions: [], active: null });
+  tabsByProj.set(proj.id, { sessions: [], active: null, splitPair: null });
   const saved = (STORE.projTabs || {})[proj.id];
   const names = saved && Array.isArray(saved.names) && saved.names.length ? saved.names : ['Терминал 1'];
   const custom = saved && Array.isArray(saved.custom) ? saved.custom : []; // какие имена задал пользователь руками — их заголовок терминала не перебивает
@@ -1340,6 +1356,11 @@ function ensureProjectTabs(proj) {
   const t = tabsByProj.get(proj.id);
   const ai = saved && Number.isInteger(saved.active) ? saved.active : 0;
   t.active = t.sessions[Math.max(0, Math.min(ai, t.sessions.length - 1))] || t.sessions[0];
+  if (saved && Array.isArray(saved.split) && saved.split.length === 2) {
+    const s0 = t.sessions[saved.split[0]];
+    const s1 = t.sessions[saved.split[1]];
+    if (s0 && s1 && s0 !== s1) t.splitPair = [s0, s1];
+  }
   saveProjTabs();
 }
 let tabDragEl = null; // перетаскиваемая вкладка внутри #term-tabs
@@ -1379,6 +1400,50 @@ function enableTabDnD(tab, bar, projId) {
   });
 }
 
+function isProjSplit(t) {
+  return !!(t && Array.isArray(t.splitPair) && t.splitPair.length === 2
+    && t.splitPair[0] !== t.splitPair[1] && terms.has(t.splitPair[0]) && terms.has(t.splitPair[1]));
+}
+function isSessionVisible(sid) {
+  const t = tabsByProj.get(activeId);
+  if (!t || !sid) return false;
+  if (isProjSplit(t)) return t.splitPair.includes(sid);
+  return t.active === sid;
+}
+function focusSplitSlot(sid) {
+  const t = tabsByProj.get(activeId);
+  if (!isProjSplit(t) || !t.splitPair.includes(sid) || t.active === sid) return;
+  t.active = sid;
+  saveProjTabs();
+  for (const s of t.splitPair) {
+    const r = terms.get(s);
+    if (r) r.container.classList.toggle('slot-focused', s === sid);
+  }
+  renderTabBar();
+}
+function toggleTermSplit() {
+  const proj = activeProject();
+  if (!proj) return;
+  ensureProjectTabs(proj);
+  const t = tabsByProj.get(proj.id);
+  if (!t) return;
+  if (isProjSplit(t)) {
+    t.splitPair = null;
+    saveProjTabs();
+    showActiveTerminal();
+    return;
+  }
+  const leftSid = (t.active && terms.has(t.active)) ? t.active : t.sessions[0];
+  let rightSid = t.sessions.find((s) => s !== leftSid && terms.has(s)) || null;
+  if (!rightSid) {
+    rightSid = createSession(proj, tt('Терминал {0}', t.sessions.length + 1));
+  }
+  t.splitPair = [leftSid, rightSid];
+  t.active = rightSid;
+  saveProjTabs();
+  showActiveTerminal();
+}
+
 function renderTabBar() {
   const bar = $('#term-tabs');
   if (!bar) return;
@@ -1387,13 +1452,23 @@ function renderTabBar() {
   hideTabTip();
   bar.innerHTML = '';
   const t = tabsByProj.get(activeId);
+  const splitOn = isProjSplit(t);
   // шапка видна всегда (в ней кнопки окна и за неё тянут окно); без проекта нет только вкладок и «+»
   $('#term-tab-add').classList.toggle('hidden', !activeId || !t);
+  {
+    const sb = $('#term-split-btn');
+    if (sb) {
+      sb.classList.toggle('hidden', !activeId || !t);
+      sb.classList.toggle('on', splitOn);
+      sb.title = splitOn ? 'Закрыть разделение терминала (Ctrl+Shift+D)' : 'Разделить терминал (Ctrl+Shift+D)';
+    }
+  }
   if (!activeId || !t || !t.sessions.length) { updateTabScroll(); return; }
   const projId = activeId;
   t.sessions.forEach((sid) => {
     const rec = terms.get(sid); if (!rec) return;
-    const tab = el('div', 'tab' + (sid === t.active ? ' active' : '') + (rec.autoTitled ? ' wide' : ''));
+    const isPeer = splitOn && sid !== t.active && t.splitPair.includes(sid);
+    const tab = el('div', 'tab' + (sid === t.active ? ' active' : (isPeer ? ' split-peer' : '')) + (rec.autoTitled ? ' wide' : ''));
     tab.dataset.sid = sid;
     tab.appendChild(el('span', 'tab-dot pind ' + (projState.get(sid) || 'quiet')));
     const nameSpan = el('span', 'tab-name', rec.name);
@@ -1464,18 +1539,36 @@ function ensureActiveTabVisible() {
 function switchTab(sid) {
   const t = tabsByProj.get(activeId);
   if (!t || !terms.has(sid)) return;
-  t.active = sid; saveProjTabs(); showActiveTerminal();
+  if (isProjSplit(t)) {
+    if (!t.splitPair.includes(sid)) {
+      const idx = t.splitPair[1] === t.active ? 1 : 0;
+      t.splitPair[idx] = sid;
+    }
+    t.active = sid;
+  } else {
+    t.active = sid;
+  }
+  saveProjTabs(); showActiveTerminal();
 }
 function addTab() {
   const proj = activeProject(); if (!proj) return;
   ensureProjectTabs(proj);
   const t = tabsByProj.get(proj.id);
   const sid = createSession(proj, tt('Терминал {0}', t.sessions.length + 1));
+  if (isProjSplit(t)) {
+    const idx = t.splitPair[1] === t.active ? 1 : 0;
+    t.splitPair[idx] = sid;
+  }
   t.active = sid; saveProjTabs(); showActiveTerminal();
 }
 function doCloseTab(projId, sid) {
   const t = tabsByProj.get(projId);
   if (!t || t.sessions.length <= 1 || !t.sessions.includes(sid)) return;
+  if (Array.isArray(t.splitPair) && t.splitPair.includes(sid)) {
+    const other = t.splitPair[0] === sid ? t.splitPair[1] : t.splitPair[0];
+    t.splitPair = null;
+    if (t.active === sid && other && other !== sid) t.active = other;
+  }
   disposeSession(sid);
   const i = t.sessions.indexOf(sid);
   t.sessions.splice(i, 1);
@@ -1577,27 +1670,47 @@ async function pasteInto(id) {
 // Ctrl+C can still send SIGINT) and report handled; otherwise return false so the
 // keypress falls through to the PTY as the interrupt signal. Mirrors the menu's copy.
 function showActiveTerminal() {
+  const t = tabsByProj.get(activeId);
   const asid = activeSessionId();
+  const splitOn = isProjSplit(t);
   $('#empty-hint').style.display = activeId ? 'none' : 'flex';
-  for (const [sid, rec] of terms) rec.container.style.display = sid === asid ? 'block' : 'none';
-  const shown = asid && terms.get(asid);
-  if (shown) activateRenderer(shown.term);
+  $('#terminals').classList.toggle('is-split', splitOn);
+  { const sg = $('#term-split-gutter'); if (sg) sg.classList.toggle('hidden', !splitOn); }
+  for (const [sid, rec] of terms) {
+    rec.container.classList.remove('slot-left', 'slot-right', 'slot-focused');
+    if (splitOn && t.splitPair.includes(sid)) {
+      rec.container.style.display = 'block';
+      rec.container.classList.add(sid === t.splitPair[0] ? 'slot-left' : 'slot-right');
+      if (sid === asid) rec.container.classList.add('slot-focused');
+      activateRenderer(rec.term);
+    } else {
+      rec.container.style.display = (!splitOn && sid === asid) ? 'block' : 'none';
+      if (!splitOn && sid === asid) activateRenderer(rec.term);
+    }
+  }
   renderTabBar();
   refitActiveTerminal(true);
 }
 function refitActiveTerminal(focusIt) {
   try { Ext.refitTerminal(); } catch (_) {} // dev-терминал модуля в #ext-pane
+  const t = tabsByProj.get(activeId);
   const asid = activeSessionId();
-  const rec = asid ? terms.get(asid) : null;
-  if (!rec) return;
+  const visibleIds = isProjSplit(t) ? t.splitPair.slice() : (asid ? [asid] : []);
+  if (!visibleIds.length) return;
   requestAnimationFrame(() => {
-    try { rec.fit.fit(); rec.syncPty(); if (focusIt) rec.term.focus(); } catch (_) {}
-    if (rec.redraw) {
-      // подхваченный терминал: размер мог не измениться, и программа не узнает, что экран пуст, —
-      // качнём ширину на колонку, это SIGWINCH, и агент (Claude Code и т. п.) перерисуется
-      rec.redraw = false;
-      const { cols, rows } = rec.term;
-      if (cols > 2) { lite.pty.resize(asid, cols - 1, rows); setTimeout(() => lite.pty.resize(asid, cols, rows), 120); }
+    for (const sid of visibleIds) {
+      const rec = terms.get(sid);
+      if (!rec) continue;
+      try {
+        rec.fit.fit();
+        rec.syncPty();
+        if (focusIt && sid === asid) rec.term.focus();
+      } catch (_) {}
+      if (rec.redraw) {
+        rec.redraw = false;
+        const { cols, rows } = rec.term;
+        if (cols > 2) { lite.pty.resize(sid, cols - 1, rows); setTimeout(() => lite.pty.resize(sid, cols, rows), 120); }
+      }
     }
   });
 }
@@ -1836,9 +1949,54 @@ const Ext = initExtensions({
 });
 registerPanel('ext', { isOpen: Ext.isOpen, setOpen: Ext.setOpen });
 PANEL_ORDER.push('ext');
-// Entry point used by the «Модули» menu / quickbar. Мигрированные модули открываются окном.
+
+// ---------------------------------------------------------------- встроенный док «Проект» (#files-dock)
+let filesDockOpen = false;
+let filesDockMounted = false;
+function ensureFilesDockFrame() {
+  const frame = /** @type {HTMLIFrameElement | null} */ ($('#files-dock-frame'));
+  if (!frame) return;
+  if (!filesDockMounted) {
+    filesDockMounted = true;
+    frame.src = 'module.html?embed=1#files';
+  }
+}
+function unmountFilesDock() {
+  filesDockOpen = false;
+  filesDockMounted = false;
+  const dock = $('#files-dock'), gut = $('#gutter-files');
+  if (dock) dock.classList.add('hidden');
+  if (gut) gut.classList.add('hidden');
+  const frame = /** @type {HTMLIFrameElement | null} */ ($('#files-dock-frame'));
+  if (frame) frame.src = 'about:blank';
+  markOpenModules();
+  refitActiveTerminal();
+}
+function setFilesDockOpen(open) {
+  const want = !!open;
+  if (want === filesDockOpen && (!want || filesDockMounted)) return;
+  if (want) {
+    closeOtherPanels('files');
+    ensureFilesDockFrame();
+  }
+  filesDockOpen = want;
+  const dock = $('#files-dock'), gut = $('#gutter-files');
+  if (dock) dock.classList.toggle('hidden', !want);
+  if (gut) gut.classList.toggle('hidden', !want);
+  applyLayout();
+  markOpenModules();
+  refitActiveTerminal();
+}
+function toggleFilesDock() { setFilesDockOpen(!filesDockOpen); }
+registerPanel('files', { isOpen: () => filesDockOpen, setOpen: setFilesDockOpen });
+PANEL_ORDER.push('files');
+registerPanel('files', { isOpen: () => filesDockOpen, setOpen: setFilesDockOpen });
+PANEL_ORDER.push('files');
+
+// Entry point used by the «Модули» menu / quickbar. Мигрированные модули открываются окном (или доком для files).
 function openModule(id) {
-  if (id === 'git') { lite.editorBus.focusGit(); return; } // Git встроен в окно вивера → открыть его на секции «Коммит»
+  if (id === 'git') { lite.editorBus.focusGit(); return; } // Git встроен в вивер → открыть на секции «Коммит»
+  if (id === 'files' && settings.dockFiles) { toggleFilesDock(); return; }
   if (WINDOW_MODULES.has(id)) { lite.module.open(id); return; }
   const p = panels.get(id);
   if (p) p.setOpen(true);
@@ -1913,7 +2071,10 @@ function renderQuickbar() {
 let openModuleIds = new Set();
 function markOpenModules() {
   document.querySelectorAll('#quickbar .qb-btn').forEach((b) => {
-    if (b instanceof HTMLElement) b.classList.toggle('open', openModuleIds.has(b.dataset.mod));
+    if (!(b instanceof HTMLElement)) return;
+    const id = b.dataset.mod;
+    const isOpen = openModuleIds.has(id) || (id === 'files' && filesDockOpen);
+    b.classList.toggle('open', isOpen);
   });
 }
 // Бейдж активных (не выполненных) задач АКТИВНОГО проекта на кнопке «Задачи» квикбара. Источник —
@@ -2040,7 +2201,8 @@ function initGutters() {
       const onMove = (ev) => {
         const dx = ev.clientX - startX;
         let w = target === 'sidebar' ? startW + dx : startW - dx;
-        layout[target] = Math.max(150, Math.min(1000, w));
+        const maxW = target === 'filesDock' ? Math.max(480, window.innerWidth - 360) : 1000;
+        layout[target] = Math.max(150, Math.min(maxW, w));
         applyLayout();
         refitActiveTerminal();
       };
@@ -2054,6 +2216,36 @@ function initGutters() {
       document.addEventListener('mouseup', onUp);
     });
   });
+  const sg = $('#term-split-gutter');
+  if (sg) {
+    sg.addEventListener('mousedown', (e) => {
+      e.preventDefault();
+      const tb = $('#term-body');
+      if (!tb) return;
+      document.body.classList.add('resizing');
+      const onMove = (ev) => {
+        const rect = tb.getBoundingClientRect();
+        if (rect.width <= 0) return;
+        layout.termSplit = Math.max(0.2, Math.min(0.8, (ev.clientX - rect.left) / rect.width));
+        applyLayout();
+        refitActiveTerminal();
+      };
+      const onUp = () => {
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onUp);
+        document.body.classList.remove('resizing');
+        saveLayout();
+      };
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+    });
+    sg.addEventListener('dblclick', () => {
+      layout.termSplit = 0.5;
+      applyLayout();
+      refitActiveTerminal();
+      saveLayout();
+    });
+  }
 }
 
 // ---------------------------------------------------------------- оболочка: боковая карточка и нижняя полоса
@@ -3322,6 +3514,12 @@ function showSettings(start = 'look') {
         // stopPropagation — как у кнопки-палитры: иначе клик всплывёт до document и closeMenus() сразу закроет панель
         button('Настроить…', 'palette', (e) => { e.stopPropagation(); close(); showLookPanel($('#app').classList.contains('single') ? $('#rail-look') : $('#btn-look')); })));
       body.appendChild(row('Размер шрифта терминала', 'На ходу — Ctrl + «+» / «−».', number(settings.fontSize, 9, 24, 1, (v) => { settings.fontSize = v; save(); applyFontSize(); })));
+      body.appendChild(row('Панель «Проект» внутри главного окна', 'Дерево файлов, редактор кода и Git закрепляются справа от терминала вместо отдельного окна (Ctrl+Shift+E).', toggle(!!settings.dockFiles, (v) => {
+        settings.dockFiles = v;
+        save();
+        if (!v) unmountFilesDock();
+        try { lite.editorBus.dockFiles(v); } catch (_) {}
+      })));
       // Рамка окна — живой предпросмотр: применяется сразу и уезжает в окна модулей (шина settingsChanged).
       const frameLive = () => { save(); applyFrame(settings); try { lite.app.settingsChanged(settings); } catch (_) {} };
       const fc = frameConf(settings);
@@ -3469,7 +3667,7 @@ function paletteActions() {
   for (const p of projects) acts.push({ label: `Проект: ${p.name}`, hint: p.path, run: () => setActive(p.id) });
   acts.push({ label: 'Открыть папку…', run: openProjectDialog });
   acts.push({ label: 'Создать папку…', run: showCreateFolder });
-  acts.push({ label: 'Проект — вивер, дерево, Git (открыть окно)', run: () => openModule('files') });
+  acts.push({ label: 'Проект — вивер, дерево, Git', hint: 'Ctrl+Shift+E', run: () => openModule('files') });
   acts.push({ label: 'Граф Git — ветки и коммиты схемой', run: () => openModule('gitgraph') });
   acts.push({ label: 'Контекст — граф контекста агента', run: () => openModule('ctx') });
   acts.push({ label: 'Контейнеры (Docker / Podman)', run: () => openModule('docker') });
@@ -3487,6 +3685,7 @@ function paletteActions() {
   acts.push({ label: 'Найти во всех проектах — файлы и терминалы', hint: 'Ctrl+Shift+F', run: () => showGlobalSearch() });
   acts.push({ label: 'Поиск по всем терминалам', run: () => showGlobalSearch({ mode: 'terms' }) });
   acts.push({ label: 'Очистить терминал', run: () => clearTerminal() });
+  acts.push({ label: 'Разделить терминал — вкл/выкл', hint: 'Ctrl+Shift+D', run: () => toggleTermSplit() });
   acts.push({ label: 'Шкала времени слева — вкл/выкл', hint: settings.termTimeline === true ? 'сейчас включена' : 'сейчас выключена', run: () => { settings.termTimeline = settings.termTimeline !== true; saveSettings(); applyTimeline(); } });
   acts.push({ label: 'Перезапустить терминал', run: () => restartTerminal() });
   acts.push({ label: 'Настройки…', run: () => showSettings() });
@@ -3965,6 +4164,13 @@ function init() {
   lite.editorBus.onSendNoteToTerminal((projId, text) => { const proj = projects.find((x) => x.id === projId) || activeProject(); if (proj) sendNoteToTerminal(proj, text); });
   lite.editorBus.onRefreshProjects(() => { try { renderProjects(); } catch (_) {} }); // git в окне вивера сделал commit/checkout → освежить бейджи
   lite.editorBus.onRestGuard((s) => { try { applyRestGuard(s); } catch (e) { console.error(e); } }); // Помодоро: оверлей отдыха над терминалами
+  if (lite.editorBus.onEnsureFilesDock) {
+    lite.editorBus.onEnsureFilesDock((opts) => {
+      if (opts && opts.close) unmountFilesDock();
+      else if (opts && opts.toggle) toggleFilesDock();
+      else setFilesDockOpen(true);
+    });
+  }
   lite.pomodoro.onTick((s) => { try { updatePomoUI(s); } catch (_) {} });        // мини-таймер в титлбаре + бейдж квикбара
   lite.pomodoro.onChime(({ to }) => { try { pomoChime(to); } catch (_) {} });     // звон смены фазы
   // Набор открытых окон-модулей → подсветка кнопок квикбара (идея 3).
@@ -3975,6 +4181,17 @@ function init() {
   $('#term-restart').addEventListener('click', () => restartTerminal());
   // Панель вкладок терминалов: статичная «+» (всегда видна) + стрелки-прокрутка при переполнении.
   $('#term-tab-add').addEventListener('click', () => addTab());
+  { const sb = $('#term-split-btn'); if (sb) sb.addEventListener('click', () => toggleTermSplit()); }
+  { const fc = $('#files-dock-close'); if (fc) fc.addEventListener('click', () => setFilesDockOpen(false)); }
+  {
+    const fp = $('#files-dock-popout');
+    if (fp) fp.addEventListener('click', () => {
+      settings.dockFiles = false;
+      saveSettings();
+      unmountFilesDock();
+      try { lite.editorBus.dockFiles(false); } catch (_) {}
+    });
+  }
   $('#term-tabs-prev').addEventListener('click', () => scrollTabs(-1));
   $('#term-tabs-next').addEventListener('click', () => scrollTabs(1));
   $('#term-tabs').addEventListener('scroll', () => { updateTabScroll(); hideTabTip(); });
