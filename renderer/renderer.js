@@ -1390,6 +1390,7 @@ function createSession(proj, name, custom, adoptId, { existingSid = null, pushTo
   const id = adoptId || existingSid || newSessionId(proj.id);
   const container = el('div', 'term-instance');
   container.addEventListener('mousedown', () => focusSplitSlot(id));
+  container.addEventListener('focusin', () => focusSplitSlot(id));
   $('#terminals').appendChild(container);
   const { term, fit, search, timeline, syncPty, created } = buildXterm(container, id, {
     cwd: proj.path,
@@ -1407,7 +1408,7 @@ function createSession(proj, name, custom, adoptId, { existingSid = null, pushTo
       if (e.ctrlKey && e.shiftKey && e.code === 'KeyT') { addTab(); return false; }
       if (e.ctrlKey && e.shiftKey && e.code === 'KeyW') { const s = activeSessionId(); if (s) closeTab(s); return false; }
       if (e.ctrlKey && (e.key === 'PageDown' || e.key === 'PageUp')) { cycleTab(e.key === 'PageDown' ? 1 : -1); return false; }
-      if (e.ctrlKey && !e.altKey && !e.shiftKey && e.code === 'KeyF') { openTermSearch(); return false; } // Ctrl+F (без Shift) — поиск в этом терминале; Ctrl+Shift+F уходит в глобальный (реестр)
+      if (e.ctrlKey && !e.altKey && !e.shiftKey && e.code === 'KeyF') { focusSplitSlot(id); openTermSearch(); return false; } // Ctrl+F (без Shift) — поиск в этом терминале; Ctrl+Shift+F уходит в глобальный (реестр)
     },
   });
   term.registerLinkProvider(fileLinkProvider(term, proj.path));
@@ -1545,6 +1546,7 @@ function focusSplitSlot(sid) {
     if (r) r.container.classList.toggle('slot-focused', s === sid);
   }
   renderTabBar();
+  syncTermSearchUI();
 }
 function toggleTermSplit() {
   const proj = activeProject();
@@ -1740,7 +1742,7 @@ function renameTab(sid) {
   const rec = tabMeta(sid); if (!rec) return;
   // Ручное имя «прибивает» вкладку: заголовок терминала больше её не перебивает (customName)
   // и вкладка возвращается к обычной ширине (autoTitled=false — не «переименована агентом»).
-  showPrompt('Переименовать вкладку', 'Название', rec.name, (v) => { rec.name = v; rec.customName = true; rec.autoTitled = false; saveProjTabs(); renderTabBar(); });
+  showPrompt('Переименовать вкладку', 'Название', rec.name, (v) => { rec.name = v; rec.customName = true; rec.autoTitled = false; saveProjTabs(); renderTabBar(); syncTermSearchUI(); });
 }
 // Дефолтный заголовок, который шлёт САМ шелл (bash/zsh): "user@host: ~/path", голый путь,
 // "C:\path". Это НЕ имя задачи агента — вкладка должна остаться "Терминал N", пока Claude/
@@ -1781,6 +1783,7 @@ function updateTabName(sid) {
   tab.classList.toggle('wide', !!rec.autoTitled);
   const span = tab.querySelector('.tab-name');
   if (span && span.textContent !== rec.name) span.textContent = rec.name;
+  if (sid === t.active) syncTermSearchUI();
   scheduleTabScroll();
 }
 // Стрелки прокрутки панели вкладок зависят от ширины вкладок — пересчитываем раз в кадр, не на каждое имя.
@@ -1820,6 +1823,7 @@ function showActiveTerminal() {
     }
   }
   renderTabBar();
+  syncTermSearchUI();
   refitActiveTerminal(true);
 }
 function refitActiveTerminal(focusIt) {
@@ -1930,23 +1934,61 @@ function bumpFont(delta) {
 }
 
 // ---------------------------------------------------------------- terminal search
+function isTermSearchOpen() {
+  const box = $('#term-search');
+  return !!(box && box.classList.contains('show'));
+}
+function clearAllTermSearchDecorations(exceptSid = null) {
+  for (const [sid, r] of terms) {
+    if (exceptSid && sid === exceptSid) continue;
+    try { r.search.clearDecorations(); } catch (_) {}
+  }
+}
+function syncTermSearchUI() {
+  const input = /** @type {HTMLInputElement | null} */ ($('#term-search-input'));
+  const t = tabsByProj.get(activeId);
+  const asid = activeSessionId();
+  const rec = asid ? terms.get(asid) : null;
+  if (input) {
+    if (isProjSplit(t) && rec) {
+      input.setAttribute('data-no-i18n', '');
+      input.placeholder = `${tt('Поиск в терминале…').replace(/…$/, '')} · ${rec.name}`;
+    } else {
+      input.removeAttribute('data-no-i18n');
+      input.placeholder = tt('Поиск в терминале…');
+    }
+  }
+  if (!isTermSearchOpen()) return;
+  if (!rec) {
+    $('#term-search').classList.remove('show');
+    clearAllTermSearchDecorations();
+    return;
+  }
+  // При переключении активного слота сплита или вкладки гасим подсветку в неактивных терминалах,
+  // чтобы декорации не оставались висеть в соседнем слоте.
+  clearAllTermSearchDecorations(asid);
+}
 function openTermSearch() {
   const rec = terms.get(activeSessionId());
   if (!rec) return;
   const box = $('#term-search');
   box.classList.add('show');
-  const input = $('#term-search-input');
+  syncTermSearchUI();
+  const input = /** @type {HTMLInputElement} */ ($('#term-search-input'));
   input.focus(); input.select();
 }
 function closeTermSearch() {
   $('#term-search').classList.remove('show');
+  clearAllTermSearchDecorations();
   const rec = terms.get(activeSessionId());
-  if (rec) { try { rec.search.clearDecorations(); } catch (_) {} rec.term.focus(); }
+  if (rec) rec.term.focus();
 }
 function runTermSearch(dir) {
-  const rec = terms.get(activeSessionId());
-  const q = $('#term-search-input').value;
+  const asid = activeSessionId();
+  const rec = terms.get(asid);
+  const q = /** @type {HTMLInputElement} */ ($('#term-search-input')).value;
   if (!rec || !q) return;
+  clearAllTermSearchDecorations(asid);
   // Метки overview-ruler берём из токенов активной темы, а не хардкодим (контракт тем):
   // --warn для совпадений, --add для активного — так они согласованы с любой темой.
   const css = getComputedStyle(document.documentElement);
@@ -2138,8 +2180,6 @@ function setFilesDockOpen(open) {
   refitActiveTerminal();
 }
 function toggleFilesDock() { setFilesDockOpen(!filesDockOpen); }
-registerPanel('files', { isOpen: () => filesDockOpen, setOpen: setFilesDockOpen });
-PANEL_ORDER.push('files');
 registerPanel('files', { isOpen: () => filesDockOpen, setOpen: setFilesDockOpen });
 PANEL_ORDER.push('files');
 
@@ -4373,7 +4413,11 @@ function init() {
   });
 
   // terminal search box
-  $('#term-search-input').addEventListener('keydown', (e) => {
+  const termSearchInput = /** @type {HTMLInputElement} */ ($('#term-search-input'));
+  termSearchInput.addEventListener('input', () => {
+    if (!termSearchInput.value) clearAllTermSearchDecorations();
+  });
+  termSearchInput.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') { e.preventDefault(); runTermSearch(e.shiftKey ? -1 : 1); }
     else if (e.key === 'Escape') { e.preventDefault(); closeTermSearch(); }
   });
