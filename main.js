@@ -29,6 +29,7 @@ const { safeChildName } = require('./lib/safe-name'); // анти-traversal дл
 const { resolveShell: resolveShellPure } = require('./lib/shell'); // выбор оболочки терминала
 const updater = require('./lib/updater');  // самообновление: проверка релиза, загрузка, подмена каталога
 const { watchTree } = require('./lib/tree-watch'); // слежение за деревом проекта (на Linux — по наблюдению на каталог)
+const gitignore = require('./lib/gitignore');      // компиляция и кэш правил .gitignore проекта
 const { createHistory } = require('./lib/history'); // локальная история файлов: снимки, троттл, срок и объём
 const { createBatcher } = require('./lib/ptybatch'); // склейка вывода PTY перед отправкой в окно
 const { createRingStore } = require('./lib/ptyring'); // кольцевой буфер вывода PTY для бесшовного подхвата вкладок
@@ -109,11 +110,7 @@ function resolveShell() {
 //   null      — unknown (non-Linux / error) → caller falls back to text heuristics
 // Реализация — lib/proctree.js: обходит только потомков шелла, а не весь /proc.
 
-const IGNORE_DIRS = new Set([
-  '.git', 'node_modules', '__pycache__', '.venv', 'venv',
-  'dist', 'build', '.next', 'target', '.cache', '.idea',
-  'vendor', '.nuxt', '.output', // зависимости PHP/Go и сборка Nuxt — десятки тысяч файлов, которые не правят руками
-]);
+const IGNORE_DIRS = gitignore.DEFAULT_IGNORE_DIRS;
 const MAX_VIEW_BYTES = 2 * 1024 * 1024;
 const IMPORT_MAX_BYTES = 64 * 1024 * 1024; // settings backup gate — small in practice, blocks pathological files
 
@@ -4821,8 +4818,18 @@ ipcMain.handle('fs:readDir', async (_e, dir) => {
       if (d.isSymbolicLink()) { try { isDir = (await fs.promises.stat(full)).isDirectory(); } catch (_) { isDir = false; } }
       return { name: d.name, path: full, dir: isDir };
     }));
+    const igRoot = gitignore.findIgnoreRoot(dir);
+    const ig = igRoot ? gitignore.forProject(igRoot, IGNORE_DIRS) : null;
     return out
-      .filter((e) => !(e.dir && IGNORE_DIRS.has(e.name)))
+      .filter((e) => {
+        if (!e.dir) return true; // одиночные файлы (.env и т.п.) остаются видимыми в дереве
+        if (IGNORE_DIRS.has(e.name)) return false;
+        if (ig && igRoot) {
+          const rel = path.relative(igRoot, e.path);
+          if (rel && !rel.startsWith('..') && ig.ignores(rel, true)) return false;
+        }
+        return true;
+      })
       .filter((e) => !(!e.dir && e.name.endsWith(WRITE_TMP_SUFFIX)))   // сосед атомарной записи — живёт миллисекунды
       .sort((a, b) => (a.dir === b.dir ? a.name.localeCompare(b.name) : a.dir ? -1 : 1));
   } catch (err) { return { error: String(err.message || err) }; }
@@ -5028,6 +5035,7 @@ const FILES_SEARCH_FILE_MAX = 1024 * 1024;     // не грепаем файлы
 async function walkProjectFiles(root, onFile, stop) {
   let rootReal = root;
   try { rootReal = await fs.promises.realpath(root); } catch { /* корня нет — readdir ниже вернёт ошибку */ }
+  const ig = gitignore.forProject(root, IGNORE_DIRS);
   const stack = [{ dir: root, real: rootReal, up: null }];   // up — родитель на пути от корня
   while (stack.length) {
     if (stop && stop()) return;
@@ -5037,19 +5045,23 @@ async function walkProjectFiles(root, onFile, stop) {
     try { entries = await fs.promises.readdir(dir, { withFileTypes: true }); } catch { continue; }
     for (const d of entries) {
       const full = path.join(dir, d.name);
+      const rel = path.relative(root, full);
       let isDir = d.isDirectory();
       let real = null;
       if (d.isSymbolicLink()) {
         try { isDir = (await fs.promises.stat(full)).isDirectory(); } catch { isDir = false; }
-        if (isDir && !IGNORE_DIRS.has(d.name)) { try { real = await fs.promises.realpath(full); } catch { continue; } }
+        if (isDir && !IGNORE_DIRS.has(d.name) && !ig.ignores(rel, true)) {
+          try { real = await fs.promises.realpath(full); } catch { continue; }
+        }
       }
       if (isDir) {
-        if (IGNORE_DIRS.has(d.name)) continue;
+        if (IGNORE_DIRS.has(d.name) || ig.ignores(rel, true)) continue;
         if (real === null) real = path.join(node.real, d.name);   // обычный каталог: реальный путь = родитель + имя
         else { let a = node; while (a && a.real !== real) a = a.up; if (a) continue; } // петля — уже на пути
         stack.push({ dir: full, real, up: node });
         continue;
       }
+      if (d.name.endsWith(WRITE_TMP_SUFFIX) || ig.ignores(rel, false)) continue;
       if (stop && stop()) return;
       await onFile(full);
     }
@@ -5362,7 +5374,11 @@ ipcMain.on('fs:watch', (_e, root) => {
   watchGaveUp.delete(root);
   let watcher;
   try {
-    watcher = watchTree(root, { ignore: IGNORE_DIRS, maxDirs: WATCH_MAX_DIRS });
+    watcher = watchTree(root, {
+      ignore: IGNORE_DIRS,
+      ignoreFilter: (rel, _name, isDir) => gitignore.forProject(root, IGNORE_DIRS).ignores(rel, isDir),
+      maxDirs: WATCH_MAX_DIRS,
+    });
   } catch (err) { // inotify limits / unsupported — degrade to manual refresh
     if (isLimitErr(err)) watchGaveUp.set(root, Date.now());
     logWatchEnded(root, err); notifyWatchEnded(root); return;
@@ -5377,7 +5393,7 @@ ipcMain.on('fs:watch', (_e, root) => {
   });
   watcher.on('change', (_type, filename) => {
     const rel = filename == null ? '' : String(filename);
-    if (rel && isIgnoredPath(rel)) return;
+    if (rel && (isIgnoredPath(rel) || gitignore.forProject(root, IGNORE_DIRS).ignoresPath(rel))) return;
     if (rel.endsWith(WRITE_TMP_SUFFIX)) return;        // временный сосед атомарной записи — не наш файл
     if (rel) rec.pending.add(path.join(root, rel));
     clearTimeout(rec.timer);
@@ -5586,8 +5602,9 @@ async function auditOrphans(root, files) {
   return { items, skipped: false };
 }
 
-// Рекурсивный обход (источник 'fs'): относительные пути, IGNORE_DIRS отсекаются.
+// Рекурсивный обход (источник 'fs'): относительные пути, IGNORE_DIRS и .gitignore отсекаются.
 async function auditWalkFs(root, out) {
+  const ig = gitignore.forProject(root, IGNORE_DIRS);
   const stack = ['.'];
   while (stack.length) {
     const rel = stack.pop();
@@ -5596,8 +5613,11 @@ async function auditWalkFs(root, out) {
     for (const ent of ents) {
       if (out.length >= AUDIT_MAX_FILES) return true; // capped
       const childRel = rel === '.' ? ent.name : rel + '/' + ent.name;
-      if (ent.isDirectory()) { if (!IGNORE_DIRS.has(ent.name)) stack.push(childRel); }
-      else if (ent.isFile()) out.push(childRel);
+      if (ent.isDirectory()) {
+        if (!IGNORE_DIRS.has(ent.name) && !ig.ignores(childRel, true)) stack.push(childRel);
+      } else if (ent.isFile() && !ent.name.endsWith(WRITE_TMP_SUFFIX) && !ig.ignores(childRel, false)) {
+        out.push(childRel);
+      }
     }
   }
   return false;
