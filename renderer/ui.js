@@ -55,10 +55,11 @@ export function el(tag, cls, text) {
 }
 // basename that survives both POSIX and Windows separators (for the Windows build).
 export function baseName(p) { return String(p).split(/[\\/]/).filter(Boolean).pop() || String(p); }
+/** @param {string} html @returns {SVGSVGElement} */
 export function svgEl(html) {
   const t = document.createElement('template');
   t.innerHTML = html.trim();
-  return t.content.firstChild;
+  return /** @type {SVGSVGElement} */ (t.content.firstChild);
 }
 // ---------------------------------------------------------------- file-type glyphs
 // Значки типов файлов для деревьев (вивер + «Удалённые хосты»): форма одна, тип различается
@@ -78,17 +79,33 @@ const EXT_COLORS = {
 /** Расширение в нижнем регистре без точки ('app.JS' → 'js'); без расширения → ''. */
 export function extOf(name) { if (!name) return ''; const i = String(name).lastIndexOf('.'); return i > 0 ? String(name).slice(i + 1).toLowerCase() : ''; }
 function colorFor(name) { return EXT_COLORS[extOf(name)] || '#8aa79a'; }
-/** Значок файла, окрашенный по расширению имени. */
+/** @type {Map<string, SVGSVGElement>} */
+const _fileProto = new Map();
+/** Значок файла, окрашенный по расширению имени (кэшируется по цвету, отдаётся клон узла). */
 export function fileTypeSvg(name) {
-  return svgEl(`<svg class="ti" viewBox="0 0 16 16" width="14" height="14">
-    <path fill="${colorFor(name)}" opacity="0.95" d="M3.5 1.4h5.1L13 5.3v9.3a1 1 0 0 1-1 1H3.5a1 1 0 0 1-1-1V2.4a1 1 0 0 1 1-1z"/>
+  const c = colorFor(name);
+  let proto = _fileProto.get(c);
+  if (!proto) {
+    proto = svgEl(`<svg class="ti" viewBox="0 0 16 16" width="14" height="14">
+    <path fill="${c}" opacity="0.95" d="M3.5 1.4h5.1L13 5.3v9.3a1 1 0 0 1-1 1H3.5a1 1 0 0 1-1-1V2.4a1 1 0 0 1 1-1z"/>
     <path fill="#06120c" opacity="0.4" d="M8.6 1.4 13 5.3H9.1a.5.5 0 0 1-.5-.5z"/></svg>`);
+    _fileProto.set(c, proto);
+  }
+  return /** @type {SVGSVGElement} */ (proto.cloneNode(true));
 }
+/** @type {Map<number, SVGSVGElement>} */
+const _folderProto = new Map();
 /** Значок папки цвета акцента («Оформление»): открытая — светлее закрытой. */
 export function folderTypeSvg(open) {
-  const c = open ? 'var(--green-bright)' : 'var(--green)';
-  return svgEl(`<svg class="ti" viewBox="0 0 16 16" width="14" height="14">
+  const k = open ? 1 : 0;
+  let proto = _folderProto.get(k);
+  if (!proto) {
+    const c = open ? 'var(--green-bright)' : 'var(--green)';
+    proto = svgEl(`<svg class="ti" viewBox="0 0 16 16" width="14" height="14">
     <path style="fill:${c}" d="M1.4 3.6h4.2l1.2 1.5H14.6a1 1 0 0 1 1 1v6.4a1 1 0 0 1-1 1H1.4a1 1 0 0 1-1-1V4.6a1 1 0 0 1 1-1z"/></svg>`);
+    _folderProto.set(k, proto);
+  }
+  return /** @type {SVGSVGElement} */ (proto.cloneNode(true));
 }
 // ---------------------------------------------------------------- icon set
 // One consistent line-icon family (Lucide-ish): 24-grid, currentColor stroke, rounded.
@@ -220,8 +237,16 @@ export const ICONS = {
   square: '<rect x="6" y="6" width="12" height="12" rx="2"/>',
   locate: '<circle cx="12" cy="12" r="6.5"/><circle cx="12" cy="12" r="2"/><path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3"/>',
 };
+/** @type {Map<string, SVGSVGElement>} */
+const _iconProto = new Map();
 export function icon(name, size = 16) {
-  return svgEl(`<svg class="ic" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name] || ''}</svg>`);
+  const key = `${name}:${size}`;
+  let proto = _iconProto.get(key);
+  if (!proto) {
+    proto = svgEl(`<svg class="ic" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name] || ''}</svg>`);
+    _iconProto.set(key, proto);
+  }
+  return /** @type {SVGSVGElement} */ (proto.cloneNode(true));
 }
 // Button carrying a single icon (replaces the old emoji-in-textContent buttons).
 export function iconBtn(cls, name, title, size) {

@@ -88,6 +88,7 @@ const BOOT_ID = Date.now().toString(36);
 const projState = new Map(); // sessionId -> 'quiet' | 'busy' | 'waiting'
 let agentScan = new Map();   // sessionId -> { fg, agent, idle } — последний опрос pty:agents (см. «агенты в терминалах»)
 let agentSig = '';           // что видел список проектов при прошлом опросе: перерисовываем только при смене
+let agentFavSig = '';        // подпись набора избранных проектов с агентами (для режима «только с агентом»)
 let agentScanTimer = null;
 let agentScanSeq = 0;        // опросы идут внахлёст (таймер + смена состояния): старый ответ не перетирает свежий
 const missing = new Set();   // ids of projects whose folder no longer exists on disk
@@ -261,13 +262,56 @@ function moveSection(key, dir) {
   saveSectionOrder(order); renderProjects();
 }
 
-function renderProjects() {
+function renderProjects({ skipRail = false } = {}) {
   const box = $('#projects');
-  box.innerHTML = '';
+  const frag = document.createDocumentFragment();
   const sections = buildSections();
-  sections.forEach((s, i) => box.appendChild(renderSection(s, i, sections)));
-  if (projFilter && !sections.length) box.appendChild(el('div', 'proj-empty', 'Ничего не найдено'));
-  renderMiniRail();
+  sections.forEach((s, i) => frag.appendChild(renderSection(s, i, sections)));
+  if (projFilter && !sections.length) frag.appendChild(el('div', 'proj-empty', 'Ничего не найдено'));
+  box.replaceChildren(frag);
+  agentSig = '';
+  agentFavSig = '';
+  if (!skipRail) renderMiniRail();
+  renderChips();
+}
+// Точечное обновление кнопки «Закрыть терминалы без агента: N» в шапке секции «Избранное» без пересборки списка.
+function syncFavHeaderSweep() {
+  const head = document.querySelector('#projects .pgroup.pinned > .pgroup-head');
+  if (!head) return;
+  const existing = head.querySelector('.pgroup-sweep');
+  const idle = idleProjects();
+  if (!idle.length) {
+    if (existing) existing.remove();
+    return;
+  }
+  const title = `Закрыть терминалы без агента: ${idle.length}`;
+  if (existing instanceof HTMLElement) {
+    if (existing.title !== title) existing.title = title;
+    return;
+  }
+  const sweep = iconBtn('pgroup-arrow pgroup-sweep', 'power', title, 12);
+  sweep.addEventListener('click', (e) => { e.stopPropagation(); closeIdleTerms(); });
+  const eye = head.querySelector('.pgroup-eye');
+  if (eye) head.insertBefore(sweep, eye);
+  else head.appendChild(sweep);
+}
+// Быстрое переключение активного проекта без сноса #projects и #mini-rail, если карточка уже отрендерена.
+function updateActiveProjectDom(prevId, nextId) {
+  const box = $('#projects');
+  const nextCards = box ? box.querySelectorAll(`.card[data-id="${nextId}"]`) : [];
+  if (!nextCards.length) {
+    renderProjects();
+    return;
+  }
+  if (prevId && prevId !== nextId) {
+    box.querySelectorAll(`.card[data-id="${prevId}"]`).forEach((c) => c.classList.remove('active'));
+    document.querySelectorAll(`#mini-rail .rail-btn[data-id="${prevId}"]`).forEach((b) => b.classList.remove('active'));
+    refreshProjIndicator(prevId);
+  }
+  nextCards.forEach((c) => c.classList.add('active'));
+  document.querySelectorAll(`#mini-rail .rail-btn[data-id="${nextId}"]`).forEach((b) => b.classList.add('active'));
+  refreshProjIndicator(nextId);
+  syncFavHeaderSweep();
   renderChips();
 }
 // Заголовок группы: имя · (✎ ↑ ↓ по наведению) · число · стрелка. Инструменты стоят в раскладке
@@ -647,6 +691,7 @@ function renderMiniRail() {
     seen.add(p.id);
     const st = projAggState(p.id);
     const btn = el('button', 'rail-btn' + (p.id === activeId ? ' active' : '') + (missing.has(p.id) ? ' missing' : ''), initials(p.name));
+    btn.dataset.id = p.id;
     btn.title = p.name;
     btn.setAttribute('data-no-i18n', '');
     if (p.accent) btn.style.color = p.accent;
@@ -1046,9 +1091,29 @@ function projAggState(projId) {
   // «ждёт вас» важнее «работает»: вторая вкладка с крутилкой не должна прятать вопрос первой
   return ss.includes('waiting') ? 'waiting' : ss.includes('busy') ? 'busy' : 'quiet';
 }
+function syncMiniRailIndicator(projId, st = projAggState(projId)) {
+  document.querySelectorAll(`#mini-rail .rail-btn[data-id="${projId}"]`).forEach((btn) => {
+    const badge = btn.querySelector('.rail-st');
+    if (st === 'idle') {
+      if (badge) badge.remove();
+      return;
+    }
+    if (badge) {
+      const ind = badge.querySelector('.pind');
+      if (ind) ind.className = 'pind ' + st;
+      return;
+    }
+    const nextBadge = el('span', 'rail-st');
+    const ind = el('span', 'pind ' + st);
+    ind.dataset.id = projId;
+    nextBadge.appendChild(ind);
+    btn.appendChild(nextBadge);
+  });
+}
 function refreshProjIndicator(projId) {
   const st = projAggState(projId);
   document.querySelectorAll(`.pind[data-id="${projId}"]`).forEach((i) => { i.className = 'pind ' + st; });
+  syncMiniRailIndicator(projId, st);
 }
 // ---- агенты в терминалах: глаз «только с агентом» в «Избранном» и закрытие простаивающих терминалов ----
 // Зелёный индикатор горит и у терминала, открытого случайным кликом: шелл на приглашении — тоже «готов».
@@ -1080,12 +1145,23 @@ async function refreshAgents() {
   try { if (ids.length) res = (await lite.pty.agents(ids)) || {}; } catch (_) { return; }
   if (seq !== agentScanSeq) return;
   agentScan = new Map(Object.entries(res));
-  const sig = projects.map((p) => p.id + (projHasAgent(p.id) ? '+a' : '') + (projIdle(p.id) ? '+i' : '')).join(',');
-  // Перерисовка пересоздаёт карточки: посреди перетаскивания она сорвала бы его, а у открытого меню
-  // сняла бы подсветку. Тогда ждём следующего опроса — подпись не запоминаем.
-  if (sig === agentSig || favDragCard || $('#menu-layer').firstChild) return;
+  const favOnly = favAgentsOnly() && !projFilter;
+  const favSig = favOnly ? projects.filter((p) => p.favorite && projHasAgent(p.id)).map((p) => p.id).join(',') : '';
+  const idleSig = idleProjects().map((p) => p.id).join(',');
+  const sig = favSig + '|' + idleSig;
+  if (sig === agentSig) return;
+  if (favOnly && favSig !== agentFavSig) {
+    // Перерисовка пересоздаёт карточки: посреди перетаскивания она сорвала бы его, а у открытого меню
+    // сняла бы подсветку. Тогда ждём следующего опроса — подпись не запоминаем.
+    if (favDragCard || $('#menu-layer').firstChild) return;
+    renderProjects();
+    agentFavSig = favSig;
+    agentSig = sig;
+    return;
+  }
+  agentFavSig = favSig;
   agentSig = sig;
-  renderProjects();
+  syncFavHeaderSweep();
 }
 // Сверка вскоре после смены состояния вкладки: агент запустился или вышел — фильтр догоняет за полсекунды.
 function scheduleAgentScan(delay = 500) {
@@ -1934,6 +2010,7 @@ function setActive(id) {
 function doSetActive(id) {
   const proj = projects.find((p) => p.id === id);
   if (!proj) return;
+  const prevId = activeId;
   activeId = id;
   try { sessionStorage.setItem('lite.activeProject', id); } catch (_) {} // переживает перезагрузку окна (не перезапуск)
   try { lite.errors.setContext(proj.path); } catch (_) {} // тег проекта для новых ошибок в реестре
@@ -1945,7 +2022,7 @@ function doSetActive(id) {
     lite.fs.watch(proj.path); watchedRoot = proj.path;
   }
   ensureProjectTabs(proj);
-  renderProjects();
+  updateActiveProjectDom(prevId, id);
   showActiveTerminal();
   // вивер живёт в своём окне и следует за проектом через app:activeProject (pushActiveProject ниже)
   try { Ext.notifyActiveProject(activeId); } catch (_) {} // пользовательские модули: ctx.projects.onChange
@@ -4156,19 +4233,29 @@ function init() {
 
   // ── Фильтр списка проектов + вход в глобальный поиск ──────────────────────────────
   {
-    const q = $('#proj-filter'), clr = $('#proj-filter-clear');
-    const apply = () => {
-      projFilter = q.value.trim().toLowerCase();
+    const q = $('#proj-filter'), clr = $('#proj-filter-clear'), box = $('#projects');
+    let filterRaf = 0;
+    let savedScrollTop = 0;
+    const applyNow = () => {
+      if (filterRaf) { cancelAnimationFrame(filterRaf); filterRaf = 0; }
+      const next = q.value.trim().toLowerCase();
+      if (!projFilter && next && box) savedScrollTop = box.scrollTop;
+      const clearing = !!(projFilter && !next);
+      projFilter = next;
       clr.classList.toggle('hidden', !projFilter);
-      renderProjects();
+      renderProjects({ skipRail: true });
+      if (clearing && box) box.scrollTop = savedScrollTop;
     };
-    q.addEventListener('input', apply);
-    q.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape') { q.value = ''; apply(); q.blur(); }
-      // Enter — открыть первый найденный проект: фильтр работает и как быстрый переключатель
-      if (e.key === 'Enter') { const first = buildSections()[0]; if (first && first.list[0]) setActive(first.list[0].id); }
+    q.addEventListener('input', () => {
+      if (filterRaf) return;
+      filterRaf = requestAnimationFrame(applyNow);
     });
-    clr.addEventListener('click', () => { q.value = ''; apply(); q.focus(); });
+    q.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') { q.value = ''; applyNow(); q.blur(); }
+      // Enter — открыть первый найденный проект: фильтр работает и как быстрый переключатель
+      if (e.key === 'Enter') { applyNow(); const first = buildSections()[0]; if (first && first.list[0]) setActive(first.list[0].id); }
+    });
+    clr.addEventListener('click', () => { q.value = ''; applyNow(); q.focus(); });
     $('#proj-find').addEventListener('click', () => showGlobalSearch({ query: q.value.trim() }));
   }
 
