@@ -251,17 +251,19 @@ const MODULES = {
 };
 
 const modId = (location.hash || '').replace(/^#/, '') || 'tools';
+const isEmbed = new URLSearchParams(location.search || '').get('embed') === '1';
+if (isEmbed) document.body.classList.add('is-embed');
 // Только собственные ключи реестра: '#constructor' / '#toString' из битого персиста __open иначе
 // дали бы «модуль» из Object.prototype, и def.load() уронил бы оболочку окна на старте.
 const def = Object.prototype.hasOwnProperty.call(MODULES, modId) ? MODULES[modId] : null;
 
 // Store snapshot + settings/theme (each window loads its own; writes go to the shared main store).
-const STORE = lite.store.loadAll() || {};
+const STORE = lite.store.loadAll(modId) || {};
 let settings = STORE.settings || {};
 // Тема одна («Графит»), палитра — из settings.look (общая с редактором, приходит живьём через settings-sync).
 function applyTheme() { applyLook(settings); }
 applyTheme();
-applyFrame(settings); // рамка окна — та же, что у редактора (настройки → «Рамка окна»)
+if (!isEmbed) applyFrame(settings); // рамка окна — та же, что у редактора (в док-режиме внешняя рамка не нужна)
 
 function persist(key, value) { STORE[key] = value; lite.store.set(key, value); }
 // settings — только изменённые поля; чужие изменения (другие окна, смена языка) вливаются в этот же
@@ -292,7 +294,7 @@ let mod = null;          // the initialised module instance
 // Применить настройки живьём: тема окна, рамка, xterm-терминалы модуля (если он их рисует).
 function applyLiveSettings() {
   applyTheme();
-  applyFrame(settings);
+  if (!isEmbed) applyFrame(settings);
   try { mod && mod.applyTermTheme && mod.applyTermTheme(); } catch (_) {}
   try { mod && mod.applyFontSize && mod.applyFontSize(); } catch (_) {}
 }
@@ -317,7 +319,7 @@ function buildHost() {
     sendToTerminal: (t) => lite.editorBus.sendToTerminal(t),
     sendNoteToTerminal: (p, t) => lite.editorBus.sendNoteToTerminal(p && p.id, t),
     refreshTree: () => lite.editorBus.refreshTree(),
-    closeWindow: () => lite.win.close(), // для модулей со своим dirty-guard на закрытии (ctx)
+    closeWindow: () => (isEmbed ? lite.editorBus.closeFilesDock() : lite.win.close()), // для модулей со своим dirty-guard на закрытии (ctx)
   };
 }
 
@@ -337,6 +339,21 @@ async function boot() {
   $('#win-min').onclick = () => lite.win.minimize();
   $('#win-max').onclick = () => lite.win.maximizeToggle();
   $('#win-close').onclick = () => lite.win.close();
+  const dockBtn = $('#win-dock');
+  if (dockBtn && !isEmbed && modId === 'files') {
+    dockBtn.classList.remove('hidden');
+    dockBtn.onclick = () => {
+      const go = () => {
+        settings.dockFiles = true;
+        saveSettings();
+        try { lite.editorBus.dockFiles(true); } catch (_) {}
+      };
+      try {
+        if (mod && typeof mod.confirmClose === 'function') mod.confirmClose(go);
+        else go();
+      } catch (_) { go(); }
+    };
+  }
   // reflect maximize state on #mod-app (CSS .is-max tweaks the restore glyph)
   lite.win.onMaximizeChange((v) => $('#mod-app').classList.toggle('is-max', !!v));
   lite.win.isMaximized().then((v) => $('#mod-app').classList.toggle('is-max', !!v)).catch(() => {});

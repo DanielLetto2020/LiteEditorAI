@@ -31,6 +31,12 @@ jobs:
       - name: Install deps (rebuilds node-pty for this OS)
         run: npm ci
 
+      - name: Lint, typecheck and unit tests
+        run: |
+          npm run lint
+          npm run typecheck
+          npm test
+
       - name: Bundle renderer
         run: node build.js
 

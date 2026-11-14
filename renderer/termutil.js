@@ -133,3 +133,30 @@ export function copySelection(term) {
   }
   return false;
 }
+
+// ── Подтверждение разбора вывода xterm (Flow Control с main) ────────────────────────
+// Мелкие ответы шелла и обычные реплики агентов копятся локально без единого лишнего IPC;
+// как только парсер xterm переварил >= PTY_ACK_BATCH символов (под лавиной вывода), уходит pty:ack.
+const PTY_ACK_BATCH = 32 * 1024;
+const ptyAckAcc = new Map(); // sessionId -> накопленное число символов
+
+export function creditPtyAck(id, len) {
+  if (!id || !(len > 0) || !lite || !lite.pty || typeof lite.pty.ack !== 'function') return;
+  const total = (ptyAckAcc.get(id) || 0) + len;
+  if (total >= PTY_ACK_BATCH) {
+    ptyAckAcc.delete(id);
+    lite.pty.ack(id, total);
+  } else {
+    ptyAckAcc.set(id, total);
+  }
+}
+
+export function dropPtyAck(id) {
+  ptyAckAcc.delete(id);
+}
+
+export function writeTermWithAck(term, id, data) {
+  const len = data ? data.length : 0;
+  if (!len) return;
+  term.write(data, () => creditPtyAck(id, len));
+}

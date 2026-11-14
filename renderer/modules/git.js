@@ -1,34 +1,110 @@
-// LiteEditor — Git как ВСТРОЕННЫЙ компонент окна вивера (PhpStorm-style), а не отдельное окно.
-// Изолирован: всё из ядра — только через host-колбэки, UI-хелперы — прямым импортом из ui.js,
-// бэкенд — через window.lite.git.*. Рендерит в контейнеры окна вивера: VCS-полоса (шапка с веткой +
-// ahead/behind + fetch/pull/push), секция «Коммит» (изменения + сообщение + commit/stash), секция
-// «Ветки/Лог» (под-вкладки История/Ветки). Дифф выбранного файла показывается в ЦЕНТРЕ вивера
-// (host.gitDiff). Разрешение конфликтов merge — отдельная модалка (3 окна).
-// host: { activeProject, getActiveId, renderProjects, refreshTree, createCodeEditor,
-//         gitDiff(projPath, file, label) — показать дифф файла в центре вивера }
+// LiteEditor — Git как ВСТРОЕННЫЙ компонент окна «Проект» (PhpStorm / VS Code style).
+// Изолирован: всё из ядра — через host-колбэки, UI-хелперы — из ui.js, бэкенд — через window.lite.git.*.
+// Рендерит:
+//   - VCS-полосу в шапке (выпадашка дерева веток + избранные + ahead/behind + fetch/pull/push);
+//   - секцию «Коммит» (фильтр, режим по статусу / деревом папок, чекбоксы без мерцания, быстрые префиксы,
+//     история сообщений коммитов, счётчик длины заголовка, Commit / Commit & Push / Amend);
+//   - нижнюю панель «Git» с 3 вкладками: История (цветной SVG-граф + карточка полного сообщения + дерево файлов),
+//     Ветки и Stash.
 import { el, icon, toast, showConfirm, showPrompt, baseName, makeModal } from '../ui.js';
 import { ensureLanguage } from '../codeedit.js';
-import { t as tr } from '../i18n.js';   // tr: имя t в этом файле занято локальными переменными
+import { t as tr } from '../i18n.js';
+import { layoutCommitGraph, buildCommitGraphSvg } from './files/git-hunks.js';
 
 const lite = window.lite;
 
+const COMMIT_HIST_LS_KEY = 'lite.gitCommitHistory';
+const MAX_COMMIT_HISTORY = 25;
+const CONVENTIONAL_PREFIXES = ['feat: ', 'fix: ', 'refactor: ', 'docs: ', 'test: ', 'chore: '];
+
+function loadCommitHistory(store) {
+  try {
+    const raw = localStorage.getItem(COMMIT_HIST_LS_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) return parsed.filter((x) => typeof x === 'string' && x.trim()).slice(0, MAX_COMMIT_HISTORY);
+    }
+  } catch (_) {}
+  const v = store && store.viewerUi && Array.isArray(store.viewerUi.commitHistory) ? store.viewerUi.commitHistory : [];
+  return v.slice(0, MAX_COMMIT_HISTORY);
+}
+
+function saveCommitHistory(list, host) {
+  const clean = list.filter((x) => typeof x === 'string' && x.trim()).slice(0, MAX_COMMIT_HISTORY);
+  try { localStorage.setItem(COMMIT_HIST_LS_KEY, JSON.stringify(clean)); } catch (_) {}
+  if (host && host.STORE && host.persist) {
+    const cur = (host.STORE.viewerUi && typeof host.STORE.viewerUi === 'object') ? host.STORE.viewerUi : {};
+    host.persist('viewerUi', { ...cur, commitHistory: clean });
+  }
+}
+
+function formatRelTime(unixSec) {
+  if (!unixSec) return '';
+  const diff = Math.max(0, Math.floor(Date.now() / 1000) - unixSec);
+  if (diff < 60) return 'только что';
+  if (diff < 3600) return `${Math.floor(diff / 60)} мин назад`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)} ч назад`;
+  if (diff < 86400 * 30) return `${Math.floor(diff / 86400)} дн назад`;
+  const d = new Date(unixSec * 1000);
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${pad(d.getDate())}.${pad(d.getMonth() + 1)}.${d.getFullYear()}`;
+}
+
+function formatFullDate(unixSec) {
+  if (!unixSec) return '';
+  const d = new Date(unixSec * 1000);
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${pad(d.getDate())}.${pad(d.getMonth() + 1)}.${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+function parseDecorateRefs(rawRefs) {
+  if (!rawRefs) return [];
+  const out = [];
+  for (const part of String(rawRefs).split(',').map((s) => s.trim()).filter(Boolean)) {
+    if (/\/HEAD$/.test(part)) continue;
+    let label = part;
+    let kind = 'local';
+    if (label.startsWith('HEAD -> ')) {
+      label = label.slice(8).trim();
+      kind = 'head';
+    } else if (label === 'HEAD') {
+      continue;
+    }
+    if (label.startsWith('tag: ')) {
+      label = label.slice(5).trim().replace(/^refs\/tags\//, '');
+      kind = 'tag';
+    } else if (label.startsWith('refs/tags/')) {
+      label = label.slice(10);
+      kind = 'tag';
+    } else if (label.startsWith('refs/heads/')) {
+      label = label.slice(11);
+      if (kind !== 'head') kind = 'local';
+    } else if (label.startsWith('refs/remotes/')) {
+      label = label.slice(13);
+      kind = 'remote';
+    } else if (/^origin\//.test(label)) {
+      kind = 'remote';
+    }
+    out.push({ label, kind });
+  }
+  return out;
+}
+
 export function initGit(host) {
   const { renderProjects, activeProject, getActiveId, refreshTree, createCodeEditor } = host;
-  // openFile(abs,line) — открыть файл в вивере; menuRow/placeMenu/closeMenus — меню-слой окна (контекст-меню строки изменённого файла).
-  const { openFile: hostOpenFile, menuRow, placeMenu, closeMenus } = host;
+  const { openFile: hostOpenFile, menuRow, placeMenu, closeMenus, settings, saveSettings } = host;
 
-  let containers = null;     // { topbar, commit, branchlog } — задаются вивером через setContainers
-  // Какие секции рендерить: коммит (левая колонка) и/или лог (нижняя панель) — могут быть открыты вместе.
+  let containers = null;     // { topbar, commit, branchlog }
   let renderOpts = { commit: true, log: false };
-  let gitRenderSeq = 0;      // bumped on every render; a stale render (older seq) bails after its awaits
-  let blsub = 'history';     // под-вкладка нижней панели: 'history' | 'branches'
-  let selectedCommit = null; // выбранный коммит в логе → дерево его файлов справа
-  let lastPath = null;       // путь проекта прошлого рендера — на смену сбрасываем выбор файлов
-  let selectedChangeFile = null; // выделенный файл во вкладке «Изменения»
-  const excluded = new Set();// abs-пути файлов, исключённых из коммита (по умолчанию включены все)
-  // projPath -> черновик сообщения коммита: переживает re-render панели, перезагрузку окна вивера
-  // и рестарт редактора (STORE.commitDrafts). Пишем с дебаунсом (не на каждый символ); если окно
-  // закрывают с несброшенным таймером — дописываем синхронно (store.setSync, как задумано для beforeunload).
+  let gitRenderSeq = 0;
+  let blsub = 'history';     // 'history' | 'branches' | 'stash'
+  let selectedCommit = null;
+  let lastPath = null;
+  let selectedChangeFile = null;
+  let changeFilterQuery = '';
+  const excluded = new Set();
+  let commitHistory = loadCommitHistory(host.STORE);
+
   const commitDraft = { ...((host.STORE && host.STORE.commitDrafts) || {}) };
   let draftTimer = null;
   function setDraft(path, val) {
@@ -41,6 +117,13 @@ export function initGit(host) {
   }
   window.addEventListener('beforeunload', flushDraft);
 
+  function pushCommitHistory(message) {
+    const clean = String(message || '').trim();
+    if (!clean) return;
+    commitHistory = [clean, ...commitHistory.filter((m) => m !== clean)].slice(0, MAX_COMMIT_HISTORY);
+    saveCommitHistory(commitHistory, host);
+  }
+
   const STATUS_LABEL = {
     conflict: 'Конфликты',
     modified: 'Изменённые',
@@ -51,6 +134,7 @@ export function initGit(host) {
 
   function miniIcon(iconName, title, extra = '') {
     const b = el('button', 'gm-mini' + (extra ? ' ' + extra : ''));
+    b.type = 'button';
     b.appendChild(icon(iconName, 13));
     if (title) b.title = title;
     return b;
@@ -103,61 +187,81 @@ export function initGit(host) {
     return n + ' ' + many;
   }
 
-  // Вивер задаёт контейнеры (VCS-полоса / секция коммита / нижняя панель веток-лога).
   function setContainers(c) { containers = c; }
-  // Перейти в секцию «Коммит» (после merge/resolve/abort): показать левую секцию коммита; рендер делает вызвавший.
   function goCommitView() { renderOpts.commit = true; if (host.showCommitPane) host.showCommitPane(); }
 
-  // Compact pill button for the Git toolbar (icon + optional label). Variants: 'primary' | 'ico' | 'danger'.
   function gitTool(iconName, label, title, variant) {
     const b = el('button', 'git-tool' + (variant ? ' ' + variant : ''));
+    b.type = 'button';
     b.appendChild(icon(iconName, 14));
     if (label) b.appendChild(el('span', null, label));
     if (title) b.title = title;
     return b;
   }
 
-  // Чип состояния ветки vs её upstream (по info.branchTrack[name]). null → синхронна/нет upstream.
-  function trackChip(tr) {
-    if (!tr) return null;
-    if (tr.gone) { const c = el('span', 'gm-btrack gone', 'upstream удалён'); c.title = 'Удалённая ветка ' + (tr.upstream || 'upstream') + ' больше не существует'; return c; }
-    if (!tr.ahead && !tr.behind) return null;
+  function trackChip(trObj) {
+    if (!trObj) return null;
+    if (trObj.gone) {
+      const c = el('span', 'gm-btrack gone', 'upstream удалён');
+      c.title = 'Удалённая ветка ' + (trObj.upstream || 'upstream') + ' больше не существует';
+      return c;
+    }
+    if (!trObj.ahead && !trObj.behind) return null;
     const parts = [];
-    if (tr.behind) parts.push('↓' + tr.behind);
-    if (tr.ahead) parts.push('↑' + tr.ahead);
-    const c = el('span', 'gm-btrack ' + (tr.behind ? 'behind' : 'ahead'), parts.join(' '));
+    if (trObj.behind) parts.push('↓' + trObj.behind);
+    if (trObj.ahead) parts.push('↑' + trObj.ahead);
+    const c = el('span', 'gm-btrack ' + (trObj.behind ? 'behind' : 'ahead'), parts.join(' '));
     const t = [];
-    if (tr.behind) t.push('отстаёт от ' + (tr.upstream || 'upstream') + ' на ' + tr.behind + ' ' + shortCount(tr.behind, 'коммит', 'коммита', 'коммитов'));
-    if (tr.ahead) t.push('впереди на ' + tr.ahead + ' ' + shortCount(tr.ahead, 'коммит', 'коммита', 'коммитов'));
-    c.title = t.join(', ') + (tr.behind ? ' — обновите кнопкой ⟳' : '');
+    if (trObj.behind) t.push('отстаёт от ' + (trObj.upstream || 'upstream') + ' на ' + shortCount(trObj.behind, 'коммит', 'коммита', 'коммитов'));
+    if (trObj.ahead) t.push('впереди на ' + shortCount(trObj.ahead, 'коммит', 'коммита', 'коммитов'));
+    c.title = t.join(', ') + (trObj.behind ? ' — обновите кнопкой Pull / ⟳' : '');
     return c;
   }
 
   // ============================================================ выпадашка веток (PhpStorm-style)
-  // Избранные ветки — персист по проекту (host.STORE.gitFav: projPath -> [имена]).
   const branchFav = (host.STORE && host.STORE.gitFav) || {};
   function favList(path) { if (!Array.isArray(branchFav[path])) branchFav[path] = []; return branchFav[path]; }
   function isFav(path, name) { return favList(path).includes(name); }
-  function toggleFav(path, name) { const l = favList(path); const i = l.indexOf(name); if (i >= 0) l.splice(i, 1); else l.push(name); if (host.persist) host.persist('gitFav', branchFav); }
+  function toggleFav(path, name) {
+    const l = favList(path);
+    const i = l.indexOf(name);
+    if (i >= 0) l.splice(i, 1); else l.push(name);
+    if (host.persist) host.persist('gitFav', branchFav);
+  }
 
-  // Дерево веток по '/' (feature/x, release/1.2 → папки).
   function buildBranchTree(names) {
     const root = { dirs: new Map(), leaves: [] };
     for (const full of names) {
       const parts = String(full).split('/');
       const leaf = parts.pop();
       let node = root;
-      for (const seg of parts) { if (!node.dirs.has(seg)) node.dirs.set(seg, { dirs: new Map(), leaves: [] }); node = node.dirs.get(seg); }
+      for (const seg of parts) {
+        if (!node.dirs.has(seg)) node.dirs.set(seg, { dirs: new Map(), leaves: [] });
+        node = node.dirs.get(seg);
+      }
       node.leaves.push({ full, leaf });
     }
     return root;
   }
+
   function branchSectionHead(t) { return el('div', 'gm-branch-section', t); }
+
   function buildBranchPop(pop, p, data, closePop) {
     pop.replaceChildren();
-    const search = el('input', 'gm-branch-search'); search.type = 'search'; search.placeholder = 'Фильтр веток…'; search.spellcheck = false;
-    pop.appendChild(search);
-    const body = el('div', 'gm-branch-body'); pop.appendChild(body);
+    const topAct = el('div', 'gm-branch-topact');
+    const newBtn = el('button', 'gm-branch-newbtn', '+ Новая ветка…');
+    newBtn.type = 'button';
+    newBtn.onclick = () => { closePop(); newBranchFrom(p, data.current || 'HEAD'); };
+    topAct.appendChild(newBtn);
+
+    const search = el('input', 'gm-branch-search');
+    search.type = 'search';
+    search.placeholder = 'Фильтр веток…';
+    search.spellcheck = false;
+    pop.append(search, topAct);
+
+    const body = el('div', 'gm-branch-body');
+    pop.appendChild(body);
     const ctx = { p, data, closePop };
     const render = (q) => {
       body.replaceChildren();
@@ -165,29 +269,48 @@ export function initGit(host) {
       const localNames = data.local.map((b) => b.name);
       const hit = (n) => !ql || n.toLowerCase().includes(ql);
       const favNames = localNames.filter((n) => isFav(p.path, n) && hit(n));
-      if (favNames.length) { body.appendChild(branchSectionHead('Избранные')); for (const n of favNames) body.appendChild(branchRow(n, n, 'local', ctx, 0)); }
+      if (favNames.length) {
+        body.appendChild(branchSectionHead('Избранные'));
+        for (const n of favNames) body.appendChild(branchRow(n, n, 'local', ctx, 0));
+      }
       const locals = localNames.filter(hit);
       body.appendChild(branchSectionHead('Локальные'));
-      if (!locals.length) body.appendChild(el('div', 'gm-branch-none', '—')); else renderBranchTree(buildBranchTree(locals), body, 'local', ctx, 0);
+      if (!locals.length) body.appendChild(el('div', 'gm-branch-none', '—'));
+      else renderBranchTree(buildBranchTree(locals), body, 'local', ctx, 0);
       const remotes = (data.remote || []).filter(hit);
-      if (remotes.length) { body.appendChild(branchSectionHead('Удалённые')); renderBranchTree(buildBranchTree(remotes), body, 'remote', ctx, 0); }
+      if (remotes.length) {
+        body.appendChild(branchSectionHead('Удалённые'));
+        renderBranchTree(buildBranchTree(remotes), body, 'remote', ctx, 0);
+      }
     };
     search.addEventListener('input', () => render(search.value.trim()));
     render('');
     setTimeout(() => search.focus(), 0);
   }
+
   function renderBranchTree(node, container, kind, ctx, depth) {
     for (const [dname, child] of [...node.dirs.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
-      const row = el('div', 'gm-branch-folder'); row.style.paddingLeft = (depth * 12 + 8) + 'px';
-      const chev = el('span', 'gm-branch-chev'); chev.appendChild(icon('chevron-down', 12));   // SVG-шеврон вместо ▾/▸
+      const row = el('div', 'gm-branch-folder');
+      row.style.paddingLeft = (depth * 12 + 8) + 'px';
+      const chev = el('span', 'gm-branch-chev');
+      chev.appendChild(icon('chevron-down', 12));
       row.append(chev, icon('folder', 13), el('span', 'gm-branch-fname', dname));
       container.appendChild(row);
-      const box = el('div'); container.appendChild(box);
+      const box = el('div');
+      container.appendChild(box);
       renderBranchTree(child, box, kind, ctx, depth + 1);
-      row.onclick = (e) => { e.stopPropagation(); const hidden = box.style.display === 'none'; box.style.display = hidden ? '' : 'none'; chev.replaceChildren(icon(hidden ? 'chevron-down' : 'chevron-right', 12)); };
+      row.onclick = (e) => {
+        e.stopPropagation();
+        const hidden = box.style.display === 'none';
+        box.style.display = hidden ? '' : 'none';
+        chev.replaceChildren(icon(hidden ? 'chevron-down' : 'chevron-right', 12));
+      };
     }
-    for (const { full, leaf } of node.leaves.sort((a, b) => a.leaf.localeCompare(b.leaf))) container.appendChild(branchRow(full, leaf, kind, ctx, depth));
+    for (const { full, leaf } of node.leaves.sort((a, b) => a.leaf.localeCompare(b.leaf))) {
+      container.appendChild(branchRow(full, leaf, kind, ctx, depth));
+    }
   }
+
   function branchRow(full, leaf, kind, ctx, depth) {
     const { p, data } = ctx;
     const cur = kind === 'local' && full === data.current;
@@ -199,7 +322,9 @@ export function initGit(host) {
       const bd = data.local.find((b) => b.name === full);
       const tc = bd ? trackChip({ upstream: bd.upstream, ahead: bd.ahead, behind: bd.behind, gone: bd.gone }) : null;
       if (tc) row.appendChild(tc);
-      const star = el('button', 'gm-branch-star' + (isFav(p.path, full) ? ' on' : '')); star.title = 'В избранное';
+      const star = el('button', 'gm-branch-star' + (isFav(p.path, full) ? ' on' : ''));
+      star.type = 'button';
+      star.title = 'В избранное';
       star.appendChild(icon('star', 12));
       star.onclick = (e) => { e.stopPropagation(); toggleFav(p.path, full); star.classList.toggle('on'); };
       row.appendChild(star);
@@ -208,19 +333,35 @@ export function initGit(host) {
     return row;
   }
 
-  // Контекстное меню действий по ветке (справа от строки, как в PhpStorm).
   let branchMenuEl = null;
-  let activeBranchPop = null;   // закрывалка открытой выпадашки веток — чтобы снять её document-listener при пересборке шапки
+  let activeBranchPop = null;
   function branchMenuDoc(e) { if (branchMenuEl && !branchMenuEl.contains(e.target)) closeBranchMenu(); }
-  function closeBranchMenu() { if (branchMenuEl) { branchMenuEl.remove(); branchMenuEl = null; document.removeEventListener('mousedown', branchMenuDoc, true); } }
+  function closeBranchMenu() {
+    if (branchMenuEl) {
+      branchMenuEl.remove();
+      branchMenuEl = null;
+      document.removeEventListener('mousedown', branchMenuDoc, true);
+    }
+  }
+
   function openBranchMenu(full, kind, ctx, rowEl) {
     closeBranchMenu();
     const { p, data, closePop } = ctx;
     const cur = kind === 'local' && full === data.current;
     const m = el('div', 'gm-branchmenu');
     const refresh = () => { renderGitPanel(p); renderProjects(); };
-    const run = async (promise, okMsg) => { const r = await promise; if (r && r.ok === false) toast(r.error || 'не удалось', { kind: 'err', ttl: 8000 }); else if (okMsg) toast(okMsg); refresh(); };
-    const add = (label, fn, opts = {}) => { if (opts.skip) return; const it = el('div', 'gm-branchmenu-item' + (opts.danger ? ' danger' : ''), label); it.onclick = () => { closeBranchMenu(); closePop(); fn(); }; m.appendChild(it); };
+    const run = async (promise, okMsg) => {
+      const r = await promise;
+      if (r && r.ok === false) toast(r.error || 'не удалось', { kind: 'err', ttl: 8000 });
+      else if (okMsg) toast(okMsg);
+      refresh();
+    };
+    const add = (label, fn, opts = {}) => {
+      if (opts.skip) return;
+      const it = el('div', 'gm-branchmenu-item' + (opts.danger ? ' danger' : ''), label);
+      it.onclick = () => { closeBranchMenu(); closePop(); fn(); };
+      m.appendChild(it);
+    };
     const sep = () => m.appendChild(el('div', 'gm-branchmenu-sep'));
 
     if (!cur) {
@@ -251,24 +392,30 @@ export function initGit(host) {
     document.body.appendChild(m);
     const r = rowEl.getBoundingClientRect();
     const mw = 250;
-    let left = r.right + 2; if (left + mw > window.innerWidth - 6) left = Math.max(6, r.left - mw - 2);
+    let left = r.right + 2;
+    if (left + mw > window.innerWidth - 6) left = Math.max(6, r.left - mw - 2);
     m.style.left = left + 'px';
     m.style.top = Math.min(r.top, Math.max(6, window.innerHeight - m.offsetHeight - 8)) + 'px';
     branchMenuEl = m;
     setTimeout(() => document.addEventListener('mousedown', branchMenuDoc, true), 0);
   }
+
   function newBranchFrom(p, base) {
     showPrompt('Новая ветка от «' + base + '»', 'Имя ветки (создастся и перейдём на неё)', '', async (name) => {
       const r = await lite.git.branchCreate(p.path, name, base, true);
-      if (r.ok) { toast('Создана и перешёл: ' + name); renderProjects(); renderGitPanel(p); } return r;
+      if (r.ok) { toast('Создана и перешёл: ' + name); renderProjects(); renderGitPanel(p); }
+      return r;
     });
   }
+
   function renameBranch(p, name) {
     showPrompt('Переименовать ветку', 'Новое имя для «' + name + '»', name, async (to) => {
       const r = await lite.git.branchRename(p.path, name, to);
-      if (r.ok) { toast('Переименована: ' + to); renderProjects(); renderGitPanel(p); } return r;
+      if (r.ok) { toast('Переименована: ' + to); renderProjects(); renderGitPanel(p); }
+      return r;
     });
   }
+
   function deleteBranch(p, name) {
     showConfirm('Удалить ветку?', 'Ветка «' + name + '» будет удалена локально.', 'Удалить', async () => {
       const r = await lite.git.branchDelete(p.path, name, false);
@@ -276,11 +423,13 @@ export function initGit(host) {
       if (/not fully merged|не слита|fully merged/i.test(r.error || '')) {
         showConfirm('Ветка не слита', '«' + name + '» содержит несли́тые коммиты. Удалить принудительно (-D)?', 'Удалить принудительно', async () => {
           const rr = await lite.git.branchDelete(p.path, name, true);
-          if (rr.ok) { toast('Удалена: ' + name); renderGitPanel(p); renderProjects(); } else toast(rr.error || 'не удалось', { kind: 'err', ttl: 8000 });
+          if (rr.ok) { toast('Удалена: ' + name); renderGitPanel(p); renderProjects(); }
+          else toast(rr.error || 'не удалось', { kind: 'err', ttl: 8000 });
         });
       } else toast(r.error || 'не удалось', { kind: 'err', ttl: 8000 });
     });
   }
+
   async function mergeBranch(p, branch) {
     const r = await lite.git.merge(p.path, branch);
     if (r.ok) { toast('Слито: ' + branch); renderProjects(); goCommitView(); renderGitPanel(p); return; }
@@ -288,9 +437,7 @@ export function initGit(host) {
     if (c.files && c.files.length) { toast('Конфликты — разрешите в секции «Коммит»', { kind: 'err', ttl: 9000 }); goCommitView(); renderGitPanel(p); }
     else toast(r.error || 'merge не прошёл', { kind: 'err', ttl: 9000 });
   }
-  // Rebase на ветку. Провал (обычно конфликт) оставляет репозиторий в состоянии rebase —
-  // молча бросать его так нельзя: предлагаем сразу прервать (git rebase --abort) или оставить
-  // для ручного разрешения в терминале.
+
   async function rebaseOntoBranch(p, branch) {
     const r = await lite.git.rebaseOnto(p.path, branch);
     if (r && r.ok) { toast('Rebase выполнен'); renderGitPanel(p); renderProjects(); return; }
@@ -307,17 +454,20 @@ export function initGit(host) {
       () => { renderGitPanel(p); renderProjects(); },
     );
   }
+
   async function showBranchDiff(p, branch) {
     const r = await lite.git.branchDiffWorktree(p.path, branch);
     if (r && r.error) { toast(r.error, { kind: 'err' }); return; }
     if (host.showRawDiff) host.showRawDiff('Рабочее дерево ↔ ' + branch, (r && r.diff) || '');
     if (!(r && r.diff && r.diff.trim())) toast('Различий нет');
   }
+
   async function compareBranch(p, branch) {
     const r = await lite.git.branchCompare(p.path, branch);
     if (!r || r.ok === false) { toast((r && r.error) || 'не удалось сравнить', { kind: 'err' }); return; }
     openCompareModal(branch, r);
   }
+
   function openCompareModal(branch, data) {
     const { m, close } = makeModal(`
       <div class="cmp-head"><span class="cmp-title"></span></div>
@@ -334,23 +484,39 @@ export function initGit(host) {
     const fill = (sel, commits) => {
       const box = m.querySelector(sel);
       if (!commits.length) { box.appendChild(el('div', 'gm-clean', 'Нет коммитов')); return; }
-      for (const c of commits) { const row = el('div', 'cmp-commit'); row.appendChild(el('span', 'gm-hash', c.hash)); row.appendChild(el('span', 'cmp-subj', c.subject)); box.appendChild(row); }
+      for (const c of commits) {
+        const row = el('div', 'cmp-commit');
+        row.appendChild(el('span', 'gm-hash', c.hash));
+        row.appendChild(el('span', 'cmp-subj', c.subject));
+        box.appendChild(row);
+      }
     };
     fill('#cmp-a', data.onlyInBranch);
     fill('#cmp-b', data.onlyInCurrent);
   }
 
   // ============================================================ сборка (VCS-полоса + открытые секции)
-  // Привязана к активному проекту; вивер зовёт renderPanel при смене проекта/секции, передавая opts
-  // { commit, log } — какие секции открыты. Внутренние refresh'и (renderGitPanel(p) без opts) повторяют
-  // последний набор. Коммит (левая колонка) и лог (нижняя панель) могут рендериться одновременно.
   async function renderGitPanel(p, opts) {
     if (!containers) return;
-    if (opts) renderOpts = { commit: !!opts.commit, log: !!opts.log };
+    if (opts) {
+      renderOpts = { commit: !!opts.commit, log: !!opts.log };
+      if (opts.sub) blsub = opts.sub;
+    }
     const wantCommit = renderOpts.commit, wantLog = renderOpts.log;
     const { topbar, commit, branchlog } = containers;
-    if (!p) { topbar.classList.add('hidden'); topbar.replaceChildren(); commit.innerHTML = ''; branchlog.innerHTML = ''; if (host.onInfo) host.onInfo(null); return; }
-    if (p.path !== lastPath) { excluded.clear(); selectedChangeFile = null; selectedCommit = null; lastPath = p.path; } // новый проект — выбор с нуля
+    if (!p) {
+      topbar.classList.add('hidden'); topbar.replaceChildren();
+      commit.innerHTML = ''; branchlog.innerHTML = '';
+      if (host.onInfo) host.onInfo(null);
+      return;
+    }
+    if (p.path !== lastPath) {
+      excluded.clear();
+      selectedChangeFile = null;
+      selectedCommit = null;
+      changeFilterQuery = '';
+      lastPath = p.path;
+    }
     const reqPath = p.path;
     const seq = ++gitRenderSeq;
     const stale = () => seq !== gitRenderSeq || activeProject()?.path !== reqPath;
@@ -358,7 +524,7 @@ export function initGit(host) {
     if (wantLog) branchlog.innerHTML = '<div class="git-loading">Загрузка…</div>';
     const info = await lite.git.info(p.path);
     if (stale()) return;
-    if (host.onInfo) host.onInfo(info);   // ветка — в строку состояния окна вивера
+    if (host.onInfo) host.onInfo(info);
 
     if (!info.repo) {
       topbar.classList.add('hidden'); topbar.replaceChildren();
@@ -381,27 +547,6 @@ export function initGit(host) {
       branchlog.innerHTML = '';
       await renderBranchLog(branchlog, p, info, stale);
     }
-  }
-
-  // Нижняя панель «Ветки · История»: под-вкладки [История][Ветки] + двух-зонный layout
-  // (слева список коммитов/веток, справа дерево изменённых файлов выбранного коммита).
-  async function renderBranchLog(host2, p, info, stale) {
-    const tabsBar = el('div', 'git-tabs');
-    for (const [id, label] of [['history', 'История'], ['branches', 'Ветки']]) {
-      const t = el('button', 'git-tab' + (blsub === id ? ' active' : ''), label);
-      t.onclick = () => { if (blsub === id) return; blsub = id; renderGitPanel(p); };
-      tabsBar.appendChild(t);
-    }
-    host2.appendChild(tabsBar);
-    // двух-зонный grid: список (слева) | дерево изменённых файлов (справа)
-    const split = el('div', 'git-log-split');
-    const listSide = el('div', 'git-log-list');
-    const filesSide = el('div', 'git-log-files');
-    filesSide.appendChild(el('div', 'git-log-files-empty', 'Выберите коммит, чтобы увидеть изменённые файлы'));
-    split.append(listSide, filesSide);
-    host2.appendChild(split);
-    if (blsub === 'history') await renderHistoryTab(listSide, filesSide, p, stale);
-    else renderBranchesTab(listSide, p, info);
   }
 
   function renderNoRepo(body, p) {
@@ -433,12 +578,11 @@ export function initGit(host) {
     cloneRow.append(url, clone); body.appendChild(cloneRow);
   }
 
-  // --- VCS-полоса сверху: дропдаун веток + ahead/behind + fetch/pull/push (PhpStorm VCS widget)
+  // --- VCS-полоса сверху
   function renderHeader(p, info) {
-    if (activeBranchPop) activeBranchPop();   // пересобираем шапку → закрыть прежнюю выпадашку и снять её listener (не копить stale)
+    if (activeBranchPop) activeBranchPop();
     const bar = el('div', 'vcs-bar');
 
-    // Кастомная выпадашка веток (PhpStorm-style): дерево Local/Remote + избранные + меню действий справа.
     const dd = el('div', 'gm-branchdd');
     const ddBtn = el('button', 'gm-branchsel');
     ddBtn.type = 'button';
@@ -448,7 +592,14 @@ export function initGit(host) {
     dd.append(ddBtn, pop);
     let popOpen = false;
     const onDoc = (e) => { if (!dd.contains(e.target) && !e.target.closest('.gm-branchmenu')) closePop(); };
-    function closePop() { popOpen = false; pop.classList.add('hidden'); dd.classList.remove('open'); closeBranchMenu(); document.removeEventListener('mousedown', onDoc, true); if (activeBranchPop === closePop) activeBranchPop = null; }
+    function closePop() {
+      popOpen = false;
+      pop.classList.add('hidden');
+      dd.classList.remove('open');
+      closeBranchMenu();
+      document.removeEventListener('mousedown', onDoc, true);
+      if (activeBranchPop === closePop) activeBranchPop = null;
+    }
     async function openPop() {
       popOpen = true; pop.classList.remove('hidden'); dd.classList.add('open');
       pop.replaceChildren(el('div', 'git-loading', 'Загрузка веток…'));
@@ -463,21 +614,19 @@ export function initGit(host) {
     ddBtn.onclick = () => (popOpen ? closePop() : openPop());
     bar.appendChild(dd);
 
-    // Нет upstream / нет remote — приглушённая пометка у ветки (счётчики pull/push тогда не считаются).
     if (!info.upstream) {
-      const note = el('span', 'vcs-note', info.hasRemote ? tr('ветка не связана с сервером') : tr('без удалённого репозитория'));
+      const note = el('span', 'vcs-note', info.hasRemote ? tr('не опубликована') : tr('локальный репо'));
       note.title = info.hasRemote ? tr('У ветки нет upstream: Push создаст её на сервере') : tr('В репозитории нет remote — отправлять некуда');
       bar.appendChild(note);
     }
 
-    // fetch / pull / push: подписи и счётчики коммитов — сколько забрать (↓) и отправить (↑)
     const runAction = async (btn, fn) => { btn.disabled = true; btn.classList.add('loading'); try { await fn(); } finally { btn.classList.remove('loading'); } };
     const fetchBtn = gitTool('refresh', null, tr('Проверить сервер на новые коммиты (git fetch)'), 'ico');
     const pull = gitTool('download', 'Pull', info.upstream
-      ? (info.behind ? tr('Забрать с сервера коммитов: {0} (git pull --ff-only)', info.behind) : tr('Забрать новые коммиты с сервера (git pull --ff-only) — сейчас нечего'))
+      ? (info.behind ? tr('Забрать с сервера коммитов: {0} (git pull --ff-only)', info.behind) : tr('Забрать новые коммиты с сервера (git pull --ff-only)'))
       : tr('Забрать новые коммиты с сервера (git pull --ff-only)'));
     const push = gitTool('upload', 'Push', info.upstream
-      ? (info.ahead ? tr('Отправить на сервер коммитов: {0} (git push)', info.ahead) : tr('Отправить коммиты на сервер (git push) — сейчас нечего'))
+      ? (info.ahead ? tr('Отправить на сервер коммитов: {0} (git push)', info.ahead) : tr('Отправить коммиты на сервер (git push)'))
       : tr('Отправить коммиты на сервер (git push)'));
     if (info.upstream && info.behind) pull.appendChild(el('span', 'git-count', '↓' + info.behind));
     if (info.upstream && info.ahead) push.appendChild(el('span', 'git-count', '↑' + info.ahead));
@@ -490,21 +639,23 @@ export function initGit(host) {
     return bar;
   }
 
-  // ============================================================ вкладка «Изменения»
+  // ============================================================ вкладка «Изменения» (секция «Коммит»)
   async function renderChangesTab(content, p, conflictSet, stale) {
     const st = await lite.git.status(p.path);
     if (stale()) return;
     const files = (st && st.files) ? st.files : {};
     const keys = Object.keys(files).sort((a, b) => a.localeCompare(b));
-    const groups = groupChanges(keys, files, conflictSet);
     const committableKeys = keys.filter((k) => !conflictSet.has(k));
-    for (const k of [...excluded]) if (!keys.includes(k)) excluded.delete(k); // прунинг исчезнувших путей — иначе ре-созданный файл молча останется исключённым из коммита
+    for (const k of [...excluded]) if (!keys.includes(k)) excluded.delete(k);
     if (selectedChangeFile && !keys.includes(selectedChangeFile)) selectedChangeFile = null;
     if (!selectedChangeFile && keys.length) selectedChangeFile = keys[0];
 
+    let treeMode = !!(settings && settings.commitTreeMode);
     let commit = null, commitPush = null, commitCount = null, amendCb = null;
+    const allRowCbs = [];     // { f, cb }
+    const allGroupSyncs = []; // () => void
 
-    // ---- шапка раздела: общий флажок (все файлы в коммит / ни одного) · «Изменения · N» · действия
+    // ---- шапка раздела
     const toolbar = el('div', 'git-commit-head');
     const master = el('input', 'gm-check gm-master'); master.type = 'checkbox';
     master.title = tr('Включить в коммит все файлы или снять все');
@@ -515,30 +666,55 @@ export function initGit(host) {
       master.indeterminate = on > 0 && on < committableKeys.length;
     };
     syncMaster();
-    master.onclick = () => {
-      const all = committableKeys.every((k) => !excluded.has(k));
-      for (const f of committableKeys) { if (all) excluded.add(f); else excluded.delete(f); }
-      renderGitPanel(p);
-    };
+
+    const modeBtn = miniIcon(treeMode ? 'folder' : 'list', treeMode ? 'Вид: дерево папок (нажмите для группировки по статусу)' : 'Вид: по статусу (нажмите для дерева папок)');
+    modeBtn.classList.toggle('active', treeMode);
     const refreshBtn = miniIcon('refresh', tr('Обновить список изменений'));
-    const stashBtn = miniIcon('layers', tr('Спрятать все изменения во временное хранилище (git stash -u)'));
-    const stashListBtn = miniIcon('archive', tr('Спрятанные изменения: вернуть или удалить (git stash)'));
+    const stashBtn = miniIcon('layers', tr('Спрятать все изменения в stash (git stash -u)'));
+    const stashListBtn = miniIcon('archive', tr('Открыть список Stash'));
     const discAll = miniIcon('eraser', tr('Отменить все правки в отслеживаемых файлах'), 'gm-disc');
-    stashBtn.disabled = !keys.length; discAll.disabled = !keys.length;
-    toolbar.append(master, el('span', 'git-commit-title', tr('Изменения')), el('span', 'git-commit-num', keys.length ? String(keys.length) : ''),
-      el('div', 'drag-space-static'), refreshBtn, stashBtn, stashListBtn, discAll);
+    stashBtn.disabled = !keys.length;
+    discAll.disabled = !keys.length;
+
+    toolbar.append(
+      master,
+      el('span', 'git-commit-title', tr('Изменения')),
+      el('span', 'git-commit-num', keys.length ? String(keys.length) : ''),
+      el('div', 'drag-space-static'),
+      modeBtn, refreshBtn, stashBtn, stashListBtn, discAll,
+    );
     content.appendChild(toolbar);
 
+    // Фильтр по изменённым файлам (если файлов > 3 или уже есть текст фильтра)
+    let filterInp = null;
+    if (keys.length > 3 || changeFilterQuery) {
+      const fBar = el('div', 'git-change-filter-wrap');
+      filterInp = el('input', 'git-change-filter');
+      filterInp.type = 'search';
+      filterInp.placeholder = 'Фильтр изменённых файлов…';
+      filterInp.value = changeFilterQuery;
+      filterInp.spellcheck = false;
+      fBar.appendChild(filterInp);
+      content.appendChild(fBar);
+    }
+
     const runAction = async (btn, fn) => { btn.disabled = true; btn.classList.add('loading'); try { await fn(); } finally { btn.classList.remove('loading'); } };
-    stashBtn.onclick = () => runAction(stashBtn, async () => { const r = await lite.git.stash(p.path); toast(r.ok ? 'Изменения спрятаны в stash' : (r.error || 'stash не прошёл'), { kind: r.ok ? undefined : 'err', ttl: 8000 }); renderGitPanel(p); renderProjects(); });
-    stashListBtn.onclick = () => openStashList(p);
+    stashBtn.onclick = () => runAction(stashBtn, async () => {
+      const r = await lite.git.stash(p.path);
+      toast(r.ok ? 'Изменения спрятаны в stash' : (r.error || 'stash не прошёл'), { kind: r.ok ? undefined : 'err', ttl: 8000 });
+      renderGitPanel(p); renderProjects();
+    });
+    stashListBtn.onclick = () => {
+      if (host.openLogTab) host.openLogTab('stash');
+      else openStashList(p);
+    };
     refreshBtn.onclick = () => renderGitPanel(p);
     discAll.onclick = () => showConfirm('Откатить все правки?', 'Изменения во всех отслеживаемых файлах будут отменены. Новые (неотслеживаемые) файлы останутся на месте.', 'Откатить всё', async () => {
       const rr = await lite.git.discardAll(p.path);
-      if (rr.ok) { selectedChangeFile = null; toast('Правки откачены'); renderGitPanel(p); renderProjects(); } else toast(rr.error || 'не удалось', { kind: 'err' });
+      if (rr.ok) { selectedChangeFile = null; toast('Правки откачены'); renderGitPanel(p); renderProjects(); }
+      else toast(rr.error || 'не удалось', { kind: 'err' });
     });
 
-    // ---- список изменений; клик по файлу → дифф в ЦЕНТРЕ вивера (как PhpStorm)
     const changes = el('div', 'gm-changes git-change-list');
     content.appendChild(changes);
 
@@ -546,311 +722,696 @@ export function initGit(host) {
     const updateCommitState = () => {
       const n = selectedFiles().length;
       const blockedByConflicts = conflictSet.size > 0;
-      const amending = amendCb && amendCb.checked;                 // amend без файлов = правка сообщения
+      const amending = amendCb && amendCb.checked;
       if (commit && commitPush) {
         commit.disabled = (!n && !amending) || blockedByConflicts;
         commitPush.disabled = (!n && !amending) || blockedByConflicts;
-        const title = blockedByConflicts ? 'Сначала разрешите конфликты' : ((!n && !amending) ? 'Не выбрано ни одного файла' : 'Закоммитить выбранные изменения');
+        const title = blockedByConflicts ? 'Сначала разрешите конфликты' : ((!n && !amending) ? 'Не выбрано ни одного файла' : 'Закоммитить выбранные изменения (Ctrl+Enter)');
         commit.title = title;
-        commitPush.title = blockedByConflicts ? title : 'Закоммитить выбранное и сразу запушить';
+        commitPush.title = blockedByConflicts ? title : 'Закоммитить выбранное и сразу запушить (Ctrl+Shift+Enter)';
       }
-      if (commitCount) commitCount.textContent = tr('В коммит: {0} из {1}', n, committableKeys.length) + (conflictSet.size ? ' · ' + tr('конфликтов: {0}', conflictSet.size) : '');
+      if (commitCount) {
+        commitCount.textContent = tr('{0} из {1}', n, committableKeys.length) + (conflictSet.size ? ' · ' + tr('конфликтов: {0}', conflictSet.size) : '');
+      }
       syncMaster();
     };
+
+    // Мгновенный мастер-чекбокс БЕЗ полной перерисовки и мерцания «Загрузка…»
+    master.onclick = () => {
+      const allSelected = committableKeys.every((k) => !excluded.has(k));
+      for (const f of committableKeys) {
+        if (allSelected) excluded.add(f);
+        else excluded.delete(f);
+      }
+      for (const item of allRowCbs) item.cb.checked = !allSelected;
+      for (const fn of allGroupSyncs) fn();
+      updateCommitState();
+    };
+
     const paintSelection = () => {
       changes.querySelectorAll('.gm-file').forEach((row) => row.classList.toggle('open', row._file === selectedChangeFile));
     };
-    const showDiff = async (f) => {
+    const showDiff = (f) => {
       selectedChangeFile = f;
       paintSelection();
       if (host.gitDiff) host.gitDiff(p.path, f, splitPath(f, p.path));
     };
 
-    if (!keys.length && st && st.error) {
-      // git status не отработал — это НЕ «чистое дерево» (коммитить/откатывать вслепую нельзя)
-      const warn = el('div', 'git-conflict-note');
-      warn.appendChild(icon('warning', 15));
-      warn.appendChild(el('span', null, st.error));
-      changes.appendChild(warn);
-    } else if (!keys.length) {
-      const clean = el('div', 'git-clean-state');
-      clean.appendChild(icon('check', 20));
-      clean.appendChild(el('div', 'git-clean-title', 'Рабочее дерево чистое'));
-      clean.appendChild(el('div', 'git-clean-note', 'Можно проверить remote или перейти к истории коммитов.'));
-      changes.appendChild(clean);
-    } else {
-      if (conflictSet.size) {
-        const warn = el('div', 'git-conflict-note');
-        warn.appendChild(icon('warning', 15));
-        warn.appendChild(el('span', null, 'Есть неразрешённые конфликты. Коммит станет доступен после Resolve.'));
-        changes.appendChild(warn);
+    function createChangeFileRow(f, { hideDir = false, indentPx = 0, onToggleCb = null } = {}) {
+      const conflicted = conflictSet.has(f);
+      const kind = statusKind(files[f], conflicted);
+      const label = splitPath(f, p.path);
+      const r = el('div', 'gm-file' + (conflicted ? ' conflict' : ''));
+      if (indentPx) r.style.paddingLeft = indentPx + 'px';
+      r._file = f;
+      r.title = label.rel + ' (клик — дифф, двойной клик — открыть файл)';
+      if (!conflicted) {
+        const cb = el('input', 'gm-check');
+        cb.type = 'checkbox';
+        cb.checked = !excluded.has(f);
+        cb.title = 'Включить в коммит';
+        cb.onclick = (e) => {
+          e.stopPropagation();
+          if (cb.checked) excluded.delete(f); else excluded.add(f);
+          updateCommitState();
+          if (onToggleCb) onToggleCb();
+        };
+        r.appendChild(cb);
+        allRowCbs.push({ f, cb });
+      } else {
+        r.appendChild(el('span', 'gm-check-spacer'));
       }
-      const appendGroup = (group) => {
-        const box = el('div', 'gm-group');
-        const head = el('div', 'gm-group-head');
-        // tri-state чекбокс на группе (как PhpStorm): включить/исключить всю группу разом (кроме конфликтов).
-        let groupCb = null;
-        const rowCbs = [];
-        function syncGroupCb() { if (!groupCb) return; const on = rowCbs.filter((x) => x.cb.checked).length; groupCb.checked = rowCbs.length > 0 && on === rowCbs.length; groupCb.indeterminate = on > 0 && on < rowCbs.length; }
-        if (group.id !== 'conflict') {
-          groupCb = el('input', 'gm-check gm-group-check'); groupCb.type = 'checkbox';
-          groupCb.onclick = (e) => { e.stopPropagation(); const want = groupCb.checked; for (const x of rowCbs) { x.cb.checked = want; if (want) excluded.delete(x.f); else excluded.add(x.f); } groupCb.indeterminate = false; updateCommitState(); };
-          head.appendChild(groupCb);
-        } else head.appendChild(el('span', 'gm-check-spacer'));
-        head.appendChild(el('span', 'gm-group-title', group.title));
-        head.appendChild(el('span', 'gm-group-count', String(group.files.length)));
-        box.appendChild(head);
-        for (const f of group.files) {
-          const conflicted = conflictSet.has(f);
-          const kind = statusKind(files[f], conflicted);
-          const label = splitPath(f, p.path);
-          const r = el('div', 'gm-file' + (conflicted ? ' conflict' : ''));
-          r._file = f; r.title = label.rel;
-          if (!conflicted) {
-            const cb = el('input', 'gm-check'); cb.type = 'checkbox'; cb.checked = !excluded.has(f); cb.title = 'Включить в коммит';
-            cb.onclick = (e) => { e.stopPropagation(); if (cb.checked) excluded.delete(f); else excluded.add(f); updateCommitState(); syncGroupCb(); };
-            r.appendChild(cb); rowCbs.push({ f, cb });
-          } else r.appendChild(el('span', 'gm-check-spacer'));
-          r.appendChild(el('span', 'gm-code g-' + kind, statusChipText(files[f], kind)));
-          const nameBox = el('span', 'gm-file-main');
-          nameBox.appendChild(el('span', 'gm-fname g-' + kind, label.name));
-          if (label.dir) nameBox.appendChild(el('span', 'gm-fdir', label.dir));
-          r.appendChild(nameBox);
-          const acts = el('span', 'gm-file-actions');
-          if (conflicted) {
-            const res = miniIcon('warning', 'Разрешить конфликт', 'gm-resolve');
-            res.onclick = (e) => { e.stopPropagation(); openMergeModal(p, f); };
-            acts.appendChild(res);
-          } else {
-            const disc = miniIcon('eraser', 'Откатить изменения файла', 'gm-disc');
-            disc.onclick = (e) => { e.stopPropagation(); showConfirm('Откатить файл?', 'Изменения в «' + label.name + '» будут отменены (git checkout --).', 'Откатить', async () => {
-              const rr = await lite.git.discardFile(p.path, f);
-              if (rr.ok) { renderGitPanel(p); renderProjects(); } else toast(rr.error || 'не удалось', { kind: 'err' });
-            }); };
-            acts.appendChild(disc);
-          }
-          r.appendChild(acts);
-          r.addEventListener('click', () => showDiff(f));
-          // контекст-меню: открыть сам файл (не дифф) в вивере. f — уже АБСОЛЮТНЫЙ путь
-          // (ключи git:status абсолютные) — не приклеивать к нему p.path повторно.
-          if (menuRow && placeMenu && hostOpenFile) {
-            r.addEventListener('contextmenu', (e) => {
-              e.preventDefault(); e.stopPropagation();
-              const dd = el('div', 'menu-dropdown'); dd.style.minWidth = '180px';
-              if (kind !== 'deleted') dd.appendChild(menuRow('eye', 'Открыть файл', () => { closeMenus(); hostOpenFile(f); }));
-              dd.appendChild(menuRow('diff', 'Показать дифф', () => { closeMenus(); showDiff(f); }));
-              dd.appendChild(menuRow('copy', 'Копировать путь', () => { closeMenus(); try { lite.copyText(f); toast('Путь скопирован'); } catch (_) {} }));
-              if (kind !== 'deleted') dd.appendChild(menuRow('folder', 'Показать в проводнике', () => { closeMenus(); lite.showItemInFolder(f).then((r2) => { if (!r2 || r2.ok === false) toast((r2 && r2.error) || 'Не удалось открыть папку', { kind: 'err' }); }); }));
-              placeMenu(dd, e.clientX, e.clientY);
-            });
-          }
-          box.appendChild(r);
+      r.appendChild(el('span', 'gm-code g-' + kind, statusChipText(files[f], kind)));
+      if (host.fileIcon) r.appendChild(host.fileIcon(label.name));
+      const nameBox = el('span', 'gm-file-main');
+      nameBox.appendChild(el('span', 'gm-fname g-' + kind, label.name));
+      if (!hideDir && label.dir) nameBox.appendChild(el('span', 'gm-fdir', label.dir));
+      r.appendChild(nameBox);
+
+      const acts = el('span', 'gm-file-actions');
+      if (conflicted) {
+        const res = miniIcon('warning', 'Разрешить конфликт (3-way merge)', 'gm-resolve');
+        res.onclick = (e) => { e.stopPropagation(); openMergeModal(p, f); };
+        acts.appendChild(res);
+      } else {
+        if (kind !== 'deleted' && hostOpenFile) {
+          const editBtn = miniIcon('file-text', 'Открыть файл в редакторе');
+          editBtn.onclick = (e) => { e.stopPropagation(); hostOpenFile(f); };
+          acts.appendChild(editBtn);
         }
-        syncGroupCb();
-        changes.appendChild(box);
-      };
-      for (const group of groups) appendGroup(group);
-      paintSelection();   // подсветить дефолтно-выбранный файл (keys[0]) сразу, не дожидаясь клика
+        const disc = miniIcon('eraser', 'Откатить изменения файла', 'gm-disc');
+        disc.onclick = (e) => {
+          e.stopPropagation();
+          showConfirm('Откатить файл?', 'Изменения в «' + label.name + '» будут отменены (git checkout --).', 'Откатить', async () => {
+            const rr = await lite.git.discardFile(p.path, f);
+            if (rr.ok) { renderGitPanel(p); renderProjects(); }
+            else toast(rr.error || 'не удалось', { kind: 'err' });
+          });
+        };
+        acts.appendChild(disc);
+      }
+      r.appendChild(acts);
+      r.addEventListener('click', () => showDiff(f));
+      r.addEventListener('dblclick', (e) => {
+        e.stopPropagation();
+        if (kind !== 'deleted' && hostOpenFile) hostOpenFile(f);
+      });
+      if (menuRow && placeMenu && hostOpenFile) {
+        r.addEventListener('contextmenu', (e) => {
+          e.preventDefault(); e.stopPropagation();
+          const dd = el('div', 'menu-dropdown'); dd.style.minWidth = '200px';
+          if (kind !== 'deleted') dd.appendChild(menuRow('file-text', 'Открыть файл', () => { closeMenus(); hostOpenFile(f); }));
+          dd.appendChild(menuRow('diff', 'Показать дифф', () => { closeMenus(); showDiff(f); }));
+          if (!conflicted) {
+            dd.appendChild(menuRow('eraser', 'Откатить изменения…', () => {
+              closeMenus();
+              showConfirm('Откатить файл?', 'Изменения в «' + label.name + '» будут отменены.', 'Откатить', async () => {
+                const rr = await lite.git.discardFile(p.path, f);
+                if (rr.ok) { renderGitPanel(p); renderProjects(); } else toast(rr.error || 'не удалось', { kind: 'err' });
+              });
+            }, 'danger'));
+          }
+          dd.appendChild(el('div', 'menu-sep'));
+          dd.appendChild(menuRow('copy', 'Копировать относительный путь', () => { closeMenus(); try { lite.copyText(label.rel); toast('Скопировано: ' + label.rel); } catch (_) {} }));
+          dd.appendChild(menuRow('copy', 'Копировать полный путь', () => { closeMenus(); try { lite.copyText(f); toast('Путь скопирован'); } catch (_) {} }));
+          if (kind !== 'deleted') dd.appendChild(menuRow('folder', 'Показать в проводнике', () => { closeMenus(); lite.showItemInFolder(f); }));
+          placeMenu(dd, e.clientX, e.clientY);
+        });
+      }
+      return r;
     }
 
-    // ---- панель коммита СНИЗУ: счётчик + сообщение + Commit / Commit & Push (PhpStorm: сообщение под списком)
-    const msg = el('textarea', 'gm-msg'); msg.placeholder = tr('Сообщение коммита… (Ctrl+Enter — закоммитить)');
-    msg.value = commitDraft[p.path] || '';           // восстановить черновик (re-render/перезапуск не теряет ввод)
-    msg.addEventListener('input', () => setDraft(p.path, msg.value));
+    function renderChangesList() {
+      changes.replaceChildren();
+      allRowCbs.length = 0;
+      allGroupSyncs.length = 0;
+
+      if (!keys.length && st && st.error) {
+        const warn = el('div', 'git-conflict-note');
+        warn.append(icon('warning', 15), el('span', null, st.error));
+        changes.appendChild(warn);
+        return;
+      }
+      if (!keys.length) {
+        const clean = el('div', 'git-clean-state');
+        clean.append(
+          icon('check', 20),
+          el('div', 'git-clean-title', 'Рабочее дерево чистое'),
+          el('div', 'git-clean-note', 'Нет незакоммиченных изменений.'),
+        );
+        changes.appendChild(clean);
+        return;
+      }
+
+      if (conflictSet.size) {
+        const warn = el('div', 'git-conflict-note');
+        warn.append(icon('warning', 15), el('span', null, 'Есть неразрешённые конфликты. Коммит станет доступен после Resolve.'));
+        changes.appendChild(warn);
+      }
+
+      const q = changeFilterQuery.trim().toLowerCase();
+      const visibleKeys = q
+        ? keys.filter((f) => displayPath(f, p.path).toLowerCase().includes(q))
+        : keys;
+
+      if (!visibleKeys.length) {
+        changes.appendChild(el('div', 'gm-clean', 'Нет совпадений по фильтру.'));
+        return;
+      }
+
+      if (!treeMode) {
+        const groups = groupChanges(visibleKeys, files, conflictSet);
+        for (const group of groups) {
+          const box = el('div', 'gm-group');
+          const head = el('div', 'gm-group-head');
+          let groupCb = null;
+          const groupRows = [];
+          const syncGroupCb = () => {
+            if (!groupCb) return;
+            const on = groupRows.filter((x) => !excluded.has(x)).length;
+            groupCb.checked = groupRows.length > 0 && on === groupRows.length;
+            groupCb.indeterminate = on > 0 && on < groupRows.length;
+          };
+          allGroupSyncs.push(syncGroupCb);
+          if (group.id !== 'conflict') {
+            groupCb = el('input', 'gm-check gm-group-check');
+            groupCb.type = 'checkbox';
+            groupCb.onclick = (e) => {
+              e.stopPropagation();
+              const want = groupCb.checked;
+              for (const f of groupRows) {
+                if (want) excluded.delete(f); else excluded.add(f);
+              }
+              for (const item of allRowCbs) {
+                if (groupRows.includes(item.f)) item.cb.checked = want;
+              }
+              groupCb.indeterminate = false;
+              updateCommitState();
+            };
+            head.appendChild(groupCb);
+          } else {
+            head.appendChild(el('span', 'gm-check-spacer'));
+          }
+          head.append(el('span', 'gm-group-title', group.title), el('span', 'gm-group-count', String(group.files.length)));
+          box.appendChild(head);
+          for (const f of group.files) {
+            if (!conflictSet.has(f)) groupRows.push(f);
+            box.appendChild(createChangeFileRow(f, { onToggleCb: syncGroupCb }));
+          }
+          syncGroupCb();
+          changes.appendChild(box);
+        }
+      } else {
+        // Иерархическое дерево папок с компактным схлопыванием одиночных папок
+        const treeRoot = { dirs: new Map(), files: [] };
+        for (const f of visibleKeys) {
+          const { rel } = splitPath(f, p.path);
+          const parts = rel.split('/').filter(Boolean);
+          parts.pop();
+          let node = treeRoot;
+          for (const seg of parts) {
+            if (!node.dirs.has(seg)) node.dirs.set(seg, { dirs: new Map(), files: [] });
+            node = node.dirs.get(seg);
+          }
+          node.files.push(f);
+        }
+        const renderDirTree = (node, container, depth) => {
+          const sortedDirs = [...node.dirs.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+          for (let [dname, child] of sortedDirs) {
+            while (child.dirs.size === 1 && child.files.length === 0) {
+              const [subName, subChild] = [...child.dirs.entries()][0];
+              dname += '/' + subName;
+              child = subChild;
+            }
+            const dRow = el('div', 'gm-tree-dir');
+            dRow.style.paddingLeft = (depth * 12 + 6) + 'px';
+            if (host.folderIcon) dRow.appendChild(host.folderIcon(true));
+            else dRow.appendChild(icon('folder', 13));
+            dRow.appendChild(el('span', 'gm-tree-dirname', dname));
+            const subBox = el('div', 'gm-tree-sub');
+            dRow.onclick = () => {
+              const hid = subBox.classList.toggle('hidden');
+              dRow.classList.toggle('collapsed', hid);
+            };
+            container.append(dRow, subBox);
+            renderDirTree(child, subBox, depth + 1);
+          }
+          for (const f of node.files) {
+            container.appendChild(createChangeFileRow(f, { hideDir: true, indentPx: depth * 12 + 8 }));
+          }
+        };
+        renderDirTree(treeRoot, changes, 0);
+      }
+      paintSelection();
+    }
+
+    modeBtn.onclick = () => {
+      treeMode = !treeMode;
+      if (settings) {
+        settings.commitTreeMode = treeMode;
+        if (saveSettings) saveSettings();
+      }
+      modeBtn.replaceChildren(icon(treeMode ? 'folder' : 'list', 13));
+      modeBtn.classList.toggle('active', treeMode);
+      renderChangesList();
+    };
+
+    if (filterInp) {
+      filterInp.addEventListener('input', () => {
+        changeFilterQuery = filterInp.value;
+        renderChangesList();
+      });
+    }
+
+    renderChangesList();
+
+    // ---- панель коммита СНИЗУ
+    const msg = el('textarea', 'gm-msg');
+    msg.placeholder = tr('Сообщение коммита… (Ctrl+Enter — Commit, Ctrl+Shift+Enter — Commit & Push)');
+    msg.value = commitDraft[p.path] || '';
+
     const commitPanel = el('div', 'git-commit-panel');
     const commitTop = el('div', 'git-commit-top');
-    commitTop.append(el('div', 'git-sec', tr('Сообщение')), (commitCount = el('div', 'git-commit-count')));
-    commitPanel.append(commitTop, msg);
+    const lenBadge = el('span', 'git-subj-len', '0/72');
+    lenBadge.title = 'Длина первой строки сообщения (рекомендуется ≤ 72 символов)';
+    const histBtn = miniIcon('history', 'История прошлых сообщений коммитов');
+
+    const updateLenBadge = () => {
+      const firstLine = (msg.value.split('\n')[0] || '').length;
+      lenBadge.textContent = `${firstLine}/72`;
+      lenBadge.classList.toggle('warn', firstLine > 52 && firstLine <= 72);
+      lenBadge.classList.toggle('over', firstLine > 72);
+    };
+    updateLenBadge();
+
+    msg.addEventListener('input', () => {
+      setDraft(p.path, msg.value);
+      updateLenBadge();
+    });
+
+    histBtn.onclick = (e) => {
+      e.stopPropagation();
+      if (!menuRow || !placeMenu) return;
+      closeMenus();
+      const dd = el('div', 'menu-dropdown');
+      dd.style.minWidth = '260px';
+      dd.style.maxWidth = '380px';
+      if (!commitHistory.length) {
+        dd.appendChild(menuRow(null, 'История сообщений пуста', null, 'disabled'));
+      } else {
+        for (const item of commitHistory.slice(0, 15)) {
+          const preview = item.replace(/\s+/g, ' ').slice(0, 64);
+          dd.appendChild(menuRow('history', preview, () => {
+            closeMenus();
+            msg.value = item;
+            setDraft(p.path, item);
+            updateLenBadge();
+            msg.focus();
+          }));
+        }
+      }
+      const rect = histBtn.getBoundingClientRect();
+      placeMenu(dd, rect.left, rect.bottom + 4);
+    };
+
+    commitTop.append(
+      el('div', 'git-sec', tr('Сообщение')),
+      (commitCount = el('div', 'git-commit-count')),
+      el('div', 'drag-space-static'),
+      lenBadge,
+      histBtn,
+    );
+
+    // Быстрые префиксы коммита
+    const prefixBar = el('div', 'git-prefix-bar');
+    for (const pref of CONVENTIONAL_PREFIXES) {
+      const pb = el('button', 'git-prefix-chip', pref.trim());
+      pb.type = 'button';
+      pb.title = 'Подставить префикс ' + pref.trim();
+      pb.onclick = () => {
+        const cur = msg.value;
+        const stripped = cur.replace(/^(feat|fix|refactor|docs|test|chore|perf|style|build|ci)(\([^)]+\))?:\s*/i, '');
+        msg.value = pref + stripped;
+        setDraft(p.path, msg.value);
+        updateLenBadge();
+        msg.focus();
+      };
+      prefixBar.appendChild(pb);
+    }
+
+    commitPanel.append(commitTop, prefixBar, msg);
     const commitRow = el('div', 'git-tools git-tools-commit');
     commit = gitTool('check', 'Commit', 'Закоммитить выбранные изменения', 'primary');
     commitPush = gitTool('upload', 'Commit & Push', 'Закоммитить выбранное и сразу запушить');
-    // Amend (PhpStorm-style): дописать выбранное в ПОСЛЕДНИЙ коммит; без выбранных файлов — только
-    // поправить сообщение. Включение при пустом поле подставляет последнее сообщение коммита.
     amendCb = el('input', 'gm-check'); amendCb.type = 'checkbox';
     const amendLb = el('label', 'gm-amend');
-    amendLb.title = 'Дописать в последний коммит (git commit --amend). Осторожно с уже запушенными коммитами: история перепишется.';
+    amendLb.title = 'Дописать в последний коммит (git commit --amend)';
     amendLb.append(amendCb, el('span', null, 'Amend'));
     amendCb.addEventListener('change', async () => {
       updateCommitState();
       if (amendCb.checked && !msg.value.trim()) {
         const r = await lite.git.lastMessage(p.path);
-        if (r && r.ok && amendCb.checked && !msg.value.trim()) { msg.value = r.message; setDraft(p.path, r.message); }
+        if (r && r.ok && amendCb.checked && !msg.value.trim()) {
+          msg.value = r.message;
+          setDraft(p.path, r.message);
+          updateLenBadge();
+        }
       }
     });
+
     const doCommit = async (withPush) => {
       const message = msg.value.trim();
-      if (!message) { toast('Введи сообщение коммита', { kind: 'err' }); return; }
+      if (!message) { toast('Введи сообщение коммита', { kind: 'err' }); msg.focus(); return; }
       const sel = selectedFiles();
       const amend = amendCb.checked;
       if (conflictSet.size) { toast('Сначала разрешите конфликты', { kind: 'err' }); return; }
       if (!sel.length && !amend) { toast('Не выбрано ни одного файла', { kind: 'err' }); return; }
       const btn = withPush ? commitPush : commit;
       btn.disabled = true; btn.classList.add('loading');
-      // amend без файлов → files:[] (маркер «только сообщение», main ничего не добавляет).
-      // Иначе — ВСЕГДА явный список выбранных путей. Раньше «выбрано всё» отправлялось как null
-      // (= git add -A), и файл, появившийся на диске после отрисовки списка (агент работает
-      // параллельно — обычный для этого редактора случай), молча уезжал в коммит.
       const filesArg = (amend && !sel.length) ? [] : sel;
       const r = await lite.git.commit(p.path, message, withPush, filesArg, amend);
       btn.classList.remove('loading');
-      if (r.ok) { toast(amend ? 'Коммит переписан (amend)' : (withPush ? 'Закоммичено и запушено' : 'Закоммичено')); msg.value = ''; setDraft(p.path, ''); selectedChangeFile = null; renderGitPanel(p); renderProjects(); }
-      // Коммит лёг, но push не прошёл: список ОБЯЗАН обновиться (файлы уже в коммите), плюс показываем ошибку.
-      else if (r.committed) { toast(r.error || 'push не прошёл', { kind: 'err', ttl: 9000 }); msg.value = ''; setDraft(p.path, ''); selectedChangeFile = null; renderGitPanel(p); renderProjects(); }
-      else { btn.disabled = false; toast(r.error || 'ошибка коммита', { kind: 'err', ttl: 8000 }); updateCommitState(); }
+      if (r.ok) {
+        pushCommitHistory(message);
+        toast(amend ? 'Коммит переписан (amend)' : (withPush ? 'Закоммичено и запушено' : 'Закоммичено'));
+        msg.value = ''; setDraft(p.path, ''); updateLenBadge(); selectedChangeFile = null;
+        renderGitPanel(p); renderProjects();
+      } else if (r.committed) {
+        pushCommitHistory(message);
+        toast(r.error || 'push не прошёл', { kind: 'err', ttl: 9000 });
+        msg.value = ''; setDraft(p.path, ''); updateLenBadge(); selectedChangeFile = null;
+        renderGitPanel(p); renderProjects();
+      } else {
+        btn.disabled = false;
+        toast(r.error || 'ошибка коммита', { kind: 'err', ttl: 8000 });
+        updateCommitState();
+      }
     };
     commit.onclick = () => doCommit(false);
     commitPush.onclick = () => doCommit(true);
-    // Ctrl+Enter в поле сообщения — закоммитить (как в PhpStorm), Ctrl+Shift+Enter — с пушем.
     msg.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); const b = e.shiftKey ? commitPush : commit; if (!b.disabled) doCommit(e.shiftKey); }
+      if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+        e.preventDefault();
+        const b = e.shiftKey ? commitPush : commit;
+        if (!b.disabled) doCommit(e.shiftKey);
+      }
     });
     commitRow.append(commit, commitPush, amendLb);
     commitPanel.appendChild(commitRow);
     content.appendChild(commitPanel);
 
     updateCommitState();
-    // НЕ авто-показываем дифф: это очищает центр вивера (и спросило бы про несохранённый файл) ещё до
-    // клика пользователя. Дифф открывается по явному клику на файл в списке (showDiff → host.gitDiff).
   }
 
-  // ============================================================ модалка списка stash (PhpStorm-style)
-  // Слева — список спрятанных наборов; клик по набору показывает справа его файлы. Действия: apply/pop/drop.
-  async function openStashList(p) {
+  // ============================================================ Stash: встроенная вкладка и модалка
+  async function renderStashPane(listSide, filesSide, p, stale, onChanged) {
+    const tools = el('div', 'git-history-tools');
+    const createBtn = gitTool('plus', 'Спрятать текущие изменения', 'git stash push -u');
+    createBtn.onclick = async () => {
+      createBtn.disabled = true;
+      const r = await lite.git.stash(p.path);
+      createBtn.disabled = false;
+      if (r && r.ok) {
+        toast('Изменения спрятаны в stash');
+        renderGitPanel(p);
+        renderProjects();
+        if (onChanged) onChanged();
+      } else toast((r && r.error) || 'Нечего прятать или ошибка stash', { kind: 'err' });
+    };
+    tools.appendChild(createBtn);
+    listSide.appendChild(tools);
+
+    const listBox = el('div', 'git-log');
+    listBox.appendChild(el('div', 'git-loading', 'Загрузка stash…'));
+    listSide.appendChild(listBox);
+
     const res = await lite.git.stashList(p.path);
+    if (stale && stale()) return;
     const items = (res && res.items) || [];
+    listBox.replaceChildren();
+    filesSide.replaceChildren(el('div', 'git-log-files-empty', items.length ? 'Выберите stash слева' : 'Список stash пуст'));
+
+    if (!items.length) {
+      listBox.appendChild(el('div', 'gm-clean', 'Спрятанных изменений (stash) нет.'));
+      return;
+    }
+
+    let stashBusy = false;
+    const runStashOp = async (op, it) => {
+      if (stashBusy) return;
+      stashBusy = true;
+      try {
+        const fn = op === 'apply' ? lite.git.stashApply : op === 'pop' ? lite.git.stashPopIndex : lite.git.stashDrop;
+        const r = await fn(p.path, it.index);
+        if (!r.ok) { toast(r.error || (op + ' не прошёл'), { kind: 'err', ttl: 8000 }); return; }
+        toast(op === 'apply' ? 'Stash применён' : op === 'pop' ? 'Stash возвращён (pop)' : 'Stash удалён');
+        renderGitPanel(p);
+        renderProjects();
+        if (onChanged) onChanged();
+      } finally {
+        stashBusy = false;
+      }
+    };
+
+    const showStashFiles = async (it, rowEl) => {
+      listBox.querySelectorAll('.git-commit').forEach((x) => x.classList.toggle('sel', x === rowEl));
+      filesSide.replaceChildren(el('div', 'git-loading', 'Загрузка файлов…'));
+      const fr = await lite.git.stashShow(p.path, it.index);
+      const fileArr = (fr && fr.files) || [];
+      filesSide.replaceChildren();
+      const head = el('div', 'git-log-files-head');
+      head.append(
+        el('span', 'gm-hash', it.ref || `stash@{${it.index}}`),
+        el('span', 'git-log-files-subj', it.subject || ''),
+      );
+      filesSide.appendChild(head);
+      if (!fileArr.length) {
+        filesSide.appendChild(el('div', 'git-log-files-empty', 'Файлов нет.'));
+        return;
+      }
+      const treeWrap = el('div', 'git-log-tree');
+      filesSide.appendChild(treeWrap);
+      for (const f of fileArr) {
+        const c = String(f.code || 'M');
+        const kind = (c === '?' || c.includes('A')) ? 'added' : c.includes('D') ? 'deleted' : c.includes('U') ? 'conflict' : 'modified';
+        const row = el('div', 'git-tree-row file');
+        row.style.paddingLeft = '10px';
+        row.title = f.rel + ' (клик — открыть рабочий файл)';
+        if (host.fileIcon) row.appendChild(host.fileIcon(baseName(f.rel)));
+        row.appendChild(el('span', 'gm-code g-' + kind, c.slice(0, 2) || 'M'));
+        row.appendChild(el('span', 'git-tree-name g-' + kind, f.rel));
+        row.onclick = () => {
+          if (hostOpenFile && kind !== 'deleted') hostOpenFile(p.path.replace(/\/+$/, '') + '/' + f.rel);
+        };
+        treeWrap.appendChild(row);
+      }
+    };
+
+    items.forEach((it, idx) => {
+      const row = el('div', 'git-commit stash-log-row');
+      row.appendChild(el('span', 'gm-hash', `@{${it.index}}`));
+      const main = el('span', 'git-commit-main');
+      main.appendChild(el('span', 'git-csubj', it.subject || `stash@{${it.index}}`));
+      row.appendChild(main);
+      if (it.when) row.appendChild(el('span', 'git-cwhen', it.when));
+      const acts = el('div', 'git-commit-acts');
+      const apply = miniIcon('download', 'Применить (оставить в stash)');
+      const pop = miniIcon('archive', 'Вернуть и удалить из stash (Pop)');
+      const drop = miniIcon('trash', 'Удалить stash', 'gm-disc');
+      apply.onclick = (e) => { e.stopPropagation(); runStashOp('apply', it); };
+      pop.onclick = (e) => { e.stopPropagation(); runStashOp('pop', it); };
+      drop.onclick = (e) => {
+        e.stopPropagation();
+        showConfirm('Удалить stash?', '«' + (it.subject || `stash@{${it.index}}`) + '» будет удалён безвозвратно.', 'Удалить', () => runStashOp('drop', it));
+      };
+      acts.append(apply, pop, drop);
+      row.appendChild(acts);
+      row.onclick = () => showStashFiles(it, row);
+      listBox.appendChild(row);
+      if (idx === 0) showStashFiles(it, row);
+    });
+  }
+
+  async function openStashList(p) {
     const { m, close } = makeModal(`
       <div class="stash-head"><span class="stash-title">Stash — спрятанные изменения</span></div>
       <div class="stash-grid">
         <div class="stash-list"></div>
-        <div class="stash-files"><div class="stash-files-empty">Выберите stash слева, чтобы увидеть его файлы</div></div>
+        <div class="stash-files"></div>
       </div>
       <div class="modal-actions"><button class="btn" id="stash-close">Закрыть</button></div>`);
     m.classList.add('modal-stash');
     m.querySelector('#stash-close').onclick = close;
     const listEl = m.querySelector('.stash-list');
     const filesEl = m.querySelector('.stash-files');
-    if (!items.length) { listEl.appendChild(el('div', 'gm-clean', 'Стеша нет.')); return; }
-
-    const showFiles = async (it) => {
-      listEl.querySelectorAll('.stash-item').forEach((r) => r.classList.toggle('active', +r.dataset.index === it.index));
-      filesEl.replaceChildren(el('div', 'git-loading', 'Загрузка…'));
-      const fr = await lite.git.stashShow(p.path, it.index);
-      const fileArr = (fr && fr.files) || [];
-      filesEl.replaceChildren();
-      if (!fileArr.length) { filesEl.appendChild(el('div', 'stash-files-empty', 'Файлов нет.')); return; }
-      for (const f of fileArr) {
-        const c = String(f.code || 'M');
-        const kind = (c === '?' || c.includes('A')) ? 'added' : c.includes('D') ? 'deleted' : c.includes('U') ? 'conflict' : 'modified';
-        const row = el('div', 'stash-file');
-        row.appendChild(el('span', 'gm-code g-' + kind, c.slice(0, 2) || 'M'));
-        row.appendChild(el('span', 'stash-file-name g-' + kind, f.rel));
-        filesEl.appendChild(row);
-      }
-    };
-    // Одна операция за раз: двойной клик по «pop» снимал ДВА stash (после первого индексы сдвигаются,
-    // и второй вызов stash@{N} бьёт уже по соседнему), по «apply» — применял набор повторно.
-    let stashBusy = false;
-    const stashOp = async (op, it) => {
-      if (stashBusy) return;
-      stashBusy = true;
-      try { await stashOpRun(op, it); } finally { stashBusy = false; }
-    };
-    const stashOpRun = async (op, it) => {
-      const fn = op === 'apply' ? lite.git.stashApply : op === 'pop' ? lite.git.stashPopIndex : lite.git.stashDrop;
-      const r = await fn(p.path, it.index);
-      if (!r.ok) { toast(r.error || (op + ' не прошёл'), { kind: 'err', ttl: 8000 }); return; }
-      toast(op === 'apply' ? 'Stash применён' : op === 'pop' ? 'Stash возвращён' : 'Stash удалён');
-      renderGitPanel(p); renderProjects();
-      if (op === 'apply') return;                        // список не изменился — оставляем модалку
-      const rr = await lite.git.stashList(p.path);       // pop/drop → перечитать; пусто → закрыть
-      const left = (rr && rr.items) || [];
-      if (!left.length) { close(); return; }
-      rebuild(left); filesEl.replaceChildren(el('div', 'stash-files-empty', 'Выберите stash слева'));
-    };
-    const rebuild = (its) => {
+    await renderStashPane(listEl, filesEl, p, () => false, () => {
       listEl.replaceChildren();
-      for (const it of its) {
-        const row = el('div', 'stash-item'); row.dataset.index = it.index;
-        const main = el('div', 'stash-item-main');
-        main.appendChild(el('span', 'stash-item-msg', it.subject || ('stash@{' + it.index + '}')));
-        if (it.when) main.appendChild(el('span', 'stash-item-when', it.when));
-        row.appendChild(main);
-        const acts = el('div', 'stash-item-acts');
-        const apply = miniIcon('download', 'Применить (оставить в списке)');
-        const pop = miniIcon('archive', 'Вернуть и убрать из списка (pop)');
-        const drop = miniIcon('trash', 'Удалить stash', 'gm-disc');
-        apply.onclick = (e) => { e.stopPropagation(); stashOp('apply', it); };
-        pop.onclick = (e) => { e.stopPropagation(); stashOp('pop', it); };
-        drop.onclick = (e) => { e.stopPropagation(); showConfirm('Удалить stash?', '«' + (it.subject || ('stash@{' + it.index + '}')) + '» будет удалён безвозвратно.', 'Удалить', () => stashOp('drop', it)); };
-        acts.append(apply, pop, drop);
-        row.append(acts);
-        row.addEventListener('click', () => showFiles(it));
-        listEl.appendChild(row);
-      }
-    };
-    rebuild(items);
-    showFiles(items[0]);
+      filesEl.replaceChildren();
+      renderStashPane(listEl, filesEl, p, () => false);
+    });
   }
 
-  // ============================================================ вкладка «История» (список коммитов + дерево файлов)
-  async function renderHistoryTab(listSide, filesSide, p, stale) {
+  // ============================================================ Нижняя панель «Git»: История · Ветки · Stash
+  async function renderBranchLog(host2, p, info, stale) {
+    const tabsBar = el('div', 'git-tabs');
+    let stashTabBtn = null;
+    const tabDefs = [
+      ['history', 'История'],
+      ['branches', `Ветки (${(info.branches || []).length})`],
+      ['stash', 'Stash'],
+    ];
+    for (const [id, label] of tabDefs) {
+      const t = el('button', 'git-tab' + (blsub === id ? ' active' : ''), label);
+      t.type = 'button';
+      t.onclick = () => { if (blsub === id) return; blsub = id; renderGitPanel(p); };
+      if (id === 'stash') stashTabBtn = t;
+      tabsBar.appendChild(t);
+    }
+    host2.appendChild(tabsBar);
+
+    // Асинхронно подгружаем счётчик stash для заголовка вкладки
+    lite.git.stashList(p.path).then((sr) => {
+      if (stale() || !stashTabBtn) return;
+      const cnt = (sr && sr.items) ? sr.items.length : 0;
+      if (cnt > 0) stashTabBtn.textContent = `Stash (${cnt})`;
+    }).catch(() => {});
+
+    const split = el('div', 'git-log-split');
+    const listSide = el('div', 'git-log-list');
+    const filesSide = el('div', 'git-log-files');
+    split.append(listSide, filesSide);
+    host2.appendChild(split);
+
+    if (blsub === 'history') {
+      filesSide.appendChild(el('div', 'git-log-files-empty', 'Выберите коммит, чтобы увидеть детали и файлы'));
+      await renderHistoryTab(listSide, filesSide, p, info, stale);
+    } else if (blsub === 'branches') {
+      split.classList.add('single-col');
+      filesSide.classList.add('hidden');
+      renderBranchesTab(listSide, p, info);
+    } else {
+      await renderStashPane(listSide, filesSide, p, stale);
+    }
+  }
+
+  // ============================================================ вкладка «История» (цветной SVG-граф + детали коммита)
+  async function renderHistoryTab(listSide, filesSide, p, info, stale) {
     const tools = el('div', 'git-history-tools');
     const searchWrap = el('div', 'git-search-wrap');
     searchWrap.appendChild(icon('search', 14));
     const search = el('input', 'git-search');
-    search.type = 'search'; search.placeholder = 'Фильтр по истории';
+    search.type = 'search';
+    search.placeholder = 'Фильтр: сообщение, хеш, автор, ветка…';
     searchWrap.appendChild(search);
-    tools.appendChild(searchWrap);
+
+    const refreshBtn = miniIcon('refresh', 'Обновить историю коммитов');
+    refreshBtn.onclick = () => renderGitPanel(p);
+    tools.append(searchWrap, refreshBtn);
     listSide.appendChild(tools);
 
     const logBox = el('div', 'git-log');
     logBox.appendChild(el('div', 'git-loading', 'Загрузка истории…'));
     listSide.appendChild(logBox);
-    const lg = await lite.git.log(p.path, 120);
-    if (stale()) return;
+
+    let commits = [];
+    let graphLayout = null;
+
+    // Предпочитаем богатый git.graph (даёт родителей p[] для цветного графа дорожек)
+    if (lite.git.graph) {
+      const gr = await lite.git.graph(p.path, { limit: 250, remotes: true, tags: true });
+      if (stale()) return;
+      if (gr && gr.ok && Array.isArray(gr.commits)) {
+        commits = gr.commits.map((c) => ({
+          fullHash: c.h,
+          hash: c.h.slice(0, 8),
+          parents: c.p || [],
+          author: c.an || '',
+          email: c.ae || '',
+          at: c.at || 0,
+          when: formatRelTime(c.at),
+          subject: c.s || '',
+          refs: c.refs || '',
+        }));
+        const gRows = layoutCommitGraph(gr.commits.map((c) => ({ h: c.h, p: c.p || [] })));
+        graphLayout = { rows: gRows, maxCols: Math.min(8, Math.max(1, ...gRows.map((r) => r.cols || 1))) };
+      }
+    }
+    if (!commits.length) {
+      const lg = await lite.git.log(p.path, 160);
+      if (stale()) return;
+      commits = ((lg && lg.commits) || []).map((c) => ({
+        fullHash: c.hash,
+        hash: c.hash,
+        parents: [],
+        author: c.author || '',
+        at: 0,
+        when: c.when || '',
+        subject: c.subject || '',
+        refs: c.refs || '',
+      }));
+    }
+
     logBox.replaceChildren();
-    const commits = (lg && lg.commits) ? lg.commits : [];
-    if (!commits.length) { logBox.appendChild(el('div', 'gm-clean', 'Пока нет коммитов.')); return; }
-    if (selectedCommit && !commits.some((c) => c.hash === selectedCommit)) selectedCommit = null;
+    if (!commits.length) {
+      logBox.appendChild(el('div', 'gm-clean', 'Пока нет коммитов.'));
+      return;
+    }
+    if (selectedCommit && !commits.some((c) => c.hash === selectedCommit || c.fullHash === selectedCommit)) {
+      selectedCommit = null;
+    }
+
     const rows = [];
     const selectCommit = (c, cr) => {
       selectedCommit = c.hash;
       logBox.querySelectorAll('.git-commit').forEach((x) => x.classList.toggle('sel', x === cr));
       renderCommitFilesTree(filesSide, p, c);
     };
-    for (const c of commits) {
-      // Одна строка, как в логе PhpStorm: хеш · сообщение (+ метки веток и тегов) · автор · когда.
-      const cr = el('div', 'git-commit' + (c.hash === selectedCommit ? ' sel' : ''));
-      cr.title = c.subject + '\n' + c.hash + ' · ' + c.author + ' · ' + c.when;
-      cr.appendChild(el('span', 'gm-hash', c.hash));
-      const main = el('span', 'git-commit-main');
-      main.appendChild(el('span', 'git-csubj', c.subject));
-      if (c.refs) {   // метки веток и тегов — после сообщения: сообщение важнее, метки ужимаются первыми
-        const refs = el('span', 'git-refs-box');
-        for (const ref of c.refs.split(',').map((x) => x.trim()).filter(Boolean).slice(0, 4)) {
-          const head = /^HEAD\b/.test(ref), remote = /^origin\/|^[\w.-]+\/HEAD$/.test(ref), tag = /^tag:/.test(ref);
-          refs.appendChild(el('span', 'git-refs' + (head ? ' head' : remote ? ' remote' : tag ? ' tag' : ''), ref.replace(/^tag:\s*/, '')));
-        }
-        main.appendChild(refs);
+
+    commits.forEach((c, idx) => {
+      const cr = el('div', 'git-commit' + ((c.hash === selectedCommit || c.fullHash === selectedCommit) ? ' sel' : ''));
+      cr.title = `${c.subject}\n${c.hash} · ${c.author} · ${c.at ? formatFullDate(c.at) : c.when}`;
+
+      // Цветная дорожка графа веток
+      if (graphLayout && graphLayout.rows[idx]) {
+        const gCell = el('span', 'git-graph-cell');
+        gCell.innerHTML = buildCommitGraphSvg(graphLayout.rows[idx], graphLayout.maxCols, 24);
+        cr.appendChild(gCell);
       }
+
+      const main = el('span', 'git-commit-main');
+      const refChips = parseDecorateRefs(c.refs);
+      if (refChips.length) {
+        const refsBox = el('span', 'git-refs-box');
+        for (const rc of refChips.slice(0, 4)) {
+          refsBox.appendChild(el('span', 'git-refs ' + rc.kind, rc.label));
+        }
+        main.appendChild(refsBox);
+      }
+      main.appendChild(el('span', 'git-csubj', c.subject));
       cr.appendChild(main);
+
+      cr.appendChild(el('span', 'gm-hash', c.hash));
       cr.appendChild(el('span', 'git-cauthor', c.author));
       cr.appendChild(el('span', 'git-cwhen', c.when));
+
       const copyBtn = miniIcon('copy', tr('Скопировать хеш'));
-      copyBtn.onclick = (e) => { e.stopPropagation(); lite.copyText(c.hash); toast('Хеш скопирован: ' + c.hash); };
-      const acts = el('div', 'git-commit-acts'); acts.appendChild(copyBtn); cr.appendChild(acts);
+      copyBtn.onclick = (e) => { e.stopPropagation(); lite.copyText(c.fullHash || c.hash); toast('Хеш скопирован: ' + c.hash); };
+      const acts = el('div', 'git-commit-acts');
+      acts.appendChild(copyBtn);
+      cr.appendChild(acts);
+
       cr.addEventListener('click', () => selectCommit(c, cr));
-      // контекст-меню коммита: cherry-pick / revert / копирование (PhpStorm-style)
       if (menuRow && placeMenu) {
         cr.addEventListener('contextmenu', (e) => {
           e.preventDefault(); e.stopPropagation();
           closeMenus();
-          const dd = el('div', 'menu-dropdown'); dd.style.minWidth = '240px';
+          const dd = el('div', 'menu-dropdown'); dd.style.minWidth = '250px';
+          dd.appendChild(menuRow('plus', 'Создать ветку от этого коммита…', () => { closeMenus(); newBranchFrom(p, c.hash); }));
           dd.appendChild(menuRow('git', 'Cherry-pick в текущую ветку', () => { closeMenus(); cherryPickCommit(p, c); }));
-          dd.appendChild(menuRow('eraser', 'Revert — обратный коммит', () => { closeMenus(); revertCommitUi(p, c); }));
+          dd.appendChild(menuRow('eraser', 'Revert — создать обратный коммит', () => { closeMenus(); revertCommitUi(p, c); }));
           dd.appendChild(el('div', 'menu-sep'));
-          dd.appendChild(menuRow('copy', 'Копировать хеш', () => { closeMenus(); lite.copyText(c.hash); toast('Хеш скопирован'); }));
-          dd.appendChild(menuRow('copy', 'Копировать сообщение', async () => {
+          dd.appendChild(menuRow('copy', 'Копировать хеш (' + c.hash + ')', () => { closeMenus(); lite.copyText(c.fullHash || c.hash); toast('Хеш скопирован'); }));
+          dd.appendChild(menuRow('copy', 'Копировать сообщение коммита', async () => {
             closeMenus();
             const r = await lite.git.commitMsg(p.path, c.hash);
             if (r && r.ok) { lite.copyText(r.message); toast('Сообщение скопировано'); }
@@ -859,20 +1420,20 @@ export function initGit(host) {
           placeMenu(dd, e.clientX, e.clientY);
         });
       }
-      const hay = (c.hash + ' ' + c.subject + ' ' + c.when + ' ' + c.author + ' ' + (c.refs || '')).toLowerCase();
+      const hay = (c.fullHash + ' ' + c.hash + ' ' + c.subject + ' ' + c.when + ' ' + c.author + ' ' + (c.refs || '')).toLowerCase();
       rows.push({ el: cr, hay });
       logBox.appendChild(cr);
-    }
+    });
+
     search.addEventListener('input', () => {
       const q = search.value.trim().toLowerCase();
       for (const r of rows) r.el.style.display = !q || r.hay.includes(q) ? '' : 'none';
     });
-    // авто-выбор: ранее выбранный коммит или первый → сразу показать его файлы справа
-    const initIdx = selectedCommit ? commits.findIndex((c) => c.hash === selectedCommit) : 0;
+
+    const initIdx = selectedCommit ? commits.findIndex((c) => c.hash === selectedCommit || c.fullHash === selectedCommit) : 0;
     if (initIdx >= 0 && rows[initIdx]) selectCommit(commits[initIdx], rows[initIdx].el);
   }
 
-  // Cherry-pick/revert коммита из лога. Конфликт → секция «Коммит» (unmerged-файлы с кнопкой Resolve).
   async function cherryPickCommit(p, c) {
     const r = await lite.git.cherryPick(p.path, c.hash);
     if (r && r.ok) { toast('Cherry-pick: ' + c.hash); renderGitPanel(p); renderProjects(); return; }
@@ -880,6 +1441,7 @@ export function initGit(host) {
     if (conf.files && conf.files.length) { toast('Конфликты cherry-pick — разрешите в секции «Коммит»', { kind: 'err', ttl: 9000 }); goCommitView(); renderGitPanel(p); }
     else toast((r && r.error) || 'cherry-pick не прошёл', { kind: 'err', ttl: 9000 });
   }
+
   async function revertCommitUi(p, c) {
     const r = await lite.git.revertCommit(p.path, c.hash);
     if (r && r.ok) { toast('Revert создан: ' + c.hash); renderGitPanel(p); renderProjects(); return; }
@@ -888,25 +1450,50 @@ export function initGit(host) {
     else toast((r && r.error) || 'revert не прошёл', { kind: 'err', ttl: 9000 });
   }
 
-  // Дерево изменённых файлов выбранного коммита (иконки типов; клик по файлу → дифф файла в центре вивера).
+  // Детали выбранного коммита (полный текст body + метаданные) + дерево его изменённых файлов
   async function renderCommitFilesTree(filesSide, p, commit) {
     const myCommit = commit.hash;
-    filesSide.replaceChildren(el('div', 'git-loading', 'Загрузка файлов…'));
-    const r = await lite.git.commitFiles(p.path, commit.hash);
-    if (selectedCommit !== myCommit) return;          // выбрали другой коммит за время await
-    const files = (r && r.files) || [];
+    filesSide.replaceChildren(el('div', 'git-loading', 'Загрузка деталей коммита…'));
+    const [filesRes, detailRes] = await Promise.all([
+      lite.git.commitFiles(p.path, commit.fullHash || commit.hash),
+      lite.git.commitDetail ? lite.git.commitDetail(p.path, commit.fullHash || commit.hash) : Promise.resolve(null),
+    ]);
+    if (selectedCommit !== myCommit) return;
+
+    const files = (filesRes && filesRes.files) || [];
     filesSide.replaceChildren();
-    const head = el('div', 'git-log-files-head');
-    head.appendChild(el('span', 'gm-hash', commit.hash));
-    head.appendChild(el('span', 'git-log-files-subj', commit.subject));
-    filesSide.appendChild(head);
-    if (!files.length) { filesSide.appendChild(el('div', 'git-log-files-empty', 'Файлов нет.')); return; }
+
+    const detailBox = el('div', 'git-commit-detail');
+    const metaRow = el('div', 'git-commit-detail-meta');
+    const hashChip = el('button', 'gm-hash git-hash-btn', commit.hash);
+    hashChip.type = 'button';
+    hashChip.title = 'Скопировать полный хеш';
+    hashChip.onclick = () => {
+      const full = (detailRes && detailRes.h) || commit.fullHash || commit.hash;
+      lite.copyText(full);
+      toast('Скопирован хеш: ' + full.slice(0, 10));
+    };
+    metaRow.appendChild(hashChip);
+    const authorTxt = (detailRes && detailRes.an) || commit.author || '';
+    const dateTxt = (detailRes && detailRes.at) ? formatFullDate(detailRes.at) : (commit.when || '');
+    metaRow.appendChild(el('span', 'git-detail-author', `${authorTxt}${dateTxt ? ' · ' + dateTxt : ''}`));
+    metaRow.appendChild(el('span', 'git-detail-fcount', `${files.length} ф.`));
+    detailBox.appendChild(metaRow);
+
+    const fullMsg = (detailRes && detailRes.body) ? detailRes.body : commit.subject;
+    const msgPre = el('div', 'git-commit-detail-body', fullMsg);
+    detailBox.appendChild(msgPre);
+    filesSide.appendChild(detailBox);
+
+    if (!files.length) {
+      filesSide.appendChild(el('div', 'git-log-files-empty', 'Нет изменённых файлов (пустой или merge-коммит).'));
+      return;
+    }
     const treeWrap = el('div', 'git-log-tree');
     filesSide.appendChild(treeWrap);
     renderTreeNode(buildPathTree(files), treeWrap, p, commit, 0);
   }
 
-  // path-tree из плоского списка файлов коммита (группировка по '/' как в PhpStorm).
   function buildPathTree(files) {
     const root = { dirs: new Map(), files: [] };
     for (const f of files) {
@@ -914,45 +1501,82 @@ export function initGit(host) {
       const parts = rel.split('/').filter(Boolean);
       const name = parts.pop() || rel;
       let node = root;
-      for (const seg of parts) { if (!node.dirs.has(seg)) node.dirs.set(seg, { dirs: new Map(), files: [] }); node = node.dirs.get(seg); }
+      for (const seg of parts) {
+        if (!node.dirs.has(seg)) node.dirs.set(seg, { dirs: new Map(), files: [] });
+        node = node.dirs.get(seg);
+      }
       const c = String(f.code || 'M');
       const kind = (c === '?' || c.includes('A')) ? 'added' : c.includes('D') ? 'deleted' : c.includes('U') ? 'conflict' : 'modified';
       node.files.push({ rel, name, code: c, kind });
     }
     return root;
   }
+
   function renderTreeNode(node, container, p, commit, depth) {
     const pad = depth * 12 + 6;
-    for (const [dname, child] of [...node.dirs.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
-      const row = el('div', 'git-tree-row dir'); row.style.paddingLeft = pad + 'px';
+    for (let [dname, child] of [...node.dirs.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
+      while (child.dirs.size === 1 && child.files.length === 0) {
+        const [subName, subChild] = [...child.dirs.entries()][0];
+        dname += '/' + subName;
+        child = subChild;
+      }
+      const row = el('div', 'git-tree-row dir');
+      row.style.paddingLeft = pad + 'px';
       if (host.folderIcon) row.appendChild(host.folderIcon());
       row.appendChild(el('span', 'git-tree-name', dname));
       container.appendChild(row);
-      const box = el('div'); container.appendChild(box);
+      const box = el('div');
+      container.appendChild(box);
       renderTreeNode(child, box, p, commit, depth + 1);
     }
     for (const f of node.files.sort((a, b) => a.name.localeCompare(b.name))) {
-      const row = el('div', 'git-tree-row file'); row.style.paddingLeft = pad + 'px'; row.title = f.rel;
+      const row = el('div', 'git-tree-row file');
+      row.style.paddingLeft = pad + 'px';
+      row.title = f.rel + ' (клик — дифф коммита, ПКМ — меню)';
       if (host.fileIcon) row.appendChild(host.fileIcon(f.name));
       row.appendChild(el('span', 'gm-code g-' + f.kind, (f.code || 'M').slice(0, 2)));
       row.appendChild(el('span', 'git-tree-name g-' + f.kind, f.name));
-      row.addEventListener('click', () => { if (host.commitDiff) host.commitDiff(p.path, commit.hash, f.rel, { name: f.name }); });
+      row.addEventListener('click', () => {
+        if (host.commitDiff) host.commitDiff(p.path, commit.fullHash || commit.hash, f.rel, { name: f.name });
+      });
+      if (menuRow && placeMenu) {
+        row.addEventListener('contextmenu', (e) => {
+          e.preventDefault(); e.stopPropagation();
+          closeMenus();
+          const dd = el('div', 'menu-dropdown'); dd.style.minWidth = '210px';
+          dd.appendChild(menuRow('diff', 'Показать дифф коммита', () => {
+            closeMenus();
+            if (host.commitDiff) host.commitDiff(p.path, commit.fullHash || commit.hash, f.rel, { name: f.name });
+          }));
+          if (f.kind !== 'deleted' && hostOpenFile) {
+            dd.appendChild(menuRow('file-text', 'Открыть текущий файл проекта', () => {
+              closeMenus();
+              hostOpenFile(p.path.replace(/\/+$/, '') + '/' + f.rel);
+            }));
+          }
+          dd.appendChild(menuRow('copy', 'Копировать путь (' + f.rel + ')', () => {
+            closeMenus();
+            lite.copyText(f.rel);
+            toast('Путь скопирован');
+          }));
+          placeMenu(dd, e.clientX, e.clientY);
+        });
+      }
       container.appendChild(row);
     }
   }
 
   // ============================================================ вкладка «Ветки»
-  // JetBrains-style: per branch — checkout · update БЕЗ перехода · new branch · merge в текущую.
   function renderBranchesTab(content, p, info) {
     const head = el('div', 'gm-branch git-branch-toolbar');
     const current = el('div', 'git-current-branch');
-    current.appendChild(icon('git', 14));
-    current.appendChild(el('span', null, info.branch));
+    current.append(icon('git', 14), el('span', null, info.branch));
     head.appendChild(current);
     const nb = gitTool('plus', 'Новая ветка', 'Новая ветка от текущей');
     nb.onclick = () => showPrompt('Новая ветка', 'Имя ветки (создастся от текущей и перейдём на неё)', '', async (name) => {
       const r = await lite.git.branchCreate(p.path, name, info.branch, true);
-      if (r.ok) { toast('Создана и перешёл: ' + name); renderProjects(); renderGitPanel(p); } return r;
+      if (r.ok) { toast('Создана и перешёл: ' + name); renderProjects(); renderGitPanel(p); }
+      return r;
     });
     head.appendChild(nb);
     content.appendChild(head);
@@ -964,45 +1588,46 @@ export function initGit(host) {
       const cur = b === info.branch;
       const row = el('div', 'gm-brow' + (cur ? ' current' : ''));
       const name = el('span', 'gm-brname' + (cur ? ' cur' : ''));
-      name.appendChild(icon(cur ? 'check' : 'git', 13));
-      name.appendChild(el('span', null, b));
+      name.append(icon(cur ? 'check' : 'git', 13), el('span', null, b));
       if (cur) name.appendChild(el('span', 'git-branch-badge', 'current'));
       row.appendChild(name);
       const tc = trackChip((info.branchTrack || {})[b]);
       if (tc) row.appendChild(tc);
       const acts = el('div', 'gm-bacts');
       if (!cur) {
-        const co = miniIcon('arrow-right', 'Переключиться');
-        co.onclick = async () => { const r = await lite.git.checkout(p.path, b); toast(r.ok ? 'Ветка: ' + b : (r.error || 'не вышло'), { kind: r.ok ? undefined : 'err', ttl: 7000 }); renderProjects(); renderGitPanel(p); };
+        const co = miniIcon('arrow-right', 'Переключиться (Checkout)');
+        co.onclick = async () => {
+          const r = await lite.git.checkout(p.path, b);
+          toast(r.ok ? 'Ветка: ' + b : (r.error || 'не вышло'), { kind: r.ok ? undefined : 'err', ttl: 7000 });
+          renderProjects(); renderGitPanel(p);
+        };
         acts.appendChild(co);
-        const mg = miniIcon('git', 'Слить в текущую');
-        mg.onclick = () => showConfirm('Слить ветку?', '«' + b + '» будет слита в текущую «' + info.branch + '» (git merge). При конфликтах откроется разрешение.', 'Слить', async () => {
-          const r = await lite.git.merge(p.path, b);
-          if (r.ok) { toast('Слито: ' + b); renderProjects(); goCommitView(); renderGitPanel(p); return; }
-          const c = await lite.git.conflicts(p.path);
-          if (c.files && c.files.length) { toast('Конфликты — разрешите во вкладке «Изменения»', { kind: 'err', ttl: 9000 }); goCommitView(); renderGitPanel(p); }
-          else toast(r.error || 'merge не прошёл', { kind: 'err', ttl: 9000 });
-        });
+        const mg = miniIcon('git', 'Слить в текущую (Merge)');
+        mg.onclick = () => showConfirm('Слить ветку?', '«' + b + '» будет слита в текущую «' + info.branch + '» (git merge).', 'Слить', () => mergeBranch(p, b));
         acts.appendChild(mg);
       }
       const up = miniIcon('refresh', cur ? 'Обновить текущую ветку (pull --ff-only)' : 'Обновить из удалёнки без переключения');
-      up.onclick = async () => { const r = await lite.git.branchUpdate(p.path, b, cur); toast(r.ok ? ('Обновлено: ' + b) : (r.error || 'не fast-forward / нет upstream'), { kind: r.ok ? undefined : 'err', ttl: 8000 }); renderGitPanel(p); };
+      up.onclick = async () => {
+        const r = await lite.git.branchUpdate(p.path, b, cur);
+        toast(r.ok ? ('Обновлено: ' + b) : (r.error || 'не fast-forward / нет upstream'), { kind: r.ok ? undefined : 'err', ttl: 8000 });
+        renderGitPanel(p);
+      };
       acts.appendChild(up);
       const newFrom = miniIcon('plus', 'Новая ветка от «' + b + '»');
-      newFrom.onclick = () => showPrompt('Новая ветка от «' + b + '»', 'Имя ветки (создастся и перейдём на неё)', '', async (name) => {
-        const r = await lite.git.branchCreate(p.path, name, b, true);
-        if (r.ok) { toast('Создана и перешёл: ' + name); renderProjects(); renderGitPanel(p); } return r;
-      });
+      newFrom.onclick = () => newBranchFrom(p, b);
       acts.appendChild(newFrom);
+      if (!cur) {
+        const del = miniIcon('trash', 'Удалить ветку «' + b + '»', 'gm-disc');
+        del.onclick = () => deleteBranch(p, b);
+        acts.appendChild(del);
+      }
       row.appendChild(acts);
       list.appendChild(row);
     }
     content.appendChild(list);
   }
 
-  // ============================================================ парсинг конфликтов
-  // Разбор маркеров merge: <<<<<<< ours [||||||| base] ======= theirs >>>>>>>.
-  // Возвращает { lines, blocks }, blocks: { start, baseAt, sep, end, ours[], theirs[] } (0-based индексы строк).
+  // ============================================================ парсинг и 3-оконное разрешение конфликтов
   function parseConflicts(text) {
     const lines = text.split('\n');
     const blocks = [];
@@ -1013,18 +1638,16 @@ export function initGit(host) {
         let baseAt = -1; let sep = -1; let end = -1;
         i++;
         while (i < lines.length && !lines[i].startsWith('|||||||') && !lines[i].startsWith('=======') && !lines[i].startsWith('>>>>>>>')) { ours.push(lines[i]); i++; }
-        if (i < lines.length && lines[i].startsWith('|||||||')) { baseAt = i; i++; while (i < lines.length && !lines[i].startsWith('=======') && !lines[i].startsWith('>>>>>>>')) { i++; } } // diff3-секция base — пропускаем (UI её не показывает)
+        if (i < lines.length && lines[i].startsWith('|||||||')) { baseAt = i; i++; while (i < lines.length && !lines[i].startsWith('=======') && !lines[i].startsWith('>>>>>>>')) i++; }
         if (i < lines.length && lines[i].startsWith('=======')) { sep = i; i++; while (i < lines.length && !lines[i].startsWith('>>>>>>>')) { theirs.push(lines[i]); i++; } }
-        if (i < lines.length && lines[i].startsWith('>>>>>>>')) { end = i; }
-        // Настоящий конфликт обязан содержать '======='. Без него (мусорный '<<<<<<<') блок не пушим —
-        // иначе buildSide с sep=-1 откатывал бы офсет назад и дублировал строки.
+        if (i < lines.length && lines[i].startsWith('>>>>>>>')) end = i;
         if (sep >= 0) blocks.push({ start, baseAt, sep, end, ours, theirs });
         i = (end >= 0 ? end : i) + 1;
       } else i++;
     }
     return { lines, blocks };
   }
-  // Полный текст одной стороны (plain + выбранная сторона вместо блоков) + строки-метки регионов (1-based).
+
   function buildSide(parsed, side) {
     const { lines, blocks } = parsed;
     const out = []; const marks = [];
@@ -1042,21 +1665,16 @@ export function initGit(host) {
     return { text: out.join('\n'), marks };
   }
 
-  // ============================================================ модалка merge (3 окна)
   async function openMergeModal(p, fileAbs) {
     const fname = baseName(fileAbs);
     const read = await lite.fs.readFile(fileAbs);
     if (read.error) { toast(read.error || 'не удалось прочитать файл', { kind: 'err' }); return; }
-    // Не UTF-8: «Сохранить разрешение» записало бы файл в UTF-8 с «�» вместо букв.
     if (read.notUtf8) { toast('Файл не в кодировке UTF-8 — разрешите конфликт во внешнем редакторе', { kind: 'warn', ttl: 8000 }); return; }
     const raw = read.content || '';
-    // CodeMirror хранит документ с '\n' — без возврата исходного перевода строки «Сохранить разрешение»
-    // переводило CRLF-файл в LF целиком (весь файл — одна сплошная правка). Правило — как у вивера (files.js).
     const crlf = (raw.match(/\r\n/g) || []).length;
     const eol = crlf && crlf * 2 >= (raw.match(/\n/g) || []).length ? '\r\n' : '\n';
     const parsed0 = parseConflicts(raw);
     if (!parsed0.blocks.length) { toast('В файле нет маркеров конфликта', { kind: 'err' }); return; }
-    // язык грузим ДО makeModal: await после неё — окно для onClose в TDZ констант ed* (закрыли во время await)
     const lang = await ensureLanguage(fileAbs);
 
     const { m, close } = makeModal(`
@@ -1084,11 +1702,10 @@ export function initGit(host) {
         <button class="btn" id="mrg-cancel">Отмена</button>
         <button class="btn primary" id="mrg-save">Сохранить разрешение</button>
       </div>`,
-      () => { [edOurs, edTheirs, edResult].forEach((e) => { try { e && e.destroy(); } catch (_) {} }); }); // снять CodeMirror при закрытии — иначе утечка трёх инстансов на каждое открытие модалки
+      () => { [edOurs, edTheirs, edResult].forEach((e) => { try { e && e.destroy(); } catch (_) {} }); });
     m.classList.add('modal-merge');
     m.querySelector('.mrg-title').textContent = fname;
 
-    // три редактора (наше/их — read-only справочно; результат — редактируемый, сырой текст с маркерами)
     const oursSide = buildSide(parsed0, 'ours');
     const theirsSide = buildSide(parsed0, 'theirs');
     const edOurs = createCodeEditor(m.querySelector('#mrg-c-ours'), { doc: oursSide.text, readOnly: true, language: lang });
@@ -1097,10 +1714,9 @@ export function initGit(host) {
     edOurs.setMarks(oursSide.marks);
     edTheirs.setMarks(theirsSide.marks);
 
-    let current = 0; // индекс текущего конфликта
+    let current = 0;
     const countEl = m.querySelector('.mrg-count');
 
-    // пересчёт по актуальному тексту результата: подсветка регионов + счётчик + клампинг current
     function scan() { return parseConflicts(edResult.getValue()); }
     function resultMarks(parsed) {
       const marks = [];
@@ -1130,7 +1746,6 @@ export function initGit(host) {
       const b = blocksCache[current];
       if (b) edResult.scrollToLine(b.start + 1);
     }
-    // заменить блок текущего конфликта выбранным текстом (по свежему скану — офсеты всегда актуальны)
     function resolve(kind) {
       const parsed = scan();
       const b = parsed.blocks[current];
@@ -1182,6 +1797,5 @@ export function initGit(host) {
     setTimeout(() => { edResult.view.focus(); gotoCurrent(); }, 30);
   }
 
-  // flushDraft — для выхода из редактора: окно сносят destroy(), и beforeunload не приходит.
   return { setContainers, renderPanel: renderGitPanel, flushDraft };
 }

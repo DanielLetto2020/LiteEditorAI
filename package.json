@@ -1,6 +1,6 @@
 {
   "name": "liteeditor-ai",
-  "version": "1.1.215-alpha",
+  "version": "1.1.239-alpha",
   "description": "Lightweight editor for working with AI coding agents in the terminal",
   "main": "main.js",
   "author": "Максим Кузьминский <i@m-letto.ru>",
@@ -11,7 +11,7 @@
     "url": "https://github.com/DanielLetto2020/LiteEditorAI.git"
   },
   "scripts": {
-    "test": "node test/safe-name.test.js && node test/shell.test.js && node test/portparse.test.js && node test/dbdetect.test.js && node test/fsmeta.test.js && node test/i18n.test.js && node test/storage-path.test.js && node test/sql-readonly.test.js && node test/errledger.test.js && node test/updater.test.js && node test/ttsnorm.test.js && node test/tts-download.test.js && node test/tree-watch.test.js && node test/logger.test.js && node test/history.test.js && node test/ptybatch.test.js && node test/proctree.test.js && node test/agentstate.test.js && node test/zipwrite.test.js && node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON test/settings-sync.test.js",
+    "test": "node test/safe-name.test.js && node test/shell.test.js && node test/portparse.test.js && node test/dbdetect.test.js && node test/fsmeta.test.js && node test/i18n.test.js && node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON test/renderer-i18n.test.js && node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON test/ui-icons.test.js && node test/storage-path.test.js && node test/sql-readonly.test.js && node test/errledger.test.js && node test/updater.test.js && node test/ttsnorm.test.js && node test/tts-download.test.js && node test/tree-watch.test.js && node test/git-watch.test.js && node test/gitignore.test.js && node test/fast-search.test.js && node test/logger.test.js && node test/history.test.js && node test/ptybatch.test.js && node test/ptyring.test.js && node test/store.test.js && node test/module-router.test.js && node test/proctree.test.js && node test/agentstate.test.js && node test/proc-service.test.js && node test/quit-guard.test.js && node test/zipwrite.test.js && node test/styles-split.test.js && node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON test/settings-sync.test.js && node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON test/proj-tabs.test.js && node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON test/viewer-ide.test.js",
     "lint": "eslint .",
     "typecheck": "tsc -p tsconfig.check.json",
     "mutation": "node scripts/stryker-gate.js",
@@ -66,7 +66,6 @@
     "katex": "^0.16.21",
     "kdbxweb": "^2.1.1",
     "marked": "^18.0.4",
-    "mathjax-full": "^3.2.1",
     "mysql2": "^3.24.4",
     "node-pty": "^1.0.0",
     "pg": "^8.21.0",
@@ -97,9 +96,6 @@
     "brace-expansion": "^5.0.8",
     "tar": "^7.5.22",
     "qs": "^6.16.0",
-    "speech-rule-engine": {
-      "@xmldom/xmldom": "0.9.12"
-    },
     "fflate": "0.7.5"
   },
   "build": {
@@ -128,7 +124,9 @@
       "package.json",
       "renderer/index.html",
       "renderer/module.html",
+      "renderer/core.css",
       "renderer/styles.css",
+      "renderer/styles/**",
       "renderer/fonts/**",
       "renderer/dist/**",
       "!renderer/dist/**/*.map",
@@ -147,9 +145,6 @@
       "category": "Development",
       "icon": "assets/icon.png",
       "maintainer": "Максим Кузьминский <i@m-letto.ru>",
-      "executableArgs": [
-        "--no-sandbox"
-      ],
       "desktop": {
         "entry": {
           "StartupWMClass": "liteeditor-ai"

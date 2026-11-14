@@ -45,36 +45,17 @@ sudo apt -f install      # если ругнётся на зависимости
 \`\`\`
 
 ## Запуск
-Иконка **LiteEditor** в меню приложений, либо команда \`lite-editor\` в терминале.
-Приложение стартует с программным рендером (без GPU) и \`--no-sandbox\` — так и задумано.
+Иконка **LiteEditorAI** в меню приложений, либо команда \`liteeditor-ai\` в терминале.
+Установленный \`.deb\` работает с включённой песочницей Chromium и аппаратным ускорением GPU (для запуска в VM/контейнере без GPU или userns доступны переменные \`LITE_NO_GPU=1\` и \`LITE_NO_SANDBOX=1\`).
 
 ## Удаление
 \`\`\`bash
-sudo apt remove lite-editor
+sudo apt remove liteeditor-ai
 \`\`\`
 
 Требуется Ubuntu 22.04+/64-бит.
 `;
 
-const windowsReadme = (file) => `# LiteEditor ${version} — Windows (x64)
-
-Собрано: ${human}. Версия: \`alpha v${version}\`.
-
-## Запуск (установка не нужна, portable)
-1. Распакуй **весь** архив \`${file}\` в любую папку.
-2. Запусти **LiteEditor.exe** из этой папки.
-
-Windows SmartScreen может предупредить (приложение без цифровой подписи):
-«Подробнее» → «Выполнить в любом случае».
-
-## ⚠️ Это первый тестовый билд
-Сборка собрана кросс-компиляцией с Linux и **не тестировалась на Windows**.
-Если что-то не работает — особенно **терминал** — напиши, что именно (скриншот/текст ошибки).
-
-Требуется Windows 10/11 x64.
-`;
-
 console.log(`release ${NAME} v${version} (${stamp}):`);
 place(newest(/\.deb$/), 'ubuntu', '.deb', ubuntuReadme);
-place(newest(/win.*\.zip$|\.zip$/), 'windows', '.zip', windowsReadme);
 console.log('готово.');

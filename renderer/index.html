@@ -6,7 +6,7 @@
         content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' file: blob:; img-src 'self' data: file: https: http:; frame-src 'self' file:;" />
   <title>LiteEditorAI</title>
   <link rel="stylesheet" href="dist/bundle.css" />
-  <link rel="stylesheet" href="styles.css" />
+  <link rel="stylesheet" href="core.css" />
 </head>
 <body>
   <!-- Оболочка «Графит»: боковая карточка проектов · терминал (вкладки сверху, чипы и модули снизу)
@@ -53,6 +53,7 @@
         <div id="term-tabs"></div>
         <button id="term-tabs-next" class="tab-scroll" title="Прокрутить вкладки вправо" data-icon="chevron-right" data-icon-size="15"></button>
         <button id="term-tab-add" class="tab-add" title="Новая вкладка (Ctrl+Shift+T)" data-icon="plus" data-icon-size="15"></button>
+        <button id="term-split-btn" class="tab-add" title="Разделить терминал (Ctrl+Shift+D)" aria-label="Разделить терминал" data-icon="columns-2" data-icon-size="15"></button>
         <div class="drag-space"></div>
         <div class="win-tools">
           <button id="attention-badge" class="attention-badge" title="Перейти к агенту, который ждёт ответа">0</button>
@@ -66,6 +67,7 @@
       </div>
       <div id="term-body">
         <div id="terminals"></div>
+        <div id="term-split-gutter" class="term-split-gutter hidden" title="Потяните для изменения пропорции (двойной клик — 50/50)"></div>
         <div id="term-search">
           <input id="term-search-input" type="text" placeholder="Поиск в терминале…" autocomplete="off" spellcheck="false">
           <button id="term-search-prev" class="ts-btn" title="Назад (Shift+Enter)" data-icon="chevron-up" data-icon-size="14"></button>
@@ -98,6 +100,18 @@
           <button id="term-restart" class="tt-btn" title="Перезапустить терминал" aria-label="Перезапустить терминал" data-icon="refresh" data-icon-size="15"></button>
         </div>
       </div>
+    </section>
+
+    <!-- Встроенный док «Проект» (вивер кода, дерево, Git): по желанию закрепляется справа вместо отдельного окна -->
+    <div id="gutter-files" class="gutter hidden" data-resize="filesDock"></div>
+    <section id="files-dock" class="hidden">
+      <div class="pane-head files-dock-head">
+        <span id="files-dock-title">Проект</span>
+        <div class="drag-space-static"></div>
+        <button id="files-dock-popout" class="icon-btn" title="Открепить в отдельное окно" aria-label="Открепить в отдельное окно" data-icon="external-link"></button>
+        <button id="files-dock-close" class="icon-btn" title="Скрыть панель (Ctrl+Shift+E)" aria-label="Скрыть панель" data-icon="x"></button>
+      </div>
+      <iframe id="files-dock-frame" class="files-dock-frame" title="Проект"></iframe>
     </section>
 
     <!-- «Мои модули» (пользовательские плагины): правая панель, один модуль за раз -->
