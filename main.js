@@ -31,6 +31,7 @@ const updater = require('./lib/updater');  // самообновление: пр
 const { watchTree } = require('./lib/tree-watch'); // слежение за деревом проекта (на Linux — по наблюдению на каталог)
 const { createHistory } = require('./lib/history'); // локальная история файлов: снимки, троттл, срок и объём
 const { createBatcher } = require('./lib/ptybatch'); // склейка вывода PTY перед отправкой в окно
+const { createRingStore } = require('./lib/ptyring'); // кольцевой буфер вывода PTY для бесшовного подхвата вкладок
 const { foregroundKind } = require('./lib/proctree'); // индикатор активности: состояние группы переднего плана
 const { agentState, agentOf } = require('./lib/agentstate'); // индикатор: отчёт Claude Code о своей сессии; какой агент в терминале
 
@@ -78,6 +79,7 @@ let tray = null;
 let growDesiredWidth = null;
 let growAppliedWidth = null;
 const ptys = new Map();     // projectId -> IPty
+const ptyRings = createRingStore(128 * 1024); // кольцевой хвост вывода живых PTY (128 КБ на сессию)
 const watchers = new Map(); // project root path -> { watcher, timer, pending:Set }
 
 // Resolve a shell that actually exists. $SHELL can point at a shell that was
@@ -3065,6 +3067,7 @@ function killPtysOwnedBy(wc) {
     if (ownerBySession.get(id) !== wc) continue;
     try { p.kill(); } catch (_) {}
     ptys.delete(id);
+    ptyRings.delete(id);
     ownerBySession.delete(id);
     dropOrphan(id);
   }
@@ -3083,6 +3086,7 @@ function orphanPtysOf(wc) {
       if (!p) return;
       try { p.kill(); } catch (_) {}
       ptys.delete(id);
+      ptyRings.delete(id);
       ownerBySession.delete(id);
       logger.log('info', 'pty', `терминал ${id} никто не забрал после перезагрузки окна — остановлен`);
     }, ORPHAN_TTL_MS));
@@ -4100,6 +4104,7 @@ function bindPtyOwner(proc, owner) {
         if (ptyOwner.get(p) !== owner) continue;
         try { p.kill(); } catch (_) {}
         ptys.delete(id);
+        ptyRings.delete(id);
         dropOrphan(id);
       }
     });
@@ -4133,14 +4138,19 @@ function spawnPtyFor(id, cwd, cols, rows, owner) {
     return { error: String(err.message || err) };
   }
   logger.log('info', 'pty', `spawned pid=${proc.pid}`);
+  ptyRings.delete(id);
   // Вывод — окну-владельцу (редактор/scratch-окно), склеенный: после тишины кусок уходит сразу,
   // под потоком — пачкой раз в 5 мс (lib/ptybatch.js). Хвост досылается перед pty:exit.
-  const out = createBatcher((data) => sendToOwner(id, 'pty:data', { id, data }));
+  const out = createBatcher((data) => {
+    ptyRings.push(id, data);
+    sendToOwner(id, 'pty:data', { id, data });
+  });
   proc.onData((data) => out.push(data));
   proc.onExit(() => {
     out.flush();
     if (ptys.get(id) && ptys.get(id) !== proc) return; // replaced by a restart — suppress stale exit
     ptys.delete(id);
+    ptyRings.delete(id);
     sendToOwner(id, 'pty:exit', { id });
     ownerBySession.delete(id); // сессия закрылась — не копим мёртвые id в карте маршрутизации (B4-LOW)
     dropOrphan(id);
@@ -4150,12 +4160,18 @@ function spawnPtyFor(id, cwd, cols, rows, owner) {
   return { ok: true };
 }
 ipcMain.handle('pty:create', (e, { id, cwd, cols, rows }) => {
-  if (ptys.has(id)) { dropOrphan(id); ownerBySession.set(id, e.sender); bindPtyOwner(ptys.get(id), e.sender); return { ok: true, existed: true }; }
+  if (ptys.has(id)) {
+    dropOrphan(id);
+    ownerBySession.set(id, e.sender);
+    bindPtyOwner(ptys.get(id), e.sender);
+    return { ok: true, existed: true, backlog: ptyRings.read(id) };
+  }
   return spawnPtyFor(id, cwd, cols, rows, e.sender);
 });
 // Kill the existing PTY (if any) and start a fresh one in the same cwd.
 ipcMain.handle('pty:restart', (e, { id, cwd, cols, rows }) => {
   dropOrphan(id);
+  ptyRings.delete(id);
   const old = ptys.get(id);
   if (old) { try { old.kill(); } catch (_) {} ptys.delete(id); }
   return spawnPtyFor(id, cwd, cols, rows, e.sender);
@@ -4167,6 +4183,7 @@ ipcMain.on('pty:resize', (_e, { id, cols, rows }) => {
 });
 ipcMain.on('pty:kill', (_e, { id }) => {
   dropOrphan(id);
+  ptyRings.delete(id);
   const p = ptys.get(id);
   if (p) { try { p.kill(); } catch (_) {} ptys.delete(id); }
 });

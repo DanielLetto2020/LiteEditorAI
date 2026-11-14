@@ -1206,7 +1206,7 @@ function buildXterm(container, id, { cwd, onInput, onKey } = {}) {
     onGeometry: () => requestAnimationFrame(() => { try { fit.fit(); syncPty(); } catch (_) {} }),
   });
   fit.fit();
-  lite.pty.create({ id, cwd, cols: term.cols, rows: term.rows });
+  const created = lite.pty.create({ id, cwd, cols: term.cols, rows: term.rows });
   term.onData((data) => { if (onInput && onInput(data) === false) return; timeline.markInput(data); lite.pty.write(id, data); });
   term.onResize(syncPty);
   term.attachCustomKeyEventHandler((e) => {
@@ -1222,7 +1222,7 @@ function buildXterm(container, id, { cwd, onInput, onKey } = {}) {
     return true;
   });
   container.addEventListener('contextmenu', (e) => { e.preventDefault(); showTermMenu(e.clientX, e.clientY, term, id); });
-  return { term, fit, search, timeline, syncPty };
+  return { term, fit, search, timeline, syncPty, created };
 }
 // Вкл/выкл шкалы времени во ВСЕХ живых терминалах (настройка применяется на лету, без перезапуска).
 function applyTimeline() {
@@ -1265,7 +1265,7 @@ function createSession(proj, name, custom, adoptId) {
   const id = adoptId || (proj.id + '::t' + (++sessionSeq) + '.' + BOOT_ID);
   const container = el('div', 'term-instance');
   $('#terminals').appendChild(container);
-  const { term, fit, search, timeline, syncPty } = buildXterm(container, id, {
+  const { term, fit, search, timeline, syncPty, created } = buildXterm(container, id, {
     cwd: proj.path,
     onInput: (data) => {
       const r = terms.get(id);
@@ -1285,12 +1285,31 @@ function createSession(proj, name, custom, adoptId) {
     },
   });
   term.registerLinkProvider(fileLinkProvider(term, proj.path));
-  const rec = { term, fit, search, timeline, syncPty, container, projId: proj.id, name, customName: !!custom, idleTimer: null, sawBell: false, tail: '', busyStart: 0, lastInputAt: 0, activitySeq: 0, prefill: '', prefillTimer: null, redraw: !!adoptId,
+  const rec = { term, fit, search, timeline, syncPty, container, projId: proj.id, name, customName: !!custom, idleTimer: null, sawBell: false, tail: '', busyStart: 0, lastInputAt: 0, activitySeq: 0, prefill: '', prefillTimer: null, redraw: false,
+    adoptPending: /** @type {string[] | null} */ (adoptId ? [] : null),
     claude: null, probeTimer: null, probeDeadline: null, probeSeq: 0, claudeRetry: 0 }; // claude — см. «Claude Code» у индикатора
   terms.set(id, rec);
   if (adoptId) {
-    // прокрутка прежней страницы пропала вместе с ней; программу в терминале попросим перерисоваться при показе
-    term.write('\x1b[90m' + tt('[терминал подхвачен после перезагрузки окна — прежний вывод не сохранился]') + '\x1b[0m\r\n');
+    // Восстанавливаем последние 128 КБ вывода из кольцевого буфера main-процесса в строгом порядке
+    // перед любыми новыми чанками pty:data, а затем качаем размер (SIGWINCH) для TUI-агентов.
+    Promise.resolve(created).then((res) => {
+      const r = terms.get(id);
+      if (!r) return;
+      const queued = r.adoptPending || [];
+      r.adoptPending = null;
+      const backlog = res && typeof res.backlog === 'string' ? res.backlog : '';
+      if (backlog) r.term.write(backlog);
+      else r.term.write('\x1b[90m' + tt('[терминал подхвачен после перезагрузки окна]') + '\x1b[0m\r\n');
+      for (const chunk of queued) {
+        r.term.write(chunk);
+        markActivity(id, chunk);
+      }
+      r.redraw = true;
+      if (id === activeSessionId()) refitActiveTerminal();
+    }).catch(() => {
+      const r = terms.get(id);
+      if (r) { r.adoptPending = null; r.redraw = true; }
+    });
   } else {
     armPrefill(id, (settings.termPrefill || '').trim()); // автоввод слова из настроек (по умолчанию `claude`)
   }
@@ -3833,6 +3852,7 @@ function init() {
     if (isExtTerm(id)) { const r = extTerms.get(id); if (r) r.term.write(data); return; }
     const rec = terms.get(id); // scratch-сессии маршрутизируются в своё окно (не приходят сюда)
     if (!rec) return;
+    if (rec.adoptPending) { rec.adoptPending.push(data); return; }
     rec.term.write(data);
     if (rec.prefill) nudgePrefill(id); // ждём паузы в выводе — тогда пишем автоввод
     markActivity(id, data);
