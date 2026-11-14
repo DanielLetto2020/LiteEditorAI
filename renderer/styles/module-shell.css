@@ -39,12 +39,24 @@ body.mw-files #module-root {
   grid-template-rows: 40px minmax(0, 1fr) var(--log-h, 0px) 24px;
   grid-template-areas: "top top top top top" "strip left gut tabs center" "log log log log log" "status status status status status";
 }
-/* стрип/гаттер/секции гита/строка состояния есть в общем module.html — показываем ТОЛЬКО в окне вивера */
+/* стрип/гаттер/секции гита/боковые панели/строка состояния есть в общем module.html — показываем ТОЛЬКО в окне вивера */
 body:not(.mw-files) #mw-gutter, body:not(.mw-files) #vcs-strip, body:not(.mw-files) #vcs-topbar, body:not(.mw-files) #tabs-pane,
+body:not(.mw-files) #side-search-pane, body:not(.mw-files) #side-outline-pane, body:not(.mw-files) #side-todos-pane, body:not(.mw-files) #side-bookmarks-pane,
 body:not(.mw-files) #log-pane, body:not(.mw-files) #mw-status { display: none !important; }
 body.mw-files #viewer-pane { grid-area: center !important; min-width: 0 !important; min-height: 0 !important; border-left: none !important; background: transparent; }
 body.mw-files #tree-pane,
-body.mw-files #commit-pane { grid-area: left !important; min-width: 0 !important; min-height: 0 !important; border-left: none !important; flex: 1 1 auto; background: transparent; }
+body.mw-files #commit-pane,
+body.mw-files .side-pane { grid-area: left !important; min-width: 0 !important; min-height: 0 !important; border-left: none !important; flex: 1 1 auto; background: transparent; display: flex; flex-direction: column; }
+body.mw-files #tree-pane.hidden,
+body.mw-files #commit-pane.hidden,
+body.mw-files .side-pane.hidden { display: none !important; }
+/* Сворачивание левой панели повторным кликом по кнопке полосы или Alt+1..6 */
+body.mw-files.side-collapsed #module-root {
+  grid-template-columns: 44px 0px 0px var(--tabs-w, 0px) minmax(0, 1fr);
+}
+body.mw-files.side-collapsed #mw-gutter { display: none !important; }
+body.mw-files #tabs-pane:not(.empty) { width: 190px; }
+body.mw-files #module-root:has(#tabs-pane:not(.empty)) { --tabs-w: 190px; }
 body.mw-files #log-pane { grid-area: log; min-width: 0; min-height: 0; position: relative; display: flex; flex-direction: column; border-top: 1px solid var(--border); }
 body.mw-files #log-pane.hidden { display: none !important; }
 .log-resize { position: absolute; top: -3px; left: 0; right: 0; height: 6px; cursor: row-resize; z-index: 3; }
@@ -56,7 +68,7 @@ body.mw-files #mw-gutter::after { content: ""; position: absolute; top: 0; botto
 body.mw-files #mw-gutter:hover::after { background: var(--accent); width: 2px; left: 1.5px; }
 /* Zen — только редактор: грид схлопнут до центральной ячейки */
 body.mw-files.viewer-zen #module-root { grid-template-columns: 0 0 0 0 1fr; grid-template-rows: 0 1fr 0 0; }
-body.viewer-zen #vcs-strip, body.viewer-zen #tabs-pane, body.viewer-zen #tree-pane, body.viewer-zen #commit-pane,
+body.viewer-zen #vcs-strip, body.viewer-zen #tabs-pane, body.viewer-zen #tree-pane, body.viewer-zen #commit-pane, body.viewer-zen .side-pane,
 body.viewer-zen #log-pane, body.viewer-zen #mw-gutter, body.viewer-zen #vcs-topbar, body.viewer-zen #mw-status { display: none !important; }
 
 /* ---- кнопки с подписью: иконку из data-icon (hydrateIcons кладёт её в конец) ставим перед текстом ---- */
@@ -305,9 +317,9 @@ body.mw-files .gm-brow { min-height: 28px; padding: 2px 8px; border: none; }
 body.mw-files .gm-brow:hover { background: var(--hover); }
 body.mw-files .gm-brow.current { background: var(--raised); }
 
-/* ---- редактор кода: шрифт и плотность ---- */
-body.mw-files #editor .cm-scroller { font-variant-ligatures: none; font-feature-settings: "calt" 0, "liga" 0; line-height: 1.55; }
-body.mw-files #editor .cm-gutters { background: transparent; }   /* номера строк — на фоне кода, без тёмной полосы */
+/* ---- редактор кода: шрифт и плотность (лигатуры и межстрочный интервал управляются динамически через typoComp) ---- */
+body.mw-files #editor .cm-gutters,
+body.mw-files #editor-split .cm-gutters { background: transparent; }
 /* переключатель вида диффа («Рядом · Единый») — как переключатель режимов в шапке */
 body.mw-files .diff-toolbar { display: inline-flex; gap: 2px; padding: 2px; margin: 6px 8px; border: 1px solid var(--border-strong); border-radius: 8px; background: transparent; width: max-content; }
 body.mw-files .diff-viewbtn { height: 22px; padding: 0 10px; border: none; border-radius: 6px; background: transparent; color: var(--text-dim); font: inherit; font-size: 12px; cursor: pointer; }
@@ -889,3 +901,421 @@ body.preview-full .prev-frame { width: 100%; height: 100%; }
 .cm-conf-ours { background: var(--accent-soft); }
 .cm-conf-theirs { background: var(--hover-2); }
 .cm-conf-marker { background: var(--hover); }
+
+
+/* ============================================================================================
+   IDE Viewer 2.0 (feat/viewer-ide): Вкладки сверху, Split Right, Боковые панели, Дерево,
+   Хлебные крошки, Палитра, Живой Git Diff, Попап ханков и Цветной граф истории коммитов.
+   ============================================================================================ */
+
+/* Палитра в верхнем тулбаре */
+.tb-palette-btn { width: 28px; height: 28px; border-radius: 7px; color: var(--icon); }
+.tb-palette-btn:hover { background: var(--hover-2); color: var(--green-bright); }
+
+/* Горизонтальная полоса вкладок редактора сверху */
+.editor-tabs-bar {
+  display: flex; align-items: stretch; height: 34px; min-height: 34px; flex: 0 0 34px;
+  background: var(--app-bg); border-bottom: 1px solid var(--border); overflow: hidden;
+}
+.editor-tabs-bar.hidden { display: none !important; }
+.editor-tabs-list {
+  flex: 1 1 auto; min-width: 0; display: flex; align-items: stretch;
+  overflow-x: auto; overflow-y: hidden; scrollbar-width: none;
+}
+.editor-tabs-list::-webkit-scrollbar { height: 0; display: none; }
+.editor-tabs-actions {
+  flex: 0 0 auto; display: flex; align-items: center; gap: 2px; padding: 0 6px;
+  border-left: 1px solid var(--border); background: var(--app-bg);
+}
+.editor-tabs-actions .icon-btn { width: 24px; height: 24px; border-radius: 6px; color: var(--icon); }
+.editor-tabs-actions .icon-btn:hover { background: var(--hover-2); color: var(--text); }
+
+.etab {
+  position: relative; display: inline-flex; align-items: center; gap: 6px;
+  min-width: 96px; max-width: 210px; padding: 0 6px 0 10px; flex: 0 0 auto;
+  border-right: 1px solid var(--border); background: transparent; color: var(--text-dim);
+  font-size: 12.5px; cursor: pointer; user-select: none; transition: background .1s, color .1s;
+}
+.etab:hover { background: var(--hover); color: var(--text); }
+.etab.active {
+  background: var(--mod-bg); color: var(--text-hi); font-weight: 550;
+  box-shadow: inset 0 2px 0 var(--green);
+}
+.etab.preview .etab-name { font-style: italic; opacity: 0.9; }
+.etab.dragging { opacity: 0.45; }
+.etab.drop-target { box-shadow: inset 2px 0 0 var(--green); background: var(--accent-soft); }
+.etab-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.etab-name.g-mod { color: var(--info); }
+.etab-name.g-add { color: var(--add); }
+.etab-name.g-del { color: var(--danger); text-decoration: line-through; }
+.etab-pin {
+  flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center;
+  color: var(--green); opacity: 0.85;
+}
+.etab-close {
+  flex: 0 0 auto; width: 18px; height: 18px; padding: 0; border: none; border-radius: 5px;
+  background: transparent; color: var(--text-mute); display: inline-flex; align-items: center;
+  justify-content: center; cursor: pointer; opacity: 0;
+}
+.etab:hover .etab-close, .etab.active .etab-close { opacity: 0.8; }
+.etab-close:hover { opacity: 1 !important; background: var(--hover-2); color: var(--text-hi); }
+.etab.dirty:not(:hover) .etab-close { opacity: 1; }
+.etab.dirty:not(:hover) .etab-close svg { display: none; }
+.etab.dirty:not(:hover) .etab-close::before {
+  content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--green);
+}
+.ftab.preview .ftab-name { font-style: italic; }
+
+/* Основная область + Правый сплит редактора (Split Right) */
+.editor-main-wrap {
+  flex: 1 1 auto; min-width: 0; min-height: 0; display: flex; position: relative;
+}
+#viewer-body.has-code-split .editor-main-wrap {
+  flex: 1 1 calc(100% - var(--code-split-ratio, 50%));
+}
+.editor-split-gutter {
+  flex: 0 0 5px; width: 5px; cursor: col-resize; position: relative; background: transparent;
+}
+.editor-split-gutter.hidden { display: none !important; }
+.editor-split-gutter::after {
+  content: ""; position: absolute; top: 0; bottom: 0; left: 2px; width: 1px; background: var(--border);
+}
+.editor-split-gutter:hover::after { width: 2px; left: 1.5px; background: var(--green); }
+.editor-split-pane {
+  flex: 0 0 var(--code-split-ratio, 50%); min-width: 180px; min-height: 0;
+  display: flex; flex-direction: column; overflow: hidden;
+}
+.editor-split-pane.hidden { display: none !important; }
+.editor-split-pane.is-focused-group .split-tabs-bar { box-shadow: inset 0 -1px 0 var(--border-accent); }
+.editor-split-host { flex: 1 1 auto; min-height: 0; overflow: hidden; position: relative; }
+.editor-split-host .cm-editor { height: 100%; background: transparent; }
+.editor-split-host .cm-scroller {
+  overflow: auto; font-family: "JetBrains Mono", "Fira Code", "Cascadia Code", Consolas, monospace;
+}
+
+/* Шапка редактора и интерактивные хлебные крошки */
+body.mw-files .viewer-head { height: 34px; min-height: 34px; padding: 0 8px 0 6px; }
+body.mw-files .viewer-head .icon-btn.active,
+body.mw-files .seg-btn.active { background: var(--accent-soft); color: var(--green-bright); }
+.crumb-seg {
+  display: inline-flex; align-items: center; gap: 4px; height: 22px; padding: 0 5px;
+  border: none; border-radius: 5px; background: transparent; color: var(--text-dim);
+  font: inherit; font-size: 12px; cursor: pointer; white-space: nowrap;
+}
+.crumb-seg:hover { background: var(--hover-2); color: var(--text-hi); }
+.crumb-seg.is-file { color: var(--text-hi); font-weight: 550; }
+.crumb-seg.is-sym { color: var(--green-bright); }
+
+/* Интерактивные индикаторы статус-бара и диагностика синтаксиса */
+.st-diag { color: var(--danger) !important; font-weight: 600; }
+.cm-diag-err-line {
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  text-decoration: underline wavy var(--danger);
+}
+.cm-ctrl-link {
+  color: var(--green-bright) !important;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+/* Гаттеры Git, закладок, Blame и авторства (единые для обоих сплитов) */
+.cm-git-gutter { width: 5px; padding: 0; cursor: pointer; }
+.cm-git-gutter .cm-gutterElement { padding: 0 1px; }
+.cm-git-add { width: 3px; height: 100%; min-height: 1.2em; background: var(--add); border-radius: 1px; }
+.cm-git-mod { width: 3px; height: 100%; min-height: 1.2em; background: var(--info); border-radius: 1px; }
+.cm-git-del {
+  width: 0; height: 0; margin-top: 4px;
+  border-left: 5px solid var(--danger); border-top: 4px solid transparent; border-bottom: 4px solid transparent;
+}
+.cm-git-gutter:hover .cm-git-add,
+.cm-git-gutter:hover .cm-git-mod { width: 5px; filter: brightness(1.18); }
+
+.cm-bm-gutter { width: 14px; cursor: pointer; }
+.cm-bm-dot { color: var(--warn); font-size: 11px; line-height: 1.4; text-align: center; }
+.cm-blame-lbl {
+  display: block; max-width: 150px; padding: 0 8px 0 4px; font-size: 11px;
+  color: var(--text-mute); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.cm-author-gutter { width: 3px; padding: 0; }
+.cm-auth-user { width: 3px; height: 100%; min-height: 1.2em; background: var(--info); }
+.cm-auth-agent { width: 3px; height: 100%; min-height: 1.2em; background: var(--warn); }
+
+/* Инлайн-попап Git Ханка при клике на цветную полосу в редакторе */
+.git-hunk-pop {
+  position: fixed; z-index: 120; width: min(640px, 90vw); max-height: 45vh;
+  display: flex; flex-direction: column; border-radius: 10px;
+  background: var(--bg-pop); border: 1px solid var(--border-strong);
+  box-shadow: var(--card-shadow); overflow: hidden;
+}
+.git-hunk-pop-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 6px 10px; border-bottom: 1px solid var(--border); background: var(--surface);
+}
+.git-hunk-pop-title { font-size: 12px; font-weight: 600; color: var(--text); }
+.git-hunk-pop-acts { display: flex; align-items: center; gap: 4px; }
+.git-hunk-pop-code {
+  margin: 0; padding: 8px 12px; overflow: auto; font-family: "JetBrains Mono", Consolas, monospace;
+  font-size: 12px; line-height: 1.45; background: var(--ink); color: var(--text);
+}
+.git-hunk-old {
+  white-space: pre-wrap; word-break: break-word;
+  color: color-mix(in srgb, var(--danger) 68%, var(--text));
+}
+.git-hunk-empty { color: var(--text-mute); font-style: italic; }
+
+/* Улучшенный полноэкранный живой Diff во вкладке */
+#diff-view {
+  flex-direction: column; overflow: hidden; padding: 0;
+}
+body.mw-files #diff-view .diff-toolbar {
+  display: flex; align-items: center; gap: 6px; width: 100%; margin: 0; padding: 5px 10px;
+  border: none; border-bottom: 1px solid var(--border); border-radius: 0; background: var(--surface);
+}
+.diff-hunk-count { font-size: 12px; font-weight: 600; color: var(--text); margin-right: 4px; }
+.diff-live-badge {
+  font-size: 11px; padding: 2px 7px; border-radius: 8px;
+  background: var(--accent-soft); color: var(--green-bright);
+}
+.diff-hunks-strip {
+  display: flex; align-items: center; gap: 5px; padding: 4px 10px; overflow-x: auto;
+  border-bottom: 1px solid var(--border); background: var(--app-bg); flex: 0 0 auto;
+}
+.diff-hunks-lbl { font-size: 11px; color: var(--text-mute); white-space: nowrap; }
+.diff-hunk-chip {
+  height: 22px; padding: 0 8px; border-radius: 6px; border: 1px solid var(--border-strong);
+  background: var(--surface-2); color: var(--text-dim); font-size: 11px; cursor: pointer; white-space: nowrap;
+}
+.diff-hunk-chip:hover { border-color: var(--danger); color: var(--danger); background: var(--hover); }
+.diff-body-wrap { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+.diff-col-headers {
+  display: grid; grid-template-columns: 1fr 1fr; padding: 4px 12px;
+  font-size: 11px; font-weight: 600; color: var(--text-mute); border-bottom: 1px solid var(--border);
+  background: var(--app-bg); flex: 0 0 auto;
+}
+.diff-mv-host { flex: 1 1 auto; min-height: 0; overflow: hidden; }
+.diff-mv-host .cm-mergeView { height: 100%; overflow-y: auto; }
+.diff-unified-box { flex: 1 1 auto; overflow: auto; padding: 6px 0; font-family: "JetBrains Mono", monospace; font-size: 12.5px; }
+.diff-u-line { padding: 1px 12px; white-space: pre-wrap; word-break: break-word; }
+.diff-u-line.add { background: color-mix(in srgb, var(--ok) 13%, transparent); color: color-mix(in srgb, var(--ok) 65%, var(--text)); }
+.diff-u-line.del { background: color-mix(in srgb, var(--danger) 13%, transparent); color: color-mix(in srgb, var(--danger) 65%, var(--text)); }
+.diff-u-line.hunk-hdr {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 4px 12px; margin: 4px 0; background: color-mix(in srgb, var(--info) 10%, transparent); color: var(--info);
+}
+.diff-u-line.meta { color: var(--text-mute); }
+.diff-empty-msg { padding: 28px; text-align: center; color: var(--text-dim); font-size: 13px; }
+.prev-img-wrap { padding: 20px; display: flex; justify-content: center; align-items: center; min-height: 100%; }
+.prev-svg-wrap svg { max-width: 100%; max-height: 80vh; }
+
+/* Дерево файлов: фильтр, клавиатурный фокус и инлайн-поля ввода */
+#tree:focus { outline: none; }
+.tree-filter-bar {
+  display: flex; align-items: center; gap: 4px; padding: 2px 8px 6px; flex: 0 0 auto;
+}
+.tree-filter-inp {
+  flex: 1 1 auto; min-width: 0; height: 26px; padding: 0 8px; border-radius: 6px;
+  border: 1px solid var(--border); background: var(--bg-input); color: var(--text); font-size: 12px; outline: none;
+}
+.tree-filter-inp:focus { border-color: var(--border-accent); }
+.tree-filter-clear.hidden { display: none; }
+.tree-chev-spacer { width: 12px; flex: 0 0 12px; }
+body.mw-files .tree-row.active { background: var(--accent-soft); color: var(--text-hi); font-weight: 550; }
+body.mw-files .tree-row.kb-focus { box-shadow: inset 0 0 0 1px var(--border-accent); }
+body.mw-files .tree-row.is-cut { opacity: 0.45; }
+body.mw-files .tree-row.drop-target { background: var(--accent-soft); box-shadow: inset 0 0 0 1px var(--green); }
+.tree-subhint { margin-left: auto; font-size: 11px; color: var(--text-mute); overflow: hidden; text-overflow: ellipsis; }
+.tree-inline-inp {
+  flex: 1 1 auto; min-width: 0; height: 22px; padding: 0 6px; border-radius: 5px;
+  border: 1px solid var(--green); background: var(--bg-input); color: var(--text-hi);
+  font: inherit; font-size: 12.5px; outline: none;
+}
+
+/* Постоянные боковые панели (Поиск/Замена, Структура, TODO, Закладки) */
+.sp-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 6px;
+  height: 36px; min-height: 36px; padding: 0 8px 0 12px; flex: 0 0 auto;
+}
+.sp-title { font-size: 12.5px; font-weight: 650; color: var(--text); }
+.sp-head-acts { display: flex; align-items: center; gap: 2px; }
+.sp-icon-btn {
+  width: 26px; height: 26px; padding: 0; border: none; border-radius: 6px;
+  background: transparent; color: var(--icon); display: inline-flex; align-items: center; justify-content: center; cursor: pointer;
+}
+.sp-icon-btn:hover { background: var(--hover-2); color: var(--text); }
+.sp-icon-btn.active { background: var(--accent-soft); color: var(--green-bright); }
+.sp-form { display: flex; flex-direction: column; gap: 5px; padding: 0 8px 6px; flex: 0 0 auto; }
+.sp-input-row {
+  display: flex; align-items: center; gap: 3px; padding: 2px 4px 2px 8px; border-radius: 7px;
+  border: 1px solid var(--border-strong); background: var(--bg-input);
+}
+.sp-input-row:focus-within { border-color: var(--border-accent); }
+.sp-input-row.hidden { display: none; }
+.sp-input {
+  flex: 1 1 auto; min-width: 0; height: 24px; border: none; background: transparent;
+  color: var(--text); font: inherit; font-size: 12.5px; outline: none;
+}
+.sp-input.full {
+  padding: 0 8px; height: 26px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg-input);
+}
+.sp-input.full:focus { border-color: var(--border-accent); }
+.sp-flag {
+  height: 20px; min-width: 22px; padding: 0 4px; border: 1px solid transparent; border-radius: 5px;
+  background: transparent; color: var(--text-mute); font-family: "JetBrains Mono", monospace;
+  font-size: 11px; font-weight: 600; cursor: pointer;
+}
+.sp-flag:hover { color: var(--text); background: var(--hover); }
+.sp-flag.active { color: var(--green-bright); background: var(--accent-soft); border-color: var(--border-accent); }
+.sp-act-btn {
+  height: 22px; padding: 0 8px; border: none; border-radius: 5px;
+  background: var(--green); color: var(--accent-contrast); font-size: 11.5px; font-weight: 600; cursor: pointer;
+}
+.sp-act-btn:disabled { opacity: 0.4; cursor: default; }
+.sp-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+.sp-chip {
+  height: 22px; padding: 0 8px; border: 1px solid var(--border); border-radius: 11px;
+  background: var(--surface-2); color: var(--text-dim); font-size: 11px; cursor: pointer;
+}
+.sp-chip.active { border-color: var(--border-accent); background: var(--accent-soft); color: var(--green-bright); }
+.sp-summary {
+  padding: 2px 10px 5px; font-size: 11px; color: var(--text-mute); border-bottom: 1px solid var(--border); flex: 0 0 auto;
+}
+.sp-list { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 4px 6px 10px; display: flex; flex-direction: column; gap: 2px; }
+.sp-empty { padding: 18px 10px; text-align: center; color: var(--text-mute); font-size: 12px; }
+.sp-group-head {
+  display: flex; align-items: center; gap: 6px; height: 24px; padding: 0 6px; border-radius: 6px;
+  cursor: pointer; color: var(--text); font-size: 12px; font-weight: 600;
+}
+.sp-group-head:hover { background: var(--hover); }
+.sp-group-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sp-group-dir { flex: 1 1 auto; min-width: 0; font-weight: 400; font-size: 11px; color: var(--text-mute); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sp-group-cnt { font-size: 10.5px; padding: 0 5px; border-radius: 8px; background: var(--hover); color: var(--text-dim); }
+.sp-row-del {
+  flex: 0 0 auto; width: 18px; height: 18px; border: none; border-radius: 4px;
+  background: transparent; color: var(--text-mute); cursor: pointer; opacity: 0; line-height: 1;
+}
+.sp-group-head:hover .sp-row-del, .sp-match-row:hover .sp-row-del, .sp-bm-row:hover .sp-row-del { opacity: 0.85; }
+.sp-row-del:hover { opacity: 1 !important; color: var(--text-hi); background: var(--hover-2); }
+.sp-match-row {
+  display: flex; align-items: baseline; gap: 6px; padding: 3px 6px 3px 18px; border-radius: 6px;
+  cursor: pointer; font-size: 12px;
+}
+.sp-match-row:hover { background: var(--hover); }
+.sp-match-row.active { background: var(--accent-soft); }
+.sp-line-num { flex: 0 0 auto; font-family: "JetBrains Mono", monospace; font-size: 11px; color: var(--text-mute); }
+.sp-match-txt {
+  flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-family: "JetBrains Mono", Consolas, monospace; font-size: 11.5px; color: var(--text2);
+}
+.sp-mark { background: color-mix(in srgb, var(--warn) 35%, transparent); color: var(--text-hi); border-radius: 2px; padding: 0 1px; }
+.sp-sym-row, .sp-bm-row {
+  display: flex; align-items: center; gap: 6px; min-height: 25px; padding: 2px 6px; border-radius: 6px;
+  cursor: pointer; font-size: 12.5px; color: var(--text2);
+}
+.sp-sym-row:hover, .sp-bm-row:hover { background: var(--hover); color: var(--text-hi); }
+.sp-sym-row.active { background: var(--accent-soft); color: var(--green-bright); font-weight: 550; }
+.sp-sym-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sp-sym-detail { font-size: 11px; color: var(--text-mute); }
+.sp-bm-main { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; }
+.sp-bm-file { font-size: 12px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sp-bm-lbl { font-size: 11px; color: var(--green-bright); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sp-todo-tag {
+  flex: 0 0 auto; font-size: 10px; font-weight: 700; padding: 1px 5px; border-radius: 4px; background: var(--surface-2);
+}
+.sp-todo-todo { color: var(--info); }
+.sp-todo-fixme, .sp-todo-bug, .sp-todo-xxx { color: var(--danger); }
+.sp-todo-hack { color: var(--warn); }
+
+/* Универсальный Quick Open (Ctrl+P) и Палитра команд (Ctrl+Shift+P) */
+.ov-backdrop {
+  position: fixed; inset: 0; z-index: 150; display: flex; justify-content: center; align-items: flex-start;
+  padding-top: 9vh; background: rgba(0, 0, 0, 0.42); backdrop-filter: blur(2px);
+}
+.ov-box {
+  width: min(560px, 92vw); max-height: 72vh; display: flex; flex-direction: column;
+  border-radius: 11px; border: 1px solid var(--border-strong); background: var(--bg-pop);
+  box-shadow: var(--card-shadow); overflow: hidden;
+}
+.ov-box.wide { width: min(720px, 94vw); }
+.ov-head {
+  display: flex; align-items: center; gap: 8px; padding: 10px 12px;
+  border-bottom: 1px solid var(--border); color: var(--text-dim);
+}
+.ov-input {
+  flex: 1 1 auto; min-width: 0; border: none; outline: none; background: transparent;
+  color: var(--text-hi); font: inherit; font-size: 13.5px;
+}
+.ov-hint { font-size: 11px; color: var(--text-mute); white-space: nowrap; }
+.ov-list { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 4px; }
+.ov-empty { padding: 18px; text-align: center; color: var(--text-mute); font-size: 12.5px; }
+.ov-row {
+  display: flex; align-items: center; gap: 8px; min-height: 30px; padding: 4px 10px;
+  border-radius: 7px; cursor: pointer; font-size: 12.5px; color: var(--text);
+}
+.ov-row.sel { background: var(--accent-soft); color: var(--text-hi); }
+.ov-row .ov-name { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ov-row .ov-detail { font-size: 11px; color: var(--text-mute); }
+.ov-row .ov-path { flex: 1 1 auto; min-width: 0; font-size: 11.5px; color: var(--text-mute); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: right; }
+.ov-kbd { margin-left: auto; }
+.ov-badge {
+  flex: 0 0 auto; font-size: 10.5px; padding: 1px 6px; border-radius: 8px;
+  background: var(--surface-2); color: var(--green-bright); border: 1px solid var(--border);
+}
+.menu-kbd { margin-left: auto; padding-left: 14px; font-size: 11px; color: var(--text-mute); font-family: "JetBrains Mono", monospace; }
+
+/* Дополнения встроенного Git: префиксы коммита, фильтр изменений, граф дорожек и карточка коммита */
+.gm-branch-topact { padding: 0 2px 4px; border-bottom: 1px solid var(--border); margin-bottom: 3px; }
+.gm-branch-newbtn {
+  width: 100%; text-align: left; padding: 5px 8px; border: none; border-radius: 6px;
+  background: transparent; color: var(--green-bright); font-size: 12.5px; font-weight: 550; cursor: pointer;
+}
+.gm-branch-newbtn:hover { background: var(--hover); }
+.git-change-filter-wrap { padding: 0 2px 4px; flex: 0 0 auto; }
+.git-change-filter {
+  width: 100%; height: 26px; padding: 0 8px; border-radius: 6px;
+  border: 1px solid var(--border); background: var(--bg-input); color: var(--text); font-size: 12px; outline: none;
+}
+.git-change-filter:focus { border-color: var(--border-accent); }
+.gm-mini.active { color: var(--green-bright); background: var(--accent-soft); }
+.gm-tree-dir {
+  display: flex; align-items: center; gap: 6px; height: 24px; border-radius: 6px;
+  cursor: pointer; font-size: 12.5px; font-weight: 550; color: var(--text2);
+}
+.gm-tree-dir:hover { background: var(--hover); }
+.gm-tree-sub.hidden { display: none; }
+.git-subj-len { font-family: "JetBrains Mono", monospace; font-size: 11px; color: var(--text-mute); }
+.git-subj-len.warn { color: var(--warn); }
+.git-subj-len.over { color: var(--danger); font-weight: 600; }
+.git-prefix-bar { display: flex; flex-wrap: wrap; gap: 4px; }
+.git-prefix-chip {
+  height: 20px; padding: 0 6px; border-radius: 5px; border: 1px solid var(--border);
+  background: var(--surface-2); color: var(--text-dim); font-family: "JetBrains Mono", monospace;
+  font-size: 10.5px; cursor: pointer;
+}
+.git-prefix-chip:hover { border-color: var(--border-accent); color: var(--green-bright); background: var(--hover); }
+
+.git-log-split.single-col { grid-template-columns: 1fr; }
+body.mw-files .git-commit {
+  grid-template-columns: auto minmax(0, 1fr) 64px minmax(0, 115px) minmax(0, 92px) auto;
+  gap: 8px; height: 26px; padding: 0 6px;
+}
+body.mw-files .git-commit.stash-log-row {
+  grid-template-columns: 44px minmax(0, 1fr) minmax(0, 100px) auto;
+}
+.git-graph-cell { display: inline-flex; align-items: center; height: 24px; flex: 0 0 auto; }
+.git-graph-svg { display: block; flex: 0 0 auto; }
+.git-commit-detail {
+  padding: 6px 8px 8px; margin-bottom: 6px; border-bottom: 1px solid var(--border);
+  background: var(--surface); border-radius: 7px; flex: 0 0 auto;
+}
+.git-commit-detail-meta { display: flex; align-items: center; gap: 8px; font-size: 11.5px; margin-bottom: 4px; }
+.git-hash-btn {
+  padding: 1px 6px; border-radius: 5px; border: 1px solid var(--border);
+  background: var(--surface-2); cursor: pointer; font-size: 11px;
+}
+.git-hash-btn:hover { border-color: var(--border-accent); }
+.git-detail-author { flex: 1 1 auto; min-width: 0; color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.git-detail-fcount { color: var(--text-mute); font-size: 11px; }
+.git-commit-detail-body {
+  max-height: 86px; overflow-y: auto; white-space: pre-wrap; word-break: break-word;
+  font-size: 12px; line-height: 1.4; color: var(--text); -webkit-user-select: text; user-select: text;
+}

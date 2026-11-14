@@ -605,36 +605,37 @@
         <div id="seo-body" class="seo-body"></div>
       </section>
 
-      <!-- Окно «Проект»: вивер кода (CodeMirror) + дерево + ВСТРОЕННЫЙ Git. Раскладка — CSS grid на
-           body.mw-files (styles.css, блок «Окно «Проект»»), в духе нового интерфейса PhpStorm:
-             сверху — панель инструментов (проект · ветка, pull/push · поиск файла);
-             слева — полоса инструментов (Проект/Коммит/Git + поиск, структура, TODO, закладки; внизу — агент);
-             затем левая секция (дерево или коммит), колонка открытых файлов и редактор;
-             снизу — панель Git (история/ветки, по кнопке) и строка состояния на всё окно. -->
+      <!-- Окно «Проект»: IDE-вивер кода (CodeMirror 6, мультибуфер, сплит) + дерево + боковые панели + встроенный Git.
+           Раскладка — CSS grid на body.mw-files (module-shell.css):
+             сверху — панель инструментов (проект · ветка, pull/push · поиск файла · палитра команд);
+             слева — полоса инструментов (Файлы/Коммит/Поиск/Структура/TODO/Закладки · Git снизу · Агент);
+             затем левая секция, опциональная вертикальная колонка вкладок и область редактора со вкладками сверху и сплитом;
+             снизу — панель Git (История с графом / Ветки / Stash) и интерактивная строка состояния. -->
       <div id="vcs-topbar" class="mw-toolbar">
-        <button id="tb-project" class="tb-project" type="button" title="Проект — показать дерево файлов" data-icon="folder"><span id="tb-project-name" class="tb-project-name">—</span></button>
+        <button id="tb-project" class="tb-project" type="button" title="Проект — показать или свернуть боковую панель (Alt+1)" data-icon="folder"><span id="tb-project-name" class="tb-project-name">—</span></button>
         <!-- git-компонент наполняет: ветка ▾ · pull/push со счётчиками · fetch. Скрыт, если не репозиторий. -->
         <div id="vcs-git" class="vcs-git hidden"></div>
         <div class="drag-space-static"></div>
-        <button id="tb-search" class="tb-search" type="button" title="Найти файл по имени (Ctrl+P)" data-icon="search"><span class="tb-search-lbl">Найти файл…</span><kbd>Ctrl+P</kbd></button>
+        <button id="tb-search" class="tb-search" type="button" title="Быстрый переход: файл, :строка, @символ, #символ проекта (Ctrl+P)" data-icon="search"><span class="tb-search-lbl">Перейти к файлу / символу…</span><kbd>Ctrl+P</kbd></button>
+        <button id="tb-palette" class="icon-btn tb-palette-btn" type="button" title="Палитра команд (Ctrl+Shift+P)" data-icon="wand" data-icon-size="15"></button>
       </div>
-      <!-- Полоса инструментов: верхние три — разделы (data-section), остальные — действия. -->
+      <!-- Полоса инструментов: секции левой панели (клик по активной — свернуть) + нижняя панель Git + действия. -->
       <div id="vcs-strip" class="vcs-strip">
-        <button id="strip-files" class="strip-btn active" type="button" title="Проект — дерево файлов" data-section="files" data-icon="folder"></button>
-        <button id="strip-commit" class="strip-btn" type="button" title="Коммит — изменённые файлы" data-section="commit" data-icon="check"><span id="strip-commit-badge" class="strip-badge hidden"></span></button>
-        <button id="strip-branches" class="strip-btn" type="button" title="Git — история коммитов и ветки" data-section="branches" data-icon="git"></button>
-        <button id="strip-gitgraph" class="strip-btn" type="button" title="Граф Git — ветки и коммиты схемой (отдельное окно)" data-icon="gitgraph"></button>
+        <button id="strip-files" class="strip-btn active" type="button" title="Файлы проекта (Alt+1)" data-section="files" data-icon="folder"></button>
+        <button id="strip-commit" class="strip-btn" type="button" title="Коммит — изменённые файлы (Alt+2)" data-section="commit" data-icon="check"><span id="strip-commit-badge" class="strip-badge hidden"></span></button>
+        <button id="viewer-find" class="strip-btn" type="button" title="Поиск и замена в проекте (Ctrl+Shift+F · Alt+3)" data-section="search" data-icon="search"></button>
+        <button id="viewer-outline" class="strip-btn" type="button" title="Структура файла (Ctrl+Shift+O · Alt+4)" data-section="outline" data-icon="braces"></button>
+        <button id="viewer-todos" class="strip-btn" type="button" title="TODO и FIXME по проекту (Alt+5)" data-section="todos" data-icon="flag"></button>
+        <button id="viewer-bookmarks" class="strip-btn" type="button" title="Закладки (Ctrl+F2 поставить · F2 следующая · Alt+6)" data-section="bookmarks" data-icon="bookmark"></button>
         <span class="strip-sep"></span>
-        <button id="viewer-find" class="strip-btn" type="button" title="Найти в проекте (Ctrl+Shift+F) · правая кнопка — заменить (Ctrl+Shift+R)" data-icon="search"></button>
-        <button id="viewer-outline" class="strip-btn" type="button" title="Структура файла (Ctrl+Shift+O)" data-icon="braces"></button>
-        <button id="viewer-todos" class="strip-btn" type="button" title="TODO и FIXME по проекту" data-icon="flag"></button>
-        <button id="viewer-bookmarks" class="strip-btn" type="button" title="Закладки: список · Ctrl+F2 — поставить, F2 — следующая" data-icon="bookmark"></button>
+        <button id="strip-branches" class="strip-btn" type="button" title="Git — История коммитов, Ветки и Stash (Alt+9)" data-section="branches" data-icon="git"></button>
+        <button id="strip-gitgraph" class="strip-btn" type="button" title="Граф Git — схема веток в отдельном окне" data-icon="gitgraph"></button>
         <div class="strip-fill"></div>
-        <button id="viewer-agent" class="strip-btn" type="button" title="Режим агента — ревью правок агента, слой авторства, «спросить агента» в меню кода" data-icon="sparkles"></button>
+        <button id="viewer-agent" class="strip-btn" type="button" title="Режим ревью правок агента и слой авторства" data-icon="sparkles"></button>
       </div>
-      <!-- Разделитель между левой секцией и колонкой файлов: перетаскивание меняет ширину (--mw-left). -->
-      <div id="mw-gutter" class="mw-gutter" title="Потяните, чтобы изменить ширину"></div>
-      <!-- Колонка открытых файлов (вертикальная, между деревом и редактором). Список наполняет renderTabs(). -->
+      <!-- Разделитель между левой секцией и областью редактора: перетаскивание меняет ширину (--mw-left). -->
+      <div id="mw-gutter" class="mw-gutter" title="Потяните, чтобы изменить ширину (двойной клик — сброс)"></div>
+      <!-- Опциональная вертикальная колонка открытых файлов (режим «Вкладки слева»). При вкладках сверху имеет .empty. -->
       <section id="tabs-pane" class="file-tabs empty">
         <div class="tabs-head">
           <span class="tabs-title">Открытые</span><span id="tabs-count" class="tabs-count"></span>
@@ -644,74 +645,106 @@
         <div id="tabs-list" class="tabs-list"></div>
       </section>
       <section id="viewer-pane" class="hidden">
+        <!-- Горизонтальная полоса вкладок сверху (режим по умолчанию в духе PhpStorm / VS Code). -->
+        <div id="editor-tabs-bar" class="editor-tabs-bar hidden">
+          <div id="editor-tabs-list" class="editor-tabs-list"></div>
+          <div class="editor-tabs-actions">
+            <button id="editor-tabs-more" class="icon-btn" type="button" title="Все открытые вкладки" data-icon="chevron-down" data-icon-size="14"></button>
+            <button id="viewer-split-right" class="icon-btn" type="button" title="Разделить редактор вправо (Ctrl+\)" data-icon="split-right" data-icon-size="14"></button>
+            <button id="editor-tabs-close" class="icon-btn" type="button" title="Закрыть незакреплённые вкладки" data-icon="x" data-icon-size="14"></button>
+          </div>
+        </div>
         <div class="pane-head viewer-head">
           <button id="viewer-back" class="icon-btn" type="button" title="Назад (Alt+←)" data-icon="chevron-left" disabled></button>
           <button id="viewer-fwd" class="icon-btn" type="button" title="Вперёд (Alt+→)" data-icon="chevron-right" disabled></button>
-          <!-- Путь файла «хлебными крошками» (клик по папке — показать её в дереве) + символ под курсором.
-               В режимах дифф/превью/сравнение крошки скрыты — вместо них подпись #viewer-filename. -->
+          <!-- Путь файла «хлебными крошками» (клик по папке — соседние файлы, ПКМ — в дереве) + символ под курсором. -->
           <div id="viewer-crumbs" class="viewer-crumbs hidden"></div>
           <span id="viewer-filename" class="viewer-filename">—</span>
-          <span id="viewer-dirty" class="dirty-dot" title="Несохранённые изменения"></span>
+          <span id="viewer-dirty" class="dirty-dot" title="Несохранённые изменения (Ctrl+S)"></span>
           <div class="drag-space-static"></div>
-          <!-- Режим просмотра md/html: радио-группа «Код · Рядом · Превью» (показ — updatePreviewBar). -->
+          <!-- Режим просмотра md/html/svg: радио-группа «Код · Рядом · Превью». -->
           <div id="view-modes" class="seg" style="display:none">
-            <button id="viewer-original" class="seg-btn" type="button" title="Исходный код (режим по умолчанию)">Код</button>
+            <button id="viewer-original" class="seg-btn" type="button" title="Исходный код">Код</button>
             <button id="viewer-split" class="seg-btn" type="button" title="Код и превью рядом">Рядом</button>
-            <button id="viewer-preview" class="seg-btn" type="button" title="Только превью (Markdown / HTML)">Превью</button>
+            <button id="viewer-preview" class="seg-btn" type="button" title="Только превью (Markdown / HTML / SVG)">Превью</button>
           </div>
-          <button id="viewer-diff" class="hbtn" type="button" title="Изменения файла относительно последнего коммита (git diff)" data-icon="diff"><span>Изменения</span></button>
-          <button id="viewer-blame" class="hbtn" type="button" title="Кто и когда менял строки (git blame) — вкл/выкл" data-icon="users"><span>Авторы</span></button>
+          <button id="viewer-wrap" class="icon-btn" type="button" title="Перенос длинных строк (Alt+Z)" data-icon="wrap-text" data-icon-size="15"></button>
+          <button id="viewer-diff" class="hbtn" type="button" title="Изменения файла относительно HEAD (git diff)" data-icon="diff"><span>Изменения</span></button>
+          <button id="viewer-blame" class="hbtn" type="button" title="Кто и когда менял строки (git blame)" data-icon="users"><span>Авторы</span></button>
           <button id="viewer-hist" class="hbtn" type="button" title="История файла: локальные версии и коммиты git" data-icon="history"><span>История</span></button>
-          <button id="viewer-more" class="icon-btn" type="button" title="Ещё действия с файлом" data-icon="dots-h"></button>
+          <button id="viewer-more" class="icon-btn" type="button" title="Настройки редактора и действия с файлом" data-icon="dots-h"></button>
         </div>
         <div id="viewer-reload-bar" class="reload-bar hidden">
           <span class="reload-bar-text">Файл изменён на диске, а у вас есть несохранённые правки.</span>
           <button id="viewer-reload-apply" class="reload-bar-btn" type="button">Перечитать с диска</button>
+          <button id="viewer-reload-diff" class="reload-bar-btn" type="button">Сравнить</button>
           <button id="viewer-reload-dismiss" class="icon-btn" type="button" title="Оставить мои правки" data-icon="x"></button>
         </div>
         <div id="viewer-body">
-          <div id="editor"></div>
-          <div id="diff-view"></div>
-          <div id="preview-view"></div>
-          <!-- Пустой редактор: как открыть файл + недавние (наполняет renderEmptyState). -->
-          <div id="viewer-empty" class="viewer-empty hidden"></div>
+          <div id="editor-main-wrap" class="editor-main-wrap">
+            <div id="editor"></div>
+            <div id="diff-view"></div>
+            <div id="preview-view"></div>
+            <!-- Пустой редактор: хоткеи + недавние файлы проекта (наполняет renderEmptyState). -->
+            <div id="viewer-empty" class="viewer-empty hidden"></div>
+          </div>
+          <div id="editor-split-gutter" class="editor-split-gutter hidden" title="Потяните, чтобы изменить пропорцию сплита"></div>
+          <div id="editor-split-pane" class="editor-split-pane hidden">
+            <div id="split-tabs-bar" class="editor-tabs-bar split-tabs-bar">
+              <div id="split-tabs-list" class="editor-tabs-list"></div>
+              <div class="editor-tabs-actions">
+                <button id="split-close-pane" class="icon-btn" type="button" title="Закрыть правую группу редактора" data-icon="x" data-icon-size="14"></button>
+              </div>
+            </div>
+            <div id="editor-split" class="editor-split-host"></div>
+          </div>
         </div>
       </section>
       <section id="tree-pane" class="hidden">
         <div class="pane-head tree-head">
           <span id="tree-title" class="pane-title">Файлы</span>
           <div class="drag-space-static"></div>
-          <button id="tree-new" class="icon-btn" type="button" title="Создать файл или папку в корне проекта" data-icon="plus" data-icon-size="15"></button>
+          <button id="tree-new" class="icon-btn" type="button" title="Создать файл или папку" data-icon="plus" data-icon-size="15"></button>
           <button id="tree-locate" class="icon-btn" type="button" title="Показать открытый файл в дереве" data-icon="locate" data-icon-size="15"></button>
           <button id="tree-collapse" class="icon-btn" type="button" title="Свернуть все папки" data-icon="obs-collapse" data-icon-size="15"></button>
           <button id="tree-refresh" class="icon-btn" type="button" title="Обновить дерево файлов" data-icon="refresh" data-icon-size="15"></button>
+          <button id="tree-opts" class="icon-btn" type="button" title="Параметры дерева" data-icon="dots-h" data-icon-size="15"></button>
         </div>
-        <div id="tree"></div>
+        <div id="tree-filter-bar" class="tree-filter-bar">
+          <input id="tree-filter" class="tree-filter-inp" type="text" placeholder="Фильтр дерева…" spellcheck="false" autocomplete="off">
+          <button id="tree-filter-clear" class="icon-btn tree-filter-clear hidden" type="button" title="Сбросить фильтр" data-icon="x" data-icon-size="12"></button>
+        </div>
+        <div id="tree" tabindex="0"></div>
       </section>
       <!-- Git: секция «Коммит» (изменения + сообщение + commit). Наполняет git-компонент. -->
       <section id="commit-pane" class="hidden">
         <div id="commit-body" class="git-body commit-body"></div>
       </section>
-      <!-- Git: нижняя панель на всю ширину (PhpStorm Git tool window): вкладки История/Ветки рендерит
-           git-компонент в #branchlog-body; слева список, справа файлы выбранного коммита. -->
+      <!-- Постоянные боковые панели IDE: Поиск/Замена, Структура файла, TODO/FIXME, Закладки. -->
+      <section id="side-search-pane" class="side-pane hidden"></section>
+      <section id="side-outline-pane" class="side-pane hidden"></section>
+      <section id="side-todos-pane" class="side-pane hidden"></section>
+      <section id="side-bookmarks-pane" class="side-pane hidden"></section>
+      <!-- Git: нижняя панель на всю ширину: вкладки История (с графом) / Ветки / Stash. -->
       <section id="log-pane" class="hidden">
         <div id="log-resize" class="log-resize" title="Потяните, чтобы изменить высоту"></div>
         <button id="log-close" class="icon-btn log-close" type="button" title="Скрыть панель Git" data-icon="x" data-icon-size="14"></button>
         <div id="branchlog-body" class="git-body branchlog-body"></div>
       </section>
-      <!-- Строка состояния окна: слева ветка и изменения (клик — Git/Коммит), автор строки (blame);
-           справа позиция курсора, выделение, отступы, кодировка, концы строк, язык. -->
+      <!-- Интерактивная строка состояния окна. -->
       <footer id="mw-status" class="mw-status">
-        <button id="st-branch" class="st-item st-btn hidden" type="button" title="Текущая ветка — открыть историю и ветки" data-icon="git" data-icon-size="13"><span id="st-branch-name"></span></button>
-        <button id="st-changes" class="st-item st-btn hidden" type="button" title="Изменённые файлы — открыть «Коммит»"></button>
+        <button id="st-branch" class="st-item st-btn hidden" type="button" title="Текущая ветка — открыть историю и ветки (Alt+9)" data-icon="git" data-icon-size="13"><span id="st-branch-name"></span></button>
+        <button id="st-changes" class="st-item st-btn hidden" type="button" title="Изменённые файлы — открыть «Коммит» (Alt+2)"></button>
+        <button id="vs-diag" class="st-item st-btn st-diag hidden" type="button" title="Перейти к синтаксической ошибке"></button>
         <span id="vs-blame" class="st-item vs-blame"></span>
         <div class="drag-space-static"></div>
-        <span id="vs-pos" class="st-item"></span>
+        <button id="vs-pos" class="st-item st-btn" type="button" title="Перейти к строке и столбцу (Ctrl+G)"></button>
         <span id="vs-sel" class="st-item vs-sel"></span>
-        <span id="st-indent" class="st-item"></span>
+        <button id="st-indent" class="st-item st-btn" type="button" title="Настройка и конвертация отступов"></button>
         <span id="st-enc" class="st-item"></span>
-        <span id="st-eol" class="st-item"></span>
-        <span id="vs-lang" class="st-item"></span>
+        <button id="st-eol" class="st-item st-btn" type="button" title="Переключить концы строк (LF / CRLF)"></button>
+        <button id="vs-lang" class="st-item st-btn" type="button" title="Выбрать подсветку синтаксиса"></button>
+        <button id="st-keymap" class="st-item st-btn" type="button" title="Раскладка горячих клавиш редактора (VS Code / JetBrains)"></button>
       </footer>
     </div>
   </div>
