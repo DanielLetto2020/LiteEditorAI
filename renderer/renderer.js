@@ -209,6 +209,39 @@ function buildSections() {
   // под фильтром пустая категория — шум: показываем только секции, где что-то нашлось
   return secs.map((s) => ({ ...s, list: s.list.filter(matchesFilter) })).filter((s) => s.list.length);
 }
+// Плоский список проектов в точном визуальном порядке карточек боковой панели (или рельса #mini-rail
+// в режиме «один терминал»): учитывает порядок секций, ручную сортировку «Избранного», фильтр
+// «только с агентом», текстовый фильтр и пропускает свёрнутые группы (включая «Архив»).
+function visibleOrderedProjects() {
+  const appEl = $('#app');
+  const single = !!(appEl && appEl.classList.contains('single'));
+  const keepFilter = projFilter;
+  if (single) projFilter = '';
+  const secs = buildSections();
+  if (single) projFilter = keepFilter;
+
+  const out = [];
+  const seen = new Set();
+  for (const s of secs) {
+    if (single) {
+      if (s.key === ARCHIVE && isCollapsed(ARCHIVE)) continue;
+      for (const p of s.list) if (!seen.has(p.id)) { seen.add(p.id); out.push(p); }
+      continue;
+    }
+    const collapsed = projFilter ? false : isCollapsed(s.key);
+    if (collapsed) continue;
+    const agentsOnly = s.key === FAV_KEY && favAgentsOnly() && !projFilter;
+    const list = agentsOnly ? s.list.filter((p) => projHasAgent(p.id)) : s.list;
+    for (const p of list) if (!seen.has(p.id)) { seen.add(p.id); out.push(p); }
+  }
+  if (!out.length) {
+    for (const s of secs) {
+      if (s.key === ARCHIVE && isCollapsed(ARCHIVE) && !projFilter) continue;
+      for (const p of s.list) if (!seen.has(p.id)) { seen.add(p.id); out.push(p); }
+    }
+  }
+  return out.length ? out : projects.slice();
+}
 function moveSection(key, dir) {
   if (key === ARCHIVE) return;            // Архив зафиксирован последним
   const visible = buildSections().map((s) => s.key);
@@ -1121,7 +1154,7 @@ const HOTKEYS = [
   { test: (e) => e.code === 'Minus' || e.code === 'NumpadSubtract', run: () => bumpFont(-1) },
   { test: (e) => e.code === 'Tab',                                  run: (e) => cycleProject(e.shiftKey ? -1 : 1) },
   { test: (e) => e.code === 'KeyF' && e.shiftKey,                   run: () => showGlobalSearch() }, // Ctrl+Shift+F — «Найти во всех проектах» (файлы + терминалы)
-  { test: (e) => /^Digit[1-9]$/.test(e.code) && !e.shiftKey,        run: (e) => { const p = projects[+e.code.slice(5) - 1]; if (p) setActive(p.id); } },
+  { test: (e) => /^Digit[1-9]$/.test(e.code) && !e.shiftKey,        run: (e) => { const p = visibleOrderedProjects()[+e.code.slice(5) - 1]; if (p) setActive(p.id); } },
 ];
 // Поле ввода, где Ctrl-комбо должны доставаться самому полю (модалки, палитра, формы), — но НЕ
 // скрытая textarea xterm'а: она и есть ввод терминала, там перехват обязателен (это фикс B1,
@@ -1146,7 +1179,7 @@ function runGlobalHotkey(e) {
 /**
  * @param {HTMLElement} container
  * @param {string} id
- * @param {{ cwd?: string, onInput?: (data: string) => void, onKey?: (e: KeyboardEvent) => boolean | void }} [opts]
+ * @param {{ cwd?: string, onInput?: (data: string) => boolean | void, onKey?: (e: KeyboardEvent) => boolean | void }} [opts]
  */
 function buildXterm(container, id, { cwd, onInput, onKey } = {}) {
   const term = new Terminal({
@@ -1174,7 +1207,7 @@ function buildXterm(container, id, { cwd, onInput, onKey } = {}) {
   });
   fit.fit();
   lite.pty.create({ id, cwd, cols: term.cols, rows: term.rows });
-  term.onData((data) => { timeline.markInput(data); if (onInput) onInput(data); lite.pty.write(id, data); });
+  term.onData((data) => { if (onInput && onInput(data) === false) return; timeline.markInput(data); lite.pty.write(id, data); });
   term.onResize(syncPty);
   term.attachCustomKeyEventHandler((e) => {
     if (e.type !== 'keydown') return true;
@@ -1234,8 +1267,17 @@ function createSession(proj, name, custom, adoptId) {
   $('#terminals').appendChild(container);
   const { term, fit, search, timeline, syncPty } = buildXterm(container, id, {
     cwd: proj.path,
-    onInput: () => { cancelPrefill(id); const r = terms.get(id); if (r) r.lastInputAt = Date.now(); },
+    onInput: (data) => {
+      const r = terms.get(id);
+      if (r && r.exited) { if (data === '\r' || data === '\n') restartTerminal(id); return false; }
+      cancelPrefill(id);
+      if (r) r.lastInputAt = Date.now();
+    },
     onKey: (e) => {
+      if (e.key === 'Enter' && !e.ctrlKey && !e.altKey && !e.shiftKey) {
+        const r = terms.get(id);
+        if (r && r.exited) { e.preventDefault(); restartTerminal(id); return false; }
+      }
       if (e.ctrlKey && e.shiftKey && e.code === 'KeyT') { addTab(); return false; }
       if (e.ctrlKey && e.shiftKey && e.code === 'KeyW') { const s = activeSessionId(); if (s) closeTab(s); return false; }
       if (e.ctrlKey && (e.key === 'PageDown' || e.key === 'PageUp')) { cycleTab(e.key === 'PageDown' ? 1 : -1); return false; }
@@ -1281,6 +1323,43 @@ function ensureProjectTabs(proj) {
   t.active = t.sessions[Math.max(0, Math.min(ai, t.sessions.length - 1))] || t.sessions[0];
   saveProjTabs();
 }
+let tabDragEl = null; // перетаскиваемая вкладка внутри #term-tabs
+function enableTabDnD(tab, bar, projId) {
+  tab.draggable = true;
+  tab.addEventListener('dragstart', (e) => {
+    hideTabTip();
+    tabDragEl = tab;
+    tab.classList.add('dragging');
+    if (e.dataTransfer) {
+      e.dataTransfer.effectAllowed = 'move';
+      try { e.dataTransfer.setData('text/plain', tab.dataset.sid || ''); } catch (_) {}
+    }
+  });
+  tab.addEventListener('dragover', (e) => {
+    if (!tabDragEl || tabDragEl === tab || tab.parentElement !== bar) return;
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+    const r = tab.getBoundingClientRect();
+    bar.insertBefore(tabDragEl, e.clientX < r.left + r.width / 2 ? tab : tab.nextSibling);
+  });
+  tab.addEventListener('dragend', (e) => {
+    tab.classList.remove('dragging');
+    if (!tabDragEl) return;
+    tabDragEl = null;
+    const t = tabsByProj.get(projId);
+    if (t && e.dataTransfer && e.dataTransfer.dropEffect !== 'none') {
+      const order = [...bar.querySelectorAll('.tab')]
+        .map((x) => (x instanceof HTMLElement ? x.dataset.sid : ''))
+        .filter((s) => s && t.sessions.includes(s));
+      if (order.length === t.sessions.length) {
+        t.sessions = order;
+        saveProjTabs();
+      }
+    }
+    renderTabBar();
+  });
+}
+
 function renderTabBar() {
   const bar = $('#term-tabs');
   if (!bar) return;
@@ -1292,6 +1371,7 @@ function renderTabBar() {
   // шапка видна всегда (в ней кнопки окна и за неё тянут окно); без проекта нет только вкладок и «+»
   $('#term-tab-add').classList.toggle('hidden', !activeId || !t);
   if (!activeId || !t || !t.sessions.length) { updateTabScroll(); return; }
+  const projId = activeId;
   t.sessions.forEach((sid) => {
     const rec = terms.get(sid); if (!rec) return;
     const tab = el('div', 'tab' + (sid === t.active ? ' active' : '') + (rec.autoTitled ? ' wide' : ''));
@@ -1300,13 +1380,20 @@ function renderTabBar() {
     const nameSpan = el('span', 'tab-name', rec.name);
     tab.appendChild(nameSpan);
     // Кастомный тултип с полным именем — только когда имя визуально обрезано многоточием.
-    tab.addEventListener('mouseenter', () => { if (nameSpan.scrollWidth > nameSpan.clientWidth + 1) showTabTip(tab, rec.name); });
+    tab.addEventListener('mouseenter', () => { if (!tabDragEl && nameSpan.scrollWidth > nameSpan.clientWidth + 1) showTabTip(tab, rec.name); });
     tab.addEventListener('mouseleave', hideTabTip);
     if (t.sessions.length > 1) {
       const x = iconBtn('tab-close', 'x', 'Закрыть вкладку (Ctrl+Shift+W)', 12);
       x.addEventListener('click', (e) => { e.stopPropagation(); closeTab(sid); });
       tab.appendChild(x);
+      enableTabDnD(tab, bar, projId);
     }
+    tab.addEventListener('mousedown', (e) => { if (e.button === 1) e.preventDefault(); });
+    tab.addEventListener('auxclick', (e) => {
+      if (e.button === 1 && t.sessions.length > 1) {
+        e.preventDefault(); e.stopPropagation(); hideTabTip(); closeTab(sid);
+      }
+    });
     tab.addEventListener('click', () => { hideTabTip(); switchTab(sid); });
     tab.addEventListener('dblclick', () => renameTab(sid));
     bar.appendChild(tab);
@@ -1367,14 +1454,38 @@ function addTab() {
   const sid = createSession(proj, tt('Терминал {0}', t.sessions.length + 1));
   t.active = sid; saveProjTabs(); showActiveTerminal();
 }
-function closeTab(sid) {
-  const t = tabsByProj.get(activeId); if (!t || t.sessions.length <= 1) return; // keep ≥1 tab
+function doCloseTab(projId, sid) {
+  const t = tabsByProj.get(projId);
+  if (!t || t.sessions.length <= 1 || !t.sessions.includes(sid)) return;
   disposeSession(sid);
   const i = t.sessions.indexOf(sid);
   t.sessions.splice(i, 1);
   if (t.active === sid) t.active = t.sessions[Math.max(0, i - 1)];
-  saveProjTabs(); showActiveTerminal();
-  refreshProjIndicator(activeId); updateAttention();
+  saveProjTabs();
+  if (projId === activeId) showActiveTerminal();
+  refreshProjIndicator(projId);
+  updateAttention();
+}
+async function closeTab(sid) {
+  const rec = terms.get(sid);
+  const projId = rec ? rec.projId : activeId;
+  const t = tabsByProj.get(projId);
+  if (!t || t.sessions.length <= 1 || !t.sessions.includes(sid)) return; // keep ≥1 tab
+  if (!rec || rec.exited) { doCloseTab(projId, sid); return; }
+  const rep = await agentReport(sid);
+  if (!terms.has(sid)) return;
+  const agent = sessionAgent(sid) || (rep && rep.claude ? 'claude' : null);
+  const st = projState.get(sid);
+  const activeProc = !!(agent || (rep && (rep.fg === 'running' || rep.fg === 'waiting')) || (!rep && (st === 'busy' || st === 'waiting')));
+  if (!activeProc) { doCloseTab(projId, sid); return; }
+  showConfirm(
+    `Закрыть вкладку «${rec.name}»?`,
+    agent
+      ? `В этой вкладке работает агент ${agent} — процесс будет остановлен.`
+      : 'В этой вкладке выполняется команда — процесс будет остановлен.',
+    'Закрыть вкладку',
+    () => doCloseTab(projId, sid),
+  );
 }
 function cycleTab(dir) {
   const t = tabsByProj.get(activeId); if (!t || t.sessions.length < 2) return;
@@ -3730,7 +3841,7 @@ function init() {
     if (isExtTerm(id)) { const r = extTerms.get(id); if (r) r.term.write('\r\n\x1b[90m[шелл завершён]\x1b[0m\r\n'); return; }
     const rec = terms.get(id);
     if (!rec) return;   // сессия прежней загрузки окна (или уже закрытая вкладка) — не наша
-    cancelPrefill(id); rec.term.write('\r\n\x1b[90m[процесс завершён — закрой и переоткрой проект]\x1b[0m\r\n');
+    cancelPrefill(id); rec.term.write('\r\n\x1b[90m' + tt('[процесс завершён — нажмите Enter или ↻ для перезапуска]') + '\x1b[0m\r\n');
     clearTimeout(rec.idleTimer); rec.claude = null; rec.exited = true; stopClaudeProbe(rec);   // exited — терминал закрывается без потерь
     setProjState(id, 'quiet');
   });
@@ -3847,6 +3958,8 @@ function init() {
   $('#term-tabs-prev').addEventListener('click', () => scrollTabs(-1));
   $('#term-tabs-next').addEventListener('click', () => scrollTabs(1));
   $('#term-tabs').addEventListener('scroll', () => { updateTabScroll(); hideTabTip(); });
+  $('#term-tabs').addEventListener('dragover', (e) => { if (tabDragEl) { e.preventDefault(); if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'; } });
+  $('#term-tabs').addEventListener('drop', (e) => { if (tabDragEl) e.preventDefault(); });
   window.addEventListener('resize', updateTabScroll);
   // бейдж «N ждёт ответа»: клик — к следующему ждущему агенту (по кругу, если ждут несколько)
   $('#attention-badge').addEventListener('click', () => {
@@ -3878,7 +3991,7 @@ function init() {
   const hideDrop = () => { clearTimeout(dropT); if (dropZone) { dropZone.remove(); dropZone = null; } };
   document.addEventListener('dragover', (e) => {
     e.preventDefault();
-    if (favDragCard || !e.dataTransfer || ![...(e.dataTransfer.types || [])].includes('Files')) return;
+    if (favDragCard || tabDragEl || !e.dataTransfer || ![...(e.dataTransfer.types || [])].includes('Files')) return;
     if (!dropZone) {
       dropZone = el('div', 'dropzone');
       const c = el('div', 'dz-card');
@@ -3974,9 +4087,10 @@ function autoLaunchModules() {
 }
 
 function cycleProject(dir) {
-  if (projects.length < 2) return;
-  const i = projects.findIndex((p) => p.id === activeId);
-  const next = projects[(i + dir + projects.length) % projects.length];
+  const list = visibleOrderedProjects();
+  if (list.length < 2) return;
+  const i = list.findIndex((p) => p.id === activeId);
+  const next = i < 0 ? list[dir > 0 ? 0 : list.length - 1] : list[(i + dir + list.length) % list.length];
   if (next) setActive(next.id);
 }
 

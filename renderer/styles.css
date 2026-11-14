@@ -662,6 +662,7 @@ body.mw-files .diff-viewbtn.on { background: var(--raised); color: var(--text-hi
 .tab.wide { max-width: 360px; }
 .tab:hover { background: var(--row-hover); color: var(--text2); }
 .tab.active { background: var(--panel); color: var(--text-hi); border-color: var(--input-b); }
+.tab.dragging { opacity: .35; }
 .tab-dot { flex: 0 0 14px; }
 .tab-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tab-close { width: 22px; height: 22px; flex-shrink: 0; border: 0; background: none; color: var(--text-dim); border-radius: var(--r3); display: inline-flex; align-items: center; justify-content: center; cursor: pointer; visibility: hidden; }
