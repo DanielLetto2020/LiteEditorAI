@@ -3,7 +3,7 @@
 Все заметные изменения LiteEditorAI. Формат — [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/),
 нумерация — [SemVer](https://semver.org/lang/ru/). Проект в стадии **alpha**.
 
-## [1.1.239] — 2026-11-14
+## [1.1.240] — 2026-11-14
 
 **Модуль «Проект» стал полноценным лёгким IDE-редактором со сплитом, код-навигацией и живым графом Git; в главном окне появились сплит терминалов, закрепляемый правый док «Проект» и защита от закрытия при работающих агентах, а ядро редактора заметно ускорено.**
 
@@ -30,6 +30,7 @@
 ### 🐛 Исправлено
 
 - Надёжное повторное переключение языков интерфейса для шаблонно отрендеренных строк, корректное поведение инлайн-попапа Git-ханков в поле редактора и очистка таймеров/слушателей в модулях.
+- Совместимость нативных модулей Linux-сборки (`node-pty`) с `glibc` Ubuntu 22.04/24.04 и штатный запуск портативного архива `.tar.gz` на Ubuntu 24.04+ без дополнительных флагов.
 
 ## [1.1.215] — 2026-11-05
 
@@ -3202,7 +3203,7 @@ AGENTS.md как граф на канве), и **цветной пульт** —
 [1.0.97]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.0.97
 [1.0.96]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.0.96
 [1.1.123]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.1.123
-[1.1.239]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.1.239
+[1.1.240]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.1.240
 [1.1.215]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.1.215
 [1.1.214]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.1.214
 [1.1.209]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.1.209
