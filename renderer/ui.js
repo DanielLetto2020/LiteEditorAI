@@ -69,11 +69,12 @@ const EXT_COLORS = {
   js: '#e8d44d', jsx: '#e8d44d', mjs: '#e8d44d', cjs: '#e8d44d',
   ts: '#4a9be0', tsx: '#4a9be0',
   py: '#5fa6dd', json: '#cbcb41', md: '#9fb3a9', markdown: '#9fb3a9',
-  html: '#e3733b', htm: '#e3733b', css: '#9b6bd6', scss: '#cf6ba0',
+  html: '#e3733b', htm: '#e3733b', css: '#9b6bd6', scss: '#cf6ba0', sass: '#cf6ba0', less: '#6d80c4',
   png: '#b07cd6', jpg: '#b07cd6', jpeg: '#b07cd6', gif: '#b07cd6', webp: '#b07cd6', svg: '#ffb13b',
-  sh: '#89e051', bash: '#89e051', yml: '#dd6c6c', yaml: '#dd6c6c', toml: '#b07a4a',
-  lock: '#7a8a82', txt: '#9fb3a9', env: '#e2c08d', sql: '#e38f3b', vue: '#41b883', go: '#4ad0e0', rs: '#dd8855',
-  php: '#8892bf', rb: '#cc342d', java: '#e07c3e', c: '#6f9ad3', h: '#6f9ad3', cpp: '#6f9ad3',
+  sh: '#89e051', bash: '#89e051', zsh: '#89e051', yml: '#dd6c6c', yaml: '#dd6c6c', toml: '#b07a4a',
+  lock: '#7a8a82', txt: '#9fb3a9', env: '#e2c08d', sql: '#e38f3b', vue: '#41b883', svelte: '#ff3e00',
+  go: '#4ad0e0', rs: '#dd8855', php: '#8892bf', rb: '#cc342d', java: '#e07c3e', kt: '#a97bff', swift: '#f05138',
+  c: '#6f9ad3', h: '#6f9ad3', cpp: '#6f9ad3', cc: '#6f9ad3', cs: '#58b05c', lua: '#5382e8', xml: '#e37933',
   conf: '#e2c08d', ini: '#e2c08d', log: '#7a8a82', zip: '#c0a060', gz: '#c0a060', tar: '#c0a060',
 };
 /** Расширение в нижнем регистре без точки ('app.JS' → 'js'); без расширения → ''. */
@@ -236,6 +237,15 @@ export const ICONS = {
   cmd: '<path d="M9 6a3 3 0 1 0-3 3h12a3 3 0 1 0-3-3v12a3 3 0 1 0 3-3H6a3 3 0 1 0 3 3z"/>',
   square: '<rect x="6" y="6" width="12" height="12" rx="2"/>',
   locate: '<circle cx="12" cy="12" r="6.5"/><circle cx="12" cy="12" r="2"/><path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3"/>',
+  'split-right': '<rect x="3.5" y="4.5" width="17" height="15" rx="2"/><path d="M12 4.5v15"/><path d="M15 9.5h2.5M15 12.5h2.5"/>',
+  'wrap-text': '<path d="M4 6h16M4 12h13a3 3 0 1 1 0 6h-5"/><path d="M14 16l-2 2 2 2"/><path d="M4 18h5"/>',
+  replace: '<rect x="3.5" y="4" width="11" height="6" rx="1.5"/><rect x="9.5" y="14" width="11" height="6" rx="1.5"/><path d="M6 10v5a2 2 0 0 0 2 2h1.5M18 14V9a2 2 0 0 0-2-2h-1.5"/>',
+  filter: '<path d="M4 5h16l-6.2 7.2v5.3l-3.6 2v-7.3z"/>',
+  wand: '<path d="M15 4V2M15 16v-2M8 9h2M20 9h2M17.8 11.8L19 13M17.8 6.2L19 5M3 21l9-9M12.2 6.2L11 5"/>',
+  'arrow-up': '<path d="M12 19V5M6 11l6-6 6 6"/>',
+  'arrow-down': '<path d="M12 5v14M6 13l6 6 6-6"/>',
+  'corner-up-left': '<path d="M9 14L4 9l5-5"/><path d="M20 20v-7a4 4 0 0 0-4-4H4"/>',
+  'file-text': '<path d="M6 3.5h7L18.5 9v10.5a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1v-15a1 1 0 0 1 1-1z"/><path d="M12.5 3.5V9H18"/><path d="M8.5 13h7M8.5 16.5h4.5"/>',
 };
 /** @type {Map<string, SVGSVGElement>} */
 const _iconProto = new Map();
