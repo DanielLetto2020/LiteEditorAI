@@ -37,8 +37,9 @@ const {
   WRITE_TMP_SUFFIX, STORE_KEYS, PATCH_KEYS, rendererStoreKey,
   atomicWriteSync, readJsonForEdit: readJsonForEditRaw, createStore,
 } = require('./lib/store'); // in-memory кэш STORE + коалесируемая атомарная запись
-const { foregroundKind } = require('./lib/proctree'); // индикатор активности: состояние группы переднего плана
-const { agentState, agentOf } = require('./lib/agentstate'); // индикатор: отчёт Claude Code о своей сессии; какой агент в терминале
+const { createProcService } = require('./lib/proc-service'); // фоновый worker_threads для опроса /proc (индикаторы PTY + монитор)
+const fastSearch = require('./lib/fast-search');   // быстрый листинг и поиск через системный rg с фолбэком в worker_threads
+const procService = createProcService({ cacheTtlMs: 200 });
 
 app.setName('LiteEditorAI');
 app.setAppUserModelId('com.mletto.liteeditorai'); // Windows: имя/иконка/группировка в панели задач и уведомлениях
@@ -3411,6 +3412,7 @@ app.on('before-quit', () => { logger.log('info', 'app', 'before-quit'); });
 app.on('will-quit', () => {
   try { appStore.flushAllSync(); } catch (_) {}
   try { errledger.flush(); } catch (_) {}
+  try { procService.shutdown(); } catch (_) {}
 });
 
 app.whenReady().then(() => {
@@ -4035,28 +4037,27 @@ ipcMain.on('pty:kill', (_e, { id }) => {
 });
 // Терминалы этого окна, пережившие перезагрузку страницы: новая страница забирает их по id.
 ipcMain.handle('pty:adoptable', (e) => [...orphanPtys.keys()].filter((id) => ptys.has(id) && ownerBySession.get(id) === e.sender));
-// 'shell' | 'running' | 'waiting' | null — see foregroundKind().
+// 'shell' | 'running' | 'waiting' | null — опрашивается вне главного потока через procService.
 ipcMain.handle('pty:foregroundState', (_e, { id }) => {
   const p = ptys.get(id);
-  return p ? foregroundKind(p.pid) : null;
+  return p && p.pid ? procService.foregroundKind(p.pid) : null;
 });
 // { fg, claude: { status, waitingFor } | null } | null — то же плюс отчёт Claude Code, если он
 // на переднем плане (lib/agentstate.js). По нему индикатор отличает «работает» / «ждёт вас» / «готов».
 ipcMain.handle('pty:agentState', (_e, { id }) => {
   const p = ptys.get(id);
-  return p ? agentState(p.pid) : null;
+  return p && p.pid ? procService.agentState(p.pid) : null;
 });
 // Какой агент на переднем плане каждого из терминалов ids и можно ли закрыть терминал без потерь
 // (lib/agentstate.js agentOf) — для фильтра «только проекты с агентом» в «Избранном» и закрытия
 // случайно открытых терминалов. { [id]: { fg, agent, idle } }; вне Linux ответа по терминалу нет.
 ipcMain.handle('pty:agents', (_e, { ids } = {}) => {
-  const out = {};
+  const entries = [];
   for (const id of Array.isArray(ids) ? ids.slice(0, 500) : []) {
     const p = ptys.get(id);
-    const r = p ? agentOf(p.pid) : null;
-    if (r) out[id] = r;
+    if (p && p.pid) entries.push([String(id), p.pid]);
   }
-  return out;
+  return procService.agents(entries);
 });
 
 // ---------------------------------------------------------------- Монитор ресурсов
@@ -4066,34 +4067,14 @@ ipcMain.handle('pty:agents', (_e, { ids } = {}) => {
 //   • деревья процессов терминалов (PTY-агенты, /proc — ТОЛЬКО Linux) — «полезная нагрузка», к
 //     редактору отношения почти не имеет (claude/codex молотят по делу). Не смешиваем, чтобы цифры
 //     агентов не выдавались за расход редактора.
-// CPU% PTY считаем дельтой между последовательными вызовами (UI опрашивает раз в ~3с) — без
-// искусственных sleep. getAppMetrics уже отдаёт cpu.percentCPUUsage за интервал с прошлого вызова.
-const MONITOR_PAGE = 4096;                    // размер страницы (rss в /proc/<pid>/stat — в страницах)
+// Обход /proc для деревьев PTY вынесен в фоновый worker_threads (lib/proc-service.js) и ходит по
+// потомкам шелла (/proc/<pid>/task/*/children), не читая /proc всех тысяч процессов системы.
 const MODULE_TITLES = {
   tools: 'Инструменты', iterflow: 'IterFlow', seo: 'WEB/SEO аудит', audit: 'Аудит',
   pomodoro: 'Помодоро', company: 'ИИ компания', notes: 'Задачи', db: 'Базы данных',
   chat: 'OpenRouter', doc: 'Обработка текста', docker: 'Контейнеры', rh: 'Удалённые хосты',
   ctx: 'Контекст', scratch: 'Система · ~', files: 'Проект', monitor: 'Монитор', gitgraph: 'Граф Git', servers: 'Серверы',
 };
-let monPrev = null;   // { total, perSid: Map<sid,jiffies> } — для расчёта CPU% деревьев PTY
-
-// /proc/<pid>/stat → { comm, ppid, jiffies (utime+stime), rssBytes }; null если процесс исчез.
-function readPidStatFull(pid) {
-  try {
-    const data = fs.readFileSync(`/proc/${pid}/stat`, 'utf8');
-    const r = data.lastIndexOf(')');
-    const comm = data.slice(data.indexOf('(') + 1, r);
-    const f = data.slice(r + 2).split(' '); // [0]=state [1]=ppid … [11]=utime [12]=stime [21]=rss(стр.)
-    return { comm, ppid: +f[1] || 0, jiffies: (+f[11] || 0) + (+f[12] || 0), rssBytes: (+f[21] || 0) * MONITOR_PAGE };
-  } catch (_) { return null; }
-}
-// суммарные «джиффи» процессора из /proc/stat (для нормировки CPU% деревьев PTY)
-function readTotalJiffies() {
-  try {
-    const line = fs.readFileSync('/proc/stat', 'utf8').split('\n', 1)[0]; // "cpu  u n s i ..."
-    return line.trim().split(/\s+/).slice(1).reduce((a, b) => a + (+b || 0), 0);
-  } catch (_) { return 0; }
-}
 function monitorSessionLabel(sid) {
   const s = String(sid);
   const pid = s.split('::')[0];
@@ -4101,7 +4082,7 @@ function monitorSessionLabel(sid) {
   return 'Терминал: ' + s;
 }
 
-ipcMain.handle('monitor:sample', () => {
+ipcMain.handle('monitor:sample', async () => {
   // ── Electron-процессы: pid → понятная метка (окно/модуль/GPU/служебный) ──
   const pidLabel = new Map();
   try { pidLabel.set(process.pid, { label: 'Ядро (main)', kind: 'main' }); } catch (_) {}
@@ -4125,54 +4106,19 @@ ipcMain.handle('monitor:sample', () => {
     };
   }).sort((a, b) => b.memBytes - a.memBytes);
 
-  // ── PTY-агенты: деревья процессов терминалов (Linux) ──
-  const pty = [];
-  let ptyNote = null;
-  if (process.platform === 'linux') {
-    const all = new Map();
-    try {
-      for (const ent of fs.readdirSync('/proc')) {
-        if (ent.charCodeAt(0) < 48 || ent.charCodeAt(0) > 57) continue; // только числовые pid
-        const st = readPidStatFull(ent); if (st) all.set(+ent, st);
-      }
-    } catch (_) {}
-    const kids = new Map();
-    for (const [p, st] of all) { if (!kids.has(st.ppid)) kids.set(st.ppid, []); kids.get(st.ppid).push(p); }
-    const total = readTotalJiffies();
-    const dTotal = monPrev ? Math.max(0, total - monPrev.total) : 0;
-    const ncpu = (os.cpus() || []).length || 1;
-    const nowPer = new Map();
-    for (const [sid, proc] of ptys) {
-      const root = proc && proc.pid; if (!root) continue;
-      const seen = new Set(); const stack = [root]; let rss = 0, jif = 0, n = 0, topComm = '';
-      while (stack.length) {
-        const p = stack.pop(); if (seen.has(p)) continue; seen.add(p);
-        const st = all.get(p); if (!st) continue;
-        rss += st.rssBytes; jif += st.jiffies; n++;
-        if (p === root) topComm = st.comm;
-        for (const c of (kids.get(p) || [])) stack.push(c);
-      }
-      nowPer.set(sid, jif);
-      let cpu = 0;
-      if (monPrev && monPrev.perSid.has(sid) && dTotal > 0) {
-        cpu = Math.max(0, Math.round(((jif - monPrev.perSid.get(sid)) / dTotal) * ncpu * 100 * 10) / 10);
-      }
-      pty.push({ sid, pid: root, label: monitorSessionLabel(sid), comm: topComm, procs: n, state: foregroundKind(root), cpu, memBytes: rss });
-    }
-    pty.sort((a, b) => b.memBytes - a.memBytes);
-    monPrev = { total, perSid: nowPer };
-  } else {
-    ptyNote = 'Детализация процессов терминалов доступна только на Linux.';
+  // ── PTY-агенты: деревья процессов терминалов (Linux, в worker_threads) ──
+  const entries = [];
+  for (const [sid, proc] of ptys) {
+    if (proc && proc.pid) entries.push([String(sid), proc.pid]);
   }
+  const ptySnap = await procService.samplePtyTrees(entries, monitorSessionLabel);
 
   const editorMem = electron.reduce((s, p) => s + p.memBytes, 0);
   const editorCpu = Math.round(electron.reduce((s, p) => s + p.cpu, 0) * 10) / 10;
-  const ptyMem = pty.reduce((s, p) => s + p.memBytes, 0);
-  const ptyCpu = Math.round(pty.reduce((s, p) => s + p.cpu, 0) * 10) / 10;
   return {
     ok: true, ts: Date.now(),
     editor: { procs: electron, totalMem: editorMem, totalCpu: editorCpu },
-    pty: { procs: pty, totalMem: ptyMem, totalCpu: ptyCpu, note: ptyNote },
+    pty: ptySnap,
   };
 });
 
@@ -5023,89 +4969,13 @@ ipcMain.handle('fs:readDataUrl', async (_e, file) => {
 });
 
 // ---------------------------------------------------------------- files: проектные хелперы вивера
-// Ctrl+P (рекурсивный листинг), поиск по проекту (grep на Node) и сравнение двух файлов (git --no-index).
+// Ctrl+P (рекурсивный листинг), поиск по проекту (ripgrep / worker_threads) и сравнение двух файлов (git --no-index).
 const FILES_LIST_CAP = 30000;                  // потолок файлов для Ctrl+P
 const FILES_SEARCH_CAP = 1000;                 // потолок совпадений для поиска по проекту
 const FILES_SEARCH_FILE_MAX = 1024 * 1024;     // не грепаем файлы крупнее 1 МБ (минифицированные/данные)
-// Обход дерева проекта (тот же IGNORE_DIRS, что у дерева/аудита). onFile(full) — на каждый файл;
-// stop() → true прекращает обход (достигнут потолок). Симлинки на папки резолвим через stat.
-// Петли симлинков («ln -s .. up», «ln -s . self»): ссылку на каталог, который уже есть на пути от
-// корня (по реальному пути), не раскрываем. Без этого обход шёл по кругу до ELOOP ядра (40 уровней),
-// а две такие ссылки давали 2^40 путей — поиск по проекту не завершался никогда.
-async function walkProjectFiles(root, onFile, stop) {
-  let rootReal = root;
-  try { rootReal = await fs.promises.realpath(root); } catch { /* корня нет — readdir ниже вернёт ошибку */ }
-  const ig = gitignore.forProject(root, IGNORE_DIRS);
-  const stack = [{ dir: root, real: rootReal, up: null }];   // up — родитель на пути от корня
-  while (stack.length) {
-    if (stop && stop()) return;
-    const node = stack.pop();
-    const dir = node.dir;
-    let entries;
-    try { entries = await fs.promises.readdir(dir, { withFileTypes: true }); } catch { continue; }
-    for (const d of entries) {
-      const full = path.join(dir, d.name);
-      const rel = path.relative(root, full);
-      let isDir = d.isDirectory();
-      let real = null;
-      if (d.isSymbolicLink()) {
-        try { isDir = (await fs.promises.stat(full)).isDirectory(); } catch { isDir = false; }
-        if (isDir && !IGNORE_DIRS.has(d.name) && !ig.ignores(rel, true)) {
-          try { real = await fs.promises.realpath(full); } catch { continue; }
-        }
-      }
-      if (isDir) {
-        if (IGNORE_DIRS.has(d.name) || ig.ignores(rel, true)) continue;
-        if (real === null) real = path.join(node.real, d.name);   // обычный каталог: реальный путь = родитель + имя
-        else { let a = node; while (a && a.real !== real) a = a.up; if (a) continue; } // петля — уже на пути
-        stack.push({ dir: full, real, up: node });
-        continue;
-      }
-      if (d.name.endsWith(WRITE_TMP_SUFFIX) || ig.ignores(rel, false)) continue;
-      if (stop && stop()) return;
-      await onFile(full);
-    }
-  }
-}
-ipcMain.handle('files:listAll', async (_e, root) => {
-  if (!root) return { error: 'нет корня' };
-  const files = [];
-  let capped = false;
-  try {
-    await walkProjectFiles(root, (full) => { files.push(path.relative(root, full)); },
-      () => { if (files.length >= FILES_LIST_CAP) { capped = true; return true; } return false; });
-  } catch (err) { return { error: String(err.message || err) }; }
-  return { files, capped };
-});
-ipcMain.handle('files:search', async (_e, { root, query, opts } = {}) => {
-  if (!root || !query) return { matches: [] };
-  const o = opts || {};
-  let re;
-  try {
-    const src = o.regex ? query : query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    re = new RegExp(src, o.caseSensitive ? 'g' : 'gi');
-  } catch { return { error: 'некорректное регулярное выражение' }; }
-  const matches = [];
-  let capped = false;
-  try {
-    await walkProjectFiles(root, async (full) => {
-      if (matches.length >= FILES_SEARCH_CAP) return;
-      let stat; try { stat = await fs.promises.stat(full); } catch { return; }
-      if (!stat.size || stat.size > FILES_SEARCH_FILE_MAX) return;
-      let buf; try { buf = await fs.promises.readFile(full); } catch { return; }
-      const probe = Math.min(buf.length, 8192);
-      for (let i = 0; i < probe; i++) if (buf[i] === 0) return;   // NUL → бинарь, пропускаем
-      const rel = path.relative(root, full);
-      const rows = buf.toString('utf8').split('\n');
-      for (let i = 0; i < rows.length && matches.length < FILES_SEARCH_CAP; i++) {
-        re.lastIndex = 0;
-        const m = re.exec(rows[i]);
-        if (m) matches.push({ file: rel, line: i + 1, col: m.index + 1, text: rows[i].slice(0, 240) });
-      }
-    }, () => { if (matches.length >= FILES_SEARCH_CAP) { capped = true; return true; } return false; });
-  } catch (err) { return { error: String(err.message || err) }; }
-  return { matches, capped };
-});
+ipcMain.handle('files:listAll', (_e, root) => fastSearch.listFiles(root, { cap: FILES_LIST_CAP }));
+ipcMain.handle('files:search', (_e, { root, query, opts } = {}) =>
+  fastSearch.searchProject(root, query, Object.assign({}, opts, { cap: FILES_SEARCH_CAP, maxFileSize: FILES_SEARCH_FILE_MAX })));
 // Замена по проекту: рендерер присылает итог files:search с галочками — список целей
 // { file(rel), lines[1-based] }. Заменяем ТОЛЬКО в этих строках (та же регэксп-логика, что у
 // поиска, + флаг g — несколько совпадений на строке заменяются разом). Перед записью каждого
@@ -5185,126 +5055,56 @@ ipcMain.handle('files:diffPair', async (_e, { a, b } = {}) => {
 });
 
 // ---------------------------------------------------------------- глобальный поиск по всем проектам
-// Стриминговый брат files:search: тот же обход (IGNORE_DIRS, пропуск бинарей), но по N корням сразу
-// и с выдачей ПАЧКАМИ — окно рисует первые попадания через доли секунды, а не ждёт обхода двадцати
-// проектов. Запрос живёт под своим runId: gsearch:cancel и закрытие окна его гасят (флаг проверяется
-// и в stop() обхода, и перед каждой отправкой).
+// Стриминговый брат files:search через lib/fast-search.js (системный rg или worker_threads):
+// результат течёт пачками, а главный поток Electron не читает файлы проектов в свою кучу V8.
 const GSX_TOTAL_CAP = 5000;                 // общий потолок совпадений на запрос
 const GSX_PER_FILE_CAP = 50;                // на файл: один минифицированный бандл не съест всю выдачу
 const GSX_FILE_MAX = 2 * 1024 * 1024;       // крупнее — не грепаем (данные/бандлы)
 const GSX_FLUSH_HITS = 200;                 // пачка совпадений…
 const GSX_FLUSH_MS = 120;                   // …либо столько миллисекунд — что раньше
 const GSX_TEXT_MAX = 260;                   // сколько символов строки отдаём в выдачу
-const gsxRuns = new Map();                  // runId → { cancelled }
+const gsxRuns = new Map();                  // runId → { cancel() }
 
-// Маска вида "*.js, src/**" → предикат по относительному пути. Маска со слэшем меряется по всему
-// пути, без слэша — по имени файла (так человек и думает, печатая «*.md»). «**» ходит через границы
-// папок, одиночная «*» — только внутри сегмента.
-function gsxMaskPred(raw) {
-  const parts = String(raw || '').split(',').map((s) => s.trim()).filter(Boolean);
-  if (!parts.length) return null;
-  const res = [];
-  for (const p of parts) {
-    let body = '';
-    for (let i = 0; i < p.length; i++) {
-      const ch = p[i];
-      if (ch === '*') { if (p[i + 1] === '*') { body += '.*'; i++; } else body += '[^/]*'; }
-      else if (ch === '?') body += '.';
-      else if ('.+^${}()|[]\\'.includes(ch)) body += '\\' + ch;
-      else body += ch;
-    }
-    try { res.push({ re: new RegExp('^' + body + '$', 'i'), full: p.includes('/') }); } catch (_) { /* мусорная маска — игнор */ }
-  }
-  if (!res.length) return null;
-  return (rel) => {
-    const name = rel.split('/').pop();
-    return res.some((r) => r.re.test(r.full ? rel : name));
-  };
-}
 ipcMain.handle('gsearch:cancel', (_e, { runId } = {}) => {
   const run = gsxRuns.get(String(runId));
-  if (run) run.cancelled = true;
+  if (run) run.cancel();
   return { ok: true };
 });
 ipcMain.handle('gsearch:start', (e, { runId, query, opts, roots } = {}) => {
   const id = String(runId || '');
-  const o = opts || {};
-  const mode = (o.mode === 'names' || o.mode === 'both') ? o.mode : 'content';
   if (!id || !query || !Array.isArray(roots) || !roots.length) return { ok: false, error: 'нет запроса или области поиска' };
-  let re;
-  try {
-    let src = o.regex ? String(query) : String(query).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    if (o.wholeWord) src = '\\b(?:' + src + ')\\b';
-    re = new RegExp(src, o.caseSensitive ? 'g' : 'gi');
-  } catch { return { ok: false, error: 'некорректное регулярное выражение' }; }
-  const incl = gsxMaskPred(o.include);
-  const excl = gsxMaskPred(o.exclude);
-  const run = { cancelled: false };
-  gsxRuns.set(id, run);
-  // Обход идёт ФОНОМ: invoke отвечает сразу, результат течёт событиями. Иначе окно ждало бы конца
-  // обхода всех проектов, чтобы показать первую строку.
-  (async () => {
-    const started = Date.now();
-    let total = 0, files = 0, scanned = 0, capped = false, error = '';
-    let batch = [], lastFlush = 0;
-    const flush = (force) => {
-      if (!batch.length || run.cancelled) return;
-      if (!force && batch.length < GSX_FLUSH_HITS && Date.now() - lastFlush < GSX_FLUSH_MS) return;
-      const hits = batch; batch = [];
-      lastFlush = Date.now();
-      safeSend(e.sender, 'gsearch:hit', { runId: id, hits });
-    };
-    try {
-      for (const r of roots) {
-        if (run.cancelled || capped) break;
-        const root = r && r.path ? String(r.path) : '';
-        if (!root) continue;
-        try { if (!(await fs.promises.stat(root)).isDirectory()) continue; } catch { continue; } // папка удалена — просто пропускаем
-        safeSend(e.sender, 'gsearch:progress', { runId: id, rootId: r.id, name: r.name, total, scanned });
-        await walkProjectFiles(root, async (full) => {
-          if (run.cancelled || total >= GSX_TOTAL_CAP) return;
-          const rel = path.relative(root, full).split(path.sep).join('/');
-          if (incl && !incl(rel)) return;
-          if (excl && excl(rel)) return;
-          scanned++;
-          if (scanned % 500 === 0) safeSend(e.sender, 'gsearch:progress', { runId: id, rootId: r.id, name: r.name, total, scanned });
-          let fileHits = 0;
-          if (mode === 'names' || mode === 'both') {
-            re.lastIndex = 0;
-            const m = re.exec(rel);
-            if (m) { batch.push({ rootId: r.id, file: rel, line: 0, text: rel, mcol: m.index, len: m[0].length }); total++; fileHits++; }
-          }
-          if (mode === 'content' || mode === 'both') {
-            let stat; try { stat = await fs.promises.stat(full); } catch { if (fileHits) { files++; flush(); } return; }
-            if (!stat.size || stat.size > GSX_FILE_MAX) { if (fileHits) { files++; flush(); } return; }
-            let raw; try { raw = await fs.promises.readFile(full); } catch { if (fileHits) { files++; flush(); } return; }
-            const probe = Math.min(raw.length, 8192);
-            for (let i = 0; i < probe; i++) if (raw[i] === 0) { if (fileHits) { files++; flush(); } return; }  // NUL → бинарь
-            const rows = raw.toString('utf8').split('\n');
-            let perFile = 0;
-            for (let i = 0; i < rows.length && total < GSX_TOTAL_CAP && perFile < GSX_PER_FILE_CAP; i++) {
-              re.lastIndex = 0;
-              const m = re.exec(rows[i]);
-              if (!m) continue;
-              // окно вокруг совпадения: обрезка «с начала строки» прятала бы находку в длинной строке
-              const from = Math.max(0, m.index - 60);
-              const text = (from ? '…' : '') + rows[i].slice(from, from + GSX_TEXT_MAX);
-              batch.push({ rootId: r.id, file: rel, line: i + 1, text, mcol: m.index - from + (from ? 1 : 0), len: m[0].length });
-              total++; perFile++; fileHits++;
-            }
-          }
-          if (fileHits) files++;
-          if (total >= GSX_TOTAL_CAP) capped = true;
-          flush();
-        // Окно ушло (перезагрузка, закрытие) — обход всех проектов дальше вхолостую не гоняем. Проверкой,
-        // а не подпиской на 'destroyed': слушатель на каждый поиск копился бы на окне редактора.
-        }, () => { if (e.sender.isDestroyed()) run.cancelled = true; return run.cancelled || total >= GSX_TOTAL_CAP; });
-      }
-    } catch (err) { error = String((err && err.message) || err); }
-    flush(true);
+  const started = Date.now();
+  const ctrl = fastSearch.startGlobalSearch({
+    roots,
+    query: String(query),
+    opts: opts || {},
+    caps: {
+      totalCap: GSX_TOTAL_CAP,
+      perFileCap: GSX_PER_FILE_CAP,
+      maxFileSize: GSX_FILE_MAX,
+      flushHits: GSX_FLUSH_HITS,
+      flushMs: GSX_FLUSH_MS,
+      textMax: GSX_TEXT_MAX,
+    },
+    shouldStop: () => e.sender.isDestroyed(),
+    onHits: (hits) => safeSend(e.sender, 'gsearch:hit', { runId: id, hits }),
+    onProgress: (p) => safeSend(e.sender, 'gsearch:progress', Object.assign({ runId: id }, p)),
+  });
+  if (!ctrl.ok) return { ok: false, error: ctrl.error || 'некорректное регулярное выражение' };
+  gsxRuns.set(id, ctrl);
+  ctrl.promise.then((res) => {
     gsxRuns.delete(id);
-    safeSend(e.sender, 'gsearch:done', { runId: id, total, files, scanned, capped, error, cancelled: run.cancelled, ms: Date.now() - started });
-  })();
+    safeSend(e.sender, 'gsearch:done', {
+      runId: id,
+      total: res.total,
+      files: res.files,
+      scanned: res.scanned,
+      capped: res.capped,
+      error: res.error || '',
+      cancelled: res.cancelled,
+      ms: Date.now() - started,
+    });
+  });
   return { ok: true, runId: id };
 });
 
