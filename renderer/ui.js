@@ -233,7 +233,7 @@ export function iconBtn(cls, name, title, size) {
 // Fill the static [data-icon] buttons defined in index.html (titlebar / pane toolbars).
 export function hydrateIcons(root = document) {
   root.querySelectorAll('[data-icon]').forEach((node) => {
-    if (node.querySelector('svg.ic')) return; // already done
+    if (!(node instanceof HTMLElement) || node.querySelector('svg.ic')) return; // already done
     node.appendChild(icon(node.dataset.icon, +node.dataset.iconSize || 16));
   });
 }
@@ -317,7 +317,7 @@ export function makeModal(innerHtml, onClose) {
     closed = true;
     overlay.remove();   // только СВОЙ оверлей — иначе закрытие вложенной модалки снесло бы родителя мимо его close()/onClose (#modal-root:empty прячет контейнер сам)
     // вложенная модалка: вернуть фокус в родительскую, иначе её Esc перестал бы работать
-    if (prevFocus && prevFocus.isConnected && prevFocus.closest && prevFocus.closest('.modal')) { try { prevFocus.focus({ preventScroll: true }); } catch (_) {} }
+    if (prevFocus instanceof HTMLElement && prevFocus.isConnected && prevFocus.closest('.modal')) { try { prevFocus.focus({ preventScroll: true }); } catch (_) {} }
     if (onClose) { try { onClose(); } catch (_) {} }
   };
   overlay.addEventListener('mousedown', (e) => { if (e.target === overlay) close(); });

@@ -1143,6 +1143,11 @@ function runGlobalHotkey(e) {
 // рендерер + PTY + базовый обработчик клавиш. Вызывающий передаёт id/cwd, хук ввода и
 // набор «своих» клавиш (onKey) поверх базовых. Это убрало ~90% дубля между
 // createSession и createExtTerminal, который раньше норовил разъехаться.
+/**
+ * @param {HTMLElement} container
+ * @param {string} id
+ * @param {{ cwd?: string, onInput?: (data: string) => void, onKey?: (e: KeyboardEvent) => boolean | void }} [opts]
+ */
 function buildXterm(container, id, { cwd, onInput, onKey } = {}) {
   const term = new Terminal({
     fontFamily: '"JetBrains Mono", "Fira Code", "Cascadia Code", Consolas, monospace',
@@ -1417,7 +1422,7 @@ function updateTabName(sid) {
   const rec = terms.get(sid);
   const t = tabsByProj.get(activeId);
   if (!rec || !t || !t.sessions.includes(sid)) return;
-  const tab = [...document.querySelectorAll('#term-tabs .tab')].find((x) => x.dataset.sid === sid);
+  const tab = [...document.querySelectorAll('#term-tabs .tab')].find((x) => x instanceof HTMLElement && x.dataset.sid === sid);
   if (!tab) { renderTabBar(); return; }
   tab.classList.toggle('wide', !!rec.autoTitled);
   const span = tab.querySelector('.tab-name');
@@ -1778,7 +1783,7 @@ function renderQuickbar() {
 let openModuleIds = new Set();
 function markOpenModules() {
   document.querySelectorAll('#quickbar .qb-btn').forEach((b) => {
-    b.classList.toggle('open', openModuleIds.has(b.dataset.mod));
+    if (b instanceof HTMLElement) b.classList.toggle('open', openModuleIds.has(b.dataset.mod));
   });
 }
 // Бейдж активных (не выполненных) задач АКТИВНОГО проекта на кнопке «Задачи» квикбара. Источник —
@@ -1811,7 +1816,7 @@ async function refreshAgendaCount(id) {
   try {
     const arr = await lite.store.agendaGet(id);
     const eod = (() => { const d = new Date(); d.setHours(0, 0, 0, 0); return d.getTime() + 86400000; })();
-    const n = Array.isArray(arr) ? arr.filter((r) => r && !r.done && r.at && !isNaN(new Date(r.at)) && new Date(r.at).getTime() < eod).length : 0;
+    const n = Array.isArray(arr) ? arr.filter((r) => r && !r.done && r.at && !Number.isNaN(Date.parse(r.at)) && new Date(r.at).getTime() < eod).length : 0;
     if (!STORE.agendaCounts) STORE.agendaCounts = {};
     STORE.agendaCounts[id] = n;
     if (id === activeId || id === '__global__') updateNotesBadge();
@@ -1895,6 +1900,7 @@ renderQuickbar(); // стартовая отрисовка (пользовате
 // ---------------------------------------------------------------- gutters (resize)
 function initGutters() {
   document.querySelectorAll('.gutter').forEach((g) => {
+    if (!(g instanceof HTMLElement)) return;
     const target = g.dataset.resize;
     g.addEventListener('mousedown', (e) => {
       e.preventDefault();
@@ -2192,6 +2198,7 @@ function showModulesCatalog(start = 'all') {
   let tab = start, hl = 0, tiles = [];
   const quick = () => (Array.isArray(STORE.quickbar) ? STORE.quickbar : []);
   const userMods = () => Ext.list().filter((x) => x.ok).map((x) => ({ id: 'ext:' + x.id, extId: x.id, icon: 'layers', title: x.name, desc: 'мой модуль · панель справа', user: true }));
+  /** @type {Array<[string, string, () => number]>} */
   const TABS = [
     ['all', 'Все', () => BUILTIN_MODS.length + userMods().length],
     ['project', 'Для проекта', () => BUILTIN_MODS.filter((x) => x.project).length],
@@ -2347,6 +2354,7 @@ function showLookPanel(anchor) {
     });
     dd.querySelectorAll('.lk-sw').forEach((b) => b.classList.toggle('on', b.dataset.acc === l.accent));
   };
+  /** @type {Array<[string, string, number, number, number, string, () => number, (v: number) => void]>} */
   const RANGES = [
     ['alpha', 'Непрозрачность фона', 60, 100, 1, '%', () => lookOf(settings).alpha, (v) => editLook((l) => { l.alpha = v; })],
     ['r', 'Скругление', 4, 22, 1, 'px', () => lookOf(settings).r, (v) => editLook((l) => { l.r = v; })],
@@ -2501,12 +2509,12 @@ function refreshGitChip(delay = 400) {
   clearTimeout(gitChipT);
   gitChipT = setTimeout(async () => {
     const p = activeProject();
-    if (!p || missing.has(p.id)) { gitChip = { projId: p ? p.id : null, repo: false, branch: '', files: [] }; renderChips(); return; }
+    if (!p || missing.has(p.id)) { gitChip = { projId: p ? p.id : null, repo: false, branch: '', ahead: 0, behind: 0, files: [] }; renderChips(); return; }
     const seq = ++gitChipSeq;
     let info, st;
     try { [info, st] = await Promise.all([lite.git.info(p.path), lite.git.status(p.path)]); } catch (_) { info = null; }
     if (seq !== gitChipSeq) return;          // пока ждали, проект сменился — ответ устарел
-    if (!info || !info.repo) { gitChip = { projId: p.id, repo: false, branch: '', files: [] }; renderChips(); return; }
+    if (!info || !info.repo) { gitChip = { projId: p.id, repo: false, branch: '', ahead: 0, behind: 0, files: [] }; renderChips(); return; }
     const base = p.path.replace(/[\\/]+$/, '');
     // префикс — с разделителем: иначе у проекта /repo/app файл /repo/app-old/x показывался бы как «old/x»
     const inBase = (abs) => abs.startsWith(base + '/') || abs.startsWith(base + '\\');
@@ -3654,7 +3662,7 @@ function applyRestGuard(s) {
     restGuardEl.appendChild(card);
     host.appendChild(restGuardEl);
     // снять фокус с терминала, чтобы клавиатура не уходила в xterm под оверлеем
-    try { if (document.activeElement && document.activeElement.blur) document.activeElement.blur(); } catch (_) {}
+    try { if (document.activeElement instanceof HTMLElement) document.activeElement.blur(); } catch (_) {}
     try { restGuardEl.focus(); } catch (_) {}
   }
   const done = s.total ? Math.max(0, Math.min(1, (s.total - s.remaining) / s.total)) : 0;

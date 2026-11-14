@@ -147,9 +147,9 @@ export function translate(root = document.body) {
     if (root.nodeType === Node.ELEMENT_NODE) translateAttrs(root);
     const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT, {
       acceptNode(n) {
-        if (n.nodeType === Node.ELEMENT_NODE) {
+        if (n instanceof Element) {
           if (SKIP_TAGS.has(n.tagName)) return NodeFilter.FILTER_REJECT;
-          if (n.matches && n.matches(SKIP_SEL)) return NodeFilter.FILTER_REJECT;
+          if (n.matches(SKIP_SEL)) return NodeFilter.FILTER_REJECT;
           return NodeFilter.FILTER_ACCEPT;
         }
         return n.nodeValue && n.nodeValue.trim() ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
@@ -217,11 +217,11 @@ export function observe(root = document.documentElement) {
       if (r.type === 'childList') {
         // Терминалы и редактор кода не переводим — их мутации (строки DOM-рендерера xterm, правки
         // CodeMirror) отсекаем сразу, не копя в очереди.
-        const host = r.target && r.target.nodeType === Node.ELEMENT_NODE ? r.target : null;
-        if (host && host.closest && host.closest(SKIP_SEL)) continue;
+        const host = r.target instanceof Element ? r.target : null;
+        if (host && host.closest(SKIP_SEL)) continue;
         for (const n of r.addedNodes) queued.push(n);
-      } else if (r.type === 'attributes' && r.target && r.target.nodeType === Node.ELEMENT_NODE) {
-        if (!(r.target.closest && r.target.closest(SKIP_SEL))) { applying = true; try { translateAttrs(r.target); } finally { applying = false; } }
+      } else if (r.type === 'attributes' && r.target instanceof Element) {
+        if (!r.target.closest(SKIP_SEL)) { applying = true; try { translateAttrs(r.target); } finally { applying = false; } }
       } else if (r.type === 'characterData' && r.target) {
         if (!(r.target.parentElement && r.target.parentElement.closest(SKIP_SEL))) queued.push(r.target);
       }

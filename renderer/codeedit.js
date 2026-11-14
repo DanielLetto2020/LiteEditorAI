@@ -46,6 +46,7 @@ export function ensureLanguage(file) {
   return desc.load().then((sup) => { langCache.set(desc.name, sup); return sup; }).catch(() => []);
 }
 
+/** @type {import('@codemirror/state').StateEffectType<import('@codemirror/view').DecorationSet>} */
 const setMarksEffect = StateEffect.define();
 const marksField = StateField.define({
   create: () => Decoration.none,
