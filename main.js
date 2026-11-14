@@ -63,10 +63,21 @@ if (!app.requestSingleInstanceLock()) {
 // uploadToServer:false → minidumps stay local (userData/Crashpad), never sent.
 try { crashReporter.start({ uploadToServer: false }); } catch (_) {}
 
-// Electron installed via npm ships no root-owned setuid sandbox helper, so the
-// Chromium SUID sandbox aborts at launch. We load only our own local content,
-// and the renderer already gets a shell via PTY, so the sandbox adds nothing.
-app.commandLine.appendSwitch('no-sandbox');
+// В установленном .deb пакет содержит root-owned SUID-хелпер chrome-sandbox (uid 0, mode 04755),
+// поэтому песочница Chromium работает штатно. В dev-запуске из npm и в portable tar.gz (распакованном
+// без root) SUID-бита нет, и на Ubuntu 24.04+ с ограничением userns старт упадёт без no-sandbox.
+function hasConfiguredSandboxHelper() {
+  if (!app.isPackaged) return false;
+  try {
+    const st = fs.statSync(path.join(path.dirname(process.execPath), 'chrome-sandbox'));
+    return st.uid === 0 && (st.mode & 0o4000) !== 0;
+  } catch (_) {
+    return false;
+  }
+}
+if (process.env.LITE_NO_SANDBOX === '1' || !hasConfiguredSandboxHelper()) {
+  app.commandLine.appendSwitch('no-sandbox');
+}
 // GPU accel powers the xterm WebGL renderer (smooth scroll) and is fine on real
 // desktops. It only breaks on VM/nested/VNC displays — there set LITE_NO_GPU=1 to
 // fall back to software rendering (xterm then uses the Canvas renderer).
@@ -749,12 +760,10 @@ ipcMain.handle('update:install', async (e) => {
     return { ok: true };
   }
 
-  const script = process.platform === 'win32'
-    ? updater.winStager({ pid: process.pid, appDir: inst.appDir, newDir: updStaged.root, exec: process.execPath })
-    : updater.unixStager({
-      pid: process.pid, appDir: inst.appDir, newDir: updStaged.root, exec: process.execPath,
-      mac: process.platform === 'darwin',
-    });
+  const script = updater.unixStager({
+    pid: process.pid, appDir: inst.appDir, newDir: updStaged.root, exec: process.execPath,
+    mac: false,
+  });
   try {
     updater.launchStager(script, path.join(updater.updatesDir(storeDir), updStaged.tag), process.platform,
       (e) => logger.log('error', 'update', 'стейджер не запустился: ' + String(e && e.message || e)));
@@ -1004,7 +1013,7 @@ ipcMain.handle('tp:saveAgents', (_e, { text } = {}) => {
 let loginPath = '';        // '' = ещё не знаем или не вышло
 let loginPathTried = false;
 function probeLoginPath() {
-  if (loginPathTried || process.platform === 'win32') return;
+  if (loginPathTried) return;
   loginPathTried = true;
   const shell = process.env.SHELL || '/bin/bash';
   // -lic: rc-файлы (nvm живёт в .bashrc/.zshrc) читаются только интерактивным шеллом.
@@ -1018,14 +1027,12 @@ function probeLoginPath() {
   try { probe.stdin.end(); } catch (_) {}
 }
 function tpEnv() {
-  const sep = process.platform === 'win32' ? ';' : ':';
   const extra = [
     loginPath,
-    ...(process.platform === 'darwin' ? ['/opt/homebrew/bin', '/usr/local/bin'] : []),
     path.join(os.homedir(), '.local', 'bin'),
     path.dirname(process.execPath),
   ].filter(Boolean);
-  return { ...process.env, PATH: extra.join(sep) + sep + (process.env.PATH || '') };
+  return { ...process.env, PATH: extra.join(':') + ':' + (process.env.PATH || '') };
 }
 // ---- Единый разбор «агент не авторизован» ---------------------------------------------------
 // CLI-агенты запускаются неинтерактивно: свой запрос логина показать нам они не могут, и он
@@ -2347,7 +2354,7 @@ const companyReqs = new Map(); // reqId -> ChildProcess
 function companyKill(child) {
   if (!child) return;
   try {
-    if (process.platform !== 'win32' && child.pid) process.kill(-child.pid, 'SIGTERM');
+    if (child.pid) process.kill(-child.pid, 'SIGTERM');
     else child.kill();
   } catch (_) { try { child.kill(); } catch (_) {} }
 }
@@ -2391,7 +2398,7 @@ ipcMain.on('company:run', (e, { reqId, projPath, goal, roles, director, limitUsd
 
   let child;
   // detached → свой process group: убиваем всё дерево (директор + его tool-подпроцессы), а не только claude.
-  try { child = spawn('claude', args, { cwd: projPath, env: tpEnv(), detached: process.platform !== 'win32' }); }
+  try { child = spawn('claude', args, { cwd: projPath, env: tpEnv(), detached: true }); }
   catch (err) { safeSend(sender, 'company:error', { reqId, error: 'не запустить «claude»: ' + (err.message || err) }); return; }
   companyReqs.set(reqId, child);
   // Строки вместо Buffer: длинные строки stream-json (результаты инструментов) рвутся на чанки, и
@@ -3407,21 +3414,8 @@ app.whenReady().then(() => {
   const gpu = !(process.env.LITE_NO_GPU === '1' || process.env.LITE_SOFTWARE_RENDER === '1');
   logger.log('info', 'app', `ready — electron ${process.versions.electron}, chrome ${process.versions.chrome}, node ${process.versions.node}, gpu=${gpu}`);
   probeLoginPath(); // фоном: PATH логин-шелла для CLI-агентов «Обработки текста»
-  // Своё меню мы рисуем в титлбаре, поэтому системное не нужно — но на macOS оно ещё и держит
-  // системные ускорители: без меню в приложении не работают Cmd+C/V/X/A и Cmd+Q, а About/Hide
-  // недоступны совсем. Поэтому там ставим минимальное меню из ролей (идея PR #10), на остальных
-  // платформах — как было, без меню.
-  Menu.setApplicationMenu(process.platform === 'darwin' ? Menu.buildFromTemplate([
-    { role: 'appMenu' },
-    { label: i18n.t('Правка'), submenu: [
-      { role: 'undo' }, { role: 'redo' }, { type: 'separator' },
-      { role: 'cut' }, { role: 'copy' }, { role: 'paste' }, { role: 'selectAll' },
-    ] },
-    { label: i18n.t('Окно'), submenu: [
-      { role: 'minimize' }, { role: 'zoom' }, { type: 'separator' },
-      { role: 'togglefullscreen' }, { type: 'separator' }, { role: 'close' },
-    ] },
-  ]) : null);
+  // Своё меню рисуется в титлбаре — системное меню окна на Linux не нужно.
+  Menu.setApplicationMenu(null);
   createWindow();
   createTray();
   // Переоткрыть окна модулей, открытые в прошлой сессии (проектозависимые подхватят активный
@@ -3435,9 +3429,6 @@ app.whenReady().then(() => {
   // идёт — уборка стирала её .part/распаковку, а стейджер без каталога новой версии выходил, не
   // перезапустив редактор.
   setTimeout(() => { if (!updDownloading && !updStaged) updater.cleanup(storeDir); }, 8000);
-  app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow();
-  });
 });
 
 
@@ -3458,7 +3449,7 @@ app.on('window-all-closed', () => {
   ctxOutWatchers.clear();
   try { pomodoroApi.stop(); } catch (_) {}
   try { voiceApi.stop(); } catch (_) {} // сайдкар озвучки (если загружался) не должен пережить редактор
-  if (process.platform !== 'darwin') app.quit();
+  app.quit();
 });
 
 // ---------------------------------------------------------------- локализация
@@ -3731,7 +3722,6 @@ ipcMain.on('tray:update', (_e, { attention } = {}) => {
   if (n === trayAttention) return;   // рендерер шлёт на смене числа, но старое окно может слать чаще
   trayAttention = n;
   updateTrayTooltip();
-  if (process.platform === 'darwin' && app.dock) app.setBadgeCount(trayAttention);
 });
 
 // Grow/shrink the window to the right by dx px (used when the viewer opens, so
@@ -4600,10 +4590,6 @@ ipcMain.handle('shell:copyFile', (_e, target) => {
     const fileUrl = require('url').pathToFileURL(p).href;
     if (process.platform === 'linux') {
       clipboard.writeBuffer('x-special/gnome-copied-files', Buffer.from('copy\n' + fileUrl, 'utf8'));
-      return { ok: true, mode: 'file' };
-    }
-    if (process.platform === 'darwin') {
-      clipboard.writeBuffer('public.file-url', Buffer.from(fileUrl, 'utf8'));
       return { ok: true, mode: 'file' };
     }
     clipboard.writeText(p);

@@ -3549,14 +3549,12 @@ function showSettings(start = 'look') {
       const pre = el('input', 'set-txt mono'); pre.style.width = '220px'; pre.placeholder = 'claude'; pre.spellcheck = false; pre.value = settings.termPrefill || '';
       pre.addEventListener('change', () => { settings.termPrefill = pre.value.trim(); save(); });
       body.appendChild(row('Автоввод в новом терминале', 'Слово или команда само пишется в каждый новый терминал проекта — при открытии проекта и новой вкладке, но без Enter. Пусто — терминал открывается пустым.', pre));
-      // Оболочка — платформо-зависимо (Windows: PowerShell/cmd/свой; Linux: bash/свой).
-      const isWin = (lite.platform === 'win32');
-      const presets = isWin ? ['', 'cmd'] : [''];
+      // Оболочка Linux ($SHELL / /bin/bash по умолчанию либо пользовательский путь).
       const curShell = settings.shell || '';
-      const custom = curShell && !presets.includes(curShell);
+      const custom = Boolean(curShell);
       const path = el('input', 'set-txt mono'); path.placeholder = 'путь к исполняемому файлу'; path.spellcheck = false; path.value = custom ? curShell : '';
-      const shell = select(isWin ? [['', 'PowerShell (по умолчанию)'], ['cmd', 'cmd'], ['__custom__', 'Свой путь…']] : [['', 'bash (по умолчанию)'], ['__custom__', 'Свой путь…']],
-        custom ? '__custom__' : curShell, (v) => {
+      const shell = select([['', 'bash (по умолчанию)'], ['__custom__', 'Свой путь…']],
+        custom ? '__custom__' : '', (v) => {
           pathRow.style.display = v === '__custom__' ? '' : 'none';
           if (v !== '__custom__') { settings.shell = v; save(); } else if (path.value.trim()) { settings.shell = path.value.trim(); save(); }
         });

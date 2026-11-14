@@ -1,0 +1,891 @@
+/* Оболочка окон модулей (#mod-app, #mod-topbar) и окно «Проект» (вивер кода, дерево файлов, дифф, локальная история, превью и панель Git). */
+
+/* ---------------- module window (v1.1+) ---------------- */
+/* Окно одного модуля: титлбар сверху + единственная панель, заполняющая окно. Переиспользует
+   токены тем и классы .win-btn/.brand; панель теряет border-left/фикс-ширину и тянется.
+   Фон — полупрозрачный, как у окна редактора (ползунок «Непрозрачность фона» в «Оформлении»):
+   шапка — цвета фона окна (--app-bg), тело — цвета панелей (--mod-bg). Панели модулей и крупные
+   области внутри них своего фона в окне не имеют — лежат на этом стекле; карточки, поля, меню и
+   модалки остаются плотными, как в редакторе. */
+#mod-app {
+  display: flex; flex-direction: column; height: 100vh;
+  border: 1px solid var(--app-border); border-radius: var(--win-radius); overflow: hidden; background: transparent;
+}
+#mod-app.is-max { border-color: transparent; }
+#mod-topbar {
+  display: flex; align-items: center; gap: 4px; height: 38px; padding: 0 6px 0 14px;
+  background: var(--app-bg); border-bottom: 1px solid var(--border); -webkit-app-region: drag;
+}
+#module-root { flex: 1 1 auto; display: flex; min-height: 0; position: relative; background: var(--mod-bg); }
+/* «Система · ~» — окно-терминал: лежит на фоне окна, как терминал редактора */
+body.mw-scratch #module-root { background: var(--app-bg); }
+body.module-window #module-root > section {
+  flex: 1 1 auto !important; min-width: 0 !important; border-left: none !important; background: transparent;
+}
+body.module-window #module-root > .gutter { display: none !important; }
+body.is-embed #mod-topbar { display: none !important; }
+body.is-embed #mod-app { border: 0; border-radius: 0; }
+/* ============================================================================================
+   Окно «Проект» (вивер + встроенный Git), v1.1.206. Раскладка — grid в духе нового интерфейса PhpStorm:
+     top    — панель инструментов: проект · ветка, Pull/Push со счётчиками · поиск файла (Ctrl+P);
+     strip  — полоса инструментов: Проект/Коммит/Git + поиск, структура, TODO, закладки; внизу — агент;
+     left   — дерево или коммит · gut — ручка ширины · tabs — открытые файлы · center — редактор;
+     log    — панель Git (история/ветки), по кнопке · status — строка состояния на всё окно.
+   Всё — под body.mw-files: module.html и styles.css общие для всех окон модулей.
+   ============================================================================================ */
+body.mw-files #module-root {
+  display: grid; flex: 1 1 auto; min-height: 0;
+  grid-template-columns: 44px var(--mw-left, 280px) 5px var(--tabs-w, 0px) minmax(0, 1fr);
+  grid-template-rows: 40px minmax(0, 1fr) var(--log-h, 0px) 24px;
+  grid-template-areas: "top top top top top" "strip left gut tabs center" "log log log log log" "status status status status status";
+}
+/* стрип/гаттер/секции гита/строка состояния есть в общем module.html — показываем ТОЛЬКО в окне вивера */
+body:not(.mw-files) #mw-gutter, body:not(.mw-files) #vcs-strip, body:not(.mw-files) #vcs-topbar, body:not(.mw-files) #tabs-pane,
+body:not(.mw-files) #log-pane, body:not(.mw-files) #mw-status { display: none !important; }
+body.mw-files #viewer-pane { grid-area: center !important; min-width: 0 !important; min-height: 0 !important; border-left: none !important; background: transparent; }
+body.mw-files #tree-pane,
+body.mw-files #commit-pane { grid-area: left !important; min-width: 0 !important; min-height: 0 !important; border-left: none !important; flex: 1 1 auto; background: transparent; }
+body.mw-files #log-pane { grid-area: log; min-width: 0; min-height: 0; position: relative; display: flex; flex-direction: column; border-top: 1px solid var(--border); }
+body.mw-files #log-pane.hidden { display: none !important; }
+.log-resize { position: absolute; top: -3px; left: 0; right: 0; height: 6px; cursor: row-resize; z-index: 3; }
+.log-resize:hover { background: var(--accent); }
+body.mw-files .log-close { position: absolute; top: 5px; right: 8px; z-index: 4; }
+/* ручка ширины: широкая зона захвата, видна тонкая линия */
+body.mw-files #mw-gutter { grid-area: gut; cursor: col-resize; position: relative; background: transparent; }
+body.mw-files #mw-gutter::after { content: ""; position: absolute; top: 0; bottom: 0; left: 2px; width: 1px; background: var(--border); transition: background .12s, width .12s; }
+body.mw-files #mw-gutter:hover::after { background: var(--accent); width: 2px; left: 1.5px; }
+/* Zen — только редактор: грид схлопнут до центральной ячейки */
+body.mw-files.viewer-zen #module-root { grid-template-columns: 0 0 0 0 1fr; grid-template-rows: 0 1fr 0 0; }
+body.viewer-zen #vcs-strip, body.viewer-zen #tabs-pane, body.viewer-zen #tree-pane, body.viewer-zen #commit-pane,
+body.viewer-zen #log-pane, body.viewer-zen #mw-gutter, body.viewer-zen #vcs-topbar, body.viewer-zen #mw-status { display: none !important; }
+
+/* ---- кнопки с подписью: иконку из data-icon (hydrateIcons кладёт её в конец) ставим перед текстом ---- */
+body.mw-files .tb-project svg.ic, body.mw-files .tb-search svg.ic, body.mw-files .hbtn svg.ic, body.mw-files .st-btn svg.ic { order: -1; flex: 0 0 auto; }
+body.mw-files kbd {
+  font-family: "JetBrains Mono", ui-monospace, monospace; font-size: 10.5px; line-height: 1; color: var(--text-dim);
+  padding: 3px 5px; border-radius: 5px; border: 1px solid var(--border-strong); background: var(--surface-2); white-space: nowrap;
+}
+
+/* ---- панель инструментов ---- */
+body.mw-files #vcs-topbar { grid-area: top; display: flex; align-items: center; gap: 6px; padding: 0 10px 0 6px; min-width: 0; border-bottom: 1px solid var(--border); }
+.tb-project {
+  display: inline-flex; align-items: center; gap: 8px; height: 28px; max-width: 240px; padding: 0 10px; flex: 0 1 auto; min-width: 0;
+  border: none; border-radius: 7px; background: transparent; color: var(--text-hi); font: inherit; font-size: 13px; font-weight: 600; cursor: pointer;
+}
+.tb-project svg.ic { color: var(--text-dim); }
+.tb-project:hover { background: var(--hover); }
+.tb-project-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.vcs-git { display: flex; align-items: center; min-width: 0; gap: 6px; padding-left: 8px; margin-left: 2px; border-left: 1px solid var(--border); height: 22px; }
+.vcs-git.hidden { display: none; }
+.tb-search {
+  display: inline-flex; align-items: center; gap: 8px; height: 28px; width: min(300px, 30vw); flex: 0 1 auto; min-width: 0; padding: 0 6px 0 10px;
+  border: 1px solid var(--border-strong); border-radius: 7px; background: var(--bg-input); color: var(--text-dim); font: inherit; font-size: 12.5px; cursor: pointer;
+}
+.tb-search:hover { border-color: var(--tline2); color: var(--text); }
+.tb-search-lbl { flex: 1; min-width: 0; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Git в панели: ветка — спокойной кнопкой, Pull/Push — с подписью и счётчиком коммитов */
+body.mw-files .vcs-bar { display: flex; align-items: center; gap: 4px; flex: 0 1 auto; min-width: 0; }
+body.mw-files .vcs-bar .gm-branchdd { flex: 0 1 auto; min-width: 0; }
+body.mw-files .gm-branchsel {
+  height: 28px; max-width: 300px; padding: 0 8px; gap: 6px; border: 1px solid transparent; border-radius: 7px;
+  background: transparent; color: var(--text); font-size: 13px; font-weight: 500;
+}
+body.mw-files .gm-branchsel:hover, body.mw-files .gm-branchdd.open .gm-branchsel { background: var(--hover); border-color: transparent; }
+body.mw-files .gm-branchsel > svg:first-child { color: var(--green); opacity: 1; }
+.vcs-note { color: var(--text-mute); font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; padding: 0 4px; }
+body.mw-files .vcs-bar .git-tool {
+  height: 28px; padding: 0 9px; gap: 6px; border: 1px solid transparent; border-radius: 7px; background: transparent;
+  color: var(--text-dim); font-size: 12.5px;
+}
+body.mw-files .vcs-bar .git-tool.ico { padding: 0 7px; }
+body.mw-files .vcs-bar .git-tool:hover:not(:disabled) { background: var(--hover-2); color: var(--text); border-color: transparent; }
+body.mw-files .vcs-bar .git-tool.has-count { color: var(--text); }
+.git-count { padding: 1px 6px; border-radius: 9px; background: var(--accent-soft); color: var(--green-bright); font-size: 11px; font-weight: 650; }
+
+/* ---- полоса инструментов ---- */
+body.mw-files #vcs-strip { grid-area: strip; display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 8px 0; border-right: 1px solid var(--border); }
+.vcs-strip .strip-btn {
+  position: relative; width: 32px; height: 32px; display: flex; align-items: center; justify-content: center; flex: 0 0 auto;
+  border: none; background: transparent; color: var(--icon); border-radius: 8px; cursor: pointer;
+}
+.vcs-strip .strip-btn:hover { background: var(--hover-2); color: var(--text); }
+.vcs-strip .strip-btn.active { background: var(--accent-soft); color: var(--green); }
+.vcs-strip .strip-btn.on { color: var(--green); background: var(--accent-soft); }
+.strip-sep { width: 18px; height: 1px; background: var(--border); margin: 4px 0; flex: 0 0 auto; }
+.strip-fill { flex: 1 1 auto; }
+.strip-badge, .vcs-strip .agent-badge {
+  position: absolute; bottom: 0; right: -2px; min-width: 14px; height: 14px; padding: 0 3px; border-radius: 7px;
+  background: var(--info); color: var(--accent-contrast); font-size: 9px; font-weight: 750; line-height: 14px; text-align: center; pointer-events: none;
+  box-shadow: 0 0 0 2px var(--mod-bg);
+}
+.strip-badge.hidden { display: none; }
+.vcs-strip .agent-badge { background: var(--green); }
+
+/* ---- шапки левой секции и колонки файлов ---- */
+body.mw-files .pane-head { height: 36px; min-height: 36px; padding: 0 6px 0 12px; gap: 2px; border-bottom: none; }
+body.mw-files .pane-title { font-size: 12.5px; font-weight: 650; color: var(--text); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+body.mw-files .pane-head .icon-btn { width: 26px; height: 26px; border-radius: 6px; color: var(--icon); }
+body.mw-files .pane-head .icon-btn:hover { background: var(--hover-2); color: var(--text); }
+
+/* ---- дерево ---- */
+body.mw-files #tree { padding: 2px 6px 12px; }
+body.mw-files .tree-row { height: 24px; gap: 6px; padding-right: 8px; border-radius: 6px; font-size: 13px; color: var(--text2); }
+body.mw-files .tree-row:hover { background: var(--hover); }
+body.mw-files .tree-row.open { background: var(--raised); color: var(--text-hi); }
+body.mw-files .tree-row.dir .tree-name { font-weight: 500; color: var(--text2); }
+body.mw-files .tree-row.dir svg.ti path { fill: var(--icon) !important; }   /* папки нейтральные: цвет — только у статусов git */
+body.mw-files .tree-chev { color: var(--text-mute); }
+body.mw-files .tree-row.flash { animation: tree-flash 1.2s ease-out; }
+@keyframes tree-flash { 0%, 35% { background: var(--accent-soft); box-shadow: inset 0 0 0 1px var(--border-accent); } 100% { background: transparent; box-shadow: none; } }
+/* цвета статусов git — одни и те же в дереве, вкладках, коммите и логе (как в PhpStorm) */
+body.mw-files .tree-name.g-mod, body.mw-files .ftab-name.g-mod { color: var(--info); }
+body.mw-files .tree-name.g-add, body.mw-files .ftab-name.g-add { color: var(--add); }
+body.mw-files .tree-name.g-del, body.mw-files .ftab-name.g-del { color: var(--text-mute); text-decoration: line-through; }
+/* папка с изменениями внутри — тем же цветом (правило .tree-row.dir .tree-name выше перебивало статус) */
+body.mw-files .tree-row.dir .tree-name.g-mod { color: var(--info); }
+body.mw-files .tree-row.dir .tree-name.g-add { color: var(--add); }
+
+/* ---- колонка открытых файлов ---- */
+body.mw-files #tabs-pane { grid-area: tabs; min-width: 0; min-height: 0; }
+.file-tabs { display: flex; flex-direction: column; overflow: hidden; border-right: 1px solid var(--border); }
+.file-tabs.empty { display: none; }
+.tabs-head { display: flex; align-items: center; gap: 6px; height: 36px; flex: 0 0 auto; padding: 0 6px 0 12px; }
+.tabs-title { font-size: 12.5px; font-weight: 650; color: var(--text); }
+.tabs-count { font-size: 11.5px; color: var(--text-mute); }
+.tabs-head .icon-btn { width: 26px; height: 26px; border-radius: 6px; color: var(--icon); }
+.tabs-head .icon-btn:hover { background: var(--hover-2); color: var(--text); }
+.tabs-list { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; gap: 1px; overflow-y: auto; overflow-x: hidden; padding: 0 6px 8px; }
+.ftab { display: flex; align-items: center; gap: 7px; height: 28px; flex: 0 0 auto; padding: 0 4px 0 9px; cursor: pointer;
+  color: var(--text2); border-radius: 6px; user-select: none; }
+.ftab:hover { background: var(--hover); color: var(--text); }
+.ftab.active { background: var(--raised); color: var(--text-hi); }
+.ftab .ti { flex: 0 0 auto; }
+.ftab-name { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; }
+.ftab-dir { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; color: var(--text-mute); }
+.ftab-dot { display: none; flex: 0 0 auto; width: 6px; height: 6px; border-radius: 50%; background: var(--green); margin-left: auto; }
+.ftab.dirty .ftab-dot { display: block; }
+.ftab-x { flex: 0 0 auto; display: flex; align-items: center; justify-content: center; width: 18px; height: 18px; margin-left: auto;
+  border: none; background: transparent; color: var(--text-dim); border-radius: 4px; cursor: pointer; opacity: 0; }
+.ftab.dirty .ftab-x { margin-left: 0; }
+.ftab:hover .ftab-x, .ftab.active .ftab-x { opacity: 0.75; }
+.ftab-x:hover { opacity: 1; background: var(--hover-2); color: var(--text); }
+.ftab.pinned .ftab-x { opacity: 1; color: var(--green); }
+
+/* ---- шапка редактора ---- */
+body.mw-files .viewer-head { height: 40px; min-height: 40px; padding: 0 8px 0 6px; gap: 4px; border-bottom: 1px solid var(--border); }
+body.mw-files .viewer-head .icon-btn { width: 28px; height: 28px; border-radius: 7px; color: var(--icon); flex: 0 0 auto; }
+body.mw-files .viewer-head .icon-btn:hover:not(:disabled) { background: var(--hover-2); color: var(--text); }
+body.mw-files .viewer-head .icon-btn:disabled { opacity: .35; }
+body.mw-files .viewer-crumbs {
+  display: flex; align-items: center; flex-wrap: nowrap; gap: 2px; flex: 0 1 auto; min-width: 0; padding: 0 4px;
+  overflow: hidden; white-space: nowrap; font-size: 12.5px; color: var(--text-dim); border: none; background: transparent;
+}
+body.mw-files .viewer-crumbs.hidden { display: none; }
+body.mw-files .viewer-crumbs .crumb { padding: 2px 4px; border-radius: 5px; cursor: pointer; flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+body.mw-files .viewer-crumbs .crumb:hover { background: var(--hover-2); color: var(--text); }
+body.mw-files .viewer-crumbs .crumb-file { color: var(--text-hi); font-weight: 550; flex-shrink: 0; }
+body.mw-files .viewer-crumbs .crumb-sym { color: var(--green-bright); }
+body.mw-files .viewer-crumbs .crumb-sep { color: var(--text-mute); flex: 0 0 auto; }
+.viewer-filename { font-size: 12.5px; font-weight: 550; color: var(--text-hi); padding: 0 6px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+body.mw-files #viewer-crumbs:not(.hidden) + #viewer-filename { display: none; }   /* обычный файл — крошки; дифф/превью/сравнение — подпись */
+/* файл не открыт (и не дифф) — в шапке нечего показывать и не над чем действовать */
+body.mw-files #viewer-pane.no-file #viewer-filename, body.mw-files #viewer-pane.no-file .hbtn,
+body.mw-files #viewer-pane.no-file #viewer-more, body.mw-files #viewer-pane.no-file .dirty-dot { display: none; }
+body.mw-files .dirty-dot { flex: 0 0 auto; margin: 0 2px; }
+.seg { display: inline-flex; align-items: center; gap: 2px; padding: 2px; margin-right: 6px; border: 1px solid var(--border-strong); border-radius: 8px; flex: 0 0 auto; }
+.seg-btn { height: 24px; padding: 0 10px; border: none; border-radius: 6px; background: transparent; color: var(--text-dim); font: inherit; font-size: 12px; cursor: pointer; }
+.seg-btn:hover { color: var(--text); }
+.seg-btn.on { background: var(--raised); color: var(--text-hi); }
+.hbtn {
+  display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 9px; flex: 0 0 auto;
+  border: none; border-radius: 7px; background: transparent; color: var(--text-dim); font: inherit; font-size: 12.5px; cursor: pointer;
+}
+.hbtn:hover { background: var(--hover-2); color: var(--text); }
+.hbtn.on { background: var(--accent-soft); color: var(--green-bright); }
+/* узкое окно — подписи кнопок шапки прячутся, остаются иконки (подсказки на месте) */
+@media (max-width: 1180px) { body.mw-files .hbtn span, body.mw-files .tb-search-lbl, body.mw-files .tb-search kbd { display: none; } body.mw-files .tb-search { width: auto; } }
+
+/* ---- пустой редактор ---- */
+body.mw-files #editor.is-empty { visibility: hidden; }
+.viewer-empty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; padding: 24px; overflow: auto; }
+.viewer-empty.hidden { display: none; }
+.ve-card { width: min(440px, 100%); }
+.ve-title { font-size: 17px; font-weight: 650; color: var(--text-hi); margin-bottom: 6px; }
+.ve-sub { color: var(--text-dim); font-size: 13px; line-height: 1.5; margin-bottom: 16px; }
+.ve-actions { display: flex; flex-direction: column; gap: 1px; margin-bottom: 18px; }
+.ve-act { display: flex; align-items: center; gap: 10px; height: 34px; padding: 0 10px; border: none; border-radius: 8px;
+  background: transparent; color: var(--text2); font: inherit; font-size: 13px; text-align: left; cursor: pointer; }
+.ve-act:hover { background: var(--hover); color: var(--text-hi); }
+.ve-act .ic { color: var(--icon); }
+.ve-act-lbl { flex: 1; }
+.ve-act kbd:empty { display: none; }
+.ve-head { font-size: 11px; font-weight: 650; letter-spacing: .05em; text-transform: uppercase; color: var(--text-mute); margin: 0 0 6px 10px; }
+.ve-recent { display: flex; flex-direction: column; gap: 1px; }
+.ve-file { display: flex; align-items: center; gap: 8px; width: 100%; height: 30px; padding: 0 10px; border: none; border-radius: 7px;
+  background: transparent; color: var(--text2); font: inherit; font-size: 13px; text-align: left; cursor: pointer; }
+.ve-file:hover { background: var(--hover); color: var(--text-hi); }
+.ve-file-name { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ve-file-dir { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-mute); font-size: 11.5px; }
+
+/* ---- строка состояния ---- */
+body.mw-files #mw-status {
+  grid-area: status; display: flex; align-items: center; gap: 1px; padding: 0 6px; min-width: 0; overflow: hidden; white-space: nowrap;
+  border-top: 1px solid var(--border); font-size: 11.5px; color: var(--text-dim);
+}
+.mw-status .st-item { display: inline-flex; align-items: center; gap: 5px; height: 20px; padding: 0 7px; border-radius: 5px; flex: 0 0 auto; }
+.mw-status .st-item.hidden { display: none; }
+.mw-status .st-btn { border: none; background: transparent; color: inherit; font: inherit; cursor: pointer; }
+.mw-status .st-btn:hover { background: var(--hover-2); color: var(--text); }
+.mw-status #st-branch svg.ic { color: var(--green); }
+.mw-status #st-changes.has { color: var(--info); }
+.mw-status .vs-sel { color: var(--green-bright); }
+.mw-status .vs-blame { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; font-style: italic; color: var(--text-mute); }
+
+/* ---- Git: раздел «Коммит» ---- */
+body.mw-files #commit-pane:not(.hidden) { display: flex; flex-direction: column; }
+body.mw-files .commit-body > .gm-norepo { margin: 14px 6px 2px; color: var(--text2); }
+body.mw-files .commit-body > .gm-actions, body.mw-files .commit-body > .gm-or { margin: 0 6px; }
+body.mw-files .commit-body { padding: 0 6px 8px; gap: 6px; min-height: 0; }
+body.mw-files .commit-body .gm-changes { flex: 1 1 auto; max-height: none; min-height: 60px; overflow: auto; }   /* список тянется, сообщение — внизу */
+.git-commit-head { display: flex; align-items: center; gap: 6px; height: 36px; flex: 0 0 auto; padding: 0 0 0 6px; }
+.git-commit-title { font-size: 12.5px; font-weight: 650; color: var(--text); }
+.git-commit-num { font-size: 11.5px; color: var(--text-mute); }
+.git-commit-head .gm-mini { width: 26px; height: 26px; border: none; background: transparent; color: var(--icon); border-radius: 6px; }
+.git-commit-head .gm-mini:hover:not(:disabled) { background: var(--hover-2); color: var(--text); }
+.git-commit-head .gm-disc:hover:not(:disabled) { color: var(--danger); }
+body.mw-files .commit-body .gm-changes { border: none; background: transparent; padding: 0; gap: 4px; }
+body.mw-files .gm-group + .gm-group { border-top: none; padding-top: 6px; }
+body.mw-files .gm-group-head { padding: 4px 6px 3px; }
+body.mw-files .gm-group-count { background: transparent; padding: 0; color: var(--text-mute); }
+body.mw-files .gm-file { min-height: 26px; padding: 2px 6px; gap: 7px; border: none; border-radius: 6px; font-size: 13px; }
+body.mw-files .git-body .gm-file:hover { background: var(--hover); border-color: transparent; }
+body.mw-files .git-body .gm-file.open { background: var(--raised); border-color: transparent; }
+body.mw-files .gm-file.conflict { box-shadow: inset 2px 0 0 var(--danger); background: transparent; }
+body.mw-files .gm-file-main { flex-direction: row; align-items: baseline; gap: 7px; }
+body.mw-files .gm-fname { flex: 0 1 auto; }
+body.mw-files .gm-fdir { flex: 1 1 auto; font-size: 11.5px; }
+body.mw-files .gm-code { flex: 0 0 16px; min-width: 16px; padding: 0; border: none; background: transparent; font-family: "JetBrains Mono", monospace; font-size: 11px; font-weight: 700; }
+body.mw-files .gm-code.g-untracked, body.mw-files .gm-fname.g-untracked { color: var(--add); }
+body.mw-files .gm-file .gm-mini { width: 22px; height: 22px; border: none; background: transparent; }
+body.mw-files .gm-file .gm-mini:hover:not(:disabled) { background: var(--hover-2); }
+body.mw-files .git-commit-panel { margin-top: auto; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); padding: 8px; gap: 8px; box-shadow: none; }
+body.mw-files .gm-msg { min-height: 72px; font-size: 13px; line-height: 1.45; background: var(--bg-input); }
+body.mw-files .git-tools-commit { justify-content: flex-start; align-items: center; }
+body.mw-files .git-tools-commit .gm-amend { margin-left: auto; }
+
+/* ---- Git: нижняя панель (история · ветки) ---- */
+body.mw-files .branchlog-body .git-tabs { height: 36px; align-items: flex-end; padding: 0 44px 0 8px; gap: 2px; }
+body.mw-files .git-tab { padding: 7px 12px 8px; font-size: 12.5px; border-radius: 6px 6px 0 0; }
+body.mw-files .git-tab.active { color: var(--text-hi); border-bottom-color: var(--green); }
+body.mw-files .git-log-list { padding: 6px 6px 8px; gap: 4px; }
+body.mw-files .git-search-wrap { padding: 4px 8px; border-radius: 7px; }
+body.mw-files .git-log { gap: 0; }
+body.mw-files .git-commit {
+  display: grid; grid-template-columns: 64px minmax(0, 1fr) minmax(0, 130px) minmax(0, 104px) auto; align-items: center; gap: 10px;
+  height: 28px; padding: 0 8px; border: none; border-radius: 6px; background: transparent; font-size: 12.5px;
+}
+body.mw-files .git-commit:hover { background: var(--hover); }
+body.mw-files .git-commit.sel { background: var(--raised); }
+body.mw-files .git-commit .gm-hash { font-family: "JetBrains Mono", monospace; font-size: 11.5px; color: var(--text-mute); }
+body.mw-files .git-commit-main { display: flex; align-items: center; gap: 5px; min-width: 0; overflow: hidden; }
+body.mw-files .git-csubj { flex: 0 1 auto; min-width: 45%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--text); }
+.git-refs-box { display: flex; gap: 4px; flex: 0 1 auto; min-width: 0; overflow: hidden; }
+body.mw-files .git-cauthor, body.mw-files .git-cwhen { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-dim); font-size: 12px; }
+body.mw-files .git-cwhen { color: var(--text-mute); }
+body.mw-files .git-refs { flex: 0 0 auto; padding: 0 6px; height: 18px; line-height: 17px; border-radius: 9px; font-size: 11px; border: 1px solid var(--border-strong); background: transparent; color: var(--warn); }
+body.mw-files .git-refs.head { color: var(--green-bright); border-color: var(--border-accent); background: var(--accent-soft); }
+body.mw-files .git-refs.remote { color: var(--info); }
+body.mw-files .git-refs.tag { color: var(--star); }
+body.mw-files .git-commit-acts { opacity: 0; }
+body.mw-files .git-commit:hover .git-commit-acts { opacity: 1; }
+body.mw-files .git-commit-acts .gm-mini { width: 22px; height: 22px; border: none; background: transparent; }
+body.mw-files .git-log-files-head .gm-hash { font-family: "JetBrains Mono", monospace; color: var(--text-mute); }
+body.mw-files .git-branch-toolbar, body.mw-files .gm-branches { border: none; background: transparent; padding: 0; }
+body.mw-files .gm-brow { min-height: 28px; padding: 2px 8px; border: none; }
+body.mw-files .gm-brow:hover { background: var(--hover); }
+body.mw-files .gm-brow.current { background: var(--raised); }
+
+/* ---- редактор кода: шрифт и плотность ---- */
+body.mw-files #editor .cm-scroller { font-variant-ligatures: none; font-feature-settings: "calt" 0, "liga" 0; line-height: 1.55; }
+body.mw-files #editor .cm-gutters { background: transparent; }   /* номера строк — на фоне кода, без тёмной полосы */
+/* переключатель вида диффа («Рядом · Единый») — как переключатель режимов в шапке */
+body.mw-files .diff-toolbar { display: inline-flex; gap: 2px; padding: 2px; margin: 6px 8px; border: 1px solid var(--border-strong); border-radius: 8px; background: transparent; width: max-content; }
+body.mw-files .diff-viewbtn { height: 22px; padding: 0 10px; border: none; border-radius: 6px; background: transparent; color: var(--text-dim); font: inherit; font-size: 12px; cursor: pointer; }
+body.mw-files .diff-viewbtn:hover { color: var(--text); }
+body.mw-files .diff-viewbtn.on { background: var(--raised); color: var(--text-hi); border: none; }
+#mod-app.is-max #win-max::before { width: 8px; height: 8px; transform: translate(-60%, -40%); }
+#mod-app.is-max #win-max::after { width: 8px; height: 8px; border: 1.6px solid var(--text); border-radius: 2px; transform: translate(-30%, -60%); background: var(--bg); }
+
+/* ---------------- viewer ---------------- */
+#viewer-pane { flex: 0 0 520px; min-width: 240px; border-left: 1px solid var(--border); display: flex; flex-direction: column; background: var(--panel); }
+#viewer-filename { color: var(--text); font-size: 12px; letter-spacing: 0; }
+.dirty-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--green); display: none; }
+.dirty-dot.show { display: inline-block; }
+/* B15: контейнер редактора/диффа/превью — флекс-ряд (сплит-превью кладёт код+рендер рядом) */
+#viewer-body { flex: 1; min-height: 0; min-width: 0; display: flex; position: relative; }
+#viewer-body > #editor, #viewer-body > #diff-view, #viewer-body > #preview-view { min-width: 0; }
+body.preview-split #preview-view { border-left: 1px solid var(--border); }
+#editor { flex: 1; min-height: 0; overflow: hidden; position: relative; }
+/* A6: sticky scroll — закреплённый заголовок области сверху редактора */
+.cm-sticky-header { position: absolute; top: 0; left: 0; right: 0; z-index: 4; display: flex; align-items: center;
+  gap: 7px; padding: 3px 12px; background: var(--panel); border-bottom: 1px solid var(--border);
+  font-size: 12px; color: var(--text-dim); cursor: pointer; }
+.cm-sticky-header.hidden { display: none; }
+.cm-sticky-header:hover { background: var(--hover); color: var(--text); }
+.cm-sticky-header .sticky-kind { font-family: monospace; color: var(--text-mute); }
+.cm-sticky-header .sticky-name { color: var(--text); }
+#editor .cm-editor { height: 100%; background: transparent; }
+#editor .cm-scroller { overflow: auto; font-family: "JetBrains Mono", "Fira Code", "Cascadia Code", Consolas, monospace; font-size: var(--editor-fs, 13px); }
+#editor .cm-scroller::-webkit-scrollbar-thumb { background: var(--border-strong); }
+/* C18: бейдж числа изменённых файлов на кнопке режима агента + откат ханка в диффе */
+#viewer-agent { position: relative; }
+.agent-badge { position: absolute; top: -3px; right: -3px; min-width: 14px; height: 14px; padding: 0 3px;
+  border-radius: 7px; background: var(--warn); color: var(--bg); font-size: 9px; line-height: 14px;
+  text-align: center; font-weight: 700; box-sizing: border-box; pointer-events: none; }
+.diff-line.hunk { display: flex; align-items: center; gap: 8px; }
+.diff-hunk-revert { margin-left: auto; display: inline-flex; align-items: center; justify-content: center;
+  width: 18px; height: 16px; border: none; background: transparent; color: var(--text-dim); border-radius: 4px;
+  cursor: pointer; flex: 0 0 auto; }
+.diff-hunk-revert:hover { color: var(--danger); background: var(--hover); }
+/* C21: гаттер авторства (агент/ты) */
+#editor .cm-auth-gutter { width: 3px; padding: 0; background: transparent; }
+#editor .cm-auth-gutter .cm-gutterElement { padding: 0; }
+.cm-auth-mark { width: 3px; height: 100%; min-height: 1em; box-sizing: border-box; }
+.cm-auth-mark.auth-you { background: var(--info); }
+.cm-auth-mark.auth-agent { background: var(--warn); }
+/* B11: инлайн-свотч цвета перед литералом */
+.cm-color-swatch { display: inline-block; width: 11px; height: 11px; border-radius: 3px; margin-right: 4px;
+  vertical-align: middle; cursor: pointer; border: 1px solid var(--border-strong); box-sizing: border-box; }
+/* B12: подсветка TODO/FIXME/… */
+.cm-todo { font-weight: 700; border-radius: 3px; padding: 0 2px; background: var(--hover); }
+.cm-todo-todo { color: var(--info); }
+.cm-todo-fixme, .cm-todo-bug, .cm-todo-xxx { color: var(--danger); }
+.cm-todo-hack { color: var(--warn); }
+.cm-todo-note { color: var(--add); }
+/* глифы видов TODO в оверлей-списке */
+.ov-kind.ov-todo-todo { color: var(--info); }
+.ov-kind.ov-todo-fixme, .ov-kind.ov-todo-bug, .ov-kind.ov-todo-xxx { color: var(--danger); }
+.ov-kind.ov-todo-hack { color: var(--warn); }
+.ov-kind.ov-todo-note { color: var(--add); }
+/* git-маркеры в гаттере: тонкая цветная полоса справа от номеров строк (изменения vs HEAD) */
+#editor .cm-git-gutter { width: 3px; padding: 0; background: transparent; }
+#editor .cm-git-gutter .cm-gutterElement { padding: 0; }
+.cm-git-mark { width: 3px; height: 100%; min-height: 1em; box-sizing: border-box; }
+.cm-git-mark.git-added { background: var(--add); }
+.cm-git-mark.git-modified { background: var(--warn); }
+/* удаление: маленький треугольник на стыке строк, где что-то было вырезано */
+.cm-git-mark.git-deleted { width: 0; height: 0; background: none;
+  border-left: 4px solid var(--danger); border-top: 3px solid transparent; border-bottom: 3px solid transparent; }
+/* плашка-конфликт авто-reload (файл изменён на диске + есть несохранённые правки) */
+.reload-bar { display: flex; align-items: center; gap: 8px; padding: 6px 10px;
+  background: color-mix(in srgb, var(--warn) 14%, transparent); border-bottom: 1px solid var(--border); color: var(--text); font-size: 12px; }
+.reload-bar-text { flex: 1; color: var(--warn); }
+.reload-bar-btn { flex: 0 0 auto; padding: 3px 10px; border-radius: 6px; border: 1px solid var(--border-strong);
+  background: var(--green); color: var(--accent-contrast); font-size: 12px; font-weight: 600; cursor: pointer; }
+.reload-bar-btn:hover { filter: brightness(1.08); }
+/* minimap — вписываем в тему: разделитель слева + акцентная рамка «где ты» */
+#editor .cm-minimap-gutter { border-left: 1px solid var(--border); background: var(--ink-2); }
+#editor .cm-minimap-overlay { background: var(--green) !important; opacity: 0.14 !important; }
+#editor .cm-minimap-overlay-container:hover .cm-minimap-overlay { opacity: 0.24 !important; }
+/* активная строка в гаттере: яркий жирный номер + лёгкая подложка — чтобы сразу видеть, где курсор */
+#editor .cm-activeLineGutter { color: var(--text); font-weight: 700; background: var(--ink-3, var(--ink-2)); }
+/* сворачивание кода (folding): стрелки в гаттере под цвет темы */
+#editor .cm-foldGutter { color: var(--text-dim); }
+#editor .cm-foldGutter .cm-gutterElement { cursor: pointer; opacity: 0.55; transition: opacity 0.12s; }
+#editor .cm-foldGutter .cm-gutterElement:hover { opacity: 1; color: var(--text); }
+#editor .cm-foldPlaceholder { background: var(--ink-2); border: 1px solid var(--border); color: var(--text-dim);
+  border-radius: 4px; padding: 0 6px; margin: 0 2px; }
+/* нижняя статус-строка вивера: позиция курсора / выделение / язык */
+/* хлебные крошки: путь от корня проекта + текущий символ */
+.viewer-crumbs { display: flex; align-items: center; flex-wrap: wrap; gap: 3px; flex: 0 0 auto; padding: 3px 10px;
+  border-bottom: 1px solid var(--border); font-size: 11px; color: var(--text-dim); user-select: none; }
+.viewer-crumbs.hidden { display: none; }
+.viewer-crumbs .crumb-sep { color: var(--text-mute); opacity: 0.7; }
+.viewer-crumbs .crumb-file { color: var(--text); }
+.viewer-crumbs .crumb-sym { color: var(--green); }
+/* гаттер закладок: звёздочка слева на отмеченных строках */
+#editor .cm-bm-gutter { width: 14px; padding: 0; }
+#editor .cm-bm-mark { color: var(--warn); font-size: 11px; line-height: 1; text-align: center; cursor: pointer; }
+/* оверлеи вивера: Ctrl+P / поиск в проекте / структура файла / закладки */
+.viewer-ov { position: fixed; inset: 0; z-index: 80; display: flex; justify-content: center; align-items: flex-start;
+  padding-top: 12vh; background: rgba(0,0,0,0.35); }
+.viewer-ov-box { width: 560px; max-width: 90vw; max-height: 70vh; display: flex; flex-direction: column;
+  background: var(--panel); border: 1px solid var(--border-strong); border-radius: 10px; overflow: hidden;
+  box-shadow: var(--card-shadow); }
+.viewer-ov-box.wide { width: 760px; }
+.viewer-ov-input { border: none; outline: none; background: transparent; color: var(--text);
+  font-size: 14px; padding: 12px 14px; border-bottom: 1px solid var(--border); }
+.viewer-ov-list { overflow: auto; flex: 1; }
+.viewer-ov-row { display: flex; align-items: baseline; gap: 8px; padding: 6px 14px; cursor: pointer; font-size: 13px; color: var(--text); }
+.viewer-ov-row.active { background: var(--accent-soft, rgba(255,255,255,0.07)); }
+.viewer-ov-row .ov-name { color: var(--text); white-space: nowrap; }
+.viewer-ov-row .ov-path { color: var(--text-dim); font-size: 11px; overflow: hidden; text-overflow: ellipsis; }
+.viewer-ov-row .ov-kind { flex: 0 0 18px; text-align: center; color: var(--green); font-size: 11px; font-weight: 700; }
+/* панель поиска по проекту */
+.search-head { display: flex; align-items: center; border-bottom: 1px solid var(--border); }
+.search-head .viewer-ov-input { flex: 1; border-bottom: none; }
+.search-opts { display: flex; gap: 4px; padding: 0 10px; }
+.search-opt { display: flex; align-items: center; gap: 3px; font-size: 11px; color: var(--text-dim); cursor: pointer; user-select: none; }
+.search-info { padding: 5px 14px; font-size: 11px; color: var(--text-dim); border-bottom: 1px solid var(--border); }
+.search-row { flex-direction: column; gap: 2px; align-items: stretch; }
+.search-row .sr-loc { color: var(--green); font-size: 11px; }
+.search-row .sr-text { color: var(--text-dim); font-family: "JetBrains Mono", Consolas, monospace; font-size: 11.5px;
+  white-space: pre; overflow: hidden; text-overflow: ellipsis; }
+
+/* ---------------- tree ---------------- */
+#tree-pane { flex: 0 0 240px; min-width: 170px; border-left: 1px solid var(--border); background: var(--panel); display: flex; flex-direction: column; }
+#tree { overflow: auto; flex: 1; padding: 4px 0 10px; }
+.tree-empty { padding: 22px 16px; color: var(--text-mute); font-size: 12px; line-height: 1.5; text-align: center; }
+.tree-row {
+  display: flex; align-items: center; gap: 6px;
+  white-space: nowrap; cursor: pointer; padding: 3px 8px; font-size: 12.5px; color: var(--text);
+}
+.tree-row:hover { background: var(--hover); }
+.tree-row.open { background: var(--accent-soft); color: var(--text-hi); }
+/* drag-and-drop: подсветка папки-приёмника и корня дерева */
+.tree-row.drag-over { background: var(--accent-soft); box-shadow: inset 0 0 0 1px var(--accent); }
+#tree.drag-over-root { box-shadow: inset 0 0 0 2px var(--accent); border-radius: 4px; }
+.tree-chev { width: 10px; flex: 0 0 10px; color: var(--text-mute); font-size: 9px; }
+.tree-row .ti { flex: 0 0 14px; }
+.tree-name { overflow: hidden; text-overflow: ellipsis; }
+.tree-row.dir .tree-name { color: var(--text); font-weight: 500; }
+
+/* ---------------- system/scratch terminal ---------------- */
+#scratch-pane { flex: 0 0 420px; min-width: 240px; border-left: 1px solid var(--border); display: flex; flex-direction: column; background: var(--ink-2); }
+#scratch-term { flex: 1; position: relative; overflow: hidden; }
+.scratch-tabs { flex: 0 0 auto; min-width: 0; display: flex; align-items: flex-end; gap: 3px; padding: 4px 8px 0; overflow-x: auto; overflow-y: hidden; border-bottom: 1px solid var(--border); }
+.scratch-tabs::-webkit-scrollbar { height: 0; }
+#scratch-term .xterm { height: 100%; }
+#app.single #scratch-pane { display: none !important; }
+
+/* ---------------- Git (внутри окна вивера): базовые правила контейнеров секций ---------------- */
+.git-body { flex: 1; overflow: auto; padding: 10px; display: flex; flex-direction: column; gap: 10px; }
+.git-body .gm-branch { flex-wrap: wrap; }
+.git-body .gm-changes { max-height: 34vh; }
+.git-loading { color: var(--text-dim); font-size: 12.5px; padding: 4px 2px; }
+.git-sec { font-size: 11px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; color: var(--text-mute); margin-top: 2px; }
+.git-body .gm-file { cursor: pointer; border-radius: 6px; }
+.git-body .gm-file:hover { background: var(--hover); }
+.git-body .gm-file.open { background: var(--accent-soft); color: var(--text-hi); }
+.git-body .gm-fname { flex: 1; overflow: hidden; text-overflow: ellipsis; }
+
+/* ---- пикер подключений «Выполнить в БД» (вивер, кнопка на .sql-файле) ---- */
+.runsql-list { display: flex; flex-direction: column; gap: 6px; margin-top: 12px; max-height: 50vh; overflow-y: auto; }
+.runsql-row {
+  display: flex; align-items: center; gap: 9px; min-width: 0; padding: 9px 11px;
+  border: 1px solid var(--border); border-radius: 9px;
+  background: var(--surface-2); color: var(--text); cursor: pointer; text-align: left; font-size: 13px;
+}
+.runsql-row:hover { background: var(--hover-2); border-color: var(--border-accent); }
+.runsql-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--text-mute); flex: none; }
+.runsql-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.runsql-sub { color: var(--text-dim); font-size: 11.5px; margin-left: auto; flex: none; }
+.runsql-prod { color: var(--danger); font-size: 10px; font-weight: 700; border: 1px solid var(--danger); border-radius: 5px; padding: 1px 5px; flex: none; }
+
+/* ---------------- git markers in the tree ---------------- */
+.tree-name.g-mod { color: var(--warn); }
+.tree-name.g-add { color: var(--add); }
+.tree-name.g-del { color: var(--danger); text-decoration: line-through; }
+.tree-row.dir .tree-name.g-mod,
+.tree-row.dir .tree-name.g-add { font-weight: 600; }
+
+/* ---------------- viewer diff ---------------- */
+#diff-view {
+  display: none; flex: 1; overflow: auto; padding: 6px 0;
+  font-family: "JetBrains Mono", "Fira Code", Consolas, monospace; font-size: var(--editor-fs, 13px); line-height: 1.45;
+}
+.diff-line { padding: 0 12px; white-space: pre-wrap; word-break: break-word; }
+.diff-line.add { background: color-mix(in srgb, var(--ok) 12%, transparent); color: color-mix(in srgb, var(--ok) 55%, var(--text)); }
+.diff-line.del { background: color-mix(in srgb, var(--danger) 12%, transparent); color: color-mix(in srgb, var(--danger) 55%, var(--text)); }
+.diff-line.hunk { color: var(--info); background: color-mix(in srgb, var(--info) 8%, transparent); }
+.diff-line.meta { color: var(--text-mute); }
+.diff-empty { padding: 18px; color: var(--text-dim); text-align: center; }
+#viewer-diff.on { color: var(--green); border-color: var(--border-accent); }
+
+/* side-by-side дифф (@codemirror/merge): тумблер вида + контейнер MergeView */
+/* display диффа задаёт JS инлайном (flex для сплита / block для unified) — класс даёт остальное */
+#diff-view.split { flex-direction: column; overflow: hidden; padding: 0; }
+.diff-toolbar {
+  display: flex; gap: 4px; padding: 5px 10px; flex: 0 0 auto;
+  border-bottom: 1px solid var(--border); background: var(--panel);
+  position: sticky; top: -6px; z-index: 3;
+}
+#diff-view.split .diff-toolbar { position: static; }
+.diff-viewbtn {
+  border: 1px solid var(--border); background: transparent; color: var(--text-dim);
+  font-size: 11px; padding: 2px 10px; border-radius: 7px; cursor: pointer;
+}
+.diff-viewbtn:hover { color: var(--text); background: var(--hover); }
+.diff-viewbtn.on { color: var(--green); border-color: var(--border-accent); background: var(--hover); }
+/* MergeView скроллится ВНЕШНИМ .cm-mergeView (его база даёт внутренним скроллерам
+   height:auto/overflow:visible !important) — внутренним панелям высоту НЕ фиксировать,
+   иначе скролл пропадает. Контейнеру — фикс. высота, .cm-mergeView — 100% + overflow:auto. */
+.diff-merge { flex: 1; min-height: 0; overflow: hidden; }
+.diff-merge .cm-mergeView { height: 100%; overflow-y: auto; }
+
+/* Blame-гаттер (аннотация «автор · возраст» слева, PhpStorm Annotate) */
+.cm-blame-gutter { min-width: 148px; max-width: 190px; border-right: 1px solid var(--border); }
+.cm-blame-mark {
+  padding: 0 8px 0 6px; font-size: 11px; color: var(--text-mute);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: default;
+}
+.cm-blame-mark.unc { color: var(--green); text-align: center; }
+
+/* Amend в панели коммита */
+.gm-amend { display: inline-flex; align-items: center; gap: 5px; color: var(--text-dim); font-size: 12px; cursor: pointer; user-select: none; margin-left: auto; }
+.gm-amend input { accent-color: var(--green); }
+.gm-amend:hover { color: var(--text); }
+
+/* ---------------- замена по проекту (Ctrl+Shift+R) ---------------- */
+.replace-row { display: flex; align-items: center; gap: 8px; }
+.rr-check { flex: 0 0 auto; accent-color: var(--green); }
+.replace-foot { display: flex; align-items: center; gap: 8px; padding: 8px 2px 0; border-top: 1px solid var(--border); margin-top: 6px; }
+.replace-foot-space { flex: 1; }
+
+/* ---------------- локальная история файла (PhpStorm Local History) ---------------- */
+.modal-hist { width: min(1180px, 94vw); height: min(760px, 88vh); display: flex; flex-direction: column; }
+.hist-head { display: flex; align-items: baseline; gap: 10px; padding: 2px 2px 10px; }
+.hist-title { font-weight: 600; color: var(--text); }
+.hist-count { color: var(--text-dim); font-size: 12px; }
+.hist-grid { flex: 1; min-height: 0; display: grid; grid-template-columns: 240px 1fr; gap: 10px; }
+.hist-list { overflow: auto; border: 1px solid var(--border); border-radius: 9px; background: var(--ink); }
+.hist-item { padding: 7px 10px; display: flex; flex-direction: column; gap: 2px; cursor: pointer; border-bottom: 1px solid var(--border); }
+.hist-item:hover { background: var(--hover); }
+.hist-item.active { background: var(--hover); box-shadow: inset 2px 0 0 var(--green); }
+.hist-when { color: var(--text); font-size: 12px; }
+.hist-tag { font-size: 11px; color: var(--text-dim); }
+.hist-tag.t-ext { color: var(--info); }
+.hist-size { font-size: 11px; color: var(--text-mute); }
+.hist-right { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.hist-collabels { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 0 2px 6px; color: var(--text-dim); font-size: 11px; }
+.hist-diff { flex: 1; min-height: 0; border: 1px solid var(--border); border-radius: 9px; overflow: hidden; }
+.hist-diff .cm-mergeView { height: 100%; overflow-y: auto; } /* скролл — внешний .cm-mergeView (см. .diff-merge) */
+
+/* ---------------- viewer preview (md / image / html) ---------------- */
+#preview-view { display: none; flex: 1; overflow: auto; }
+.prev-empty { padding: 18px; color: var(--text-dim); text-align: center; }
+.prev-img { display: block; max-width: 100%; margin: 16px auto; background:
+  linear-gradient(45deg,var(--raised) 25%,transparent 25%),linear-gradient(-45deg,var(--raised) 25%,transparent 25%),
+  linear-gradient(45deg,transparent 75%,var(--raised) 75%),linear-gradient(-45deg,transparent 75%,var(--raised) 75%);
+  background-size: 18px 18px; background-position: 0 0,0 9px,9px -9px,-9px 0; }
+.prev-frame { width: 100%; height: 100%; border: 0; background: #fff; }
+.prev-md { padding: 16px 24px; color: var(--text); line-height: 1.6; font-size: 14px; }
+/* текст в md-превью можно выделять и копировать (глобально на body стоит user-select: none) */
+.prev-md, .prev-md * { -webkit-user-select: text; user-select: text; cursor: auto; }
+/* B17: зеркальная подсветка выделения во «второй» колонке сплита — не выделение (Ctrl+C копирует из
+   колонки, где выделял пользователь), полупрозрачный акцент выводится из токена темы */
+.cm-mirror-hl { background: color-mix(in srgb, var(--green) 28%, transparent); border-radius: 2px; }
+::highlight(lite-mirror) { background-color: color-mix(in srgb, var(--green) 28%, transparent); }
+.prev-md h1, .prev-md h2, .prev-md h3 { color: var(--text-hi); border-bottom: 1px solid var(--border); padding-bottom: 4px; margin: 18px 0 10px; }
+.prev-md h1 { font-size: 1.6em; } .prev-md h2 { font-size: 1.35em; } .prev-md h3 { font-size: 1.15em; border-bottom: 0; }
+.prev-md a { color: var(--green-bright); }
+.prev-md code { background: var(--hover); padding: 1px 5px; border-radius: 5px; font-family: "JetBrains Mono", monospace; font-size: 0.9em; }
+.prev-md pre { background: var(--ink); border: 1px solid var(--border); border-radius: 9px; padding: 12px; overflow: auto; }
+.prev-md pre code { background: none; padding: 0; }
+.prev-md blockquote { margin: 10px 0; padding: 4px 14px; border-left: 3px solid var(--green-dim); color: var(--text-dim); }
+.prev-md table { border-collapse: collapse; margin: 10px 0; }
+.prev-md th, .prev-md td { border: 1px solid var(--border); padding: 6px 10px; }
+.prev-md img { max-width: 100%; }
+.prev-md hr { border: 0; border-top: 1px solid var(--border); margin: 16px 0; }
+.prev-md ul, .prev-md ol { padding-left: 22px; }
+
+/* HTML-превью на весь экран — оверлей поверх всего окна для проверки вёрстки */
+body.preview-full #preview-view {
+  position: fixed; inset: 0; z-index: 5000;
+  display: block !important; overflow: auto; background: #fff;
+}
+body.preview-full .prev-frame { width: 100%; height: 100%; }
+#preview-full-exit {
+  position: fixed; top: 12px; right: 14px; z-index: 5001;
+  background: var(--bg-pop); color: var(--text); border: 1px solid var(--border-strong);
+  border-radius: 9px; padding: 6px 12px; font-size: 13px; cursor: pointer;
+  backdrop-filter: blur(3px); transition: background .12s, color .12s;
+}
+#preview-full-exit:hover { background: var(--press); color: var(--text-hi); }
+
+/* CodeMirror search panel — dark to match */
+#editor .cm-panels { background: var(--bg-pop); color: var(--text); border-color: var(--border-strong); }
+#editor .cm-panel.cm-search { padding: 6px 8px; }
+#editor .cm-panel.cm-search input, #editor .cm-textfield {
+  background: var(--bg-input); border: 1px solid var(--border-strong); color: var(--text); border-radius: 7px; padding: 3px 6px;
+}
+#editor .cm-panel.cm-search .cm-button {
+  background: var(--hover); border: 1px solid var(--border-strong); color: var(--text); border-radius: 7px; background-image: none;
+}
+#editor .cm-panel.cm-search label { color: var(--text-dim); }
+#editor .cm-searchMatch { background: color-mix(in srgb, var(--warn) 30%, transparent); }
+#editor .cm-searchMatch-selected { background: color-mix(in srgb, var(--accent) 40%, transparent); }
+
+/* ---------------- git panel (gm-* shared by the right-pane Git module) ---------------- */
+.gm-branch { display: flex; align-items: center; gap: 10px; }
+.gm-norepo { color: var(--text-dim); }
+.gm-clean { color: var(--text-dim); font-size: 12.5px; padding: 8px; }
+
+.gm-branchdd { position: relative; min-width: 0; }
+.gm-branchsel {
+  display: flex; align-items: center; gap: 6px; min-width: 0; width: 100%; cursor: pointer; text-align: left;
+  background: var(--bg-input); border: 1px solid var(--border-strong);
+  color: var(--green-bright); border-radius: 8px; padding: 5px 8px; font-weight: 600; outline: none;
+}
+.gm-branchsel:hover, .gm-branchdd.open .gm-branchsel { border-color: var(--border-accent); }
+.gm-branchsel-txt { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gm-branchsel svg { flex: 0 0 auto; opacity: .65; transition: transform .12s; }
+.gm-branchdd.open .gm-branchsel svg { transform: rotate(180deg); }
+.gm-branchpop {
+  position: absolute; z-index: 60; top: calc(100% + 4px); left: 0; right: 0; max-height: 280px; overflow: auto;
+  background: var(--bg-pop); border: 1px solid var(--border-strong); border-radius: 9px; padding: 4px;
+  box-shadow: var(--card-shadow); display: flex; flex-direction: column; gap: 1px;
+}
+.gm-branchpop.hidden { display: none; }
+.gm-branchitem {
+  display: flex; align-items: center; gap: 8px; min-width: 0; padding: 5px 8px; border-radius: 6px;
+  cursor: pointer; font-size: 12.5px; color: var(--text);
+}
+.gm-branchitem:hover { background: var(--hover); }
+.gm-branchitem.cur { color: var(--green-bright); font-weight: 650; }
+.gm-branchitem svg { flex: 0 0 auto; opacity: .8; }
+.gm-branchitem-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gm-btrack {
+  flex: 0 0 auto; font-size: 10.5px; line-height: 1.3; padding: 1px 6px; border-radius: 8px;
+  border: 1px solid var(--border); background: var(--surface-2); color: var(--text-dim); white-space: nowrap;
+}
+.gm-btrack.behind { color: var(--warn); border-color: var(--border-strong); }
+.gm-btrack.ahead { color: var(--green-bright); border-color: var(--border-accent); }
+.gm-btrack.gone { color: var(--text-mute); }
+/* ---- выпадашка веток PhpStorm-style: поиск + секции + дерево Local/Remote + звезда избранного ---- */
+.gm-branchpop { min-width: 300px; max-height: 60vh; }
+.gm-branch-search { margin: 2px 2px 5px; padding: 6px 9px; border-radius: 7px; background: var(--bg-input);
+  border: 1px solid var(--border-strong); color: var(--text); font-size: 12.5px; outline: none; }
+.gm-branch-search:focus { border-color: var(--border-accent); }
+.gm-branch-body { display: flex; flex-direction: column; gap: 1px; }
+.gm-branch-section { padding: 6px 8px 2px; font-size: 10px; font-weight: 700; letter-spacing: .04em;
+  text-transform: uppercase; color: var(--text-mute); }
+.gm-branch-none { padding: 3px 10px; color: var(--text-mute); font-size: 12px; }
+.gm-branch-folder { display: flex; align-items: center; gap: 6px; padding: 4px 8px; border-radius: 6px;
+  cursor: pointer; color: var(--text-dim); font-size: 12.5px; }
+.gm-branch-folder:hover { background: var(--hover); color: var(--text); }
+.gm-branch-chev { flex: 0 0 auto; display: inline-flex; align-items: center; color: var(--text-mute); }
+.gm-branch-fname { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gm-branch-star { flex: 0 0 auto; display: flex; align-items: center; justify-content: center; width: 18px; height: 18px;
+  border: none; background: transparent; color: var(--text-mute); border-radius: 4px; cursor: pointer; opacity: 0; }
+.gm-branchitem:hover .gm-branch-star { opacity: .65; }
+.gm-branch-star.on { opacity: 1; color: var(--star); }
+.gm-branch-star:hover { opacity: 1; color: var(--star); }
+/* меню действий по ветке (плавающее, справа от строки) */
+.gm-branchmenu { position: fixed; z-index: 90; min-width: 230px; padding: 4px; border-radius: 9px;
+  background: var(--bg-pop); border: 1px solid var(--border-strong); box-shadow: var(--card-shadow);
+  display: flex; flex-direction: column; gap: 1px; }
+.gm-branchmenu-item { padding: 6px 10px; border-radius: 6px; cursor: pointer; font-size: 12.5px; color: var(--text); white-space: nowrap; }
+.gm-branchmenu-item:hover { background: var(--hover); }
+.gm-branchmenu-item.danger { color: var(--danger); }
+.gm-branchmenu-sep { height: 1px; background: var(--border); margin: 3px 2px; }
+/* модалка «Сравнить с текущей» — два списка коммитов */
+.modal-compare { width: min(820px, 94vw); }
+.cmp-head { margin-bottom: 8px; }
+.cmp-title { font-weight: 650; color: var(--text); }
+.cmp-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; min-height: 220px; max-height: 56vh; }
+.cmp-col { display: flex; flex-direction: column; min-height: 0; }
+.cmp-collabel { font-size: 11px; color: var(--text-dim); padding: 0 2px 6px; }
+.cmp-list { flex: 1 1 auto; min-height: 0; overflow: auto; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); padding: 5px; display: flex; flex-direction: column; gap: 3px; }
+.cmp-commit { display: flex; gap: 8px; align-items: baseline; padding: 3px 5px; border-radius: 6px; font-size: 12px; }
+.cmp-commit:hover { background: var(--hover); }
+.cmp-subj { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
+
+.git-commit-top {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px; min-width: 0;
+}
+.git-sec { font-size: 11px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; color: var(--text-mute); margin-top: 2px; }
+
+.gm-changes {
+  max-height: 240px; overflow: auto; border: 1px solid var(--border); border-radius: 8px;
+  padding: 5px; background: var(--surface); display: flex; flex-direction: column; gap: 5px;
+}
+.git-body .gm-changes { max-height: 30vh; }
+.git-change-list { min-height: 94px; }
+.gm-group { display: flex; flex-direction: column; gap: 2px; }
+.gm-group + .gm-group { padding-top: 4px; border-top: 1px solid var(--border); }
+.gm-group-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 4px 6px 2px; color: var(--text-mute); font-size: 10.5px; font-weight: 700;
+  text-transform: uppercase; letter-spacing: 0.04em;
+}
+.gm-group-count { padding: 1px 6px; border-radius: 8px; background: var(--hover); color: var(--text-dim); }
+.gm-file {
+  display: flex; align-items: center; gap: 7px; min-height: 32px; padding: 4px 6px;
+  font-size: 12.5px; border-radius: 7px; cursor: pointer; border: 1px solid transparent;
+}
+.git-body .gm-file:hover { background: var(--hover); border-color: var(--border); }
+.git-body .gm-file.open { background: var(--accent-soft); color: var(--text); border-color: var(--border-accent); }
+.gm-file.conflict { border-color: var(--danger); background: var(--hover); }
+.gm-check { width: 14px; height: 14px; flex: 0 0 auto; cursor: pointer; accent-color: var(--green); }
+.gm-check-spacer { flex: 0 0 14px; width: 14px; height: 14px; }
+.gm-code {
+  flex: 0 0 25px; min-width: 25px; font-family: monospace; font-weight: 800; text-align: center;
+  border-radius: 6px; padding: 2px 3px; background: var(--surface-2); border: 1px solid var(--border);
+}
+/* цвета статусов файлов как в PhpStorm: modified=синий, added=зелёный, untracked=оранжевый, deleted=серый, conflict=красный */
+.gm-code.g-modified, .gm-fname.g-modified, .gm-code.g-mod { color: var(--info); }
+.gm-code.g-added, .gm-fname.g-added, .gm-code.g-add { color: var(--add); }
+.gm-code.g-untracked, .gm-fname.g-untracked { color: var(--warn); }
+.gm-code.g-deleted, .gm-fname.g-deleted, .gm-code.g-del { color: var(--text-dim); }
+.gm-code.g-conflict, .gm-fname.g-conflict { color: var(--danger); }
+.gm-file-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.gm-fname { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
+.gm-fdir { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-mute); font-size: 11px; }
+.gm-file-actions { display: inline-flex; align-items: center; gap: 4px; opacity: 0; flex: 0 0 auto; }
+.gm-file:hover .gm-file-actions, .gm-file:focus-within .gm-file-actions, .gm-file.conflict .gm-file-actions { opacity: 1; }
+.gm-mini {
+  width: 24px; height: 24px; padding: 0; border-radius: 7px; cursor: pointer; font-size: 13px;
+  background: var(--hover); border: 1px solid var(--border); color: var(--text-dim);
+}
+.gm-mini:hover:not(:disabled) { color: var(--text); border-color: var(--border-strong); background: var(--hover-2); }
+.gm-mini:disabled { opacity: 0.4; cursor: default; }
+.gm-resolve { color: var(--danger); }
+.gm-disc:hover:not(:disabled) { color: var(--danger); border-color: var(--danger); }
+
+/* ---- секция «Коммит» (PhpStorm-style): тулбар-иконки сверху · список · сообщение+кнопки снизу ---- */
+.commit-body { gap: 8px; }
+.commit-body .gm-changes { flex: 1 1 auto; max-height: none; min-height: 120px; }
+.gm-group-title { flex: 1; }
+.gm-group-check { margin-right: 2px; accent-color: var(--green); }
+.gm-group-head { cursor: default; }
+
+/* ---- модалка списка stash: слева наборы, справа их файлы ---- */
+.modal-stash { width: min(760px, 94vw); }
+.stash-head { margin-bottom: 8px; }
+.stash-title { font-weight: 650; color: var(--text); }
+.stash-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; min-height: 280px; max-height: 56vh; }
+.stash-list, .stash-files { border: 1px solid var(--border); border-radius: 8px; background: var(--surface); overflow: auto; padding: 5px; }
+.stash-item { display: flex; align-items: center; gap: 8px; padding: 7px 8px; border-radius: 7px; cursor: pointer; border: 1px solid transparent; }
+.stash-item:hover { background: var(--hover); border-color: var(--border); }
+.stash-item.active { background: var(--accent-soft); border-color: var(--border-accent); }
+.stash-item-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.stash-item-msg { color: var(--text); font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.stash-item-when { color: var(--text-mute); font-size: 11px; }
+.stash-item-acts { display: inline-flex; gap: 4px; opacity: 0; flex: 0 0 auto; }
+.stash-item:hover .stash-item-acts, .stash-item.active .stash-item-acts { opacity: 1; }
+.stash-file { display: flex; align-items: center; gap: 7px; padding: 4px 6px; font-size: 12.5px; }
+.stash-file-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.stash-files-empty { color: var(--text-dim); padding: 16px; text-align: center; font-size: 12px; }
+
+.git-conflict-note {
+  display: flex; align-items: center; gap: 7px; padding: 7px 8px; border-radius: 8px;
+  border: 1px solid var(--danger); color: var(--danger); background: var(--surface);
+  font-size: 12px;
+}
+.git-clean-state { min-height: 128px; display: grid; place-items: center; align-content: center; gap: 6px; color: var(--text-dim); }
+.git-clean-state .ic { color: var(--green-bright); }
+.git-clean-title { color: var(--text); font-weight: 650; }
+.git-clean-note { font-size: 12px; text-align: center; }
+
+.diff-mark { display: inline-block; width: 1ch; opacity: 0.55; user-select: none; }
+
+.git-commit-panel {
+  display: flex; flex-direction: column; gap: 8px; border: 1px solid var(--border);
+  border-radius: 8px; background: var(--surface); padding: 8px;
+}
+.git-commit-panel { position: sticky; bottom: 0; z-index: 2; box-shadow: 0 -8px 18px var(--bg); }
+.git-commit-count { color: var(--text-dim); font-size: 11.5px; white-space: nowrap; }
+.gm-msg {
+  width: 100%; min-height: 58px; resize: vertical; padding: 8px 10px; border-radius: 8px;
+  background: var(--bg-input); border: 1px solid var(--border-strong); color: var(--text);
+  font-size: 12.5px; outline: none; font-family: inherit;
+}
+.gm-msg:focus { border-color: var(--border-accent); }
+.git-tools-commit { justify-content: flex-end; }
+.git-tool.loading { opacity: 0.7; cursor: wait; }
+
+.git-history-tools { display: flex; align-items: center; gap: 8px; }
+.git-search-wrap {
+  flex: 1; min-width: 0; display: flex; align-items: center; gap: 7px; padding: 6px 8px;
+  border: 1px solid var(--border); border-radius: 8px; background: var(--bg-input); color: var(--text-dim);
+}
+.git-search { flex: 1; min-width: 0; border: 0; outline: 0; background: transparent; color: var(--text); font: inherit; font-size: 12.5px; }
+.git-log { display: flex; flex-direction: column; gap: 5px; max-height: none; overflow: visible; }
+.git-commit {
+  display: flex; flex-direction: column; gap: 4px; padding: 8px 9px; border: 1px solid var(--border);
+  border-radius: 8px; font-size: 12px; cursor: pointer; background: var(--surface);
+}
+.git-commit:hover { background: var(--hover); border-color: var(--border-strong); }
+.git-commit-main { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+/* название коммита переносится на новую строку, а не вылезает за блок справа */
+.git-csubj { flex: 1; min-width: 0; color: var(--text); white-space: normal; overflow-wrap: anywhere; }
+.gm-hash { font-family: monospace; color: var(--green-bright); flex: 0 0 auto; }
+.git-refs { color: var(--warn); font-size: 11px; padding: 1px 6px; border-radius: 8px; background: var(--hover); border: 1px solid var(--border); }
+
+.git-branch-toolbar {
+  justify-content: space-between; border: 1px solid var(--border); border-radius: 8px; padding: 8px;
+  background: var(--surface); flex-wrap: wrap;
+}
+.git-current-branch { min-width: 0; display: inline-flex; align-items: center; gap: 7px; color: var(--green-bright); font-weight: 650; }
+.gm-branches {
+  max-height: none; overflow: visible; border: 1px solid var(--border); border-radius: 8px;
+  padding: 5px; background: var(--surface); display: flex; flex-direction: column; gap: 2px;
+}
+.gm-brow { display: flex; align-items: center; gap: 8px; min-height: 34px; padding: 5px 6px; border-radius: 7px; border: 1px solid transparent; }
+.gm-brow:hover { background: var(--hover); border-color: var(--border); }
+.gm-brow.current { background: var(--accent-soft); border-color: var(--border-accent); }
+.gm-brname { flex: 1; min-width: 0; display: inline-flex; align-items: center; gap: 7px; overflow: hidden; font-size: 12.5px; }
+.gm-brname > span:first-of-type { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gm-brname.cur { color: var(--green-bright); font-weight: 650; }
+.git-branch-badge { flex: 0 0 auto; font-size: 10.5px; color: var(--text-dim); border: 1px solid var(--border); border-radius: 8px; padding: 1px 6px; background: var(--hover); }
+.gm-bacts { display: flex; gap: 4px; opacity: 0; transition: opacity .12s; }
+.gm-brow:hover .gm-bacts, .gm-brow:focus-within .gm-bacts, .gm-brow.current .gm-bacts { opacity: 1; }
+
+.gm-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.gm-actions .btn:disabled { opacity: 0.45; cursor: default; }
+.gm-or { color: var(--text-dim); font-size: 12px; margin-top: 4px; }
+.gm-cloneurl {
+  flex: 1; min-width: 220px; padding: 8px 10px; border-radius: 8px; background: var(--bg-input);
+  border: 1px solid var(--border-strong); color: var(--text); font-size: 12.5px; outline: none; font-family: inherit;
+}
+.gm-cloneurl:focus { border-color: var(--border-accent); }
+
+/* ---------------- git panel: header + tabs (PhpStorm-style) ---------------- */
+.git-tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); }
+.git-tab {
+  background: transparent; border: none; border-bottom: 2px solid transparent; color: var(--text-dim);
+  padding: 6px 10px; font-size: 12.5px; cursor: pointer; border-radius: 6px 6px 0 0;
+  display: flex; align-items: center; gap: 6px;
+}
+.git-tab:hover { color: var(--text); background: var(--hover); }
+.git-tab.active { color: var(--green-bright); border-bottom-color: var(--green); font-weight: 600; }
+
+/* ---- нижняя панель «Ветки · История»: tabs сверху, ниже две зоны (список | дерево файлов коммита) ---- */
+.branchlog-body { padding: 0; gap: 0; overflow: hidden; }
+.branchlog-body .git-tabs { padding: 6px 8px 0; flex: 0 0 auto; }
+.git-log-split { flex: 1 1 auto; min-height: 0; display: grid; grid-template-columns: 1.25fr 1fr; }
+.git-log-list { min-width: 0; min-height: 0; overflow: auto; padding: 7px 8px; border-right: 1px solid var(--border); display: flex; flex-direction: column; gap: 6px; }
+.git-log-files { min-width: 0; min-height: 0; overflow: auto; padding: 7px 8px; display: flex; flex-direction: column; gap: 1px; }
+.git-log-files-empty { color: var(--text-dim); padding: 18px 12px; text-align: center; font-size: 12px; }
+.git-log-files-head { display: flex; align-items: center; gap: 8px; padding: 1px 2px 7px; border-bottom: 1px solid var(--border); margin-bottom: 5px; }
+.git-log-files-subj { color: var(--text-dim); font-size: 12px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.git-log-tree { display: flex; flex-direction: column; gap: 1px; }
+.git-tree-row { display: flex; align-items: center; gap: 6px; padding: 3px 6px; border-radius: 6px; font-size: 12.5px; cursor: default; }
+.git-tree-row.file { cursor: pointer; }
+.git-tree-row.file:hover { background: var(--hover); }
+.git-tree-row .ti { flex: 0 0 auto; }
+.git-tree-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
+.git-tree-row .gm-code { flex: 0 0 22px; min-width: 22px; font-size: 10px; padding: 1px 2px; }
+/* выбранный коммит в списке + наведение для action-иконок */
+.git-commit.sel { background: var(--accent-soft); border-color: var(--border-accent); }
+.git-commit-acts { display: flex; justify-content: flex-end; opacity: 0; margin-top: -2px; }
+.git-commit:hover .git-commit-acts, .git-commit.sel .git-commit-acts { opacity: 1; }
+
+/* ---------------- git merge modal (3-pane conflict resolution) ---------------- */
+.modal-merge { width: min(1500px, 96vw); max-width: 96vw; padding: 16px 18px; }
+.mrg-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }
+.mrg-title { font-weight: 600; color: var(--green-bright); }
+.mrg-count { font-size: 12px; color: var(--text-dim); }
+.mrg-nav { display: flex; gap: 4px; }
+.mrg-actions { display: flex; gap: 6px; margin-left: auto; flex-wrap: wrap; }
+.mrg-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; }
+.mrg-col { display: flex; flex-direction: column; min-width: 0; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.mrg-collabel { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-mute); padding: 6px 8px; background: var(--panel); border-bottom: 1px solid var(--border); }
+.mrg-ed { height: 62vh; min-height: 240px; overflow: hidden; }
+.mrg-ed .cm-editor { height: 100%; }
+.mrg-ed .cm-scroller { overflow: auto; }
+.mrg-foot { margin-top: 12px; }
+.cm-conf-ours { background: var(--accent-soft); }
+.cm-conf-theirs { background: var(--hover-2); }
+.cm-conf-marker { background: var(--hover); }
