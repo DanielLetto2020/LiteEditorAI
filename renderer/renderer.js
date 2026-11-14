@@ -12,6 +12,7 @@ import '@xterm/xterm/css/xterm.css';
 // В ядре остались только терминал (xterm) + темы/термутилы.
 import { initI18n, t as tt } from './i18n.js';
 import { syncSettings } from './settings-sync.js';
+import { planProjectTabs } from './proj-tabs.js';
 import { applyLook, termThemeFor, lookOf, lookTokens, LOOK_BASE_NAMES, LOOK_STATUS_NAMES, LOOK_TOKEN_NAMES, THEME_NAME } from './themes.js';
 import { FRAME_COLORS, frameConf, applyFrame } from './frame.js';
 import { prepareRenderer, activateRenderer, releaseRenderer, applyUnicode11, copySelection, ptyResizer, writeTermWithAck, creditPtyAck, dropPtyAck } from './termutil.js';
@@ -75,6 +76,7 @@ function saveSettings() { STORE.settings = settings; if (!storeFrozen) settingsS
 let projects = [];
 let activeId = null;
 const terms = new Map();          // sessionId -> { term, fit, search, container, projId, name, ... }
+const lazyTabs = new Map();       // sessionId -> { projId, name, customName, autoTitled } — отложенные фоновые вкладки (без xterm/PTY до клика)
 const tabsByProj = new Map();     // projId -> { sessions: [sessionId...], active: sessionId }
 let sessionSeq = 0;
 // Терминалы прежней страницы, пережившие перезагрузку окна (pty:adoptable): projId → [sessionId…] по порядку вкладок.
@@ -615,7 +617,7 @@ function sendNoteToTerminal(p, text) {
   ensureProjectTabs(proj);
   setActive(proj.id);
   const sid = (tabsByProj.get(proj.id) || {}).active;
-  if (!sid) return;
+  if (!sid || !materializeSession(sid)) return;
   // Терминал мог только что подняться (ensureProjectTabs) с отложенным автовводом — без отмены
   // слово из настроек (`claude`) дописалось бы в ту же строку после текста заметки.
   cancelPrefill(sid);
@@ -1033,9 +1035,12 @@ async function openFromTerminal(projPath, raw) {
 // (projTabs store); PTYs don't, so tabs are recreated empty on next launch.
 function activeSessionId() { const t = tabsByProj.get(activeId); return t ? t.active : null; }
 function projSessions(projId) { const t = tabsByProj.get(projId); return t ? t.sessions : []; }
+function hasTabSession(sid) { return !!(sid && (terms.has(sid) || lazyTabs.has(sid))); }
+function tabMeta(sid) { return terms.get(sid) || lazyTabs.get(sid) || null; }
 function projAggState(projId) {
-  const ss = projSessions(projId).map((s) => projState.get(s));
-  if (!ss.length) return 'idle';   // терминал проекта ещё не поднимали в этом запуске
+  const live = projSessions(projId).filter((s) => terms.has(s));
+  if (!live.length) return 'idle';   // ни один терминал проекта ещё не поднимали в этом запуске
+  const ss = live.map((s) => projState.get(s));
   // «ждёт вас» важнее «работает»: вторая вкладка с крутилкой не должна прятать вопрос первой
   return ss.includes('waiting') ? 'waiting' : ss.includes('busy') ? 'busy' : 'quiet';
 }
@@ -1054,11 +1059,11 @@ function sessionAgent(sid) {
   return rec && rec.claude ? 'claude' : null;
 }
 function projHasAgent(projId) { return projSessions(projId).some((s) => sessionAgent(s)); }
-// Терминалы проекта закрываются без потерь: в каждой вкладке шелл на приглашении без потомков или шелл
-// уже завершился. Активный проект не трогаем — его терминал на экране.
+// Терминалы проекта закрываются без потерь: в каждой живой вкладке шелл на приглашении без потомков или шелл
+// уже завершился (отложенные ленивые вкладки процессов ещё не запускали). Активный проект не трогаем.
 function projIdle(projId) {
-  const ss = projSessions(projId);
-  return projId !== activeId && ss.length > 0 && ss.every((s) => {
+  const live = projSessions(projId).filter((s) => terms.has(s));
+  return projId !== activeId && live.length > 0 && live.every((s) => {
     const rec = terms.get(s), r = agentScan.get(s);
     return (rec && rec.exited) || (r && r.idle && !sessionAgent(s));
   });
@@ -1067,7 +1072,7 @@ function idleProjects() { return projects.filter((p) => projIdle(p.id)); }
 async function refreshAgents() {
   clearTimeout(agentScanTimer); agentScanTimer = null;
   if (!lite.pty.agents) return;
-  const ids = [...tabsByProj.values()].flatMap((t) => t.sessions);
+  const ids = [...tabsByProj.values()].flatMap((t) => t.sessions).filter((s) => terms.has(s));
   const seq = ++agentScanSeq;
   let res = {};
   try { if (ids.length) res = (await lite.pty.agents(ids)) || {}; } catch (_) { return; }
@@ -1084,10 +1089,13 @@ async function refreshAgents() {
 function scheduleAgentScan(delay = 500) {
   if (!agentScanTimer) agentScanTimer = setTimeout(refreshAgents, delay);
 }
-// Снять вкладку-сессию: процесс, xterm, таймеры, состояние индикатора.
+// Снять вкладку-сессию: процесс, xterm, таймеры, состояние индикатора (либо отложенную ленивую запись).
 function disposeSession(sid) {
-  lite.pty.kill(sid);
-  dropPtyAck(sid);
+  const wasLazy = lazyTabs.delete(sid);
+  if (!wasLazy || terms.has(sid)) {
+    lite.pty.kill(sid);
+    dropPtyAck(sid);
+  }
   const rec = terms.get(sid);
   if (rec) { clearTimeout(rec.idleTimer); clearTimeout(rec.prefillTimer); stopClaudeProbe(rec); releaseRenderer(rec.term); try { rec.timeline.dispose(); } catch (_) {} try { rec.term.dispose(); } catch (_) {} rec.container.remove(); terms.delete(sid); }
   projState.delete(sid);
@@ -1139,8 +1147,8 @@ function saveProjTabs() {
   for (const p of projects) if (!tabsByProj.has(p.id) && prev[p.id]) out[p.id] = prev[p.id];
   for (const [pid, t] of tabsByProj) {
     const rec = {
-      names: t.sessions.map((s) => (terms.get(s) || {}).name || 'Терминал'),
-      custom: t.sessions.map((s) => !!(terms.get(s) || {}).customName),
+      names: t.sessions.map((s) => (tabMeta(s) || {}).name || 'Терминал'),
+      custom: t.sessions.map((s) => !!(tabMeta(s) || {}).customName),
       active: t.sessions.indexOf(t.active),
     };
     if (Array.isArray(t.splitPair) && t.splitPair.length === 2) {
@@ -1279,9 +1287,29 @@ function firePrefill(id) {
   rec.lastInputAt = Date.now(); // это ввод, пусть и наш: эхо не должно считаться работой агента
   lite.pty.write(id, text);     // без \r — Enter жмёт человек
 }
+function newSessionId(projId) {
+  return projId + '::t' + (++sessionSeq) + '.' + BOOT_ID;
+}
+function createLazyTab(proj, name, custom) {
+  const id = newSessionId(proj.id);
+  lazyTabs.set(id, { projId: proj.id, name, customName: !!custom, autoTitled: false });
+  tabsByProj.get(proj.id).sessions.push(id);
+  return id;
+}
+// Материализовать отложенную вкладку в живой xterm + PTY на том же месте в t.sessions.
+function materializeSession(sid) {
+  if (!sid) return null;
+  if (terms.has(sid)) return sid;
+  const lazy = lazyTabs.get(sid);
+  if (!lazy) return null;
+  const proj = projects.find((p) => p.id === lazy.projId);
+  if (!proj) { lazyTabs.delete(sid); return null; }
+  lazyTabs.delete(sid);
+  return createSession(proj, lazy.name, lazy.customName, null, { existingSid: sid, pushToTabs: false, allowPrefill: true });
+}
 // adoptId — живой терминал прежней страницы (пережил перезагрузку окна): вкладка садится на него.
-function createSession(proj, name, custom, adoptId) {
-  const id = adoptId || (proj.id + '::t' + (++sessionSeq) + '.' + BOOT_ID);
+function createSession(proj, name, custom, adoptId, { existingSid = null, pushToTabs = true, allowPrefill = true } = {}) {
+  const id = adoptId || existingSid || newSessionId(proj.id);
   const container = el('div', 'term-instance');
   container.addEventListener('mousedown', () => focusSplitSlot(id));
   $('#terminals').appendChild(container);
@@ -1305,7 +1333,7 @@ function createSession(proj, name, custom, adoptId) {
     },
   });
   term.registerLinkProvider(fileLinkProvider(term, proj.path));
-  const rec = { term, fit, search, timeline, syncPty, container, projId: proj.id, name, customName: !!custom, idleTimer: null, sawBell: false, tail: '', busyStart: 0, lastInputAt: 0, activitySeq: 0, prefill: '', prefillTimer: null, redraw: false, needsFit: false,
+  const rec = { term, fit, search, timeline, syncPty, container, projId: proj.id, name, customName: !!custom, autoTitled: false, idleTimer: null, sawBell: false, tail: '', busyStart: 0, lastInputAt: 0, activitySeq: 0, prefill: '', prefillTimer: null, redraw: false, needsFit: false,
     adoptPending: /** @type {string[] | null} */ (adoptId ? [] : null),
     claude: null, probeTimer: null, probeDeadline: null, probeSeq: 0, claudeRetry: 0 }; // claude — см. «Claude Code» у индикатора
   terms.set(id, rec);
@@ -1330,8 +1358,8 @@ function createSession(proj, name, custom, adoptId) {
       const r = terms.get(id);
       if (r) { r.adoptPending = null; r.redraw = true; }
     });
-  } else {
-    armPrefill(id, (settings.termPrefill || '').trim()); // автоввод слова из настроек (по умолчанию `claude`)
+  } else if (allowPrefill) {
+    armPrefill(id, (settings.termPrefill || '').trim()); // автоввод слова из настроек — только в открываемую вкладку
   }
   // Имя вкладки из заголовка терминала (OSC ]0;…): Claude/агент в промпте пишет туда
   // текущую задачу, шелл — user@host:cwd. Подхватываем как имя вкладки, пока пользователь
@@ -1339,31 +1367,46 @@ function createSession(proj, name, custom, adoptId) {
   // промпт шлёт одно и то же) отсекаем сравнением — без дёрганья tab-бара.
   // Он же — признак работы Claude Code для индикатора (onClaudeTitle).
   term.onTitleChange((t) => { onClaudeTitle(id, t); adoptTermTitle(id, t); });
-  tabsByProj.get(proj.id).sessions.push(id);
+  if (pushToTabs) tabsByProj.get(proj.id).sessions.push(id);
   return id;
 }
 // Ensure a project's sessions exist (restoring saved tab names on first open).
+// Фоновые вкладки остаются легковесными записями в lazyTabs до первого переключения на них:
+// при открытии проекта материализуются только активная вкладка (и второй слот сплита, если был сплит).
 function ensureProjectTabs(proj) {
   if (tabsByProj.has(proj.id)) return;
   tabsByProj.set(proj.id, { sessions: [], active: null, splitPair: null });
   const saved = (STORE.projTabs || {})[proj.id];
-  const names = saved && Array.isArray(saved.names) && saved.names.length ? saved.names : ['Терминал 1'];
-  const custom = saved && Array.isArray(saved.custom) ? saved.custom : []; // какие имена задал пользователь руками — их заголовок терминала не перебивает
+  const plan = planProjectTabs(saved, tt('Терминал {0}', 1));
   const adopted = adoptPtys.get(proj.id);
   if (adopted && adopted.length) {
     // окно перезагрузилось, а терминалы проекта живы: вкладки садятся на них в прежнем порядке
     adoptPtys.delete(proj.id);
-    adopted.forEach((id, i) => createSession(proj, names[i] || tt('Терминал {0}', i + 1), custom[i], id));
+    adopted.forEach((id, i) => {
+      const pt = plan.tabs[i];
+      createSession(proj, pt ? pt.name : tt('Терминал {0}', i + 1), pt ? pt.customName : false, id);
+    });
+    for (let i = adopted.length; i < plan.tabs.length; i++) {
+      createLazyTab(proj, plan.tabs[i].name, plan.tabs[i].customName);
+    }
   } else {
-    names.forEach((n, i) => createSession(proj, n, custom[i])); // только имена вкладок; история до перезапуска НЕ восстанавливается
+    for (const pt of plan.tabs) {
+      if (pt.eager) createSession(proj, pt.name, pt.customName, null, { allowPrefill: pt.prefill });
+      else createLazyTab(proj, pt.name, pt.customName);
+    }
   }
   const t = tabsByProj.get(proj.id);
-  const ai = saved && Number.isInteger(saved.active) ? saved.active : 0;
-  t.active = t.sessions[Math.max(0, Math.min(ai, t.sessions.length - 1))] || t.sessions[0];
-  if (saved && Array.isArray(saved.split) && saved.split.length === 2) {
-    const s0 = t.sessions[saved.split[0]];
-    const s1 = t.sessions[saved.split[1]];
-    if (s0 && s1 && s0 !== s1) t.splitPair = [s0, s1];
+  const actSid = t.sessions[Math.min(plan.activeIndex, t.sessions.length - 1)] || t.sessions[0];
+  materializeSession(actSid);
+  t.active = actSid;
+  if (plan.splitIndices) {
+    const s0 = t.sessions[plan.splitIndices[0]];
+    const s1 = t.sessions[plan.splitIndices[1]];
+    if (s0 && s1 && s0 !== s1) {
+      materializeSession(s0);
+      materializeSession(s1);
+      t.splitPair = [s0, s1];
+    }
   }
   saveProjTabs();
 }
@@ -1437,11 +1480,13 @@ function toggleTermSplit() {
     showActiveTerminal();
     return;
   }
-  const leftSid = (t.active && terms.has(t.active)) ? t.active : t.sessions[0];
-  let rightSid = t.sessions.find((s) => s !== leftSid && terms.has(s)) || null;
-  if (!rightSid) {
-    rightSid = createSession(proj, tt('Терминал {0}', t.sessions.length + 1));
-  }
+  const leftSid = (t.active && hasTabSession(t.active)) ? t.active : t.sessions[0];
+  materializeSession(leftSid);
+  let rightSid = t.sessions.find((s) => s !== leftSid && terms.has(s))
+    || t.sessions.find((s) => s !== leftSid && lazyTabs.has(s))
+    || null;
+  if (rightSid) materializeSession(rightSid);
+  else rightSid = createSession(proj, tt('Терминал {0}', t.sessions.length + 1));
   t.splitPair = [leftSid, rightSid];
   t.active = rightSid;
   saveProjTabs();
@@ -1470,11 +1515,12 @@ function renderTabBar() {
   if (!activeId || !t || !t.sessions.length) { updateTabScroll(); return; }
   const projId = activeId;
   t.sessions.forEach((sid) => {
-    const rec = terms.get(sid); if (!rec) return;
+    const rec = tabMeta(sid); if (!rec) return;
+    const isLive = terms.has(sid);
     const isPeer = splitOn && sid !== t.active && t.splitPair.includes(sid);
     const tab = el('div', 'tab' + (sid === t.active ? ' active' : (isPeer ? ' split-peer' : '')) + (rec.autoTitled ? ' wide' : ''));
     tab.dataset.sid = sid;
-    tab.appendChild(el('span', 'tab-dot pind ' + (projState.get(sid) || 'quiet')));
+    tab.appendChild(el('span', 'tab-dot pind ' + (isLive ? (projState.get(sid) || 'quiet') : 'idle')));
     const nameSpan = el('span', 'tab-name', rec.name);
     tab.appendChild(nameSpan);
     // Кастомный тултип с полным именем — только когда имя визуально обрезано многоточием.
@@ -1542,7 +1588,8 @@ function ensureActiveTabVisible() {
 }
 function switchTab(sid) {
   const t = tabsByProj.get(activeId);
-  if (!t || !terms.has(sid)) return;
+  if (!t || !hasTabSession(sid)) return;
+  if (!terms.has(sid) && !materializeSession(sid)) return;
   if (isProjSplit(t)) {
     if (!t.splitPair.includes(sid)) {
       const idx = t.splitPair[1] === t.active ? 1 : 0;
@@ -1577,6 +1624,7 @@ function doCloseTab(projId, sid) {
   const i = t.sessions.indexOf(sid);
   t.sessions.splice(i, 1);
   if (t.active === sid) t.active = t.sessions[Math.max(0, i - 1)];
+  if (projId === activeId && t.active) materializeSession(t.active);
   saveProjTabs();
   if (projId === activeId) showActiveTerminal();
   refreshProjIndicator(projId);
@@ -1584,7 +1632,8 @@ function doCloseTab(projId, sid) {
 }
 async function closeTab(sid) {
   const rec = terms.get(sid);
-  const projId = rec ? rec.projId : activeId;
+  const meta = rec || lazyTabs.get(sid);
+  const projId = meta ? meta.projId : activeId;
   const t = tabsByProj.get(projId);
   if (!t || t.sessions.length <= 1 || !t.sessions.includes(sid)) return; // keep ≥1 tab
   if (!rec || rec.exited) { doCloseTab(projId, sid); return; }
@@ -1610,7 +1659,7 @@ function cycleTab(dir) {
   switchTab(t.sessions[i]);
 }
 function renameTab(sid) {
-  const rec = terms.get(sid); if (!rec) return;
+  const rec = tabMeta(sid); if (!rec) return;
   // Ручное имя «прибивает» вкладку: заголовок терминала больше её не перебивает (customName)
   // и вкладка возвращается к обычной ширине (autoTitled=false — не «переименована агентом»).
   showPrompt('Переименовать вкладку', 'Название', rec.name, (v) => { rec.name = v; rec.customName = true; rec.autoTitled = false; saveProjTabs(); renderTabBar(); });
@@ -1851,7 +1900,7 @@ function scanTermBuffer(term, q) {
 function jumpToSession(projId, sid) {
   setActive(projId);
   const t = tabsByProj.get(projId);
-  if (t && t.sessions.includes(sid)) { t.active = sid; saveProjTabs(); }
+  if (t && t.sessions.includes(sid)) { materializeSession(sid); t.active = sid; saveProjTabs(); }
   showActiveTerminal();
 }
 // Окно «Найти во всех проектах» (renderer/gsearch.js): содержимое и имена файлов через стриминговый

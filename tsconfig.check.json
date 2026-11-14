@@ -45,7 +45,8 @@
     "renderer/termtimeline.js",
     "renderer/gsearch.js",
     "renderer/codeedit.js",
-    "renderer/settings-sync.js"
+    "renderer/settings-sync.js",
+    "renderer/proj-tabs.js"
   ],
   "exclude": [
     "node_modules",
