@@ -27,6 +27,7 @@ const {
   atomicWriteSync, readJsonForEdit: readJsonForEditRaw, createStore,
 } = require('./lib/store'); // in-memory кэш STORE + коалесируемая атомарная запись
 const { createProcService } = require('./lib/proc-service'); // фоновый worker_threads для опроса /proc (индикаторы PTY + монитор)
+const { summarizeBusyPtys } = require('./lib/quit-guard'); // проверка живых агентов/команд в PTY перед закрытием редактора
 const fastSearch = require('./lib/fast-search');   // быстрый листинг и поиск через системный rg с фолбэком в worker_threads
 const { createModuleRouter, createLazyIpc } = require('./lib/module-router'); // единый роутер готовности модулей + ленивая загрузка IPC
 const { git, registerGitIpc } = require('./lib/ipc/git');
@@ -746,7 +747,10 @@ ipcMain.handle('update:install', async (e) => {
   // документ «Обработки текста» или правка удалённого файла пропали бы молча. Сначала спрашиваем окна.
   updQuitCheck = true;
   let go;
-  try { go = await confirmDiscardUnsaved(senderWin(e) || mainWindow); } finally { updQuitCheck = false; }
+  try {
+    const par = senderWin(e) || mainWindow;
+    go = (await confirmDiscardUnsaved(par)) && (await confirmStopActiveTerminals(par));
+  } finally { updQuitCheck = false; }
   if (!go) return { ok: false, canceled: true };
   const inst = updInstallInfo();
   updSet({ phase: 'installing' });
@@ -3332,6 +3336,58 @@ async function confirmDiscardUnsaved(parent) {
   if (w && !w.isDestroyed()) { if (w.isMinimized()) w.restore(); w.show(); w.focus(); }
   return false;
 }
+// Защита от случайного убийства живых агентов/процессов в PTY при закрытии главного окна или обновлении.
+// Голые шеллы на приглашении (idle === true) диалога не вызывают.
+async function confirmStopActiveTerminals(parent) {
+  if ((readSettingsCached() || {}).confirmQuitWithAgents === false) return true;
+  const entries = [];
+  for (const [id, proc] of ptys) {
+    if (proc && proc.pid) entries.push([String(id), proc.pid]);
+  }
+  if (!entries.length) return true;
+  let agentsMap;
+  try {
+    agentsMap = await Promise.race([
+      procService.agents(entries),
+      new Promise((resolve) => setTimeout(() => resolve({}), 2500)),
+    ]) || {};
+  } catch (_) {
+    return true;
+  }
+  const summary = summarizeBusyPtys({
+    agentsMap,
+    projects: readStoreKey('projects') || [],
+    t: i18n.t,
+  });
+  if (!summary.busyCount) return true;
+  const lines = summary.detailLines.slice(0, 12);
+  if (summary.detailLines.length > 12) lines.push(`… (+${summary.detailLines.length - 12})`);
+  /** @type {Electron.MessageBoxOptions} */
+  const opts = {
+    type: 'warning',
+    title: 'LiteEditorAI',
+    message: summary.agentCount > 0
+      ? i18n.t('В терминалах работают агенты')
+      : i18n.t('В терминалах выполняются процессы'),
+    detail: lines.join('\n') + '\n\n' + i18n.t('При закрытии редактора все сессии терминалов будут остановлены.'),
+    buttons: [i18n.t('Остаться в редакторе'), i18n.t('Закрыть и остановить')],
+    defaultId: 0,
+    cancelId: 0,
+    checkboxLabel: i18n.t('Больше не спрашивать при выходе'),
+    checkboxChecked: false,
+    noLink: true,
+  };
+  const par = parent && !parent.isDestroyed() ? parent : null;
+  const { response, checkboxChecked } = await (par ? dialog.showMessageBox(par, opts) : dialog.showMessageBox(opts));
+  if (response === 1) {
+    if (checkboxChecked) {
+      try { patchStoreKey('settings', { confirmQuitWithAgents: false }, [], null, null); } catch (_) {}
+    }
+    return true;
+  }
+  if (par && !par.isDestroyed()) { if (par.isMinimized()) par.restore(); par.show(); par.focus(); }
+  return false;
+}
 // Выход через app.quit() (трей «Выход», Cmd+Q): после согласия выходим снова тем же путём, а не только
 // закрываем окно — на macOS приложение без окон иначе осталось бы жить.
 let quitViaApp = false;
@@ -3339,12 +3395,17 @@ app.on('before-quit', () => { quitViaApp = true; });
 function guardMainWindowClose(win) {
   let approved = false, checking = false;
   win.on('close', (e) => {
-    const live = [...moduleWindows.values()].some((w) => w && !w.isDestroyed()) || !!liveFilesDockFrame();
-    if (approved || !live) { closeAllModuleWindows(); return; }
+    const hasModules = [...moduleWindows.values()].some((w) => w && !w.isDestroyed()) || !!liveFilesDockFrame();
+    const needPtyCheck = ptys.size > 0 && (readSettingsCached() || {}).confirmQuitWithAgents !== false;
+    if (approved || (!hasModules && !needPtyCheck)) { closeAllModuleWindows(); return; }
     e.preventDefault();
     if (checking) return;
     checking = true;
-    confirmDiscardUnsaved(win).then((ok) => {
+    (async () => {
+      if (hasModules && !(await confirmDiscardUnsaved(win))) return false;
+      if (needPtyCheck && !(await confirmStopActiveTerminals(win))) return false;
+      return true;
+    })().then((ok) => {
       checking = false;
       const viaApp = quitViaApp; quitViaApp = false;
       if (!ok || win.isDestroyed()) return;
@@ -3704,11 +3765,9 @@ function trayMenu() {
   return Menu.buildFromTemplate([
     { label: i18n.t('Показать LiteEditor'), click: showWindow },
     { type: 'separator' },
-    // Через закрытие окна редактора: оно одно спросит окна модулей о несохранённом. app.quit() начал бы
-    // закрывать окна модулей поодиночке, и каждое со своим dirty-guard показало бы свой диалог.
+    // Через закрытие окна редактора: оно одно спросит окна модулей о несохранённом и проверит активных агентов в PTY.
     { label: i18n.t('Выход'), click: () => {
-      const live = [...moduleWindows.values()].some((w) => w && !w.isDestroyed());
-      if (live && mainWindow && !mainWindow.isDestroyed()) { quitViaApp = true; mainWindow.close(); } else app.quit();
+      if (mainWindow && !mainWindow.isDestroyed()) { quitViaApp = true; mainWindow.close(); } else app.quit();
     } },
   ]);
 }

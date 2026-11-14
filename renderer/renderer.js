@@ -60,7 +60,7 @@ function persist(key, value) { STORE[key] = value; if (!storeFrozen) lite.store.
 function projId(p) { let h = 5381; for (let i = 0; i < p.length; i++) h = ((h << 5) + h + p.charCodeAt(i)) >>> 0; return 'p' + h.toString(36); }
 
 // ---------------------------------------------------------------- settings (tiny on purpose)
-const DEFAULT_SETTINGS = { notifications: true, sound: false, idleMs: 1200, fontSize: 13, workingDir: '', scanDirs: [], onboarded: false, shell: '', minimap: true, notesTab: 'project', frameOn: true, frameColor: 'green', framePulse: true, framePeriodS: 6, termTimeline: false, termPrefill: 'claude', dockFiles: false };
+const DEFAULT_SETTINGS = { notifications: true, sound: false, idleMs: 1200, fontSize: 13, workingDir: '', scanDirs: [], onboarded: false, shell: '', minimap: true, notesTab: 'project', frameOn: true, frameColor: 'green', framePulse: true, framePeriodS: 6, termTimeline: false, termPrefill: 'claude', dockFiles: false, confirmQuitWithAgents: true };
 function loadSettings() { return { ...DEFAULT_SETTINGS, ...(STORE.settings || {}) }; }
 let settings = loadSettings();
 // Пишем только изменённые поля, чужие изменения (окна модулей, смена языка) вливаются в settings —
@@ -3565,6 +3565,8 @@ function showSettings(start = 'look') {
       body.appendChild(pathRow);
       body.appendChild(row('Шкала времени слева', 'Узкая полоса вдоль терминала: когда отправлена команда, когда вывод возобновился после паузы, смена минуты. Едет вместе с текстом и не попадает в копирование.',
         toggle(settings.termTimeline === true, (v) => { settings.termTimeline = v; save(); applyTimeline(); })));
+      body.appendChild(row('Предупреждать при выходе с активными терминалами', 'Спрашивать подтверждение при закрытии главного окна, если в терминалах работают агенты или выполняются команды.',
+        toggle(settings.confirmQuitWithAgents !== false, (v) => { settings.confirmQuitWithAgents = v; save(); })));
     },
     notif() {
       const subs = [];
