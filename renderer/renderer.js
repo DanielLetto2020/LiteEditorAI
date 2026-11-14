@@ -828,6 +828,7 @@ async function settleProject(id) {
   const worked = rec.sawBell || (projState.get(id) === 'busy' && (Date.now() - (rec.busyStart || 0)) >= 1500);
   rec.sawBell = false;
   setProjState(id, waiting ? 'waiting' : 'quiet');
+  if (rec.projId === activeId) refreshGitChip(500); // ход окончен — освежить счётчик рабочих файлов в чипе даже без watchTree
   // notify per project when its turn ended on a non-visible tab (or app unfocused)
   if (worked && (id !== activeSessionId() || !document.hasFocus())) notifyAgent(rec.projId, waiting ? 'waiting' : 'quiet', id);
 }
@@ -960,6 +961,7 @@ function setAgentState(id, st, reason) {
   rec.sawBell = false;
   setProjState(id, st);
   if (st === 'busy') return;
+  if (rec.projId === activeId) refreshGitChip(500);
   if ((st === 'waiting' || worked) && (id !== activeSessionId() || !document.hasFocus())) notifyAgent(rec.projId, st, id, reason);
 }
 
@@ -2036,12 +2038,14 @@ function unmountFilesDock() {
   if (gut) gut.classList.add('hidden');
   const frame = /** @type {HTMLIFrameElement | null} */ ($('#files-dock-frame'));
   if (frame) frame.src = 'about:blank';
+  try { if (lite.editorBus.filesDockState) lite.editorBus.filesDockState(false); } catch (_) {}
   markOpenModules();
   refitActiveTerminal();
 }
 function setFilesDockOpen(open) {
   const want = !!open;
   if (want === filesDockOpen && (!want || filesDockMounted)) return;
+  const alreadyMounted = filesDockMounted;
   if (want) {
     closeOtherPanels('files');
     ensureFilesDockFrame();
@@ -2050,6 +2054,8 @@ function setFilesDockOpen(open) {
   const dock = $('#files-dock'), gut = $('#gutter-files');
   if (dock) dock.classList.toggle('hidden', !want);
   if (gut) gut.classList.toggle('hidden', !want);
+  try { if (lite.editorBus.filesDockState) lite.editorBus.filesDockState(want); } catch (_) {}
+  if (want && alreadyMounted) { try { lite.editorBus.refreshTree(); } catch (_) {} }
   applyLayout();
   markOpenModules();
   refitActiveTerminal();

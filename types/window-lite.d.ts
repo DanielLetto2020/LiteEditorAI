@@ -82,6 +82,7 @@ export interface LiteBridge {
     onSendNoteToTerminal(cb: (projId: string, text: string) => void): Unsubscribe;
     onRefreshTree(cb: () => void): Unsubscribe;
     dockFiles(docked: boolean): void;
+    filesDockState?(open: boolean): void;
     closeFilesDock(): void;
     onEnsureFilesDock(cb: (opts?: { open?: boolean; toggle?: boolean; close?: boolean }) => void): Unsubscribe;
     onRestGuard(cb: (state: any) => void): Unsubscribe;

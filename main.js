@@ -18,6 +18,7 @@ const { safeChildName } = require('./lib/safe-name'); // анти-traversal дл
 const { resolveShell: resolveShellPure } = require('./lib/shell'); // выбор оболочки терминала
 const updater = require('./lib/updater');  // самообновление: проверка релиза, загрузка, подмена каталога
 const { watchTree } = require('./lib/tree-watch'); // слежение за деревом проекта (на Linux — по наблюдению на каталог)
+const { watchGitLite } = require('./lib/git-watch'); // лёгкое слежение за .git для чипа ветки без обхода всего дерева
 const gitignore = require('./lib/gitignore');      // компиляция и кэш правил .gitignore проекта
 const { createHistory } = require('./lib/history'); // локальная история файлов: снимки, троттл, срок и объём
 const { createBatcher, createFlowGate } = require('./lib/ptybatch'); // склейка вывода PTY + watermark flow-control
@@ -89,12 +90,13 @@ if (process.env.LITE_NO_GPU === '1' || process.env.LITE_SOFTWARE_RENDER === '1')
 let mainWindow = null;
 /** @type {Electron.WebFrameMain | null} */
 let filesDockFrame = null; // встроенный фрейм панели «Проект» внутри mainWindow (?embed=1#files)
+let filesDockVisible = false; // открыта ли сейчас док-панель «Проект» на экране главного окна
 function liveFilesDockFrame() {
   if (!filesDockFrame) return null;
   try {
-    if (filesDockFrame.isDestroyed() || filesDockFrame.detached) { filesDockFrame = null; return null; }
+    if (filesDockFrame.isDestroyed() || filesDockFrame.detached) { filesDockFrame = null; filesDockVisible = false; return null; }
     return filesDockFrame;
-  } catch (_) { filesDockFrame = null; return null; }
+  } catch (_) { filesDockFrame = null; filesDockVisible = false; return null; }
 }
 function sendToFrame(frame, ch, payload) {
   if (!frame) return false;
@@ -116,7 +118,9 @@ let growAppliedWidth = null;
 const ptys = new Map();     // projectId -> IPty
 const ptyFlows = new Map(); // sessionId -> FlowGate (pause/resume по watermark вывода в xterm)
 const ptyRings = createRingStore(128 * 1024); // кольцевой хвост вывода живых PTY (128 КБ на сессию)
-const watchers = new Map(); // project root path -> { watcher, timer, pending:Set }
+const watchers = new Map(); // project root path -> { watcher, timer, pending:Set } (полный обход дерева по требованию)
+const gitWatchers = new Map(); // project root path -> watchGitLite (лёгкое слежение за .git для главного окна)
+const watchedRoots = new Set(); // корни, запрошенные рендерером через fs:watch
 
 // Resolve a shell that actually exists. $SHELL can point at a shell that was
 // uninstalled (e.g. zsh removed), which makes node-pty fail with "execvp failed".
@@ -3271,6 +3275,7 @@ function openModuleWindow(modId, arg) {
     if (modId === 'chat') killReqMap(orReqs);        // OpenRouter
     if (modId === 'company') { for (const c of companyReqs.values()) { try { companyKill(c); } catch (_) {} } companyReqs.clear(); }
     if (modId === 'docker') { try { const api = containersLazy.getApi(); if (api) api.closeStreams(); } catch (_) {} }
+    if (modId === 'files' || modId === 'doc') scheduleSyncWatchers(0);
     for (const [sid, wc] of ownerBySession) { try { if (wc.isDestroyed()) ownerBySession.delete(sid); } catch (_) { ownerBySession.delete(sid); } }
     broadcastModuleOpenSet();
   });
@@ -3286,6 +3291,7 @@ function openModuleWindow(modId, arg) {
     if (input.key === 'F12') win.webContents.toggleDevTools();
     if (input.key === 'F11') win.setFullScreen(!win.isFullScreen());
   });
+  if (modId === 'files' || modId === 'doc') scheduleSyncWatchers(0);
   broadcastModuleOpenSet();
 }
 // ── Выход из редактора при несохранённом в окнах модулей ──────────────────────────────────────
@@ -3510,8 +3516,11 @@ app.on('window-all-closed', () => {
   killReqMap(tpReqs); killReqMap(dbaiReqs); killReqMap(orReqs); killReqMap(ctxmineReqs); // + анализ диалогов «Контекста»
   try { const api = dbLazy.getApi(); if (api) api.closeAll(); } catch (_) {}
   try { rhApi.closeAll(); } catch (_) {}
-  for (const w of watchers.values()) { try { w.watcher.close(); } catch (_) {} }
+  for (const w of watchers.values()) { clearTimeout(w.timer); try { w.watcher.close(); } catch (_) {} }
   watchers.clear();
+  for (const gw of gitWatchers.values()) { try { gw.close(); } catch (_) {} }
+  gitWatchers.clear();
+  watchedRoots.clear();
   for (const w of ctxOutWatchers.values()) { try { w.close(); } catch (_) {} } // fs.watch выходных файлов «Контекста» (B2)
   ctxOutWatchers.clear();
   try { pomodoroApi.stop(); } catch (_) {}
@@ -3710,7 +3719,7 @@ ipcMain.on('editor:focusGit', () => {
 ipcMain.on('editor:viewerReady', (e) => {
   const fromDock = !!(mainWindow && !mainWindow.isDestroyed() && e.sender === mainWindow.webContents
     && e.senderFrame && e.senderFrame !== mainWindow.webContents.mainFrame);
-  if (fromDock) filesDockFrame = e.senderFrame;
+  if (fromDock) { filesDockFrame = e.senderFrame; filesDockVisible = true; scheduleSyncWatchers(0); }
   const df = liveFilesDockFrame();
   const override = (df && (isFilesDocked() || fromDock)) ? { __isFrame: true, frame: df } : undefined;
   moduleRouter.markReady('files', override);
@@ -3728,12 +3737,20 @@ ipcMain.on('editor:dockFiles', (_e, { docked } = {}) => {
     }
   } else {
     filesDockFrame = null;
+    filesDockVisible = false;
     moduleRouter.markNotReady('files', { clearArg: false, clearQueue: false });
     if (mainWindow && !mainWindow.isDestroyed()) sendTo(mainWindow, 'editor:ensureFilesDock', { close: true });
     openModuleWindow('files');
   }
+  scheduleSyncWatchers(0);
+});
+ipcMain.on('editor:filesDockState', (_e, { open } = {}) => {
+  filesDockVisible = !!open;
+  scheduleSyncWatchers(0);
 });
 ipcMain.on('editor:closeFilesDock', () => {
+  filesDockVisible = false;
+  scheduleSyncWatchers(0);
   if (mainWindow && !mainWindow.isDestroyed()) sendTo(mainWindow, 'editor:ensureFilesDock', { close: true });
 });
 
@@ -4527,9 +4544,37 @@ const logWatchEnded = (root, err) => logger.log('info', 'watch', `слежени
 // наблюдений (22.09.2026: 55 раз за день на kudatut-v2 — 15 тысяч временных каталогов Infection).
 // Через срок пробуем снова: каталоги могли вычистить.
 const WATCH_GIVEUP_MS = 10 * 60 * 1000;
+const WATCH_SWITCH_DEBOUNCE_MS = 180;
 const watchGaveUp = new Map(); // root -> момент отказа
 const isLimitErr = (err) => !!err && (err.code === 'ELIMIT' || err.code === 'ENOSPC');
-ipcMain.on('fs:watch', (_e, root) => {
+let syncWatchTimer = null;
+
+// Полный обход подкаталогов дерева нужен только тогда, когда открыт потребитель дерева файлов:
+// окно «Проект», видимый встроенный док «Проект» или окно «Обработка текста».
+// В обычном режиме главного окна (терминал с агентами) работает только лёгкий watchGitLite (3–5 fd).
+function needsFullTreeWatch() {
+  return !!(filesWindow() || docWindow() || (filesDockVisible && liveFilesDockFrame()));
+}
+function stopGitWatcher(root) {
+  const gw = gitWatchers.get(root);
+  if (gw) { try { gw.close(); } catch (_) {} gitWatchers.delete(root); }
+}
+function stopTreeWatcher(root) {
+  const rec = watchers.get(root);
+  if (rec) { clearTimeout(rec.timer); try { rec.watcher.close(); } catch (_) {} watchers.delete(root); }
+}
+function startGitWatcher(root) {
+  if (!root || gitWatchers.has(root) || !fs.existsSync(root)) return;
+  try {
+    const gw = watchGitLite(root, () => {
+      sendTo(mainWindow, 'fs:changed', { root, files: [] });
+      const fw = filesWindow(); if (fw) sendTo(fw, 'fs:changed', { root, files: [] });
+      const df = liveFilesDockFrame(); if (df && filesDockVisible) sendToFrame(df, 'fs:changed', { root, files: [] });
+    }, { writeTmpSuffix: WRITE_TMP_SUFFIX });
+    gitWatchers.set(root, gw);
+  } catch (_) {}
+}
+function startTreeWatcher(root) {
   if (!root || watchers.has(root) || !fs.existsSync(root)) return;
   const gaveUp = watchGaveUp.get(root);
   if (gaveUp && Date.now() - gaveUp < WATCH_GIVEUP_MS) { notifyWatchEnded(root); return; }
@@ -4562,18 +4607,50 @@ ipcMain.on('fs:watch', (_e, root) => {
     rec.timer = setTimeout(() => {
       const files = [...rec.pending]; rec.pending.clear();
       const fw = filesWindow(); if (fw) sendTo(fw, 'fs:changed', { root, files }); // окно вивера обновляет дерево/файл
-      const df = liveFilesDockFrame(); if (df) sendToFrame(df, 'fs:changed', { root, files }); // встроенный док «Проект»
+      const df = liveFilesDockFrame(); if (df && filesDockVisible) sendToFrame(df, 'fs:changed', { root, files }); // встроенный док «Проект»
       const dw = docWindow(); if (dw) sendTo(dw, 'fs:changed', { root, files }); // «Обработка текста»: сайдбар-дерево
-      sendTo(mainWindow, 'fs:changed', { root, files }); // редактор: пересчитать чип git под терминалом (renderer.js, lite.fs.onChange)
+      sendTo(mainWindow, 'fs:changed', { root, files }); // редактор: пересчитать чип git под терминалом
       // локальная история: внешняя правка (агент/git). Большая пачка = массовая операция — шум, пропускаем.
       if (files.length <= HIST_BATCH_CAP) for (const f of files) histSnapshotFromDisk(f, 'ext');
     }, 180);
   });
   watchers.set(root, rec);
+}
+function applyProjectWatchersNow() {
+  const full = needsFullTreeWatch();
+  for (const r of [...gitWatchers.keys()]) { if (!watchedRoots.has(r)) stopGitWatcher(r); }
+  for (const r of [...watchers.keys()]) { if (!watchedRoots.has(r) || !full) stopTreeWatcher(r); }
+  for (const r of watchedRoots) {
+    startGitWatcher(r);
+    if (full) startTreeWatcher(r);
+  }
+}
+function scheduleSyncWatchers(delay = WATCH_SWITCH_DEBOUNCE_MS) {
+  const full = needsFullTreeWatch();
+  // Освобождаем ненужные наблюдения сразу, а постановку новых при быстром Ctrl+Tab коалесируем.
+  for (const r of [...gitWatchers.keys()]) { if (!watchedRoots.has(r)) stopGitWatcher(r); }
+  for (const r of [...watchers.keys()]) { if (!watchedRoots.has(r) || !full) stopTreeWatcher(r); }
+  clearTimeout(syncWatchTimer);
+  if (delay <= 0) {
+    syncWatchTimer = null;
+    applyProjectWatchersNow();
+    return;
+  }
+  syncWatchTimer = setTimeout(() => {
+    syncWatchTimer = null;
+    applyProjectWatchersNow();
+  }, delay);
+}
+ipcMain.on('fs:watch', (_e, root) => {
+  if (!root) return;
+  watchedRoots.add(root);
+  scheduleSyncWatchers(WATCH_SWITCH_DEBOUNCE_MS);
 });
 ipcMain.on('fs:unwatch', (_e, root) => {
-  const rec = watchers.get(root);
-  if (rec) { clearTimeout(rec.timer); try { rec.watcher.close(); } catch (_) {} watchers.delete(root); }
+  if (!root) return;
+  watchedRoots.delete(root);
+  stopGitWatcher(root);
+  stopTreeWatcher(root);
 });
 
 // ---------------------------------------------------------------- доменные IPC-модули (git, audit, iterflow, seo, containers)

@@ -115,6 +115,7 @@ if (canExposeLiteBridge()) contextBridge.exposeInMainWorld('lite', {
     onSendNoteToTerminal: (cb) => { const h = (_e, p) => cb(p && p.projId, p && p.text); ipcRenderer.on('editor:sendNoteToTerminal', h); return () => ipcRenderer.removeListener('editor:sendNoteToTerminal', h); },
     onRefreshTree: (cb) => { const h = () => cb(); ipcRenderer.on('editor:refreshTree', h); return () => ipcRenderer.removeListener('editor:refreshTree', h); },
     dockFiles: (docked) => ipcRenderer.send('editor:dockFiles', { docked: !!docked }),
+    filesDockState: (open) => ipcRenderer.send('editor:filesDockState', { open: !!open }),
     closeFilesDock: () => ipcRenderer.send('editor:closeFilesDock', {}),
     onEnsureFilesDock: (cb) => { const h = (_e, p) => cb(p || {}); ipcRenderer.on('editor:ensureFilesDock', h); return () => ipcRenderer.removeListener('editor:ensureFilesDock', h); },
     // Помодоро: оверлей отдыха в окне редактора. main шлёт состояние (показать/обновить/скрыть);
