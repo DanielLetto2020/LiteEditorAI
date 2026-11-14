@@ -22,11 +22,15 @@ const SKIP_TAGS = new Set(['SCRIPT', 'STYLE', 'TEXTAREA', 'CANVAS']);
 
 let locale = 'ru';
 let dict = Object.create(null);        // ru-строка → перевод
-let reverse = Object.create(null);     // перевод → ru-строка (для смены языка на лету)
-let patterns = [];                     // { re, order, out }
+let reverse = Object.create(null);     // перевод → ru-строка (фолбэк для смены языка на лету)
+let patterns = [];                     // { re, order, out, lit }
 let patternIndex = new Map();
 let observer = null;
 let applying = false;                  // защита от реакции наблюдателя на наши же правки
+/** @type {WeakMap<Node, { src: string, last: string }>} */
+const origNodeText = new WeakMap();
+/** @type {WeakMap<Element, Map<string, { src: string, last: string }>>} */
+const origElemAttrs = new WeakMap();
 // Диагностика стоимости перевода (видна в консоли окна как window.__i18nStats).
 const stats = { passes: 0, nodes: 0, hits: 0, records: 0, ms: 0 };
 try { if (typeof window !== 'undefined') window.__i18nStats = stats; } catch (_) {}
@@ -38,12 +42,18 @@ function compilePatterns(d) {
     if (!/\{\d\}/.test(k)) continue;
     const parts = k.split(/\{(\d)\}/);
     let re = '^';
+    let lit = '';
     const order = [];
     for (let i = 0; i < parts.length; i++) {
-      if (i % 2 === 0) re += parts[i].replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      else { re += '([\\s\\S]*?)'; order.push(Number(parts[i])); }
+      if (i % 2 === 0) {
+        re += parts[i].replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        if (parts[i].length > lit.length) lit = parts[i];
+      } else {
+        re += '([\\s\\S]*?)';
+        order.push(Number(parts[i]));
+      }
     }
-    const entry = { re: new RegExp(re + '$'), order, out: v };
+    const entry = { re: new RegExp(re + '$'), order, out: v, lit };
     patterns.push(entry);
     const anchor = (k.match(/[А-Яа-яЁё]+/) || [''])[0].toLowerCase();
     if (!patternIndex.has(anchor)) patternIndex.set(anchor, []);
@@ -56,7 +66,7 @@ function setDict(code, d) {
   dict = Object.create(null);
   reverse = Object.create(null);
   for (const [k, v] of Object.entries(d || {})) {
-    if (!v || k === '@@meta') continue;
+    if (!v || typeof v !== 'string' || k === '@@meta') continue;
     dict[k] = v;
     if (!reverse[v]) reverse[v] = k;
   }
@@ -70,14 +80,22 @@ function sourceOf(text) {
   return text;
 }
 
+function formatPattern(p, m) {
+  return p.out.replace(/\{(\d)\}/g, (_, i) => {
+    const idx = p.order.indexOf(Number(i));
+    return idx >= 0 ? (m[idx + 1] ?? '') : '';
+  });
+}
+
 function byPattern(s) {
   if (!patterns.length) return null;
   const anchor = (s.match(/[А-Яа-яЁё]+/) || [''])[0].toLowerCase();
   const list = patternIndex.get(anchor);
   if (!list) return null;
   for (const p of list) {
+    if (p.lit && !s.includes(p.lit)) continue;
     const m = p.re.exec(s);
-    if (m) return p.out.replace(/\{(\d)\}/g, (_, i) => m[p.order.indexOf(Number(i)) + 1] ?? '');
+    if (m) return formatPattern(p, m);
   }
   return null;
 }
@@ -97,42 +115,85 @@ export function t(src, ...args) {
 // --------------------------------------------------------------- DOM-перевод
 const CYR = /[А-Яа-яЁё]/;
 
+/**
+ * Вычисляет перевод для текста узла или атрибута с опорой на сохранённый исходник
+ * (чтобы при горячем переключении ru → en → zh → ru не терялись русские омонимы и
+ * повторно переводились шаблонные строки). Если внешний код изменил текст узла,
+ * старый снимок игнорируется.
+ * @param {string} text
+ * @param {{ src: string, last: string } | undefined} saved
+ * @returns {{ src: string, out: string } | null}
+ */
+function resolveDomTranslation(text, saved) {
+  const validSaved = saved && (text === saved.last || text === saved.src) ? saved : null;
+  if (validSaved) {
+    const src = validSaved.src;
+    const out = locale === 'ru' ? src : (dict[src] ?? byPattern(src) ?? src);
+    return { src, out };
+  }
+  if (dict[text] !== undefined) {
+    return { src: text, out: locale === 'ru' ? text : dict[text] };
+  }
+  if (!CYR.test(text)) {
+    const rev = reverse[text];
+    if (rev) {
+      const out = locale === 'ru' ? rev : (dict[rev] ?? byPattern(rev) ?? rev);
+      return { src: rev, out };
+    }
+    if (locale !== 'ru' && patternIndex.has('')) {
+      const pat = byPattern(text);
+      if (pat != null) return { src: text, out: pat };
+    }
+    return null;
+  }
+  const src = reverse[text] || text;
+  if (locale === 'ru') return src !== text ? { src, out: src } : null;
+  const out = dict[src] ?? byPattern(src);
+  return out != null ? { src, out } : null;
+}
+
 function translateText(node) {
   const raw = node.nodeValue;
   if (!raw) return;
   const text = raw.trim();
   if (text.length < 1 || text.length > 400) return;
-  let out = dict[text];
-  if (out === undefined) {
-    // Ключи словаря русские, якорь шаблона — тоже. Значит текст без кириллицы может
-    // совпасть только как УЖЕ переведённый (обратный индекс). Это самая частая ветка
-    // на переведённом интерфейсе, и она должна стоить один regex, а не три поиска.
-    // Уже переведённый текст ищется по обратному индексу (в нём и прошлый язык — applyLocale):
-    // en → zh тоже должен переводиться на лету, а не только возврат к русскому. На русском словарь
-    // пуст, и перевод строки — её исходник (иначе не возвращался текст кириллической локали, uk и т.п.).
-    if (!CYR.test(text)) {
-      const src = reverse[text];
-      if (!src) return;
-      out = locale === 'ru' ? src : (dict[src] || byPattern(src));
-    } else {
-      const key = sourceOf(text);
-      out = locale === 'ru' ? key : (dict[key] || byPattern(key));
-    }
+  const saved = origNodeText.get(node);
+  const res = resolveDomTranslation(text, saved);
+  if (!res) {
+    if (saved) origNodeText.delete(node);
+    return;
   }
-  if (out == null || out === text) return;
+  if (locale === 'ru') origNodeText.delete(node);
+  else origNodeText.set(node, { src: res.src, last: res.out });
+  if (res.out === text) return;
   stats.hits++;
-  node.nodeValue = raw.replace(text, out);          // сохраняем окружающие пробелы
+  // Передаём функцию замены, чтобы спецпоследовательности $&, $$, $', $` в переводе
+  // вставлялись буквально и не повреждали текст.
+  node.nodeValue = raw.replace(text, () => res.out);
 }
 
 function translateAttrs(elem) {
+  let attrMap = origElemAttrs.get(elem);
   for (const a of ATTRS) {
     if (!elem.hasAttribute || !elem.hasAttribute(a)) continue;
     const val = elem.getAttribute(a);
     const text = (val || '').trim();
     if (!text) continue;
-    const key = sourceOf(text);
-    const out = dict[key] || (locale === 'ru' && reverse[text] ? reverse[text] : null) || byPattern(key);
-    if (out != null && out !== text) elem.setAttribute(a, out);
+    const saved = attrMap ? attrMap.get(a) : undefined;
+    const res = resolveDomTranslation(text, saved);
+    if (!res) {
+      if (attrMap && saved) attrMap.delete(a);
+      continue;
+    }
+    if (locale === 'ru') {
+      if (attrMap) attrMap.delete(a);
+    } else {
+      if (!attrMap) { attrMap = new Map(); origElemAttrs.set(elem, attrMap); }
+      attrMap.set(a, { src: res.src, last: res.out });
+    }
+    if (res.out !== text) {
+      elem.setAttribute(a, val === text ? res.out : (val || '').replace(text, () => res.out));
+    }
   }
 }
 
