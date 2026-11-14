@@ -65,7 +65,10 @@ function loadSettings() { return { ...DEFAULT_SETTINGS, ...(STORE.settings || {}
 let settings = loadSettings();
 // Пишем только изменённые поля, чужие изменения (окна модулей, смена языка) вливаются в settings —
 // см. renderer/settings-sync.js. base = то, что на диске: первый save запишет и дефолты, как раньше.
-const settingsSync = syncSettings(lite, settings, { base: STORE.settings });
+const settingsSync = syncSettings(lite, settings, {
+  base: STORE.settings,
+  onRemote: ({ set }) => { if (set && 'fontSize' in set) applyFontSize({ notify: false }); },
+});
 function saveSettings() { STORE.settings = settings; if (!storeFrozen) settingsSync.save(); }
 
 // ---------------------------------------------------------------- state
@@ -1302,7 +1305,7 @@ function createSession(proj, name, custom, adoptId) {
     },
   });
   term.registerLinkProvider(fileLinkProvider(term, proj.path));
-  const rec = { term, fit, search, timeline, syncPty, container, projId: proj.id, name, customName: !!custom, idleTimer: null, sawBell: false, tail: '', busyStart: 0, lastInputAt: 0, activitySeq: 0, prefill: '', prefillTimer: null, redraw: false,
+  const rec = { term, fit, search, timeline, syncPty, container, projId: proj.id, name, customName: !!custom, idleTimer: null, sawBell: false, tail: '', busyStart: 0, lastInputAt: 0, activitySeq: 0, prefill: '', prefillTimer: null, redraw: false, needsFit: false,
     adoptPending: /** @type {string[] | null} */ (adoptId ? [] : null),
     claude: null, probeTimer: null, probeDeadline: null, probeSeq: 0, claudeRetry: 0 }; // claude — см. «Claude Code» у индикатора
   terms.set(id, rec);
@@ -1705,6 +1708,7 @@ function refitActiveTerminal(focusIt) {
       try {
         rec.fit.fit();
         rec.syncPty();
+        rec.needsFit = false;
         if (focusIt && sid === asid) rec.term.focus();
       } catch (_) {}
       if (rec.redraw) {
@@ -1758,13 +1762,14 @@ function createExtTerminal(container, cwd) {
   // Без onKey: у dev-терминала модуля нет вкладок, а Ctrl+F открыл бы поиск ЧУЖОГО
   // (активного проектного) терминала — поэтому поиск здесь не перехватываем (как было).
   const { term, fit, search, timeline, syncPty } = buildXterm(container, id, { cwd });
-  extTerms.set(id, { term, fit, search, timeline, container, cwd }); // cwd — для «Перезапустить» из контекст-меню
+  const extRec = { term, fit, search, timeline, syncPty, container, cwd, needsFit: false }; // cwd — для «Перезапустить» из контекст-меню
+  extTerms.set(id, extRec);
   activateRenderer(term);   // dev-терминал модуля виден сразу, в панели «Мои модули»
   return {
     id,
     write: (s) => lite.pty.write(id, s),
     focus: () => { try { term.focus(); } catch (_) {} },
-    refit: () => requestAnimationFrame(() => { try { fit.fit(); syncPty(); } catch (_) {} }),
+    refit: () => requestAnimationFrame(() => { try { fit.fit(); syncPty(); extRec.needsFit = false; } catch (_) {} }),
     dispose: () => { lite.pty.kill(id); dropPtyAck(id); releaseRenderer(term); try { timeline.dispose(); } catch (_) {} try { term.dispose(); } catch (_) {} extTerms.delete(id); },
   };
 }
@@ -1774,12 +1779,23 @@ function createExtTerminal(container, cwd) {
 
 // ---------------------------------------------------------------- font size
 let watchedRoot = null; // we live-watch only the active project to limit inotify use
-function applyFontSize() {
-  for (const rec of terms.values()) { rec.term.options.fontSize = settings.fontSize; try { rec.timeline.setFontSize(settings.fontSize); } catch (_) {} try { rec.fit.fit(); } catch (_) {} }
-  for (const rec of extTerms.values()) { rec.term.options.fontSize = settings.fontSize; try { rec.timeline.setFontSize(settings.fontSize); } catch (_) {} try { rec.fit.fit(); } catch (_) {} }
-  document.documentElement.style.setProperty('--editor-fs', settings.fontSize + 'px');
+function applyFontSize({ notify = true } = {}) {
+  const fsPx = settings.fontSize;
+  for (const [sid, rec] of terms) {
+    rec.term.options.fontSize = fsPx;
+    try { rec.timeline.setFontSize(fsPx); } catch (_) {}
+    if (!isSessionVisible(sid)) rec.needsFit = true;
+  }
+  for (const rec of extTerms.values()) {
+    rec.term.options.fontSize = fsPx;
+    try { rec.timeline.setFontSize(fsPx); } catch (_) {}
+    rec.needsFit = true;
+  }
+  document.documentElement.style.setProperty('--editor-fs', fsPx + 'px');
   refitActiveTerminal();
-  try { lite.app.settingsChanged(settings); } catch (_) {} // окно «Система · ~» подхватит размер шрифта
+  if (notify) {
+    try { lite.app.settingsChanged(settings); } catch (_) {} // окно «Система · ~» подхватит размер шрифта
+  }
 }
 function bumpFont(delta) {
   settings.fontSize = Math.max(9, Math.min(24, settings.fontSize + delta));
@@ -1880,7 +1896,6 @@ function doSetActive(id) {
   ensureProjectTabs(proj);
   renderProjects();
   showActiveTerminal();
-  applyFontSize();
   // вивер живёт в своём окне и следует за проектом через app:activeProject (pushActiveProject ниже)
   try { Ext.notifyActiveProject(activeId); } catch (_) {} // пользовательские модули: ctx.projects.onChange
   pushActiveProject(proj); // окна модулей (git/ctx/notes/audit): следовать за активным проектом редактора
@@ -4265,7 +4280,7 @@ function init() {
   // scratch/rh ресайз теперь в окнах модулей — обрабатывается module-entry.js.
 
 
-  applyFontSize();
+  applyFontSize({ notify: false });
   projects = loadProjectsFromDisk();
   renderProjects();
   // Какие терминалы заняты агентом и какие можно закрыть: опрос раз в 3 с (≈1,5 мс в main на десяток
