@@ -40,7 +40,7 @@ const $ = (sel) => document.querySelector(sel);
 
 // ---------------------------------------------------------------- global store (~/.LiteEditor)
 // Synchronous snapshot loaded once; reads are in-memory, writes go through to disk.
-const STORE = lite.store.loadAll();
+const STORE = lite.store.loadAll('__editor__');
 // После импорта настроек стор на диске — уже импортированный, а окно ещё держит старое состояние до
 // перезагрузки: смена заголовка вкладки (projTabs), раскладки и т. п. за эти сотни миллисекунд
 // переписала бы импортированное старым. С этого момента окно в стор не пишет.

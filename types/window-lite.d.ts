@@ -88,7 +88,7 @@ export interface LiteBridge {
   pomodoro: Record<string, (...args: any[]) => any>;
 
   store: {
-    loadAll(opts?: { modId?: string }): Record<string, any>;
+    loadAll(modId?: string | { modId?: string }): Record<string, any>;
     set(key: string, value: any): void;
     setSync(key: string, value: any): any;
     patch(key: string, set: Record<string, any>, unset?: string[]): void;

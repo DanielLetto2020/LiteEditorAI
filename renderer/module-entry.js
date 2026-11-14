@@ -256,7 +256,7 @@ const modId = (location.hash || '').replace(/^#/, '') || 'tools';
 const def = Object.prototype.hasOwnProperty.call(MODULES, modId) ? MODULES[modId] : null;
 
 // Store snapshot + settings/theme (each window loads its own; writes go to the shared main store).
-const STORE = lite.store.loadAll() || {};
+const STORE = lite.store.loadAll(modId) || {};
 let settings = STORE.settings || {};
 // Тема одна («Графит»), палитра — из settings.look (общая с редактором, приходит живьём через settings-sync).
 function applyTheme() { applyLook(settings); }

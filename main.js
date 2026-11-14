@@ -32,6 +32,10 @@ const { watchTree } = require('./lib/tree-watch'); // слежение за де
 const { createHistory } = require('./lib/history'); // локальная история файлов: снимки, троттл, срок и объём
 const { createBatcher } = require('./lib/ptybatch'); // склейка вывода PTY перед отправкой в окно
 const { createRingStore } = require('./lib/ptyring'); // кольцевой буфер вывода PTY для бесшовного подхвата вкладок
+const {
+  WRITE_TMP_SUFFIX, STORE_KEYS, PATCH_KEYS, rendererStoreKey,
+  atomicWriteSync, readJsonForEdit: readJsonForEditRaw, createStore,
+} = require('./lib/store'); // in-memory кэш STORE + коалесируемая атомарная запись
 const { foregroundKind } = require('./lib/proctree'); // индикатор активности: состояние группы переднего плана
 const { agentState, agentOf } = require('./lib/agentstate'); // индикатор: отчёт Claude Code о своей сессии; какой агент в терминале
 
@@ -123,127 +127,24 @@ try {
   const legacy = path.join(os.homedir(), '.LiteEditor');
   if (!fs.existsSync(storeDir) && fs.existsSync(legacy)) fs.cpSync(legacy, storeDir, { recursive: true });
 } catch (_) {}
-const STORE_KEYS = ['projects', 'settings', 'layout', 'recents', 'lastParent', 'categories', 'sectionOrder', 'favOrder', 'favAgentsOnly', 'accordions', 'dismissed', 'projTabs', 'openrouter', 'dockerUi', 'dbConnections', 'dbUi', 'rhConnections', 'rhUi', 'extData', 'extEnabled', 'quickbar', 'seoSites', 'moduleWins', 'mwLeft', 'mwLogH', 'gitFav', 'commitDrafts', 'bookmarks', 'promptSnippets', 'pomodoro', 'pomodoroLog', 'dbaiProviders', 'sessionSnaps', 'siteMon', 'rmqConnections', 'rmqUi', 'kafkaConnections', 'kafkaUi', 'stConnections', 'stUi', 'jiraAccounts', 'jiraUi', 'gsearch', 'gsearchHist', 'voice', 'voiceClips', 'toolsUi', 'sitemonUi', 'gitGraphUi', 'sshHostKeys', 'servers', 'serversUi'];
-// Профили подключений с зашифрованными секретами (passEnc/tokenEnc…) — только для main: модули
-// получают их через свои IPC (publicConn — без секретов), а рендерер эти ключи не читает и не пишет.
-// В общем снимке стора они уходили во ВСЕ окна (при недоступном safeStorage — base64, то есть по сути
-// открытым текстом), а через store:set любое окно могло подменить хост профиля при сохранённом пароле.
-// Бэкап настроек (settings:export/import) их по-прежнему несёт — он читает стор в main напрямую.
-const MAIN_ONLY_KEYS = new Set(['dbConnections', 'rhConnections', 'rmqConnections', 'kafkaConnections', 'stConnections', 'jiraAccounts']);
-const rendererStoreKey = (key) => STORE_KEYS.includes(key) && !MAIN_ONLY_KEYS.has(key);
-function ensureStoreDir() { try { fs.mkdirSync(storeDir, { recursive: true }); } catch (_) {} }
-function storeFile(key) { return path.join(storeDir, String(key).replace(/[^\w.-]/g, '_') + '.json'); }
-// Ключи, которые не прочитались (права, EMFILE, EIO). Кто получил вместо них «пусто» (дефолты, пустой
-// список проектов), рано или поздно запишет это «пусто» — например, открытый проект сохранил бы список
-// из ОДНОГО проекта поверх всех. Поэтому такие ключи не пишем:
-//   • storeReadFailed — последнее чтение в main не удалось; снимается следующим удачным чтением
-//     (main перечитывает ключ перед каждой правкой, разовый сбой не должен глушить запись навсегда);
-//   • storeSnapshotBroken — «пусто» ушло в снимок окна (store:loadAll): окно держит его до перезапуска.
-const storeReadFailed = new Set();
-const storeSnapshotBroken = new Set();
-function readStoreKey(key) {
-  const f = storeFile(key);
-  let raw;
-  try { raw = fs.readFileSync(f, 'utf8'); }
-  catch (e) {
-    if (e && e.code === 'ENOENT') { storeReadFailed.delete(String(key)); return undefined; }   // «ещё не записывали» — нормально
-    storeReadFailed.add(String(key));
-    logger.log('error', 'store', `read '${key}' failed`, e);
-    return undefined;
-  }
-  let value;
-  try { value = JSON.parse(raw); }
-  catch (e) {
-    // Не разбирается — откладываем рядом, а не затираем при следующей записи: данные остаются на
-    // диске для ручного восстановления. Не отложилось — блокируем запись, как при ошибке чтения.
-    const aside = f + '.corrupt-' + Date.now();
-    try { fs.renameSync(f, aside); storeReadFailed.delete(String(key)); logger.log('warn', 'store', `повреждённый файл отложен: ${aside} (${(e && e.message) || e})`); }
-    catch (_) { storeReadFailed.add(String(key)); logger.log('error', 'store', `read '${key}' failed`, e); }
-    return undefined;
-  }
-  storeReadFailed.delete(String(key));
-  return value;
-}
-// Crash-safe write: write a sibling .tmp then rename(2) over the target. rename is atomic
-// on the same filesystem, so a crash / OOM-kill / power-loss mid-write can never leave a
-// half-written (corrupt) JSON — the original file stays intact and a stale .tmp is harmless
-// (overwritten next time). Without this, dying during the write of projects.json would lose
-// the entire project list on the next launch (JSON.parse throws → undefined).
-// Суффикс временного соседа при атомарной записи. Вотчер и листинг дерева его отфильтровывают:
-// иначе сохранение файла В ПРОЕКТЕ (через atomicWriteSync это, например, CLAUDE.md) дёргало бы
-// дерево лишним «изменился файл» на соседа, которого через миллисекунду уже нет.
-const WRITE_TMP_SUFFIX = '.lite-tmp';
-function atomicWriteSync(file, data) {
-  // Пишем по РЕАЛЬНОМУ пути: rename поверх симлинка заменяет саму ссылку обычным файлом, и связь
-  // с общим файлом-целью рвётся молча (CLAUDE.md или конфиг вполне держат симлинком на шаблон —
-  // дальше правки уходили бы в копию, а общий файл больше не обновлялся).
-  let target = file;
-  try { if (fs.lstatSync(file).isSymbolicLink()) target = fs.realpathSync(file); } catch (_) {}
-  // Права существующей цели переносим на нового соседа: rename кладёт на её место файл, созданный
-  // по umask, и цель с чувствительным содержимым (база KeePass, 0600) стала бы читаемой всем.
-  let mode; try { mode = fs.statSync(target).mode & 0o777; } catch (_) {}
-  // Имя соседа уникально по процессу. Single-instance-лок привязан к userData, а стор — к HOME: копия
-  // редактора с другим профилем (dev-запуск, portable) пишет ТЕ ЖЕ файлы, и с общим `X.tmp` два процесса писали бы в один временный
-  // файл вперемешку, после чего один переименовывал бы мешанину поверх цели. Для projects.json
-  // это ровно та потеря всего списка проектов, ради предотвращения которой запись и делалась
-  // атомарной. Тот же приём уже применён в mcp/lite-agenda-server.js, который пишет agenda/*.json
-  // из отдельного процесса.
-  const tmp = target + '.' + process.pid + WRITE_TMP_SUFFIX;
-  try {
-    fs.writeFileSync(tmp, data, mode == null ? undefined : { mode });
-    if (mode != null) { try { fs.chmodSync(tmp, mode); } catch (_) {} }  // tmp мог остаться от прошлого краха — { mode } его не переоткрывает
-    fs.renameSync(tmp, target);
-  } catch (e) {
-    // Недописанный сосед (ENOSPC, EPERM на rename) убираем: имя уникально по pid, и при каждом
-    // новом запуске такие файлы копились бы в сторе и папках проектов, добивая и без того полный диск.
-    try { fs.unlinkSync(tmp); } catch (_) {}
-    throw e;
-  }
-}
-// Returns true on success. store:set is fire-and-forget (renderer updates its in-memory
-// snapshot before the write), so a swallowed failure = silent data loss after restart — we
-// log it; the boolean lets callers that DO care (import) detect a partial failure.
-// settings читают периодически (заставка — раз в 5 с) и на каждый запуск шелла. Перечитываем файл
-// только если он изменился (mtime) — так видны и внешние правки, и не гоняется JSON.parse впустую.
-let settingsCache = { mtime: -1, value: undefined };
-function readSettingsCached() {
-  let mtime;
-  try { mtime = fs.statSync(storeFile('settings')).mtimeMs; } catch (_) { return {}; }
-  if (mtime !== settingsCache.mtime) settingsCache = { mtime, value: readStoreKey('settings') };
-  return settingsCache.value || {};
-}
-// fromWindow — значение пришло из окна целиком: окно с исправным снимком — источник правды, и разовый
-// сбой чтения в main (storeReadFailed) его запись не глушит; глушит только испорченный снимок.
-function writeStoreKey(key, value, fromWindow) {
-  if (storeSnapshotBroken.has(String(key)) || (!fromWindow && storeReadFailed.has(String(key)))) {
-    logger.log('error', 'store', `write '${key}' skipped: файл не прочитался в этой сессии — запись затёрла бы его`);
-    return false;
-  }
-  ensureStoreDir();
-  try { atomicWriteSync(storeFile(key), JSON.stringify(value)); return true; }
-  catch (e) { logger.log('error', 'store', `write '${key}' failed`, e); return false; }
-}
+const appStore = createStore({
+  storeDir,
+  logger,
+  corruptMsg: (file) => i18n.t('Файл данных повреждён и не откладывается: {0}', file),
+  flushDelayMs: 120,
+});
+function ensureStoreDir() { appStore.ensureDir(); }
+function readStoreKey(key) { return appStore.readStoreKey(key); }
+function readSettingsCached() { return appStore.readSettingsCached(); }
+function writeStoreKey(key, value, opts) { return appStore.writeStoreKey(key, value, opts); }
 ensureStoreDir();
+process.on('exit', () => { try { appStore.flushAllSync(); } catch (_) {} });
 
-// Чтение пользовательских данных, которые окно потом перезапишет целиком (задачи, напоминания, история
-// чата, штат компании). Раньше любая ошибка давала «пусто»: окно показывало пустой список, и первое же
-// действие записывало его поверх файла — все задачи пропадали из-за одной запятой, поставленной руками,
-// или временного EACCES/EMFILE. Теперь:
-//   • файла нет — fallback (это «ещё не создавали»);
-//   • файл не разбирается — откладываем его рядом (<файл>.corrupt-<время>) и отдаём fallback: окно
-//     начинает с чистого листа, а данные остаются на диске для ручного восстановления;
-//   • прочитать не вышло — { error }: окно ничего не пишет, пока чтение не удастся.
 function readJsonForEdit(file, fallback) {
-  let raw;
-  try { raw = fs.readFileSync(file, 'utf8'); }
-  catch (e) { if (e && e.code === 'ENOENT') return fallback; return { error: String((e && e.message) || e), readFailed: true }; }
-  try { return JSON.parse(raw); }
-  catch (e) {
-    const aside = file + '.corrupt-' + Date.now();
-    try { fs.renameSync(file, aside); } catch (_) { return { error: i18n.t('Файл данных повреждён и не откладывается: {0}', file), readFailed: true }; }
-    logger.log('warn', 'store', `повреждённый файл отложен: ${aside} (${(e && e.message) || e})`);
-    return fallback;
-  }
+  return readJsonForEditRaw(file, fallback, {
+    log: (lvl, src, msg) => logger.log(lvl, src, msg),
+    corruptMsg: (f) => i18n.t('Файл данных повреждён и не откладывается: {0}', f),
+  });
 }
 
 // ── Централизованная обвязка ошибок IPC (см. CLAUDE.md → «Логирование ошибок») ──────────────
@@ -412,85 +313,34 @@ ipcMain.handle('errors:setContext', (_e, projectPath) => { errledger.setContext(
 errledger.onChange(() => { sendTo(mainWindow, 'errors:changed'); });
 errledger.watch();
 
-ipcMain.on('store:loadAll', (e) => {
-  const o = {};
-  for (const k of STORE_KEYS) {
-    if (MAIN_ONLY_KEYS.has(k)) continue;
-    const v = readStoreKey(k);
-    if (v !== undefined) o[k] = v;
-    else if (storeReadFailed.has(k)) storeSnapshotBroken.add(k);   // окно получило «пусто» вместо данных
-  }
-  o.noteCounts = {}; // project id -> number of ACTIVE (не выполненных) задач, for card badges
-  try {
-    const nd = path.join(storeDir, 'notes');
-    for (const f of fs.readdirSync(nd)) {
-      if (!f.endsWith('.json')) continue;
-      // старые заметки без поля status считаем активными (status='todo' по умолчанию)
-      try { const a = JSON.parse(fs.readFileSync(path.join(nd, f), 'utf8')); if (Array.isArray(a)) { const n = a.filter((x) => x && x.status !== 'done').length; if (n) o.noteCounts[f.slice(0, -5)] = n; } } catch (_) {}
-    }
-  } catch (_) {}
-  o.agendaCounts = {}; // project id -> число напоминаний «требует внимания» (просрочено + сегодня, не done)
-  try {
-    const ad = path.join(storeDir, 'agenda');
-    for (const f of fs.readdirSync(ad)) {
-      if (!f.endsWith('.json')) continue;
-      try { const a = JSON.parse(fs.readFileSync(path.join(ad, f), 'utf8')); const n = agendaAttentionCount(a); if (n) o.agendaCounts[f.slice(0, -5)] = n; } catch (_) {}
-    }
-  } catch (_) {}
-  if (storeSnapshotBroken.size) o.__readFailed = [...storeSnapshotBroken];   // окно предупредит человека
-  e.returnValue = o; // synchronous: renderer loads the snapshot once at startup
+ipcMain.on('store:loadAll', (e, opts) => {
+  e.returnValue = appStore.loadSnapshot(opts || {}); // synchronous: reads from main's RAM cache
 });
 ipcMain.on('store:set', (_e, { key, value }) => { if (rendererStoreKey(key)) writeStoreKey(key, value, true); });
 // settings пишут несколько окон, поэтому для него — патч по полям, а не объект целиком: иначе
 // побеждала последняя запись из устаревшей копии окна (renderer/settings-sync.js). Вливаем патч
-// в файл и рассылаем его остальным окнам — они применят его к своему объекту.
-const PATCH_KEYS = new Set(['settings']);
+// в кэш/файл и рассылаем его остальным окнам — они применят его к своему объекту.
 function broadcastStoreChange(msg, exceptWc) {
   for (const w of BrowserWindow.getAllWindows()) { if (!exceptWc || w.webContents !== exceptWc) sendTo(w, 'store:changed', msg); }
 }
 function patchStoreKey(key, set, unset, exceptWc) {
-  const cur = readStoreKey(key);
-  const next = (cur && typeof cur === 'object' && !Array.isArray(cur)) ? cur : {};
-  const s = (set && typeof set === 'object') ? set : {};
-  const u = Array.isArray(unset) ? unset.map(String) : [];
-  for (const k of Object.keys(s)) next[k] = s[k];
-  for (const k of u) delete next[k];
-  writeStoreKey(key, next);
-  broadcastStoreChange({ key, set: s, unset: u }, exceptWc);
+  const res = appStore.patchStoreKey(key, set, unset);
+  broadcastStoreChange({ key: res.key, set: res.set, unset: res.unset }, exceptWc);
 }
 ipcMain.on('store:patch', (e, { key, set, unset } = {}) => { if (PATCH_KEYS.has(key)) patchStoreKey(key, set, unset, e.sender); });
-// Синхронный вариант — для записи на beforeunload (снимки сессий, идея 7): обычный send может
-// не успеть флашнуться до сноса рендерера, sendSync гарантирует запись до выхода.
-ipcMain.on('store:setSync', (e, { key, value } = {}) => { if (rendererStoreKey(key)) writeStoreKey(key, value, true); e.returnValue = true; });
-ipcMain.handle('store:notesGet', (_e, id) => readJsonForEdit(path.join(storeDir, 'notes', String(id).replace(/[^\w.-]/g, '_') + '.json'), []));
-ipcMain.handle('store:notesSet', (_e, { id, notes }) => {
-  try {
-    fs.mkdirSync(path.join(storeDir, 'notes'), { recursive: true });
-    atomicWriteSync(path.join(storeDir, 'notes', String(id).replace(/[^\w.-]/g, '_') + '.json'), JSON.stringify(notes));
-    return { ok: true };
-  } catch (e) { return { error: String(e) }; }
+// Синхронный вариант — гарантирует запись на диск до выхода из рендерера (beforeunload).
+ipcMain.on('store:setSync', (e, { key, value } = {}) => {
+  if (rendererStoreKey(key)) writeStoreKey(key, value, { fromWindow: true, sync: true });
+  e.returnValue = true;
 });
-
-// «Календарь» (дата-задачи / напоминания) — отдельный источник, зеркалит notesGet/Set (agenda/<id>.json).
-const agendaPath = (id) => path.join(storeDir, 'agenda', String(id).replace(/[^\w.-]/g, '_') + '.json');
-// Число напоминаний «требует внимания» = не выполнено И (просрочено или срок сегодня). Для бейджа квикбара.
-function agendaAttentionCount(arr) {
-  if (!Array.isArray(arr)) return 0;
-  const sod = new Date(); sod.setHours(0, 0, 0, 0);
-  const eod = sod.getTime() + 86400000; // конец сегодняшнего дня (граница «просрочено+сегодня»)
-  let n = 0;
-  for (const r of arr) {
-    if (!r || r.done || !r.at) continue;
-    const t = new Date(r.at).getTime();
-    if (!isNaN(t) && t < eod) n++; // просрочено или срок наступает сегодня
-  }
-  return n;
-}
+ipcMain.handle('store:notesGet', (_e, id) => appStore.notesGet(id));
+ipcMain.handle('store:notesSet', (_e, { id, notes }) => appStore.notesSet(id, notes));
 
 // ── Напоминалки Календаря: тикер сканирует agenda/*.json, шлёт нативные уведомления ──
 // Работает, пока редактор запущен (не демон). Гейт notifiedAt не даёт дублей/спама при рестарте.
 const AGENDA_REMIND_MS = { at: 0, '10m': 600000, '1h': 3600000, '1d': 86400000 };
 function agendaBroadcastChanged(id) {
+  appStore.invalidateAgendaCounts(id);
   for (const w of moduleWindows.values()) { sendTo(w, 'app:agendaChanged', { id }); }
   sendTo(mainWindow, 'app:agendaChanged', { id });
 }
@@ -605,14 +455,8 @@ ipcMain.handle('agenda:mcpConnect', async (_e, { projId, projPath } = {}) => {
     cp.on('exit', (code) => finish(code === 0 ? { ok: true, out: stdout.trim() } : { ok: false, error: (stderr || stdout).trim() || ('claude завершился с кодом ' + code) }));
   });
 });
-ipcMain.handle('store:agendaGet', (_e, id) => readJsonForEdit(agendaPath(id), []));
-ipcMain.handle('store:agendaSet', (_e, { id, agenda }) => {
-  try {
-    fs.mkdirSync(path.join(storeDir, 'agenda'), { recursive: true });
-    atomicWriteSync(agendaPath(id), JSON.stringify(agenda));
-    return { ok: true };
-  } catch (e) { return { error: String(e) }; }
-});
+ipcMain.handle('store:agendaGet', (_e, id) => appStore.agendaGet(id));
+ipcMain.handle('store:agendaSet', (_e, { id, agenda }) => appStore.agendaSet(id, agenda));
 
 // ---------------------------------------------------------------- OpenRouter chat
 // HTTP from main (Node https): no CORS, the API key never reaches the renderer bundle.
@@ -814,6 +658,7 @@ ipcMain.handle('update:cancel', () => {
 // Жёсткий выход под обновление. app.exit() не поднимает before-quit, поэтому его уборку делаем
 // здесь: иначе реестр ошибок терял бы последние отложенные правки.
 function updHardExit() {
+  try { appStore.flushAllSync(); } catch (_) {}
   try { errledger.flush(); } catch (_) {}
   // Агентов тоже гасим (как в window-all-closed, которое app.exit() не поднимает): директор «ИИ
   // компании» запущен detached — своей группой процессов — и пережил бы редактор, продолжая править
@@ -2933,7 +2778,7 @@ ipcMain.handle('settings:import', async () => {
     // an unreported failure would let import claim success after losing settings.
     const failedKeys = [];
     for (const k of STORE_KEYS) {
-      if (Object.prototype.hasOwnProperty.call(data.store, k) && !writeStoreKey(k, data.store[k])) failedKeys.push(k);
+      if (Object.prototype.hasOwnProperty.call(data.store, k) && !writeStoreKey(k, data.store[k], { sync: true })) failedKeys.push(k);
     }
     let failedNotes = 0;
     if (data.notes && typeof data.notes === 'object' && !Array.isArray(data.notes)) { // массив дал бы notes/0.json, notes/1.json…
@@ -2943,6 +2788,7 @@ ipcMain.handle('settings:import', async () => {
         try { atomicWriteSync(path.join(nd, String(id).replace(/[^\w.-]/g, '_') + '.json'), JSON.stringify(arr)); }
         catch (e) { failedNotes++; logger.log('error', 'store', `import note '${id}' failed`, e); }
       }
+      appStore.invalidateNoteCounts();
     }
     if (data.windowState && typeof data.windowState === 'object') saveState(data.windowState);
     saveState({ lastOpenDir: path.dirname(file) });
@@ -3565,7 +3411,10 @@ app.on('child-process-gone', (_e, d) =>
 app.on('before-quit', () => { logger.log('info', 'app', 'before-quit'); });
 // Уборка — на will-quit, а не на before-quit: выход может быть отменён (окно с несохранённым,
 // guardMainWindowClose).
-app.on('will-quit', () => { try { errledger.flush(); } catch (_) {} });
+app.on('will-quit', () => {
+  try { appStore.flushAllSync(); } catch (_) {}
+  try { errledger.flush(); } catch (_) {}
+});
 
 app.whenReady().then(() => {
   // Язык интерфейса — до создания окон: рендерер забирает словарь синхронно при старте.
@@ -4851,7 +4700,7 @@ function smMigrateOld(s) {
 }
 function smLoad() {
   const raw = readStoreKey('siteMon');
-  if (raw === undefined && storeReadFailed.has('siteMon')) storeSnapshotBroken.add('siteMon');   // держим «пусто» до перезапуска — не пишем его
+  if (raw === undefined) appStore.markSnapshotBrokenIfReadFailed('siteMon');   // держим «пусто» до перезапуска — не пишем его
   if (!Array.isArray(raw)) { smTargets = []; return; }
   smTargets = raw.map((x) => {
     if (x && Array.isArray(x.checks)) return { id: x.id || smNewId('t'), name: x.name, url: x.url, intervalSec: smClampInt(x.intervalSec), render: !!x.render, insecureTls: !!x.insecureTls, headers: x.headers || null, serverId: smSid(x.serverId), checks: x.checks.map((c) => Object.assign({}, c, { pend: null })), checking: false, nextAt: 0 };

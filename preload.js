@@ -129,7 +129,7 @@ contextBridge.exposeInMainWorld('lite', {
   },
 
   store: {
-    loadAll: () => ipcRenderer.sendSync('store:loadAll'),       // sync snapshot at startup
+    loadAll: (modId) => ipcRenderer.sendSync('store:loadAll', modId ? { modId: String(modId) } : undefined), // sync snapshot at startup (filtered per window)
     set: (key, value) => ipcRenderer.send('store:set', { key, value }),
     setSync: (key, value) => ipcRenderer.sendSync('store:setSync', { key, value }), // гарантированная запись (beforeunload)
     // Общий ключ settings пишут несколько окон: только изменённые поля (renderer/settings-sync.js),
