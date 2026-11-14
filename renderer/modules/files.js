@@ -12,7 +12,7 @@
 //     в редакторе с инлайн-просмотром и откатом отдельного ханка в 1 клик.
 
 import {
-  el, icon, toast, showConfirm, baseName, extOf, fileTypeSvg, folderTypeSvg,
+  el, icon, toast, showConfirm, baseName, extOf, fileTypeSvg, folderTypeSvg, makeModal,
 } from '../ui.js';
 import {
   languageFor, ensureLanguage, langNameFor, mergeRoExtensions, mergeRwExtensions, liteEditorTheme,
@@ -219,7 +219,10 @@ export function initFiles(host) {
   class GitBarMarker extends GutterMarker {
     constructor(kind) { super(); this.kind = kind; }
     eq(other) { return other.kind === this.kind; }
-    toDOM() { return el('div', 'cm-git-' + this.kind); }
+    toDOM() {
+      const cls = this.kind === 'add' ? 'git-added' : this.kind === 'del' ? 'git-deleted' : 'git-modified';
+      return el('div', 'cm-git-mark ' + cls);
+    }
   }
   const gitMarkers = {
     add: new GitBarMarker('add'),
@@ -319,7 +322,7 @@ export function initFiles(host) {
     constructor(who) { super(); this.who = who; }
     eq(other) { return other.who === this.who; }
     toDOM() {
-      const d = el('div', 'cm-auth-' + this.who);
+      const d = el('div', 'cm-auth-mark ' + (this.who === 'agent' ? 'auth-agent' : 'auth-you'));
       d.title = this.who === 'agent' ? 'Изменено агентом на диске' : 'Изменено вами в редакторе';
       return d;
     }
@@ -506,7 +509,7 @@ export function initFiles(host) {
   function buildAuthorGutterExt() {
     if (!agentMode) return [];
     return gutter({
-      class: 'cm-author-gutter',
+      class: 'cm-auth-gutter',
       markers: (v) => v.state.field(authorField),
     });
   }
@@ -580,9 +583,11 @@ export function initFiles(host) {
         markers: (v) => v.state.field(gitGutterField),
         domEventHandlers: {
           mousedown: (view, line, event) => {
+            if (event.button !== 0) return false;
             const lineNum = view.state.doc.lineAt(line.from).number;
             if (openInlineHunkPopover(filePath, lineNum, event.clientX, event.clientY)) {
               event.preventDefault();
+              event.stopPropagation();
               return true;
             }
             return false;
@@ -1729,14 +1734,15 @@ export function initFiles(host) {
   async function openBreadcrumbDirMenu(dirPath, anchorEl, activeFilePath) {
     closeMenus();
     const res = await lite.fs.readDir(dirPath);
-    if (!res || !Array.isArray(res.entries)) return;
+    const dirEntries = Array.isArray(res) ? res : (res && Array.isArray(res.entries) ? res.entries : null);
+    if (!dirEntries) return;
     const dd = el('div', 'menu-dropdown');
     dd.style.minWidth = '220px';
     dd.style.maxHeight = '360px';
     dd.style.overflowY = 'auto';
     dd.addEventListener('click', (e) => e.stopPropagation());
 
-    for (const ent of res.entries) {
+    for (const ent of dirEntries) {
       const r = menuRow(null, ent.name, () => {
         closeMenus();
         if (ent.dir) revealInTree(ent.path, true);
@@ -1999,7 +2005,7 @@ export function initFiles(host) {
       buf.gitHunks = [];
       return;
     }
-    const res = await lite.git.diff(p.path, buf.path);
+    const res = await lite.git.fileDiff(p.path, buf.path);
     if (!res || res.error) return;
     const parsed = parseUnifiedDiff(res.diff || '');
     buf.gitHunks = parsed.hunks;
@@ -2143,6 +2149,33 @@ export function initFiles(host) {
     }
   }
 
+  // «Выполнить в БД» (.sql): пикер сохранённых подключений модуля «Базы данных» → db:openSql через main.
+  // SQL = выделение в редакторе, если есть, иначе весь файл.
+  async function runSqlInDb(file) {
+    const v = getActiveEditorView();
+    if (!v || !file) return;
+    const selRange = v.state.selection.main;
+    const sqlText = selRange.empty ? v.state.doc.toString() : v.state.sliceDoc(selRange.from, selRange.to);
+    if (!sqlText.trim()) { toast('Файл пуст — выполнять нечего'); return; }
+    let conns = [];
+    try { const r = await lite.db.list(); conns = (r && r.connections) || []; } catch (_) {}
+    if (!conns.length) { toast('Нет сохранённых подключений — создайте их в модуле «Базы данных»', { kind: 'warn', ttl: 7000 }); return; }
+    const { m, close } = makeModal('<h2>Выполнить в «Базах данных»</h2>');
+    m.appendChild(el('div', 'about-desc', `${baseName(file)} · ${selRange.empty ? 'весь файл' : 'выделение'} · ${sqlText.length} симв. — SQL вставится в новую консоль, запуск по кнопке там`));
+    const list = el('div', 'runsql-list');
+    for (const c of conns) {
+      const row = el('button', 'runsql-row');
+      row.type = 'button';
+      const dot = el('span', 'runsql-dot'); if (c.color) dot.style.background = c.color;
+      row.append(dot, el('span', 'runsql-name', c.name || '(без имени)'));
+      row.appendChild(el('span', 'runsql-sub', c.type === 'sqlite' ? 'SQLite' : `${c.type || ''} · ${c.host || 'localhost'}:${c.port || ''}`));
+      if (c.isProd) row.appendChild(el('span', 'runsql-prod', 'PROD'));
+      row.onclick = () => { close(); lite.db.openSql(c.id, sqlText); toast('Отправлено в «Базы данных»…', { ttl: 3000 }); };
+      list.appendChild(row);
+    }
+    m.appendChild(list);
+  }
+
   async function fetchWorkingDiffData(projPath, filePath) {
     // Гарантируем, что свежие правки буфера записаны на диск перед чтением git diff
     const buf = pool.getBuffer(filePath);
@@ -2150,8 +2183,8 @@ export function initFiles(host) {
       await saveBufferNow(filePath, false);
     }
     const [dRes, pairRes] = await Promise.all([
-      lite.git.diff(projPath, filePath),
-      lite.git.fileVersions(projPath, filePath),
+      lite.git.fileDiff(projPath, filePath),
+      lite.git.filePair(projPath, filePath),
       ensureLanguage(filePath),
     ]);
     return {
@@ -2188,7 +2221,7 @@ export function initFiles(host) {
     const absHint = joinPath(projPath, relFile);
     const [dRes, pairRes] = await Promise.all([
       lite.git.commitFileDiff(projPath, hash, relFile, false),
-      lite.git.commitFileVersions ? lite.git.commitFileVersions(projPath, hash, relFile, false) : Promise.resolve(null),
+      lite.git.commitFilePair(projPath, hash, relFile),
       ensureLanguage(absHint),
     ]);
     const pair = (pairRes && !pairRes.error && !pairRes.binary && !pairRes.tooBig)
@@ -2380,6 +2413,8 @@ export function initFiles(host) {
         highlightChanges: true,
         gutter: true,
         collapseUnchanged: { margin: 4, minSize: 6 },
+        // Дефолтный scanLimit=500 на больших файлах даёт «грубый» дифф (целые блоки помечаются изменёнными)
+        diffConfig: { scanLimit: 20000, timeout: 2500 },
       });
 
       // Полоса быстрых кнопок отката отдельных ханков под тулбаром (для рабочего диффа)
@@ -2997,9 +3032,8 @@ export function initFiles(host) {
   async function readDirCached(dirPath, force = false) {
     if (!force && dirEntriesCache.has(dirPath)) return dirEntriesCache.get(dirPath);
     const res = await lite.fs.readDir(dirPath);
-    const entries = (res && Array.isArray(res.entries))
-      ? res.entries.map((e) => ({ ...e, path: normSlash(e.path) }))
-      : [];
+    const raw = Array.isArray(res) ? res : (res && Array.isArray(res.entries) ? res.entries : []);
+    const entries = raw.map((e) => ({ ...e, path: normSlash(e.path) }));
     dirEntriesCache.set(dirPath, entries);
     return entries;
   }
@@ -3371,16 +3405,20 @@ export function initFiles(host) {
   function deleteTreeEntry(ent) {
     const p = activeProject();
     if (!p || ent.root) return;
-    showConfirm('Удалить?', `«${ent.name}» будет безвозвратно удалён с диска.`, 'Удалить', async () => {
-      const r = await lite.fs.delete(ent.path);
+    showConfirm('Удалить в корзину?', `«${ent.name}» будет перемещён в корзину.`, 'Удалить', async () => {
+      const prevPrimary = getGroupActiveId('primary');
+      const prevSplit = getGroupActiveId('split');
+      const r = await lite.fs.trash(ent.path);
       if (r && r.error) { toast(r.error, { kind: 'err' }); return; }
-      const affected = pool.dropUnder(ent.path);
-      if (affected.primaryClosedActive) {
-        if (affected.primaryNext) activateTabInGroup('primary', affected.primaryNext);
+      pool.dropUnder(ent.path);
+      const nextPrimary = getGroupActiveId('primary');
+      const nextSplit = getGroupActiveId('split');
+      if (prevPrimary !== nextPrimary) {
+        if (nextPrimary) activateTabInGroup('primary', nextPrimary);
         else clearPrimarySurface();
       }
-      if (affected.splitClosedActive) {
-        if (affected.splitNext) activateTabInGroup('split', affected.splitNext);
+      if (prevSplit !== nextSplit) {
+        if (nextSplit) activateTabInGroup('split', nextSplit);
         else syncSplitVisibility();
       }
       fileListCache = null;
@@ -3869,10 +3907,7 @@ export function initFiles(host) {
     }
     if (f && extOf(f) === 'sql') {
       sep();
-      add('database', 'Выполнить SQL в модуле «Базы данных»…', async () => {
-        const v = getActiveEditorView();
-        if (v) lite.editorBus.openSqlInDb({ sql: v.state.doc.toString(), file: f });
-      });
+      add('database', 'Выполнить SQL в модуле «Базы данных»…', () => runSqlInDb(f));
     }
     placeMenu(dd, x, y);
   }
@@ -4107,6 +4142,10 @@ export function initFiles(host) {
         return v ? v.state.doc.toString() : '';
       },
       getBookmarks: () => bmList(),
+      getCursorLine: () => {
+        const v = getActiveEditorView();
+        return v ? v.state.doc.lineAt(v.state.selection.main.head).number : 1;
+      },
       toggleBookmarkHere,
       saveBookmarks: () => {
         saveBookmarks();

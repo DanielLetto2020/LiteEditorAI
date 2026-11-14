@@ -212,8 +212,7 @@ export function createSidePanels(host) {
     const body = el('div', 'sp-file-body');
     head.addEventListener('click', (e) => {
       if (e.target === dismissFile) return;
-      const col = box.classList.toggle('collapsed');
-      chev.textContent = col ? '▸' : '▾';
+      box.classList.toggle('collapsed');
     });
     dismissFile.addEventListener('click', (e) => {
       e.stopPropagation();
@@ -246,9 +245,17 @@ export function createSidePanels(host) {
       const txt = el('span', 'sp-hit-txt');
       const raw = String(h.text || '');
       const leadTrim = raw.length - raw.trimStart().length;
-      const trimmed = raw.trimStart().slice(0, 220);
-      const mStart = Math.max(0, (h.mcol | 0) - leadTrim);
+      let trimmed = raw.trimStart();
+      let mStart = Math.max(0, (h.mcol | 0) - leadTrim);
+      // Совпадение далеко от начала строки — сдвигаем окно, чтобы найденное было видно в узкой панели
+      if (mStart > 18) {
+        const cut = mStart - 12;
+        trimmed = '…' + trimmed.slice(cut);
+        mStart = mStart - cut + 1;
+      }
+      trimmed = trimmed.slice(0, 220);
       const mEnd = Math.min(trimmed.length, mStart + Math.max(0, h.len | 0));
+      row.title = raw.trim().slice(0, 400);
       if (mEnd > mStart && (h.len | 0) > 0) {
         txt.appendChild(document.createTextNode(trimmed.slice(0, mStart)));
         txt.appendChild(el('mark', 'sp-mark', trimmed.slice(mStart, mEnd)));
@@ -516,7 +523,7 @@ export function createSidePanels(host) {
       oDom.list.appendChild(el('div', 'tree-empty', tr('Символы в этом файле не найдены')));
       return;
     }
-    const curLn = lastCursorLine || 1;
+    const curLn = (host.getCursorLine && host.getCursorLine()) || lastCursorLine || 1;
     const activeSym = enclosingSymbolAtLine(allSyms, curLn);
     const q = oDom.fInput.value.trim().toLowerCase();
     const filtered = q ? syms.filter((s) => s.name.toLowerCase().includes(q)) : syms;
@@ -628,6 +635,7 @@ export function createSidePanels(host) {
       head.onclick = () => box.classList.toggle('collapsed');
       for (const it of arr) {
         const row = el('div', 'sp-hit-row');
+        row.title = it.text.slice(0, 400);
         row.appendChild(el('span', 'ov-kind ov-todo-' + it.kind.toLowerCase(), it.kind));
         row.appendChild(el('span', 'sp-hit-ln', ':' + it.line));
         row.appendChild(el('span', 'sp-hit-txt', it.text.slice(0, 160)));

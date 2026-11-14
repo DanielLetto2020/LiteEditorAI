@@ -246,6 +246,10 @@ export const ICONS = {
   'arrow-down': '<path d="M12 5v14M6 13l6 6 6-6"/>',
   'corner-up-left': '<path d="M9 14L4 9l5-5"/><path d="M20 20v-7a4 4 0 0 0-4-4H4"/>',
   'file-text': '<path d="M6 3.5h7L18.5 9v10.5a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1v-15a1 1 0 0 1 1-1z"/><path d="M12.5 3.5V9H18"/><path d="M8.5 13h7M8.5 16.5h4.5"/>',
+  'file-plus': '<path d="M6 3.5h7L18.5 9v10.5a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1v-15a1 1 0 0 1 1-1z"/><path d="M12.5 3.5V9H18"/><path d="M11.75 11.5v6M8.75 14.5h6"/>',
+  edit: '<path d="M4 20h4L18.5 9.5a2 2 0 0 0-2.83-2.83L5 17v3z"/><path d="M13.5 6.5l4 4"/><path d="M13 20h7"/>',
+  map: '<path d="M3.5 6.5l5.5-2 6 2 5.5-2v13l-5.5 2-6-2-5.5 2z"/><path d="M9 4.5v13M15 6.5v13"/>',
+  bug: '<rect x="7.5" y="8" width="9" height="12" rx="4.5"/><path d="M9.5 8V6.5a2.5 2.5 0 0 1 5 0V8M12 12v8M4 13h3.5M16.5 13H20M5 8.5l2.8 1.8M19 8.5l-2.8 1.8M5 18.5l2.8-1.8M19 18.5l-2.8-1.8"/>',
 };
 /** @type {Map<string, SVGSVGElement>} */
 const _iconProto = new Map();

@@ -545,6 +545,7 @@ export function createProjectSymbolIndex({ readFile, listAll, maxFiles = 600, ma
   return {
     rebuild,
     startIndex: rebuild,
+    invalidate: () => (rootPath ? rebuild(rootPath) : Promise.resolve()),
     onFilesChanged,
     updateFromOpenBuffer,
     findDefinitions,

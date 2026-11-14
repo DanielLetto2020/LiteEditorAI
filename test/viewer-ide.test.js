@@ -209,6 +209,9 @@ const toUrl = (rel) => pathToFileURL(path.join(__dirname, '..', rel)).href;
     eq(defs[0].rel, 'src/math.ts', 'путь определения calcTotal');
     const searchHits = idx.searchSymbols('Account');
     eq(searchHits[0]?.name, 'AccountManager', 'поиск #Account нашёл AccountManager');
+    virtualFs.set('/repo/src/math.ts', 'export function calcGrandTotal(items) { return items.length; }\n');
+    await idx.invalidate();
+    eq(idx.findDefinitions('calcGrandTotal').length, 1, 'invalidate() пересобрал индекс проекта после файловых операций');
   }
 
   {

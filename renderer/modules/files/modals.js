@@ -450,6 +450,7 @@ export function createViewerOverlays(ctx) {
         parent: diffEl,
         highlightChanges: true,
         gutter: true,
+        diffConfig: { scanLimit: 20000, timeout: 2500 },
       });
     };
 

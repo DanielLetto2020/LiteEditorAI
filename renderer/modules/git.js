@@ -1332,7 +1332,8 @@ export function initGit(host) {
           subject: c.s || '',
           refs: c.refs || '',
         }));
-        graphLayout = layoutCommitGraph(gr.commits.map((c) => ({ h: c.h, p: c.p || [] })));
+        const gRows = layoutCommitGraph(gr.commits.map((c) => ({ h: c.h, p: c.p || [] })));
+        graphLayout = { rows: gRows, maxCols: Math.min(8, Math.max(1, ...gRows.map((r) => r.cols || 1))) };
       }
     }
     if (!commits.length) {
