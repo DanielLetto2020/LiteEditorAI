@@ -209,7 +209,7 @@ export function openGlobalSearch(host, initial = {}) {
     resetResults();
     if (!query || query.length < 2) { setStatus('Введите минимум 2 символа'); setRunning(false); return; }
     saveState(); pushHist(query);
-    if (st.mode === 'terms') { runTerms(query); return; }
+    if (st.mode === 'terms') { runTerms(query, seq); return; }
     const roots = projs().filter((p) => chosen.has(p.id) && p.path).map((p) => ({ id: p.id, name: p.name, path: p.path }));
     if (!roots.length) { setStatus('Не выбрано ни одного проекта'); setRunning(false); return; }
     const id = 'gsx' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
@@ -371,30 +371,51 @@ export function openGlobalSearch(host, initial = {}) {
     requestAnimationFrame(() => { const hitRowEl = pre.querySelector('.hit'); if (hitRowEl) hitRowEl.scrollIntoView({ block: 'center' }); });
   }
 
-  // ── режим «в терминалах» (буферы открытых сессий, без похода в main) ───────────────
-  function runTerms(query) {
+  // ── режим «в терминалах» (буферы открытых сессий в главном окне и вынесенных окнах) ──
+  async function runTerms(query, seq) {
     setRunning(false);
     let total = 0;
+    const appendTermHit = (projId, tabName, y, text, onJump) => {
+      if (total >= TERM_CAP) return;
+      const g = groupFor(projId);
+      const f = fileFor(g, tabName || 'терминал');
+      total++; totalHits++; g.n++; f.n++;
+      const row = el('div', 'gsx-hit');
+      row.appendChild(el('span', 'gsx-ln', String(y)));
+      row.appendChild(el('span', 'gsx-text', text));
+      const jump = () => { onJump(); close(); };
+      row.addEventListener('click', () => select(row));
+      row.addEventListener('dblclick', jump);
+      row._open = jump; row._prev = () => {};
+      f.body.appendChild(row);
+      g.cntEl.textContent = String(g.n); f.cntEl.textContent = String(f.n);
+    };
     for (const [sid, rec] of host.terms()) {
       if (total >= TERM_CAP) break;
       const hits = host.scanTermBuffer(rec.term, query);
       if (!hits.length) continue;
-      const g = groupFor(rec.projId);
-      const f = fileFor(g, rec.name || 'терминал');
       for (const h of hits) {
         if (total >= TERM_CAP) break;
-        total++; totalHits++; g.n++; f.n++;
-        const row = el('div', 'gsx-hit');
-        row.appendChild(el('span', 'gsx-ln', String(h.y)));
-        row.appendChild(el('span', 'gsx-text', h.text));
-        const jump = () => { host.jumpToSession(rec.projId, sid); requestAnimationFrame(() => { try { rec.term.scrollToLine(Math.max(0, h.y - 2)); rec.search.findNext(query); } catch (_) {} }); close(); };
-        row.addEventListener('click', () => select(row));
-        row.addEventListener('dblclick', jump);
-        row._open = jump; row._prev = () => {};
-        f.body.appendChild(row);
+        appendTermHit(rec.projId, rec.name || 'терминал', h.y, h.text, () => {
+          host.jumpToSession(rec.projId, sid);
+          requestAnimationFrame(() => { try { rec.term.scrollToLine(Math.max(0, h.y - 2)); rec.search.findNext(query); } catch (_) {} });
+        });
       }
-      g.cntEl.textContent = String(g.n); f.cntEl.textContent = String(f.n);
     }
+    if (total < TERM_CAP && typeof host.searchDetachedTerms === 'function') {
+      try {
+        const remoteHits = await host.searchDetachedTerms(query);
+        if (closed || seq !== runSeq) return;
+        for (const h of (Array.isArray(remoteHits) ? remoteHits : [])) {
+          if (total >= TERM_CAP) break;
+          if (!h || !h.projId || !h.sid) continue;
+          appendTermHit(h.projId, h.name || 'терминал', h.y, h.text, () => {
+            host.jumpToSession(h.projId, h.sid);
+          });
+        }
+      } catch (_) {}
+    }
+    if (closed || seq !== runSeq) return;
     setStatus(total ? `Найдено ${total} строк в ${totalFiles} сессиях (${groups.size} проектов)` : 'Ничего не найдено в открытых сессиях');
   }
 

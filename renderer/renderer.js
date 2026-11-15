@@ -1,24 +1,17 @@
 // LiteEditor renderer — projects, per-project terminal, viewer, file tree,
 // custom titlebar, menu, modals. Talks to the backend only via window.lite.
 
-import { Terminal } from '@xterm/xterm';
-import { FitAddon } from '@xterm/addon-fit';
-import { SearchAddon } from '@xterm/addon-search';
-import { WebLinksAddon } from '@xterm/addon-web-links';
-// WebGL/Canvas/Unicode11-аддоны здесь не нужны: их подключает termutil.js (loadFastRenderer/applyUnicode11).
-import '@xterm/xterm/css/xterm.css';
-
-// CodeMirror/marked/showMinimap/codeedit — переехали в окно вивера (renderer/modules/files.js).
-// В ядре остались только терминал (xterm) + темы/термутилы.
 import { initI18n, t as tt } from './i18n.js';
 import { syncSettings } from './settings-sync.js';
-import { planProjectTabs } from './proj-tabs.js';
 import { applyLook, termThemeFor, lookOf, lookTokens, LOOK_BASE_NAMES, LOOK_STATUS_NAMES, LOOK_TOKEN_NAMES, THEME_NAME } from './themes.js';
 import { FRAME_COLORS, frameConf, applyFrame } from './frame.js';
-import { prepareRenderer, activateRenderer, releaseRenderer, applyUnicode11, copySelection, ptyResizer, writeTermWithAck, creditPtyAck, dropPtyAck } from './termutil.js';
-import { attachTimeline } from './termtimeline.js';
+import { activateRenderer, releaseRenderer, dropPtyAck } from './termutil.js';
+import { createTermEngine, createRestGuardController, scanTermBuffer } from './term-core.js';
 // initTextProc — «Обработка текста» мигрирована в отдельное окно (renderer/module-entry.js).
-import { el, icon, iconBtn, hydrateIcons, toast, makeModal, showConfirm, showPrompt, baseName, ICONS, setErrorSink } from './ui.js';
+import {
+  el, icon, iconBtn, hydrateIcons, toast, makeModal, showConfirm, showPrompt, baseName, ICONS, setErrorSink,
+  initMenus, closeMenus, menuFrom, setMenuAnchor, placeMenu, placeMenuAbove, placeMenuBelow, menuRow,
+} from './ui.js';
 // initGit — модуль «Git» мигрирован в отдельное окно (renderer/module-entry.js).
 // initCtx — модуль «Контекст» мигрирован в отдельное окно (renderer/module-entry.js).
 // initContainers — модуль «Контейнеры» мигрирован в отдельное окно (renderer/module-entry.js).
@@ -68,36 +61,24 @@ let settings = loadSettings();
 // см. renderer/settings-sync.js. base = то, что на диске: первый save запишет и дефолты, как раньше.
 const settingsSync = syncSettings(lite, settings, {
   base: STORE.settings,
-  onRemote: ({ set }) => { if (set && 'fontSize' in set) applyFontSize({ notify: false }); },
+  onRemote: ({ set }) => {
+    if (set && 'fontSize' in set) applyFontSize({ notify: false });
+    if (set && 'termTimeline' in set) applyTimeline();
+  },
 });
 function saveSettings() { STORE.settings = settings; if (!storeFrozen) settingsSync.save(); }
 
 // ---------------------------------------------------------------- state
 let projects = [];
 let activeId = null;
-const terms = new Map();          // sessionId -> { term, fit, search, container, projId, name, ... }
-const lazyTabs = new Map();       // sessionId -> { projId, name, customName, autoTitled } — отложенные фоновые вкладки (без xterm/PTY до клика)
-const tabsByProj = new Map();     // projId -> { sessions: [sessionId...], active: sessionId }
-let sessionSeq = 0;
-// Терминалы прежней страницы, пережившие перезагрузку окна (pty:adoptable): projId → [sessionId…] по порядку вкладок.
-const adoptPtys = new Map();
-// Метка этой загрузки страницы в id сессий. После перезагрузки окна (падение рендерера, импорт
-// настроек) нумерация вкладок начинается заново, и без метки новая вкладка получила бы id ещё живого
-// шелла старой страницы — возможно, чужого проекта (pty:create отвечает existed и цепляет его).
-const BOOT_ID = Date.now().toString(36);
-const projState = new Map(); // sessionId -> 'quiet' | 'busy' | 'waiting'
-let agentScan = new Map();   // sessionId -> { fg, agent, idle } — последний опрос pty:agents (см. «агенты в терминалах»)
+const detachedProjIds = new Set();    // проекты, чьи терминалы вынесены в отдельное окно
+const detachingProjIds = new Set();   // защита от двойного клика во время выноса
+const detachedStatuses = new Map();   // projId -> { aggState, waitingCount, waitingSids, hasAgent, idle }
 let agentSig = '';           // что видел список проектов при прошлом опросе: перерисовываем только при смене
 let agentFavSig = '';        // подпись набора избранных проектов с агентами (для режима «только с агентом»)
-let agentScanTimer = null;
-let agentScanSeq = 0;        // опросы идут внахлёст (таймер + смена состояния): старый ответ не перетирает свежий
 const missing = new Set();   // ids of projects whose folder no longer exists on disk
 // Состояние вивера+дерева (expandedDirs/gitFiles/currentFile/dirty/…) живёт в отдельном ОКНЕ —
 // renderer/modules/files.js (initFiles) + module-entry.js. Ядро его не держит (см. WINDOW_MODULES).
-
-// OpenRouter (чат) и «Обработка текста» — панели правого слота. Их инициализация и регистрация
-// в реестре панелей — ниже, вместе с git/audit/… (нужны layout/GUTTER/closeOtherPanels, объявленные
-// после этого места). Сами модули держат своё внутреннее состояние (активный ключ/документ).
 
 // Терминалы dev-папок пользовательских модулей: живут ВНУТРИ панели «Модули» (#ext-pane),
 // не в области проектов и не среди скретч-вкладок. cwd = папка модуля.
@@ -113,10 +94,56 @@ let lastParent = STORE.lastParent || '';
 // Тема одна — «Графит», палитра настраивается (settings.look → renderer/themes.js, общая с окнами модулей).
 // Терминалы окна редактора стоят на полупрозрачном фоне окна — их собственный фон прозрачный.
 function termTheme() { return termThemeFor(settings, { glass: true }); }
+
+const termEngine = createTermEngine({
+  lite,
+  STORE,
+  persist,
+  getSettings: () => settings,
+  saveSettings,
+  termTheme,
+  getProjects: () => projects,
+  getActiveId: () => activeId,
+  setActiveProject: (id) => setActive(id),
+  isDetached: (pid) => detachedProjIds.has(pid),
+  getSplitFrac: () => layout.termSplit,
+  setSplitFrac: (frac, save) => {
+    layout.termSplit = frac;
+    applyLayout();
+    if (save) saveLayout();
+  },
+  extTerms,
+  isExtTerm,
+  restartExtTerminal: (id) => restartExtTerminal(id),
+  refitExtra: () => { try { Ext.refitTerminal(); } catch (_) {} },
+  onStatusChange: (pid, sid) => {
+    if (pid) refreshProjIndicator(pid);
+    updateAttention();
+    if (sid === null) syncAgentListAfterScan();
+  },
+  onTabsChanged: () => saveProjTabs(),
+  onTurnEnd: (pid, st, sid, reason, worked) => {
+    if (pid === activeId) refreshGitChip(500);
+    if ((st === 'waiting' || worked) && (sid !== activeSessionId() || !document.hasFocus())) notifyAgent(pid, st, sid, reason);
+  },
+  onAfterShowActive: () => syncDetachedHint(),
+  onHotkey: (e) => runGlobalHotkey(e),
+});
+
+const {
+  BOOT_ID,
+  tabsByProj, terms, projState, adoptPtys,
+  activeSessionId, projSessions, tabMeta,
+  buildXterm, createSession, ensureProjectTabs, disposeSession, unloadProjectTerms,
+  materializeSession, refreshAgents, scheduleAgentScan,
+  showActiveTerminal, refitActiveTerminal, applyTimeline,
+  switchTab, addTab, clearTerminal, restartTerminal,
+  toggleTermSplit, openTermSearch,
+} = termEngine;
+
 function applyTheme() {
   applyLook(settings);
-  for (const rec of terms.values()) { try { rec.term.options.theme = termTheme(); } catch (_) {} }
-  for (const rec of extTerms.values()) { try { rec.term.options.theme = termTheme(); } catch (_) {} }
+  termEngine.applyThemeAll();
   try { Ext.notifyTheme(THEME_NAME); } catch (_) {} // пользовательские модули: ctx.theme.onChange
   try { lite.app.settingsChanged(settings); } catch (_) {} // окна модулей: применить тему/настройки
 }
@@ -421,10 +448,12 @@ function mergeFavOrder(visible) {
 // Путь — в подсказке имени и в чипе папки под терминалом.
 function makeCard(p) {
   const gone = missing.has(p.id);
+  const isDet = detachedProjIds.has(p.id);
   const card = el('div', 'card');
   card.dataset.id = p.id;
   if (p.id === activeId) card.classList.add('active');
   if (gone) card.classList.add('missing');
+  if (isDet) card.classList.add('detached');
   if (p.accent) { card.classList.add('accented'); card.style.setProperty('--card-accent', p.accent); }
   card.title = gone ? `Папка не найдена: ${p.path}` : p.path;
 
@@ -439,6 +468,18 @@ function makeCard(p) {
   card.appendChild(el('span', 'card-title', p.name));
   const acts = el('div', 'card-acts');
   if (!gone) {
+    const detachBtn = iconBtn(
+      'card-detach' + (isDet ? ' on' : ''),
+      isDet ? 'panels' : 'external-link',
+      isDet ? 'Вернуть терминалы в главное окно' : 'Вынести терминалы в отдельное окно',
+      13,
+    );
+    detachBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (detachedProjIds.has(p.id)) dockProjectTerminals(p.id);
+      else detachProjectTerminals(p);
+    });
+    acts.appendChild(detachBtn);
     const star = iconBtn('card-star' + (p.favorite ? ' on' : ''), 'star', p.favorite ? 'Убрать из избранного' : 'В избранное', 14);
     star.addEventListener('click', (e) => { e.stopPropagation(); toggleFavorite(p.id); });
     acts.appendChild(star);
@@ -493,7 +534,7 @@ function showCardMenu(x, y, p, card) {
   const dd = el('div', 'menu-dropdown');
   dd.style.minWidth = '230px';
   dd.addEventListener('click', (e) => e.stopPropagation());
-  if (card) { card.classList.add('menu-open'); menuAnchor = card; }
+  if (card) setMenuAnchor(card, 'menu-open');
   buildCardMenuMain(dd, p);
   placeMenu(dd, x, y);
 }
@@ -511,8 +552,16 @@ function buildCardMenuMain(dd, p) {
   else
     dd.appendChild(menuRow('archive', 'В архив', () => { closeMenus(); archiveProject(p.id); }));
   dd.appendChild(el('div', 'menu-sep'));
+  if (!missing.has(p.id)) {
+    if (detachedProjIds.has(p.id)) {
+      dd.appendChild(menuRow('external-link', 'Перейти к окну терминалов', () => { closeMenus(); lite.projTerm.focus(p.id); }));
+      dd.appendChild(menuRow('panels', 'Вернуть терминалы в главное окно', () => { closeMenus(); dockProjectTerminals(p.id); }));
+    } else {
+      dd.appendChild(menuRow('external-link', 'Вынести терминалы в окно', () => { closeMenus(); detachProjectTerminals(p); }));
+    }
+  }
   // терминалы поднимались (в том числе случайным кликом) — закрыть их, оставив проект в списке
-  if (tabsByProj.has(p.id) && p.id !== activeId) {
+  if (tabsByProj.has(p.id) && p.id !== activeId && !detachedProjIds.has(p.id)) {
     const row = menuRow('power', 'Закрыть терминалы', () => { closeMenus(); closeProjectTerms(p); });
     row.appendChild(el('span', 'menu-desc', projHasAgent(p.id) ? 'работает агент' : 'погасит индикатор'));
     dd.appendChild(row);
@@ -641,31 +690,15 @@ async function scanProjects() {
 // ---------------------------------------------------------------- notes / prompt cards (#4)
 // Модуль «Задачи» (notes) мигрирован в отдельное окно (renderer/module-entry.js, проектозависимый).
 // Здесь остаётся только sendNoteToTerminal — его зовёт редактор по editorBus (окно→редактор).
-// Текст, который редактор ВСТАВЛЯЕТ в терминал (заметки, промпты, «Спросить агента» из окон модулей,
-// «Вставить» из контекстного меню), — не нажатия клавиш. Если программа в терминале включила bracketed
-// paste (bash ≥ 5.1, zsh, fish, Claude Code — по умолчанию), оборачиваем его в маркеры вставки — ровно
-// как xterm при Ctrl+V. Иначе перевод строки внутри текста срабатывал как Enter: оболочка выполняла
-// строки заметки/промпта (а в них бывают чужие данные — имена файлов, ответы модели, сэмплы ошибок)
-// до того, как человек их увидел. Маркеры внутри текста вырезаем — ими нельзя «выйти» из вставки.
-// Режим не включён (свежий шелл ещё не ответил, программа без поддержки) — пишем как раньше.
-function writeAsPaste(id, text) {
-  const rec = terms.get(id) || extTerms.get(id);
-  const bracketed = !!(rec && rec.term && rec.term.modes && rec.term.modes.bracketedPasteMode);
-  const s = String(text);
-  lite.pty.write(id, bracketed ? '\x1b[200~' + s.replace(/\x1b\[20[01]~/g, '').replace(/\r?\n/g, '\r') + '\x1b[201~' : s);
-}
 function sendNoteToTerminal(p, text) {
   if (!text) return;
   const proj = projects.find((x) => x.id === p.id);
   if (!proj) return;
-  ensureProjectTabs(proj);
-  setActive(proj.id);
-  const sid = (tabsByProj.get(proj.id) || {}).active;
-  if (!sid || !materializeSession(sid)) return;
-  // Терминал мог только что подняться (ensureProjectTabs) с отложенным автовводом — без отмены
-  // слово из настроек (`claude`) дописалось бы в ту же строку после текста заметки.
-  cancelPrefill(sid);
-  writeAsPaste(sid, text); // no trailing newline — review, then press Enter yourself
+  if (detachedProjIds.has(proj.id)) {
+    lite.projTerm.sendText(proj.id, text);
+    return;
+  }
+  termEngine.sendTextToProject(proj, text, { focusProject: true });
 }
 
 // Режим «один терминал»: карточка проектов сжимается в узкий рельс — буквы проектов со статусом,
@@ -752,12 +785,16 @@ function doCloseProject(id) {
     const dis = new Set(STORE.dismissed || []); dis.add(closing.path); persist('dismissed', [...dis]);
   }
   if (closing && watchedRoot === closing.path) { lite.fs.unwatch(closing.path); watchedRoot = null; }
+  if (detachedProjIds.has(id)) {
+    detachedProjIds.delete(id);
+    detachedStatuses.delete(id);
+    try { lite.projTerm.closeProject(id); } catch (_) {}
+    updateAttention();
+  }
   const tabs = tabsByProj.get(id);
   if (tabs) {
     for (const sid of tabs.sessions) disposeSession(sid);
     tabsByProj.delete(id);
-    // Сессии ушли из projState — пересчитать бейдж «N ждёт ответа» и трей. Без этого закрытый проект
-    // с ждущим агентом оставлял бейдж и отметку в трее до следующей смены состояния любой вкладки.
     updateAttention();
   }
   const pt = { ...(STORE.projTabs || {}) }; delete pt[id]; persist('projTabs', pt);
@@ -799,219 +836,8 @@ async function checkProjectsExistence() {
   if (changed) renderProjects();
 }
 
-// ---------------------------------------------------------------- activity indicator
-// Three states: busy (output flowing) · waiting (quiet, but wants your input) ·
-// quiet (done/idle). The reliable "wants attention" signal is the terminal BELL
-// (\x07) — agents/CLIs ring it on purpose; a normal shell/Claude prompt does not,
-// so we must NOT treat trailing $, #, ❯ as "waiting" (that's just idle/ready).
-// PROMPT_RE is a narrow backup for plain CLIs (git/ssh/sudo) that don't bell.
-// Claude Code идёт своим путём (ниже, «Claude Code»): его состояние — из его же отчёта.
-const PROMPT_RE = /\(y\/n\)|\[y\/n\]|\[Y\/n\]|\(yes\/no\)|overwrite\?|password[^\n]{0,24}:|passphrase[^\n]{0,24}:|press\s+(?:enter|return|any key)|continue\?/i;
-const ANSI_RE = /\x1b\][^\x07]*\x07|\x1b\[[0-?]*[ -/]*[@-~]|\x1b[@-_]|[\x00-\x08\x0b-\x1f\x7f]/g;
-const stripAnsi = (str) => str.replace(ANSI_RE, '');
-// A real "attention" bell vs the BEL that merely terminates an OSC title sequence
-// (ESC ] 0 ; title BEL) — which bash/zsh/Claude emit on every prompt. Strip OSC
-// first, then a leftover BEL is a genuine bell.
-const OSC_RE = /\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g;
-// Быстрый путь: в подавляющем большинстве кусков BEL нет вовсе — не гоняем replace по всему куску.
-const hasRealBell = (s) => s.indexOf('\x07') !== -1 && s.replace(OSC_RE, '').includes('\x07');
-// От куска для rec.tail нужен только конец (хвост держим 400 видимых символов, эвристика смотрит
-// последнюю строку): чистим ANSI не во всём куске, а в последних TAIL_SRC символах. Склеенный
-// вывод приходит пачками до 64 КБ — без этого regex бегал бы по каждой пачке целиком.
-const TAIL_SRC = 8192;
-
-function setProjState(sid, state) {
-  projState.set(sid, state);
-  const rec = terms.get(sid);
-  document.querySelectorAll(`.tab[data-sid="${sid}"] .tab-dot`).forEach((d) => { d.className = 'tab-dot pind ' + state; });
-  if (rec) refreshProjIndicator(rec.projId); // card/rail show the project aggregate
-  updateAttention();
-  scheduleAgentScan();                         // агент мог запуститься или выйти — глаз «Избранного» догонит
-}
-function markActivity(id, data) {
-  const rec = terms.get(id);
-  if (!rec) return;
-  const bell = !!(data && hasRealBell(data));
-  if (bell) rec.sawBell = true;
-  // Claude на переднем плане: его вывод — не признак работы (строка статуса и поле ввода
-  // перерисовываются и в простое), а только повод свериться с его отчётом.
-  if (rec.claude) { scheduleClaudeProbe(id); return; }
-  // Local echo of the user's own typing is tiny and arrives right after a keystroke —
-  // that's not the agent working, so don't spin on it.
-  const echoLike = !bell && data && data.length <= 8 && (Date.now() - (rec.lastInputAt || 0)) < 250;
-  if (echoLike) return;
-  const src = data || '';
-  rec.tail = stripAnsi((rec.tail || '') + (src.length > TAIL_SRC ? src.slice(-TAIL_SRC) : src)).slice(-400);
-  rec.activitySeq = (rec.activitySeq || 0) + 1; // lets a pending settle detect that new output arrived
-  if (projState.get(id) !== 'busy') { rec.busyStart = Date.now(); setProjState(id, 'busy'); }
-  clearTimeout(rec.idleTimer);
-  rec.idleTimer = setTimeout(() => settleProject(id), settings.idleMs);
-}
-// Output stopped — ask the OS whether the foreground process is waiting on input
-// (universal, agent-agnostic) and fall back to text heuristics off Linux.
-async function settleProject(id) {
-  const rec = terms.get(id);
-  if (!rec) return;
-  const seq = rec.activitySeq;
-  const report = await agentReport(id);
-  if (!terms.has(id) || rec.activitySeq !== seq) return; // new output arrived during the await
-  if (claudeVerdict(id, report)) return;           // в терминале Claude — решает его отчёт
-  const kind = report ? report.fg : null;          // 'shell' | 'running' | 'waiting' | null
-
-  if (kind === 'running') { // a foreground program is computing silently → keep spinner, re-poll
-    if (projState.get(id) !== 'busy') setProjState(id, 'busy');
-    clearTimeout(rec.idleTimer);
-    rec.idleTimer = setTimeout(() => settleProject(id), settings.idleMs);
-    return;
-  }
-  let waiting;
-  if (kind === 'waiting') waiting = true;          // agent alive & blocked on your input
-  else if (kind === 'shell') waiting = false;      // back at a bare shell prompt → idle/done
-  else waiting = PROMPT_RE.test((rec.tail || '').split('\n').pop().trim()); // non-Linux fallback
-  if (rec.sawBell) waiting = true;                 // explicit bell always means "look at me"
-  // skip trivial blips; не busy — сюда пришли после выхода Claude, работы не было
-  const worked = rec.sawBell || (projState.get(id) === 'busy' && (Date.now() - (rec.busyStart || 0)) >= 1500);
-  rec.sawBell = false;
-  setProjState(id, waiting ? 'waiting' : 'quiet');
-  if (rec.projId === activeId) refreshGitChip(500); // ход окончен — освежить счётчик рабочих файлов в чипе даже без watchTree
-  // notify per project when its turn ended on a non-visible tab (or app unfocused)
-  if (worked && (id !== activeSessionId() || !document.hasFocus())) notifyAgent(rec.projId, waiting ? 'waiting' : 'quiet', id);
-}
-// { fg, claude } (Linux) | null (нет /proc). Старый preload без agentState — только fg.
-async function agentReport(id) {
-  try {
-    if (lite.pty.agentState) return await lite.pty.agentState(id);
-    const fg = await lite.pty.foregroundState(id);
-    return fg ? { fg, claude: null } : null;
-  } catch (_) { return null; }
-}
-
-// ---- Claude Code ----
-// По выводу не понять, работает ли Claude: строка статуса с refreshInterval перерисовывается и
-// в простое (55–75 байт раз в 1–2 с), каждая буква в поле ввода — ~50 байт перерисовки. По правилу
-// «вывод = работа» простаивающий Claude мигал: 1,2 с крутилка, затем жёлтый, и снова (задача #35).
-// Что Claude сообщает сам (замер 24.09.2026, v2.1.281):
-//  • заголовок терминала: «◐ …»/«◑ …» — идёт ход (кадр сменяется раз в 0,96 с, пока терминал
-//    в фокусе; без фокуса замирает, но остаётся «рабочим»), «✳ …» — ход окончен или Claude ждёт
-//    ответа, пустой — Claude вышел. «Ждёт вас» от «готов» заголовок не отличает;
-//  • отчёт о сессии (lib/agentstate.js, только Linux): busy | idle | waiting + причина — главный источник.
-// Итог: крутилка — Claude работает; жёлтый — ждёт вашего решения (разрешение, вопрос, диалог);
-// зелёный — ход окончен, Claude готов к следующему сообщению.
-const CLAUDE_TITLE_RE = /^([◐◑✳])\s/;
-const CLAUDE_PROBE_MS = 150;      // пауза в выводе перед сверкой: отчёт отстаёт от экрана до ~50 мс
-const CLAUDE_PROBE_MAX_MS = 1000; // под непрерывным выводом сверяемся не реже раза в секунду
-// Отчёта нет (macOS/Windows, Claude по ssh, старая версия) — диалог узнаём по экрану: у запроса
-// разрешения, вопроса и меню Claude внизу нумерованный список «❯ 1.» и подвал «… Esc to cancel».
-const CLAUDE_PICK_RE = /^\s*❯\s*1\.\s/;
-const CLAUDE_FOOT_RE = /\bEsc to cancel\b/;
-
-function claudeDialogOnScreen(term) {
-  const b = term.buffer.active;
-  let pick = false, foot = false;
-  for (let y = b.baseY; y < b.baseY + term.rows; y++) {
-    const line = b.getLine(y);
-    if (!line) continue;
-    const text = line.translateToString(true);
-    if (CLAUDE_PICK_RE.test(text)) pick = true;
-    if (CLAUDE_FOOT_RE.test(text)) foot = true;
-  }
-  return pick && foot;
-}
-// Заголовок терминала (OSC 0/2) — самый быстрый признак: «◐/◑» ставит крутилку сразу.
-function onClaudeTitle(id, raw) {
-  const rec = terms.get(id);
-  if (!rec) return;
-  const m = CLAUDE_TITLE_RE.exec(String(raw || ''));
-  if (!m) {   // заголовок больше не от Claude: вышел (при выходе он пустой) или шелл поставил свой
-    if (rec.claude && rec.claude.titled) leaveClaude(id);
-    return;
-  }
-  const working = m[1] !== '✳';
-  const c = rec.claude || (rec.claude = {});
-  const was = c.titled ? c.working : null;
-  c.titled = true;
-  c.working = working;
-  clearTimeout(rec.idleTimer);                // обычная «тишина → проверка» для Claude не нужна
-  if (was === working) return;                // очередной кадр ◐/◑ — ничего не изменилось
-  if (working) setAgentState(id, 'busy');     // ход начался — крутилка сразу, отчёт догонит
-  scheduleClaudeProbe(id, working ? CLAUDE_PROBE_MS : 60);
-}
-function scheduleClaudeProbe(id, delay = CLAUDE_PROBE_MS) {
-  const rec = terms.get(id);
-  if (!rec) return;
-  clearTimeout(rec.probeTimer);
-  rec.probeTimer = setTimeout(() => probeClaude(id), delay);
-  if (!rec.probeDeadline) rec.probeDeadline = setTimeout(() => probeClaude(id), CLAUDE_PROBE_MAX_MS);
-}
-function stopClaudeProbe(rec) {
-  clearTimeout(rec.probeTimer); clearTimeout(rec.probeDeadline);
-  rec.probeTimer = rec.probeDeadline = null;
-}
-async function probeClaude(id) {
-  const rec = terms.get(id);
-  if (!rec) return;
-  stopClaudeProbe(rec);
-  const seq = rec.probeSeq = (rec.probeSeq || 0) + 1;
-  const report = await agentReport(id);
-  if (!terms.has(id) || rec.probeSeq !== seq || !rec.claude) return; // пока ждали, ушла новая сверка
-  if (!claudeVerdict(id, report)) settleProject(id);                 // Claude больше нет — обычная логика
-}
-// Состояние по Claude. false — Claude в терминале нет, решает обычная логика.
-function claudeVerdict(id, report) {
-  const rec = terms.get(id);
-  const rep = report && report.claude;
-  if (rep) {
-    const c = rec.claude || (rec.claude = {});   // Claude без заголовка (он отключён) узнаём по отчёту
-    clearTimeout(rec.idleTimer);
-    const st = rep.status === 'busy' ? 'busy' : rep.status === 'waiting' ? 'waiting' : 'quiet';
-    // Заголовок и отчёт расходятся — файл отстаёт от экрана на десятки мс, переспросим. Расхождение
-    // бывает и по делу («busy» при «✳», пока работают фоновые агенты Claude) — после трёх сверок верим отчёту.
-    if (c.titled && (st === 'busy') !== c.working && (rec.claudeRetry || 0) < 3) {
-      rec.claudeRetry = (rec.claudeRetry || 0) + 1;
-      scheduleClaudeProbe(id, 300);
-      return true;
-    }
-    rec.claudeRetry = 0;
-    setAgentState(id, st, rep.waitingFor);
-    return true;
-  }
-  if (!rec.claude) return false;
-  // Отчёта нет, но заголовок от Claude и на переднем плане не голый шелл — по заголовку и экрану.
-  if (rec.claude.titled && !(report && report.fg === 'shell')) {
-    setAgentState(id, rec.claude.working ? 'busy' : claudeDialogOnScreen(rec.term) ? 'waiting' : 'quiet');
-    return true;
-  }
-  rec.claude = null;   // Claude вышел: на переднем плане шелл или другая программа
-  stopClaudeProbe(rec);
-  return false;
-}
-function leaveClaude(id) {
-  const rec = terms.get(id);
-  if (!rec) return;
-  rec.claude = null;
-  rec.claudeRetry = 0;
-  stopClaudeProbe(rec);
-  clearTimeout(rec.idleTimer);
-  rec.idleTimer = setTimeout(() => settleProject(id), settings.idleMs);
-}
-// Смена состояния Claude. Уведомление, если вкладка не на виду: «ждёт вас» — всегда,
-// «закончил» — если ход был не пустяковый (≥ 1,5 с).
-function setAgentState(id, st, reason) {
-  const rec = terms.get(id);
-  if (!rec) return;
-  const prev = projState.get(id);
-  if (st === prev) return;
-  const worked = prev === 'busy' && Date.now() - (rec.busyStart || 0) >= 1500;
-  if (st === 'busy') rec.busyStart = Date.now();
-  rec.sawBell = false;
-  setProjState(id, st);
-  if (st === 'busy') return;
-  if (rec.projId === activeId) refreshGitChip(500);
-  if ((st === 'waiting' || worked) && (id !== activeSessionId() || !document.hasFocus())) notifyAgent(rec.projId, st, id, reason);
-}
-
+// ---------------------------------------------------------------- activity indicator & detached windows
 let lastNotifyAt = 0;
-// reason — причина ожидания из отчёта Claude ('permission prompt', 'input needed', …).
 function notifyAgent(id, state, sid, reason) {
   if (!settings.notifications) return;
   const proj = projects.find((p) => p.id === id);
@@ -1023,13 +849,24 @@ function notifyAgent(id, state, sid, reason) {
     : tt('⏳ {0} — агент ждёт ответа', proj.name);
   try {
     const n = new Notification(title, { body: proj.path, silent: !settings.sound, tag: 'lite-' + id });
-    n.onclick = () => { lite.win.show(); setActive(id); if (sid && terms.has(sid)) switchTab(sid); };
+    n.onclick = () => {
+      if (detachedProjIds.has(id)) {
+        lite.projTerm.focusSession(id, sid);
+      } else {
+        lite.win.show();
+        setActive(id);
+        if (sid && terms.has(sid)) switchTab(sid);
+      }
+    };
   } catch (_) {}
 }
-// Count of agents waiting on input → titlebar badge + tray tooltip.
-let trayAttentionSent = -1;   // что последним ушло в трей: шлём только при смене числа
+let trayAttentionSent = -1;
 function updateAttention() {
-  const n = [...projState.values()].filter((s) => s === 'waiting').length;
+  let n = [...projState.values()].filter((s) => s === 'waiting').length;
+  for (const pid of detachedProjIds) {
+    const st = detachedStatuses.get(pid);
+    if (st && Number.isFinite(st.waitingCount)) n += st.waitingCount;
+  }
   const badge = $('#attention-badge');
   if (badge) {
     badge.replaceChildren(icon('bell', 13), el('span', null, String(n)), el('span', null, n === 1 ? 'ждёт ответа' : 'ждут ответа'));
@@ -1038,58 +875,77 @@ function updateAttention() {
   if (n !== trayAttentionSent) { trayAttentionSent = n; lite.tray.update(n); }
 }
 
-// ---------------------------------------------------------------- terminals
-// Matches a path with an extension, optionally :line — e.g. src/app.js:42.
-const FILELINK_RE = /(?:[a-zA-Z]:)?(?:\.{0,2}[\\/])?[\w.\-\\/]+\.[A-Za-z][\w]*(?::\d+)?/g;
-function fileLinkProvider(term, projPath) {
-  return {
-    provideLinks(y, cb) {
-      const line = term.buffer.active.getLine(y - 1);
-      if (!line) { cb(undefined); return; }
-      const text = line.translateToString(true);
-      const links = [];
-      let m; FILELINK_RE.lastIndex = 0;
-      while ((m = FILELINK_RE.exec(text))) {
-        const raw = m[0];
-        if (!/[\\/]/.test(raw) && !/^\w+\.\w+(:\d+)?$/.test(raw)) continue;
-        const startX = m.index + 1;
-        links.push({
-          range: { start: { x: startX, y }, end: { x: startX + raw.length - 1, y } },
-          text: raw,
-          activate: () => openFromTerminal(projPath, raw),
-        });
-      }
-      cb(links.length ? links : undefined);
-    },
-  };
+const detachedSnapshots = new Map(); // projId -> последний снимок вынесенных вкладок
+function snapshotToProjTabsRec(snap) {
+  if (!snap || !Array.isArray(snap.tabs) || !snap.tabs.length) return null;
+  const names = snap.tabs.map((x) => x.name || 'Терминал');
+  const custom = snap.tabs.map((x) => !!x.customName);
+  const sids = snap.tabs.map((x) => x.sid);
+  const act = snap.activeSid ? sids.indexOf(snap.activeSid) : 0;
+  const rec = { names, custom, active: act >= 0 ? act : 0 };
+  if (Array.isArray(snap.splitPair) && snap.splitPair.length === 2) {
+    const i0 = sids.indexOf(snap.splitPair[0]);
+    const i1 = sids.indexOf(snap.splitPair[1]);
+    if (i0 >= 0 && i1 >= 0 && i0 !== i1) rec.split = [i0, i1];
+  }
+  return rec;
 }
-async function openFromTerminal(projPath, raw) {
-  const mm = raw.match(/^(.*?)(?::(\d+))?$/);
-  let p = mm[1]; const line = mm[2] ? parseInt(mm[2], 10) : 0;
-  if (!/^([a-zA-Z]:[\\/]|[\\/])/.test(p)) p = projPath.replace(/[\\/]$/, '') + '/' + p.replace(/^\.[\\/]/, '');
-  if (!(await lite.fs.exists(p))) return;
-  lite.editorBus.openInViewer(p, line); // main откроет окно вивера (если надо) и покажет файл
+function syncDetachedHint() {
+  const hint = $('#detached-hint');
+  if (!hint) return;
+  const isDet = !!(activeId && detachedProjIds.has(activeId));
+  hint.classList.toggle('hidden', !isDet);
+  if (isDet) {
+    const proj = projects.find((p) => p.id === activeId);
+    const title = $('#detached-hint-title');
+    if (title) title.textContent = proj ? tt('Терминалы «{0}» вынесены в отдельное окно', proj.name) : tt('Терминалы вынесены в отдельное окно');
+  }
+}
+async function detachProjectTerminals(proj) {
+  if (!proj || missing.has(proj.id)) return;
+  if (detachedProjIds.has(proj.id)) { lite.projTerm.focus(proj.id); return; }
+  if (detachingProjIds.has(proj.id)) return;
+  detachingProjIds.add(proj.id);
+  try {
+    ensureProjectTabs(proj);
+    saveProjTabs();
+    const snapshot = termEngine.teardownProjectForDetach(proj.id);
+    if (!snapshot) return;
+    detachedProjIds.add(proj.id);
+    detachedSnapshots.set(proj.id, snapshot);
+    detachedStatuses.set(proj.id, { projId: proj.id, aggState: 'quiet', waitingCount: 0, waitingSids: [], hasAgent: false, idle: false });
+    renderProjects();
+    showActiveTerminal();
+    updateAttention();
+    const res = await lite.projTerm.detach({
+      id: proj.id, name: proj.name, path: proj.path, accent: proj.accent || '',
+    }, snapshot);
+    if (!res || !res.ok) {
+      detachedProjIds.delete(proj.id);
+      detachedSnapshots.delete(proj.id);
+      detachedStatuses.delete(proj.id);
+      termEngine.importProjectSnapshot(proj, snapshot, { applySplitFrac: false });
+      renderProjects();
+      showActiveTerminal();
+      updateAttention();
+      toast('Не удалось открыть отдельное окно терминалов', { kind: 'err' });
+    }
+  } finally {
+    detachingProjIds.delete(proj.id);
+  }
+}
+function dockProjectTerminals(projId) {
+  if (!projId || !detachedProjIds.has(projId)) return;
+  lite.projTerm.dock(projId).catch(() => {});
 }
 
-// True only for a real GPU — software WebGL (SwiftShader/llvmpipe) is slower than
-// Canvas and stalls, so route those to the Canvas renderer instead.
-// isHardwareWebgl/loadFastRenderer/applyUnicode11/copySelection вынесены в renderer/termutil.js
-// (общие xterm-хелперы редактора и окон модулей; импорт у блока импортов).
-
-// ---- terminal sessions (tabs) ----
-// Each project owns ≥1 SESSION (tab) = its own PTY + xterm. `terms` is keyed by sessionId;
-// `tabsByProj` keeps per-project order + active session. Tab NAMES persist across restarts
-// (projTabs store); PTYs don't, so tabs are recreated empty on next launch.
-function activeSessionId() { const t = tabsByProj.get(activeId); return t ? t.active : null; }
-function projSessions(projId) { const t = tabsByProj.get(projId); return t ? t.sessions : []; }
-function hasTabSession(sid) { return !!(sid && (terms.has(sid) || lazyTabs.has(sid))); }
-function tabMeta(sid) { return terms.get(sid) || lazyTabs.get(sid) || null; }
+// ---- terminal sessions, project indicators & hotkeys ----
 function projAggState(projId) {
-  const live = projSessions(projId).filter((s) => terms.has(s));
-  if (!live.length) return 'idle';   // ни один терминал проекта ещё не поднимали в этом запуске
-  const ss = live.map((s) => projState.get(s));
-  // «ждёт вас» важнее «работает»: вторая вкладка с крутилкой не должна прятать вопрос первой
-  return ss.includes('waiting') ? 'waiting' : ss.includes('busy') ? 'busy' : 'quiet';
+  if (detachedProjIds.has(projId)) {
+    const st = detachedStatuses.get(projId);
+    return (st && st.aggState) || 'quiet';
+  }
+  return termEngine.projAggState(projId);
 }
 function syncMiniRailIndicator(projId, st = projAggState(projId)) {
   document.querySelectorAll(`#mini-rail .rail-btn[data-id="${projId}"]`).forEach((btn) => {
@@ -1115,44 +971,25 @@ function refreshProjIndicator(projId) {
   document.querySelectorAll(`.pind[data-id="${projId}"]`).forEach((i) => { i.className = 'pind ' + st; });
   syncMiniRailIndicator(projId, st);
 }
-// ---- агенты в терминалах: глаз «только с агентом» в «Избранном» и закрытие простаивающих терминалов ----
-// Зелёный индикатор горит и у терминала, открытого случайным кликом: шелл на приглашении — тоже «готов».
-// Какой агент в терминале, знает main по процессам переднего плана (pty:agents, только Linux); запасной
-// признак — заголовок терминала от Claude (rec.claude): он же узнаёт Claude на сервере через ssh.
-function sessionAgent(sid) {
-  const r = agentScan.get(sid);
-  if (r && r.agent) return r.agent;
-  const rec = terms.get(sid);
-  return rec && rec.claude ? 'claude' : null;
+function projHasAgent(projId) {
+  if (detachedProjIds.has(projId)) {
+    const st = detachedStatuses.get(projId);
+    return !!(st && st.hasAgent);
+  }
+  return termEngine.projHasAgent(projId);
 }
-function projHasAgent(projId) { return projSessions(projId).some((s) => sessionAgent(s)); }
-// Терминалы проекта закрываются без потерь: в каждой живой вкладке шелл на приглашении без потомков или шелл
-// уже завершился (отложенные ленивые вкладки процессов ещё не запускали). Активный проект не трогаем.
 function projIdle(projId) {
-  const live = projSessions(projId).filter((s) => terms.has(s));
-  return projId !== activeId && live.length > 0 && live.every((s) => {
-    const rec = terms.get(s), r = agentScan.get(s);
-    return (rec && rec.exited) || (r && r.idle && !sessionAgent(s));
-  });
+  if (detachedProjIds.has(projId)) return false;
+  return termEngine.projIdle(projId);
 }
 function idleProjects() { return projects.filter((p) => projIdle(p.id)); }
-async function refreshAgents() {
-  clearTimeout(agentScanTimer); agentScanTimer = null;
-  if (!lite.pty.agents) return;
-  const ids = [...tabsByProj.values()].flatMap((t) => t.sessions).filter((s) => terms.has(s));
-  const seq = ++agentScanSeq;
-  let res = {};
-  try { if (ids.length) res = (await lite.pty.agents(ids)) || {}; } catch (_) { return; }
-  if (seq !== agentScanSeq) return;
-  agentScan = new Map(Object.entries(res));
+function syncAgentListAfterScan() {
   const favOnly = favAgentsOnly() && !projFilter;
   const favSig = favOnly ? projects.filter((p) => p.favorite && projHasAgent(p.id)).map((p) => p.id).join(',') : '';
   const idleSig = idleProjects().map((p) => p.id).join(',');
   const sig = favSig + '|' + idleSig;
   if (sig === agentSig) return;
   if (favOnly && favSig !== agentFavSig) {
-    // Перерисовка пересоздаёт карточки: посреди перетаскивания она сорвала бы его, а у открытого меню
-    // сняла бы подсветку. Тогда ждём следующего опроса — подпись не запоминаем.
     if (favDragCard || $('#menu-layer').firstChild) return;
     renderProjects();
     agentFavSig = favSig;
@@ -1163,36 +1000,6 @@ async function refreshAgents() {
   agentSig = sig;
   syncFavHeaderSweep();
 }
-// Сверка вскоре после смены состояния вкладки: агент запустился или вышел — фильтр догоняет за полсекунды.
-function scheduleAgentScan(delay = 500) {
-  if (!agentScanTimer) agentScanTimer = setTimeout(refreshAgents, delay);
-}
-// Снять вкладку-сессию: процесс, xterm, таймеры, состояние индикатора (либо отложенную ленивую запись).
-function disposeSession(sid) {
-  const wasLazy = lazyTabs.delete(sid);
-  if (!wasLazy || terms.has(sid)) {
-    lite.pty.kill(sid);
-    dropPtyAck(sid);
-  }
-  const rec = terms.get(sid);
-  if (rec) { clearTimeout(rec.idleTimer); clearTimeout(rec.prefillTimer); stopClaudeProbe(rec); releaseRenderer(rec.term); try { rec.timeline.dispose(); } catch (_) {} try { rec.term.dispose(); } catch (_) {} rec.container.remove(); terms.delete(sid); }
-  projState.delete(sid);
-  agentScan.delete(sid);
-}
-// Закрыть терминалы проекта, не закрывая сам проект: индикатор возвращается в «терминал не запускали».
-// Имена вкладок остаются в projTabs — при следующем открытии проекта вкладки поднимутся с ними.
-function unloadProjectTerms(id) {
-  const t = tabsByProj.get(id);
-  if (!t || id === activeId) return false;
-  saveProjTabs();
-  for (const sid of t.sessions) disposeSession(sid);
-  tabsByProj.delete(id);
-  refreshProjIndicator(id);
-  updateAttention();
-  return true;
-}
-// Кнопка у глаза: закрыть терминалы всех проектов, где ничего не запущено. Перед закрытием —
-// свежий опрос: за время диалога в терминале могли что-то запустить.
 function closeIdleTerms() {
   const list = idleProjects();
   if (!list.length) return;
@@ -1205,13 +1012,12 @@ function closeIdleTerms() {
       if (n) toast(`Закрыты терминалы проектов: ${n}`);
     });
 }
-// Пункт меню проекта. Шелл без дела закрывается сразу; агент или программа — только после подтверждения.
 async function closeProjectTerms(p) {
-  if (!tabsByProj.has(p.id) || p.id === activeId) return;
+  if (!tabsByProj.has(p.id) || p.id === activeId || detachedProjIds.has(p.id)) return;
   await refreshAgents();
   const go = () => { if (unloadProjectTerms(p.id)) renderProjects(); };
   if (projIdle(p.id)) { go(); return; }
-  const agent = projSessions(p.id).map(sessionAgent).find(Boolean);
+  const agent = projSessions(p.id).map((s) => termEngine.sessionAgent(s)).find(Boolean);
   showConfirm(`Закрыть терминалы проекта «${p.name}»?`,
     agent ? `В терминале работает агент ${agent} — он будет остановлен. Проект останется в списке.`
       : 'В терминале может работать программа — она будет остановлена. Проект останется в списке.',
@@ -1219,10 +1025,15 @@ async function closeProjectTerms(p) {
 }
 function saveProjTabs() {
   const out = {};
-  // Проекты без поднятых терминалов (не открывали в этом запуске или закрыли терминалы) — имена их
-  // вкладок из прежней записи: иначе первое же сохранение стирало бы их у всех, кроме открытых.
   const prev = STORE.projTabs || {};
-  for (const p of projects) if (!tabsByProj.has(p.id) && prev[p.id]) out[p.id] = prev[p.id];
+  for (const p of projects) {
+    if (detachedProjIds.has(p.id) && detachedSnapshots.has(p.id)) {
+      const rec = snapshotToProjTabsRec(detachedSnapshots.get(p.id));
+      if (rec) out[p.id] = rec;
+      continue;
+    }
+    if (!tabsByProj.has(p.id) && prev[p.id]) out[p.id] = prev[p.id];
+  }
   for (const [pid, t] of tabsByProj) {
     const rec = {
       names: t.sessions.map((s) => (tabMeta(s) || {}).name || 'Терминал'),
@@ -1239,31 +1050,19 @@ function saveProjTabs() {
   persist('projTabs', out);
 }
 
-// ── Снимки сессий между перезапусками — УБРАНО ────────────────────────────────
-// Раньше (идея 7) scrollback каждой сессии сериализовался и при старте подгружался НАД свежим
-// терминалом как «история до перезапуска». От этого отказались: подгрузка прошлой истории мешает.
-// Чистим разово стор от ранее накопленных снимков (могли весить до ~1.5 МБ).
 try { if (STORE.sessionSnaps) { STORE.sessionSnaps = null; lite.store.set('sessionSnaps', null); } } catch (_) {}
-// ── Реестр глобальных горячих клавиш ядра (идея 5) ────────────────────────────
-// Единый источник правды. Матч по физическим клавишам (e.code) → работает в любой
-// раскладке. Эти комбо перехватываются И на уровне document, И внутри терминала: фабрика
-// xterm зовёт runGlobalHotkey и, если перехвачено, глушит байт + stopPropagation (иначе
-// document-хендлер сработал бы вторично, а xterm отправил бы код в PTY — баг B1, из-за
-// которого Ctrl+\ слал SIGQUIT активному агенту, Ctrl+K — kill-line readline и т.п.).
+
 const HOTKEYS = [
   { test: (e) => e.code === 'Backslash',                            run: () => toggleSingle() },
   { test: (e) => e.code === 'KeyK',                                 run: () => showPalette() },
   { test: (e) => e.code === 'Equal' || e.code === 'NumpadAdd',      run: () => bumpFont(1) },
   { test: (e) => e.code === 'Minus' || e.code === 'NumpadSubtract', run: () => bumpFont(-1) },
   { test: (e) => e.code === 'Tab',                                  run: (e) => cycleProject(e.shiftKey ? -1 : 1) },
-  { test: (e) => e.code === 'KeyF' && e.shiftKey,                   run: () => showGlobalSearch() }, // Ctrl+Shift+F — «Найти во всех проектах» (файлы + терминалы)
-  { test: (e) => e.code === 'KeyD' && e.shiftKey,                   run: () => toggleTermSplit() },  // Ctrl+Shift+D — разделить область терминала пополам
-  { test: (e) => e.code === 'KeyE' && e.shiftKey,                   run: () => openModule('files') }, // Ctrl+Shift+E — панель/окно «Проект»
+  { test: (e) => e.code === 'KeyF' && e.shiftKey,                   run: () => showGlobalSearch() },
+  { test: (e) => e.code === 'KeyD' && e.shiftKey,                   run: () => toggleTermSplit() },
+  { test: (e) => e.code === 'KeyE' && e.shiftKey,                   run: () => openModule('files') },
   { test: (e) => /^Digit[1-9]$/.test(e.code) && !e.shiftKey,        run: (e) => { const p = visibleOrderedProjects()[+e.code.slice(5) - 1]; if (p) setActive(p.id); } },
 ];
-// Поле ввода, где Ctrl-комбо должны доставаться самому полю (модалки, палитра, формы), — но НЕ
-// скрытая textarea xterm'а: она и есть ввод терминала, там перехват обязателен (это фикс B1,
-// иначе Ctrl+\ уходит SIGQUIT'ом агенту, а Ctrl+K режет строку в readline).
 function isTextEntry(t) {
   if (!t || (t.closest && t.closest('.xterm'))) return false;
   const tag = (t.tagName || '').toLowerCase();
@@ -1276,604 +1075,6 @@ function runGlobalHotkey(e) {
   return false;
 }
 
-// ── Единая фабрика терминалов (идея 4) ────────────────────────────────────────
-// Общая сборка xterm для сессий проектов и dev-терминалов модулей: Terminal + аддоны +
-// рендерер + PTY + базовый обработчик клавиш. Вызывающий передаёт id/cwd, хук ввода и
-// набор «своих» клавиш (onKey) поверх базовых. Это убрало ~90% дубля между
-// createSession и createExtTerminal, который раньше норовил разъехаться.
-/**
- * @param {HTMLElement} container
- * @param {string} id
- * @param {{ cwd?: string, onInput?: (data: string) => boolean | void, onKey?: (e: KeyboardEvent) => boolean | void }} [opts]
- */
-function buildXterm(container, id, { cwd, onInput, onKey } = {}) {
-  const term = new Terminal({
-    fontFamily: '"JetBrains Mono", "Fira Code", "Cascadia Code", Consolas, monospace',
-    fontSize: settings.fontSize, cursorBlink: true, allowProposedApi: true, theme: termTheme(), scrollback: 5000,
-    allowTransparency: true, // фон терминала прозрачный — виден полупрозрачный фон окна (задаётся только при создании)
-  });
-  const fit = new FitAddon();
-  const search = new SearchAddon();
-  term.loadAddon(fit);
-  term.loadAddon(search);
-  term.loadAddon(new WebLinksAddon((_e, uri) => lite.openExternal(uri)));
-  applyUnicode11(term);
-  term.open(container);
-  prepareRenderer(term);   // WebGL — при показе (activateRenderer), держится у последних показанных
-  // Шкала времени слева — подключается ДО первого fit(): она забирает ширину у области вывода,
-  // и cols должны считаться уже с её учётом, иначе первый же resize уедет на несколько колонок.
-  // Размер PTY — через ptyResizer (termutil.js): серия ресайзов при перетаскивании разделителя
-  // уходит программе одним SIGWINCH, а не десятками перерисовок в секунду.
-  const syncPty = ptyResizer(id, term);
-  const timeline = attachTimeline(term, container, {
-    enabled: settings.termTimeline === true,
-    fontSize: settings.fontSize,
-    onGeometry: () => requestAnimationFrame(() => { try { fit.fit(); syncPty(); } catch (_) {} }),
-  });
-  fit.fit();
-  const created = lite.pty.create({ id, cwd, cols: term.cols, rows: term.rows });
-  term.onData((data) => { if (onInput && onInput(data) === false) return; timeline.markInput(data); lite.pty.write(id, data); });
-  term.onResize(syncPty);
-  term.attachCustomKeyEventHandler((e) => {
-    if (e.type !== 'keydown') return true;
-    // Match by physical key (e.code), NOT e.key — so Ctrl+C/V etc. work in ANY keyboard
-    // layout (in Russian layout Ctrl+V gives e.key='м', which the old e.key check missed).
-    if (e.ctrlKey && !e.shiftKey && !e.altKey && e.code === 'KeyC') return !copySelection(term); // copied → swallow; else SIGINT
-    if (e.ctrlKey && !e.shiftKey && !e.altKey && e.code === 'KeyV') { e.preventDefault(); pasteInto(id); return false; } // preventDefault — иначе xterm вставит ещё раз нативно (дубль)
-    // Ctrl+Enter — перенос строки в вводе (продолжение команды), а не выполнение: \ + CR для bash/zsh, LF для ConPTY/PSReadLine (Win)
-    if (e.ctrlKey && !e.shiftKey && !e.altKey && e.key === 'Enter') { cancelPrefill(id); lite.pty.write(id, lite.platform === 'win32' ? '\n' : '\\\r'); return false; }
-    if (onKey && onKey(e) === false) return false;            // клавиши вызывающего (вкладки/поиск проекта)
-    if (runGlobalHotkey(e)) { e.stopPropagation(); return false; } // глобальные хоткеи в фокусе терминала (B1)
-    return true;
-  });
-  container.addEventListener('contextmenu', (e) => { e.preventDefault(); showTermMenu(e.clientX, e.clientY, term, id); });
-  return { term, fit, search, timeline, syncPty, created };
-}
-// Вкл/выкл шкалы времени во ВСЕХ живых терминалах (настройка применяется на лету, без перезапуска).
-function applyTimeline() {
-  const on = settings.termTimeline === true;
-  { const tl = $('#term-timeline'); if (tl) { tl.classList.toggle('on', on); tl.title = on ? 'Скрыть шкалу времени' : 'Шкала времени слева'; } }
-  for (const rec of terms.values()) { try { rec.timeline.setEnabled(on); } catch (_) {} }
-  for (const rec of extTerms.values()) { try { rec.timeline.setEnabled(on); } catch (_) {} }
-  refitActiveTerminal();
-}
-
-// ── Автоввод в новом терминале ────────────────────────────────────────────────
-// Настройка «Автоввод» (по умолчанию `claude`): в свежую сессию проекта пишем слово БЕЗ перевода
-// строки — команда стоит в строке ввода, человеку остаётся нажать Enter. Пустая настройка =
-// обычный пустой терминал, как раньше. Пишем не сразу: пока шелл поднимается, readline глотает
-// символы, а .bashrc успевает насыпать вывода — поэтому ждём первого вывода PTY и паузы в нём.
-const PREFILL_QUIET_MS = 150;    // тишина в выводе, после которой считаем, что промпт отрисован
-const PREFILL_MAX_WAIT = 1500;   // шелл не сказал ни байта — пишем всё равно
-function armPrefill(id, text) {
-  const rec = terms.get(id); if (!rec || !text) return;
-  rec.prefill = text;
-  rec.prefillTimer = setTimeout(() => firePrefill(id), PREFILL_MAX_WAIT);
-}
-function nudgePrefill(id) {   // пришёл вывод от шелла — отодвинуть запись до паузы
-  const rec = terms.get(id); if (!rec || !rec.prefill) return;
-  clearTimeout(rec.prefillTimer);
-  rec.prefillTimer = setTimeout(() => firePrefill(id), PREFILL_QUIET_MS);
-}
-function cancelPrefill(id) {  // человек начал печатать сам — не лезть ему в строку
-  const rec = terms.get(id); if (!rec || !rec.prefill) return;
-  clearTimeout(rec.prefillTimer); rec.prefill = '';
-}
-function firePrefill(id) {
-  const rec = terms.get(id); if (!rec || !rec.prefill) return;
-  const text = rec.prefill; rec.prefill = '';
-  rec.lastInputAt = Date.now(); // это ввод, пусть и наш: эхо не должно считаться работой агента
-  lite.pty.write(id, text);     // без \r — Enter жмёт человек
-}
-function newSessionId(projId) {
-  return projId + '::t' + (++sessionSeq) + '.' + BOOT_ID;
-}
-function createLazyTab(proj, name, custom) {
-  const id = newSessionId(proj.id);
-  lazyTabs.set(id, { projId: proj.id, name, customName: !!custom, autoTitled: false });
-  tabsByProj.get(proj.id).sessions.push(id);
-  return id;
-}
-// Материализовать отложенную вкладку в живой xterm + PTY на том же месте в t.sessions.
-function materializeSession(sid) {
-  if (!sid) return null;
-  if (terms.has(sid)) return sid;
-  const lazy = lazyTabs.get(sid);
-  if (!lazy) return null;
-  const proj = projects.find((p) => p.id === lazy.projId);
-  if (!proj) { lazyTabs.delete(sid); return null; }
-  lazyTabs.delete(sid);
-  return createSession(proj, lazy.name, lazy.customName, null, { existingSid: sid, pushToTabs: false, allowPrefill: true });
-}
-// adoptId — живой терминал прежней страницы (пережил перезагрузку окна): вкладка садится на него.
-function createSession(proj, name, custom, adoptId, { existingSid = null, pushToTabs = true, allowPrefill = true } = {}) {
-  const id = adoptId || existingSid || newSessionId(proj.id);
-  const container = el('div', 'term-instance');
-  container.addEventListener('mousedown', () => focusSplitSlot(id));
-  container.addEventListener('focusin', () => focusSplitSlot(id));
-  $('#terminals').appendChild(container);
-  const { term, fit, search, timeline, syncPty, created } = buildXterm(container, id, {
-    cwd: proj.path,
-    onInput: (data) => {
-      const r = terms.get(id);
-      if (r && r.exited) { if (data === '\r' || data === '\n') restartTerminal(id); return false; }
-      cancelPrefill(id);
-      if (r) r.lastInputAt = Date.now();
-    },
-    onKey: (e) => {
-      if (e.key === 'Enter' && !e.ctrlKey && !e.altKey && !e.shiftKey) {
-        const r = terms.get(id);
-        if (r && r.exited) { e.preventDefault(); restartTerminal(id); return false; }
-      }
-      if (e.ctrlKey && e.shiftKey && e.code === 'KeyT') { addTab(); return false; }
-      if (e.ctrlKey && e.shiftKey && e.code === 'KeyW') { const s = activeSessionId(); if (s) closeTab(s); return false; }
-      if (e.ctrlKey && (e.key === 'PageDown' || e.key === 'PageUp')) { cycleTab(e.key === 'PageDown' ? 1 : -1); return false; }
-      if (e.ctrlKey && !e.altKey && !e.shiftKey && e.code === 'KeyF') { focusSplitSlot(id); openTermSearch(); return false; } // Ctrl+F (без Shift) — поиск в этом терминале; Ctrl+Shift+F уходит в глобальный (реестр)
-    },
-  });
-  term.registerLinkProvider(fileLinkProvider(term, proj.path));
-  const rec = { term, fit, search, timeline, syncPty, container, projId: proj.id, name, customName: !!custom, autoTitled: false, idleTimer: null, sawBell: false, tail: '', busyStart: 0, lastInputAt: 0, activitySeq: 0, prefill: '', prefillTimer: null, redraw: false, needsFit: false,
-    adoptPending: /** @type {string[] | null} */ (adoptId ? [] : null),
-    claude: null, probeTimer: null, probeDeadline: null, probeSeq: 0, claudeRetry: 0 }; // claude — см. «Claude Code» у индикатора
-  terms.set(id, rec);
-  if (adoptId) {
-    // Восстанавливаем последние 128 КБ вывода из кольцевого буфера main-процесса в строгом порядке
-    // перед любыми новыми чанками pty:data, а затем качаем размер (SIGWINCH) для TUI-агентов.
-    Promise.resolve(created).then((res) => {
-      const r = terms.get(id);
-      if (!r) return;
-      const queued = r.adoptPending || [];
-      r.adoptPending = null;
-      const backlog = res && typeof res.backlog === 'string' ? res.backlog : '';
-      if (backlog) r.term.write(backlog);
-      else r.term.write('\x1b[90m' + tt('[терминал подхвачен после перезагрузки окна]') + '\x1b[0m\r\n');
-      for (const chunk of queued) {
-        writeTermWithAck(r.term, id, chunk);
-        markActivity(id, chunk);
-      }
-      r.redraw = true;
-      if (isSessionVisible(id)) refitActiveTerminal();
-    }).catch(() => {
-      const r = terms.get(id);
-      if (r) { r.adoptPending = null; r.redraw = true; }
-    });
-  } else if (allowPrefill) {
-    armPrefill(id, (settings.termPrefill || '').trim()); // автоввод слова из настроек — только в открываемую вкладку
-  }
-  // Имя вкладки из заголовка терминала (OSC ]0;…): Claude/агент в промпте пишет туда
-  // текущую задачу, шелл — user@host:cwd. Подхватываем как имя вкладки, пока пользователь
-  // не переименовал вкладку руками (rec.customName). Один и тот же заголовок (bash каждый
-  // промпт шлёт одно и то же) отсекаем сравнением — без дёрганья tab-бара.
-  // Он же — признак работы Claude Code для индикатора (onClaudeTitle).
-  term.onTitleChange((t) => { onClaudeTitle(id, t); adoptTermTitle(id, t); });
-  if (pushToTabs) tabsByProj.get(proj.id).sessions.push(id);
-  return id;
-}
-// Ensure a project's sessions exist (restoring saved tab names on first open).
-// Фоновые вкладки остаются легковесными записями в lazyTabs до первого переключения на них:
-// при открытии проекта материализуются только активная вкладка (и второй слот сплита, если был сплит).
-function ensureProjectTabs(proj) {
-  if (tabsByProj.has(proj.id)) return;
-  tabsByProj.set(proj.id, { sessions: [], active: null, splitPair: null });
-  const saved = (STORE.projTabs || {})[proj.id];
-  const plan = planProjectTabs(saved, tt('Терминал {0}', 1));
-  const adopted = adoptPtys.get(proj.id);
-  if (adopted && adopted.length) {
-    // окно перезагрузилось, а терминалы проекта живы: вкладки садятся на них в прежнем порядке
-    adoptPtys.delete(proj.id);
-    adopted.forEach((id, i) => {
-      const pt = plan.tabs[i];
-      createSession(proj, pt ? pt.name : tt('Терминал {0}', i + 1), pt ? pt.customName : false, id);
-    });
-    for (let i = adopted.length; i < plan.tabs.length; i++) {
-      createLazyTab(proj, plan.tabs[i].name, plan.tabs[i].customName);
-    }
-  } else {
-    for (const pt of plan.tabs) {
-      if (pt.eager) createSession(proj, pt.name, pt.customName, null, { allowPrefill: pt.prefill });
-      else createLazyTab(proj, pt.name, pt.customName);
-    }
-  }
-  const t = tabsByProj.get(proj.id);
-  const actSid = t.sessions[Math.min(plan.activeIndex, t.sessions.length - 1)] || t.sessions[0];
-  materializeSession(actSid);
-  t.active = actSid;
-  if (plan.splitIndices) {
-    const s0 = t.sessions[plan.splitIndices[0]];
-    const s1 = t.sessions[plan.splitIndices[1]];
-    if (s0 && s1 && s0 !== s1) {
-      materializeSession(s0);
-      materializeSession(s1);
-      t.splitPair = [s0, s1];
-    }
-  }
-  saveProjTabs();
-}
-let tabDragEl = null; // перетаскиваемая вкладка внутри #term-tabs
-function enableTabDnD(tab, bar, projId) {
-  tab.draggable = true;
-  tab.addEventListener('dragstart', (e) => {
-    hideTabTip();
-    tabDragEl = tab;
-    tab.classList.add('dragging');
-    if (e.dataTransfer) {
-      e.dataTransfer.effectAllowed = 'move';
-      try { e.dataTransfer.setData('text/plain', tab.dataset.sid || ''); } catch (_) {}
-    }
-  });
-  tab.addEventListener('dragover', (e) => {
-    if (!tabDragEl || tabDragEl === tab || tab.parentElement !== bar) return;
-    e.preventDefault();
-    if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
-    const r = tab.getBoundingClientRect();
-    bar.insertBefore(tabDragEl, e.clientX < r.left + r.width / 2 ? tab : tab.nextSibling);
-  });
-  tab.addEventListener('dragend', (e) => {
-    tab.classList.remove('dragging');
-    if (!tabDragEl) return;
-    tabDragEl = null;
-    const t = tabsByProj.get(projId);
-    if (t && e.dataTransfer && e.dataTransfer.dropEffect !== 'none') {
-      const order = [...bar.querySelectorAll('.tab')]
-        .map((x) => (x instanceof HTMLElement ? x.dataset.sid : ''))
-        .filter((s) => s && t.sessions.includes(s));
-      if (order.length === t.sessions.length) {
-        t.sessions = order;
-        saveProjTabs();
-      }
-    }
-    renderTabBar();
-  });
-}
-
-function isProjSplit(t) {
-  return !!(t && Array.isArray(t.splitPair) && t.splitPair.length === 2
-    && t.splitPair[0] !== t.splitPair[1] && terms.has(t.splitPair[0]) && terms.has(t.splitPair[1]));
-}
-function isSessionVisible(sid) {
-  const t = tabsByProj.get(activeId);
-  if (!t || !sid) return false;
-  if (isProjSplit(t)) return t.splitPair.includes(sid);
-  return t.active === sid;
-}
-function focusSplitSlot(sid) {
-  const t = tabsByProj.get(activeId);
-  if (!isProjSplit(t) || !t.splitPair.includes(sid) || t.active === sid) return;
-  t.active = sid;
-  saveProjTabs();
-  for (const s of t.splitPair) {
-    const r = terms.get(s);
-    if (r) r.container.classList.toggle('slot-focused', s === sid);
-  }
-  renderTabBar();
-  syncTermSearchUI();
-}
-function toggleTermSplit() {
-  const proj = activeProject();
-  if (!proj) return;
-  ensureProjectTabs(proj);
-  const t = tabsByProj.get(proj.id);
-  if (!t) return;
-  if (isProjSplit(t)) {
-    t.splitPair = null;
-    saveProjTabs();
-    showActiveTerminal();
-    return;
-  }
-  const leftSid = (t.active && hasTabSession(t.active)) ? t.active : t.sessions[0];
-  materializeSession(leftSid);
-  let rightSid = t.sessions.find((s) => s !== leftSid && terms.has(s))
-    || t.sessions.find((s) => s !== leftSid && lazyTabs.has(s))
-    || null;
-  if (rightSid) materializeSession(rightSid);
-  else rightSid = createSession(proj, tt('Терминал {0}', t.sessions.length + 1));
-  t.splitPair = [leftSid, rightSid];
-  t.active = rightSid;
-  saveProjTabs();
-  showActiveTerminal();
-}
-
-function renderTabBar() {
-  const bar = $('#term-tabs');
-  if (!bar) return;
-  // вкладки пересоздаются: у снятой из DOM mouseleave уже не сработает, и тултип (например, после ✕
-  // по вкладке под курсором или Ctrl+Tab) висел бы над панелью до следующего наведения
-  hideTabTip();
-  bar.innerHTML = '';
-  const t = tabsByProj.get(activeId);
-  const splitOn = isProjSplit(t);
-  // шапка видна всегда (в ней кнопки окна и за неё тянут окно); без проекта нет только вкладок и «+»
-  $('#term-tab-add').classList.toggle('hidden', !activeId || !t);
-  {
-    const sb = $('#term-split-btn');
-    if (sb) {
-      sb.classList.toggle('hidden', !activeId || !t);
-      sb.classList.toggle('on', splitOn);
-      sb.title = splitOn ? 'Закрыть разделение терминала (Ctrl+Shift+D)' : 'Разделить терминал (Ctrl+Shift+D)';
-    }
-  }
-  if (!activeId || !t || !t.sessions.length) { updateTabScroll(); return; }
-  const projId = activeId;
-  t.sessions.forEach((sid) => {
-    const rec = tabMeta(sid); if (!rec) return;
-    const isLive = terms.has(sid);
-    const isPeer = splitOn && sid !== t.active && t.splitPair.includes(sid);
-    const tab = el('div', 'tab' + (sid === t.active ? ' active' : (isPeer ? ' split-peer' : '')) + (rec.autoTitled ? ' wide' : ''));
-    tab.dataset.sid = sid;
-    tab.appendChild(el('span', 'tab-dot pind ' + (isLive ? (projState.get(sid) || 'quiet') : 'idle')));
-    const nameSpan = el('span', 'tab-name', rec.name);
-    tab.appendChild(nameSpan);
-    // Кастомный тултип с полным именем — только когда имя визуально обрезано многоточием.
-    tab.addEventListener('mouseenter', () => { if (!tabDragEl && nameSpan.scrollWidth > nameSpan.clientWidth + 1) showTabTip(tab, rec.name); });
-    tab.addEventListener('mouseleave', hideTabTip);
-    if (t.sessions.length > 1) {
-      const x = iconBtn('tab-close', 'x', 'Закрыть вкладку (Ctrl+Shift+W)', 12);
-      x.addEventListener('click', (e) => { e.stopPropagation(); closeTab(sid); });
-      tab.appendChild(x);
-      enableTabDnD(tab, bar, projId);
-    }
-    tab.addEventListener('mousedown', (e) => { if (e.button === 1) e.preventDefault(); });
-    tab.addEventListener('auxclick', (e) => {
-      if (e.button === 1 && t.sessions.length > 1) {
-        e.preventDefault(); e.stopPropagation(); hideTabTip(); closeTab(sid);
-      }
-    });
-    tab.addEventListener('click', () => { hideTabTip(); switchTab(sid); });
-    tab.addEventListener('dblclick', () => renameTab(sid));
-    bar.appendChild(tab);
-  });
-  ensureActiveTabVisible();
-  updateTabScroll();
-}
-// ── Кастомный тултип вкладок + прокрутка панели вкладок стрелками ──────────────
-let tabTipEl = null;
-function showTabTip(anchor, text) {
-  if (!tabTipEl) { tabTipEl = el('div'); tabTipEl.id = 'tab-tip'; document.body.appendChild(tabTipEl); }
-  tabTipEl.textContent = text;
-  tabTipEl.classList.add('show');                       // показать, чтобы измерить размеры
-  const r = anchor.getBoundingClientRect();
-  const tw = tabTipEl.offsetWidth, iw = window.innerWidth;
-  let left = r.left + r.width / 2 - tw / 2;
-  left = Math.max(6, Math.min(left, iw - tw - 6));      // не вылезать за края экрана
-  tabTipEl.style.left = left + 'px';
-  tabTipEl.style.top = (r.bottom + 6) + 'px';           // под вкладкой (вкладки вверху панели)
-}
-function hideTabTip() { if (tabTipEl) tabTipEl.classList.remove('show'); }
-function scrollTabs(dir) {
-  const bar = $('#term-tabs'); if (!bar) return;
-  hideTabTip();
-  bar.scrollBy({ left: dir * Math.max(140, bar.clientWidth * 0.7), behavior: 'smooth' });
-}
-// Показ/дизейбл стрелок по факту переполнения панели вкладок.
-function updateTabScroll() {
-  const bar = $('#term-tabs'), prev = $('#term-tabs-prev'), next = $('#term-tabs-next');
-  if (!bar || !prev || !next) return;
-  const overflow = bar.scrollWidth > bar.clientWidth + 1;
-  prev.classList.toggle('show', overflow);
-  next.classList.toggle('show', overflow);
-  if (overflow) {
-    const max = bar.scrollWidth - bar.clientWidth;
-    prev.disabled = bar.scrollLeft <= 1;
-    next.disabled = bar.scrollLeft >= max - 1;
-  }
-}
-// Подкрутить панель так, чтобы активная вкладка была видна целиком (без прокрутки страницы).
-// По rect'ам (а не offsetLeft) — устойчиво к отсутствию positioned-родителя у #term-tabs.
-function ensureActiveTabVisible() {
-  const bar = $('#term-tabs'); if (!bar) return;
-  const a = bar.querySelector('.tab.active'); if (!a) return;
-  const br = bar.getBoundingClientRect(), ar = a.getBoundingClientRect();
-  if (ar.left < br.left) bar.scrollLeft -= (br.left - ar.left) + 8;
-  else if (ar.right > br.right) bar.scrollLeft += (ar.right - br.right) + 8;
-}
-function switchTab(sid) {
-  const t = tabsByProj.get(activeId);
-  if (!t || !hasTabSession(sid)) return;
-  if (!terms.has(sid) && !materializeSession(sid)) return;
-  if (isProjSplit(t)) {
-    if (!t.splitPair.includes(sid)) {
-      const idx = t.splitPair[1] === t.active ? 1 : 0;
-      t.splitPair[idx] = sid;
-    }
-    t.active = sid;
-  } else {
-    t.active = sid;
-  }
-  saveProjTabs(); showActiveTerminal();
-}
-function addTab() {
-  const proj = activeProject(); if (!proj) return;
-  ensureProjectTabs(proj);
-  const t = tabsByProj.get(proj.id);
-  const sid = createSession(proj, tt('Терминал {0}', t.sessions.length + 1));
-  if (isProjSplit(t)) {
-    const idx = t.splitPair[1] === t.active ? 1 : 0;
-    t.splitPair[idx] = sid;
-  }
-  t.active = sid; saveProjTabs(); showActiveTerminal();
-}
-function doCloseTab(projId, sid) {
-  const t = tabsByProj.get(projId);
-  if (!t || t.sessions.length <= 1 || !t.sessions.includes(sid)) return;
-  if (Array.isArray(t.splitPair) && t.splitPair.includes(sid)) {
-    const other = t.splitPair[0] === sid ? t.splitPair[1] : t.splitPair[0];
-    t.splitPair = null;
-    if (t.active === sid && other && other !== sid) t.active = other;
-  }
-  disposeSession(sid);
-  const i = t.sessions.indexOf(sid);
-  t.sessions.splice(i, 1);
-  if (t.active === sid) t.active = t.sessions[Math.max(0, i - 1)];
-  if (projId === activeId && t.active) materializeSession(t.active);
-  saveProjTabs();
-  if (projId === activeId) showActiveTerminal();
-  refreshProjIndicator(projId);
-  updateAttention();
-}
-async function closeTab(sid) {
-  const rec = terms.get(sid);
-  const meta = rec || lazyTabs.get(sid);
-  const projId = meta ? meta.projId : activeId;
-  const t = tabsByProj.get(projId);
-  if (!t || t.sessions.length <= 1 || !t.sessions.includes(sid)) return; // keep ≥1 tab
-  if (!rec || rec.exited) { doCloseTab(projId, sid); return; }
-  const rep = await agentReport(sid);
-  if (!terms.has(sid)) return;
-  const agent = sessionAgent(sid) || (rep && rep.claude ? 'claude' : null);
-  const st = projState.get(sid);
-  const activeProc = !!(agent || (rep && (rep.fg === 'running' || rep.fg === 'waiting')) || (!rep && (st === 'busy' || st === 'waiting')));
-  if (!activeProc) { doCloseTab(projId, sid); return; }
-  showConfirm(
-    `Закрыть вкладку «${rec.name}»?`,
-    agent
-      ? `В этой вкладке работает агент ${agent} — процесс будет остановлен.`
-      : 'В этой вкладке выполняется команда — процесс будет остановлен.',
-    'Закрыть вкладку',
-    () => doCloseTab(projId, sid),
-  );
-}
-function cycleTab(dir) {
-  const t = tabsByProj.get(activeId); if (!t || t.sessions.length < 2) return;
-  let i = t.sessions.indexOf(t.active) + dir;
-  if (i < 0) i = t.sessions.length - 1; if (i >= t.sessions.length) i = 0;
-  switchTab(t.sessions[i]);
-}
-function renameTab(sid) {
-  const rec = tabMeta(sid); if (!rec) return;
-  // Ручное имя «прибивает» вкладку: заголовок терминала больше её не перебивает (customName)
-  // и вкладка возвращается к обычной ширине (autoTitled=false — не «переименована агентом»).
-  showPrompt('Переименовать вкладку', 'Название', rec.name, (v) => { rec.name = v; rec.customName = true; rec.autoTitled = false; saveProjTabs(); renderTabBar(); syncTermSearchUI(); });
-}
-// Дефолтный заголовок, который шлёт САМ шелл (bash/zsh): "user@host: ~/path", голый путь,
-// "C:\path". Это НЕ имя задачи агента — вкладка должна остаться "Терминал N", пока Claude/
-// Codex не напишет осмысленный заголовок. Такие заголовки в имя вкладки НЕ подхватываем.
-function looksLikeShellTitle(s) {
-  if (/^\S+@\S+/.test(s)) return true;             // user@host[: …] — дефолт bash/zsh
-  if (/^[~/]\S*$/.test(s)) return true;            // ~/path или /abs/path целиком (без пробелов)
-  if (/^[A-Za-z]:[\\/]\S*$/.test(s)) return true;  // C:\path (Windows)
-  return false;
-}
-// Подхват заголовка терминала (OSC ]0;…) в имя вкладки. Чистим управляющие символы,
-// схлопываем пробелы, держим щадящий предел (визуально имя режет CSS-многоточие, полное —
-// в тултипе). Не трогаем вручную названные вкладки; ИГНОРИРУЕМ шелловый заголовок (путь/хост),
-// чтобы вкладка изначально была "Терминал N" и сменилась только на имя задачи от агента;
-// не перерисовываем бар, если имя то же (заголовок сыплется на каждый промпт).
-// autoTitled=true → вкладка «переименована агентом» (шире вдвое, класс .wide в renderTabBar).
-function adoptTermTitle(id, raw) {
-  const rec = terms.get(id); if (!rec || rec.customName) return;
-  let name = String(raw || '').replace(/[\x00-\x1f\x7f]/g, '').trim().replace(/\s+/g, ' ');
-  // значок состояния Claude (◐/◑ меняются раз в секунду, пока идёт ход) — в индикаторе, не в имени
-  name = name.replace(CLAUDE_TITLE_RE, '');
-  if (!name || looksLikeShellTitle(name)) return;
-  if (name.length > 200) name = name.slice(0, 200);
-  if (name === rec.name && rec.autoTitled) return;
-  rec.name = name;
-  rec.autoTitled = true;
-  updateTabName(id);
-}
-// Точечное обновление одной вкладки вместо пересборки всей панели: агенты пишут заголовок часто,
-// а renderTabBar пересоздаёт все вкладки и дважды заставляет браузер пересчитать раскладку. Вкладка
-// фонового проекта на экране не видна — её имя подхватит следующий renderTabBar при переключении.
-function updateTabName(sid) {
-  const rec = terms.get(sid);
-  const t = tabsByProj.get(activeId);
-  if (!rec || !t || !t.sessions.includes(sid)) return;
-  const tab = [...document.querySelectorAll('#term-tabs .tab')].find((x) => x instanceof HTMLElement && x.dataset.sid === sid);
-  if (!tab) { renderTabBar(); return; }
-  tab.classList.toggle('wide', !!rec.autoTitled);
-  const span = tab.querySelector('.tab-name');
-  if (span && span.textContent !== rec.name) span.textContent = rec.name;
-  if (sid === t.active) syncTermSearchUI();
-  scheduleTabScroll();
-}
-// Стрелки прокрутки панели вкладок зависят от ширины вкладок — пересчитываем раз в кадр, не на каждое имя.
-let tabScrollRaf = 0;
-function scheduleTabScroll() {
-  if (tabScrollRaf) return;
-  tabScrollRaf = requestAnimationFrame(() => { tabScrollRaf = 0; updateTabScroll(); });
-}
-async function pasteInto(id) {
-  const text = await lite.readClipboard();
-  if (text) { cancelPrefill(id); writeAsPaste(id, text); }
-  // Reading the clipboard is async (IPC round-trip) and the right-click menu steals
-  // focus — without this the terminal looks "frozen" until clicked. Refocus the xterm.
-  const rec = isExtTerm(id) ? extTerms.get(id) : terms.get(id); // dev-терминал модуля живёт в extTerms
-  if (rec && rec.term) { try { rec.term.focus(); } catch (_) {} }
-}
-// Smart Ctrl+C: if there's a non-empty selection, copy it (and clear, so the next
-// Ctrl+C can still send SIGINT) and report handled; otherwise return false so the
-// keypress falls through to the PTY as the interrupt signal. Mirrors the menu's copy.
-function showActiveTerminal() {
-  const t = tabsByProj.get(activeId);
-  const asid = activeSessionId();
-  const splitOn = isProjSplit(t);
-  $('#empty-hint').style.display = activeId ? 'none' : 'flex';
-  $('#terminals').classList.toggle('is-split', splitOn);
-  { const sg = $('#term-split-gutter'); if (sg) sg.classList.toggle('hidden', !splitOn); }
-  for (const [sid, rec] of terms) {
-    rec.container.classList.remove('slot-left', 'slot-right', 'slot-focused');
-    if (splitOn && t.splitPair.includes(sid)) {
-      rec.container.style.display = 'block';
-      rec.container.classList.add(sid === t.splitPair[0] ? 'slot-left' : 'slot-right');
-      if (sid === asid) rec.container.classList.add('slot-focused');
-      activateRenderer(rec.term);
-    } else {
-      rec.container.style.display = (!splitOn && sid === asid) ? 'block' : 'none';
-      if (!splitOn && sid === asid) activateRenderer(rec.term);
-    }
-  }
-  renderTabBar();
-  syncTermSearchUI();
-  refitActiveTerminal(true);
-}
-function refitActiveTerminal(focusIt) {
-  try { Ext.refitTerminal(); } catch (_) {} // dev-терминал модуля в #ext-pane
-  const t = tabsByProj.get(activeId);
-  const asid = activeSessionId();
-  const visibleIds = isProjSplit(t) ? t.splitPair.slice() : (asid ? [asid] : []);
-  if (!visibleIds.length) return;
-  requestAnimationFrame(() => {
-    for (const sid of visibleIds) {
-      const rec = terms.get(sid);
-      if (!rec) continue;
-      try {
-        rec.fit.fit();
-        rec.syncPty();
-        rec.needsFit = false;
-        if (focusIt && sid === asid) rec.term.focus();
-      } catch (_) {}
-      if (rec.redraw) {
-        rec.redraw = false;
-        const { cols, rows } = rec.term;
-        if (cols > 2) { lite.pty.resize(sid, cols - 1, rows); setTimeout(() => lite.pty.resize(sid, cols, rows), 120); }
-      }
-    }
-  });
-}
-// ⚠ id из контекстного меню терминала может быть и dev-терминалом модуля (`__extterm__::tN`) —
-// его НЕТ в `terms`. Раньше обе функции молча падали на activeSessionId(), и «Перезапустить» в
-// терминале папки модуля перезапускал PTY активного проекта, убивая работающего там агента.
-function clearTerminal(id) {
-  if (isExtTerm(id)) { const r = extTerms.get(id); if (r) { try { r.term.clear(); } catch (_) {} try { r.timeline.reset(); } catch (_) {} r.term.focus(); } return; }
-  const sid = (id && terms.has(id)) ? id : activeSessionId();
-  const rec = terms.get(sid); if (rec) { try { rec.term.clear(); } catch (_) {} try { rec.timeline.reset(); } catch (_) {} rec.term.focus(); }
-}
-function restartTerminal(id) {
-  if (isExtTerm(id)) { restartExtTerminal(id); return; }
-  const sid = (id && terms.has(id)) ? id : activeSessionId();
-  const rec = terms.get(sid);
-  const proj = rec && projects.find((p) => p.id === rec.projId);
-  if (!proj || !rec) return;
-  try { rec.term.reset(); } catch (_) {}
-  try { rec.timeline.reset(); } catch (_) {}
-  dropPtyAck(sid);
-  rec.sawBell = false; rec.tail = ''; rec.busyStart = Date.now();
-  clearTimeout(rec.idleTimer);
-  rec.claude = null; rec.exited = false; stopClaudeProbe(rec);
-  setProjState(sid, 'busy');
-  lite.pty.restart({ id: sid, cwd: proj.path, cols: rec.term.cols, rows: rec.term.rows });
-  rec.term.focus();
-}
 // Перезапуск dev-терминала модуля — в его СОБСТВЕННОЙ папке (cwd запоминаем при создании).
 function restartExtTerminal(id) {
   const r = extTerms.get(id);
@@ -1885,17 +1086,13 @@ function restartExtTerminal(id) {
   r.term.focus();
 }
 
-
 // Терминал dev-папки модуля: PTY+xterm в переданном контейнере (живёт в #ext-pane).
-// Возвращает handle для extensions.js; xterm в код модуля не утекает (правило изоляции).
 function createExtTerminal(container, cwd) {
   const id = EXT_TERM_ID + '::t' + (++extTermSeq) + '.' + BOOT_ID;
-  // Без onKey: у dev-терминала модуля нет вкладок, а Ctrl+F открыл бы поиск ЧУЖОГО
-  // (активного проектного) терминала — поэтому поиск здесь не перехватываем (как было).
   const { term, fit, search, timeline, syncPty } = buildXterm(container, id, { cwd });
-  const extRec = { term, fit, search, timeline, syncPty, container, cwd, needsFit: false }; // cwd — для «Перезапустить» из контекст-меню
+  const extRec = { term, fit, search, timeline, syncPty, container, cwd, needsFit: false };
   extTerms.set(id, extRec);
-  activateRenderer(term);   // dev-терминал модуля виден сразу, в панели «Мои модули»
+  activateRenderer(term);
   return {
     id,
     write: (s) => lite.pty.write(id, s),
@@ -1905,27 +1102,11 @@ function createExtTerminal(container, cwd) {
   };
 }
 
-// ================================================================ RemoteHost module (SSH)
-// Вынесен в renderer/modules/remotehost.js (const Rh — у реестра панелей).
-
-// ---------------------------------------------------------------- font size
 let watchedRoot = null; // we live-watch only the active project to limit inotify use
 function applyFontSize({ notify = true } = {}) {
-  const fsPx = settings.fontSize;
-  for (const [sid, rec] of terms) {
-    rec.term.options.fontSize = fsPx;
-    try { rec.timeline.setFontSize(fsPx); } catch (_) {}
-    if (!isSessionVisible(sid)) rec.needsFit = true;
-  }
-  for (const rec of extTerms.values()) {
-    rec.term.options.fontSize = fsPx;
-    try { rec.timeline.setFontSize(fsPx); } catch (_) {}
-    rec.needsFit = true;
-  }
-  document.documentElement.style.setProperty('--editor-fs', fsPx + 'px');
-  refitActiveTerminal();
+  termEngine.applyFontSize();
   if (notify) {
-    try { lite.app.settingsChanged(settings); } catch (_) {} // окно «Система · ~» подхватит размер шрифта
+    try { lite.app.settingsChanged(settings); } catch (_) {}
   }
 }
 function bumpFont(delta) {
@@ -1933,98 +1114,19 @@ function bumpFont(delta) {
   saveSettings(); applyFontSize();
 }
 
-// ---------------------------------------------------------------- terminal search
-function isTermSearchOpen() {
-  const box = $('#term-search');
-  return !!(box && box.classList.contains('show'));
-}
-function clearAllTermSearchDecorations(exceptSid = null) {
-  for (const [sid, r] of terms) {
-    if (exceptSid && sid === exceptSid) continue;
-    try { r.search.clearDecorations(); } catch (_) {}
-  }
-}
-function syncTermSearchUI() {
-  const input = /** @type {HTMLInputElement | null} */ ($('#term-search-input'));
-  const t = tabsByProj.get(activeId);
-  const asid = activeSessionId();
-  const rec = asid ? terms.get(asid) : null;
-  if (input) {
-    if (isProjSplit(t) && rec) {
-      input.setAttribute('data-no-i18n', '');
-      input.placeholder = `${tt('Поиск в терминале…').replace(/…$/, '')} · ${rec.name}`;
-    } else {
-      input.removeAttribute('data-no-i18n');
-      input.placeholder = tt('Поиск в терминале…');
-    }
-  }
-  if (!isTermSearchOpen()) return;
-  if (!rec) {
-    $('#term-search').classList.remove('show');
-    clearAllTermSearchDecorations();
-    return;
-  }
-  // При переключении активного слота сплита или вкладки гасим подсветку в неактивных терминалах,
-  // чтобы декорации не оставались висеть в соседнем слоте.
-  clearAllTermSearchDecorations(asid);
-}
-function openTermSearch() {
-  const rec = terms.get(activeSessionId());
-  if (!rec) return;
-  const box = $('#term-search');
-  box.classList.add('show');
-  syncTermSearchUI();
-  const input = /** @type {HTMLInputElement} */ ($('#term-search-input'));
-  input.focus(); input.select();
-}
-function closeTermSearch() {
-  $('#term-search').classList.remove('show');
-  clearAllTermSearchDecorations();
-  const rec = terms.get(activeSessionId());
-  if (rec) rec.term.focus();
-}
-function runTermSearch(dir) {
-  const asid = activeSessionId();
-  const rec = terms.get(asid);
-  const q = /** @type {HTMLInputElement} */ ($('#term-search-input')).value;
-  if (!rec || !q) return;
-  clearAllTermSearchDecorations(asid);
-  // Метки overview-ruler берём из токенов активной темы, а не хардкодим (контракт тем):
-  // --warn для совпадений, --add для активного — так они согласованы с любой темой.
-  const css = getComputedStyle(document.documentElement);
-  const opts = { decorations: {
-    matchOverviewRuler: (css.getPropertyValue('--warn') || '#e0af68').trim() || '#e0af68',
-    activeMatchColorOverviewRuler: (css.getPropertyValue('--add') || '#3ddc84').trim() || '#3ddc84',
-  } };
-  if (dir < 0) rec.search.findPrevious(q, opts); else rec.search.findNext(q, opts);
-}
-
-// ── Сканер буферов открытых сессий (режим «В терминалах» глобального поиска, идея 9) ──
-// Когда параллельно работают несколько агентов, важно быстро найти «где это проскочило».
-// Читаем scrollback каждого терминала (read-only, PTY не трогаем); выдачу рисует gsearch.js.
-const GS_PER_SESSION = 60;   // потолок совпадений на одну сессию
-function scanTermBuffer(term, q) {
-  const out = [];
-  try {
-    const buf = term.buffer.active;
-    const ql = q.toLowerCase();
-    for (let y = 0; y < buf.length && out.length < GS_PER_SESSION; y++) {
-      const line = buf.getLine(y);
-      if (!line) continue;
-      const text = line.translateToString(true);
-      if (text.toLowerCase().includes(ql)) out.push({ y, text: text.trim().slice(0, 200) });
-    }
-  } catch (_) {}
-  return out;
-}
 function jumpToSession(projId, sid) {
   setActive(projId);
+  if (detachedProjIds.has(projId)) {
+    lite.projTerm.focusSession(projId, sid);
+    return;
+  }
   const t = tabsByProj.get(projId);
   if (t && t.sessions.includes(sid)) { materializeSession(sid); t.active = sid; saveProjTabs(); }
   showActiveTerminal();
 }
+
 // Окно «Найти во всех проектах» (renderer/gsearch.js): содержимое и имена файлов через стриминговый
-// бэкенд gsearch:*, плюс прежний поиск по буферам открытых терминалов — теперь один из его режимов.
+// бэкенд gsearch:*, плюс прежний поиск по буферам открытых терминалов (локальных и вынесенных).
 function showGlobalSearch(initial = {}) {
   openGlobalSearch({
     lite,
@@ -2033,6 +1135,7 @@ function showGlobalSearch(initial = {}) {
     setActive,
     openInViewer: (p, line) => lite.editorBus.openInViewer(p, line),
     terms: () => terms,
+    searchDetachedTerms: (query) => (detachedProjIds.size ? lite.projTerm.searchBuffers({ query }) : Promise.resolve([])),
     jumpToSession,
     scanTermBuffer,
     categories: () => loadCategories().filter((c) => c !== ARCHIVE),
@@ -2406,41 +1509,11 @@ function initGutters() {
       document.addEventListener('mouseup', onUp);
     });
   });
-  const sg = $('#term-split-gutter');
-  if (sg) {
-    sg.addEventListener('mousedown', (e) => {
-      e.preventDefault();
-      const tb = $('#term-body');
-      if (!tb) return;
-      document.body.classList.add('resizing');
-      const onMove = (ev) => {
-        const rect = tb.getBoundingClientRect();
-        if (rect.width <= 0) return;
-        layout.termSplit = Math.max(0.2, Math.min(0.8, (ev.clientX - rect.left) / rect.width));
-        applyLayout();
-        refitActiveTerminal();
-      };
-      const onUp = () => {
-        document.removeEventListener('mousemove', onMove);
-        document.removeEventListener('mouseup', onUp);
-        document.body.classList.remove('resizing');
-        saveLayout();
-      };
-      document.addEventListener('mousemove', onMove);
-      document.addEventListener('mouseup', onUp);
-    });
-    sg.addEventListener('dblclick', () => {
-      layout.termSplit = 0.5;
-      applyLayout();
-      refitActiveTerminal();
-      saveLayout();
-    });
-  }
 }
 
 // ---------------------------------------------------------------- оболочка: боковая карточка и нижняя полоса
 // Кнопки, которые живут в index.html постоянно (не перерисовываются): навигация и подвал боковой
-// карточки, чипы активного проекта, «+» быстрой панели, плашка кнопок терминала, пустой экран.
+// карточки, чипы активного проекта, «+» быстрой панели, пустой экран.
 let matrixCtl = null;   // заставка «матрица»: собирается в init(), запускается и из «Ещё»/настроек
 function startMatrix() { if (matrixCtl) matrixCtl.start(); }
 function initShell() {
@@ -2454,12 +1527,10 @@ function initShell() {
   $('#chip-folder').addEventListener('click', stop((b) => showFolderMenu(b)));
   $('#chip-branch').addEventListener('click', stop((b) => showBranchMenu(b)));
   $('#qb-more').addEventListener('click', () => showModulesCatalog());
-  const tl = $('#term-timeline');
-  const markTl = () => { const on = settings.termTimeline === true; tl.classList.toggle('on', on); tl.title = on ? 'Скрыть шкалу времени' : 'Шкала времени слева'; };
-  markTl();
-  tl.addEventListener('click', () => { settings.termTimeline = settings.termTimeline !== true; saveSettings(); applyTimeline(); markTl(); });
-  $('#term-find').addEventListener('click', () => openTermSearch());
   $('#empty-open').addEventListener('click', () => openProjectDialog());
+  const df = $('#detached-focus'), dd = $('#detached-dock');
+  if (df) df.addEventListener('click', () => { if (activeId) lite.projTerm.focus(activeId); });
+  if (dd) dd.addEventListener('click', () => { if (activeId) dockProjectTerminals(activeId); });
 }
 
 // ---------------------------------------------------------------- window controls
@@ -2480,65 +1551,7 @@ function initWindowControls() {
 
 // ---------------------------------------------------------------- menu
 // Меню верхней строки больше нет: «Ещё» (выезжает вбок от боковой карточки), «Модули» (каталог плитками),
-// шестерёнка (настройки) и палитра (оформление) — в боковой карточке. Все выпадашки живут в #menu-layer.
-let menuAnchor = null;   // кнопка/строка, от которой открыто меню: подсвечена, повторный клик закрывает
-function initMenus() {
-  document.addEventListener('click', closeMenus);
-  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeMenus(); });
-  window.addEventListener('resize', closeMenus);
-}
-function closeMenus() {
-  $('#menu-layer').innerHTML = '';
-  if (menuAnchor) { menuAnchor.classList.remove('on', 'menu-open'); menuAnchor = null; }
-}
-// Открыть меню от кнопки. Второй клик по той же кнопке — закрыть (вернёт false).
-function menuFrom(anchor) {
-  if (menuAnchor === anchor && $('#menu-layer').firstChild) { closeMenus(); return false; }
-  closeMenus();
-  menuAnchor = anchor;
-  anchor.classList.add('on');
-  return true;
-}
-function placeMenu(dd, x, y) {
-  $('#menu-layer').appendChild(dd);
-  dd.style.left = x + 'px';
-  dd.style.top = y + 'px';
-  const r = dd.getBoundingClientRect();
-  if (r.right > window.innerWidth - 8) dd.style.left = Math.max(8, window.innerWidth - 8 - r.width) + 'px';
-  if (r.bottom > window.innerHeight - 8) dd.style.top = Math.max(8, window.innerHeight - 8 - r.height) + 'px';
-}
-// Меню над кнопкой нижней полосы: открывается вверх, левым краем по кнопке.
-function placeMenuAbove(dd, anchor, alignRight) {
-  $('#menu-layer').appendChild(dd);
-  const r = anchor.getBoundingClientRect(), w = dd.offsetWidth, h = dd.offsetHeight;
-  const x = alignRight ? r.right - w : r.left;
-  dd.style.left = Math.max(8, Math.min(x, window.innerWidth - w - 8)) + 'px';
-  dd.style.top = Math.max(8, r.top - h - 6) + 'px';
-}
-// Меню под кнопкой шапки (помодоро, бейдж): правым краем по кнопке.
-function placeMenuBelow(dd, anchor) {
-  $('#menu-layer').appendChild(dd);
-  const r = anchor.getBoundingClientRect(), w = dd.offsetWidth;
-  dd.style.left = Math.max(8, Math.min(r.right - w, window.innerWidth - w - 8)) + 'px';
-  dd.style.top = (r.bottom + 6) + 'px';
-}
-// `glyph` is an ICONS name (rendered as SVG); a non-icon string falls back to text; falsy → empty slot.
-// opts: kbd — сочетание справа, desc — приглушённая подпись справа, badge — плашка, ext — стрелка «наружу».
-function menuRow(glyph, text, onClick, cls, opts = {}) {
-  const row = el('div', 'menu-row' + (cls ? ' ' + cls : ''));
-  const ic = el('span', 'menu-ic');
-  if (glyph && ICONS[glyph]) ic.appendChild(icon(glyph, 16));
-  else if (glyph) ic.textContent = glyph;
-  row.appendChild(ic); row.appendChild(el('span', null, text));
-  if (opts.kbd) row.appendChild(el('span', 'menu-kbd', opts.kbd));
-  if (opts.desc) { const d = el('span', 'menu-desc', opts.desc); d.title = opts.desc; row.appendChild(d); }
-  if (opts.badge) row.appendChild(el('span', 'menu-badge', opts.badge));
-  if (opts.ext) { const e = el('span', 'menu-ext'); e.appendChild(icon('external-link', 13)); row.appendChild(e); }
-  if (opts.title) row.title = opts.title;
-  if (onClick) row.addEventListener('click', onClick);
-  return row;
-}
-// Двухстрочный пункт: название (1-я строка) + описание (2-я строка, мельче и приглушённо).
+// менюшки вынесены в renderer/ui.js; тут оставляем двухстрочную строку каталога модулей.
 function moduleRow(glyph, title, desc, onClick) {
   const row = el('div', 'menu-row menu-row2');
   const ic = el('span', 'menu-ic');
@@ -3114,216 +2127,7 @@ function showPomoMenu(anchor) {
   placeMenuBelow(dd, anchor);
 }
 
-// ---------------------------------------------------------------- заготовленные промпты
-// Реплики для агента по правому клику в терминале. Делятся на ОБЩИЕ (видны в любом проекте) и
-// ПРОЕКТНЫЕ (только в своём проекте) — как задачи в модуле «Задачи». Хранятся в STORE.promptSnippets:
-//   { global: [{id,title,body}], byProject: { <projId>: [{id,title,body}] } }.
-// Клик по карточке ВСТАВЛЯЕТ текст в PTY без хвостового перевода строки — ничего не запускает.
-const DEFAULT_PROMPTS = [
-  { id: 'ps_explain', title: 'Объясни код', body: 'Объясни, что делает этот код, по шагам — без изменений.' },
-  { id: 'ps_bugs', title: 'Найди баги', body: 'Найди потенциальные баги и уязвимости в коде проекта и предложи исправления.' },
-  { id: 'ps_tests', title: 'Напиши тесты', body: 'Напиши модульные тесты для последних изменений.' },
-  { id: 'ps_refactor', title: 'Отрефактори', body: 'Предложи рефакторинг: чище и проще, без изменения поведения.' },
-];
-// Нормализует хранилище к {global, byProject}. Старый формат (плоский массив) мигрирует в global.
-function loadPromptStore() {
-  let v = STORE.promptSnippets;
-  if (Array.isArray(v)) { v = { global: v, byProject: {} }; persist('promptSnippets', v); return v; }
-  if (!v || typeof v !== 'object') { v = { global: DEFAULT_PROMPTS.map((p) => ({ ...p })), byProject: {} }; persist('promptSnippets', v); return v; }
-  if (!Array.isArray(v.global)) v.global = [];
-  if (!v.byProject || typeof v.byProject !== 'object') v.byProject = {};
-  return v;
-}
-function savePromptStore(s) { persist('promptSnippets', s); }
-function newPromptId() { return 'ps_' + Date.now().toString(36) + Math.floor(Math.random() * 1e4).toString(36); }
-// Вставка промпта в конкретную сессию (sid). Хвостовые переводы строк срезаем — ничего не запускаем.
-function insertPrompt(sid, body) {
-  const text = String(body || '').replace(/[\r\n]+$/, '');
-  // как pasteInto: в свежем терминале отложенный автоввод («claude») иначе допишется следом за промптом
-  if (text) { cancelPrefill(sid); writeAsPaste(sid, text); }
-  const rec = terms.get(sid);
-  if (rec && rec.term) { try { rec.term.focus(); } catch (_) {} }
-}
-// Flyout-панель: проектные промпты (если есть) + общие, каждая группа со своей меткой; в шапке шестерёнка.
-function buildPromptPanel(sid, projId, schedClose, keepOpen) {
-  const sub = el('div', 'menu-dropdown menu-sub prompt-flyout');
-  sub.addEventListener('click', (e) => e.stopPropagation());
-  sub.addEventListener('mouseenter', keepOpen);
-  sub.addEventListener('mouseleave', schedClose);
-  const head = el('div', 'prompt-head');
-  head.appendChild(el('span', 'prompt-head-title', 'Промпты'));
-  const gear = iconBtn('prompt-gear', 'sliders', 'Управление промптами', 15);
-  gear.addEventListener('click', () => { closeMenus(); openPromptsManager(projId); });
-  head.appendChild(gear);
-  sub.appendChild(head);
-  const list = el('div', 'prompt-list');
-  const store = loadPromptStore();
-  const proj = projId ? (store.byProject[projId] || []) : [];
-  const glob = store.global || [];
-  const addCards = (arr) => {
-    for (const p of arr) {
-      const card = el('div', 'prompt-card');
-      card.appendChild(el('div', 'prompt-card-title', p.title || '(без названия)'));
-      if (p.body) card.appendChild(el('div', 'prompt-card-body', p.body));
-      card.addEventListener('click', () => { closeMenus(); insertPrompt(sid, p.body); });
-      list.appendChild(card);
-    }
-  };
-  if (!proj.length && !glob.length) {
-    list.appendChild(el('div', 'prompt-empty', 'Промптов пока нет'));
-  } else if (proj.length) {
-    // обе группы маркируем, чтобы было видно, что проектное, а что общее
-    list.appendChild(el('div', 'prompt-group', 'Проект'));
-    addCards(proj);
-    if (glob.length) { list.appendChild(el('div', 'prompt-group', 'Общие')); addCards(glob); }
-  } else {
-    addCards(glob); // только общие — без лишней метки
-  }
-  sub.appendChild(list);
-  return sub;
-}
-// Пункт «Промпты ▸» в контекстном меню: подменю раскрывается вправо по наведению (как в меню «Модули»).
-function addPromptsItem(dd, sid) {
-  const projId = (terms.get(sid) || {}).projId || String(sid).split('::')[0];
-  const row = el('div', 'menu-row menu-flyout');
-  const ic = el('span', 'menu-ic'); ic.appendChild(icon('chat', 16));
-  row.append(ic, el('span', null, 'Промпты'));
-  const arr = el('span', 'menu-arrow'); arr.appendChild(icon('chevron-right', 15)); row.appendChild(arr);
-  let sub = null, closeT = null;
-  const closeSub = () => { if (sub) { sub.remove(); sub = null; } row.classList.remove('sub-open'); };
-  const schedClose = () => { clearTimeout(closeT); closeT = setTimeout(closeSub, 240); };
-  const keepOpen = () => clearTimeout(closeT);
-  row.addEventListener('mouseenter', () => {
-    clearTimeout(closeT);
-    if (sub) return;
-    sub = buildPromptPanel(sid, projId, schedClose, keepOpen);
-    $('#menu-layer').appendChild(sub);
-    const rr = row.getBoundingClientRect();
-    sub.style.top = rr.top + 'px';
-    sub.style.left = (rr.right - 4) + 'px';
-    const sr = sub.getBoundingClientRect();
-    if (sr.right > window.innerWidth - 8) sub.style.left = Math.max(8, rr.left - sr.width + 4) + 'px';
-    if (sr.bottom > window.innerHeight - 8) sub.style.top = Math.max(8, window.innerHeight - 8 - sr.height) + 'px';
-    row.classList.add('sub-open');
-  });
-  row.addEventListener('mouseleave', schedClose);
-  dd.appendChild(row);
-}
-// Менеджер промптов: две колонки (Проект | Общие), каждая со своим скроллом; inline-правка названия+тела,
-// перемещение ↑/↓ внутри колонки, удаление и переброс между колонками (как перенос задач проект↔общие).
-function openPromptsManager(projId) {
-  const store = loadPromptStore();
-  const projName = (projects.find((p) => p.id === projId) || {}).name || 'Проект';
-  const clone = (arr) => (arr || []).map((p) => ({ id: p.id, title: p.title || '', body: p.body || '' }));
-  const cols = { proj: clone(store.byProject[projId]), glob: clone(store.global) };
-  const listEls = {};
-  const syncFromDom = () => {
-    for (const key of ['proj', 'glob']) {
-      if (!listEls[key]) continue;
-      for (const row of listEls[key].children) {
-        const it = cols[key].find((x) => x.id === row.dataset.id);
-        if (!it) continue;
-        it.title = row.querySelector('.pm-title').value;
-        it.body = row.querySelector('.pm-body').value;
-      }
-    }
-  };
-  const persistNow = () => {
-    if (cols.proj.length) store.byProject[projId] = cols.proj; else delete store.byProject[projId];
-    store.global = cols.glob;
-    savePromptStore(store);
-  };
-  const commit = () => { syncFromDom(); persistNow(); };
-  const { m, close } = makeModal(`
-    <h2>Заготовленные промпты</h2>
-    <div class="pm-hint">Доступны по правому клику в терминале → «Промпты». Клик по карточке вставляет текст в активный терминал <b>без запуска</b>. Слева — промпты этого проекта, справа — общие для всех проектов.</div>
-    <div class="pm-cols">
-      <div class="pm-col">
-        <div class="pm-col-head" data-head="proj"></div>
-        <div class="pm-list" data-list="proj"></div>
-        <button class="btn pm-add" data-add="proj">＋ Добавить</button>
-      </div>
-      <div class="pm-col">
-        <div class="pm-col-head">Общие</div>
-        <div class="pm-list" data-list="glob"></div>
-        <button class="btn pm-add" data-add="glob">＋ Добавить</button>
-      </div>
-    </div>
-    <div class="modal-actions">
-      <button class="btn primary" id="pm-done">Готово</button>
-    </div>`, commit);
-  m.querySelector('[data-head="proj"]').textContent = 'Проект — ' + projName;
-  listEls.proj = m.querySelector('[data-list="proj"]');
-  listEls.glob = m.querySelector('[data-list="glob"]');
-  const move = (key, i, d) => { syncFromDom(); const a = cols[key], j = i + d; if (j < 0 || j >= a.length) return; [a[i], a[j]] = [a[j], a[i]]; persistNow(); render(); };
-  const remove = (key, i) => { syncFromDom(); cols[key].splice(i, 1); persistNow(); render(); };
-  const add = (key) => { syncFromDom(); const it = { id: newPromptId(), title: '', body: '' }; cols[key].push(it); persistNow(); render(key, it.id); };
-  const transfer = (key, i) => { syncFromDom(); const dest = key === 'proj' ? 'glob' : 'proj'; const [it] = cols[key].splice(i, 1); cols[dest].push(it); persistNow(); render(dest, it.id); };
-  const buildRow = (key, it, i) => {
-    const row = el('div', 'pm-row'); row.dataset.id = it.id;
-    const head = el('div', 'pm-row-head');
-    const ti = el('input', 'pm-title'); ti.type = 'text'; ti.value = it.title; ti.placeholder = 'Название';
-    ti.addEventListener('change', commit);
-    const ctrl = el('div', 'pm-ctrl');
-    const up = iconBtn('pm-mini', 'chevron-up', 'Выше', 15); up.disabled = i === 0;
-    up.addEventListener('click', () => move(key, i, -1));
-    const down = iconBtn('pm-mini', 'chevron-down', 'Ниже', 15); down.disabled = i === cols[key].length - 1;
-    down.addEventListener('click', () => move(key, i, 1));
-    const toGlob = key === 'proj';
-    const mv = iconBtn('pm-mini', toGlob ? 'globe' : 'folder', toGlob ? 'В общие' : 'В проект', 15);
-    mv.addEventListener('click', () => transfer(key, i));
-    const del = iconBtn('pm-mini del', 'trash', 'Удалить', 15);
-    del.addEventListener('click', () => remove(key, i));
-    ctrl.append(up, down, mv, del);
-    head.append(ti, ctrl);
-    const body = el('textarea', 'pm-body'); body.value = it.body; body.placeholder = 'Текст промпта…';
-    body.addEventListener('change', commit);
-    row.append(head, body);
-    return row;
-  };
-  const render = (focusKey, focusId) => {
-    for (const key of ['proj', 'glob']) {
-      const listEl = listEls[key]; listEl.innerHTML = '';
-      if (!cols[key].length) { listEl.appendChild(el('div', 'pm-empty', key === 'proj' ? 'Нет промптов проекта' : 'Нет общих промптов')); continue; }
-      cols[key].forEach((it, i) => listEl.appendChild(buildRow(key, it, i)));
-    }
-    if (focusId && listEls[focusKey]) {
-      const r = listEls[focusKey].querySelector(`.pm-row[data-id="${focusId}"]`);
-      if (r) setTimeout(() => r.querySelector('.pm-title').focus(), 20);
-    }
-  };
-  m.querySelectorAll('.pm-add').forEach((b) => { b.onclick = () => add(b.dataset.add); });
-  m.querySelector('#pm-done').onclick = close;
-  render();
-}
-
-// terminal right-click menu
-// `sid` — id ИМЕННО того терминала, по которому кликнули: сессия проекта (`p…::tN`) ИЛИ
-// dev-терминал модуля (`__extterm__::tN`). Все действия обязаны идти по нему, а не по активной вкладке.
-function showTermMenu(x, y, term, sid) {
-  closeMenus();
-  const dd = el('div', 'menu-dropdown');
-  dd.style.minWidth = '160px';
-  const hasSel = term.hasSelection && term.hasSelection();
-  dd.appendChild(menuRow('copy', 'Копировать', hasSel ? () => {
-    closeMenus();
-    lite.copyText(term.getSelection());
-    if (term.clearSelection) term.clearSelection();
-  } : null, hasSel ? '' : 'disabled'));
-  dd.appendChild(menuRow('clipboard', 'Вставить', () => { closeMenus(); pasteInto(sid); }));
-  // «Озвучить» — выделенный кусок вывода уезжает в окно модуля «Озвучка» (main откроет его, если закрыто).
-  dd.appendChild(menuRow('volume', 'Озвучить', hasSel ? () => {
-    closeMenus();
-    lite.tts.openFromEditor(term.getSelection());
-  } : null, hasSel ? '' : 'disabled'));
-  dd.appendChild(el('div', 'menu-sep'));
-  addPromptsItem(dd, sid);
-  dd.appendChild(el('div', 'menu-sep'));
-  dd.appendChild(menuRow('eraser', 'Очистить', () => { closeMenus(); clearTerminal(sid); }));
-  dd.appendChild(menuRow('refresh', 'Перезапустить', () => { closeMenus(); restartTerminal(sid); }));
-  dd.addEventListener('click', (e) => e.stopPropagation());
-  placeMenu(dd, x, y);
-}
+// Промпты и контекстное меню терминала перенесены в renderer/term-core.js.
 
 // ---------------------------------------------------------------- modals
 // makeModal/showConfirm/showPrompt живут в ui.js; здесь остались только предметные модалки.
@@ -4144,55 +2948,17 @@ function pomoChime(to) {
   } catch (_) {}
 }
 
-// ── Помодоро: оверлей отдыха над зоной терминалов ───────────────────────────────────
-// Полупрозрачный слой поверх #term-body. Блокирует ВВОД человека (перехват кликов
-// pointer-events + снятие фокуса с xterm), но PTY НЕ трогаем — агенты продолжают работать,
-// вывод виден сквозь оверлей. Состоянием управляет main (editor:restGuard): show/обновление/hide.
-// Прогресс-кольцо вокруг часов; затемнение фона усиливается к концу перерыва (доля пройдено).
-let restGuardEl = null;
-const REST_R = 70, REST_C = 2 * Math.PI * REST_R;
-function applyRestGuard(s) {
-  const host = $('#term-body');
-  if (!host) return;
-  if (!s || !s.show) {
-    if (restGuardEl) { restGuardEl.remove(); restGuardEl = null; try { showActiveTerminal(); const r = terms.get(activeSessionId()); if (r) r.term.focus(); } catch (_) {} } // вернуть фокус терминалу после перерыва
-    return;
-  }
-  const justAppeared = !restGuardEl;
-  if (justAppeared) {
-    restGuardEl = el('div', 'rest-overlay');
-    restGuardEl.tabIndex = -1;
-    const card = el('div', 'rest-card');
-    const ringWrap = el('div', 'rest-ring');
-    ringWrap.innerHTML = `<svg viewBox="0 0 160 160" class="rest-ring-svg" aria-hidden="true">
-      <circle class="rest-ring-bg" cx="80" cy="80" r="${REST_R}"/>
-      <circle class="rest-ring-fg" cx="80" cy="80" r="${REST_R}" stroke-dasharray="${REST_C.toFixed(1)}" stroke-dashoffset="0"/>
-    </svg>`;
-    const center = el('div', 'rest-ring-center');
-    center.appendChild(el('div', 'rest-title'));
-    center.appendChild(el('div', 'rest-clock'));
-    ringWrap.appendChild(center);
-    card.appendChild(ringWrap);
-    card.appendChild(el('div', 'rest-sub', 'Отойдите от экрана — агенты продолжают работать'));
-    const skipBtn = el('button', 'rest-skip');
-    skipBtn.append(icon('skip', 16), el('span', null, 'Пропустить'));
-    skipBtn.onclick = () => { try { lite.editorBus.pomodoroSkip(); } catch (_) {} };
-    card.appendChild(skipBtn);
-    restGuardEl.appendChild(card);
-    host.appendChild(restGuardEl);
-    // снять фокус с терминала, чтобы клавиатура не уходила в xterm под оверлеем
-    try { if (document.activeElement instanceof HTMLElement) document.activeElement.blur(); } catch (_) {}
-    try { restGuardEl.focus(); } catch (_) {}
-  }
-  const done = s.total ? Math.max(0, Math.min(1, (s.total - s.remaining) / s.total)) : 0;
-  restGuardEl.querySelector('.rest-title').textContent = s.phase === 'long' ? 'Длинный перерыв' : 'Короткий перерыв';
-  restGuardEl.querySelector('.rest-clock').textContent = fmtRest(s.remaining) + (s.paused ? '  ⏸' : '');
-  restGuardEl.querySelector('.rest-skip').style.display = s.allowSkip ? '' : 'none';
-  // кольцо «осталось»: убывает от полного к нулю
-  restGuardEl.querySelector('.rest-ring-fg').style.strokeDashoffset = (REST_C * done).toFixed(1);
-  // затемнение усиливается к концу перерыва (#20): 0.45 → 0.82
-  restGuardEl.style.setProperty('--rest-dim', (0.45 + 0.37 * done).toFixed(2));
-}
+// ── Помодоро: оверлей отдыха над зоной терминалов (из term-core.js) ───────────────────
+const applyRestGuard = createRestGuardController({
+  lite,
+  onRestored: () => {
+    try {
+      showActiveTerminal();
+      const r = terms.get(activeSessionId());
+      if (r) r.term.focus();
+    } catch (_) {}
+  },
+});
 
 function init() {
   hydrateIcons(); // fill the static [data-icon] buttons (titlebar / pane toolbars) with SVG
@@ -4237,27 +3003,8 @@ function init() {
   setTimeout(() => { checkForUpdate().catch(() => {}); }, 3000);
   setInterval(() => { checkForUpdate().catch(() => {}); }, 3 * 60 * 60 * 1000);
 
-  lite.pty.onData(({ id, data }) => {
-    if (isExtTerm(id)) {
-      const r = extTerms.get(id);
-      if (r) writeTermWithAck(r.term, id, data); else creditPtyAck(id, data ? data.length : 0);
-      return;
-    }
-    const rec = terms.get(id); // scratch-сессии маршрутизируются в своё окно (не приходят сюда)
-    if (!rec) { creditPtyAck(id, data ? data.length : 0); return; }
-    if (rec.adoptPending) { rec.adoptPending.push(data); return; }
-    writeTermWithAck(rec.term, id, data);
-    if (rec.prefill) nudgePrefill(id); // ждём паузы в выводе — тогда пишем автоввод
-    markActivity(id, data);
-  });
-  lite.pty.onExit(({ id }) => {
-    if (isExtTerm(id)) { const r = extTerms.get(id); if (r) r.term.write('\r\n\x1b[90m[шелл завершён]\x1b[0m\r\n'); return; }
-    const rec = terms.get(id);
-    if (!rec) return;   // сессия прежней загрузки окна (или уже закрытая вкладка) — не наша
-    cancelPrefill(id); rec.term.write('\r\n\x1b[90m' + tt('[процесс завершён — нажмите Enter или ↻ для перезапуска]') + '\x1b[0m\r\n');
-    clearTimeout(rec.idleTimer); rec.claude = null; rec.exited = true; stopClaudeProbe(rec);   // exited — терминал закрывается без потерь
-    setProjState(id, 'quiet');
-  });
+  lite.pty.onData(({ id, data }) => termEngine.handlePtyData(id, data));
+  lite.pty.onExit(({ id }) => termEngine.handlePtyExit(id));
   // RemoteHost — SSH-сессии (отдельный канал, не PTY): пишем вывод в соответствующий xterm.
   // Окно «Задачи» изменило список → пересчитать счётчик и освежить бейдж активных задач на квикбаре.
   try { if (lite.app && lite.app.onNotesChanged) lite.app.onNotesChanged((id) => { try { refreshNotesCount(id); } catch (_) {} }); } catch (_) {}
@@ -4381,11 +3128,7 @@ function init() {
   try { if (lite.module && lite.module.onOpenSet) lite.module.onOpenSet((ids) => { openModuleIds = new Set(ids || []); markOpenModules(); }); } catch (_) {}
   { const mini = $('#pomo-mini'); if (mini) mini.onclick = (e) => { e.stopPropagation(); showPomoMenu(mini); }; }
   lite.pomodoro.getState().then((s) => updatePomoUI(s)).catch(() => {});          // стартовый снимок (таймер мог идти до открытия редактора)
-  $('#term-clear').addEventListener('click', () => clearTerminal());
-  $('#term-restart').addEventListener('click', () => restartTerminal());
-  // Панель вкладок терминалов: статичная «+» (всегда видна) + стрелки-прокрутка при переполнении.
-  $('#term-tab-add').addEventListener('click', () => addTab());
-  { const sb = $('#term-split-btn'); if (sb) sb.addEventListener('click', () => toggleTermSplit()); }
+  termEngine.bindUiEvents();
   { const fc = $('#files-dock-close'); if (fc) fc.addEventListener('click', () => setFilesDockOpen(false)); }
   {
     const fp = $('#files-dock-popout');
@@ -4396,34 +3139,108 @@ function init() {
       try { lite.editorBus.dockFiles(false); } catch (_) {}
     });
   }
-  $('#term-tabs-prev').addEventListener('click', () => scrollTabs(-1));
-  $('#term-tabs-next').addEventListener('click', () => scrollTabs(1));
-  $('#term-tabs').addEventListener('scroll', () => { updateTabScroll(); hideTabTip(); });
-  $('#term-tabs').addEventListener('dragover', (e) => { if (tabDragEl) { e.preventDefault(); if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'; } });
-  $('#term-tabs').addEventListener('drop', (e) => { if (tabDragEl) e.preventDefault(); });
-  window.addEventListener('resize', updateTabScroll);
-  // бейдж «N ждёт ответа»: клик — к следующему ждущему агенту (по кругу, если ждут несколько)
+  {
+    const df = $('#detached-focus');
+    if (df) df.addEventListener('click', () => { if (activeId) lite.projTerm.focus(activeId); });
+    const dd = $('#detached-dock');
+    if (dd) dd.addEventListener('click', () => { if (activeId) dockProjectTerminals(activeId); });
+  }
+  if (lite.projTerm) {
+    lite.projTerm.onDetachedSet(({ ids }) => {
+      const next = new Set(Array.isArray(ids) ? ids.map(String) : []);
+      let changed = next.size !== detachedProjIds.size;
+      if (!changed) {
+        for (const id of next) { if (!detachedProjIds.has(id)) { changed = true; break; } }
+      }
+      detachedProjIds.clear();
+      for (const id of next) detachedProjIds.add(id);
+      for (const id of [...detachedStatuses.keys()]) { if (!next.has(id)) detachedStatuses.delete(id); }
+      for (const id of [...detachedSnapshots.keys()]) { if (!next.has(id)) detachedSnapshots.delete(id); }
+      if (changed) {
+        showActiveTerminal();
+        renderProjects();
+        updateAttention();
+      }
+    });
+    lite.projTerm.onStatus((st) => {
+      if (!st || !st.projId) return;
+      const pid = String(st.projId);
+      detachedStatuses.set(pid, st);
+      if (detachedProjIds.has(pid)) {
+        refreshProjIndicator(pid);
+        updateAttention();
+        syncAgentListAfterScan();
+      }
+    });
+    if (lite.projTerm.onSnapshot) {
+      lite.projTerm.onSnapshot(({ projId, snapshot }) => {
+        if (!projId || !snapshot) return;
+        const pid = String(projId);
+        detachedSnapshots.set(pid, snapshot);
+        if (detachedProjIds.has(pid)) saveProjTabs();
+      });
+    }
+    lite.projTerm.onReattached(({ projId, snapshot, ackId }) => {
+      try {
+        const pid = String(projId || '');
+        detachedProjIds.delete(pid);
+        detachedStatuses.delete(pid);
+        detachedSnapshots.delete(pid);
+        const proj = projects.find((x) => x.id === pid);
+        if (proj && snapshot) {
+          termEngine.importProjectSnapshot(proj, snapshot);
+          saveProjTabs();
+          refreshAgents();
+        }
+        showActiveTerminal();
+        renderProjects();
+        updateAttention();
+      } finally {
+        if (ackId) lite.projTerm.sendReattachAck(ackId);
+      }
+    });
+    lite.projTerm.listDetached().then((res) => {
+      const { ids, statuses } = res || { ids: [], statuses: [] };
+      if (Array.isArray(ids)) {
+        detachedProjIds.clear();
+        for (const id of ids) detachedProjIds.add(String(id));
+      }
+      if (Array.isArray(statuses)) {
+        for (const st of statuses) {
+          if (st && st.projId) detachedStatuses.set(String(st.projId), st);
+        }
+      }
+      if (detachedProjIds.size) {
+        showActiveTerminal();
+        renderProjects();
+        updateAttention();
+      }
+    }).catch(() => {});
+  }
+  // бейдж «N ждёт ответа»: клик — к следующему ждущему агенту (по кругу, если ждут несколько, включая вынесенные окна)
   $('#attention-badge').addEventListener('click', () => {
-    const waiting = [...projState.entries()].filter(([, s]) => s === 'waiting').map(([sid]) => sid).filter((sid) => terms.has(sid));
-    if (!waiting.length) return;
-    const cur = waiting.indexOf(activeSessionId());
-    const sid = waiting[(cur + 1) % waiting.length];
-    const rec = terms.get(sid);
-    setActive(rec.projId); switchTab(sid);
+    const targets = [];
+    for (const [sid, s] of projState.entries()) {
+      if (s !== 'waiting' || !terms.has(sid)) continue;
+      const rec = terms.get(sid);
+      targets.push({ detached: false, projId: rec.projId, sid });
+    }
+    for (const pid of detachedProjIds) {
+      const st = detachedStatuses.get(pid);
+      const sids = st && Array.isArray(st.waitingSids) ? st.waitingSids : [];
+      for (const sid of sids) targets.push({ detached: true, projId: pid, sid });
+    }
+    if (!targets.length) return;
+    const curSid = activeSessionId();
+    const cur = targets.findIndex((t) => !t.detached && t.sid === curSid);
+    const next = targets[(cur + 1) % targets.length];
+    if (next.detached) {
+      lite.projTerm.focusSession(next.projId, next.sid);
+    } else {
+      setActive(next.projId);
+      switchTab(next.sid);
+    }
   });
-
-  // terminal search box
-  const termSearchInput = /** @type {HTMLInputElement} */ ($('#term-search-input'));
-  termSearchInput.addEventListener('input', () => {
-    if (!termSearchInput.value) clearAllTermSearchDecorations();
-  });
-  termSearchInput.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') { e.preventDefault(); runTermSearch(e.shiftKey ? -1 : 1); }
-    else if (e.key === 'Escape') { e.preventDefault(); closeTermSearch(); }
-  });
-  $('#term-search-next').addEventListener('click', () => runTermSearch(1));
-  $('#term-search-prev').addEventListener('click', () => runTermSearch(-1));
-  $('#term-search-close').addEventListener('click', closeTermSearch);
 
   // OpenRouter (чат) живёт в окне модуля — bindControls/bindStream вызывает module-entry.js.
 
@@ -4436,7 +3253,7 @@ function init() {
   const hideDrop = () => { clearTimeout(dropT); if (dropZone) { dropZone.remove(); dropZone = null; } };
   document.addEventListener('dragover', (e) => {
     e.preventDefault();
-    if (favDragCard || tabDragEl || !e.dataTransfer || ![...(e.dataTransfer.types || [])].includes('Files')) return;
+    if (favDragCard || termEngine.getTabDragEl() || !e.dataTransfer || ![...(e.dataTransfer.types || [])].includes('Files')) return;
     if (!dropZone) {
       dropZone = el('div', 'dropzone');
       const c = el('div', 'dz-card');
@@ -4478,6 +3295,7 @@ function init() {
   lite.pty.adoptable().catch(() => []).then((ids) => {
     for (const id of (Array.isArray(ids) ? ids : [])) {
       const pid = String(id).split('::')[0];
+      if (detachedProjIds.has(pid)) continue;
       if (!projects.some((p) => p.id === pid)) { lite.pty.kill(id); continue; }
       if (!adoptPtys.has(pid)) adoptPtys.set(pid, []);
       adoptPtys.get(pid).push(id);

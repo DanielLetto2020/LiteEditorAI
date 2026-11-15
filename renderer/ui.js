@@ -464,3 +464,86 @@ export function applyLayoutSwap(ta) {
   }
   ta.focus();
 }
+
+// ---------------------------------------------------------------- выпадающие меню (#menu-layer)
+let _menuAnchor = null;
+const _menuLayer = () => document.querySelector('#menu-layer');
+
+/** Закрывает активное выпадающее меню и снимает подсветку с кнопки-источника. */
+export function closeMenus() {
+  const ml = _menuLayer();
+  if (ml) ml.innerHTML = '';
+  if (_menuAnchor) { _menuAnchor.classList.remove('on', 'menu-open'); _menuAnchor = null; }
+}
+
+/** Привязывает глобальные обработчики закрытия выпадающих меню (клик вне, Escape, resize). */
+export function initMenus() {
+  document.addEventListener('click', closeMenus);
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeMenus(); });
+  window.addEventListener('resize', closeMenus);
+}
+
+/** Фиксирует элемент-якорь активного меню (для последующего снятия класса в closeMenus). */
+export function setMenuAnchor(anchor, cls = 'on') {
+  _menuAnchor = anchor || null;
+  if (anchor && cls) anchor.classList.add(cls);
+}
+
+/** Открывает меню от кнопки: повторный клик по той же кнопке закрывает меню и возвращает false. */
+export function menuFrom(anchor) {
+  const ml = _menuLayer();
+  if (_menuAnchor === anchor && ml && ml.firstChild) { closeMenus(); return false; }
+  closeMenus();
+  _menuAnchor = anchor;
+  anchor.classList.add('on');
+  return true;
+}
+
+/** Размещает выпадающее меню в координатах (x, y) с удержанием внутри вьюпорта. */
+export function placeMenu(dd, x, y) {
+  const ml = _menuLayer();
+  if (!ml) return;
+  ml.appendChild(dd);
+  dd.style.left = x + 'px';
+  dd.style.top = y + 'px';
+  const r = dd.getBoundingClientRect();
+  if (r.right > window.innerWidth - 8) dd.style.left = Math.max(8, window.innerWidth - 8 - r.width) + 'px';
+  if (r.bottom > window.innerHeight - 8) dd.style.top = Math.max(8, window.innerHeight - 8 - r.height) + 'px';
+}
+
+/** Размещает выпадающее меню над элементом-якорем. */
+export function placeMenuAbove(dd, anchor, alignRight) {
+  const ml = _menuLayer();
+  if (!ml) return;
+  ml.appendChild(dd);
+  const r = anchor.getBoundingClientRect(), w = dd.offsetWidth, h = dd.offsetHeight;
+  const x = alignRight ? r.right - w : r.left;
+  dd.style.left = Math.max(8, Math.min(x, window.innerWidth - w - 8)) + 'px';
+  dd.style.top = Math.max(8, r.top - h - 6) + 'px';
+}
+
+/** Размещает выпадающее меню под элементом-якорем. */
+export function placeMenuBelow(dd, anchor) {
+  const ml = _menuLayer();
+  if (!ml) return;
+  ml.appendChild(dd);
+  const r = anchor.getBoundingClientRect(), w = dd.offsetWidth;
+  dd.style.left = Math.max(8, Math.min(r.right - w, window.innerWidth - w - 8)) + 'px';
+  dd.style.top = (r.bottom + 6) + 'px';
+}
+
+/** Строит строку выпадающего меню с опциональной иконкой, хоткеем и подписью. */
+export function menuRow(glyph, text, onClick, cls, opts = {}) {
+  const row = el('div', 'menu-row' + (cls ? ' ' + cls : ''));
+  const ic = el('span', 'menu-ic');
+  if (glyph && ICONS[glyph]) ic.appendChild(icon(glyph, 16));
+  else if (glyph) ic.textContent = glyph;
+  row.appendChild(ic); row.appendChild(el('span', null, text));
+  if (opts.kbd) row.appendChild(el('span', 'menu-kbd', opts.kbd));
+  if (opts.desc) { const d = el('span', 'menu-desc', opts.desc); d.title = opts.desc; row.appendChild(d); }
+  if (opts.badge) row.appendChild(el('span', 'menu-badge', opts.badge));
+  if (opts.ext) { const e = el('span', 'menu-ext'); e.appendChild(icon('external-link', 13)); row.appendChild(e); }
+  if (opts.title) row.title = opts.title;
+  if (onClick) row.addEventListener('click', onClick);
+  return row;
+}

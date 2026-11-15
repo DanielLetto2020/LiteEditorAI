@@ -37,6 +37,8 @@
     "errledger.js",
     "logger.js",
     "renderer/renderer.js",
+    "renderer/term-core.js",
+    "renderer/proj-term-window.js",
     "renderer/ui.js",
     "renderer/i18n.js",
     "renderer/themes.js",

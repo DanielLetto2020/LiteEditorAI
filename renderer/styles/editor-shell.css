@@ -164,12 +164,13 @@
 .card.accented::before { content: ''; position: absolute; left: 3px; top: 10px; bottom: 10px; width: 3px; border-radius: 2px; background: var(--card-accent); }
 .card-title { flex: 1; min-width: 0; font-size: 13.5px; color: inherit; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .card-acts { display: none; align-items: center; flex: 0 0 auto; }
-.card:hover .card-acts, .card.active .card-acts, .card.menu-open .card-acts { display: flex; }
-.card-star, .card-kebab {
+.card:hover .card-acts, .card.active .card-acts, .card.menu-open .card-acts, .card.detached .card-acts { display: flex; }
+.card-detach, .card-star, .card-kebab {
   flex: 0 0 auto; width: 24px; height: 24px; padding: 0; border-radius: var(--r3);
   background: transparent; border: 0; cursor: pointer; color: var(--icon);
 }
-.card-star:hover, .card-kebab:hover { background: var(--press); color: var(--text); }
+.card-detach:hover, .card-star:hover, .card-kebab:hover { background: var(--press); color: var(--text); }
+.card-detach.on { color: var(--accent); }
 .card-star.on { color: var(--star); }
 .card-star.on .ic { fill: currentColor; }
 /* перетаскивание внутри «Избранного» */
@@ -368,10 +369,13 @@
 .gs-empty { color: var(--text-dim); font-size: 12px; padding: 8px 2px; }
 
 /* пусто: нет проектов */
-#empty-hint { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; pointer-events: none; }
-.hint-card { text-align: center; color: var(--text-dim); line-height: 1.5; pointer-events: auto; }
+#empty-hint, #detached-hint { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; pointer-events: none; }
+#detached-hint.hidden { display: none; }
+.hint-card { text-align: center; color: var(--text-dim); line-height: 1.5; pointer-events: auto; max-width: 440px; padding: 0 20px; }
 .hint-title { font-size: 15px; font-weight: 600; color: var(--text2); margin-bottom: 4px; }
 .hint-card .btn { margin-top: 14px; }
+.hint-actions { display: flex; align-items: center; justify-content: center; gap: 8px; margin-top: 14px; }
+.hint-actions .btn { margin-top: 0; }
 
 /* ---------------- user modules (extensions): общая панель правого слота ---------------- */
 .ext-body { flex: 1; min-height: 0; overflow: auto; position: relative; }
