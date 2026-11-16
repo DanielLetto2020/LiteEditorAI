@@ -18,7 +18,22 @@
 }
 #module-root { flex: 1 1 auto; display: flex; min-height: 0; position: relative; background: var(--mod-bg); }
 /* «Система · ~» — окно-терминал: лежит на фоне окна, как терминал редактора */
-body.mw-scratch #module-root { background: var(--app-bg); }
+body.mw-scratch #module-root, body.mw-projterm #module-root { background: var(--app-bg); }
+body.mw-projterm #mod-topbar { display: none !important; }
+body.mw-projterm #projterm-pane {
+  display: flex; flex-direction: column;
+  flex: 1 1 auto; min-width: 0; min-height: 0; width: 100%; height: 100%;
+}
+body.mw-projterm #projterm-pane.hidden { display: none; }
+.pt-proj-badge {
+  display: inline-flex; align-items: center; gap: 7px; flex: 0 0 auto; max-width: 220px;
+  padding: 0 8px 0 4px; font-size: 12.5px; font-weight: 500; color: var(--text);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.pt-proj-dot { width: 7px; height: 7px; border-radius: 50%; flex: 0 0 auto; background: var(--accent); }
+.pt-proj-badge #pt-proj-name { overflow: hidden; text-overflow: ellipsis; }
+.chip-static { cursor: default; }
+.chip-static:hover { background: var(--panel); color: var(--text3); }
 body.module-window #module-root > section {
   flex: 1 1 auto !important; min-width: 0 !important; border-left: none !important; background: transparent;
 }
@@ -325,8 +340,8 @@ body.mw-files .diff-toolbar { display: inline-flex; gap: 2px; padding: 2px; marg
 body.mw-files .diff-viewbtn { height: 22px; padding: 0 10px; border: none; border-radius: 6px; background: transparent; color: var(--text-dim); font: inherit; font-size: 12px; cursor: pointer; }
 body.mw-files .diff-viewbtn:hover { color: var(--text); }
 body.mw-files .diff-viewbtn.on { background: var(--raised); color: var(--text-hi); border: none; }
-#mod-app.is-max #win-max::before { width: 8px; height: 8px; transform: translate(-60%, -40%); }
-#mod-app.is-max #win-max::after { width: 8px; height: 8px; border: 1.6px solid var(--text); border-radius: 2px; transform: translate(-30%, -60%); background: var(--bg); }
+#mod-app.is-max #win-max::before, #mod-app.is-max #pt-max::before { width: 8px; height: 8px; transform: translate(-60%, -40%); }
+#mod-app.is-max #win-max::after, #mod-app.is-max #pt-max::after { width: 8px; height: 8px; border: 1.6px solid var(--text); border-radius: 2px; transform: translate(-30%, -60%); background: var(--bg); }
 
 /* ---------------- viewer ---------------- */
 #viewer-pane { flex: 0 0 520px; min-width: 240px; border-left: 1px solid var(--border); display: flex; flex-direction: column; background: var(--panel); }

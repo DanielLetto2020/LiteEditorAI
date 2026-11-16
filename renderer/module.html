@@ -731,6 +731,50 @@
         <button id="log-close" class="icon-btn log-close" type="button" title="Скрыть панель Git" data-icon="x" data-icon-size="14"></button>
         <div id="branchlog-body" class="git-body branchlog-body"></div>
       </section>
+      <!-- Вынесенное окно терминалов проекта (renderer/proj-term-window.js) -->
+      <section id="projterm-pane" class="hidden">
+        <div id="term-header">
+          <span class="pt-proj-badge" id="pt-proj-badge">
+            <span class="pt-proj-dot"></span>
+            <span id="pt-proj-name">Проект</span>
+          </span>
+          <button id="term-tabs-prev" class="tab-scroll" title="Прокрутить вкладки влево" data-icon="chevron-left" data-icon-size="15"></button>
+          <div id="term-tabs"></div>
+          <button id="term-tabs-next" class="tab-scroll" title="Прокрутить вкладки вправо" data-icon="chevron-right" data-icon-size="15"></button>
+          <button id="term-tab-add" class="tab-add" title="Новая вкладка (Ctrl+Shift+T)" data-icon="plus" data-icon-size="15"></button>
+          <button id="term-split-btn" class="tab-add" title="Разделить терминал (Ctrl+Shift+D)" aria-label="Разделить терминал" data-icon="columns-2" data-icon-size="15"></button>
+          <div class="drag-space"></div>
+          <div id="pt-win-tools" class="win-tools">
+            <button id="pt-dock" class="icon-btn" title="Вернуть терминалы в главное окно" aria-label="Вернуть терминалы в главное окно" data-icon="panels" data-icon-size="15"></button>
+            <button id="pt-min" class="win-btn min" title="Свернуть" aria-label="Свернуть"></button>
+            <button id="pt-max" class="win-btn max" title="Развернуть" aria-label="Развернуть"></button>
+            <button id="pt-close" class="win-btn close" title="Вернуть в главное окно и закрыть" aria-label="Закрыть"></button>
+          </div>
+        </div>
+        <div id="term-body">
+          <div id="terminals"></div>
+          <div id="term-split-gutter" class="term-split-gutter hidden" title="Потяните для изменения пропорции (двойной клик — 50/50)"></div>
+          <div id="term-search">
+            <input id="term-search-input" type="text" placeholder="Поиск в терминале…" autocomplete="off" spellcheck="false">
+            <button id="term-search-prev" class="ts-btn" title="Назад (Shift+Enter)" data-icon="chevron-up" data-icon-size="14"></button>
+            <button id="term-search-next" class="ts-btn" title="Вперёд (Enter)" data-icon="chevron-down" data-icon-size="14"></button>
+            <button id="term-search-close" class="ts-btn" title="Закрыть (Esc)" data-icon="x" data-icon-size="14"></button>
+          </div>
+        </div>
+        <div id="bottombar">
+          <div class="chips">
+            <span id="pt-proj-path" class="chip chip-static" data-no-i18n></span>
+          </div>
+          <div class="drag-space"></div>
+          <div id="term-tools" class="tgroup" role="group" aria-label="Терминал">
+            <span class="tgroup-l">Терминал</span>
+            <button id="term-timeline" class="tt-btn" title="Шкала времени слева" aria-label="Шкала времени" data-icon="clock" data-icon-size="15"></button>
+            <button id="term-find" class="tt-btn" title="Поиск в терминале (Ctrl+F)" aria-label="Поиск в терминале" data-icon="search" data-icon-size="15"></button>
+            <button id="term-clear" class="tt-btn" title="Очистить терминал" aria-label="Очистить терминал" data-icon="eraser" data-icon-size="15"></button>
+            <button id="term-restart" class="tt-btn" title="Перезапустить терминал" aria-label="Перезапустить терминал" data-icon="refresh" data-icon-size="15"></button>
+          </div>
+        </div>
+      </section>
       <!-- Интерактивная строка состояния окна. -->
       <footer id="mw-status" class="mw-status">
         <button id="st-branch" class="st-item st-btn hidden" type="button" title="Текущая ветка — открыть историю и ветки (Alt+9)" data-icon="git" data-icon-size="13"><span id="st-branch-name"></span></button>

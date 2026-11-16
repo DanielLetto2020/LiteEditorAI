@@ -231,6 +231,12 @@ const MODULES = {
     title: 'Система · ~', load: initScratch, project: false,
     wire: (mod) => { bind('#scratch-restart', () => mod.restart()); },
   },
+  // Вынесенные терминалы проекта (отдельное окно с живыми PTY одного проекта)
+  projterm: {
+    title: 'Терминалы',
+    load: () => import('./proj-term-window.js').then((m) => m.initProjTermWindow),
+    project: false,
+  },
   // Вивер кода + дерево файлов (проектозависимое окно: следует за активным проектом редактора).
   // Кнопки #viewer-*/#tree-* и контекст-меню дерева вешает сам модуль (Files.mount); тут — только
   // приём действий от других модулей-окон (открыть файл / обновить дерево) и сигнал готовности.
@@ -297,6 +303,7 @@ function applyLiveSettings() {
   if (!isEmbed) applyFrame(settings);
   try { mod && mod.applyTermTheme && mod.applyTermTheme(); } catch (_) {}
   try { mod && mod.applyFontSize && mod.applyFontSize(); } catch (_) {}
+  try { mod && mod.applyTimeline && mod.applyTimeline(); } catch (_) {}
 }
 
 // Window-mode host: right-slot callbacks become no-ops; editor actions are forwarded.
