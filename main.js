@@ -31,6 +31,7 @@ const { createProcService } = require('./lib/proc-service'); // фоновый w
 const { summarizeBusyPtys } = require('./lib/quit-guard'); // проверка живых агентов/команд в PTY перед закрытием редактора
 const fastSearch = require('./lib/fast-search');   // быстрый листинг и поиск через системный rg с фолбэком в worker_threads
 const { createModuleRouter, createLazyIpc } = require('./lib/module-router'); // единый роутер готовности модулей + ленивая загрузка IPC
+const { normalizeProjTermSnapshot, collectLiveSessionIds } = require('./lib/projterm-state'); // снапшоты и живые сессии вынесенных окон терминалов
 const { git, registerGitIpc } = require('./lib/ipc/git');
 const { registerPomodoroIpc } = require('./lib/ipc/pomodoro');
 const { registerKeepassIpc, KEEPASS_HANDLES, KEEPASS_ONS } = require('./lib/ipc/keepass');
@@ -3056,6 +3057,12 @@ function showWindow() {
 // Одно окно на тип модуля (повторный open = фокус). Окно помнит свои bounds (STORE.moduleWins[id]).
 // Закрытие редактора закрывает все окна модулей (освобождение памяти — отдельный процесс на окно).
 const moduleWindows = new Map();    // modId -> BrowserWindow
+const detachedTermWindows = new Map(); // projId -> BrowserWindow (вынесенные терминалы проектов)
+const detachedTermMeta = new Map();    // projId -> { project, snapshot, liveOnDetach, status }
+const detachedCollectors = new Map();  // reqId -> (snap) => void
+const detachedAckers = new Map();      // ackId -> () => void
+const detachedSearchers = new Map();   // reqId -> (hits) => void
+let detachedReqSeq = 0;
 let activeProjectInfo = null;       // {id,path,name,accent} — кэш активного проекта редактора (для проектозависимых окон)
 const ownerBySession = new Map();   // sessionId -> webContents — маршрутизация стримов по окну-владельцу (этап D)
 
@@ -3105,6 +3112,7 @@ function reopenSavedModuleWindows() {
 }
 function broadcastToModules(ch, payload) {
   for (const w of moduleWindows.values()) { sendTo(w, ch, payload); }
+  for (const w of detachedTermWindows.values()) { sendTo(w, ch, payload); }
   const df = liveFilesDockFrame();
   if (df) sendToFrame(df, ch, payload);
 }
@@ -3294,6 +3302,228 @@ function openModuleWindow(modId, arg) {
   if (modId === 'files' || modId === 'doc') scheduleSyncWatchers(0);
   broadcastModuleOpenSet();
 }
+
+// ── Вынесенные окна терминалов проектов (v1.1+) ──────────────────────────────────────────────
+// Каждый проект можно вынести в отдельное окно (module.html?projId=<id>#projterm), сохраняя
+// живые PTY (агентов и шеллы). При закрытии вынесенного окна или клике «Вернуть» все вкладки,
+// сплиты и живые PTY без разрыва возвращаются в главное окно редактора.
+function transferPtysTo(sessionIds, targetWc, { makeOrphan = false } = {}) {
+  for (const id of sessionIds || []) {
+    const proc = ptys.get(id);
+    if (!proc) continue;
+    dropOrphan(id);
+    const g = ptyFlows.get(id);
+    if (g) g.reset();
+    if (targetWc && !targetWc.isDestroyed()) {
+      ownerBySession.set(id, targetWc);
+      bindPtyOwner(proc, targetWc);
+    }
+    if (makeOrphan) {
+      orphanPtys.set(id, setTimeout(() => {
+        orphanPtys.delete(id);
+        const p = ptys.get(id);
+        if (!p) return;
+        const fg = ptyFlows.get(id); if (fg) fg.reset();
+        ptyFlows.delete(id);
+        try { p.kill(); } catch (_) {}
+        ptys.delete(id);
+        ptyRings.delete(id);
+        ownerBySession.delete(id);
+        logger.log('info', 'pty', `вынесенный терминал ${id} не забрали при передаче окна — остановлен`);
+      }, ORPHAN_TTL_MS));
+    }
+  }
+}
+function saveDetachedTermBounds(projId, win) {
+  if (!win || win.isDestroyed() || win.isFullScreen()) return;
+  try {
+    const all = readModuleWins();
+    const key = 'projterm:' + projId;
+    if (win.isMaximized()) {
+      all[key] = { ...(all[key] || {}), maximized: true };
+    } else {
+      const b = win.getBounds();
+      all[key] = { x: b.x, y: b.y, width: b.width, height: b.height, maximized: false };
+      all.projterm = { width: b.width, height: b.height };
+    }
+    writeStoreKey('moduleWins', all);
+  } catch (_) {}
+}
+function detachedProjIds() { return [...detachedTermWindows.keys()]; }
+function broadcastDetachedTermSet() {
+  if (closingAllModules) return;
+  sendTo(mainWindow, 'projTerm:detachedSet', { ids: detachedProjIds() });
+}
+function collectFromDetachedWin(win, fallbackSnap) {
+  return new Promise((resolve) => {
+    if (!win || win.isDestroyed()) { resolve(fallbackSnap || null); return; }
+    const reqId = `ptc_${++detachedReqSeq}`;
+    const timer = setTimeout(() => {
+      detachedCollectors.delete(reqId);
+      resolve(fallbackSnap || null);
+    }, 650);
+    detachedCollectors.set(reqId, (snap) => {
+      clearTimeout(timer);
+      detachedCollectors.delete(reqId);
+      resolve(snap || fallbackSnap || null);
+    });
+    if (!sendTo(win, 'projTerm:collect', { reqId })) {
+      clearTimeout(timer);
+      detachedCollectors.delete(reqId);
+      resolve(fallbackSnap || null);
+    }
+  });
+}
+/** @returns {Promise<void>} */
+function waitForReattachAck(projId, project, snapshot) {
+  return new Promise((resolve) => {
+    if (!mainWindow || mainWindow.isDestroyed()) { resolve(); return; }
+    const ackId = `pta_${++detachedReqSeq}`;
+    const timer = setTimeout(() => {
+      detachedAckers.delete(ackId);
+      resolve();
+    }, 1500);
+    detachedAckers.set(ackId, () => {
+      clearTimeout(timer);
+      detachedAckers.delete(ackId);
+      resolve();
+    });
+    if (!sendTo(mainWindow, 'projTerm:reattached', { projId, project, snapshot, ackId })) {
+      clearTimeout(timer);
+      detachedAckers.delete(ackId);
+      resolve();
+    }
+  });
+}
+async function reattachDetachedTermWindow(projId, { fromCrash = false } = {}) {
+  const win = detachedTermWindows.get(projId);
+  const meta = detachedTermMeta.get(projId);
+  if (!win || win.isDestroyed()) return { ok: false };
+  if (win.__reattaching) return { ok: true };
+  win.__reattaching = true;
+
+  const fallbackSnap = meta ? meta.snapshot : null;
+  const collected = fromCrash ? fallbackSnap : await collectFromDetachedWin(win, fallbackSnap);
+  const snap = normalizeProjTermSnapshot(collected || fallbackSnap, projId);
+
+  // Собираем все живые PTY этого окна (по снимку и по текущему owner) до уничтожения webContents,
+  // чтобы bindPtyOwner().once('destroyed') увидел нового владельца и не убил живые сессии.
+  const idSet = new Set(collectLiveSessionIds(snap));
+  try {
+    const wc = win.webContents;
+    for (const [sid, p] of ptys) {
+      if (ptyOwner.get(p) === wc || ownerBySession.get(sid) === wc) idSet.add(sid);
+    }
+  } catch (_) {}
+  const targetWc = (mainWindow && !mainWindow.isDestroyed()) ? mainWindow.webContents : null;
+  transferPtysTo([...idSet], targetWc, { makeOrphan: true });
+
+  await waitForReattachAck(projId, meta ? meta.project : { id: projId }, snap);
+
+  detachedTermWindows.delete(projId);
+  detachedTermMeta.delete(projId);
+  win.__forceClose = true;
+  try {
+    if (!win.isDestroyed()) {
+      if (fromCrash) win.destroy(); else win.close();
+    }
+  } catch (_) {}
+  broadcastDetachedTermSet();
+  return { ok: true };
+}
+function closeDetachedProjectWindow(projId, { killPtys = true } = {}) {
+  const win = detachedTermWindows.get(projId);
+  detachedTermWindows.delete(projId);
+  detachedTermMeta.delete(projId);
+  if (win && !win.isDestroyed()) {
+    win.__forceClose = true;
+    try { win.destroy(); } catch (_) {}
+  }
+  if (killPtys) {
+    const prefix = String(projId) + '::';
+    for (const [sid, proc] of [...ptys]) {
+      if (!String(sid).startsWith(prefix)) continue;
+      dropOrphan(sid);
+      const g = ptyFlows.get(sid); if (g) g.reset();
+      ptyFlows.delete(sid);
+      try { proc.kill(); } catch (_) {}
+      ptys.delete(sid);
+      ptyRings.delete(sid);
+      ownerBySession.delete(sid);
+    }
+  }
+  broadcastDetachedTermSet();
+}
+function openDetachedTermWindow(projId, project, snapshot) {
+  const id = String(projId || '');
+  if (!id) return { ok: false, error: 'projId required' };
+  const existing = detachedTermWindows.get(id);
+  if (existing && !existing.isDestroyed()) {
+    if (existing.isMinimized()) existing.restore();
+    existing.show();
+    existing.focus();
+    return { ok: true, already: true };
+  }
+  const snap = normalizeProjTermSnapshot(snapshot, id);
+  const liveIds = collectLiveSessionIds(snap).filter((sid) => ptys.has(sid));
+  const savedAll = readModuleWins();
+  const saved = savedAll['projterm:' + id] || savedAll.projterm || {};
+  const iconPng = path.join(__dirname, 'assets', 'icon.png');
+  const opts = {
+    width: saved.width || 1040, height: saved.height || 740,
+    minWidth: 520, minHeight: 360,
+    backgroundColor: '#00000000', frame: false, transparent: true,
+    title: 'LiteEditorAI — ' + ((project && project.name) || id), show: false,
+    webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false },
+  };
+  if (Number.isInteger(saved.x) && Number.isInteger(saved.y)) { opts.x = saved.x; opts.y = saved.y; }
+  if (fs.existsSync(iconPng)) opts.icon = iconPng;
+  const win = new BrowserWindow(opts);
+  hardenNavigation(win);
+  detachedTermWindows.set(id, win);
+  detachedTermMeta.set(id, {
+    project: project ? { ...project } : { id, name: id, path: '' },
+    snapshot: snap,
+    liveOnDetach: new Set(liveIds),
+    status: null,
+  });
+  // Сразу переводим владение живыми PTY на новое окно + ставим 90с orphan-защиту на случай сбоя старта.
+  transferPtysTo(liveIds, win.webContents, { makeOrphan: true });
+
+  win.loadFile(path.join(__dirname, 'renderer', 'module.html'), {
+    query: { projId: id },
+    hash: 'projterm',
+  }).catch((e) => logger.log('warn', 'window', `loadFile projterm(${id}): ` + String((e && e.message) || e)));
+  if (saved.maximized) win.maximize();
+  win.once('ready-to-show', () => { if (!win.isDestroyed()) win.show(); });
+  win.on('maximize', () => { sendTo(win, 'win:maximized', true); });
+  win.on('unmaximize', () => { sendTo(win, 'win:maximized', false); });
+  win.on('resize', debounce(() => saveDetachedTermBounds(id, win), 400));
+  win.on('move', debounce(() => saveDetachedTermBounds(id, win), 400));
+  win.on('close', (e) => {
+    saveDetachedTermBounds(id, win);
+    if (win.__forceClose || closingAllModules) return;
+    e.preventDefault();
+    reattachDetachedTermWindow(id);
+  });
+  win.on('closed', () => {
+    if (detachedTermWindows.get(id) === win) detachedTermWindows.delete(id);
+    detachedTermMeta.delete(id);
+    for (const [sid, wc] of ownerBySession) { try { if (wc.isDestroyed()) ownerBySession.delete(sid); } catch (_) { ownerBySession.delete(sid); } }
+    broadcastDetachedTermSet();
+  });
+  win.webContents.on('render-process-gone', (_e, d) => {
+    logger.log('error', 'projterm-window', `${id} ${JSON.stringify(d)}`);
+    reattachDetachedTermWindow(id, { fromCrash: true });
+  });
+  win.webContents.on('before-input-event', (event, input) => {
+    if (input.type !== 'keyDown') return;
+    if (input.key === 'F12') win.webContents.toggleDevTools();
+    if (input.key === 'F11') win.setFullScreen(!win.isFullScreen());
+  });
+  broadcastDetachedTermSet();
+  return { ok: true };
+}
 // ── Выход из редактора при несохранённом в окнах модулей ──────────────────────────────────────
 // Закрытие редактора сносит окна модулей destroy() — мимо их dirty-guard (иначе выход упирался бы
 // в N диалогов по окнам). Поэтому перед сносом спрашиваем окна: модуль дописывает то, что можно
@@ -3436,8 +3666,15 @@ function closeAllModuleWindows() {
   closingAllModules = true;
   try {
     for (const w of [...moduleWindows.values()]) { try { if (w && !w.isDestroyed()) w.destroy(); } catch (_) {} }
+    for (const w of [...detachedTermWindows.values()]) {
+      if (!w) continue;
+      w.__forceClose = true;
+      try { if (!w.isDestroyed()) w.destroy(); } catch (_) {}
+    }
   } finally { closingAllModules = false; }
   moduleWindows.clear();
+  detachedTermWindows.clear();
+  detachedTermMeta.clear();
 }
 
 // ── Помодоро: долгоживущий движок таймера в main (lib/ipc/pomodoro.js) ───────────────────
@@ -3609,7 +3846,12 @@ ipcMain.on('app:agendaChanged', (e, { id } = {}) => {
 });
 
 // ── Действия из окна модуля → переслать редактору (терминал) или модулю вивера (файл/дерево) ──
-function forwardToEditor(ch, payload) { sendTo(mainWindow, ch, payload); }
+function forwardToEditor(ch, payload) {
+  sendTo(mainWindow, ch, payload);
+  if (ch === 'editor:restGuard') {
+    for (const w of detachedTermWindows.values()) sendTo(w, ch, payload);
+  }
+}
 function filesWindow() { const w = moduleWindows.get('files'); return (w && !w.isDestroyed()) ? w : null; }
 function docWindow() { const w = moduleWindows.get('doc'); return (w && !w.isDestroyed()) ? w : null; }
 function routeOpenInViewer(payload) {
@@ -3775,9 +4017,124 @@ ipcMain.on('kafka:openFromContainer', (_e, payload) => {
 });
 ipcMain.on('kafka:panelReady', () => { moduleRouter.markReady('kafka'); });
 
-ipcMain.on('editor:sendToTerminal', (_e, payload) => forwardToEditor('editor:sendToTerminal', payload));
-ipcMain.on('editor:sendNoteToTerminal', (_e, payload) => forwardToEditor('editor:sendNoteToTerminal', payload));
+ipcMain.on('editor:sendToTerminal', (_e, payload) => {
+  const pid = activeProjectInfo && activeProjectInfo.id;
+  const dw = pid ? detachedTermWindows.get(pid) : null;
+  if (dw && !dw.isDestroyed()) { sendTo(dw, 'projTerm:sendText', payload || {}); return; }
+  forwardToEditor('editor:sendToTerminal', payload);
+});
+ipcMain.on('editor:sendNoteToTerminal', (_e, payload) => {
+  const pid = (payload && payload.projId) || (activeProjectInfo && activeProjectInfo.id);
+  const dw = pid ? detachedTermWindows.get(pid) : null;
+  if (dw && !dw.isDestroyed()) { sendTo(dw, 'projTerm:sendText', payload || {}); return; }
+  forwardToEditor('editor:sendNoteToTerminal', payload);
+});
 ipcMain.on('editor:refreshProjects', () => { sendTo(mainWindow, 'editor:refreshProjects'); });
+
+// ── Вынесенные окна терминалов: IPC ────────────────────────────────────────────────────────────
+ipcMain.handle('projTerm:detach', (_e, { project, snapshot } = {}) => {
+  const projId = project && project.id ? String(project.id) : (snapshot && snapshot.projId ? String(snapshot.projId) : '');
+  return openDetachedTermWindow(projId, project, snapshot);
+});
+ipcMain.handle('projTerm:dock', async (_e, { projId } = {}) => {
+  if (!projId) return { ok: false };
+  return reattachDetachedTermWindow(String(projId));
+});
+ipcMain.on('projTerm:focus', (_e, { projId } = {}) => {
+  const w = projId ? detachedTermWindows.get(String(projId)) : null;
+  if (!w || w.isDestroyed()) return;
+  if (w.isMinimized()) w.restore();
+  w.show(); w.focus();
+});
+ipcMain.on('projTerm:focusSession', (_e, { projId, sid } = {}) => {
+  const w = projId ? detachedTermWindows.get(String(projId)) : null;
+  if (!w || w.isDestroyed()) return;
+  if (w.isMinimized()) w.restore();
+  w.show(); w.focus();
+  if (sid) sendTo(w, 'projTerm:focusSession', { sid: String(sid) });
+});
+ipcMain.on('projTerm:sendText', (_e, { projId, text } = {}) => {
+  const w = projId ? detachedTermWindows.get(String(projId)) : null;
+  if (w && !w.isDestroyed()) sendTo(w, 'projTerm:sendText', { projId, text });
+});
+ipcMain.on('projTerm:closeProject', (_e, { projId } = {}) => {
+  if (projId) closeDetachedProjectWindow(String(projId), { killPtys: true });
+});
+ipcMain.handle('projTerm:listDetached', () => {
+  const statuses = [];
+  for (const [projId, meta] of detachedTermMeta) {
+    if (meta && meta.status) statuses.push({ projId, ...meta.status });
+  }
+  return { ids: detachedProjIds(), statuses };
+});
+ipcMain.handle('projTerm:getInit', (_e, { projId } = {}) => {
+  const id = String(projId || '');
+  const meta = detachedTermMeta.get(id);
+  if (!meta) return { ok: false };
+  const liveOnDetach = meta.liveOnDetach || new Set();
+  const aliveLiveIds = [...liveOnDetach].filter((sid) => ptys.has(sid));
+  const deadOnDetachIds = [...liveOnDetach].filter((sid) => !ptys.has(sid));
+  return {
+    ok: true,
+    projId: id,
+    project: meta.project,
+    snapshot: meta.snapshot,
+    aliveLiveIds,
+    deadOnDetachIds,
+  };
+});
+ipcMain.on('projTerm:syncSnapshot', (_e, { projId, snapshot } = {}) => {
+  const id = String(projId || '');
+  const meta = id ? detachedTermMeta.get(id) : null;
+  if (!meta || !snapshot) return;
+  const norm = normalizeProjTermSnapshot(snapshot, id);
+  if (norm) {
+    meta.snapshot = norm;
+    sendTo(mainWindow, 'projTerm:snapshot', { projId: id, snapshot: norm });
+  }
+});
+ipcMain.on('projTerm:reportStatus', (_e, payload = {}) => {
+  const projId = payload && payload.projId ? String(payload.projId) : '';
+  if (!projId) return;
+  const meta = detachedTermMeta.get(projId);
+  if (meta) meta.status = payload;
+  sendTo(mainWindow, 'projTerm:status', payload);
+});
+ipcMain.on('projTerm:collectResult', (_e, { reqId, snapshot } = {}) => {
+  const fn = reqId ? detachedCollectors.get(reqId) : null;
+  if (fn) fn(snapshot);
+});
+ipcMain.on('projTerm:reattachAck', (_e, { ackId } = {}) => {
+  const fn = ackId ? detachedAckers.get(ackId) : null;
+  if (fn) fn();
+});
+ipcMain.on('projTerm:searchResult', (_e, { reqId, hits } = {}) => {
+  const fn = reqId ? detachedSearchers.get(reqId) : null;
+  if (fn) fn(Array.isArray(hits) ? hits : []);
+});
+ipcMain.handle('projTerm:searchBuffers', async (_e, { query, isRe, caseSens } = {}) => {
+  if (detachedTermWindows.size === 0) return [];
+  const tasks = [];
+  for (const [projId, w] of detachedTermWindows) {
+    if (!w || w.isDestroyed()) continue;
+    tasks.push(new Promise((resolve) => {
+      const reqId = `pts_${++detachedReqSeq}`;
+      const timer = setTimeout(() => { detachedSearchers.delete(reqId); resolve([]); }, 500);
+      detachedSearchers.set(reqId, (hits) => {
+        clearTimeout(timer);
+        detachedSearchers.delete(reqId);
+        resolve(hits.map((h) => ({ ...h, projId })));
+      });
+      if (!sendTo(w, 'projTerm:searchBuffers', { reqId, query, isRe, caseSens })) {
+        clearTimeout(timer);
+        detachedSearchers.delete(reqId);
+        resolve([]);
+      }
+    }));
+  }
+  const chunks = await Promise.all(tasks);
+  return chunks.flat();
+});
 
 // Reflect how many agents need attention on the tray tooltip (and macOS title).
 // Меню трея статичное — ставим его только при создании трея и смене языка (setTrayMenu).
@@ -4062,6 +4419,12 @@ ipcMain.handle('monitor:sample', async () => {
     // Заголовок окна — запасной источник имени: словарь выше знает не все модули (sitemon, voice, kafka…).
     const title = MODULE_TITLES[modId] || String(w.getTitle() || '').replace(/^LiteEditorAI\s*—\s*/, '') || modId;
     try { pidLabel.set(w.webContents.getOSProcessId(), { label: 'Окно: ' + title, kind: 'window' }); } catch (_) {}
+  }
+  for (const [projId, w] of detachedTermWindows) {
+    if (!w || w.isDestroyed()) continue;
+    const meta = detachedTermMeta.get(projId);
+    const name = (meta && meta.project && meta.project.name) || String(w.getTitle() || '').replace(/^LiteEditorAI\s*—\s*/, '') || projId;
+    try { pidLabel.set(w.webContents.getOSProcessId(), { label: 'Терминалы: ' + name, kind: 'window' }); } catch (_) {}
   }
   const TYPE_RU = { GPU: 'GPU', Utility: 'Служебный', Browser: 'Ядро (main)', Tab: 'Renderer', Pepper: 'Плагин' };
   const electron = (app.getAppMetrics() || []).map((m) => {

@@ -208,6 +208,31 @@ export interface LiteBridge {
     onProgress(cb: (p: { runId?: string; rootId?: string; name?: string; total?: number; scanned?: number }) => void): Unsubscribe;
     onDone(cb: (p: { runId?: string; total?: number; files?: number; scanned?: number; capped?: boolean; error?: string; cancelled?: boolean; ms?: number }) => void): Unsubscribe;
   };
+
+  projTerm: {
+    detach(project: Record<string, any>, snapshot: Record<string, any>): Promise<{ ok: boolean; already?: boolean; error?: string }>;
+    dock(projId: string): Promise<{ ok: boolean }>;
+    focus(projId: string): void;
+    focusSession(projId: string, sid?: string): void;
+    sendText(projId: string, text: string): void;
+    closeProject(projId: string): void;
+    listDetached(): Promise<{ ids: string[]; statuses: any[] }>;
+    getInit(projId: string): Promise<{ ok: boolean; projId?: string; project?: any; snapshot?: any; aliveLiveIds?: string[]; deadOnDetachIds?: string[] }>;
+    syncSnapshot(projId: string, snapshot: Record<string, any>): void;
+    reportStatus(payload: Record<string, any>): void;
+    sendCollectResult(reqId: string, snapshot: Record<string, any>): void;
+    sendReattachAck(ackId: string): void;
+    sendSearchResult(reqId: string, hits: any[]): void;
+    searchBuffers(opts: { query: string; isRe?: boolean; caseSens?: boolean }): Promise<any[]>;
+    onDetachedSet(cb: (p: { ids?: string[] }) => void): Unsubscribe;
+    onReattached(cb: (p: { projId?: string; project?: any; snapshot?: any; ackId?: string }) => void): Unsubscribe;
+    onStatus(cb: (p: Record<string, any>) => void): Unsubscribe;
+    onSnapshot(cb: (p: { projId?: string; snapshot?: any }) => void): Unsubscribe;
+    onCollect(cb: (p: { reqId?: string }) => void): Unsubscribe;
+    onFocusSession(cb: (p: { sid?: string }) => void): Unsubscribe;
+    onSendText(cb: (p: { projId?: string; text?: string }) => void): Unsubscribe;
+    onSearchBuffers(cb: (p: { reqId?: string; query?: string; isRe?: boolean; caseSens?: boolean }) => void): Unsubscribe;
+  };
 }
 
 declare global {
