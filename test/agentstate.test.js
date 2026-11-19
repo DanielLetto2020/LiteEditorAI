@@ -76,14 +76,20 @@ function writePresence(dir, pid, extra) {
     eq(as.agentState(process.pid, 'darwin'), null, 'не Linux — null (индикатор идёт по заголовку и экрану)');
 
     // --- какой агент: по comm нативной сборки или по имени скрипта интерпретатора ---
+    eq(as.AGENTS.has('agy') && as.AGENTS.has('antigravity'), true, 'agy и antigravity есть в списке AGENTS');
     eq(as.agentName(process.pid), null, 'node с тестом — не агент');
     eq(as.agentName(999999999), null, 'несуществующий процесс — null');
     const script = path.join(tmp, 'codex.js');
     fs.writeFileSync(script, 'setTimeout(() => {}, 30000);');
     const c = spawn(process.execPath, ['--no-warnings', script], { detached: true, stdio: 'ignore' });
     kids.push(c);
+    const agyScript = path.join(tmp, 'agy.js');
+    fs.writeFileSync(agyScript, 'setTimeout(() => {}, 30000);');
+    const d = spawn(process.execPath, ['--no-warnings', agyScript], { detached: true, stdio: 'ignore' });
+    kids.push(d);
     await wait(150);
     eq(as.agentName(c.pid), 'codex', 'node …/codex.js — codex (флаги интерпретатора пропущены)');
+    eq(as.agentName(d.pid), 'agy', 'node …/agy.js — agy распознан как агент');
     eq(as.agentOf(process.pid, 'darwin'), null, 'agentOf вне Linux — null');
 
     // --- настоящий терминал: Claude-подобный процесс на переднем плане интерактивного bash ---
