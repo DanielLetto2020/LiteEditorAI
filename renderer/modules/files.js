@@ -18,6 +18,7 @@ import {
   languageFor, ensureLanguage, langNameFor, mergeRoExtensions, mergeRwExtensions, liteEditorTheme,
 } from '../codeedit.js';
 import { t as tr } from '../i18n.js';
+import { getHotkey, matchesAction } from '../../lib/hotkeys.js';
 import { initGit } from './git.js';
 import {
   createBufferPool, detectIndentSpec, convertIndentation, eolOfText, normEolText, toDiskEol, isVirtualTabId,
@@ -4405,38 +4406,43 @@ export function initFiles(host) {
     // Глобальные горячие клавиши окна «Проект» (используем e.code для независимости от русской раскладки!)
     document.addEventListener('keydown', (e) => {
       const mod = e.ctrlKey || e.metaKey;
+      const hkOpts = { allowMetaAsCtrl: true };
 
       if (e.key === 'Escape') {
         if (hunkPopEl) { e.preventDefault(); closeInlineHunkPopover(); return; }
         if (document.body.classList.contains('viewer-zen')) { e.preventDefault(); toggleZenMode(); return; }
       }
 
-      // Ctrl+P / Ctrl+Shift+P — Quick Open / Палитра команд
-      if (mod && !e.altKey && e.code === 'KeyP') {
+      // Палитра команд / Quick Open
+      if (matchesAction(e, settings, 'files.commandPalette', hkOpts)) {
         e.preventDefault();
-        if (e.shiftKey) overlays.openCommandPalette();
-        else overlays.openQuickOpen('');
+        overlays.openCommandPalette();
         return;
       }
-      // Ctrl+G — Перейти к строке:столбцу
-      if (mod && !e.shiftKey && !e.altKey && e.code === 'KeyG') {
+      if (matchesAction(e, settings, 'files.quickOpen', hkOpts)) {
+        e.preventDefault();
+        overlays.openQuickOpen('');
+        return;
+      }
+      // Перейти к строке:столбцу
+      if (matchesAction(e, settings, 'files.gotoLine', hkOpts)) {
         e.preventDefault();
         overlays.openGotoLine();
         return;
       }
-      // Ctrl+Shift+O — Символы файла; Ctrl+T — Символы проекта
-      if (mod && e.shiftKey && !e.altKey && e.code === 'KeyO') {
+      // Символы файла / Символы проекта
+      if (matchesAction(e, settings, 'files.fileSymbols', hkOpts)) {
         e.preventDefault();
         overlays.openSymbolOutlineOverlay();
         return;
       }
-      if (mod && !e.shiftKey && !e.altKey && e.code === 'KeyT') {
+      if (matchesAction(e, settings, 'files.projectSymbols', hkOpts)) {
         e.preventDefault();
         overlays.openProjectSymbolOverlay();
         return;
       }
-      // Ctrl+Shift+F / Ctrl+Shift+R — Боковая панель поиска и замены по проекту
-      if (mod && e.shiftKey && !e.altKey && e.code === 'KeyF') {
+      // Боковая панель поиска и замены по проекту
+      if (matchesAction(e, settings, 'files.projectSearch', hkOpts)) {
         e.preventDefault();
         const v = getActiveEditorView();
         const sel = v && !v.state.selection.main.empty ? v.state.sliceDoc(v.state.selection.main.from, v.state.selection.main.to) : '';
@@ -4444,7 +4450,7 @@ export function initFiles(host) {
         if (sel && !sel.includes('\n')) sidePanels.openSearch({ query: sel });
         return;
       }
-      if (mod && e.shiftKey && !e.altKey && e.code === 'KeyR') {
+      if (matchesAction(e, settings, 'files.projectReplace', hkOpts)) {
         e.preventDefault();
         openSideSection('search', false);
         sidePanels.openSearch({ replace: true });
@@ -4466,8 +4472,9 @@ export function initFiles(host) {
           }
         }
       }
-      // Ctrl+W — закрыть активную вкладку (в раскладке VS Code; в JetBrains Ctrl+W расширяет выделение)
-      if (mod && !e.shiftKey && !e.altKey && e.code === 'KeyW' && settings.viewerKeymap !== 'jetbrains') {
+      // Закрыть активную вкладку (в раскладке JetBrains Ctrl+W остаётся за выделением)
+      if (matchesAction(e, settings, 'files.closeTab', hkOpts)
+        && !(settings.viewerKeymap === 'jetbrains' && getHotkey(settings, 'files.closeTab') === 'Ctrl+KeyW')) {
         const cur = getGroupActiveId(activeGroup);
         if (cur) { e.preventDefault(); requestCloseTab(activeGroup, cur); return; }
       }
@@ -4477,26 +4484,26 @@ export function initFiles(host) {
         stepMruTab(e.shiftKey ? -1 : 1);
         return;
       }
-      // Ctrl+\ — Разделить редактор вправо
-      if (mod && !e.altKey && e.code === 'Backslash') {
+      // Разделить редактор вправо
+      if (matchesAction(e, settings, 'files.splitRight', hkOpts)) {
         e.preventDefault();
         openInSplitRight();
         return;
       }
-      // Alt+Z — Перенос длинных строк
-      if (e.altKey && !mod && !e.shiftKey && e.code === 'KeyZ') {
+      // Перенос длинных строк
+      if (matchesAction(e, settings, 'files.wordWrap', hkOpts)) {
         e.preventDefault();
         toggleWordWrap();
         return;
       }
-      // Ctrl+= / Ctrl+- / Ctrl+0 — Зум шрифта редактора
-      if (mod && !e.altKey && (e.code === 'Equal' || e.code === 'NumpadAdd')) {
+      // Зум шрифта редактора
+      if (matchesAction(e, settings, 'files.zoomIn', hkOpts)) {
         e.preventDefault(); adjustEditorZoom(1); return;
       }
-      if (mod && !e.altKey && (e.code === 'Minus' || e.code === 'NumpadSubtract')) {
+      if (matchesAction(e, settings, 'files.zoomOut', hkOpts)) {
         e.preventDefault(); adjustEditorZoom(-1); return;
       }
-      if (mod && !e.altKey && (e.code === 'Digit0' || e.code === 'Numpad0')) {
+      if (matchesAction(e, settings, 'files.zoomReset', hkOpts)) {
         e.preventDefault(); adjustEditorZoom(0); return;
       }
       // Alt+1..6, Alt+9 — Быстрое переключение инструментальных окон (как в PhpStorm!)
@@ -4511,8 +4518,8 @@ export function initFiles(host) {
         if (e.code === 'ArrowLeft') { e.preventDefault(); navBack(); return; }
         if (e.code === 'ArrowRight') { e.preventDefault(); navFwd(); return; }
       }
-      // Закладки: Ctrl+F2 поставить, Alt+F2 / Shift+Alt+F2 навигация по закладкам
-      if (mod && e.code === 'F2') {
+      // Закладки: поставить/снять, Alt+F2 / Shift+Alt+F2 навигация по закладкам
+      if (matchesAction(e, settings, 'files.toggleBookmark', hkOpts)) {
         e.preventDefault();
         toggleBookmarkHere();
         return;
@@ -4522,7 +4529,7 @@ export function initFiles(host) {
         stepBookmark(e.shiftKey ? -1 : 1);
         return;
       }
-      if (mod && !e.altKey && e.code === 'KeyS') {
+      if (matchesAction(e, settings, 'files.save', hkOpts)) {
         e.preventDefault();
         const f = getActiveBufferFile();
         if (f) saveBufferNow(f, true);

@@ -55,12 +55,12 @@ working on right now".
 A traffic light shows the state without switching anywhere: **working** (spinner) · **waiting for your
 answer** (amber) · **done** (green) · **not started yet** (dashed). The project row aggregates all its tabs,
 and the terminal header carries a counter — *how many agents are blocked on you*; click it to jump to the
-next one. Notifications included. For Claude Code the light doesn't guess from the output: Claude reports its
-own state, so status-line redraws and typing never start the spinner, and amber means it is asking for
-permission, asking a question or showing a dialog.
+next one. Notifications included. For Claude Code and Antigravity CLI the light doesn't guess from the output:
+the agent reports its own state (via hooks for Claude Code and OSC 7501 for `agy`), so status-line redraws and
+typing never start the spinner, and amber means it is asking for permission, asking a question or showing a dialog.
 
 Lots of projects, but agents busy in only two or three? The **eye** in the *Favourites* header keeps only the
-projects where an agent (Claude Code, Codex, Gemini, Aider…) is actually running in a terminal, not just an open
+projects where an agent (Claude Code, Codex, Gemini, Antigravity CLI, Aider…) is actually running in a terminal, not just an open
 shell. The button next to it closes terminals with nothing running in them, so a shell opened by a stray click
 stops glowing green. The project itself stays in the list.
 
@@ -227,7 +227,10 @@ text to share it.
 | `Ctrl+S` | save file |
 | `Ctrl+Shift+R` | project-wide replace (Project window) |
 | `Ctrl+1..9` / `Ctrl+Tab` | switch projects |
+| `Ctrl+,` | settings |
 | `Ctrl + +/−` · `F11` | font size · fullscreen |
+
+Every shortcut can be remapped live or disabled in **Settings → Hotkeys**.
 
 ## Status
 

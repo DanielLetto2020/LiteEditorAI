@@ -10,6 +10,8 @@ import '@xterm/xterm/css/xterm.css';
 
 import { t as tt } from './i18n.js';
 import { planProjectTabs } from './proj-tabs.js';
+import { OSC7501_QUERY_REPLY, parseOsc7501, mapOsc7501ToIndicator } from '../lib/osc7501.js';
+import { matchesAction, getHotkey, formatCombo } from '../lib/hotkeys.js';
 import {
   prepareRenderer, activateRenderer, releaseRenderer, applyUnicode11,
   copySelection, ptyResizer, writeTermWithAck, creditPtyAck, dropPtyAck,
@@ -49,6 +51,22 @@ export function looksLikeShellTitle(s) {
   if (/^[~/]\S*$/.test(s)) return true;
   if (/^[A-Za-z]:[\\/]\S*$/.test(s)) return true;
   return false;
+}
+
+/**
+ * Формирует заголовок системного уведомления о состоянии агента.
+ * @param {string} projName
+ * @param {string} state
+ * @param {string} [reason]
+ * @returns {string}
+ */
+export function agentNotifyTitle(projName, state, reason) {
+  if (state !== 'waiting') return tt('✓ {0} — агент закончил', projName);
+  if (reason === 'permission prompt') return tt('⏳ {0} — агент просит разрешения', projName);
+  if (reason === 'input needed') return tt('⏳ {0} — агент задал вопрос', projName);
+  if (reason === 'auth needed') return tt('⏳ {0} — агенту нужна авторизация', projName);
+  if (reason === 'error') return tt('⚠ {0} — ошибка агента', projName);
+  return tt('⏳ {0} — агент ждёт ответа', projName);
 }
 
 export function scanTermBuffer(term, q, { isRe = false, caseSens = false } = {}) {
@@ -314,9 +332,46 @@ export function createTermEngine(host) {
     if (!claudeVerdict(id, report)) settleProject(id);
   }
 
-  function onClaudeTitle(id, raw) {
+  function onOsc7501(id, raw) {
     const rec = terms.get(id);
     if (!rec) return;
+    const parsed = parseOsc7501(raw);
+    if (!parsed) return;
+    if (parsed.type === 'query') {
+      if (!rec.replayingBacklog && !rec.exited) lite.pty.write(id, OSC7501_QUERY_REPLY);
+      return;
+    }
+    const mapped = mapOsc7501ToIndicator(parsed);
+    if (!mapped) return;
+    if (mapped.action === 'clear') {
+      rec.osc7501 = null;
+      clearTimeout(rec.idleTimer);
+      setProjState(id, 'quiet');
+      if (!rec.replayingBacklog) scheduleAgentScan(200);
+      return;
+    }
+    const hadOsc = !!rec.osc7501;
+    const prevApp = rec.osc7501 ? rec.osc7501.app : '';
+    rec.osc7501 = {
+      state: parsed.state,
+      kind: parsed.kind,
+      app: parsed.app || prevApp,
+      msg: parsed.msg,
+    };
+    clearTimeout(rec.idleTimer);
+    stopClaudeProbe(rec);
+    rec.claude = null;
+    if (rec.replayingBacklog) {
+      if (projState.get(id) !== mapped.indicator) setProjState(id, mapped.indicator);
+      return;
+    }
+    setAgentState(id, mapped.indicator, mapped.reason);
+    if (!hadOsc) scheduleAgentScan(200);
+  }
+
+  function onClaudeTitle(id, raw) {
+    const rec = terms.get(id);
+    if (!rec || rec.osc7501) return;
     const m = CLAUDE_TITLE_RE.exec(String(raw || ''));
     if (!m) {
       if (rec.claude && rec.claude.titled) leaveClaude(id);
@@ -339,6 +394,10 @@ export function createTermEngine(host) {
     const seq = rec.activitySeq;
     const report = await agentReport(id);
     if (!terms.has(id) || rec.activitySeq !== seq) return;
+    if (rec.osc7501) {
+      if (report && report.fg === 'shell') rec.osc7501 = null;
+      else return;
+    }
     if (claudeVerdict(id, report)) return;
     const kind = report ? report.fg : null;
     const st = host.getSettings();
@@ -363,6 +422,7 @@ export function createTermEngine(host) {
   function markActivity(id, data) {
     const rec = terms.get(id);
     if (!rec) return;
+    if (rec.osc7501) return;
     const bell = !!(data && hasRealBell(data));
     if (bell) rec.sawBell = true;
     if (rec.claude) { scheduleClaudeProbe(id); return; }
@@ -387,6 +447,7 @@ export function createTermEngine(host) {
     const r = agentScan.get(sid);
     if (r && r.agent) return r.agent;
     const rec = terms.get(sid);
+    if (rec && rec.osc7501 && rec.osc7501.app) return rec.osc7501.app;
     return rec && rec.claude ? 'claude' : null;
   }
 
@@ -394,12 +455,17 @@ export function createTermEngine(host) {
     return projSessions(projId).some((s) => sessionAgent(s));
   }
 
+  function sessionIdle(sid) {
+    const rec = terms.get(sid);
+    if (!rec) return false;
+    if (rec.exited) return true;
+    const r = agentScan.get(sid);
+    return !!(r && r.idle && !sessionAgent(sid));
+  }
+
   function projIdle(projId) {
     const live = projSessions(projId).filter((s) => terms.has(s));
-    return projId !== host.getActiveId() && live.length > 0 && live.every((s) => {
-      const rec = terms.get(s), r = agentScan.get(s);
-      return (rec && rec.exited) || (r && r.idle && !sessionAgent(s));
-    });
+    return projId !== host.getActiveId() && live.length > 0 && live.every((s) => sessionIdle(s));
   }
 
   async function refreshAgents() {
@@ -411,6 +477,15 @@ export function createTermEngine(host) {
     try { if (ids.length) res = (await lite.pty.agents(ids)) || {}; } catch (_) { return null; }
     if (seq !== agentScanSeq) return null;
     agentScan = new Map(Object.entries(res));
+    for (const [sid, rec] of terms) {
+      if (!rec.osc7501) continue;
+      const scan = agentScan.get(sid);
+      if (scan && scan.fg === 'shell') {
+        rec.osc7501 = null;
+        clearTimeout(rec.idleTimer);
+        if (projState.get(sid) !== 'quiet') setProjState(sid, 'quiet');
+      }
+    }
     if (host.onStatusChange) {
       // Дёргаем общий апдейт после завершения опроса (renderer обновит фильтр, вынесенное окно пошлёт статус)
       const aid = host.getActiveId();
@@ -717,7 +792,13 @@ export function createTermEngine(host) {
       if (e.type !== 'keydown') return true;
       if (e.ctrlKey && !e.shiftKey && !e.altKey && e.code === 'KeyC') return !copySelection(term);
       if (e.ctrlKey && !e.shiftKey && !e.altKey && e.code === 'KeyV') { e.preventDefault(); pasteInto(id); return false; }
-      if (e.ctrlKey && !e.shiftKey && !e.altKey && e.key === 'Enter') { cancelPrefill(id); lite.pty.write(id, lite.platform === 'win32' ? '\n' : '\\\r'); return false; }
+      if (matchesAction(e, host.getSettings(), 'termNewline')) {
+        cancelPrefill(id);
+        lite.pty.write(id, lite.platform === 'win32' ? '\n' : '\\\r');
+        e.preventDefault();
+        e.stopPropagation();
+        return false;
+      }
       if (onKey && onKey(e) === false) return false;
       if (host.onHotkey && host.onHotkey(e)) { e.stopPropagation(); return false; }
       return true;
@@ -772,10 +853,7 @@ export function createTermEngine(host) {
           const r = terms.get(id);
           if (r && r.exited) { e.preventDefault(); restartTerminal(id); return false; }
         }
-        if (e.ctrlKey && e.shiftKey && e.code === 'KeyT') { addTab(); return false; }
-        if (e.ctrlKey && e.shiftKey && e.code === 'KeyW') { const s = activeSessionId(); if (s) closeTab(s); return false; }
-        if (e.ctrlKey && (e.key === 'PageDown' || e.key === 'PageUp')) { cycleTab(e.key === 'PageDown' ? 1 : -1); return false; }
-        if (e.ctrlKey && !e.altKey && !e.shiftKey && e.code === 'KeyF') { focusSplitSlot(id); openTermSearch(); return false; }
+        if (handleTermHotkey(e, id)) { e.preventDefault(); e.stopPropagation(); return false; }
       },
     });
     term.registerLinkProvider(fileLinkProvider(term, proj.path));
@@ -786,6 +864,8 @@ export function createTermEngine(host) {
       prefill: '', prefillTimer: null, redraw: false, needsFit: false, exited: false,
       adoptPending: /** @type {string[] | null} */ (adoptId ? [] : null),
       claude: null, probeTimer: null, probeDeadline: null, probeSeq: 0, claudeRetry: 0,
+      osc7501: /** @type {{ state: string, kind: string, app: string, msg: string } | null} */ (null),
+      replayingBacklog: false,
     };
     terms.set(id, rec);
     if (adoptId) {
@@ -795,8 +875,15 @@ export function createTermEngine(host) {
         const queued = r.adoptPending || [];
         r.adoptPending = null;
         const backlog = res && typeof res.backlog === 'string' ? res.backlog : '';
-        if (backlog) r.term.write(backlog);
-        else if (attachReason !== 'transfer') r.term.write('\x1b[90m' + tt('[терминал подхвачен после перезагрузки окна]') + '\x1b[0m\r\n');
+        if (backlog) {
+          r.replayingBacklog = true;
+          r.term.write(backlog, () => {
+            const cur = terms.get(id);
+            if (cur) cur.replayingBacklog = false;
+          });
+        } else if (attachReason !== 'transfer') {
+          r.term.write('\x1b[90m' + tt('[терминал подхвачен после перезагрузки окна]') + '\x1b[0m\r\n');
+        }
         for (const chunk of queued) {
           writeTermWithAck(r.term, id, chunk);
           markActivity(id, chunk);
@@ -810,12 +897,15 @@ export function createTermEngine(host) {
         }
       }).catch(() => {
         const r = terms.get(id);
-        if (r) { r.adoptPending = null; r.redraw = true; }
+        if (r) { r.adoptPending = null; r.replayingBacklog = false; r.redraw = true; }
       });
     } else if (allowPrefill) {
       armPrefill(id, (host.getSettings().termPrefill || '').trim());
     }
     term.onTitleChange((t) => { onClaudeTitle(id, t); adoptTermTitle(id, t); });
+    if (term.parser && typeof term.parser.registerOscHandler === 'function') {
+      term.parser.registerOscHandler(7501, (data) => { onOsc7501(id, data); return true; });
+    }
     if (pushToTabs) tabsByProj.get(proj.id).sessions.push(id);
     return id;
   }
@@ -1081,10 +1171,15 @@ export function createTermEngine(host) {
     if (sb) {
       sb.classList.toggle('hidden', !aid || !t);
       sb.classList.toggle('on', splitOn);
-      sb.title = splitOn ? 'Закрыть разделение терминала (Ctrl+Shift+D)' : 'Разделить терминал (Ctrl+Shift+D)';
+      const splitHk = formatCombo(getHotkey(host.getSettings(), 'termSplit'));
+      const splitBase = splitOn ? tt('Закрыть разделение терминала') : tt('Разделить терминал');
+      sb.title = splitHk ? `${splitBase} (${splitHk})` : splitBase;
     }
     if (!aid || !t || !t.sessions.length) { updateTabScroll(); return; }
     const projId = aid;
+    const closeHk = formatCombo(getHotkey(host.getSettings(), 'closeTab'));
+    const closeBase = tt('Закрыть вкладку');
+    const closeTitle = closeHk ? `${closeBase} (${closeHk})` : closeBase;
     t.sessions.forEach((sid) => {
       const rec = tabMeta(sid); if (!rec) return;
       const isLive = terms.has(sid);
@@ -1097,7 +1192,7 @@ export function createTermEngine(host) {
       tab.addEventListener('mouseenter', () => { if (!tabDragEl && nameSpan.scrollWidth > nameSpan.clientWidth + 1) showTabTip(tab, rec.name); });
       tab.addEventListener('mouseleave', hideTabTip);
       if (t.sessions.length > 1) {
-        const x = iconBtn('tab-close', 'x', 'Закрыть вкладку (Ctrl+Shift+W)', 12);
+        const x = iconBtn('tab-close', 'x', closeTitle, 12);
         x.addEventListener('click', (e) => { e.stopPropagation(); closeTab(sid); });
         tab.appendChild(x);
         enableTabDnD(tab, bar, projId);
@@ -1338,6 +1433,17 @@ export function createTermEngine(host) {
     if (host.onTabsChanged) host.onTabsChanged(rec.projId);
   }
 
+  function handleTermHotkey(e, sid = null) {
+    const st = host.getSettings();
+    if (matchesAction(e, st, 'newTab')) { addTab(); return true; }
+    if (matchesAction(e, st, 'closeTab')) { const s = sid || activeSessionId(); if (s) closeTab(s); return true; }
+    if (matchesAction(e, st, 'nextTab')) { cycleTab(1); return true; }
+    if (matchesAction(e, st, 'prevTab')) { cycleTab(-1); return true; }
+    if (matchesAction(e, st, 'termSearch')) { if (sid) focusSplitSlot(sid); openTermSearch(); return true; }
+    if (matchesAction(e, st, 'termSplit')) { toggleTermSplit(); return true; }
+    return false;
+  }
+
   function clearTerminal(id) {
     if (isExtTerm(id)) { const r = extTerms.get(id); if (r) { try { r.term.clear(); } catch (_) {} try { r.timeline.reset(); } catch (_) {} r.term.focus(); } return; }
     const sid = (id && terms.has(id)) ? id : activeSessionId();
@@ -1356,7 +1462,7 @@ export function createTermEngine(host) {
     dropPtyAck(sid);
     rec.sawBell = false; rec.tail = ''; rec.busyStart = Date.now();
     clearTimeout(rec.idleTimer);
-    rec.claude = null; rec.exited = false; stopClaudeProbe(rec);
+    rec.claude = null; rec.osc7501 = null; rec.replayingBacklog = false; rec.exited = false; stopClaudeProbe(rec);
     setProjState(sid, 'busy');
     lite.pty.restart({ id: sid, cwd: proj.path, cols: rec.term.cols, rows: rec.term.rows });
     rec.term.focus();
@@ -1483,6 +1589,8 @@ export function createTermEngine(host) {
     rec.term.write('\r\n\x1b[90m' + tt('[процесс завершён — нажмите Enter или ↻ для перезапуска]') + '\x1b[0m\r\n');
     clearTimeout(rec.idleTimer);
     rec.claude = null;
+    rec.osc7501 = null;
+    rec.replayingBacklog = false;
     rec.exited = true;
     stopClaudeProbe(rec);
     setProjState(id, 'quiet');
@@ -1583,7 +1691,7 @@ export function createTermEngine(host) {
     activeSessionId, projSessions, hasTabSession, tabMeta,
     isProjSplit, isSessionVisible,
     setProjState, markActivity, settleProject, agentReport,
-    projAggState, sessionAgent, projHasAgent, projIdle,
+    projAggState, sessionAgent, projHasAgent, sessionIdle, projIdle,
     refreshAgents, scheduleAgentScan,
     buildXterm, writeAsPaste, pasteInto, cancelPrefill,
     createLazyTab, materializeSession, createSession, ensureProjectTabs,
@@ -1596,7 +1704,7 @@ export function createTermEngine(host) {
     clearTerminal, restartTerminal,
     insertPrompt, openPromptsManager, showTermMenu,
     isTermSearchOpen, clearAllTermSearchDecorations, syncTermSearchUI,
-    openTermSearch, closeTermSearch, runTermSearch,
+    openTermSearch, closeTermSearch, runTermSearch, handleTermHotkey,
     applyTimeline, applyFontSize, applyThemeAll,
     handlePtyData, handlePtyExit, bindUiEvents,
   };

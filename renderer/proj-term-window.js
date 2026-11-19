@@ -2,9 +2,9 @@
 // Работает поверх общего движка renderer/term-core.js и сохраняет живые PTY при выносе и возврате.
 
 import { summarizeDetachedStatus } from '../lib/projterm-state.js';
-import { t as tt } from './i18n.js';
+import { matchesAction } from '../lib/hotkeys.js';
 import { icon, toast, initMenus } from './ui.js';
-import { scanTermBuffer, createRestGuardController, createTermEngine } from './term-core.js';
+import { scanTermBuffer, createRestGuardController, createTermEngine, agentNotifyTitle } from './term-core.js';
 
 const $ = (sel) => document.querySelector(sel);
 
@@ -48,11 +48,10 @@ export function initProjTermWindow(host) {
   }
 
   function runDetachedHotkey(e) {
-    if (!e.ctrlKey || e.metaKey) return false;
     if (isTextEntry(e.target)) return false;
-    if (e.code === 'Equal' || e.code === 'NumpadAdd') { e.preventDefault(); bumpFont(1); return true; }
-    if (e.code === 'Minus' || e.code === 'NumpadSubtract') { e.preventDefault(); bumpFont(-1); return true; }
-    if (e.code === 'KeyD' && e.shiftKey && engine) { e.preventDefault(); engine.toggleTermSplit(); return true; }
+    if (matchesAction(e, host.settings, 'fontUp')) { e.preventDefault(); bumpFont(1); return true; }
+    if (matchesAction(e, host.settings, 'fontDown')) { e.preventDefault(); bumpFont(-1); return true; }
+    if (engine && engine.handleTermHotkey(e)) { e.preventDefault(); return true; }
     return false;
   }
 
@@ -66,11 +65,11 @@ export function initProjTermWindow(host) {
       const agent = live ? engine.sessionAgent(sid) : null;
       return {
         sid,
-        live,
+        isLazy: !live,
         exited,
         state,
-        agent,
-        idle: live && (exited || !agent),
+        hasAgent: !!agent,
+        idle: live && (exited || engine.sessionIdle(sid)),
       };
     });
     return summarizeDetachedStatus(projId, sessions);
@@ -109,10 +108,7 @@ export function initProjTermWindow(host) {
     if (sid === engine.activeSessionId() && document.hasFocus()) return;
     if (Date.now() - lastNotifyAt < 1200) return;
     lastNotifyAt = Date.now();
-    const title = state !== 'waiting' ? tt('✓ {0} — агент закончил', project.name)
-      : reason === 'permission prompt' ? tt('⏳ {0} — Claude просит разрешения', project.name)
-      : reason === 'input needed' ? tt('⏳ {0} — Claude задал вопрос', project.name)
-      : tt('⏳ {0} — агент ждёт ответа', project.name);
+    const title = agentNotifyTitle(project.name, state, reason);
     try {
       const n = new Notification(title, { body: project.path || '', silent: !host.settings.sound, tag: 'lite-' + projId });
       n.onclick = () => { lite.projTerm.focusSession(projId, sid); };
@@ -186,6 +182,10 @@ export function initProjTermWindow(host) {
   engine.bindUiEvents();
   document.addEventListener('keydown', (e) => { runDetachedHotkey(e); });
 
+  const agentPollTimer = setInterval(() => { if (!document.hidden && engine) engine.refreshAgents(); }, 3000);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden && engine) engine.scheduleAgentScan(100); });
+  window.addEventListener('beforeunload', () => clearInterval(agentPollTimer));
+
   lite.pty.onData(({ id, data }) => engine.handlePtyData(id, data));
   lite.pty.onExit(({ id }) => engine.handlePtyExit(id));
 
@@ -246,6 +246,7 @@ export function initProjTermWindow(host) {
       engine.showActiveTerminal();
       flushSnapshotSync();
       flushStatusReport();
+      engine.refreshAgents();
     } catch (e) {
       toast('Ошибка запуска окна терминалов: ' + ((e && e.message) || e), { kind: 'err' });
     }
@@ -259,6 +260,7 @@ export function initProjTermWindow(host) {
     applyTermTheme() { engine.applyThemeAll(); },
     applyFontSize() { engine.applyFontSize(); },
     applyTimeline() { engine.applyTimeline(); },
+    applyHotkeys() { if (engine) engine.renderTabBar(); },
     refit() { engine.refitActiveTerminal(); },
   };
 }
