@@ -304,6 +304,7 @@ function applyLiveSettings() {
   try { mod && mod.applyTermTheme && mod.applyTermTheme(); } catch (_) {}
   try { mod && mod.applyFontSize && mod.applyFontSize(); } catch (_) {}
   try { mod && mod.applyTimeline && mod.applyTimeline(); } catch (_) {}
+  try { mod && mod.applyHotkeys && mod.applyHotkeys(); } catch (_) {}
 }
 
 // Window-mode host: right-slot callbacks become no-ops; editor actions are forwarded.

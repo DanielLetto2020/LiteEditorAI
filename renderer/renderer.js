@@ -6,7 +6,12 @@ import { syncSettings } from './settings-sync.js';
 import { applyLook, termThemeFor, lookOf, lookTokens, LOOK_BASE_NAMES, LOOK_STATUS_NAMES, LOOK_TOKEN_NAMES, THEME_NAME } from './themes.js';
 import { FRAME_COLORS, frameConf, applyFrame } from './frame.js';
 import { activateRenderer, releaseRenderer, dropPtyAck } from './termutil.js';
-import { createTermEngine, createRestGuardController, scanTermBuffer } from './term-core.js';
+import { createTermEngine, createRestGuardController, scanTermBuffer, agentNotifyTitle } from './term-core.js';
+import {
+  HOTKEY_GROUPS, HOTKEY_DEFS,
+  eventToCombo, validateHotkeyForAction, getHotkey,
+  matchesAction, findConflicts, setHotkeyOverride, formatCombo, formatComboParts,
+} from '../lib/hotkeys.js';
 // initTextProc — «Обработка текста» мигрирована в отдельное окно (renderer/module-entry.js).
 import {
   el, icon, iconBtn, hydrateIcons, toast, makeModal, showConfirm, showPrompt, baseName, ICONS, setErrorSink,
@@ -23,7 +28,7 @@ import { openGlobalSearch } from './gsearch.js';
 import { initExtensions } from './modules/extensions.js';
 // initFiles — вивер+дерево мигрированы в отдельное окно (renderer/module-entry.js).
 
-const APP_VERSION = 'alpha v1.1.241';
+const APP_VERSION = 'alpha v1.1.242';
 const GUTTER = 8; // зазор между карточками окна — он же разделитель, за который тянется ширина
 // Системный терминал («Система · ~») мигрирован в отдельное окно (renderer/modules/scratch.js):
 // его id `__scratch__::tN` маршрутизируются main'ом в окно-владельца, в ядре их больше не обрабатываем.
@@ -54,16 +59,17 @@ function persist(key, value) { STORE[key] = value; if (!storeFrozen) lite.store.
 function projId(p) { let h = 5381; for (let i = 0; i < p.length; i++) h = ((h << 5) + h + p.charCodeAt(i)) >>> 0; return 'p' + h.toString(36); }
 
 // ---------------------------------------------------------------- settings (tiny on purpose)
-const DEFAULT_SETTINGS = { notifications: true, sound: false, idleMs: 1200, fontSize: 13, workingDir: '', scanDirs: [], onboarded: false, shell: '', minimap: true, notesTab: 'project', frameOn: true, frameColor: 'green', framePulse: true, framePeriodS: 6, termTimeline: false, termPrefill: 'claude', dockFiles: false, confirmQuitWithAgents: true };
+const DEFAULT_SETTINGS = { notifications: true, sound: false, idleMs: 1200, fontSize: 13, workingDir: '', scanDirs: [], onboarded: false, shell: '', minimap: true, notesTab: 'project', frameOn: true, frameColor: 'green', framePulse: true, framePeriodS: 6, termTimeline: false, termPrefill: 'claude', dockFiles: false, confirmQuitWithAgents: true, hotkeys: {} };
 function loadSettings() { return { ...DEFAULT_SETTINGS, ...(STORE.settings || {}) }; }
 let settings = loadSettings();
 // Пишем только изменённые поля, чужие изменения (окна модулей, смена языка) вливаются в settings —
 // см. renderer/settings-sync.js. base = то, что на диске: первый save запишет и дефолты, как раньше.
 const settingsSync = syncSettings(lite, settings, {
   base: STORE.settings,
-  onRemote: ({ set }) => {
+  onRemote: ({ set, unset }) => {
     if (set && 'fontSize' in set) applyFontSize({ notify: false });
     if (set && 'termTimeline' in set) applyTimeline();
+    if ((set && 'hotkeys' in set) || (unset && unset.includes('hotkeys'))) syncHotkeyHints();
   },
 });
 function saveSettings() { STORE.settings = settings; if (!storeFrozen) settingsSync.save(); }
@@ -712,7 +718,8 @@ function renderMiniRail() {
   if (!rail) return;
   rail.innerHTML = '';
   rail.appendChild(el('span', 'rail-mark'));
-  const expand = iconBtn('icon-btn', 'panel-left', 'Развернуть проекты (Ctrl+\\)', 17);
+  const expand = iconBtn('icon-btn', 'panel-left', withHk('Развернуть проекты', 'toggleSingle'), 17);
+  expand.id = 'rail-expand';
   expand.addEventListener('click', toggleSingle);
   rail.append(expand, el('span', 'rail-sep'));
   const list = el('div', 'rail-list');
@@ -843,10 +850,7 @@ function notifyAgent(id, state, sid, reason) {
   const proj = projects.find((p) => p.id === id);
   if (!proj || Date.now() - lastNotifyAt < 1200) return;
   lastNotifyAt = Date.now();
-  const title = state !== 'waiting' ? tt('✓ {0} — агент закончил', proj.name)
-    : reason === 'permission prompt' ? tt('⏳ {0} — Claude просит разрешения', proj.name)
-    : reason === 'input needed' ? tt('⏳ {0} — Claude задал вопрос', proj.name)
-    : tt('⏳ {0} — агент ждёт ответа', proj.name);
+  const title = agentNotifyTitle(proj.name, state, reason);
   try {
     const n = new Notification(title, { body: proj.path, silent: !settings.sound, tag: 'lite-' + id });
     n.onclick = () => {
@@ -1052,26 +1056,56 @@ function saveProjTabs() {
 
 try { if (STORE.sessionSnaps) { STORE.sessionSnaps = null; lite.store.set('sessionSnaps', null); } } catch (_) {}
 
-const HOTKEYS = [
-  { test: (e) => e.code === 'Backslash',                            run: () => toggleSingle() },
-  { test: (e) => e.code === 'KeyK',                                 run: () => showPalette() },
-  { test: (e) => e.code === 'Equal' || e.code === 'NumpadAdd',      run: () => bumpFont(1) },
-  { test: (e) => e.code === 'Minus' || e.code === 'NumpadSubtract', run: () => bumpFont(-1) },
-  { test: (e) => e.code === 'Tab',                                  run: (e) => cycleProject(e.shiftKey ? -1 : 1) },
-  { test: (e) => e.code === 'KeyF' && e.shiftKey,                   run: () => showGlobalSearch() },
-  { test: (e) => e.code === 'KeyD' && e.shiftKey,                   run: () => toggleTermSplit() },
-  { test: (e) => e.code === 'KeyE' && e.shiftKey,                   run: () => openModule('files') },
-  { test: (e) => /^Digit[1-9]$/.test(e.code) && !e.shiftKey,        run: (e) => { const p = visibleOrderedProjects()[+e.code.slice(5) - 1]; if (p) setActive(p.id); } },
-];
+let hotkeyRecording = false;
+function hkLabel(id) { return formatCombo(getHotkey(settings, id)); }
+function withHk(text, id) {
+  const k = hkLabel(id);
+  const base = tt(text);
+  return k ? `${base} (${k})` : base;
+}
+function syncHotkeyHints() {
+  const singleOn = $('#app')?.classList.contains('single');
+  const bs = $('#btn-single');
+  if (bs instanceof HTMLElement) bs.title = withHk(singleOn ? 'Развернуть проекты' : 'Один терминал', 'toggleSingle');
+  const ta = $('#term-tab-add');
+  if (ta instanceof HTMLElement) ta.title = withHk('Новая вкладка', 'newTab');
+  const tf = $('#term-find');
+  if (tf instanceof HTMLElement) tf.title = withHk('Поиск в терминале', 'termSearch');
+  const fd = $('#files-dock-close');
+  if (fd instanceof HTMLElement) fd.title = withHk('Скрыть панель', 'openFiles');
+  const re = $('#rail-expand');
+  if (re instanceof HTMLElement) re.title = withHk('Развернуть проекты', 'toggleSingle');
+  termEngine.renderTabBar();
+}
+function applyHotkeysLive() {
+  saveSettings();
+  syncHotkeyHints();
+  try { lite.app.settingsChanged(settings); } catch (_) {}
+}
 function isTextEntry(t) {
   if (!t || (t.closest && t.closest('.xterm'))) return false;
   const tag = (t.tagName || '').toLowerCase();
   return tag === 'input' || tag === 'textarea' || tag === 'select' || t.isContentEditable === true;
 }
 function runGlobalHotkey(e) {
-  if (!e.ctrlKey || e.metaKey) return false;
+  if (hotkeyRecording) return false;
   if (isTextEntry(e.target)) return false;
-  for (const h of HOTKEYS) { if (h.test(e)) { e.preventDefault(); h.run(e); return true; } }
+  if (matchesAction(e, settings, 'toggleSingle')) { e.preventDefault(); toggleSingle(); return true; }
+  if (matchesAction(e, settings, 'palette')) { e.preventDefault(); showPalette(); return true; }
+  if (matchesAction(e, settings, 'globalSearch')) { e.preventDefault(); showGlobalSearch(); return true; }
+  if (matchesAction(e, settings, 'openFiles')) { e.preventDefault(); openModule('files'); return true; }
+  if (matchesAction(e, settings, 'openSettings')) { e.preventDefault(); if (!document.querySelector('.settings-modal')) showSettings(); return true; }
+  if (matchesAction(e, settings, 'fontUp')) { e.preventDefault(); bumpFont(1); return true; }
+  if (matchesAction(e, settings, 'fontDown')) { e.preventDefault(); bumpFont(-1); return true; }
+  if (matchesAction(e, settings, 'nextProject')) { e.preventDefault(); cycleProject(1); return true; }
+  if (matchesAction(e, settings, 'prevProject')) { e.preventDefault(); cycleProject(-1); return true; }
+  if (termEngine.handleTermHotkey(e)) { e.preventDefault(); return true; }
+  if (e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey && /^Digit[1-9]$/.test(e.code)) {
+    e.preventDefault();
+    const p = visibleOrderedProjects()[+e.code.slice(5) - 1];
+    if (p) setActive(p.id);
+    return true;
+  }
   return false;
 }
 
@@ -1635,9 +1669,9 @@ function showMoreMenu(anchor) {
   Ext.buildMenuSection(c0, { bare: true, compact: true });
 
   T(c1, 'Вид и инструменты');
-  c1.appendChild(menuRow('panel-left', 'Один терминал', go(toggleSingle), '', { kbd: 'Ctrl+\\' }));
-  c1.appendChild(menuRow('cmd', 'Палитра команд', go(showPalette), '', { kbd: 'Ctrl+K' }));
-  c1.appendChild(menuRow('search', 'Поиск в терминале', go(openTermSearch), '', { kbd: 'Ctrl+F' }));
+  c1.appendChild(menuRow('panel-left', 'Один терминал', go(toggleSingle), '', { kbd: hkLabel('toggleSingle') }));
+  c1.appendChild(menuRow('cmd', 'Палитра команд', go(showPalette), '', { kbd: hkLabel('palette') }));
+  c1.appendChild(menuRow('search', 'Поиск в терминале', go(openTermSearch), '', { kbd: hkLabel('termSearch') }));
   c1.appendChild(menuRow('search', 'Найти во всех проектах', go(() => showGlobalSearch())));
   c1.appendChild(menuRow('sliders', 'Быстрая панель…', go(showPanelSetup)));
   c1.appendChild(menuRow('palette', 'Оформление…', () => { closeMenus(); showLookPanel($('#app').classList.contains('single') ? $('#rail-look') : $('#btn-look')); }));
@@ -2060,7 +2094,7 @@ function showFolderMenu(anchor) {
   dd.appendChild(menuRow('eye', 'Открыть «Проект»', () => { closeMenus(); openModule('files'); }, '', { desc: 'вивер и дерево' }));
   dd.appendChild(menuRow('folder', 'Открыть в проводнике', () => { closeMenus(); lite.openInFileManager(p.path); }));
   dd.appendChild(menuRow('copy', 'Копировать путь', () => { closeMenus(); lite.copyText(p.path); toast('Путь скопирован'); }));
-  dd.appendChild(menuRow('terminal', 'Новая вкладка терминала', () => { closeMenus(); addTab(); }, '', { kbd: 'Ctrl⇧T' }));
+  dd.appendChild(menuRow('terminal', 'Новая вкладка терминала', () => { closeMenus(); addTab(); }, '', { kbd: hkLabel('newTab') }));
   placeMenuAbove(dd, anchor);
 }
 const GIT_KIND = { M: 'M', A: 'A', D: 'D', R: 'R', C: 'C', U: 'U', '??': '?', '?': '?' };
@@ -2427,6 +2461,7 @@ function showLogs() {
 const SET_SECTIONS = [
   ['look', 'palette', 'Внешний вид'],
   ['term', 'terminal', 'Терминал'],
+  ['keys', 'keyboard', 'Горячие клавиши'],
   ['notif', 'bell', 'Уведомления'],
   ['upd', 'refresh', 'Обновления'],
   ['proj', 'folder', 'Проекты и папки'],
@@ -2434,10 +2469,12 @@ const SET_SECTIONS = [
 ];
 function showSettings(start = 'look') {
   closeMenus();
+  /** @type {(rerender?: boolean) => void} */
+  let stopRecording = () => {};
   const { m, close } = makeModal(`
     <aside class="snav"><div class="st-title">Настройки</div><div class="snav-list"></div><span class="grow"></span><div class="sver"></div></aside>
     <section class="scontent"><div class="shead"><h3></h3><button class="icon-btn" id="st-x" title="Закрыть" aria-label="Закрыть"></button></div><div class="sbody"></div>
-      <div class="sfoot"><button class="btn primary" id="st-ok">Готово</button></div></section>`, () => { scanProjects(); });
+      <div class="sfoot"><button class="btn primary" id="st-ok">Готово</button></div></section>`, () => { stopRecording(); scanProjects(); });
   m.classList.add('settings-modal');
   m.querySelector('.sver').textContent = 'LiteEditor ' + APP_VERSION;
   m.querySelector('.sver').setAttribute('data-no-i18n', '');
@@ -2562,6 +2599,227 @@ function showSettings(start = 'look') {
       body.appendChild(row('Предупреждать при выходе с активными терминалами', 'Спрашивать подтверждение при закрытии главного окна, если в терминалах работают агенты или выполняются команды.',
         toggle(settings.confirmQuitWithAgents !== false, (v) => { settings.confirmQuitWithAgents = v; save(); })));
     },
+    keys() {
+      let filterQuery = '';
+      /** @type {string | null} */
+      let recordingId = null;
+      /** @type {HTMLButtonElement | null} */
+      let activeRecBtn = null;
+      /** @type {{ id: string, kind: 'error' | 'conflict', text: string, combo?: string, conflicts?: any[] } | null} */
+      let pendingAlert = null;
+      /** @type {((ev: KeyboardEvent) => void) | null} */
+      let onRecKeyDown = null;
+      /** @type {((ev: KeyboardEvent) => void) | null} */
+      let onRecKeyUp = null;
+
+      const detachRecListeners = () => {
+        hotkeyRecording = false;
+        activeRecBtn = null;
+        if (onRecKeyDown) { window.removeEventListener('keydown', onRecKeyDown, true); onRecKeyDown = null; }
+        if (onRecKeyUp) { window.removeEventListener('keyup', onRecKeyUp, true); onRecKeyUp = null; }
+      };
+      stopRecording = (rerender = false) => {
+        const wasRecording = recordingId !== null;
+        recordingId = null;
+        detachRecListeners();
+        if (rerender && wasRecording) renderList();
+      };
+
+      const renderComboBtn = (btn, combo) => {
+        btn.replaceChildren();
+        const parts = formatComboParts(combo);
+        btn.classList.toggle('empty', parts.length === 0);
+        if (!parts.length) {
+          btn.textContent = 'Не назначено';
+          return;
+        }
+        parts.forEach((p, idx) => {
+          if (idx > 0) btn.appendChild(document.createTextNode('+'));
+          btn.appendChild(el('kbd', null, p));
+        });
+      };
+
+      const renderPreview = (e) => {
+        if (!activeRecBtn) return;
+        const mods = [];
+        if (e.ctrlKey) mods.push('Ctrl');
+        if (e.altKey) mods.push('Alt');
+        if (e.shiftKey) mods.push('Shift');
+        if (e.metaKey) mods.push('Meta');
+        activeRecBtn.textContent = mods.length ? mods.join('+') + '+…' : 'Нажмите клавиши…';
+      };
+
+      const commitCombo = (actionId, combo, { replace = false } = {}) => {
+        const v = validateHotkeyForAction(actionId, combo);
+        if (v.ok === false) {
+          pendingAlert = { id: actionId, kind: 'error', text: tt(v.reason) };
+          renderList();
+          return;
+        }
+        const conflicts = v.combo ? findConflicts(settings.hotkeys, actionId, v.combo) : [];
+        if (conflicts.length && !replace) {
+          pendingAlert = {
+            id: actionId,
+            kind: 'conflict',
+            text: tt('«{0}» уже занято: {1}', formatCombo(v.combo), conflicts.map((c) => tt(c.label)).join(', ')),
+            combo: v.combo,
+            conflicts,
+          };
+          renderList();
+          return;
+        }
+        let next = settings.hotkeys;
+        if (replace && conflicts.length) {
+          for (const c of conflicts) next = setHotkeyOverride(next, c.id, '');
+        }
+        settings.hotkeys = setHotkeyOverride(next, actionId, v.combo);
+        pendingAlert = null;
+        applyHotkeysLive();
+        renderList();
+      };
+
+      const startRecording = (actionId) => {
+        if (recordingId === actionId) { stopRecording(true); return; }
+        stopRecording(false);
+        pendingAlert = null;
+        recordingId = actionId;
+        hotkeyRecording = true;
+
+        onRecKeyDown = (e) => {
+          e.preventDefault();
+          e.stopImmediatePropagation();
+          const res = eventToCombo(e);
+          if (res.status === 'modifier') { renderPreview(e); return; }
+          if (res.status === 'cancel') { stopRecording(true); return; }
+          stopRecording(false);
+          if (res.status === 'invalid') {
+            pendingAlert = { id: actionId, kind: 'error', text: tt(res.reason) };
+            renderList();
+            return;
+          }
+          commitCombo(actionId, res.combo);
+        };
+        onRecKeyUp = (e) => {
+          if (recordingId !== actionId) return;
+          renderPreview(e);
+        };
+        window.addEventListener('keydown', onRecKeyDown, true);
+        window.addEventListener('keyup', onRecKeyUp, true);
+        renderList();
+      };
+
+      const bar = el('div', 'hk-bar');
+      const search = /** @type {HTMLInputElement} */ (el('input', 'set-txt hk-search'));
+      search.type = 'search';
+      search.placeholder = 'Поиск по действию или клавише…';
+      search.spellcheck = false;
+      search.addEventListener('focus', () => stopRecording(true));
+      search.addEventListener('input', () => {
+        filterQuery = search.value.trim().toLowerCase();
+        renderList();
+      });
+      const resetAll = /** @type {HTMLButtonElement} */ (button('Сбросить все', 'refresh', () => {
+        stopRecording(false);
+        pendingAlert = null;
+        settings.hotkeys = {};
+        applyHotkeysLive();
+        renderList();
+      }));
+      bar.append(search, resetAll);
+      body.appendChild(bar);
+      body.appendChild(el('div', 'hk-hint', 'Нажмите на сочетание и введите новые клавиши. Esc — отмена записи. Изменения применяются сразу.'));
+
+      const listEl = el('div', 'hk-list');
+      body.appendChild(listEl);
+
+      function renderList() {
+        const hasOverrides = HOTKEY_DEFS.some((d) => getHotkey(settings, d.id) !== d.defaultCombo);
+        resetAll.disabled = !hasOverrides;
+        activeRecBtn = null;
+        listEl.replaceChildren();
+        let shown = 0;
+
+        for (const grp of HOTKEY_GROUPS) {
+          const items = HOTKEY_DEFS.filter((d) => {
+            if (d.group !== grp.id) return false;
+            if (!filterQuery) return true;
+            const curCombo = getHotkey(settings, d.id);
+            const hay = `${tt(d.label)} ${tt(d.desc)} ${formatCombo(curCombo)} ${formatCombo(d.defaultCombo)}`.toLowerCase();
+            return hay.includes(filterQuery);
+          });
+          if (!items.length) continue;
+          shown += items.length;
+          listEl.appendChild(el('div', 'hk-group-title', grp.label));
+
+          for (const def of items) {
+            const curCombo = getHotkey(settings, def.id);
+            const modified = curCombo !== def.defaultCombo;
+            const isRec = recordingId === def.id;
+
+            const rowEl = el('div', 'hk-row' + (modified ? ' modified' : ''));
+            const main = el('div', 'hk-row-main');
+
+            const info = el('div', 'hk-info');
+            const titleEl = el('b');
+            titleEl.append(el('span', 'hk-dot'), el('span', null, def.label));
+            info.appendChild(titleEl);
+            if (def.desc) info.appendChild(el('span', null, def.desc));
+
+            const ctl = el('div', 'hk-ctl');
+            const bindBtn = /** @type {HTMLButtonElement} */ (el('button', 'hk-bind' + (isRec ? ' recording' : '')));
+            bindBtn.type = 'button';
+            bindBtn.title = isRec ? 'Нажмите новое сочетание или Esc для отмены' : 'Назначить клавиши';
+            if (isRec) {
+              bindBtn.textContent = 'Нажмите клавиши…';
+              activeRecBtn = bindBtn;
+            } else {
+              renderComboBtn(bindBtn, curCombo);
+            }
+            bindBtn.addEventListener('click', () => startRecording(def.id));
+
+            const clearBtn = /** @type {HTMLButtonElement} */ (iconBtn('icon-btn hk-act', 'x', 'Отключить сочетание', 13));
+            clearBtn.disabled = !curCombo;
+            clearBtn.addEventListener('click', () => {
+              stopRecording(false);
+              commitCombo(def.id, '');
+            });
+
+            const resetBtn = /** @type {HTMLButtonElement} */ (iconBtn('icon-btn hk-act', 'refresh', 'Сбросить по умолчанию', 13));
+            resetBtn.disabled = !modified;
+            resetBtn.addEventListener('click', () => {
+              stopRecording(false);
+              commitCombo(def.id, def.defaultCombo);
+            });
+
+            ctl.append(bindBtn, clearBtn, resetBtn);
+            main.append(info, ctl);
+            rowEl.appendChild(main);
+
+            if (pendingAlert && pendingAlert.id === def.id) {
+              const al = el('div', 'hk-alert');
+              al.appendChild(el('span', 'hk-alert-msg', pendingAlert.text));
+              if (pendingAlert.kind === 'conflict' && pendingAlert.combo) {
+                const repCombo = pendingAlert.combo;
+                const repBtn = /** @type {HTMLButtonElement} */ (el('button', 'btn primary', 'Заменить'));
+                repBtn.type = 'button';
+                repBtn.addEventListener('click', () => commitCombo(def.id, repCombo, { replace: true }));
+                const cancelBtn = /** @type {HTMLButtonElement} */ (el('button', 'btn', 'Отмена'));
+                cancelBtn.type = 'button';
+                cancelBtn.addEventListener('click', () => { pendingAlert = null; renderList(); });
+                al.append(repBtn, cancelBtn);
+              }
+              rowEl.appendChild(al);
+            }
+
+            listEl.appendChild(rowEl);
+          }
+        }
+
+        if (!shown) listEl.appendChild(el('div', 'hk-empty', 'Ничего не найдено'));
+      }
+
+      renderList();
+    },
     notif() {
       const subs = [];
       body.appendChild(row('Уведомления о завершении агента', 'Системное уведомление, когда агент закончил или ждёт ответа, а вы смотрите в другое место.',
@@ -2641,6 +2899,7 @@ function showSettings(start = 'look') {
     },
   };
   const draw = () => {
+    stopRecording();
     nav.replaceChildren();
     for (const [key, glyph, label] of SET_SECTIONS) {
       const b = el('button', key === cur ? 'on' : '');
@@ -2661,7 +2920,7 @@ function paletteActions() {
   for (const p of projects) acts.push({ label: `Проект: ${p.name}`, hint: p.path, run: () => setActive(p.id) });
   acts.push({ label: 'Открыть папку…', run: openProjectDialog });
   acts.push({ label: 'Создать папку…', run: showCreateFolder });
-  acts.push({ label: 'Проект — вивер, дерево, Git', hint: 'Ctrl+Shift+E', run: () => openModule('files') });
+  acts.push({ label: 'Проект — вивер, дерево, Git', hint: hkLabel('openFiles'), run: () => openModule('files') });
   acts.push({ label: 'Граф Git — ветки и коммиты схемой', run: () => openModule('gitgraph') });
   acts.push({ label: 'Контекст — граф контекста агента', run: () => openModule('ctx') });
   acts.push({ label: 'Контейнеры (Docker / Podman)', run: () => openModule('docker') });
@@ -2674,15 +2933,16 @@ function paletteActions() {
   acts.push({ label: 'Jira — свои задачи из нескольких аккаунтов', run: () => openModule('jira') });
   acts.push({ label: 'Избранное: только проекты с агентом — вкл/выкл', hint: favAgentsOnly() ? 'сейчас включено' : 'сейчас выключено', run: () => setFavAgentsOnly(!favAgentsOnly()) });
   acts.push({ label: 'Закрыть терминалы без агента', run: async () => { await refreshAgents(); if (idleProjects().length) closeIdleTerms(); else toast('Закрывать нечего — простаивающих терминалов нет'); } });
-  acts.push({ label: 'Режим «один терминал»', run: toggleSingle });
-  acts.push({ label: 'Поиск в терминале', hint: 'Ctrl+F', run: openTermSearch });
-  acts.push({ label: 'Найти во всех проектах — файлы и терминалы', hint: 'Ctrl+Shift+F', run: () => showGlobalSearch() });
+  acts.push({ label: 'Режим «один терминал»', hint: hkLabel('toggleSingle'), run: toggleSingle });
+  acts.push({ label: 'Поиск в терминале', hint: hkLabel('termSearch'), run: openTermSearch });
+  acts.push({ label: 'Найти во всех проектах — файлы и терминалы', hint: hkLabel('globalSearch'), run: () => showGlobalSearch() });
   acts.push({ label: 'Поиск по всем терминалам', run: () => showGlobalSearch({ mode: 'terms' }) });
   acts.push({ label: 'Очистить терминал', run: () => clearTerminal() });
-  acts.push({ label: 'Разделить терминал — вкл/выкл', hint: 'Ctrl+Shift+D', run: () => toggleTermSplit() });
+  acts.push({ label: 'Разделить терминал — вкл/выкл', hint: hkLabel('termSplit'), run: () => toggleTermSplit() });
   acts.push({ label: 'Шкала времени слева — вкл/выкл', hint: settings.termTimeline === true ? 'сейчас включена' : 'сейчас выключена', run: () => { settings.termTimeline = settings.termTimeline !== true; saveSettings(); applyTimeline(); } });
   acts.push({ label: 'Перезапустить терминал', run: () => restartTerminal() });
-  acts.push({ label: 'Настройки…', run: () => showSettings() });
+  acts.push({ label: 'Настройки…', hint: hkLabel('openSettings'), run: () => showSettings() });
+  acts.push({ label: 'Настройки: Горячие клавиши…', run: () => showSettings('keys') });
   acts.push({ label: 'Модули — все модули плитками', run: () => showModulesCatalog() });
   acts.push({ label: 'Быстрая панель — состав и порядок', run: showPanelSetup });
   acts.push({ label: 'Оформление — цвета и размеры', run: () => showLookPanel($('#app').classList.contains('single') ? $('#rail-look') : $('#btn-look')) });
@@ -2759,7 +3019,7 @@ function showOnboarding() {
 function toggleSingle() {
   closeMenus();
   const on = $('#app').classList.toggle('single');
-  $('#btn-single').title = on ? 'Развернуть проекты (Ctrl+\\)' : 'Один терминал (Ctrl+\\)';
+  $('#btn-single').title = withHk(on ? 'Развернуть проекты' : 'Один терминал', 'toggleSingle');
   refitActiveTerminal();
 }
 
@@ -3336,6 +3596,7 @@ function init() {
   window.addEventListener('focus', () => refreshGitChip(300)); // ветка/изменения могли поменяться снаружи
   lite.fs.onChange(() => refreshGitChip(1200));              // файлы активного проекта меняются — пересчитать чип git
 
+  syncHotkeyHints();
   if (!settings.onboarded) setTimeout(showOnboarding, 200); // first-run welcome
   autoLaunchModules();
 }

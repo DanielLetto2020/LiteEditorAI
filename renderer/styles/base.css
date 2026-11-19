@@ -371,6 +371,31 @@ body:has(#app.is-max), body:has(#mod-app.is-max) { --win-radius: 0px; }
 .frame-sw { width: 22px; height: 22px; padding: 0; border-radius: 50%; border: 0; cursor: pointer; box-shadow: inset 0 0 0 1px rgba(255,255,255,.14); }
 .frame-sw.on { box-shadow: 0 0 0 2px var(--modal), 0 0 0 3.5px var(--text2); }
 
+/* раздел «Горячие клавиши» в настройках */
+.hk-bar { display: flex; align-items: center; gap: 8px; margin-top: 12px; }
+.hk-search { flex: 1; min-width: 0; }
+.hk-hint { font-size: 12px; color: var(--text-dim); margin: 8px 0 4px; line-height: 1.4; }
+.hk-group-title { font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--text-mute); margin: 16px 0 4px; }
+.hk-row { display: flex; flex-direction: column; gap: 6px; padding: 10px 0; border-bottom: 1px solid var(--raised); }
+.hk-row:last-child { border-bottom: none; }
+.hk-row-main { display: flex; align-items: center; gap: 12px; }
+.hk-info { flex: 1; min-width: 0; }
+.hk-info b { display: inline-flex; align-items: center; gap: 6px; font-weight: 500; font-size: 13.5px; color: var(--text); }
+.hk-dot { display: none; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); flex-shrink: 0; }
+.hk-row.modified .hk-dot { display: inline-block; }
+.hk-info span { display: block; font-size: 12px; color: var(--text-dim); margin-top: 2px; line-height: 1.4; }
+.hk-ctl { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
+.hk-bind { min-width: 138px; height: 30px; padding: 0 10px; border: 1px solid var(--input-b); border-radius: var(--r3); background: var(--bg-input); color: var(--text); font: inherit; font-size: 12px; display: inline-flex; align-items: center; justify-content: center; gap: 4px; cursor: pointer; }
+.hk-bind:hover { border-color: var(--tline); background: var(--row-hover); }
+.hk-bind.empty { color: var(--text-mute); }
+.hk-bind.recording { border-color: var(--accent); background: var(--accent-soft); color: var(--text-hi); box-shadow: 0 0 0 2px var(--accent-soft); }
+.hk-act { width: 28px; height: 28px; }
+.hk-act:disabled { opacity: .25; pointer-events: none; }
+.hk-alert { display: flex; align-items: center; gap: 8px; padding: 7px 10px; margin-top: 4px; border-radius: var(--r3); background: var(--warn-soft); border: 1px solid var(--warn-ring); font-size: 12px; color: var(--text); }
+.hk-alert-msg { flex: 1; min-width: 0; }
+.hk-alert .btn { height: 26px; padding: 0 9px; font-size: 12px; }
+.hk-empty { text-align: center; padding: 28px 0; color: var(--text-mute); font-size: 13px; }
+
 /* ---------------- панель «Оформление»: цвета и размеры ---------------- */
 .menu-dropdown.look-pop { width: 380px; max-width: none; min-width: 0; padding: 0; max-height: calc(100vh - 16px); overflow-y: auto; animation: fly-in .16s ease-out; }
 .look-h { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; gap: 4px; padding: 12px 10px 10px 16px; background: var(--bg-pop); border-bottom: 1px solid var(--border-strong); }
