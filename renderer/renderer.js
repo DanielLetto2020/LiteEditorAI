@@ -28,7 +28,7 @@ import { openGlobalSearch } from './gsearch.js';
 import { initExtensions } from './modules/extensions.js';
 // initFiles — вивер+дерево мигрированы в отдельное окно (renderer/module-entry.js).
 
-const APP_VERSION = 'alpha v1.1.244';
+const APP_VERSION = 'alpha v1.1.245';
 const GUTTER = 8; // зазор между карточками окна — он же разделитель, за который тянется ширина
 // Системный терминал («Система · ~») мигрирован в отдельное окно (renderer/modules/scratch.js):
 // его id `__scratch__::tN` маршрутизируются main'ом в окно-владельца, в ядре их больше не обрабатываем.
@@ -142,7 +142,7 @@ const {
   activeSessionId, projSessions, tabMeta,
   buildXterm, createSession, ensureProjectTabs, disposeSession, unloadProjectTerms,
   materializeSession, refreshAgents, scheduleAgentScan,
-  showActiveTerminal, refitActiveTerminal, applyTimeline,
+  showActiveTerminal, refitActiveTerminal, refitActiveTerminalSoon, applyTimeline,
   switchTab, addTab, clearTerminal, restartTerminal,
   toggleTermSplit, openTermSearch,
 } = termEngine;
@@ -1531,12 +1531,13 @@ function initGutters() {
         const maxW = target === 'filesDock' ? Math.max(480, window.innerWidth - 360) : 1000;
         layout[target] = Math.max(150, Math.min(maxW, w));
         applyLayout();
-        refitActiveTerminal();
+        refitActiveTerminalSoon();   // reflow буфера не на каждый кадр (см. term-core)
       };
       const onUp = () => {
         document.removeEventListener('mousemove', onMove);
         document.removeEventListener('mouseup', onUp);
         document.body.classList.remove('resizing');
+        refitActiveTerminal();
         saveLayout();
       };
       document.addEventListener('mousemove', onMove);
@@ -1917,7 +1918,7 @@ function showLookPanel(anchor) {
   const RANGES = [
     ['alpha', 'Непрозрачность фона', 60, 100, 1, '%', () => lookOf(settings).alpha, (v) => editLook((l) => { l.alpha = v; })],
     ['r', 'Скругление', 4, 22, 1, 'px', () => lookOf(settings).r, (v) => editLook((l) => { l.r = v; })],
-    ['side', 'Ширина панели', 240, 440, 2, 'px', () => layout.sidebar, (v) => { layout.sidebar = v; applyLayout(); refitActiveTerminal(); clearTimeout(lookLayoutT); lookLayoutT = setTimeout(saveLayout, 250); }],
+    ['side', 'Ширина панели', 240, 440, 2, 'px', () => layout.sidebar, (v) => { layout.sidebar = v; applyLayout(); refitActiveTerminalSoon(); clearTimeout(lookLayoutT); lookLayoutT = setTimeout(() => { saveLayout(); refitActiveTerminal(); }, 250); }],
     ['row', 'Строка проекта', 28, 42, 1, 'px', () => lookOf(settings).row, (v) => editLook((l) => { l.row = v; })],
     ['font', 'Шрифт терминала', 9, 24, 1, 'px', () => settings.fontSize, (v) => { settings.fontSize = v; applyFontSize(); clearTimeout(lookFontT); lookFontT = setTimeout(saveSettings, 250); }],
   ];
