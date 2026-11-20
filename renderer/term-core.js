@@ -17,7 +17,8 @@ import {
   copySelection, ptyResizer, writeTermWithAck, creditPtyAck, dropPtyAck, termLinkHandler, openTermFile, termTrace,
 } from './termutil.js';
 import { attachTimeline } from './termtimeline.js';
-import { el, icon, iconBtn, menuRow, placeMenu, closeMenus, makeModal, showConfirm, showPrompt } from './ui.js';
+import { el, icon, iconBtn, menuRow, placeMenu, closeMenus, makeModal, showConfirm, showPrompt, toast } from './ui.js';
+import { shellQuotePath, classifyTermLink } from '../lib/termlink.js';
 
 const $ = (sel) => document.querySelector(sel);
 
@@ -283,6 +284,7 @@ export function createTermEngine(host) {
     rec.sawBell = false;
     setProjState(id, st);
     if (st === 'busy') return;
+    if (st === 'quiet' && prev === 'busy') dispatchQueueSoon(id);
     if (host.onTurnEnd) host.onTurnEnd(rec.projId, st, id, reason, worked);
   }
 
@@ -415,7 +417,9 @@ export function createTermEngine(host) {
     const worked = rec.sawBell || (projState.get(id) === 'busy' && (Date.now() - (rec.busyStart || 0)) >= 1500);
     rec.sawBell = false;
     const next = waiting ? 'waiting' : 'quiet';
+    const wasBusy = projState.get(id) === 'busy';
     setProjState(id, next);
+    if (next === 'quiet' && wasBusy) dispatchQueueSoon(id);
     if (host.onTurnEnd) host.onTurnEnd(rec.projId, next, id, undefined, worked);
   }
 
@@ -558,11 +562,195 @@ export function createTermEngine(host) {
     lite.pty.write(id, bracketed ? '\x1b[200~' + s.replace(/\x1b\[20[01]~/g, '').replace(/\r?\n/g, '\r') + '\x1b[201~' : s);
   }
 
+  // Каталог проекта сессии (для скриншотов из буфера); у ext-терминала и неизвестной — ''.
+  function sessionProjPath(id) {
+    const rec = terms.get(id);
+    const p = rec ? host.getProjects().find((x) => x.id === rec.projId) : null;
+    return p ? p.path : '';
+  }
+
+  // Ctrl+V: текст — как раньше; если текста нет, а в буфере картинка (скриншот), — она сохраняется
+  // в <проект>/.lite/shots, а в строку ввода вставляется путь: Claude Code принимает изображения по пути.
   async function pasteInto(id) {
     const text = await lite.readClipboard();
     if (text) { cancelPrefill(id); writeAsPaste(id, text); }
+    else if (lite.saveClipboardImage) {
+      let r = null;
+      try { r = await lite.saveClipboardImage(sessionProjPath(id)); } catch (_) {}
+      if (r && r.path) { cancelPrefill(id); writeAsPaste(id, shellQuotePath(r.path) + ' '); }
+      else if (r && r.error) toast(r.error, { kind: 'err' });
+    }
     const rec = isExtTerm(id) ? extTerms.get(id) : terms.get(id);
     if (rec && rec.term) { try { rec.term.focus(); } catch (_) {} }
+  }
+
+  // ---- перетаскивание файлов в терминал: вставить пути ----
+  // Файлы из системного файлового менеджера приходят как Files (путь — через webUtils в preload),
+  // из дерева «Проект» — text/plain с абсолютным путём. Перетаскивание вкладок (тоже text/plain,
+  // но с id сессии) сюда не относится: такой текст не путь и отбрасывается проверкой.
+  function isPathDrag(e) {
+    if (tabDragEl || !e.dataTransfer) return false;
+    const types = Array.from(e.dataTransfer.types || []);
+    return types.includes('Files') || types.includes('text/plain') || types.includes('text/uri-list');
+  }
+  async function dropPaths(dt) {
+    const out = [];
+    for (const f of Array.from(dt.files || [])) {
+      const p = lite.pathForFile ? lite.pathForFile(f) : '';
+      if (p) out.push(p);
+    }
+    if (out.length) return out;
+    const raw = dt.getData('text/uri-list') || dt.getData('text/plain') || '';
+    const cand = [];
+    for (const line of raw.split(/\r?\n/)) {
+      const v = line.trim();
+      if (!v || v.startsWith('#')) continue;
+      if (v.startsWith('file:')) { const l = classifyTermLink(v); if (l && l.kind === 'file') cand.push(l.path); continue; }
+      if (/^(\/|[A-Za-z]:[\\/])/.test(v)) cand.push(v);
+    }
+    if (!cand.length) return [];
+    let ok = [];
+    try { ok = await lite.fs.existsMany(cand); } catch (_) { return []; }
+    return cand.filter((_, i) => ok[i]);
+  }
+  function attachPathDrop(container, id, term) {
+    const leave = () => container.classList.remove('drop-target');
+    container.addEventListener('dragover', (e) => {
+      if (!isPathDrag(e)) return;
+      e.preventDefault(); e.stopPropagation();
+      const allowed = String(e.dataTransfer.effectAllowed || 'all');
+      e.dataTransfer.dropEffect = /copy|all|uninitialized/i.test(allowed) ? 'copy' : (/move/i.test(allowed) ? 'move' : 'link');
+      container.classList.add('drop-target');
+    }, true);
+    container.addEventListener('dragleave', (e) => { if (!container.contains(/** @type {Node} */ (e.relatedTarget))) leave(); }, true);
+    container.addEventListener('drop', async (e) => {
+      if (!isPathDrag(e)) return;
+      e.preventDefault(); e.stopPropagation(); leave();
+      const paths = await dropPaths(e.dataTransfer);
+      if (!paths.length) return;
+      cancelPrefill(id);
+      writeAsPaste(id, paths.map(shellQuotePath).join(' ') + ' ');
+      try { term.focus(); } catch (_) {}
+    }, true);
+  }
+
+  // ---- очередь промптов: следующее сообщение уходит само, когда агент закончил ход ----
+  // Отправляем только при переходе «работает → ждёт ввода» (quiet). «waiting» — это запрос
+  // разрешения, вопрос или ошибка: туда текст не шлём никогда, решает человек. Если при
+  // добавлении агент уже свободен — уходит сразу. Очередь живёт в памяти окна (до перезагрузки).
+  const QUEUE_DISPATCH_MS = 900;
+  function queueOf(sid) { const r = terms.get(sid); return r ? (r.queue || (r.queue = [])) : []; }
+  function dispatchQueueSoon(id) {
+    const rec = terms.get(id);
+    if (!rec || !rec.queue || !rec.queue.length) return;
+    clearTimeout(rec.queueTimer);
+    rec.queueTimer = setTimeout(() => {
+      const r = terms.get(id);
+      if (!r || !r.queue || !r.queue.length || r.exited || r.replayingBacklog) return;
+      if (projState.get(id) !== 'quiet') return;
+      const text = r.queue.shift();
+      termTrace('queue-send', id, r.queue.length);
+      cancelPrefill(id);
+      r.lastInputAt = Date.now();
+      writeAsPaste(id, text);
+      setTimeout(() => { if (terms.has(id)) lite.pty.write(id, '\r'); }, 120);
+      renderTabBar();
+    }, QUEUE_DISPATCH_MS);
+  }
+  function enqueuePrompt(sid, text) {
+    const v = String(text || '').replace(/[\r\n]+$/, '').trim();
+    if (!v || !terms.has(sid)) return false;
+    queueOf(sid).push(v);
+    const st = projState.get(sid);
+    if (st !== 'busy' && st !== 'waiting') dispatchQueueSoon(sid);
+    renderTabBar();
+    return true;
+  }
+  function openQueueManager(sid) {
+    const rec = terms.get(sid);
+    if (!rec) return;
+    const { m, close } = makeModal(`
+      <h2>Очередь промптов</h2>
+      <div class="pm-hint">Сообщения уходят агенту по одному: следующее — когда он закончит ход и будет ждать ввода. Пока агент спрашивает разрешение или ждёт ответа на вопрос, ничего не отправляется. Очередь живёт до перезагрузки окна.</div>
+      <div class="pm-list pq-list"></div>
+      <textarea class="pm-body pq-new" placeholder="Следующее сообщение агенту… (Ctrl+Enter — в очередь)"></textarea>
+      <div class="modal-actions">
+        <button class="btn" id="pq-clear">Очистить</button>
+        <button class="btn" id="pq-done">Закрыть</button>
+        <button class="btn primary" id="pq-add">В очередь</button>
+      </div>`);
+    const list = /** @type {HTMLElement} */ (m.querySelector('.pq-list'));
+    const ta = /** @type {HTMLTextAreaElement} */ (m.querySelector('.pq-new'));
+    const render = () => {
+      list.innerHTML = '';
+      const q = queueOf(sid);
+      if (!q.length) { list.appendChild(el('div', 'pm-empty', 'Очередь пуста')); return; }
+      q.forEach((text, i) => {
+        const row = el('div', 'pm-row');
+        const head = el('div', 'pm-row-head');
+        head.appendChild(el('span', 'pq-num', String(i + 1)));
+        head.appendChild(el('span', 'pq-text', text));
+        const ctrl = el('div', 'pm-ctrl');
+        const up = iconBtn('pm-mini', 'chevron-up', 'Выше', 15); up.disabled = i === 0;
+        up.addEventListener('click', () => { const a = queueOf(sid); [a[i - 1], a[i]] = [a[i], a[i - 1]]; render(); renderTabBar(); });
+        const del = iconBtn('pm-mini del', 'trash', 'Удалить', 15);
+        del.addEventListener('click', () => { queueOf(sid).splice(i, 1); render(); renderTabBar(); });
+        ctrl.append(up, del);
+        head.appendChild(ctrl);
+        row.appendChild(head);
+        list.appendChild(row);
+      });
+    };
+    const add = () => { if (enqueuePrompt(sid, ta.value)) { ta.value = ''; render(); } ta.focus(); };
+    /** @type {HTMLElement} */ (m.querySelector('#pq-add')).onclick = add;
+    /** @type {HTMLElement} */ (m.querySelector('#pq-done')).onclick = close;
+    /** @type {HTMLElement} */ (m.querySelector('#pq-clear')).onclick = () => { queueOf(sid).length = 0; render(); renderTabBar(); };
+    ta.addEventListener('keydown', (e) => { if (e.key === 'Enter' && e.ctrlKey) { e.preventDefault(); add(); } });
+    render();
+    setTimeout(() => ta.focus(), 20);
+  }
+
+  // ---- чипы слушающих портов активного терминала (Linux) ----
+  const PORTS_POLL_MS = 3000;
+  let portsTimer = null, portsSig = '', portsBusy = false;
+  function renderPorts(list) {
+    const box = $('#chip-ports');
+    if (!box) return;
+    const sig = list.map((p) => p.port + ':' + p.comm).join(',');
+    if (sig === portsSig) return;
+    portsSig = sig;
+    box.replaceChildren(...list.slice(0, 6).map((p) => {
+      const url = `http://localhost:${p.port}`;
+      const b = el('button', 'chip chip-port');
+      b.dataset.noI18n = '';
+      b.append(icon('globe', 14), el('span', 'ct', ':' + p.port));
+      b.title = `${p.comm || tt('процесс')} · ${url}`;
+      b.addEventListener('click', () => lite.openExternal(url));
+      return b;
+    }));
+    box.classList.toggle('hidden', !list.length);
+  }
+  async function pollPorts() {
+    clearTimeout(portsTimer);
+    portsTimer = setTimeout(pollPorts, PORTS_POLL_MS);
+    if (portsBusy || document.hidden) return;
+    const aid = host.getActiveId();
+    const t = tabsByProj.get(aid);
+    const detached = !!(aid && host.isDetached && host.isDetached(aid));
+    const ids = (!t || detached) ? [] : (isProjSplit(t) ? t.splitPair.slice() : [t.active]).filter((s) => s && terms.has(s) && !terms.get(s).exited);
+    if (!ids.length) { renderPorts([]); return; }
+    portsBusy = true;
+    let res = null;
+    try { res = await lite.pty.ports(ids); } catch (_) {} finally { portsBusy = false; }
+    if (!res) return;
+    const seen = new Map();
+    for (const id of ids) for (const p of res[id] || []) if (!seen.has(p.port)) seen.set(p.port, p);
+    renderPorts([...seen.values()].sort((a, b) => a.port - b.port));
+  }
+  function refreshPortsSoon() {
+    if (!lite.pty.ports || lite.platform !== 'linux' || !$('#chip-ports')) return;
+    clearTimeout(portsTimer);
+    portsTimer = setTimeout(pollPorts, 150);
   }
 
   // ---- промпты (правый клик в терминале) ----
@@ -752,6 +940,12 @@ export function createTermEngine(host) {
     } : null, hasSel ? '' : 'disabled'));
     dd.appendChild(el('div', 'menu-sep'));
     addPromptsItem(dd, sid);
+    if (terms.has(sid)) {
+      const qRow = menuRow('list', 'Очередь промптов…', () => { closeMenus(); openQueueManager(sid); });
+      const qn = queueOf(sid).length;
+      if (qn) qRow.appendChild(el('span', 'menu-badge', String(qn)));
+      dd.appendChild(qRow);
+    }
     dd.appendChild(el('div', 'menu-sep'));
     dd.appendChild(menuRow('eraser', 'Очистить', () => { closeMenus(); clearTerminal(sid); }));
     dd.appendChild(menuRow('refresh', 'Перезапустить', () => { closeMenus(); restartTerminal(sid); }));
@@ -804,6 +998,7 @@ export function createTermEngine(host) {
       return true;
     });
     container.addEventListener('contextmenu', (e) => { e.preventDefault(); showTermMenu(e.clientX, e.clientY, term, id); });
+    attachPathDrop(container, id, term);
     return { term, fit, search, timeline, syncPty, created };
   }
 
@@ -866,6 +1061,7 @@ export function createTermEngine(host) {
       claude: null, probeTimer: null, probeDeadline: null, probeSeq: 0, claudeRetry: 0,
       osc7501: /** @type {{ state: string, kind: string, app: string, msg: string } | null} */ (null),
       replayingBacklog: false,
+      queue: /** @type {string[]} */ ([]), queueTimer: null,
     };
     terms.set(id, rec);
     if (adoptId) {
@@ -1189,6 +1385,8 @@ export function createTermEngine(host) {
       tab.appendChild(el('span', 'tab-dot pind ' + (isLive ? (projState.get(sid) || 'quiet') : 'idle')));
       const nameSpan = el('span', 'tab-name', rec.name);
       tab.appendChild(nameSpan);
+      const qn = isLive && rec.queue ? rec.queue.length : 0;
+      if (qn) { const qb = el('span', 'tab-queue', String(qn)); qb.title = tt('Сообщений в очереди: {0}', String(qn)); tab.appendChild(qb); }
       tab.addEventListener('mouseenter', () => { if (!tabDragEl && nameSpan.scrollWidth > nameSpan.clientWidth + 1) showTabTip(tab, rec.name); });
       tab.addEventListener('mouseleave', hideTabTip);
       if (t.sessions.length > 1) {
@@ -1283,6 +1481,7 @@ export function createTermEngine(host) {
     }
     renderTabBar();
     syncTermSearchUI();
+    refreshPortsSoon();
     if (!detached) refitActiveTerminal(true);
     if (host.onAfterShowActive) host.onAfterShowActive();
   }
@@ -1626,6 +1825,7 @@ export function createTermEngine(host) {
 
   // ---- привязка DOM-кнопок терминальной области ----
   function bindUiEvents() {
+    refreshPortsSoon();   // чипы портов: первый опрос, дальше — каждые PORTS_POLL_MS
     const clearBtn = $('#term-clear');
     if (clearBtn) clearBtn.addEventListener('click', () => clearTerminal());
     const restartBtn = $('#term-restart');

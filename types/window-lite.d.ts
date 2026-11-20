@@ -17,6 +17,7 @@ export interface LiteBridge {
   openExternal(url: string): Promise<{ ok?: boolean; error?: string }>;
   copyText(text: string): void;
   readClipboard(): Promise<string>;
+  saveClipboardImage(dir?: string): Promise<{ ok?: boolean; path?: string; empty?: boolean; error?: string }>;
   log(level: string, ...args: any[]): void;
 
   i18n: {
@@ -172,6 +173,7 @@ export interface LiteBridge {
     foregroundState(id: string): Promise<'shell' | 'running' | 'waiting' | null>;
     agentState(id: string): Promise<{ fg: 'shell' | 'running' | 'waiting' | null; claude?: { status?: string; waitingFor?: string } | null } | null>;
     agents(ids: string[]): Promise<Record<string, { fg: string | null; agent: string | null; idle: boolean }>>;
+    ports(ids: string[]): Promise<Record<string, Array<{ port: number; comm: string; pid: number; loopback: boolean }>>>;
     onData(cb: (payload: { id: string; data: string }) => void): Unsubscribe;
     onExit(cb: (payload: { id: string }) => void): Unsubscribe;
   };
