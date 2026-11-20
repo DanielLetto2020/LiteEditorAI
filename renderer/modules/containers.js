@@ -2,11 +2,12 @@
 // Изолирован по образцу textproc.js: всё из ядра — через host, UI-хелперы — из ui.js,
 // бэкенд — window.lite.containers.*. xterm для exec-терминала импортируется здесь же.
 // host: { STORE, persist, settings, layout, GUTTER, saveUiState, refitActiveTerminal,
-//         closeOtherPanels, termTheme, applyUnicode11, loadFastRenderer }
+//         closeOtherPanels, termTheme, applyUnicode11, loadFastRenderer, termLinkHandler }
 import { el, icon, iconBtn, toast, showConfirm, makeModal } from '../ui.js';
 import { parsePublishedPorts, portUrl, portLabel } from '../../lib/portparse.js';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
+import { WebLinksAddon } from '@xterm/addon-web-links';
 
 const $ = (sel) => document.querySelector(sel);
 const lite = window.lite;
@@ -14,7 +15,7 @@ const lite = window.lite;
 // System-wide (not per-project) right-pane manager: tabs Docker|Podman, accordion sections for
 // containers (grouped by compose project), pods (podman), images, volumes, with lifecycle actions.
 export function initContainers(host) {
-  const { STORE, persist, settings, layout, GUTTER, saveUiState, refitActiveTerminal, closeOtherPanels, termTheme, applyUnicode11, loadFastRenderer } = host;
+  const { STORE, persist, settings, layout, GUTTER, saveUiState, refitActiveTerminal, closeOtherPanels, termTheme, applyUnicode11, loadFastRenderer, termLinkHandler } = host;
 
   let dockerOpen = false;      // модуль контейнеров (docker/podman) справа открыт
   // Persisted per-engine group order + collapse + default tab: { order:{engine:[names]}, collapsed:{'engine:name':bool}, defEngine }
@@ -796,8 +797,9 @@ export function initContainers(host) {
     view.innerHTML = '';
     const wrap = el('div', 'docker-term'); view.appendChild(wrap);
     const d = dockerDetail; if (!d) return;
-    const term = new Terminal({ fontFamily: '"JetBrains Mono", "Fira Code", "Cascadia Code", Consolas, monospace', fontSize: settings.fontSize, cursorBlink: true, allowProposedApi: true, theme: termTheme(), scrollback: 3000, allowTransparency: true });
+    const term = new Terminal({ fontFamily: '"JetBrains Mono", "Fira Code", "Cascadia Code", Consolas, monospace', fontSize: settings.fontSize, cursorBlink: true, allowProposedApi: true, theme: termTheme(), scrollback: 3000, allowTransparency: true, linkHandler: termLinkHandler() });
     const fit = new FitAddon(); term.loadAddon(fit);
+    term.loadAddon(new WebLinksAddon((_e, uri) => { if (/^https?:\/\//i.test(uri)) lite.openExternal(uri); }));
     applyUnicode11(term);
     term.open(wrap);
     loadFastRenderer(term);

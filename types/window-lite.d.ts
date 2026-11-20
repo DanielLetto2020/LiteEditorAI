@@ -6,6 +6,7 @@ type Unsubscribe = () => void;
 export interface LiteBridge {
   platform: string;
   homeDir: string;
+  termTrace: boolean;
   openProject(): Promise<{ path: string; name: string } | null>;
   pathForFile(file: File): string;
   pickDir(): Promise<string | null>;

@@ -11,7 +11,7 @@ import { syncSettings } from './settings-sync.js';
 import { createCodeEditor } from './codeedit.js';
 import { termThemeFor, applyLook } from './themes.js';
 import { applyFrame } from './frame.js';
-import { loadFastRenderer, applyUnicode11, copySelection } from './termutil.js';
+import { loadFastRenderer, applyUnicode11, copySelection, termLinkHandler } from './termutil.js';
 import '@xterm/xterm/css/xterm.css';
 import 'highlight.js/styles/atom-one-dark.css';
 
@@ -314,7 +314,7 @@ function buildHost() {
     el, icon, iconBtn, makeModal, showConfirm, showPrompt, toast, applyLayoutSwap,
     createCodeEditor, // языковая поддержка — модули импортируют languageFor/ensureLanguage из codeedit.js напрямую
     // терминалы модулей стеклянные, как в редакторе: свой фон прозрачный, виден фон окна или карточки
-    termTheme: () => termThemeFor(settings, { glass: true }), applyUnicode11, loadFastRenderer, copySelection,
+    termTheme: () => termThemeFor(settings, { glass: true }), applyUnicode11, loadFastRenderer, copySelection, termLinkHandler,
     STORE, persist, settings, saveSettings,
     layout: layoutProxy, GUTTER: 0,
     saveUiState: () => {}, refitActiveTerminal: () => {}, closeOtherPanels: () => {}, renderProjects: () => {},

@@ -2938,9 +2938,16 @@ function createWindow() {
   });
   mainWindow.webContents.on('unresponsive', () => logger.log('warn', 'window', 'renderer unresponsive'));
   mainWindow.webContents.on('responsive', () => logger.log('info', 'window', 'renderer responsive'));
+  // «CONTEXT_LOST_WEBGL: loseContext: context lost» Chromium пишет на КАЖДЫЙ явный вызов
+  // WEBGL_lose_context.loseContext() — а его делаем мы сами: проба GPU при старте окна
+  // (isHardwareWebgl) и освобождение контекста вытесненного терминала (dropWebgl, renderer/termutil.js).
+  // Это не сбой — пишем info, чтобы не засорять реестр ошибок. Настоящая потеря контекста
+  // (сброс GPU) приходит другим текстом и остаётся warn.
+  const DELIBERATE_GL_LOSS = /CONTEXT_LOST_WEBGL: loseContext: context lost/;
   mainWindow.webContents.on('console-message', (e) => {
-    if (e.level === 'warning' || e.level === 'error')
-      logger.log(e.level === 'error' ? 'error' : 'warn', 'console', `${e.message} (${e.sourceId}:${e.lineNumber})`);
+    if (e.level !== 'warning' && e.level !== 'error') return;
+    const level = DELIBERATE_GL_LOSS.test(String(e.message)) ? 'info' : (e.level === 'error' ? 'error' : 'warn');
+    logger.log(level, 'console', `${e.message} (${e.sourceId}:${e.lineNumber})`);
   });
 
   const persist = () => {
