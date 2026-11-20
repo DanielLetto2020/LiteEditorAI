@@ -3,7 +3,7 @@
 'use strict';
 
 const assert = require('assert');
-const { classifyTermLink } = require('../lib/termlink.js');
+const { classifyTermLink, shellQuotePath } = require('../lib/termlink.js');
 
 let passed = 0;
 function eq(a, b, msg) { assert.deepStrictEqual(a, b, msg); passed++; }
@@ -33,5 +33,14 @@ eq(classifyTermLink('file:///home/u/bad%E0%A4%A'), null, 'битый %-код');
 for (const bad of ['mailto:a@b.c', 'javascript:alert(1)', 'ssh://host', 'ftp://x/y', 'vscode://file/a', '', '   ', 'просто текст', '/home/u/a.js', null, undefined, 42]) {
   eq(classifyTermLink(bad), null, 'игнор: ' + String(bad));
 }
+
+// shellQuotePath — вставка путей (drop файла, скриншот) в командную строку
+eq(shellQuotePath('/home/u/p/shot-1.png'), '/home/u/p/shot-1.png', 'простой путь без кавычек');
+eq(shellQuotePath('/home/u/my dir/a.png'), "'/home/u/my dir/a.png'", 'пробел');
+eq(shellQuotePath("/home/u/it's"), "'/home/u/it'\\''s'", 'апостроф');
+eq(shellQuotePath('/home/u/проект/a.md'), "'/home/u/проект/a.md'", 'кириллица — в кавычках');
+eq(shellQuotePath('~/x'), "'~/x'", 'тильда не раскрывается');
+eq(shellQuotePath('/a/$(rm -rf ~)'), "'/a/$(rm -rf ~)'", 'подстановка команды обезврежена');
+eq(shellQuotePath(''), "''", 'пустая строка');
 
 console.log(`✓ termlink: ${passed} проверок пройдено`);

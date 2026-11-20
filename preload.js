@@ -25,6 +25,7 @@ if (canExposeLiteBridge()) contextBridge.exposeInMainWorld('lite', {
   openExternal: (url) => ipcRenderer.invoke('shell:openExternal', url),
   copyText: (text) => ipcRenderer.send('clipboard:write', text),
   readClipboard: () => ipcRenderer.invoke('clipboard:read'),
+  saveClipboardImage: (dir) => ipcRenderer.invoke('clipboard:saveImage', { dir }), // картинка из буфера → PNG; { path } | { empty }
   // Forward renderer-side errors/events to the main-process file log.
   log: (level, ...args) => ipcRenderer.send('log:renderer', { level, args }),
 
@@ -716,6 +717,7 @@ if (canExposeLiteBridge()) contextBridge.exposeInMainWorld('lite', {
     restart: (opts) => ipcRenderer.invoke('pty:restart', opts),
     foregroundState: (id) => ipcRenderer.invoke('pty:foregroundState', { id }),
     agentState: (id) => ipcRenderer.invoke('pty:agentState', { id }), // + отчёт Claude Code о сессии
+    ports: (ids) => ipcRenderer.invoke('pty:ports', { ids }), // слушающие TCP-порты процессов терминалов (Linux)
     agents: (ids) => ipcRenderer.invoke('pty:agents', { ids }), // какой агент в каждом терминале + можно ли закрыть
     onData: (cb) => {
       const h = (_e, payload) => cb(payload);
