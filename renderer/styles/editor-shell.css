@@ -668,3 +668,20 @@ body.resizing .files-dock-frame { pointer-events: none; }
 }
 .modal.gsx-modal .gsx-masks input[type="text"]:focus { border-color: var(--border-accent); }
 .gsx .gsx-proj { padding: 3px 5px; font-size: 12px; color: var(--text-dim); }
+
+/* ---- чипы слушающих портов терминала · счётчик очереди промптов · drop файлов в терминал ---- */
+#chip-ports { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 6px; }
+#chip-ports.hidden { display: none; }
+.chip.chip-port { color: var(--green); border-color: var(--border-accent); flex-shrink: 0; }
+.chip.chip-port:hover { background: var(--accent-soft); color: var(--green-bright); }
+.tab-queue {
+  flex: 0 0 auto; min-width: 16px; height: 16px; padding: 0 5px; margin-left: 2px; border-radius: 999px;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: var(--accent-soft); color: var(--green); font-size: 10.5px; font-weight: 600; line-height: 1;
+}
+.term-instance.drop-target { outline: 2px dashed var(--border-accent); outline-offset: -6px; border-radius: var(--r2); }
+.pq-list { height: auto; max-height: 40vh; min-height: 60px; }
+.pq-list .pm-row-head { margin-bottom: 0; align-items: flex-start; }
+.pq-num { flex: 0 0 auto; min-width: 18px; color: var(--text-mute); font-size: 11.5px; padding-top: 6px; }
+.pq-text { flex: 1 1 auto; min-width: 0; white-space: pre-wrap; word-break: break-word; font-size: 12.5px; color: var(--text); padding-top: 5px; max-height: 120px; overflow: auto; }
+.pq-new { margin-bottom: 4px; }

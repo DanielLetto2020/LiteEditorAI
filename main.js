@@ -4385,6 +4385,19 @@ ipcMain.handle('pty:agentState', (_e, { id }) => {
 // Какой агент на переднем плане каждого из терминалов ids и можно ли закрыть терминал без потерь
 // (lib/agentstate.js agentOf) — для фильтра «только проекты с агентом» в «Избранном» и закрытия
 // случайно открытых терминалов. { [id]: { fg, agent, idle } }; вне Linux ответа по терминалу нет.
+// Какие TCP-порты слушают процессы каждого из терминалов ids (lib/ports.js) — чипы «:5173» в
+// нижней панели. { [id]: [{ port, comm, pid, loopback }] }; вне Linux — пусто.
+ipcMain.handle('pty:ports', (_e, { ids } = {}) => {
+  const out = {};
+  if (process.platform !== 'linux') return out;
+  for (const id of Array.isArray(ids) ? ids.slice(0, 16) : []) {
+    const p = ptys.get(id);
+    if (p && p.pid) { try { out[String(id)] = portsLib().listeningPorts(p.pid, { excludePids: [process.pid] }); } catch (_) { out[String(id)] = []; } }
+  }
+  return out;
+});
+let _portsLib = null;
+function portsLib() { return _portsLib || (_portsLib = require('./lib/ports')); }
 ipcMain.handle('pty:agents', (_e, { ids } = {}) => {
   const entries = [];
   for (const id of Array.isArray(ids) ? ids.slice(0, 500) : []) {
@@ -5128,6 +5141,45 @@ ipcMain.handle('shell:copyFile', (_e, target) => {
 });
 ipcMain.on('clipboard:write', (_e, text) => clipboard.writeText(String(text == null ? '' : text)));
 ipcMain.handle('clipboard:read', () => clipboard.readText());
+// Картинка из буфера → PNG-файл, путь к которому вставляется в терминал (Ctrl+V скриншота агенту:
+// Claude Code принимает изображения по пути). Кладём в <проект>/.lite/shots — рядом с проектом агенту
+// не нужно разрешение на чтение чужого каталога; каталог сам себя исключает из git (.gitignore «*»).
+// Без проекта (терминал «Система») или без прав на запись — в ~/.LiteEditorAI/shots. Старше 14 дней — удаляем.
+const SHOTS_TTL_MS = 14 * 24 * 3600 * 1000;
+function pruneShots(dir) {
+  try {
+    const now = Date.now();
+    for (const f of fs.readdirSync(dir)) {
+      if (!/^shot-.*\.png$/.test(f)) continue;
+      const p = path.join(dir, f);
+      try { if (now - fs.statSync(p).mtimeMs > SHOTS_TTL_MS) fs.unlinkSync(p); } catch (_) {}
+    }
+  } catch (_) {}
+}
+ipcMain.handle('clipboard:saveImage', (_e, { dir } = {}) => {
+  const img = clipboard.readImage();
+  if (!img || img.isEmpty()) return { empty: true };
+  const png = img.toPNG();
+  const d = new Date();
+  const p2 = (n) => String(n).padStart(2, '0');
+  const name = `shot-${d.getFullYear()}${p2(d.getMonth() + 1)}${p2(d.getDate())}-${p2(d.getHours())}${p2(d.getMinutes())}${p2(d.getSeconds())}-${Math.random().toString(36).slice(2, 6)}.png`;
+  const targets = [];
+  const base = typeof dir === 'string' && path.isAbsolute(dir) ? dir : '';
+  try { if (base && fs.statSync(base).isDirectory()) targets.push(path.join(base, '.lite', 'shots')); } catch (_) {}
+  targets.push(path.join(storeDir, 'shots'));
+  for (const t of targets) {
+    try {
+      fs.mkdirSync(t, { recursive: true });
+      const gi = path.join(t, '.gitignore');
+      if (t !== targets[targets.length - 1] && !fs.existsSync(gi)) fs.writeFileSync(gi, '*\n');
+      const file = path.join(t, name);
+      fs.writeFileSync(file, png);
+      pruneShots(t);
+      return { ok: true, path: file };
+    } catch (_) { /* следующий вариант */ }
+  }
+  return { ok: false, error: 'Не удалось сохранить изображение из буфера' };
+});
 
 // ---------------------------------------------------------------- «Озвучка» (lib/ipc/voice.js, сайдкар TTS грузится лениво)
 const voiceApi = registerVoiceIpc({
