@@ -3,8 +3,32 @@
 import { WebglAddon } from '@xterm/addon-webgl';
 import { CanvasAddon } from '@xterm/addon-canvas';
 import { Unicode11Addon } from '@xterm/addon-unicode11';
+import { classifyTermLink } from '../lib/termlink.js';
 
 const lite = window.lite;
+
+// Открыть локальный файл из терминала во вивере «Проект» (если он существует).
+export async function openTermFile(path, line) {
+  try { if (!(await lite.fs.exists(path))) return; } catch (_) { return; }
+  lite.editorBus.openInViewer(path, line || 0);
+}
+
+// Обработчик гиперссылок OSC 8 (опция `linkHandler` у new Terminal). Без него xterm показывал
+// confirm() и звал window.open(), который Electron запрещает, — клик не открывал ничего.
+// http(s) → внешний браузер; file: → openFile(path, line), если он передан (терминалы удалённых
+// хостов и контейнеров его не передают: пути там не локальные); прочие схемы игнорируются.
+/** @param {{ openFile?: (path: string, line: number) => void }} [opts] */
+export function termLinkHandler({ openFile } = {}) {
+  return {
+    allowNonHttpProtocols: true,   // иначе xterm отбросит file:-ссылки ещё до нас
+    activate(_e, uri) {
+      const link = classifyTermLink(uri);
+      if (!link) return;
+      if (link.kind === 'web') lite.openExternal(link.url);
+      else if (openFile) openFile(link.path, link.line);
+    },
+  };
+}
 
 // Real GPU (not swiftshader/llvmpipe/mesa-offscreen) → WebGL renderer is safe & smooth.
 // Ответ не меняется в пределах сессии, поэтому считаем его ОДИН раз, а контекст пробы сразу

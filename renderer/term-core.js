@@ -14,7 +14,7 @@ import { OSC7501_QUERY_REPLY, parseOsc7501, mapOsc7501ToIndicator } from '../lib
 import { matchesAction, getHotkey, formatCombo } from '../lib/hotkeys.js';
 import {
   prepareRenderer, activateRenderer, releaseRenderer, applyUnicode11,
-  copySelection, ptyResizer, writeTermWithAck, creditPtyAck, dropPtyAck,
+  copySelection, ptyResizer, writeTermWithAck, creditPtyAck, dropPtyAck, termLinkHandler, openTermFile,
 } from './termutil.js';
 import { attachTimeline } from './termtimeline.js';
 import { el, icon, iconBtn, menuRow, placeMenu, closeMenus, makeModal, showConfirm, showPrompt } from './ui.js';
@@ -503,8 +503,7 @@ export function createTermEngine(host) {
     const mm = raw.match(/^(.*?)(?::(\d+))?$/);
     let p = mm[1]; const line = mm[2] ? parseInt(mm[2], 10) : 0;
     if (!/^([a-zA-Z]:[\\/]|[\\/])/.test(p)) p = projPath.replace(/[\\/]$/, '') + '/' + p.replace(/^\.[\\/]/, '');
-    if (!(await lite.fs.exists(p))) return;
-    lite.editorBus.openInViewer(p, line);
+    await openTermFile(p, line);
   }
 
   function fileLinkProvider(term, projPath) {
@@ -769,6 +768,7 @@ export function createTermEngine(host) {
       fontFamily: '"JetBrains Mono", "Fira Code", "Cascadia Code", Consolas, monospace',
       fontSize: st.fontSize, cursorBlink: true, allowProposedApi: true, theme: host.termTheme(), scrollback: 5000,
       allowTransparency: true,
+      linkHandler: termLinkHandler({ openFile: openTermFile }),
     });
     const fit = new FitAddon();
     const search = new SearchAddon();
