@@ -3,8 +3,56 @@
 import { WebglAddon } from '@xterm/addon-webgl';
 import { CanvasAddon } from '@xterm/addon-canvas';
 import { Unicode11Addon } from '@xterm/addon-unicode11';
+import { classifyTermLink } from '../lib/termlink.js';
 
 const lite = window.lite;
+
+// ── Диагностика тормозов терминала (LITE_TERM_TRACE=1, по умолчанию выключена) ────────────────
+// xterm пишет «task queue exceeded allotted deadline by Nms», когда idle-задача (ресайз отрисовщика,
+// прогрев атласа глифов) заняла сотни миллисекунд. Само сообщение не говорит, что её вызвало.
+// С флагом держим кольцо последних событий терминала и при таком warn пишем его в лог приложения.
+const TRACE_ON = !!(lite && lite.termTrace);
+const TRACE_MAX = 60;
+const traceRing = [];
+export function termTrace(kind, ...info) {
+  if (!TRACE_ON) return;
+  traceRing.push(`${Math.round(performance.now())} ${kind} ${info.join(' ')}`.trim());
+  if (traceRing.length > TRACE_MAX) traceRing.shift();
+}
+if (TRACE_ON) {
+  const origWarn = console.warn.bind(console);
+  console.warn = (...args) => {
+    origWarn(...args);
+    try {
+      if (/allotted deadline/.test(String(args[0]))) {
+        lite.log('info', `[term-trace] ${String(args[0])} @${Math.round(performance.now())}; последние события:\n` + traceRing.join('\n'));
+      }
+    } catch (_) {}
+  };
+}
+
+// Открыть локальный файл из терминала во вивере «Проект» (если он существует).
+export async function openTermFile(path, line) {
+  try { if (!(await lite.fs.exists(path))) return; } catch (_) { return; }
+  lite.editorBus.openInViewer(path, line || 0);
+}
+
+// Обработчик гиперссылок OSC 8 (опция `linkHandler` у new Terminal). Без него xterm показывал
+// confirm() и звал window.open(), который Electron запрещает, — клик не открывал ничего.
+// http(s) → внешний браузер; file: → openFile(path, line), если он передан (терминалы удалённых
+// хостов и контейнеров его не передают: пути там не локальные); прочие схемы игнорируются.
+/** @param {{ openFile?: (path: string, line: number) => void }} [opts] */
+export function termLinkHandler({ openFile } = {}) {
+  return {
+    allowNonHttpProtocols: true,   // иначе xterm отбросит file:-ссылки ещё до нас
+    activate(_e, uri) {
+      const link = classifyTermLink(uri);
+      if (!link) return;
+      if (link.kind === 'web') lite.openExternal(link.url);
+      else if (openFile) openFile(link.path, link.line);
+    },
+  };
+}
 
 // Real GPU (not swiftshader/llvmpipe/mesa-offscreen) → WebGL renderer is safe & smooth.
 // Ответ не меняется в пределах сессии, поэтому считаем его ОДИН раз, а контекст пробы сразу
@@ -57,10 +105,20 @@ export function loadFastRenderer(term) {
 const WEBGL_KEEP = 4;
 const webglLru = [];   // [{ term, addon }] — последний показанный в конце
 
+// dispose() аддона убирает canvas, но сам GL-контекст живёт до сборки мусора: при частом
+// переключении вкладок «мёртвые» контексты копились, Chromium упирался в свой лимит и гасил
+// живые (CONTEXT_LOST в реестре), а терминалы съезжали на Canvas. Поэтому контекст отпускаем
+// явно — WEBGL_lose_context после dispose (слушатели xterm к этому моменту уже сняты, наш
+// onContextLoss видит entry.dropping и терминал в Canvas не переводит).
 function dropWebgl(entry) {
   const i = webglLru.indexOf(entry);
   if (i !== -1) webglLru.splice(i, 1);
+  entry.dropping = true;
+  let gl = null;
+  try { gl = entry.addon._renderer && entry.addon._renderer._gl; } catch (_) {}
   try { entry.addon.dispose(); } catch (_) {}
+  try { const ext = gl && !gl.isContextLost() && gl.getExtension('WEBGL_lose_context'); if (ext) ext.loseContext(); } catch (_) {}
+  termTrace('webgl-drop', webglLru.length);
 }
 
 // Отрисовщик для нового терминала окна редактора: без GPU — Canvas сразу; с GPU — ничего,
@@ -78,6 +136,8 @@ export function activateRenderer(term) {
   try { addon = new WebglAddon(); } catch (_) { return; }
   const entry = { term, addon };
   addon.onContextLoss(() => {
+    if (entry.dropping) return;   // это мы сами отпустили контекст в dropWebgl
+    termTrace('webgl-lost', webglLru.length);
     // Контекст отняли (сброс GPU, чужой перебор лимита): этому терминалу — Canvas насовсем, как раньше.
     dropWebgl(entry);
     term.__liteCanvas = true;
@@ -85,6 +145,7 @@ export function activateRenderer(term) {
   });
   try { term.loadAddon(addon); } catch (_) { return; }
   webglLru.push(entry);
+  termTrace('webgl-create', webglLru.length);
   while (webglLru.length > WEBGL_KEEP) dropWebgl(webglLru[0]);
 }
 

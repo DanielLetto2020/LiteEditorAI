@@ -22,7 +22,7 @@ const lite = window.lite;
 function rhEolOf(s) { const crlf = (s.match(/\r\n/g) || []).length; return crlf && crlf * 2 >= (s.match(/\n/g) || []).length ? '\r\n' : '\n'; }
 
 export function initRh(host) {
-  const { STORE, persist, settings, layout, GUTTER, saveUiState, refitActiveTerminal, closeOtherPanels, termTheme, applyUnicode11, loadFastRenderer, copySelection } = host;
+  const { STORE, persist, settings, layout, GUTTER, saveUiState, refitActiveTerminal, closeOtherPanels, termTheme, applyUnicode11, loadFastRenderer, copySelection, termLinkHandler } = host;
 
   let rhOpen = false;
   let rhConnsList = [], rhSecure = true;
@@ -279,6 +279,7 @@ export function initRh(host) {
       fontFamily: '"JetBrains Mono", "Fira Code", "Cascadia Code", Consolas, monospace',
       fontSize: settings.fontSize, cursorBlink: true, allowProposedApi: true, theme: termTheme(), scrollback: 8000,
       allowTransparency: true, // фон терминала прозрачный — виден полупрозрачный фон окна (задаётся только при создании)
+      linkHandler: termLinkHandler(), // пути file: — на удалённом хосте, локально не открываем
     });
     const fit = new FitAddon();
     const search = new SearchAddon();

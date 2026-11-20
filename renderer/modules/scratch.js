@@ -9,7 +9,7 @@ import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { SearchAddon } from '@xterm/addon-search';
 import { WebLinksAddon } from '@xterm/addon-web-links';
-import { applyUnicode11, loadFastRenderer, copySelection, writeTermWithAck, creditPtyAck, dropPtyAck } from '../termutil.js';
+import { applyUnicode11, loadFastRenderer, copySelection, writeTermWithAck, creditPtyAck, dropPtyAck, termLinkHandler, openTermFile } from '../termutil.js';
 
 const $ = (sel) => document.querySelector(sel);
 const lite = window.lite;
@@ -74,6 +74,7 @@ export function initScratch(host) {
       fontFamily: '"JetBrains Mono", "Fira Code", "Cascadia Code", Consolas, monospace',
       fontSize: settings.fontSize, cursorBlink: true, allowProposedApi: true, theme: termTheme(), scrollback: 5000,
       allowTransparency: true, // фон терминала прозрачный — виден полупрозрачный фон окна (задаётся только при создании)
+      linkHandler: termLinkHandler({ openFile: openTermFile }),
     });
     const fit = new FitAddon();
     const search = new SearchAddon();

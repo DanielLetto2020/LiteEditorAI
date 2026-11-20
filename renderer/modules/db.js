@@ -550,7 +550,7 @@ export function initDb(host) {
     if (dbActiveConn.readOnly) head.appendChild(el('span', 'db-ro-badge', 'RO'));
     if (dbActiveConn.isProd) head.appendChild(el('span', 'db-prod-badge', 'PROD'));
     side.appendChild(head);
-    const pingNow = () => { statusDot.className = 'db-status-dot'; lite.db.ping(dbActiveId).then((r) => { if (r && r.ok) { statusDot.classList.add('ok'); statusDot.title = 'Соединение активно'; } else { statusDot.classList.add('err'); statusDot.title = 'Нет соединения: ' + ((r && r.error) || '') + ' — клик для переподключения'; } }); };
+    const pingNow = () => { statusDot.className = 'db-status-dot'; lite.db.ping(dbActiveId).then((r) => { if (r && r.ok) { statusDot.classList.add('ok'); statusDot.title = r.busy ? 'Соединение активно (выполняется запрос)' : 'Соединение активно'; } else { statusDot.classList.add('err'); statusDot.title = 'Нет соединения: ' + ((r && r.error) || '') + ' — клик для переподключения'; } }); };
     statusDot.onclick = async () => { statusDot.className = 'db-status-dot'; statusDot.title = 'Переподключение…'; const r = await lite.db.reconnect(dbActiveId); if (r && r.ok) { toast('Переподключено'); dbSchema = null; dbColsCache = null; dbObjectsCache = null; metaCache.clear(); aiExtrasByConn.delete(dbActiveId); invalidateTableCaches(); pingNow(); renderDbWorkspace(body); } else { statusDot.classList.add('err'); toast((r && r.error) || 'Не удалось', { kind: 'err' }); } };
     pingNow();
     const tools = el('div', 'db-side-tools');

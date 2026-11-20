@@ -14,7 +14,7 @@ import { OSC7501_QUERY_REPLY, parseOsc7501, mapOsc7501ToIndicator } from '../lib
 import { matchesAction, getHotkey, formatCombo } from '../lib/hotkeys.js';
 import {
   prepareRenderer, activateRenderer, releaseRenderer, applyUnicode11,
-  copySelection, ptyResizer, writeTermWithAck, creditPtyAck, dropPtyAck,
+  copySelection, ptyResizer, writeTermWithAck, creditPtyAck, dropPtyAck, termLinkHandler, openTermFile, termTrace,
 } from './termutil.js';
 import { attachTimeline } from './termtimeline.js';
 import { el, icon, iconBtn, menuRow, placeMenu, closeMenus, makeModal, showConfirm, showPrompt } from './ui.js';
@@ -503,8 +503,7 @@ export function createTermEngine(host) {
     const mm = raw.match(/^(.*?)(?::(\d+))?$/);
     let p = mm[1]; const line = mm[2] ? parseInt(mm[2], 10) : 0;
     if (!/^([a-zA-Z]:[\\/]|[\\/])/.test(p)) p = projPath.replace(/[\\/]$/, '') + '/' + p.replace(/^\.[\\/]/, '');
-    if (!(await lite.fs.exists(p))) return;
-    lite.editorBus.openInViewer(p, line);
+    await openTermFile(p, line);
   }
 
   function fileLinkProvider(term, projPath) {
@@ -769,6 +768,7 @@ export function createTermEngine(host) {
       fontFamily: '"JetBrains Mono", "Fira Code", "Cascadia Code", Consolas, monospace',
       fontSize: st.fontSize, cursorBlink: true, allowProposedApi: true, theme: host.termTheme(), scrollback: 5000,
       allowTransparency: true,
+      linkHandler: termLinkHandler({ openFile: openTermFile }),
     });
     const fit = new FitAddon();
     const search = new SearchAddon();
@@ -1270,11 +1270,13 @@ export function createTermEngine(host) {
       if (detached) {
         rec.container.style.display = 'none';
       } else if (splitOn && t.splitPair.includes(sid)) {
+        applyPendingFont(rec);
         rec.container.style.display = 'block';
         rec.container.classList.add(sid === t.splitPair[0] ? 'slot-left' : 'slot-right');
         if (sid === asid) rec.container.classList.add('slot-focused');
         activateRenderer(rec.term);
       } else {
+        if (!splitOn && sid === asid) applyPendingFont(rec);
         rec.container.style.display = (!splitOn && sid === asid) ? 'block' : 'none';
         if (!splitOn && sid === asid) activateRenderer(rec.term);
       }
@@ -1298,7 +1300,9 @@ export function createTermEngine(host) {
         const rec = terms.get(sid);
         if (!rec) continue;
         try {
+          const c0 = rec.term.cols, r0 = rec.term.rows;
           rec.fit.fit();
+          if (rec.term.cols !== c0 || rec.term.rows !== r0) termTrace('refit', sid, `${c0}x${r0}→${rec.term.cols}x${rec.term.rows}`);
           rec.syncPty();
           rec.needsFit = false;
           if (focusIt && sid === asid) rec.term.focus();
@@ -1310,6 +1314,28 @@ export function createTermEngine(host) {
         }
       }
     });
+  }
+
+  // Перетаскивание разделителей и слайдер ширины: mousemove/input приходят десятки раз в секунду,
+  // а каждая смена числа колонок — синхронный reflow всего буфера (scrollback 5000 строк) и
+  // переразмер WebGL-холста. Подгоняем не чаще раза в REFIT_THROTTLE_MS (первый — сразу, последний —
+  // гарантированно), терминал по-прежнему едет за мышью. На отпускании зовут refitActiveTerminal().
+  const REFIT_THROTTLE_MS = 100;
+  let refitSoonAt = 0, refitSoonTimer = null;
+  function refitActiveTerminalSoon() {
+    const wait = refitSoonAt + REFIT_THROTTLE_MS - Date.now();
+    if (wait <= 0) { refitSoonAt = Date.now(); refitActiveTerminal(); return; }
+    if (refitSoonTimer) return;
+    refitSoonTimer = setTimeout(() => { refitSoonTimer = null; refitSoonAt = Date.now(); refitActiveTerminal(); }, wait);
+  }
+
+  // Шрифт скрытого терминала меняем, только когда его покажут: смена fontSize у xterm — новый
+  // атлас глифов и переразмер отрисовщика, а скрытых вкладок у открытых проектов могут быть десятки.
+  function applyPendingFont(rec) {
+    if (rec.pendingFont == null) return;
+    const px = rec.pendingFont;
+    rec.pendingFont = null;
+    if (rec.term.options.fontSize !== px) { rec.term.options.fontSize = px; rec.needsFit = true; termTrace('font-late', px); }
   }
 
   function switchTab(sid) {
@@ -1546,10 +1572,11 @@ export function createTermEngine(host) {
 
   function applyFontSize() {
     const fsPx = host.getSettings().fontSize;
+    termTrace('font', fsPx);
     for (const [sid, rec] of terms) {
-      rec.term.options.fontSize = fsPx;
       try { rec.timeline.setFontSize(fsPx); } catch (_) {}
-      if (!isSessionVisible(sid)) rec.needsFit = true;
+      if (isSessionVisible(sid)) { rec.pendingFont = null; rec.term.options.fontSize = fsPx; }
+      else rec.pendingFont = fsPx;   // применится в showActiveTerminal (applyPendingFont)
     }
     for (const rec of extTerms.values()) {
       rec.term.options.fontSize = fsPx;
@@ -1666,12 +1693,13 @@ export function createTermEngine(host) {
           const rect = tb.getBoundingClientRect();
           if (rect.width <= 0) return;
           applySplitCss((ev.clientX - rect.left) / rect.width, false);
-          refitActiveTerminal();
+          refitActiveTerminalSoon();
         };
         const onUp = () => {
           document.removeEventListener('mousemove', onMove);
           document.removeEventListener('mouseup', onUp);
           document.body.classList.remove('resizing');
+          refitActiveTerminal();
           if (host.setSplitFrac && host.getSplitFrac) host.setSplitFrac(host.getSplitFrac(), true);
         };
         document.addEventListener('mousemove', onMove);
@@ -1699,7 +1727,7 @@ export function createTermEngine(host) {
     exportProjectSnapshot, teardownProjectForDetach, importProjectSnapshot,
     sendTextToProject,
     focusSplitSlot, toggleTermSplit, applySplitCss,
-    renderTabBar, showActiveTerminal, refitActiveTerminal, updateTabScroll, scrollTabs,
+    renderTabBar, showActiveTerminal, refitActiveTerminal, refitActiveTerminalSoon, updateTabScroll, scrollTabs,
     switchTab, addTab, doCloseTab, closeTab, cycleTab, renameTab,
     clearTerminal, restartTerminal,
     insertPrompt, openPromptsManager, showTermMenu,

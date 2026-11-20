@@ -157,10 +157,21 @@ function prune() {
 
 // Tee console.* into the log so existing console output is persisted too, while
 // still echoing to the terminal/journal (the original behaviour).
+//
+// Предупреждения Node об устаревших API («(node:PID) [DEP0180] DeprecationWarning: …») Node печатает
+// через console.error, и раньше они ложились в лог и реестр ошибок уровнем ERROR. Это не сбой:
+// DEP0180 (fs.Stats constructor) поднимает сама Electron, когда fs.stat попадает в .asar-архив
+// (asarStatsToFsStats), — пишем такие строки уровнем WARN.
+const NODE_DEPRECATION_RE = /^\(node:\d+\) (?:\[DEP\d+\] )?DeprecationWarning:/;
+function consoleLevel(method, args) {
+  if (method === 'log') return 'info';
+  if (method === 'error' && typeof args[0] === 'string' && NODE_DEPRECATION_RE.test(args[0])) return 'warn';
+  return method;
+}
 function wrapConsole() {
   for (const m of ['log', 'info', 'warn', 'error']) {
     const orig = console[m].bind(console);
-    console[m] = (...args) => { try { orig(...args); } catch (_) {} write(m === 'log' ? 'info' : m, 'main', args); };
+    console[m] = (...args) => { try { orig(...args); } catch (_) {} write(consoleLevel(m, args), 'main', args); };
   }
 }
 
@@ -180,6 +191,7 @@ function init(dir) {
 
 module.exports = {
   init,
+  consoleLevel,   // для test/logger-level.test.js
   // structured logging from the main process: log('info'|'warn'|'error'|'fatal', ...)
   log: (level, ...args) => write(level, 'main', args),
   // logging forwarded from the renderer over IPC
