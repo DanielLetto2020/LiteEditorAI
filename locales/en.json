@@ -4185,6 +4185,7 @@
  "Содержимое не может быть пустым": "The content cannot be empty",
  "содержит": "contains",
  "Соединение активно": "The connection is live",
+ "Соединение активно (выполняется запрос)": "The connection is live (a query is running)",
  "Соединение закрыто": "Connection closed",
  "соединение прервано": "connection interrupted",
  "соединение с провайдером оборвалось посреди ответа": "the connection to the provider dropped in the middle of the reply",
