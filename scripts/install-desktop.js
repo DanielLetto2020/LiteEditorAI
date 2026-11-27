@@ -17,6 +17,8 @@ const nodeDir = path.dirname(process.execPath);
 const electronBin = path.join(root, 'node_modules', '.bin', 'electron');
 
 const iconPng = path.join(root, 'assets', 'icon.png');
+const icon256 = path.join(root, 'assets', 'icon-256.png');
+const icon512 = path.join(root, 'assets', 'icon-512.png');
 const iconSvg = path.join(root, 'assets', 'icon.svg');
 
 // ⚠️ WM_CLASS окна = `name` из package.json (= 'liteeditor-ai'). Electron 42 (Ozone/X11)
@@ -27,12 +29,22 @@ const WM_CLASS = require(path.join(root, 'package.json')).name; // 'liteeditor-a
 // Иконку ставим и в тему hicolor под именем = WM_CLASS — так GNOME находит иконку окна
 // по WM_CLASS, даже если ассоциация с .desktop на миг не сработала. Ссылаемся на неё ПО ИМЕНИ.
 let iconRef = fs.existsSync(iconPng) ? iconPng : iconSvg; // фолбэк — абсолютный путь
-if (fs.existsSync(iconPng)) {
+if (fs.existsSync(iconPng) || fs.existsSync(icon256) || fs.existsSync(icon512)) {
   try {
-    for (const sz of ['256x256', '512x512']) {
+    const map = [
+      ['256x256', fs.existsSync(icon256) ? icon256 : iconPng],
+      ['512x512', fs.existsSync(icon512) ? icon512 : iconPng],
+    ];
+    for (const [sz, src] of map) {
+      if (!fs.existsSync(src)) continue;
       const dir = path.join(home, '.local', 'share', 'icons', 'hicolor', sz, 'apps');
       fs.mkdirSync(dir, { recursive: true });
-      fs.copyFileSync(iconPng, path.join(dir, `${WM_CLASS}.png`));
+      fs.copyFileSync(src, path.join(dir, `${WM_CLASS}.png`));
+    }
+    if (fs.existsSync(iconSvg)) {
+      const sdir = path.join(home, '.local', 'share', 'icons', 'hicolor', 'scalable', 'apps');
+      fs.mkdirSync(sdir, { recursive: true });
+      fs.copyFileSync(iconSvg, path.join(sdir, `${WM_CLASS}.svg`));
     }
     iconRef = WM_CLASS; // themed icon name — надёжнее абсолютного пути в доке GNOME
   } catch (_) { /* нет прав/темы — останемся на абсолютном пути */ }

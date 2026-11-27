@@ -11,10 +11,11 @@
 ## Чеклист
 
 - [ ] Базовая ветка PR — **`contrib`**
-- [ ] Прогнал сборку (`node build.js`) и проверил изменения вручную
-- [ ] Не менял версию (`package.json` / `APP_VERSION`) и релизные файлы (`CHANGELOG.md`, `RELEASE_NOTES.md`)
+- [ ] Прогнал `node build.js && npm run lint && npm run typecheck && npm test`
+- [ ] Проверил полноту словарей (`node scripts/i18n-extract.js --check`)
+- [ ] Не менял версию (`package.json` / `package-lock.json` / `APP_VERSION`) и релизные файлы (`CHANGELOG.md`, `RELEASE_NOTES.md`)
 - [ ] Без хардкода цветов/теней/радиусов — только CSS-токены (`var(--…)`)
-- [ ] Стиль кода — как в окружающем коде
+- [ ] В коммитах нет трейлеров `Co-Authored-By` и приватных данных/секретов
 
 <!--
   Ревью и перенос изменений выполняются мейнтейнером вручную, по усмотрению и без

@@ -16,6 +16,7 @@ const pty = require('node-pty');
 const logger = require('./logger');
 const { safeChildName } = require('./lib/safe-name'); // анти-traversal для имён папок/файлов
 const { resolveShell: resolveShellPure } = require('./lib/shell'); // выбор оболочки терминала
+const { resolveAgyBin, buildAgyArgs, wrapAgyPrompt, parseAgyModelsOutput, parseAgyStreamLine } = require('./lib/dbai-agy');
 const updater = require('./lib/updater');  // самообновление: проверка релиза, загрузка, подмена каталога
 const { watchTree } = require('./lib/tree-watch'); // слежение за деревом проекта (на Linux — по наблюдению на каталог)
 const { watchGitLite } = require('./lib/git-watch'); // лёгкое слежение за .git для чипа ветки без обхода всего дерева
@@ -32,7 +33,7 @@ const { summarizeBusyPtys } = require('./lib/quit-guard'); // проверка �
 const fastSearch = require('./lib/fast-search');   // быстрый листинг и поиск через системный rg с фолбэком в worker_threads
 const { createModuleRouter, createLazyIpc } = require('./lib/module-router'); // единый роутер готовности модулей + ленивая загрузка IPC
 const { normalizeProjTermSnapshot, collectLiveSessionIds } = require('./lib/projterm-state'); // снапшоты и живые сессии вынесенных окон терминалов
-const { git, registerGitIpc } = require('./lib/ipc/git');
+const { registerGitIpc } = require('./lib/ipc/git');
 const { registerPomodoroIpc } = require('./lib/ipc/pomodoro');
 const { registerKeepassIpc, KEEPASS_HANDLES, KEEPASS_ONS } = require('./lib/ipc/keepass');
 const { registerSitemonIpc } = require('./lib/ipc/sitemon');
@@ -41,6 +42,7 @@ const { registerIterflowIpc, ITERFLOW_HANDLES } = require('./lib/ipc/iterflow');
 const { registerSeoIpc, SEO_HANDLES } = require('./lib/ipc/seo');
 const { registerContainersIpc, CONTAINERS_HANDLES, CONTAINERS_ONS } = require('./lib/ipc/containers');
 const { registerVoiceIpc } = require('./lib/ipc/voice');
+const { createMcpHub } = require('./lib/mcp/hub');
 const procService = createProcService({ cacheTtlMs: 200 });
 
 app.setName('LiteEditorAI');
@@ -224,6 +226,7 @@ const dbLazy = createLazyIpc(ipcMain, {
     ipcMain: ipc, safeStorage, dialog,
     getConnections: () => readStoreKey('dbConnections'),
     setConnections: (v) => writeStoreKey('dbConnections', v),
+    findRhConn: (id) => rhApi.findConn(id),
   }),
 });
 
@@ -331,6 +334,60 @@ const serversApi = require('./lib/servers').register({
 });
 const srvNotes = new Set(); // держим ссылку до клика: собранный GC Notification отвязывает обработчик click
 app.on('will-quit', () => { try { serversApi.flush(); } catch (_) {} });
+
+// ── MCP Store / Zero-Trust MCP Hub (lib/mcp/hub.js) ───────────────────────────────────────────
+function mcpWhichBin(cmd) {
+  const pathStr = (tpEnv().PATH || '');
+  const exts = process.platform === 'win32' ? ['', '.exe', '.cmd', '.bat'] : [''];
+  for (const dir of pathStr.split(path.delimiter)) {
+    if (!dir) continue;
+    for (const ext of exts) {
+      const full = path.join(dir, cmd + ext);
+      try {
+        fs.accessSync(full, fs.constants.X_OK);
+        return full;
+      } catch (_) {}
+    }
+  }
+  return null;
+}
+
+function resolveProjectForPty(ptyId, cwd) {
+  const projects = Array.isArray(readStoreKey('projects')) ? readStoreKey('projects') : [];
+  const raw = String(ptyId || '');
+  const sep = raw.indexOf('::');
+  if (sep > 0) {
+    const pid = raw.slice(0, sep);
+    const p = projects.find((x) => x && x.id === pid);
+    if (p) return { id: p.id, name: p.name || p.path || p.id };
+    return { id: pid, name: cwd ? path.basename(cwd) : pid };
+  }
+  if (cwd) {
+    const cNorm = path.resolve(String(cwd));
+    const p = projects.find((x) => x && x.path && (cNorm === path.resolve(x.path) || cNorm.startsWith(path.resolve(x.path) + path.sep)));
+    if (p) return { id: p.id, name: p.name || p.path || p.id };
+  }
+  return { id: '__global__', name: 'Общее' };
+}
+
+const mcpHub = createMcpHub({
+  storeDir,
+  readConfig: () => readStoreKey('mcpConfig'),
+  writeConfig: (v) => writeStoreKey('mcpConfig', v),
+  readBindings: () => readStoreKey('mcpBindings'),
+  writeBindings: (v) => writeStoreKey('mcpBindings', v),
+  getDbApi: () => dbLazy.ensure(),
+  serversApi,
+  rhApi,
+  getContainersApi: () => containersLazy.ensure(),
+  getProjects: () => (Array.isArray(readStoreKey('projects')) ? readStoreKey('projects') : []),
+  broadcast: (ch, payload) => { sendTo(mainWindow, ch, payload); },
+  hasUi: () => !!(mainWindow && !mainWindow.isDestroyed()),
+  log: (lvl, src, msg) => logger.log(lvl, src, msg),
+  whichBin: mcpWhichBin,
+  cliEnv: () => tpEnv(),
+});
+mcpHub.registerIpc(ipcMain);
 
 // File logging lives next to the store, survives restarts, keeps 5 days.
 const logsDir = path.join(storeDir, 'logs');
@@ -735,11 +792,10 @@ ipcMain.handle('update:cancel', () => {
 function updHardExit() {
   try { appStore.flushAllSync(); } catch (_) {}
   try { errledger.flush(); } catch (_) {}
-  // Агентов тоже гасим (как в window-all-closed, которое app.exit() не поднимает): директор «ИИ
-  // компании» запущен detached — своей группой процессов — и пережил бы редактор, продолжая править
-  // проект и тратить бюджет; claude/codex «Обработки текста», AI-DB и запросы чата — туда же.
-  for (const c of companyReqs.values()) { try { companyKill(c); } catch (_) {} }
+  // Агенты дочерних модулей не должны пережить жёсткий выход под обновление.
+  try { mcpHub.shutdown(); } catch (_) {}
   killReqMap(tpReqs); killReqMap(dbaiReqs); killReqMap(orReqs); killReqMap(ctxmineReqs);
+  try { const api = dbLazy.getApi(); if (api) api.closeAll(); } catch (_) {}
   app.exit(0);
 }
 
@@ -1042,7 +1098,14 @@ function tpEnv() {
     path.join(os.homedir(), '.local', 'bin'),
     path.dirname(process.execPath),
   ].filter(Boolean);
-  return { ...process.env, PATH: extra.join(':') + ':' + (process.env.PATH || '') };
+  /** @type {NodeJS.ProcessEnv} */
+  const env = { ...process.env, PATH: extra.join(path.delimiter) + path.delimiter + (process.env.PATH || '') };
+  delete env.ELECTRON_RUN_AS_NODE;
+  delete env.LITEEDITOR_MCP_SOCK;
+  delete env.LITEEDITOR_MCP_TOKEN;
+  delete env.LITEEDITOR_MCP_SESSION;
+  delete env.LITEEDITOR_MCP_AGENT;
+  return env;
 }
 // ---- Единый разбор «агент не авторизован» ---------------------------------------------------
 // CLI-агенты запускаются неинтерактивно: свой запрос логина показать нам они не могут, и он
@@ -1053,6 +1116,7 @@ const TP_LOGIN_CMD = {
   claude: 'claude',      // внутри сессии: /login
   codex: 'codex login',
   gemini: 'gemini',      // мастер входа на первом экране
+  agy: 'agy',            // авторизация CLI Antigravity
 };
 const TP_AUTH_RE = [
   /\bnot logged ?in\b/i,
@@ -1183,11 +1247,13 @@ ipcMain.on('tp:cancel', (e, { reqId } = {}) => {
 const DBAI_AGENTS = {
   claude: { cmd: 'claude', args: ['-p', '--output-format', 'stream-json', '--verbose', '--include-partial-messages'], stream: 'json' },
   codex: { cmd: 'codex', args: ['exec', '-'], stream: 'text' },
+  agy: { cmd: 'agy', args: [], stream: 'agy' },
 };
 // Транскрипты чатов AI-DB — по файлу на подключение. В общем dbUi они раздували стор: сессия
 // хранит до 200 строк результата на сообщение, и весь этот объём переписывался при любом
 // сохранении раскладки модуля. Формат файла: { sessions: [...], activeId }.
 const dbaiDir = () => path.join(storeDir, 'dbai');
+const dbaiCwd = () => path.join(storeDir, 'dbai-cwd');
 const dbaiFile = (connId) => path.join(dbaiDir(), String(connId).replace(/[^\w.-]/g, '_') + '.json');
 // Нет файла — null (истории ещё нет); битый — откладывается рядом, окно начинает с чистого листа;
 // не прочитался — { error }: окно в него не пишет (см. readJsonForEdit).
@@ -1204,9 +1270,22 @@ ipcMain.handle('dbai:sessionsDelete', (_e, { connId } = {}) => {
   catch (e) { return { ok: false, error: String(e.message || e) }; }
 });
 const dbaiReqs = new Map();
+function stopDbaiProc(v) {
+  try {
+    if (v && typeof v.kill === 'function') {
+      v.kill('SIGTERM');
+      const t = setTimeout(() => {
+        try { if (v.exitCode === null && v.signalCode === null) v.kill('SIGKILL'); } catch (_) {}
+      }, 3000);
+      if (typeof t.unref === 'function') t.unref();
+    } else if (v && typeof v.destroy === 'function') {
+      v.destroy();
+    }
+  } catch (_) {}
+}
 // Глушит карту in-flight задач разом: значение — ChildProcess (.kill) или ClientRequest/сокет (.destroy).
 function killReqMap(m) {
-  for (const v of m.values()) { try { if (v && typeof v.kill === 'function') v.kill(); else if (v && typeof v.destroy === 'function') v.destroy(); } catch (_) {} }
+  for (const v of m.values()) stopDbaiProc(v);
   m.clear();
 }
 // Запрос живёт, пока живо окно, которое его заказало. Каналом ходят «Базы данных» и «Мониторинг
@@ -1226,27 +1305,82 @@ function dbaiTrack(sender, reqId, req) {
         if (wc !== sender) continue;
         dbaiOwner.delete(id);
         const c = dbaiReqs.get(id); dbaiReqs.delete(id);
-        try { if (c && typeof c.kill === 'function') c.kill(); else if (c && typeof c.destroy === 'function') c.destroy(); } catch (_) {}
+        stopDbaiProc(c);
       }
     });
   } catch (_) {}
 }
-ipcMain.on('dbai:run', (e, { reqId, agent, prompt } = {}) => {
+let agyModelsCache = null;
+let agyModelsCacheAt = 0;
+ipcMain.handle('dbai:agyModels', async (_e, { force } = {}) => {
+  const now = Date.now();
+  if (!force && agyModelsCache && now - agyModelsCacheAt < 5 * 60 * 1000) {
+    return { models: agyModelsCache };
+  }
+  const env = tpEnv();
+  const cmd = resolveAgyBin({ env });
+  let cwd = dbaiCwd();
+  try { fs.mkdirSync(cwd, { recursive: true }); } catch (_) { cwd = os.tmpdir(); }
+  return await new Promise((resolve) => {
+    const child = execFile(cmd, ['models'], { cwd, env, timeout: 25000, killSignal: 'SIGKILL', maxBuffer: 1024 * 1024 }, (err, stdout, stderr) => {
+      const combined = `${stdout || ''}\n${stderr || ''}`;
+      if (err) {
+        if (err.code === 'ENOENT') {
+          resolve({ error: i18n.t('CLI Antigravity (agy) не найден. Установите agy и проверьте PATH.') });
+          return;
+        }
+        const auth = tpAuthProblem('agy', combined + '\n' + (err.message || ''));
+        if (auth) { resolve({ error: auth.error }); return; }
+        resolve({ error: String((stderr || err.message || err)).trim().slice(0, 400) });
+        return;
+      }
+      const models = parseAgyModelsOutput(combined);
+      if (!models.length) {
+        const auth = tpAuthProblem('agy', combined);
+        if (auth) { resolve({ error: auth.error }); return; }
+        resolve({ error: i18n.t('Список моделей Antigravity пуст — проверьте вход командой «agy» в терминале') });
+        return;
+      }
+      agyModelsCache = models;
+      agyModelsCacheAt = Date.now();
+      resolve({ models });
+    });
+    try { child.stdin.end(); } catch (_) {}
+  });
+});
+ipcMain.on('dbai:run', (e, { reqId, agent, prompt, model, effort } = {}) => {
+  if (!reqId) return;
   const sender = e.sender;
   const conf = DBAI_AGENTS[agent] || DBAI_AGENTS.claude;
-  const args = [...conf.args];
+  const env = tpEnv();
+  const isAgy = conf.stream === 'agy';
+  let cmd = conf.cmd;
+  let args = [...conf.args];
+  let cwd = dbaiCwd();
+  try { fs.mkdirSync(cwd, { recursive: true }); } catch (_) { cwd = os.tmpdir(); }
+  let stdinPayload = prompt || '';
+  if (isAgy) {
+    cmd = resolveAgyBin({ env });
+    args = buildAgyArgs({ model, effort });
+    stdinPayload = wrapAgyPrompt(prompt || '');
+  }
   let child;
-  try { child = spawn(conf.cmd, args, { cwd: os.homedir(), env: tpEnv() }); }
-  catch (err) { safeSend(sender, 'dbai:error', { reqId, error: 'не запустить «' + conf.cmd + '»: ' + (err.message || err) }); return; }
+  try { child = spawn(cmd, args, { cwd, env }); }
+  catch (err) { safeSend(sender, 'dbai:error', { reqId, error: 'не запустить «' + cmd + '»: ' + (err.message || err) }); return; }
   dbaiTrack(sender, reqId, child);
   // Декодируем поток целиком (StringDecoder): русская буква — два байта, и на границе чанков
   // c.toString() давал «��» в ответе агента (так же в tp:run/openrouter)
   child.stdout.setEncoding('utf8'); child.stderr.setEncoding('utf8');
-  let errOut = '', any = false, buf = '', sawDelta = false;
-  const to = setTimeout(() => { if (dbaiReqs.has(reqId)) { dbaiReqs.delete(reqId); try { child.kill(); } catch (_) {} safeSend(sender, 'dbai:error', { reqId, error: 'таймаут (агент не ответил вовремя)' }); } }, 300000);
+  let errOut = '', any = false, buf = '', sawDelta = false, streamErr = '', activeModel = String(model || '');
+  const to = setTimeout(() => {
+    if (!dbaiReqs.has(reqId)) return;
+    dbaiReqs.delete(reqId); dbaiOwner.delete(reqId);
+    stopDbaiProc(child);
+    safeSend(sender, 'dbai:error', { reqId, error: 'таймаут (агент не ответил вовремя)' });
+  }, 300000);
   const emit = (chunk) => { if (!chunk) return; any = true; safeSend(sender, 'dbai:data', { reqId, chunk }); };
   // extract incremental assistant text from a claude stream-json NDJSON line
-  const handleLine = (line) => {
+  const handleClaudeLine = (line) => {
     const s = line.trim(); if (!s) return; let ev; try { ev = JSON.parse(s); } catch (_) { return; }
     if (ev.type === 'stream_event' && ev.event) {
       const evt = ev.event;
@@ -1258,56 +1392,110 @@ ipcMain.on('dbai:run', (e, { reqId, agent, prompt } = {}) => {
       for (const b of ev.message.content) if (b && b.type === 'text' && b.text) emit(b.text);
     }
   };
-  if (conf.stream === 'json') {
-    child.stdout.on('data', (c) => { buf += c.toString('utf8'); let nl; while ((nl = buf.indexOf('\n')) >= 0) { handleLine(buf.slice(0, nl)); buf = buf.slice(nl + 1); } });
+  const handleAgyLine = (line) => {
+    const ev = parseAgyStreamLine(line);
+    if (!ev) return;
+    if (ev.kind === 'init') {
+      if (!activeModel && ev.model) activeModel = ev.model;
+    } else if (ev.kind === 'delta') {
+      sawDelta = true;
+      emit(ev.text);
+    } else if (ev.kind === 'result') {
+      if (ev.status && ev.status !== 'SUCCESS') {
+        streamErr = ev.error || ('Antigravity завершился со статусом ' + ev.status);
+        return;
+      }
+      if (!sawDelta && ev.text) emit(ev.text);
+      if (ev.usage) safeSend(sender, 'dbai:usage', { reqId, model: activeModel || 'agy', usage: ev.usage });
+    } else if (ev.kind === 'error') {
+      streamErr = ev.error || 'Ошибка Antigravity';
+    }
+  };
+  if (conf.stream === 'json' || isAgy) {
+    const onLine = isAgy ? handleAgyLine : handleClaudeLine;
+    child.stdout.on('data', (c) => { buf += c.toString('utf8'); let nl; while ((nl = buf.indexOf('\n')) >= 0) { onLine(buf.slice(0, nl)); buf = buf.slice(nl + 1); } });
   } else {
     child.stdout.on('data', (c) => emit(c.toString('utf8')));
   }
   child.stderr.on('data', (c) => { errOut += c.toString('utf8'); });
   // clearTimeout — до проверки: после «Стоп»/закрытия окна запроса в карте уже нет, а 5-минутный
   // таймер с замыканием на процесс и окно висел бы до срабатывания
-  child.on('error', (err) => { clearTimeout(to); if (!dbaiReqs.has(reqId)) return; dbaiReqs.delete(reqId); safeSend(sender, 'dbai:error', { reqId, error: 'агент «' + conf.cmd + '» не найден/не запустился: ' + (err.message || err) }); });
+  child.on('error', (err) => {
+    clearTimeout(to);
+    if (!dbaiReqs.has(reqId)) return;
+    dbaiReqs.delete(reqId); dbaiOwner.delete(reqId);
+    safeSend(sender, 'dbai:error', { reqId, error: 'агент «' + conf.cmd + '» не найден/не запустился: ' + (err.message || err) });
+  });
   child.on('close', (code) => {
     clearTimeout(to);
-    if (!dbaiReqs.has(reqId)) return; dbaiReqs.delete(reqId);
-    if (conf.stream === 'json' && buf.trim()) handleLine(buf);
+    if (!dbaiReqs.has(reqId)) return;
+    dbaiReqs.delete(reqId); dbaiOwner.delete(reqId);
+    if ((conf.stream === 'json' || isAgy) && buf.trim()) {
+      if (isAgy) handleAgyLine(buf);
+      else handleClaudeLine(buf);
+    }
+    if (streamErr) {
+      const auth = tpAuthProblem(conf.cmd, streamErr + '\n' + errOut);
+      safeSend(sender, 'dbai:error', { reqId, error: auth ? auth.error : streamErr });
+      return;
+    }
+    if (isAgy && code !== 0) {
+      const auth = tpAuthProblem(conf.cmd, errOut);
+      safeSend(sender, 'dbai:error', { reqId, error: auth ? auth.error : (errOut.trim() || ('агент завершился с кодом ' + code)) });
+      return;
+    }
     if (any) safeSend(sender, 'dbai:done', { reqId });
-    else safeSend(sender, 'dbai:error', { reqId, error: errOut.trim() || ('агент завершился с кодом ' + code) });
+    else {
+      const auth = tpAuthProblem(conf.cmd, errOut);
+      safeSend(sender, 'dbai:error', { reqId, error: auth ? auth.error : (errOut.trim() || ('агент завершился с кодом ' + code)) });
+    }
   });
   child.stdin.on('error', () => {});   // агент не стартовал/вышел раньше, чем дочитал промпт → async EPIPE не должен ронять main
-  try { child.stdin.write(prompt || ''); child.stdin.end(); } catch (_) {}
+  try { child.stdin.write(stdinPayload); child.stdin.end(); } catch (_) {}
 });
 ipcMain.on('dbai:abort', (e, { reqId } = {}) => {
   const c = dbaiReqs.get(reqId);
-  if (c) { dbaiReqs.delete(reqId); try { if (typeof c.kill === 'function') c.kill(); else if (typeof c.destroy === 'function') c.destroy(); } catch (_) {} safeSend(e.sender, 'dbai:done', { reqId, aborted: true }); }
+  if (c) { dbaiReqs.delete(reqId); dbaiOwner.delete(reqId); stopDbaiProc(c); safeSend(e.sender, 'dbai:done', { reqId, aborted: true }); }
 });
 
 // Generic OpenAI-compatible providers (OpenRouter / Ollama / LM Studio) for the AI-DB picker.
 // baseUrl is everything before «/chat/completions» (e.g. http://localhost:11434/v1). All three
 // share the OpenAI chat-completions wire format, so one path covers them; events reuse dbai:*.
-function dbaiHttpMod(u) { return u.protocol === 'https:' ? https : http; }
+function dbaiHttpMod(u) {
+  if (u.protocol === 'https:') return https;
+  if (u.protocol === 'http:') return http;
+  throw new Error('поддерживаются только адреса http:// и https://');
+}
 ipcMain.handle('dbai:apiModels', async (_e, { baseUrl, key } = {}) => {
   return await new Promise((resolve) => {
-    let u; try { u = new URL(String(baseUrl).replace(/\/$/, '') + '/models'); } catch (_) { return resolve({ error: 'неверный адрес' }); }
+    let u; try { u = new URL(String(baseUrl || '').replace(/\/+$/, '') + '/models'); } catch (_) { return resolve({ error: 'неверный адрес' }); }
+    let mod; try { mod = dbaiHttpMod(u); } catch (err) { return resolve({ error: String(err.message || err) }); }
     const headers = { 'Accept': 'application/json', ...(key ? { Authorization: 'Bearer ' + key } : {}) };
-    const req = dbaiHttpMod(u).request(u, { method: 'GET', headers }, (res) => {
-      res.setEncoding('utf8');   // многобайтный символ на границе чанков не бьётся
-      let data = ''; res.on('data', (c) => { data += c; });
-      // обрыв посреди ответа даёт только 'close' без 'end' — иначе invoke висел бы вечно
-      res.on('close', () => { if (!res.complete) resolve({ error: 'соединение с сервером оборвалось' }); });
-      res.on('end', () => {
-        try { const j = JSON.parse(data); if (res.statusCode >= 400) return resolve({ error: (j.error && j.error.message) || ('HTTP ' + res.statusCode) }); const models = (j.data || j.models || []).map((m) => ({ id: m.id || m.name, name: m.id || m.name })); resolve({ models }); }
-        catch (_) { resolve({ error: 'не удалось разобрать список моделей (проверьте адрес/сервер)' }); }
+    let req;
+    try {
+      req = mod.request(u, { method: 'GET', headers }, (res) => {
+        res.setEncoding('utf8');   // многобайтный символ на границе чанков не бьётся
+        let data = ''; res.on('data', (c) => { data += c; });
+        // обрыв посреди ответа даёт только 'close' без 'end' — иначе invoke висел бы вечно
+        res.on('close', () => { if (!res.complete) resolve({ error: 'соединение с сервером оборвалось' }); });
+        res.on('end', () => {
+          try { const j = JSON.parse(data); if (res.statusCode >= 400) return resolve({ error: (j.error && j.error.message) || ('HTTP ' + res.statusCode) }); const models = (j.data || j.models || []).map((m) => ({ id: m.id || m.name, name: m.id || m.name })); resolve({ models }); }
+          catch (_) { resolve({ error: 'не удалось разобрать список моделей (проверьте адрес/сервер)' }); }
+        });
       });
-    });
-    req.on('error', (e2) => resolve({ error: String(e2.message || e2) }));
-    req.setTimeout(15000, () => { req.destroy(); resolve({ error: 'таймаут (сервер недоступен)' }); });
-    req.end();
+      req.on('error', (e2) => resolve({ error: String(e2.message || e2) }));
+      req.setTimeout(15000, () => { req.destroy(); resolve({ error: 'таймаут (сервер недоступен)' }); });
+      req.end();
+    } catch (err) {
+      resolve({ error: String((err && err.message) || err) });
+    }
   });
 });
 ipcMain.on('dbai:apiRun', (e, { reqId, baseUrl, key, model, messages, usage, prompt } = {}) => {
+  if (!reqId) return;
   const sender = e.sender;
-  let u; try { u = new URL(String(baseUrl).replace(/\/$/, '') + '/chat/completions'); } catch (_) { safeSend(sender, 'dbai:error', { reqId, error: 'неверный адрес провайдера' }); return; }
+  let u; try { u = new URL(String(baseUrl || '').replace(/\/+$/, '') + '/chat/completions'); } catch (_) { safeSend(sender, 'dbai:error', { reqId, error: 'неверный адрес провайдера' }); return; }
+  let mod; try { mod = dbaiHttpMod(u); } catch (err) { safeSend(sender, 'dbai:error', { reqId, error: String(err.message || err) }); return; }
   // Полноценный многоходовой диалог с ролью system: одним склеенным user-сообщением модель хуже
   // держит правила, а провайдер не может кешировать неизменную часть промпта (схему БД).
   // Одиночный prompt — прежний контракт канала: им шлёт «Мониторинг сайтов» (sitemon.js), и без
@@ -1315,35 +1503,73 @@ ipcMain.on('dbai:apiRun', (e, { reqId, baseUrl, key, model, messages, usage, pro
   const msgs = Array.isArray(messages) && messages.length ? messages : [{ role: 'user', content: String(prompt || '') }];
   const body = JSON.stringify({ model, messages: msgs, stream: true, ...(usage ? { stream_options: { include_usage: true } } : {}) });
   const headers = { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body), ...(key ? { Authorization: 'Bearer ' + key } : {}) };
-  const req = dbaiHttpMod(u).request(u, { method: 'POST', headers }, (res) => {
+  let req;
+  try {
+    req = mod.request(u, { method: 'POST', headers }, (res) => {
     res.setEncoding('utf8');   // SSE-кадры с русским текстом: буква на границе чанков иначе превращалась в «��»
-    if (res.statusCode >= 400) { let err = ''; res.on('data', (c) => { err += c; }); res.on('end', () => { let msg = 'HTTP ' + res.statusCode; try { const j = JSON.parse(err); if (j.error && j.error.message) msg = j.error.message; } catch (_) {} if (!dbaiReqs.has(reqId)) return; dbaiReqs.delete(reqId); safeSend(sender, 'dbai:error', { reqId, error: msg }); }); return; }
-    let buf = '', any = false;
-    res.on('data', (chunk) => {
-      buf += chunk.toString('utf8'); let idx;
-      while ((idx = buf.indexOf('\n')) >= 0) {
-        const line = buf.slice(0, idx).trim(); buf = buf.slice(idx + 1);
-        if (!line.startsWith('data:')) continue;
-        const payload = line.slice(5).trim(); if (payload === '[DONE]') continue;
+      let buf = '', any = false, streamErr = '';
+      res.on('close', () => {
+        if (res.complete || !dbaiReqs.has(reqId)) return;
+        dbaiReqs.delete(reqId); dbaiOwner.delete(reqId);
+        safeSend(sender, 'dbai:error', { reqId, error: 'соединение с провайдером оборвалось посреди ответа' });
+      });
+      if (res.statusCode >= 400) {
+        let err = '';
+        res.on('data', (c) => { err += c; });
+        res.on('end', () => {
+          let msg = 'HTTP ' + res.statusCode;
+          try { const j = JSON.parse(err); if (j.error && j.error.message) msg = j.error.message; } catch (_) {}
+          if (!dbaiReqs.has(reqId)) return;
+          dbaiReqs.delete(reqId); dbaiOwner.delete(reqId);
+          safeSend(sender, 'dbai:error', { reqId, error: msg });
+        });
+        return;
+      }
+      const handleSseLine = (rawLine) => {
+        const line = rawLine.trim();
+        if (!line.startsWith('data:')) return;
+        const payload = line.slice(5).trim();
+        if (payload === '[DONE]') return;
         try {
           const j = JSON.parse(payload);
+          if (j.error) { streamErr = (j.error && j.error.message) || String(j.error); return; }
           const ch = j.choices && j.choices[0];
           const delta = ch && ch.delta && ch.delta.content;
           if (delta) { any = true; safeSend(sender, 'dbai:data', { reqId, chunk: delta }); }
           // последний кадр со stream_options.include_usage несёт счётчики токенов
           if (j.usage) safeSend(sender, 'dbai:usage', { reqId, model: j.model || model, usage: j.usage });
         } catch (_) {}
-      }
+      };
+      res.on('data', (chunk) => {
+        buf += chunk.toString('utf8'); let idx;
+        while ((idx = buf.indexOf('\n')) >= 0) { handleSseLine(buf.slice(0, idx)); buf = buf.slice(idx + 1); }
+      });
+      res.on('end', () => {
+        if (buf.trim()) handleSseLine(buf);
+        if (!dbaiReqs.has(reqId)) return;
+        dbaiReqs.delete(reqId); dbaiOwner.delete(reqId);
+        if (streamErr) safeSend(sender, 'dbai:error', { reqId, error: streamErr });
+        else if (any) safeSend(sender, 'dbai:done', { reqId });
+        else safeSend(sender, 'dbai:error', { reqId, error: 'пустой ответ модели' });
+      });
     });
-    res.on('end', () => { if (!dbaiReqs.has(reqId)) return; dbaiReqs.delete(reqId); if (any) safeSend(sender, 'dbai:done', { reqId }); else safeSend(sender, 'dbai:error', { reqId, error: 'пустой ответ модели' }); });
-    // Провайдер оборвал поток посреди ответа (сеть, рестарт Ollama): приходит только 'close' без 'end',
-    // и чат висел со спиннером до ручной остановки. Нажатый «Стоп» сюда не попадает — он уже убрал reqId.
-    res.on('close', () => { if (res.complete || !dbaiReqs.has(reqId)) return; dbaiReqs.delete(reqId); safeSend(sender, 'dbai:error', { reqId, error: 'соединение с провайдером оборвалось посреди ответа' }); });
-  });
-  req.on('error', (err) => { if (!dbaiReqs.has(reqId)) return; dbaiReqs.delete(reqId); safeSend(sender, 'dbai:error', { reqId, error: String(err.message || err) }); });
-  req.setTimeout(300000, () => { req.destroy(); if (!dbaiReqs.has(reqId)) return; dbaiReqs.delete(reqId); safeSend(sender, 'dbai:error', { reqId, error: 'таймаут запроса' }); });
-  dbaiTrack(sender, reqId, req);
-  req.write(body); req.end();
+    req.on('error', (err) => {
+      if (!dbaiReqs.has(reqId)) return;
+      dbaiReqs.delete(reqId); dbaiOwner.delete(reqId);
+      safeSend(sender, 'dbai:error', { reqId, error: String(err.message || err) });
+    });
+    req.setTimeout(300000, () => {
+      if (!dbaiReqs.has(reqId)) return;
+      dbaiReqs.delete(reqId); dbaiOwner.delete(reqId);
+      try { req.destroy(); } catch (_) {}
+      safeSend(sender, 'dbai:error', { reqId, error: 'таймаут запроса' });
+    });
+    dbaiTrack(sender, reqId, req);
+    req.write(body); req.end();
+  } catch (err) {
+    dbaiReqs.delete(reqId); dbaiOwner.delete(reqId);
+    safeSend(sender, 'dbai:error', { reqId, error: String((err && err.message) || err) });
+  }
 });
 
 // ---------------------------------------------------------------- «Анализ диалогов» (ctxmine)
@@ -2231,228 +2457,6 @@ ipcMain.handle('ctxmem:restore', (_e, { id } = {}) => {
   return { ok: true, file: dst };
 });
 
-// ---------------------------------------------------------------- «ИИ компания» (company)
-// Модуль renderer/modules/company.js: агент-ДИРЕКТОР (claude -p, stream-json) над активным
-// проектом нанимает и зовёт сабагентов Claude (родная оркестровка, вариант А). Штат/настройки
-// per-project в ~/.LiteEditorAI/company/<projId>.json; роли-сотрудники МАТЕРИАЛИЗУЮТСЯ в
-// <proj>/.claude/agents/*.md (Claude понимает их нативно). Шина — доска-файл
-// <proj>/.lite/company/board.md (виден владельцу и команде). Поток событий stream-json
-// уходит в окно-владелец как company:event/done/error. Директор cwd = корень проекта,
-// иначе Claude не увидит .claude/agents/.
-const companyDir = path.join(storeDir, 'company');
-const companySafe = (s) => String(s).replace(/[^\w.-]/g, '_');
-const companyDataFile = (projId) => path.join(companyDir, companySafe(projId) + '.json');
-
-ipcMain.handle('company:getData', (_e, { projId } = {}) => readJsonForEdit(companyDataFile(projId), null));
-ipcMain.handle('company:setData', (_e, { projId, data } = {}) => {
-  try {
-    fs.mkdirSync(companyDir, { recursive: true });
-    atomicWriteSync(companyDataFile(projId), JSON.stringify(data));
-    return { ok: true };
-  } catch (e) { return { ok: false, error: String(e) }; }
-});
-// Текущая доска компании из проекта (read-only для UI).
-ipcMain.handle('company:boardGet', (_e, { projPath } = {}) => {
-  try { return { text: fs.readFileSync(path.join(projPath, '.lite', 'company', 'board.md'), 'utf8') }; }
-  catch { return { text: '' }; }
-});
-// Разбор сабагента .claude/agents/<name>.md в роль (для отображения штата, в т.ч. нанятых директором).
-function companyParseRole(raw, file) {
-  // Служебную метку модуля (см. COMPANY_ROLE_MARK) из промпта убираем: иначе роль, взятая с диска
-  // в штат, при следующем запуске записалась бы с меткой дважды, и так при каждом круге.
-  const unmark = (s) => s.split(COMPANY_ROLE_MARK).join('').trim();
-  const role = { name: file.replace(/\.md$/, ''), description: '', model: '', tools: '', prompt: unmark(raw || ''), source: 'disk' };
-  const m = /^---\s*\n([\s\S]*?)\n---\s*\n?([\s\S]*)$/.exec(raw || '');
-  if (m) {
-    role.prompt = unmark(m[2]);
-    for (const ln of m[1].split('\n')) {
-      const kv = /^([A-Za-z_]+):\s*(.*)$/.exec(ln.trim());
-      if (!kv) continue;
-      const v = kv[2].replace(/^["']|["']$/g, '');
-      if (kv[1] === 'name') role.name = v;
-      else if (kv[1] === 'description') role.description = v;
-      else if (kv[1] === 'model') role.model = v;
-      else if (kv[1] === 'tools') role.tools = v;
-    }
-  }
-  return role;
-}
-ipcMain.handle('company:listRoles', (_e, { projPath } = {}) => {
-  try {
-    const agDir = path.join(projPath, '.claude', 'agents');
-    const roles = [];
-    for (const f of fs.readdirSync(agDir)) {
-      if (!f.endsWith('.md')) continue;
-      try { roles.push(companyParseRole(fs.readFileSync(path.join(agDir, f), 'utf8'), f)); } catch (_) {}
-    }
-    return { roles };
-  } catch { return { roles: [] }; }
-});
-// Роль штата → markdown-сабагент Claude. Метка в конце отличает файл, созданный модулем, от
-// собственного субагента человека с тем же именем (reviewer, coder — имена ходовые).
-const COMPANY_ROLE_MARK = '<!-- lite-company: managed by LiteEditor (AI company module); editing the staff there overwrites this file -->';   // латиницей: служебная метка, не текст интерфейса
-function companyRoleMd(role) {
-  const L = ['---', 'name: ' + companySafe(role.name), 'description: ' + JSON.stringify(role.description || '')];
-  if (role.model) L.push('model: ' + role.model);
-  if ((role.tools || '').trim()) L.push('tools: ' + role.tools.trim());
-  L.push('---', '', (role.prompt || '').trim(), '', COMPANY_ROLE_MARK, '');
-  return L.join('\n');
-}
-// Система-промпт директора: роль, цель, команда, правила доски, право нанимать, память компании.
-function companyDirectorPrompt(goal, roles, notes) {
-  const team = (roles || []).filter((r) => r && r.name).map((r) => '- ' + companySafe(r.name) + ': ' + (r.description || '')).join('\n');
-  const L = [
-    'Ты — ДИРЕКТОР ИИ-компании, работающей над ЭТИМ проектом. Твоя задача — не писать код самому,',
-    'а управлять командой ИИ-сотрудников (сабагентов) и довести цель владельца до результата.',
-    '',
-    'ТВОЯ КОМАНДА — вызывай их как сабагентов (механизм Task) по имени и описанию:',
-    (team || '- (сотрудников ещё нет — наними нужных)'),
-  ];
-  if ((notes || '').trim()) {
-    L.push('', 'ПАМЯТЬ КОМПАНИИ (уроки и договорённости по этому проекту — учитывай их):', notes.trim());
-  }
-  L.push(
-    '',
-    'ПРАВИЛА:',
-    '1. Веди доску задач в файле .lite/company/board.md (создай каталоги при необходимости).',
-    '   Формат — markdown чек-лист (- [ ] задача / - [x] сделано). Сразу после декомпозиции запиши',
-    '   ВСЕ задачи на доску чекбоксами, по ходу отмечай выполненные. Это общий журнал для владельца и команды.',
-    '2. Декомпозируй цель на задачи и делегируй их подходящим сотрудникам-сабагентам. Сам пиши код',
-    '   только если задача совсем тривиальна.',
-    '3. Нет нужного специалиста — НАНИМИ его: создай файл .claude/agents/<имя>.md с YAML-шапкой',
-    '   (name, description, tools, model) и системным промптом роли, затем вызывай как сабагента.',
-    '4. По завершении допиши в .lite/company/notes.md краткие уроки на будущее (стек проекта, договорённости,',
-    '   грабли) — это память компании между прогонами. Не дублируй уже записанное.',
-    '5. В конце кратко отчитайся владельцу: что сделано, что осталось, что проверить.',
-    '6. Пиши по-русски.',
-  );
-  return L.join('\n');
-}
-// Память компании (.lite/company/notes.md) и обзор изменений (git diff --stat) — отдельные каналы.
-function companyNotesPath(projPath) { return path.join(projPath, '.lite', 'company', 'notes.md'); }
-ipcMain.handle('company:notesGet', (_e, { projPath } = {}) => {
-  try { return { text: fs.readFileSync(companyNotesPath(projPath), 'utf8') }; }
-  catch (e) { return e && e.code === 'ENOENT' ? { text: '' } : { text: '', error: String((e && e.message) || e) }; }   // не прочиталось — не «пусто»
-});
-// Память дописывает и директор по итогам прогона. expect — то, что показало окно: если файл с тех пор
-// изменился, запись поверх стёрла бы дописанное, поэтому отказываем (окно спросит, перезаписывать ли).
-ipcMain.handle('company:notesSet', (_e, { projPath, text, expect } = {}) => {
-  try {
-    if (typeof expect === 'string') {
-      let cur = '';
-      try { cur = fs.readFileSync(companyNotesPath(projPath), 'utf8'); } catch (e) { if (!e || e.code !== 'ENOENT') throw e; }
-      if (cur !== expect) return { ok: false, stale: true, error: 'память изменилась на диске, пока окно было открыто' };
-    }
-    fs.mkdirSync(path.dirname(companyNotesPath(projPath)), { recursive: true });
-    atomicWriteSync(companyNotesPath(projPath), String(text || ''));
-    return { ok: true };
-  } catch (e) { return { ok: false, error: String(e) }; }
-});
-ipcMain.handle('company:diff', async (_e, { projPath } = {}) => {
-  try {
-    // core.quotePath=false: иначе «Отчёт.md» приходит как "\320\236…" — в списке мусор, а клик
-    // открывает несуществующий путь (так же в git:status/аудите).
-    const stat = await git(projPath, ['-c', 'core.quotePath=false', 'diff', '--stat']);
-    const names = await git(projPath, ['-c', 'core.quotePath=false', 'diff', '--name-only']);
-    if (stat == null && names == null) return { ok: false, error: 'git недоступен' };
-    return { ok: true, stat: stat || '', files: (names || '').split('\n').map((s) => s.trim()).filter(Boolean) };
-  } catch (e) { return { ok: false, error: String(e) }; }
-});
-
-const companyReqs = new Map(); // reqId -> ChildProcess
-// Убить директора вместе с деревом подпроцессов (process group), иначе Stop оставит сирот, жгущих бюджет.
-function companyKill(child) {
-  if (!child) return;
-  try {
-    if (child.pid) process.kill(-child.pid, 'SIGTERM');
-    else child.kill();
-  } catch (_) { try { child.kill(); } catch (_) {} }
-}
-ipcMain.on('company:run', (e, { reqId, projPath, goal, roles, director, limitUsd, permission, memoryOn } = {}) => {
-  const sender = e.sender;
-  if (!projPath) { safeSend(sender, 'company:error', { reqId, error: 'нет активного проекта' }); return; }
-  // Каталог проекта обязан существовать: mkdirSync(recursive) ниже молча создал бы его заново
-  // (проект переехал, внешний диск отключён), и директор с правом правок строил бы всё в пустой папке.
-  let projStat = null;
-  try { projStat = fs.statSync(projPath); } catch (_) { /* ниже */ }
-  if (!projStat || !projStat.isDirectory()) { safeSend(sender, 'company:error', { reqId, error: `каталог проекта не найден: ${projPath}` }); return; }
-  // материализуем штат в .claude/agents/ (нативные сабагенты). Файл без нашей метки — собственный
-  // субагент человека (у многих есть свой reviewer.md): его не трогаем, Claude возьмёт его как есть.
-  // Раньше запуск молча затирал такой файл ролью по умолчанию — без копии.
-  const kept = [];
-  try {
-    const agDir = path.join(projPath, '.claude', 'agents');
-    fs.mkdirSync(agDir, { recursive: true });
-    for (const r of (roles || [])) {
-      if (!r || !r.name) continue;
-      const f = path.join(agDir, companySafe(r.name) + '.md');
-      let cur = null;
-      try { cur = fs.readFileSync(f, 'utf8'); }
-      catch (e) { if (!e || e.code !== 'ENOENT') { kept.push(companySafe(r.name)); continue; } }   // файла нет — создаём; не прочитался — не трогаем
-      if (cur != null && !cur.includes(COMPANY_ROLE_MARK)) { kept.push(companySafe(r.name)); continue; }
-      const md = companyRoleMd(r);
-      if (cur !== md) atomicWriteSync(f, md);
-    }
-  } catch (err) { safeSend(sender, 'company:error', { reqId, error: 'не записать роли: ' + (err.message || err) }); return; }
-  if (kept.length) {
-    safeSend(sender, 'company:event', { reqId, ev: { type: 'lite-note', text: i18n.t('В .claude/agents уже есть свои файлы ролей: {0} — они не перезаписаны, работают как есть', kept.join(', ')) } });
-  }
-
-  let notes = '';
-  if (memoryOn) { try { notes = fs.readFileSync(companyNotesPath(projPath), 'utf8'); } catch (_) {} }
-  const args = ['-p', '--output-format', 'stream-json', '--verbose',
-    '--permission-mode', permission || 'acceptEdits',
-    '--append-system-prompt', companyDirectorPrompt(goal, roles, notes)];
-  if (limitUsd) args.push('--max-budget-usd', String(limitUsd));
-  if (director && director.model) args.push('--model', director.model);
-
-  let child;
-  // detached → свой process group: убиваем всё дерево (директор + его tool-подпроцессы), а не только claude.
-  try { child = spawn('claude', args, { cwd: projPath, env: tpEnv(), detached: true }); }
-  catch (err) { safeSend(sender, 'company:error', { reqId, error: 'не запустить «claude»: ' + (err.message || err) }); return; }
-  companyReqs.set(reqId, child);
-  // Строки вместо Buffer: длинные строки stream-json (результаты инструментов) рвутся на чанки, и
-  // русская буква на стыке при c.toString() становилась «��» в логе директора.
-  child.stdout.setEncoding('utf8'); child.stderr.setEncoding('utf8');
-  let buf = '', errOut = '';
-  // сторож простоя: директор может думать долго, но если МОЛЧИТ 15 минут — считаем зависшим
-  let idle;
-  const bump = () => { clearTimeout(idle); idle = setTimeout(() => {
-    if (!companyReqs.has(reqId)) return; companyReqs.delete(reqId); companyKill(child);
-    safeSend(sender, 'company:error', { reqId, error: 'таймаут: директор молчит 15 минут' });
-  }, 15 * 60 * 1000); };
-  bump();
-  const emitLine = (line) => { const s = line.trim(); if (!s) return; let ev; try { ev = JSON.parse(s); } catch (_) { return; } safeSend(sender, 'company:event', { reqId, ev }); };
-  // stream-json идёт построчно (NDJSON) — режем по \n, парсим, шлём событиями
-  child.stdout.on('data', (c) => {
-    bump();
-    buf += c.toString('utf8');
-    let nl;
-    while ((nl = buf.indexOf('\n')) >= 0) { emitLine(buf.slice(0, nl)); buf = buf.slice(nl + 1); }
-  });
-  child.stderr.on('data', (c) => { bump(); errOut += c.toString('utf8'); });
-  child.stdin.on('error', () => {}); // claude не стартовал → async EPIPE на stdin не должен ронять main
-  child.on('error', (err) => {
-    clearTimeout(idle);
-    if (!companyReqs.has(reqId)) return; companyReqs.delete(reqId);
-    safeSend(sender, 'company:error', { reqId, error: '«claude» не найден/не запустился: ' + (err.message || err) });
-  });
-  child.on('close', (code, signal) => {
-    clearTimeout(idle); // и после «Стоп»/закрытия окна: вывод до смерти процесса взводил сторожа ещё на 15 мин
-    if (!companyReqs.has(reqId)) return; companyReqs.delete(reqId);
-    if (buf.trim()) emitLine(buf);   // флаш хвоста: финальный {type:'result'} может прийти без \n
-    // Убит сигналом извне (OOM, kill, падение) — code === null, и по `code ? … : ''` это считалось
-    // успехом: в логе «Готово.», в истории прогон отмечен удачным. Свой «Стоп» сюда не доходит.
-    const failed = code !== 0;
-    safeSend(sender, 'company:done', { reqId, code, error: failed ? (errOut.trim() || (code === null ? 'claude прерван сигналом ' + signal : 'claude завершился с кодом ' + code)) : '' });
-  });
-  try { child.stdin.write(goal || ''); child.stdin.end(); } catch (_) {}
-});
-ipcMain.on('company:stop', (_e, { reqId } = {}) => {
-  const c = companyReqs.get(reqId);
-  if (c) { companyReqs.delete(reqId); companyKill(c); }
-});
-
 // ---------------------------------------------------------------- «Контекст» (канва файла CLAUDE.md)
 // Модуль renderer/modules/contextgraph.js: канва блоков поверх CLAUDE.md проекта.
 //
@@ -2854,6 +2858,7 @@ ipcMain.handle('settings:import', async () => {
     for (const k of STORE_KEYS) {
       if (Object.prototype.hasOwnProperty.call(data.store, k) && !writeStoreKey(k, data.store[k], { sync: true })) failedKeys.push(k);
     }
+    sanitizeRemovedModules({ sync: true });
     let failedNotes = 0;
     if (data.notes && typeof data.notes === 'object' && !Array.isArray(data.notes)) { // массив дал бы notes/0.json, notes/1.json…
       const nd = path.join(storeDir, 'notes');
@@ -2866,6 +2871,7 @@ ipcMain.handle('settings:import', async () => {
     }
     if (data.windowState && typeof data.windowState === 'object') saveState(data.windowState);
     saveState({ lastOpenDir: path.dirname(file) });
+    try { const api = dbLazy.getApi(); if (api) api.closeAll(); } catch (_) {}
     for (const w of moduleWindows.values()) { try { if (!w.isDestroyed()) w.webContents.reload(); } catch (_) {} }
     // Surface partial failure instead of a false "success" so the renderer can warn the user.
     if (failedKeys.length || failedNotes) return { ok: true, partial: true, failedKeys, failedNotes, file };
@@ -3086,6 +3092,51 @@ function readModuleWins() { const v = readStoreKey('moduleWins'); return (v && t
     if (st && typeof st === 'object') { const al = swap(st.autoLaunchMods); if (al) { st.autoLaunchMods = al; writeStoreKey('settings', st); } }
   } catch (e) { logger.log('warn', 'store', 'миграция sitemon → servers: ' + String((e && e.message) || e)); }
 })();
+// Идемпотентная очистка удалённых модулей ('company', 'quorum') из открытых окон, квикбара и автозапуска.
+// Данные пользователя в ~/.LiteEditorAI/quorum-data/ и ~/.LiteEditorAI/company/ на диске не трогаем.
+const REMOVED_MODULE_IDS = new Set(['company', 'quorum']);
+function sanitizeRemovedModules({ sync = false } = {}) {
+  const writeOpts = sync ? { sync: true } : undefined;
+  const drop = (arr) => (Array.isArray(arr) && arr.some((x) => REMOVED_MODULE_IDS.has(x)))
+    ? arr.filter((x) => !REMOVED_MODULE_IDS.has(x))
+    : null;
+  const collapseSeps = (arr) => {
+    const out = [];
+    for (const x of arr) {
+      if (x === '|' && (!out.length || out[out.length - 1] === '|')) continue;
+      out.push(x);
+    }
+    while (out.length && out[out.length - 1] === '|') out.pop();
+    return out;
+  };
+  try {
+    const mw = readModuleWins();
+    const o = drop(mw.__open);
+    const hasLegacy = Object.prototype.hasOwnProperty.call(mw, 'company') || Object.prototype.hasOwnProperty.call(mw, 'quorum');
+    if (o || hasLegacy) {
+      if (o) mw.__open = o;
+      delete mw.company;
+      delete mw.quorum;
+      writeStoreKey('moduleWins', mw, writeOpts);
+    }
+    const qbRaw = readStoreKey('quickbar');
+    const qb = drop(qbRaw);
+    if (qb) writeStoreKey('quickbar', collapseSeps(qb), writeOpts);
+    const st = readStoreKey('settings');
+    if (st && typeof st === 'object') {
+      const al = drop(st.autoLaunchMods);
+      const hasKeys = Object.prototype.hasOwnProperty.call(st, 'quorumFollowProject')
+        || Object.prototype.hasOwnProperty.call(st, 'quorumSourceDir');
+      if (al || hasKeys) {
+        if (al) st.autoLaunchMods = al;
+        delete st.quorumFollowProject;
+        delete st.quorumSourceDir;
+        writeStoreKey('settings', st, writeOpts);
+      }
+    }
+  } catch (e) { logger.log('warn', 'store', i18n.t('очистка удалённых модулей: {0}', String((e && e.message) || e))); }
+}
+sanitizeRemovedModules();
 function saveModuleBounds(modId, win) {
   if (!win || win.isDestroyed() || win.isFullScreen()) return; // F11 — не затираем обычные габариты размером экрана
   const all = readModuleWins();
@@ -3231,6 +3282,7 @@ function deliverModuleArg(modId, arg) {
 function openModuleWindow(modId, arg) {
   // «Мониторинг сайтов» стал вкладкой «Сайты» окна «Серверы» (v1.1.212): старые вызовы ведут туда
   if (modId === 'sitemon') { modId = 'servers'; if (arg == null) arg = { view: 'sites' }; }
+  if (REMOVED_MODULE_IDS.has(modId)) return;
   const existing = moduleWindows.get(modId);
   if (existing && !existing.isDestroyed()) { if (existing.isMinimized()) existing.restore(); existing.focus(); deliverModuleArg(modId, arg); return; }
   deliverModuleArg(modId, arg);
@@ -3241,7 +3293,11 @@ function openModuleWindow(modId, arg) {
     minWidth: 420, minHeight: 320,
     backgroundColor: '#00000000', frame: false, transparent: true,
     title: 'LiteEditorAI', show: false,
-    webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false },
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+    },
   };
   if (Number.isInteger(saved.x) && Number.isInteger(saved.y)) { opts.x = saved.x; opts.y = saved.y; }
   if (fs.existsSync(iconPng)) opts.icon = iconPng;
@@ -3280,15 +3336,13 @@ function openModuleWindow(modId, arg) {
       for (const c of ctxmineReqs.values()) { try { c.kill(); } catch (_) {} } ctxmineReqs.clear();
     }
     // То же и для остальных окон с агентами: закрыли окно — обрывай его запросы. Иначе `claude -p`
-    // (или HTTP-стрим OpenRouter) доживал до своего таймаута — 2–5 минут работы и токенов в никуда,
-    // а «Директор» ИИ-компании ещё и detached, то есть переживал бы окно гарантированно.
+    // (или HTTP-стрим OpenRouter) доживал до своего таймаута — 2–5 минут работы и токенов в никуда.
     if (modId === 'doc') killReqMap(tpReqs);         // «Обработка текста»
     // AI-DB: запросы гасит dbaiTrack по закрытию окна-ЗАКАЗЧИКА (тем же каналом ходит «Мониторинг сайтов» —
     // killReqMap здесь обрывал и его). Соединения и SSH-туннели «Баз данных» нужны только этому окну — закрываем,
     // иначе они жили до выхода из редактора (следующее открытие окна переподключится само).
     if (modId === 'db') { try { const api = dbLazy.getApi(); if (api) api.closeAll(); } catch (_) {} }
     if (modId === 'chat') killReqMap(orReqs);        // OpenRouter
-    if (modId === 'company') { for (const c of companyReqs.values()) { try { companyKill(c); } catch (_) {} } companyReqs.clear(); }
     if (modId === 'docker') { try { const api = containersLazy.getApi(); if (api) api.closeStreams(); } catch (_) {} }
     if (modId === 'files' || modId === 'doc') scheduleSyncWatchers(0);
     for (const [sid, wc] of ownerBySession) { try { if (wc.isDestroyed()) ownerBySession.delete(sid); } catch (_) { ownerBySession.delete(sid); } }
@@ -3716,9 +3770,12 @@ app.on('before-quit', () => { logger.log('info', 'app', 'before-quit'); });
 // Уборка — на will-quit, а не на before-quit: выход может быть отменён (окно с несохранённым,
 // guardMainWindowClose).
 app.on('will-quit', () => {
+  killReqMap(tpReqs); killReqMap(dbaiReqs); killReqMap(orReqs); killReqMap(ctxmineReqs);
+  try { const api = dbLazy.getApi(); if (api) api.closeAll(); } catch (_) {}
   try { appStore.flushAllSync(); } catch (_) {}
   try { errledger.flush(); } catch (_) {}
   try { procService.shutdown(); } catch (_) {}
+  try { mcpHub.shutdown(); } catch (_) {}
 });
 
 app.whenReady().then(() => {
@@ -3731,6 +3788,7 @@ app.whenReady().then(() => {
   const gpu = !(process.env.LITE_NO_GPU === '1' || process.env.LITE_SOFTWARE_RENDER === '1');
   logger.log('info', 'app', `ready — electron ${process.versions.electron}, chrome ${process.versions.chrome}, node ${process.versions.node}, gpu=${gpu}`);
   probeLoginPath(); // фоном: PATH логин-шелла для CLI-агентов «Обработки текста»
+  if (mcpHub.getConfig().enabled !== false) mcpHub.ensureStarted().catch(() => {});
   // Своё меню рисуется в титлбаре — системное меню окна на Linux не нужно.
   Menu.setApplicationMenu(null);
   createWindow();
@@ -3753,8 +3811,6 @@ app.on('window-all-closed', () => {
   for (const p of ptys.values()) { try { p.kill(); } catch (_) {} }
   ptys.clear();
   try { const api = containersLazy.getApi(); if (api) api.closeStreams(); } catch (_) {}
-  for (const c of companyReqs.values()) { try { companyKill(c); } catch (_) {} } // detached-директора не должны пережить редактор
-  companyReqs.clear();
   // In-flight агент-процессы/HTTP окон модулей (textproc/чат/AI-DB): окно могло крашнуться,
   // не успев послать *:abort → не оставляем claude/codex/запрос сиротами после выхода (B3).
   killReqMap(tpReqs); killReqMap(dbaiReqs); killReqMap(orReqs); killReqMap(ctxmineReqs); // + анализ диалогов «Контекста»
@@ -4272,6 +4328,7 @@ function bindPtyOwner(proc, owner) {
         ptys.delete(id);
         ptyRings.delete(id);
         dropOrphan(id);
+        try { mcpHub.revokeByPty(id); } catch (_) {}
       }
     });
   } catch (_) {}
@@ -4283,6 +4340,8 @@ function spawnPtyFor(id, cwd, cols, rows, owner) {
   if (owner) ownerBySession.set(id, owner);
   const { file: shell, args: shellArgs } = resolveShell();
   const startCwd = cwd && fs.existsSync(cwd) ? cwd : os.homedir();
+  const proj = resolveProjectForPty(id, startCwd);
+  const mcpSess = mcpHub.issueSession({ ptyId: id, projectId: proj.id, projectName: proj.name, agentKind: 'unknown' });
   // Log around the spawn: it runs synchronously on the main thread, so if it ever
   // hangs (e.g. a ConPTY conout pipe never connecting on Windows) the log shows
   // "pty spawn …" with no following "pty spawned …" — pinpointing the freeze.
@@ -4294,9 +4353,10 @@ function spawnPtyFor(id, cwd, cols, rows, owner) {
       cols: cols || 80,
       rows: rows || 24,
       cwd: startCwd,
-      env: userShellEnv({ SHELL: shell }),   // SHELL → реальный шелл, а не тот, что унаследован от лаунчера
+      env: userShellEnv({ SHELL: shell, ...(mcpSess ? mcpSess.env : {}) }),   // SHELL → реальный шелл + токен MCP сессии
     });
   } catch (err) {
+    try { mcpHub.revokeByPty(id); } catch (_) {}
     logger.log('error', 'pty', 'spawn failed', err);
     sendToOwner(id, 'pty:data', { id, data: `\r\n\x1b[31mНе удалось запустить шелл (${shell}): ${err.message}\x1b[0m\r\n` });
     sendToOwner(id, 'pty:exit', { id });
@@ -4330,6 +4390,7 @@ function spawnPtyFor(id, cwd, cols, rows, owner) {
     sendToOwner(id, 'pty:exit', { id });
     ownerBySession.delete(id); // сессия закрылась — не копим мёртвые id в карте маршрутизации (B4-LOW)
     dropOrphan(id);
+    try { mcpHub.revokeByPty(id); } catch (_) {}
   });
   ptys.set(id, proc);
   bindPtyOwner(proc, owner);
@@ -4351,6 +4412,7 @@ ipcMain.handle('pty:restart', (e, { id, cwd, cols, rows }) => {
   const g = ptyFlows.get(id); if (g) g.reset();
   ptyFlows.delete(id);
   ptyRings.delete(id);
+  try { mcpHub.revokeByPty(id); } catch (_) {}
   const old = ptys.get(id);
   if (old) { try { old.kill(); } catch (_) {} ptys.delete(id); }
   return spawnPtyFor(id, cwd, cols, rows, e.sender);
@@ -4366,6 +4428,7 @@ ipcMain.on('pty:kill', (_e, { id }) => {
   const g = ptyFlows.get(id); if (g) g.reset();
   ptyFlows.delete(id);
   ptyRings.delete(id);
+  try { mcpHub.revokeByPty(id); } catch (_) {}
   const p = ptys.get(id);
   if (p) { try { p.kill(); } catch (_) {} ptys.delete(id); }
 });
@@ -4418,7 +4481,7 @@ ipcMain.handle('pty:agents', (_e, { ids } = {}) => {
 // потомкам шелла (/proc/<pid>/task/*/children), не читая /proc всех тысяч процессов системы.
 const MODULE_TITLES = {
   tools: 'Инструменты', iterflow: 'IterFlow', seo: 'WEB/SEO аудит', audit: 'Аудит',
-  pomodoro: 'Помодоро', company: 'ИИ компания', notes: 'Задачи', db: 'Базы данных',
+  pomodoro: 'Помодоро', notes: 'Задачи', db: 'Базы данных',
   chat: 'OpenRouter', doc: 'Обработка текста', docker: 'Контейнеры', rh: 'Удалённые хосты',
   ctx: 'Контекст', scratch: 'Система · ~', files: 'Проект', monitor: 'Монитор', gitgraph: 'Граф Git', servers: 'Серверы',
 };

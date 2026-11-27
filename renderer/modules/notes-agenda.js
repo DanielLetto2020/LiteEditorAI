@@ -1,24 +1,19 @@
 // LiteEditor — под-модуль «Календарь» (дата-задачи / напоминания) для окна «Задачи».
-// Отдельная сущность рядом с обычными задачами: главная ось — ВРЕМЯ, а не статус.
-//   • Быстрая запись «чтобы не забыть» + дата/время + напоминалка.
-//   • Свой файл-источник: ~/.LiteEditorAI/agenda/<projId>.json (или __global__ без проекта).
-//   • Своя модель, свой рендер (лента с группами по сроку) — статусную модель задач НЕ трогает.
-// Модель напоминания:
-//   { id, text, at:ISO|null, allDay:bool, remind:null|'at'|'10m'|'1h'|'1d', done:bool, tag?, notifiedAt?, createdAt }
-//   Первая строка text = заголовок (всегда виден); остальное = тело.
-// Изоляция: всё из ядра — через host (activeProject/sendNoteToTerminal/applyLayoutSwap); UI-хелперы — из ui.js.
-// Счётчик «требует внимания» (просрочено + сегодня) считает ЯДРО по app:agendaChanged; тут лишь broadcast.
+// Главная ось — ВРЕМЯ, а не статус: быстрая запись, повторения, Snooze, лента + сетка месяца
+// с перетаскиванием и отображением задач со сроком из списка задач.
+// Данные напоминаний: ~/.LiteEditorAI/agenda/<projId>.json (или __global__).
 import { el, icon, iconBtn, makeModal, showConfirm, toast, guardDirtyClose } from '../ui.js';
 import { t } from '../i18n.js';
+import {
+  GLOBAL_ID, REPEAT_ORDER, REPEAT_LABEL, computeNextRepeat, computeSnooze,
+  titleOf, bodyOf, startOfDay, dayKey, toLocalDateTimeInput, toLocalDateInput, formatDueShort, tagColorIndex,
+} from './notes-model.js';
 
 const lite = window.lite;
-const GLOBAL_ID = '__global__';
 
-// офсеты напоминания (за сколько ДО срока уведомить), мс
 const REMIND_LABEL = { '': 'Без напоминания', at: 'В момент срока', '10m': 'За 10 минут', '1h': 'За час', '1d': 'За день' };
 const REMIND_ORDER = ['', 'at', '10m', '1h', '1d'];
 
-// группы ленты (сверху вниз) — порядок и заголовки
 const BUCKETS = [
   ['overdue', 'Просрочено'],
   ['today', 'Сегодня'],
@@ -28,61 +23,56 @@ const BUCKETS = [
   ['nodate', 'Без даты'],
 ];
 
-const titleOf = (t) => { const s = (t || '').trim(); const i = s.indexOf('\n'); return (i < 0 ? s : s.slice(0, i)).trim(); };
-const bodyOf = (t) => { const s = (t || ''); const i = s.indexOf('\n'); return i < 0 ? '' : s.slice(i + 1).trim(); };
 const genId = () => 'r' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
-const pad = (n) => String(n).padStart(2, '0');
-const startOfDay = (d) => { const x = new Date(d); x.setHours(0, 0, 0, 0); return x; };
-const startOfMonth = (d) => { const x = new Date(d); x.setDate(1); x.setHours(0, 0, 0, 0); return x; };
-const toLocalInput = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
-const dayKey = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 const WEEKDAYS = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'];
 const MONTHS = ['Январь', 'Февраль', 'Март', 'Апрель', 'Май', 'Июнь', 'Июль', 'Август', 'Сентябрь', 'Октябрь', 'Ноябрь', 'Декабрь'];
 
-// В какую группу попадает напоминание относительно now.
 function bucketOf(item, now) {
   if (item.done) return 'done';
   if (!item.at) return 'nodate';
   const at = new Date(item.at);
-  if (isNaN(at)) return 'nodate';
-  const dayDiff = Math.round((startOfDay(at) - startOfDay(now)) / 86400000);
-  if (item.allDay) { if (dayDiff < 0) return 'overdue'; }
-  else if (at.getTime() < now.getTime()) return 'overdue';
+  if (isNaN(at.getTime())) return 'nodate';
+  const dayDiff = Math.round((startOfDay(at).getTime() - startOfDay(now).getTime()) / 86400000);
+  if (item.allDay) {
+    if (dayDiff < 0) return 'overdue';
+  } else if (at.getTime() < now.getTime()) {
+    return 'overdue';
+  }
   if (dayDiff <= 0) return 'today';
   if (dayDiff === 1) return 'tomorrow';
   if (dayDiff <= 7) return 'week';
   return 'later';
 }
 
-// Абсолютная подпись даты («8 июл, 15:00» или «8 июл» для allDay).
 function absLabel(item) {
   if (!item.at) return '';
-  const at = new Date(item.at); if (isNaN(at)) return '';
-  const d = at.toLocaleDateString('ru-RU', { day: 'numeric', month: 'short' });
-  return item.allDay ? d : `${d}, ${pad(at.getHours())}:${pad(at.getMinutes())}`;
+  const at = new Date(item.at);
+  if (isNaN(at.getTime())) return '';
+  return formatDueShort(item.at, item.allDay, new Date(), t);
 }
-// Относительная подпись («через 2 ч», «завтра», «3 дн назад»).
+
 function relLabel(item, now) {
   if (!item.at) return '';
-  const at = new Date(item.at); if (isNaN(at)) return '';
+  const at = new Date(item.at);
+  if (isNaN(at.getTime())) return '';
   const ms = at.getTime() - now.getTime();
   const abs = Math.abs(ms);
   let core;
-  if (abs < 60000) core = 'меньше минуты';
-  else if (abs < 3600000) core = `${Math.round(abs / 60000)} мин`;
-  else if (abs < 86400000) core = `${Math.round(abs / 3600000)} ч`;
-  else core = `${Math.round(abs / 86400000)} дн`;
-  return ms >= 0 ? `через ${core}` : `${core} назад`;
+  if (abs < 60000) core = t('меньше минуты');
+  else if (abs < 3600000) core = t('{0} мин', Math.round(abs / 60000));
+  else if (abs < 86400000) core = t('{0} ч', Math.round(abs / 3600000));
+  else core = t('{0} дн', Math.round(abs / 86400000));
+  return ms >= 0 ? t('через {0}', core) : t('{0} назад', core);
 }
 
-// Нормализация записи (миграция/защита от кривых данных).
 function normalize(r) {
   return {
     id: r.id || genId(),
     text: typeof r.text === 'string' ? r.text : '',
-    at: (r.at && !isNaN(new Date(r.at))) ? new Date(r.at).toISOString() : null,
+    at: (r.at && !isNaN(new Date(r.at).getTime())) ? new Date(r.at).toISOString() : null,
     allDay: !!r.allDay,
     remind: REMIND_ORDER.includes(r.remind) && r.remind ? r.remind : null,
+    repeat: REPEAT_ORDER.includes(r.repeat) && r.repeat ? r.repeat : null,
     done: !!r.done,
     tag: typeof r.tag === 'string' ? r.tag : '',
     notifiedAt: r.notifiedAt || null,
@@ -90,64 +80,77 @@ function normalize(r) {
   };
 }
 
-// host: { activeProject, sendNoteToTerminal, applyLayoutSwap, settings, saveSettings }
+// host: { activeProject, sendNoteToTerminal, applyLayoutSwap, settings, saveSettings, getDueTasks, toggleDueTask, openDueTask }
 export function createAgendaView(host) {
-  const { activeProject, sendNoteToTerminal, applyLayoutSwap, settings, saveSettings } = host;
+  const { activeProject, sendNoteToTerminal, applyLayoutSwap, settings, saveSettings, getDueTasks, toggleDueTask, openDueTask } = host;
 
-  let container = null;   // #notes-body ← сюда рисуем
-  let items = [];         // текущий список
-  let loadedId = null;    // id файла, который сейчас в items
-  let loadSeq = 0;        // защита от гонки async-загрузки
-  let query = '';         // поиск (в сессии)
-  let showDone = false;   // показывать выполненные
-  let subView = (settings && settings.agendaView === 'month') ? 'month' : 'agenda'; // лента / месяц
-  let monthCursor = null; // Date на 1-е число отображаемого месяца (null → текущий)
-  let selectedDay = null; // 'YYYY-MM-DD' выбранный день в виде «Месяц»
-  // Что окно записало последним (JSON). Эхо своей записи (fs.watch в main шлёт agendaChanged всем окнам)
-  // узнаём по содержимому, а не по времени: раньше внешние изменения 1,5 с после своей записи
-  // пропускались целиком, и напоминание, поставленное агентом через MCP в это окно, затиралось
-  // следующей записью окна.
+  let container = null;
+  let items = [];
+  let dueTasks = [];
+  let loadedId = null;
+  let dueLoadedId = null;
+  let loadSeq = 0;
+  let query = '';
+  let showDone = false;
+  let srcFilter = 'all'; // 'all' | 'reminders' | 'tasks'
+  let subView = (settings && settings.agendaView === 'month') ? 'month' : 'agenda';
+  let monthCursor = null;
+  let selectedDay = null;
+  let dragAgendaId = null;
   let lastSavedJson = null;
 
-  // Куда смотрит вкладка: активный проект, иначе — общий список («Личные»).
   function target() {
     const p = activeProject && activeProject();
     return p ? { id: p.id, name: p.name, proj: p, kind: 'project' } : { id: GLOBAL_ID, name: 'Личные', kind: 'global' };
   }
 
-  // Файл напоминаний, который не прочитался (права, EMFILE — store:agendaGet отдаёт { error }). В него не
-  // пишем: раньше ошибка выглядела пустым списком, и первое же напоминание затирало все прежние.
   let blockedId = null;
   const readErr = (v) => (v && !Array.isArray(v) && typeof v === 'object' && v.error ? String(v.error) : null);
   const blockedToast = (err) => toast(t('Не прочитать напоминания: {0} — список не изменится, пока файл не прочитается', err || '?'), { kind: 'err', ttl: 9000 });
+
+  async function refreshDueTasks(id) {
+    if (!getDueTasks) { dueTasks = []; dueLoadedId = id; return; }
+    try {
+      const list = await getDueTasks(id);
+      if (target().id === id) {
+        dueTasks = Array.isArray(list) ? list : [];
+        dueLoadedId = id;
+      }
+    } catch (_) {
+      dueTasks = [];
+    }
+  }
+
   async function load(id) {
     const seq = ++loadSeq;
-    let arr = await lite.store.agendaGet(id);
+    const [arr] = await Promise.all([
+      lite.store.agendaGet(id),
+      refreshDueTasks(id),
+    ]);
     if (seq !== loadSeq) return false;
     const err = readErr(arr);
     if (err) { items = []; loadedId = null; blockedId = id; blockedToast(err); return true; }
     blockedId = null;
-    if (!Array.isArray(arr)) arr = [];
-    items = arr.filter((r) => r && typeof r === 'object').map(normalize);
+    items = (Array.isArray(arr) ? arr : []).filter((r) => r && typeof r === 'object').map(normalize);
     loadedId = id;
     return true;
   }
+
   function save() {
-    const id = loadedId || target().id; // на случай записи до завершения первой загрузки
+    const id = loadedId || target().id;
     if (id === blockedId) { blockedToast(); return false; }
     loadedId = id;
     lastSavedJson = JSON.stringify(items);
     lite.store.agendaSet(id, items);
     try { lite.app.agendaChanged(id); } catch (_) {}
+    return true;
   }
 
   const matchesQuery = (r) => !query || (r.text || '').toLowerCase().includes(query.toLowerCase());
 
   // ---------------- модалка (новое/правка) ----------------
-  function openModal(item) {
+  function openModal(item, prefillDayKey) {
     const isNew = !item;
-    // Список, из которого открыли: пока модалка открыта, окно может перечитать файл (агент через MCP,
-    // тикер напоминаний) или уйти на другой проект — сохраняем туда и по id (см. notes.js openTaskModal).
     const listId = loadedId;
     const { overlay, m, close } = makeModal(`
       <h2>${isNew ? 'Новое напоминание' : 'Редактировать'}</h2>
@@ -156,6 +159,7 @@ export function createAgendaView(host) {
         <label class="ag-fld"><span>Дата и время</span><input type="datetime-local" data-at></label>
         <label class="ag-fld ag-fld-chk"><input type="checkbox" data-allday><span>Весь день</span></label>
         <label class="ag-fld"><span>Напоминание</span><select data-remind></select></label>
+        <label class="ag-fld"><span>Повторение</span><select data-repeat></select></label>
       </div>
       <div class="nt-modal-hint">Ctrl+Enter — сохранить · Esc — отмена · дату можно оставить пустой</div>
       <div class="modal-actions">
@@ -168,46 +172,65 @@ export function createAgendaView(host) {
     const atIn = m.querySelector('[data-at]');
     const allDayIn = m.querySelector('[data-allday]');
     const remindSel = m.querySelector('[data-remind]');
+    const repeatSel = m.querySelector('[data-repeat]');
+
     REMIND_ORDER.forEach((k) => { const o = el('option', null, REMIND_LABEL[k]); o.value = k; remindSel.appendChild(o); });
+    REPEAT_ORDER.forEach((k) => { const o = el('option', null, REPEAT_LABEL[k]); o.value = k; repeatSel.appendChild(o); });
 
     ta.value = item ? (item.text || '') : '';
-    if (item && item.at) atIn.value = toLocalInput(new Date(item.at));
     allDayIn.checked = item ? !!item.allDay : false;
-    remindSel.value = item && item.remind ? item.remind : '';
-    // «Весь день» → скрыть время у datetime-local нельзя, но переключаем тип на date/datetime
     const syncAllDay = () => { atIn.type = allDayIn.checked ? 'date' : 'datetime-local'; };
     syncAllDay();
+    if (item && item.at) {
+      const d = new Date(item.at);
+      atIn.value = allDayIn.checked ? toLocalDateInput(d) : toLocalDateTimeInput(d);
+    } else if (isNew && prefillDayKey) {
+      atIn.value = prefillDayKey + 'T09:00';
+    }
+    remindSel.value = item && item.remind ? item.remind : '';
+    repeatSel.value = item && item.repeat ? item.repeat : '';
+
     allDayIn.addEventListener('change', () => {
-      // сохранить дату при смене типа
-      const cur = atIn.value; syncAllDay();
+      const cur = atIn.value;
+      syncAllDay();
       if (cur && allDayIn.checked) atIn.value = cur.slice(0, 10);
+      else if (cur && !allDayIn.checked && cur.length === 10) atIn.value = cur + 'T09:00';
     });
 
-    const snap = () => JSON.stringify([ta.value, atIn.value, allDayIn.checked, remindSel.value]);
+    const snap = () => JSON.stringify([ta.value, atIn.value, allDayIn.checked, remindSel.value, repeatSel.value]);
     const initial = snap();
     guardDirtyClose(overlay, m, () => snap() !== initial, () => showConfirm('Закрыть без сохранения?', 'Набранное напоминание пропадёт.', 'Закрыть', close));
+
     let committing = false;
     const commit = async () => {
       if (committing) return;
       const text = ta.value.trim();
       if (!text) { close(); return; }
-      let at = null, allDay = !!allDayIn.checked;
+      let at = null;
+      let allDay = !!allDayIn.checked;
       if (atIn.value) {
         const d = allDay ? new Date(atIn.value + 'T00:00') : new Date(atIn.value);
-        if (!isNaN(d)) at = d.toISOString();
-      } else { allDay = false; }
+        if (!isNaN(d.getTime())) at = d.toISOString();
+      } else {
+        allDay = false;
+      }
       const remind = remindSel.value || null;
+      const repeat = repeatSel.value || null;
       const apply = (arr) => {
-        if (isNew) { arr.unshift(normalize({ text, at, allDay, remind, done: false })); return; }
+        if (isNew) { arr.unshift(normalize({ text, at, allDay, remind, repeat, done: false })); return; }
         let cur = arr.find((r) => r.id === item.id);
-        if (!cur) { cur = normalize(item); arr.unshift(cur); }   // удалили, пока правили, — правку не теряем
-        cur.text = text; cur.at = at; cur.allDay = allDay; cur.remind = remind;
-        cur.notifiedAt = null; // срок мог измениться → разрешить уведомить заново
+        if (!cur) { cur = normalize(item); arr.unshift(cur); }
+        cur.text = text;
+        cur.at = at;
+        cur.allDay = allDay;
+        cur.remind = remind;
+        cur.repeat = repeat;
+        cur.notifiedAt = null;
       };
-      if (!listId && target().id === blockedId) { blockedToast(); return; }   // модалка остаётся — текст не пропадает
+      if (!listId && target().id === blockedId) { blockedToast(); return; }
       if (!listId || loadedId === listId) { apply(items); save(); }
       else {
-        committing = true;                               // окно ушло на другой список — пишем прямо в свой файл
+        committing = true;
         try {
           let arr = await lite.store.agendaGet(listId);
           if (readErr(arr)) { blockedToast(readErr(arr)); return; }
@@ -217,7 +240,8 @@ export function createAgendaView(host) {
           try { lite.app.agendaChanged(listId); } catch (_) {}
         } finally { committing = false; }
       }
-      close(); paint();
+      close();
+      paint();
     };
     m.querySelector('[data-swap]').onclick = () => applyLayoutSwap(ta);
     m.querySelector('[data-cancel]').onclick = () => close();
@@ -234,43 +258,121 @@ export function createAgendaView(host) {
     const text = bar.querySelector('[data-qtext]').value.trim();
     const atVal = bar.querySelector('[data-qdate]').value;
     const remind = bar.querySelector('[data-qremind]').value || null;
+    const repeat = bar.querySelector('[data-qrepeat]').value || null;
     if (!text) { toast('Введите текст'); return; }
-    if ((loadedId || target().id) === blockedId) { blockedToast(); return; }   // поле не чистим — текст не пропадает
+    if ((loadedId || target().id) === blockedId) { blockedToast(); return; }
     let at = null;
-    if (atVal) { const d = new Date(atVal); if (!isNaN(d)) at = d.toISOString(); }
-    items.unshift(normalize({ text, at, allDay: false, remind, done: false }));
-    // поля — пустыми: paint() переносит недописанный ввод через перерисовку, а этот уже записан
-    bar.querySelector('[data-qtext]').value = ''; bar.querySelector('[data-qdate]').value = ''; bar.querySelector('[data-qremind]').value = '';
-    save(); paint();
+    if (atVal) { const d = new Date(atVal); if (!isNaN(d.getTime())) at = d.toISOString(); }
+    items.unshift(normalize({ text, at, allDay: false, remind, repeat, done: false }));
+    bar.querySelector('[data-qtext]').value = '';
+    bar.querySelector('[data-qdate]').value = '';
+    bar.querySelector('[data-qremind]').value = '';
+    bar.querySelector('[data-qrepeat]').value = '';
+    save();
+    paint();
+  }
+
+  function toggleReminderDone(item) {
+    const wasDone = !!item.done;
+    item.done = !wasDone;
+    if (item.done) item.notifiedAt = new Date().toISOString();
+    let nextAt = null;
+    if (!wasDone && item.repeat && item.at) {
+      nextAt = computeNextRepeat(item.at, item.repeat, item.allDay, new Date());
+      if (nextAt) {
+        items.unshift(normalize({
+          text: item.text,
+          at: nextAt,
+          allDay: item.allDay,
+          remind: item.remind,
+          repeat: item.repeat,
+          done: false,
+          tag: item.tag,
+        }));
+      }
+    }
+    save();
+    paint();
+    if (nextAt) toast(t('Повтор перенесён на {0}', formatDueShort(nextAt, item.allDay, new Date(), t)));
+  }
+
+  function snoozeReminder(item, kind) {
+    const res = computeSnooze(kind, new Date());
+    if (!res) return;
+    item.at = res.at;
+    item.allDay = res.allDay;
+    item.notifiedAt = null;
+    save();
+    paint();
+    toast(t('Отложено: {0}', formatDueShort(item.at, item.allDay, new Date(), t)));
   }
 
   // ---------------- карточка напоминания ----------------
-  function buildCard(item, now) {
+  function buildReminderCard(item, now, { draggable = false } = {}) {
     const bucket = bucketOf(item, now);
     const card = el('div', 'ag-card bk-' + bucket + (item.done ? ' done' : ''));
     card.dataset.id = item.id;
+    if (draggable) {
+      card.draggable = true;
+      card.addEventListener('dragstart', (e) => {
+        dragAgendaId = item.id;
+        card.classList.add('nt-dragging');
+        try { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', item.id); } catch (_) {}
+      });
+      card.addEventListener('dragend', () => {
+        dragAgendaId = null;
+        card.classList.remove('nt-dragging');
+        container && container.querySelectorAll('.ag-day-over').forEach((c) => c.classList.remove('ag-day-over'));
+      });
+    }
 
     const doneBtn = el('button', 'ag-check' + (item.done ? ' on' : ''));
     doneBtn.title = item.done ? 'Снять отметку' : 'Отметить выполненным';
     if (item.done) doneBtn.appendChild(icon('check', 12));
-    doneBtn.addEventListener('click', () => { item.done = !item.done; if (item.done) item.notifiedAt = new Date().toISOString(); save(); paint(); });
-
-    const dot = el('span', 'ag-dot bk-' + bucket);
+    doneBtn.addEventListener('click', () => toggleReminderDone(item));
 
     const col = el('div', 'ag-textcol');
-    const titleEl = el('div', 'ag-title', titleOf(item.text) || '(без названия)');
+    const titleEl = el('div', 'ag-title', titleOf(item.text) || t('(без названия)'));
+    titleEl.setAttribute('data-no-i18n', '');
     titleEl.addEventListener('dblclick', () => openModal(item));
     col.appendChild(titleEl);
+
     const bt = bodyOf(item.text);
-    if (bt) col.appendChild(el('div', 'ag-body', bt));
-    if (item.at || item.remind) {
+    if (bt) {
+      const bEl = el('div', 'ag-body', bt);
+      bEl.setAttribute('data-no-i18n', '');
+      col.appendChild(bEl);
+    }
+
+    if (item.at || item.remind || item.repeat) {
       const when = el('div', 'ag-when');
       if (item.at) {
         when.appendChild(el('span', 'ag-abs', absLabel(item)));
         when.appendChild(el('span', 'ag-rel', relLabel(item, now)));
       }
-      if (item.remind) { const b = el('span', 'ag-remind'); b.append(icon('clock', 11), document.createTextNode(REMIND_LABEL[item.remind])); when.appendChild(b); }
+      if (item.remind) {
+        const b = el('span', 'ag-remind');
+        b.append(icon('clock', 11), el('span', null, REMIND_LABEL[item.remind]));
+        when.appendChild(b);
+      }
+      if (item.repeat) {
+        const rp = el('span', 'ag-repeat');
+        rp.append(icon('refresh', 11), el('span', null, REPEAT_LABEL[item.repeat]));
+        when.appendChild(rp);
+      }
       col.appendChild(when);
+    }
+
+    if (!item.done && (bucket === 'overdue' || bucket === 'today')) {
+      const snooze = el('div', 'ag-snooze');
+      const mkSn = (label, kind) => {
+        const b = el('button', 'ag-sn-btn', label);
+        b.type = 'button';
+        b.addEventListener('click', (e) => { e.stopPropagation(); snoozeReminder(item, kind); });
+        return b;
+      };
+      snooze.append(mkSn('+15м', '15m'), mkSn('+1ч', '1h'), mkSn('Завтра', 'tomorrow'));
+      col.appendChild(snooze);
     }
 
     const acts = el('div', 'ag-acts');
@@ -280,41 +382,144 @@ export function createAgendaView(host) {
       if (!p) { toast('Нет активного проекта'); return; }
       sendNoteToTerminal(p, item.text);
     });
-    const edit = iconBtn('ag-act', 'pencil', 'Редактировать', 14); edit.addEventListener('click', () => openModal(item));
+    const edit = iconBtn('ag-act', 'pencil', 'Редактировать', 14);
+    edit.addEventListener('click', () => openModal(item));
     const del = iconBtn('ag-act danger', 'trash', 'Удалить', 14);
-    del.addEventListener('click', () => showConfirm('Удалить напоминание?', 'Удалить совсем?', 'Удалить', () => { const ix = items.indexOf(item); if (ix >= 0) items.splice(ix, 1); save(); paint(); }));
+    del.addEventListener('click', () => showConfirm('Удалить напоминание?', 'Удалить совсем?', 'Удалить', () => {
+      const ix = items.indexOf(item);
+      if (ix >= 0) items.splice(ix, 1);
+      save();
+      paint();
+    }));
     acts.append(send, edit, del);
 
-    card.append(doneBtn, dot, col, acts);
+    card.append(doneBtn, col, acts);
     return card;
   }
 
-  // ---------------- рендер ленты ----------------
+  // ---------------- карточка задачи со сроком ----------------
+  function buildDueTaskCard(task, targetId, now) {
+    const done = task.status === 'done';
+    const fakeItem = { at: task.dueAt, allDay: task.allDay, done };
+    const bucket = bucketOf(fakeItem, now);
+    const card = el('div', 'ag-card ag-card-task bk-' + bucket + (done ? ' done' : ''));
+    card.dataset.taskId = task.id;
+
+    const doneBtn = el('button', 'nt-stbtn st-' + task.status);
+    doneBtn.title = done ? 'Вернуть в работу' : 'Отметить выполненной';
+    if (done) doneBtn.appendChild(icon('check', 12));
+    doneBtn.addEventListener('click', async () => {
+      if (!toggleDueTask) return;
+      await toggleDueTask(targetId, task.id);
+      await refreshDueTasks(targetId);
+      paint();
+    });
+
+    const col = el('div', 'ag-textcol');
+    const titleRow = el('div', 'ag-task-head');
+    titleRow.appendChild(el('span', 'ag-task-badge', 'Задача'));
+    const titleEl = el('div', 'ag-title', titleOf(task.text) || t('(пусто)'));
+    titleEl.setAttribute('data-no-i18n', '');
+    titleEl.style.cursor = 'pointer';
+    titleEl.addEventListener('click', () => openDueTask && openDueTask(targetId, task.id));
+    titleRow.appendChild(titleEl);
+    col.appendChild(titleRow);
+
+    const when = el('div', 'ag-when');
+    when.appendChild(el('span', 'ag-abs', formatDueShort(task.dueAt, task.allDay, now, t)));
+    when.appendChild(el('span', 'ag-rel', relLabel(fakeItem, now)));
+    if (Array.isArray(task.tags)) {
+      for (const tg of task.tags.slice(0, 3)) {
+        const chip = el('span', `nt-tag nt-tag-c${tagColorIndex(tg)}`, '#' + tg);
+        chip.setAttribute('data-no-i18n', '');
+        when.appendChild(chip);
+      }
+    }
+    col.appendChild(when);
+
+    const acts = el('div', 'ag-acts');
+    const openBtn = iconBtn('ag-act', 'arrow-right', 'Открыть в задачах', 14);
+    openBtn.addEventListener('click', () => openDueTask && openDueTask(targetId, task.id));
+    const send = iconBtn('ag-act', 'terminal', 'В терминал проекта', 14);
+    send.addEventListener('click', () => {
+      const p = (target().kind === 'project') ? target().proj : (activeProject && activeProject());
+      if (!p) { toast('Нет активного проекта'); return; }
+      sendNoteToTerminal(p, task.text);
+    });
+    acts.append(openBtn, send);
+
+    card.append(doneBtn, col, acts);
+    return card;
+  }
+
+  // ---------------- рендер шапки + тела ----------------
   function paint() {
     if (!container) return;
     const now = new Date();
-    const t = target();
-    // Перерисовка (правка агентом через MCP, тикер) не должна стирать недописанную быструю запись.
-    const prevQ = container.querySelector('[data-qtext]'), prevD = container.querySelector('[data-qdate]'), prevR = container.querySelector('[data-qremind]');
-    const keep = prevQ ? { text: prevQ.value, date: prevD ? prevD.value : '', remind: prevR ? prevR.value : '', focus: document.activeElement === prevQ } : null;
+    const tgt = target();
+
+    const prevQ = container.querySelector('[data-qtext]');
+    const prevD = container.querySelector('[data-qdate]');
+    const prevR = container.querySelector('[data-qremind]');
+    const prevRp = container.querySelector('[data-qrepeat]');
+    const keep = prevQ ? {
+      text: prevQ.value,
+      date: prevD ? prevD.value : '',
+      remind: prevR ? prevR.value : '',
+      repeat: prevRp ? prevRp.value : '',
+      focus: document.activeElement === prevQ,
+    } : null;
+
     container.replaceChildren();
 
     // быстрый ввод
     const bar = el('div', 'ag-quick');
-    const qtext = el('input', 'ag-qtext'); qtext.dataset.qtext = '1'; qtext.placeholder = 'Быстрая запись… (Enter — добавить)';
-    const qdate = el('input', 'ag-qdate'); qdate.type = 'datetime-local'; qdate.dataset.qdate = '1'; qdate.title = 'Дата и время (необязательно)';
-    const qremind = el('select', 'ag-qremind'); qremind.dataset.qremind = '1'; qremind.title = 'Напоминание';
-    REMIND_ORDER.forEach((k) => { const o = el('option', null, k === '' ? '🔔 нет' : REMIND_LABEL[k]); o.value = k; qremind.appendChild(o); });
-    const qadd = el('button', 'ag-qadd'); qadd.appendChild(icon('plus', 16)); qadd.title = 'Добавить напоминание';
+    const qtext = el('input', 'ag-qtext');
+    qtext.dataset.qtext = '1';
+    qtext.placeholder = tgt.kind === 'global'
+      ? 'Личное напоминание… (Enter — добавить)'
+      : 'Быстрая запись… (Enter — добавить)';
+
+    const qdate = el('input', 'ag-qdate');
+    qdate.type = 'datetime-local';
+    qdate.dataset.qdate = '1';
+    qdate.title = 'Дата и время (необязательно)';
+
+    const qremind = el('select', 'ag-qremind');
+    qremind.dataset.qremind = '1';
+    qremind.title = 'Напоминание';
+    REMIND_ORDER.forEach((k) => {
+      const o = el('option', null, k === '' ? 'Без уведомления' : REMIND_LABEL[k]);
+      o.value = k;
+      qremind.appendChild(o);
+    });
+
+    const qrepeat = el('select', 'ag-qrepeat');
+    qrepeat.dataset.qrepeat = '1';
+    qrepeat.title = 'Повторение';
+    REPEAT_ORDER.forEach((k) => {
+      const o = el('option', null, k === '' ? 'Разово' : REPEAT_LABEL[k]);
+      o.value = k;
+      qrepeat.appendChild(o);
+    });
+
+    const qadd = el('button', 'ag-qadd');
+    qadd.appendChild(icon('plus', 16));
+    qadd.title = 'Добавить напоминание';
     qtext.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); quickAdd(bar); } });
     qadd.addEventListener('click', () => quickAdd(bar));
-    bar.append(qtext, qdate, qremind, qadd);
-    if (keep) { qtext.value = keep.text; qdate.value = keep.date; qremind.value = keep.remind; }
+    bar.append(qtext, qdate, qremind, qrepeat, qadd);
+    if (keep) {
+      qtext.value = keep.text;
+      qdate.value = keep.date;
+      qremind.value = keep.remind;
+      qrepeat.value = keep.repeat;
+    }
 
     // чипы быстрой даты
     const chips = el('div', 'ag-chips');
-    const setDate = (d) => { qdate.value = d ? toLocalInput(d) : ''; qtext.focus(); };
-    const mk = (label, fn) => { const b = el('button', 'ag-chip', label); b.addEventListener('click', fn); return b; };
+    const setDate = (d) => { qdate.value = d ? toLocalDateTimeInput(d) : ''; qtext.focus(); };
+    const mk = (label, fn) => { const b = el('button', 'nt-chip', label); b.type = 'button'; b.addEventListener('click', fn); return b; };
     const at9 = (days) => { const d = startOfDay(now); d.setDate(d.getDate() + days); d.setHours(9, 0, 0, 0); return d; };
     chips.append(
       mk('Сегодня', () => setDate(at9(0))),
@@ -323,141 +528,241 @@ export function createAgendaView(host) {
       mk('Убрать дату', () => setDate(null)),
     );
 
-    // тулбар: вид (лента/месяц) + поиск + показать выполненные
+    // тулбар: вид (Лента|Месяц) + источник (Всё|Напоминания|Задачи) + поиск + выполненные + агент
     const tools = el('div', 'ag-toolbar');
-    const viewToggle = el('button', 'ag-tbtn' + (subView === 'month' ? ' on' : ''));
-    viewToggle.append(icon('columns', 14), document.createTextNode(subView === 'month' ? 'Месяц' : 'Лента'));
-    viewToggle.title = 'Вид: лента / месяц';
-    viewToggle.addEventListener('click', () => {
-      subView = subView === 'month' ? 'agenda' : 'month';
-      if (settings) { settings.agendaView = subView; saveSettings && saveSettings(); }
-      selectedDay = null; paint();
-    });
-    const search = el('input', 'ag-search'); search.placeholder = 'Поиск…'; search.value = query;
+
+    const viewSeg = el('div', 'nt-seg sm');
+    const mkViewBtn = (mode, label) => {
+      const b = el('button', 'nt-seg-btn' + (subView === mode ? ' on' : ''), label);
+      b.type = 'button';
+      b.addEventListener('click', () => {
+        if (subView === mode) return;
+        subView = mode;
+        if (settings) { settings.agendaView = subView; saveSettings && saveSettings(); }
+        selectedDay = null;
+        paint();
+      });
+      return b;
+    };
+    viewSeg.append(mkViewBtn('agenda', 'Лента'), mkViewBtn('month', 'Месяц'));
+
+    const srcSeg = el('div', 'nt-seg sm');
+    const mkSrcBtn = (mode, label) => {
+      const b = el('button', 'nt-seg-btn' + (srcFilter === mode ? ' on' : ''), label);
+      b.type = 'button';
+      b.addEventListener('click', () => { srcFilter = mode; paint(); });
+      return b;
+    };
+    srcSeg.append(mkSrcBtn('all', 'Всё'), mkSrcBtn('reminders', 'Напоминания'), mkSrcBtn('tasks', 'Задачи'));
+
+    const search = el('input', 'ag-search');
+    search.placeholder = 'Поиск…';
+    search.value = query;
     search.addEventListener('input', () => { query = search.value.trim(); repaintList(); });
+
     const doneToggle = el('button', 'ag-tbtn' + (showDone ? ' on' : ''));
-    doneToggle.append(icon('check', 14), document.createTextNode('Выполненные'));
+    doneToggle.append(icon('check', 14), el('span', null, 'Готово'));
+    doneToggle.title = 'Показывать выполненные';
     doneToggle.addEventListener('click', () => { showDone = !showDone; paint(); });
+
     const agentBtn = el('button', 'ag-tbtn');
-    agentBtn.append(icon('terminal', 14), document.createTextNode('Агент'));
+    agentBtn.append(icon('terminal', 14), el('span', null, 'Агент'));
     agentBtn.title = 'Дать агенту в терминале доступ к напоминаниям (MCP)';
     agentBtn.addEventListener('click', openAgentModal);
-    tools.append(viewToggle, search, doneToggle, agentBtn);
 
-    const listWrap = el('div', 'ag-list' + (subView === 'month' ? ' ag-monthwrap' : '')); listWrap.dataset.list = '1';
+    tools.append(viewSeg, srcSeg, search, doneToggle, agentBtn);
+
+    const listWrap = el('div', 'ag-list' + (subView === 'month' ? ' ag-monthwrap' : ''));
+    listWrap.dataset.list = '1';
 
     container.append(bar, chips, tools, listWrap);
-    if (subView === 'month') renderMonth(listWrap, now); else renderList(listWrap, now);
+    if (subView === 'month') renderMonth(listWrap, now);
+    else renderList(listWrap, now);
 
-    // фокусные удобства
-    if (t.kind === 'global') qtext.placeholder = 'Личное напоминание… (Enter — добавить)';
     if (keep && keep.focus) { try { qtext.focus(); } catch (_) {} }
   }
 
-  // перерисовать только список (поиск), без сброса полей быстрого ввода
   function repaintList() {
     const list = container && container.querySelector('[data-list]');
     if (!list) return;
-    if (subView === 'month') renderMonth(list, new Date()); else renderList(list, new Date());
+    if (subView === 'month') renderMonth(list, new Date());
+    else renderList(list, new Date());
+  }
+
+  function combinedEntries() {
+    const tgt = target();
+    const out = [];
+    if (srcFilter !== 'tasks') {
+      for (const r of items) {
+        if (!matchesQuery(r)) continue;
+        out.push({ kind: 'reminder', item: r, at: r.at, allDay: r.allDay, done: r.done });
+      }
+    }
+    if (srcFilter !== 'reminders') {
+      for (const tk of dueTasks) {
+        if (!tk || tk.archived || !tk.dueAt) continue;
+        if (!matchesQuery(tk)) continue;
+        out.push({ kind: 'task', item: tk, targetId: tgt.id, at: tk.dueAt, allDay: tk.allDay, done: tk.status === 'done' });
+      }
+    }
+    return out;
   }
 
   function renderList(list, now) {
     list.replaceChildren();
-    const rows = items.filter(matchesQuery);
+    const rows = combinedEntries();
     const groups = new Map(BUCKETS.map(([k]) => [k, []]));
     const doneRows = [];
-    for (const r of rows) {
-      const bk = bucketOf(r, now);
-      if (bk === 'done') { doneRows.push(r); continue; }
-      groups.get(bk).push(r);
+    for (const entry of rows) {
+      const bk = bucketOf(entry, now);
+      if (bk === 'done') { doneRows.push(entry); continue; }
+      groups.get(bk).push(entry);
     }
-    // сортировка внутри группы: по времени (пустые — в конец)
     const byTime = (a, b) => {
       const ta = a.at ? new Date(a.at).getTime() : Infinity;
       const tb = b.at ? new Date(b.at).getTime() : Infinity;
       return ta - tb;
     };
+    const renderEntry = (entry) => (
+      entry.kind === 'task'
+        ? buildDueTaskCard(entry.item, entry.targetId, now)
+        : buildReminderCard(entry.item, now)
+    );
     let any = false;
     for (const [key, label] of BUCKETS) {
-      const arr = groups.get(key); if (!arr.length) continue;
+      const arr = groups.get(key);
+      if (!arr.length) continue;
       any = true;
       arr.sort(byTime);
       const head = el('div', 'ag-grp bk-' + key);
       head.append(el('span', 'ag-grp-dot bk-' + key), el('span', 'ag-grp-lbl', label), el('span', 'ag-grp-cnt', String(arr.length)));
       list.appendChild(head);
-      arr.forEach((r) => list.appendChild(buildCard(r, now)));
+      arr.forEach((e) => list.appendChild(renderEntry(e)));
     }
     if (showDone && doneRows.length) {
       doneRows.sort(byTime);
       const head = el('div', 'ag-grp bk-done');
       head.append(el('span', 'ag-grp-dot bk-done'), el('span', 'ag-grp-lbl', 'Выполненные'), el('span', 'ag-grp-cnt', String(doneRows.length)));
       list.appendChild(head);
-      doneRows.forEach((r) => list.appendChild(buildCard(r, now)));
+      doneRows.forEach((e) => list.appendChild(renderEntry(e)));
     }
     if (!any && !(showDone && doneRows.length)) {
       list.appendChild(el('div', 'nt-empty', query ? 'Ничего не найдено.' : 'Пока нет напоминаний — добавьте первое сверху.'));
     }
   }
 
-  // ---------------- рендер: вид «Месяц» (сетка) ----------------
+  function moveReminderToDay(remId, targetDayKey) {
+    const r = items.find((x) => x.id === remId);
+    if (!r) return;
+    const [yy, mm, dd] = targetDayKey.split('-').map(Number);
+    const prev = r.at ? new Date(r.at) : null;
+    const hh = prev && !r.allDay ? prev.getHours() : 9;
+    const min = prev && !r.allDay ? prev.getMinutes() : 0;
+    const nextDate = r.allDay
+      ? new Date(yy, mm - 1, dd, 0, 0, 0, 0)
+      : new Date(yy, mm - 1, dd, hh, min, 0, 0);
+    r.at = nextDate.toISOString();
+    r.notifiedAt = null;
+    save();
+    selectedDay = targetDayKey;
+    paint();
+    toast(t('Перенесено на {0}', formatDueShort(r.at, r.allDay, new Date(), t)));
+  }
+
+  // ---------------- рендер: вид «Месяц» (сетка + DnD + превью) ----------------
   function renderMonth(list, now) {
     list.replaceChildren();
-    const cur = monthCursor || startOfMonth(now);
+    const cur = monthCursor || new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0, 0);
+    const tgt = target();
 
-    // индекс напоминаний по дню (только с датой; учитываем поиск)
     const byDay = new Map();
-    for (const r of items.filter(matchesQuery)) {
-      if (!r.at) continue;
-      const d = new Date(r.at); if (isNaN(d)) continue;
+    for (const entry of combinedEntries()) {
+      if (!showDone && entry.done) continue;
+      if (!entry.at) continue;
+      const d = new Date(entry.at);
+      if (isNaN(d.getTime())) continue;
       const k = dayKey(d);
       if (!byDay.has(k)) byDay.set(k, []);
-      byDay.get(k).push(r);
+      byDay.get(k).push(entry);
     }
 
-    // шапка навигации
     const head = el('div', 'ag-mhead');
     const prev = el('button', 'ag-mnav', '‹'); prev.title = 'Предыдущий месяц';
     const next = el('button', 'ag-mnav', '›'); next.title = 'Следующий месяц';
-    const lbl = el('div', 'ag-mlabel', `${MONTHS[cur.getMonth()]} ${cur.getFullYear()}`);
+    const lbl = el('div', 'ag-mlabel', `${t(MONTHS[cur.getMonth()])} ${cur.getFullYear()}`);
     const today = el('button', 'ag-mtoday', 'Сегодня');
-    prev.addEventListener('click', () => { const c = new Date(cur); c.setMonth(c.getMonth() - 1); monthCursor = startOfMonth(c); selectedDay = null; paint(); });
-    next.addEventListener('click', () => { const c = new Date(cur); c.setMonth(c.getMonth() + 1); monthCursor = startOfMonth(c); selectedDay = null; paint(); });
+    prev.addEventListener('click', () => { monthCursor = new Date(cur.getFullYear(), cur.getMonth() - 1, 1); selectedDay = null; paint(); });
+    next.addEventListener('click', () => { monthCursor = new Date(cur.getFullYear(), cur.getMonth() + 1, 1); selectedDay = null; paint(); });
     today.addEventListener('click', () => { monthCursor = null; selectedDay = dayKey(new Date()); paint(); });
     head.append(prev, lbl, next, el('span', 'ag-spacer'), today);
     list.appendChild(head);
 
-    // сетка: заголовки дней недели + 42 ячейки (6 недель), начиная с понедельника ≤ 1-го числа
     const grid = el('div', 'ag-grid');
     WEEKDAYS.forEach((w) => grid.appendChild(el('div', 'ag-wd', w)));
-    const lead = (cur.getDay() + 6) % 7; // 0 = Пн
-    const start = new Date(cur); start.setDate(cur.getDate() - lead);
+    const lead = (cur.getDay() + 6) % 7;
+    const start = new Date(cur);
+    start.setDate(cur.getDate() - lead);
     const todayKey = dayKey(new Date());
+
     for (let i = 0; i < 42; i++) {
-      const day = new Date(start); day.setDate(start.getDate() + i);
+      const day = new Date(start);
+      day.setDate(start.getDate() + i);
       const k = dayKey(day);
       const cls = 'ag-day' + (day.getMonth() === cur.getMonth() ? '' : ' out') + (k === todayKey ? ' today' : '') + (k === selectedDay ? ' sel' : '');
       const cell = el('div', cls);
       cell.appendChild(el('div', 'ag-daynum', String(day.getDate())));
+
       const di = byDay.get(k) || [];
       if (di.length) {
+        const pills = el('div', 'ag-daypills');
+        di.slice(0, 2).forEach((e) => {
+          const bk = bucketOf(e, now);
+          const p = el('div', 'ag-daypill bk-' + bk + (e.kind === 'task' ? ' is-task' : ''), titleOf(e.item.text) || t('(без названия)'));
+          p.setAttribute('data-no-i18n', '');
+          pills.appendChild(p);
+        });
+        if (di.length > 2) pills.appendChild(el('div', 'ag-daymore', '+' + (di.length - 2)));
+        cell.appendChild(pills);
+
         const dots = el('div', 'ag-daydots');
-        di.slice(0, 4).forEach((r) => dots.appendChild(el('span', 'ag-daydot bk-' + bucketOf(r, now))));
+        di.slice(0, 4).forEach((e) => dots.appendChild(el('span', 'ag-daydot bk-' + bucketOf(e, now))));
         if (di.length > 4) dots.appendChild(el('span', 'ag-daymore', '+' + (di.length - 4)));
         cell.appendChild(dots);
       }
+
+      cell.addEventListener('dragover', (e) => {
+        if (!dragAgendaId) return;
+        e.preventDefault();
+        cell.classList.add('ag-day-over');
+      });
+      cell.addEventListener('dragleave', () => cell.classList.remove('ag-day-over'));
+      cell.addEventListener('drop', (e) => {
+        if (!dragAgendaId) return;
+        e.preventDefault();
+        cell.classList.remove('ag-day-over');
+        const id = dragAgendaId;
+        dragAgendaId = null;
+        moveReminderToDay(id, k);
+      });
       cell.addEventListener('click', () => { selectedDay = k; paint(); });
       grid.appendChild(cell);
     }
     list.appendChild(grid);
 
-    // панель выбранного дня (список напоминаний того дня)
     if (selectedDay) {
       const di = (byDay.get(selectedDay) || []).slice().sort((a, b) => new Date(a.at).getTime() - new Date(b.at).getTime());
       const [, mm, dd] = selectedDay.split('-');
       const panel = el('div', 'ag-daypanel');
-      panel.appendChild(el('div', 'ag-daypanel-h', `${Number(dd)} ${MONTHS[Number(mm) - 1]}`));
+      const pHead = el('div', 'ag-daypanel-h');
+      pHead.appendChild(el('span', null, `${Number(dd)} ${t(MONTHS[Number(mm) - 1])}`));
+      const addForDay = el('button', 'ag-dayadd');
+      addForDay.type = 'button';
+      addForDay.append(icon('plus', 13), el('span', null, 'На этот день'));
+      addForDay.addEventListener('click', () => openModal(null, selectedDay));
+      pHead.appendChild(addForDay);
+      panel.appendChild(pHead);
       if (!di.length) panel.appendChild(el('div', 'nt-empty', 'Нет напоминаний на этот день.'));
-      else di.forEach((r) => panel.appendChild(buildCard(r, now)));
+      else di.forEach((e) => panel.appendChild(e.kind === 'task' ? buildDueTaskCard(e.item, tgt.id, now) : buildReminderCard(e.item, now, { draggable: true })));
       list.appendChild(panel);
     }
   }
@@ -474,7 +779,8 @@ export function createAgendaView(host) {
       <h2>Доступ агенту из терминала</h2>
       <div class="nt-modal-hint">Встроенный MCP-сервер даёт агенту в терминале проекта инструменты
         создавать и читать эти напоминания. Регистрируется в Claude Code в scope <b>local</b> —
-        запись идёт в <code>~/.claude.json</code>, <b>в репозиторий проекта ничего не попадает</b>.
+        запись идёт в <code>~/.claude.json</code>, <b>в репозиторий проекта ничего не попадает</b>
+        (при необходимости команду ниже можно подключить и в Codex / Gemini / agy).
         После подключения перезапустите сессию агента, чтобы он увидел инструменты <code>lite-tasks</code>.</div>
       <div class="ag-agent-cmd" data-cmd>…</div>
       <div class="nt-exp">
@@ -496,40 +802,54 @@ export function createAgendaView(host) {
     const connectBtn = m.querySelector('[data-connect]');
     if (connectBtn) connectBtn.onclick = async () => {
       if (!p) return;
-      connectBtn.disabled = true; connectBtn.textContent = 'Подключаю…';
+      connectBtn.disabled = true; connectBtn.textContent = t('Подключаю…');
       let r; try { r = await lite.agenda.mcpConnect({ projId: p.id, projPath: p.path }); } catch (e) { r = { ok: false, error: String(e) }; }
       if (r && r.ok) { toast('Подключено — перезапустите сессию агента'); close(); }
       else {
-        connectBtn.disabled = false; connectBtn.textContent = 'Подключить к агенту в терминале';
-        toast('Не вышло автоматически: ' + (r && r.error ? r.error : 'ошибка') + '. Скопируйте команду и выполните вручную.', { kind: 'err', ttl: 6000 });
+        connectBtn.disabled = false; connectBtn.textContent = t('Подключить к агенту в терминале');
+        toast(t('Не вышло автоматически: {0}. Скопируйте команду и выполните вручную.', (r && r.error) || t('ошибка')), { kind: 'err', ttl: 6000 });
         if (r && r.cmd) { cmd = r.cmd; cmdBox.textContent = cmd; }
       }
     };
   }
 
   // ---------------- API для notes.js ----------------
-  async function render(el) {
-    container = el;
-    const t = target();
-    if (t.id !== loadedId) {
-      items = [];            // не мигаем данными прошлого проекта, пока грузим новый источник
+  async function render(hostEl) {
+    container = hostEl;
+    const tgt = target();
+    if (tgt.id !== loadedId || tgt.id !== dueLoadedId) {
+      if (tgt.id !== loadedId) items = [];
       paint();
-      const ok = await load(t.id);
+      const ok = await load(tgt.id);
       if (ok && container) paint();
     } else {
-      paint();               // тот же источник — рисуем из текущего состояния
+      paint();
     }
   }
+
   async function reload() {
-    // Эхо своей записи через fs.watch — не дёргаем UI и не крадём фокус. Узнаём его по содержимому файла.
     const id = loadedId;
     if (id && lastSavedJson != null) {
-      let arr; try { arr = await lite.store.agendaGet(id); } catch (_) { arr = null; }
-      if (Array.isArray(arr) && JSON.stringify(arr.map(normalize)) === lastSavedJson) return;
+      let arr;
+      try { arr = await lite.store.agendaGet(id); } catch (_) { arr = null; }
+      if (Array.isArray(arr) && JSON.stringify(arr.map(normalize)) === lastSavedJson) {
+        await refreshDueTasks(id);
+        if (container) paint();
+        return;
+      }
     }
     loadedId = null;
+    dueLoadedId = null;
     if (container) render(container);
   }
 
-  return { render, reload };
+  return {
+    render,
+    reload,
+    refreshDue: async () => {
+      const tgt = target();
+      await refreshDueTasks(tgt.id);
+      if (container) paint();
+    },
+  };
 }

@@ -194,8 +194,9 @@ export function initSitemon(host) {
   // ── провайдеры агента (общие с модулем «Базы данных») ──────────────────────────────────────────────
   function providersCfg() { return (STORE.dbaiProviders && typeof STORE.dbaiProviders === 'object') ? STORE.dbaiProviders : {}; }
   function agentOptions() {
-    const opts = [{ id: 'claude', label: 'Claude (CLI)' }, { id: 'codex', label: 'Codex (CLI)' }];
+    const opts = [{ id: 'claude', label: 'Claude (CLI)' }, { id: 'codex', label: 'Codex (CLI)' }, { id: 'agy', label: 'Antigravity (CLI)' }];
     const p = providersCfg();
+    for (const mo of ((p.antigravity && p.antigravity.models) || [])) opts.push({ id: 'agy::' + mo.id, label: 'AGY · ' + (mo.name || mo.id) });
     for (const mo of ((p.openrouter && p.openrouter.models) || [])) opts.push({ id: 'or::' + mo.id, label: 'OR · ' + (mo.name || mo.id) });
     for (const mo of ((p.ollama && p.ollama.models) || [])) opts.push({ id: 'ollama::' + mo.id, label: 'Ollama · ' + (mo.name || mo.id) });
     for (const mo of ((p.lmstudio && p.lmstudio.models) || [])) opts.push({ id: 'lmstudio::' + mo.id, label: 'LM · ' + (mo.name || mo.id) });
@@ -218,7 +219,7 @@ export function initSitemon(host) {
     offDone = lite.dbai.onDone((d) => { if (d.reqId !== reqId) return; cleanup(); cbs.onDone(); });
     offErr = lite.dbai.onError((d) => { if (d.reqId !== reqId) return; cleanup(); cbs.onError(d.error || 'ошибка агента'); });
     const ag = parseAgentId(agentId);
-    if (ag.kind === 'claude' || ag.kind === 'codex') { lite.dbai.run(reqId, ag.kind, prompt); }
+    if (ag.kind === 'claude' || ag.kind === 'codex' || ag.kind === 'agy') { lite.dbai.run(reqId, ag.kind, prompt, ag.model ? { model: ag.model } : undefined); }
     else {
       const ep = providerEndpoint(ag.kind);
       if (!ep || !ag.model) { cleanup(); cbs.onError('Провайдер не настроен. Настройте модели в модуле «Базы данных» → выбор агента.'); return { abort() {} }; }

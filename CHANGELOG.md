@@ -3,6 +3,35 @@
 Все заметные изменения LiteEditorAI. Формат — [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/),
 нумерация — [SemVer](https://semver.org/lang/ru/). Проект в стадии **alpha**.
 
+## [1.1.249] — 2026-11-27
+
+**Встроенный Zero-Trust MCP Hub с правой колонкой инструментов, каталогом модульных паков и пресетом для локальной разработки; поддержка Antigravity CLI (`agy`) в AI-чате базы данных и усиление защиты SQL/контейнеров.**
+
+### ✨ Добавлено
+
+- **Zero-Trust MCP Hub и правая колонка «MCP-инструменты» (`Ctrl+Shift+M`).** Локальный UDS-хаб (`~/.LiteEditorAI/run/mcp.sock`) и лёгкий stdio-мост `mcp/lite-mcp-bridge.js` для подключения `claude`, `agy`, `codex` и `gemini` без утечки паролей в конфиги:
+  - три модульных пака в **MCP Store**: **Базы данных** (9 read-only инструментов), **Серверы и SSH** (11 read-only инструментов) и **Контейнеры** (8 read-only инструментов для Docker/Podman);
+  - настраиваемая по ширине правая колонка `#mcp-pane` с живой лентой вызовов, переключателем фильтров «Сессия / Проект / Все» и HITL-карточками подтверждения («Разрешить и привязать / Разрешить в сессии / Только раз / Отклонить»);
+  - пресет **«Разрешить все non-prod БД и локальные контейнеры (read-only)»** (`dev_safe`) наряду со строгим Zero-Trust (`strict`) и ручной конфигурацией (`custom`);
+  - строгий флаг `noCloud` (блокирует отдачу строк БД облачным моделям), редактирование секретов/паролей/URI перед выдачей и в jsonl-аудите (`logs/mcp-audit-*.jsonl`), одноразовые криптографические токены сессии (`LITEEDITOR_MCP_TOKEN`) в PTY.
+- **Antigravity CLI (`agy`) в модуле «Базы данных».** Новый бэкенд `lib/dbai-agy.js` для SQL AI-чата: стриминг ответов, изоляция от секретов подключений и модульные тесты `test/dbai-agy.test.js`.
+- **Политика безопасности ([SECURITY.md](SECURITY.md)).** Документированы порядок сообщений об уязвимостях и встроенные гарантии Zero-Trust / локального шифрования.
+
+### 🔒 Безопасность и надёжность
+
+- **Усиление модулей «Базы данных», «Контейнеры» и «Серверы» (`lib/sqlro.js`, `lib/db.js`, `lib/ipc/containers.js`, `renderer/modules/db.js`, `renderer/modules/sitemon.js`).** Расширены проверки read-only SQL-запросов (AST-валидация, защита транзакций), экранирование параметров и ограничения на выполнение команд.
+- **Изоляция `app.asar.unpacked` в релизных сборках.** Путь к `mcp/lite-mcp-bridge.js` в `lib/mcp/hub.js` переведён на `app.asar.unpacked`, а каталог `mcp/**` добавлен в `build.asarUnpack`.
+
+### 🐛 Исправлено и улучшено
+
+- **Палитра команд `Ctrl+K` и быстрая панель.** `quickAllModules` и `paletteActions()` теперь формируются напрямую из `BUILTIN_MODS`: «Монитор ресурсов» и «Сейф паролей» появились в настройке быстрой панели, а в `Ctrl+K` доступны все 23 встроенных модуля плюс пункты настроек MCP, логов, «О программе», «Приветствие» и экспорта/импорта.
+- **Динамические подсказки горячих клавиш и UI.** Кнопки `#proj-find`, `#btn-settings`, `#term-split-btn`, `#mcp-close-btn`, модалка «Приветствие», меню «Ещё» и настройки обновляют подсказки хоткеев из `lib/hotkeys.js` без перезапуска; исправлены переводы заголовка «Ресурсы MCP», фильтрация тех-регулярки в `scripts/i18n-extract.js` и 100% покрытие локалей `en` и `zh`.
+- **Сборка и CI.** `build.js` отслеживает изменения в `lib/` при `--if-changed`; CI переведён на `ubuntu-24.04` с обязательной проверкой `i18n-extract.js --check` и preflight-проверками в `release.yml`; обновлены desktop-иконки (`install-desktop.js`).
+
+### 🗑 Удалено
+
+- Удалены устаревший модуль «ИИ компания» (`quorum`) и лендинг (`landing/`, `ansible/`, `/deploy`) с очисткой legacy-конфигов на старте.
+
 ## [1.1.248] — 2026-11-20
 
 **Скриншот можно передать агенту одной клавишей, файлы — перетащить в терминал, следующие сообщения — поставить в очередь, а запущенный dev-сервер открывается кликом по чипу порта.**
@@ -3292,6 +3321,7 @@ AGENTS.md как граф на канве), и **цветной пульт** —
 [1.1.206]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.1.206
 [1.1.205]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.1.205
 [1.1.204]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.1.204
+[1.1.249]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.1.249
 [1.1.203]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.1.203
 [1.1.202]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.1.202
 [1.1.199]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.1.199

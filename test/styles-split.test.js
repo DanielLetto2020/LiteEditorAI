@@ -58,7 +58,7 @@ for (const rel of fullImports) {
 }
 
 // Ключевые селекторы главного окна обязаны присутствовать в core.css
-for (const mustHave of [':root', '#app', '#sidebar', '#terminal-pane', '#bottombar', '#files-dock', '#ext-pane', '.modal', '.toast', '.hidden', 'body.win-frame']) {
+for (const mustHave of [':root', '#app', '#sidebar', '#terminal-pane', '#bottombar', '#mcp-pane', '#files-dock', '#ext-pane', '.modal', '.toast', '.hidden', 'body.win-frame']) {
   ok(coreCombined.includes(mustHave), `в core.css отсутствует ключевой селектор главного окна: ${mustHave}`);
 }
 

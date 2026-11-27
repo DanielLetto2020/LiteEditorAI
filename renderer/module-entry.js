@@ -31,7 +31,6 @@ const initKeepass = () => import('./modules/keepass.js').then((m) => m.initKeepa
 const initServers = () => import('./modules/servers.js').then((m) => m.initServers);
 const initPomodoro = () => import('./modules/pomodoro.js').then((m) => m.initPomodoro);
 const initVoice = () => import('./modules/voice.js').then((m) => m.initVoice);
-const initCompany = () => import('./modules/company.js').then((m) => m.initCompany);
 const initNotes = () => import('./modules/notes.js').then((m) => m.initNotes);
 const initDb = () => import('./modules/db.js').then((m) => m.initDb);
 const initRmq = () => import('./modules/rmq.js').then((m) => m.initRmq);
@@ -132,10 +131,6 @@ const MODULES = {
       bind('#voice-engine-btn', () => mod.openSettings());
       bind('#voice-clear', () => mod.clearHistory());
     },
-  },
-  company: {
-    title: 'ИИ компания', load: initCompany, project: true,
-    wire: (mod) => { bind('#company-settings', () => mod.openSettings()); },
   },
   notes: {
     title: 'Задачи', load: initNotes, project: true,
