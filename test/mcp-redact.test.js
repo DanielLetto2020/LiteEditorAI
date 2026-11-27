@@ -79,6 +79,11 @@ check('isSensitivePath blocks secrets while allowing .env.example and normal fil
     '/app/cert.pem',
     '/root/.pgpass',
     '/var/run/secrets/kubernetes.io/serviceaccount/token',
+    'C:\\app\\.ssh\\id_ed25519',
+    '/keys/id_rsa',
+    '/infra/terraform.tfstate',
+    '/infra/prod.tfvars',
+    '/gcp/service-account-prod.json',
   ]) {
     assert.strictEqual(isSensitivePath(blocked).blocked, true, `expected blocked: ${blocked}`);
   }

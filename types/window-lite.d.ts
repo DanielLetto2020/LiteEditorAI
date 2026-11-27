@@ -87,6 +87,7 @@ export interface LiteBridge {
     filesDockState?(open: boolean): void;
     closeFilesDock(): void;
     onEnsureFilesDock(cb: (opts?: { open?: boolean; toggle?: boolean; close?: boolean }) => void): Unsubscribe;
+    onJumpToSession?(cb: (projId: string, sid: string) => void): Unsubscribe;
     onRestGuard(cb: (state: any) => void): Unsubscribe;
     pomodoroSkip(): void;
   };
@@ -253,7 +254,7 @@ export interface LiteBridge {
     status(projectId?: string): Promise<Record<string, any>>;
     packs(): Promise<{ ok: boolean; packs: any[] }>;
     setConfig(config: Record<string, any>): Promise<{ ok: boolean; config: any }>;
-    resources(): Promise<{ ok: boolean; resources: { db: any[]; server: any[]; rh: any[]; container: any[] } }>;
+    resources(): Promise<{ ok: boolean; resources: { db: any[]; server: any[]; rh: any[]; container: any[]; rmq?: any[]; kafka?: any[]; storage?: any[]; jira?: any[]; project?: any[] } }>;
     getBinding(projectId?: string): Promise<{ ok: boolean; binding: any }>;
     setBinding(projectId: string, binding: Record<string, any>): Promise<{ ok: boolean; binding: any }>;
     applyPreset(projectId: string, preset: 'strict' | 'dev_safe' | 'custom'): Promise<{ ok: boolean; binding: any }>;
@@ -264,6 +265,43 @@ export interface LiteBridge {
     connectAgent(opts?: { agentKind?: string; projectId?: string; projectName?: string; projectPath?: string }): Promise<{ ok: boolean; out?: string; error?: string; command?: string }>;
     revokeTokens(projectId?: string): Promise<{ ok: boolean }>;
     onEvent(cb: (payload: Record<string, any>) => void): Unsubscribe;
+  };
+
+  rest: {
+    load(): Promise<{ ok: boolean; data: { collections: any[]; environments: any[]; history: any[] } }>;
+    saveCollection(collection: Record<string, any>): Promise<{ ok: boolean; id?: string; data?: any; error?: string }>;
+    deleteCollection(id: string): Promise<{ ok: boolean; data?: any }>;
+    saveEnv(env: Record<string, any>): Promise<{ ok: boolean; id?: string; data?: any; error?: string }>;
+    deleteEnv(id: string): Promise<{ ok: boolean; data?: any }>;
+    send(opts: Record<string, any>): Promise<{ ok: boolean; response?: any; history?: any[]; error?: string }>;
+    abort(reqId: string): Promise<{ ok: boolean }>;
+    clearHistory(): Promise<{ ok: boolean }>;
+    importText(opts: { text: string; format?: string; baseUrl?: string }): Promise<{ ok: boolean; kind?: string; name?: string; baseUrl?: string; vars?: Record<string, string>; requests?: any[]; error?: string }>;
+    importFile(): Promise<{ ok?: boolean; canceled?: boolean; filePath?: string; content?: string; error?: string }>;
+    exportText(opts: { format?: string; request?: any; requests?: any[]; vars?: Record<string, string> }): Promise<{ ok: boolean; text?: string }>;
+    discoverLocal(projectId?: string): Promise<{ ok: boolean; endpoints: any[]; error?: string }>;
+  };
+
+  preview: {
+    setAllowExternal(allow: boolean): Promise<{ ok: boolean; allowExternal: boolean }>;
+    getLogs(): Promise<{ ok: boolean; allowExternal: boolean; consoleLogs: any[]; networkErrors: any[] }>;
+    clearLogs(): Promise<{ ok: boolean }>;
+    capture(opts: { webContentsId: number; projectDir?: string }): Promise<{ ok: boolean; path?: string; error?: string }>;
+    openDevTools(webContentsId: number): Promise<{ ok: boolean; error?: string }>;
+    onEvent(cb: (payload: Record<string, any>) => void): Unsubscribe;
+  };
+
+  agents: {
+    reportMeta(meta: Record<string, any>): void;
+    subscribe(): Promise<{ ok: boolean; items: any[]; stats: any }>;
+    unsubscribe(): Promise<{ ok: boolean }>;
+    snapshot(): Promise<{ ok: boolean; items: any[]; stats: any }>;
+    quickReply(opts: { sid: string; text?: string; enter?: boolean }): Promise<{ ok: boolean; error?: string }>;
+    jumpToSession(projId: string, sid: string): Promise<{ ok: boolean; error?: string }>;
+    stats(): Promise<{ ok: boolean; stats: any }>;
+    resetToday(): Promise<{ ok: boolean; stats: any }>;
+    onUpdate(cb: (payload: Record<string, any>) => void): Unsubscribe;
+    onQuickReply(cb: (payload: { sid?: string; text?: string; enter?: boolean }) => void): Unsubscribe;
   };
 }
 

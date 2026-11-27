@@ -120,6 +120,7 @@ if (canExposeLiteBridge()) contextBridge.exposeInMainWorld('lite', {
     filesDockState: (open) => ipcRenderer.send('editor:filesDockState', { open: !!open }),
     closeFilesDock: () => ipcRenderer.send('editor:closeFilesDock', {}),
     onEnsureFilesDock: (cb) => { const h = (_e, p) => cb(p || {}); ipcRenderer.on('editor:ensureFilesDock', h); return () => ipcRenderer.removeListener('editor:ensureFilesDock', h); },
+    onJumpToSession: (cb) => { const h = (_e, p) => cb(p && p.projId, p && p.sid); ipcRenderer.on('editor:jumpToSession', h); return () => ipcRenderer.removeListener('editor:jumpToSession', h); },
     // Помодоро: оверлей отдыха в окне редактора. main шлёт состояние (показать/обновить/скрыть);
     // кнопка «Пропустить» с оверлея → пропустить текущую фазу (движок таймера в main).
     onRestGuard: (cb) => { const h = (_e, p) => cb(p || {}); ipcRenderer.on('editor:restGuard', h); return () => ipcRenderer.removeListener('editor:restGuard', h); },
@@ -802,5 +803,42 @@ if (canExposeLiteBridge()) contextBridge.exposeInMainWorld('lite', {
     connectAgent: (opts) => ipcRenderer.invoke('mcp:connectAgent', opts),
     revokeTokens: (projectId) => ipcRenderer.invoke('mcp:revokeTokens', { projectId }),
     onEvent: (cb) => { const h = (_e, p) => cb(p || {}); ipcRenderer.on('mcp:event', h); return () => ipcRenderer.removeListener('mcp:event', h); },
+  },
+
+  rest: {
+    load: () => ipcRenderer.invoke('rest:load'),
+    saveCollection: (collection) => ipcRenderer.invoke('rest:saveCollection', { collection }),
+    deleteCollection: (id) => ipcRenderer.invoke('rest:deleteCollection', { id }),
+    saveEnv: (env) => ipcRenderer.invoke('rest:saveEnv', { env }),
+    deleteEnv: (id) => ipcRenderer.invoke('rest:deleteEnv', { id }),
+    send: (opts) => ipcRenderer.invoke('rest:send', opts),
+    abort: (reqId) => ipcRenderer.invoke('rest:abort', { reqId }),
+    clearHistory: () => ipcRenderer.invoke('rest:clearHistory'),
+    importText: (opts) => ipcRenderer.invoke('rest:importText', opts),
+    importFile: () => ipcRenderer.invoke('rest:importFile'),
+    exportText: (opts) => ipcRenderer.invoke('rest:exportText', opts),
+    discoverLocal: (projectId) => ipcRenderer.invoke('rest:discoverLocal', { projectId }),
+  },
+
+  preview: {
+    setAllowExternal: (allow) => ipcRenderer.invoke('preview:setAllowExternal', { allow: !!allow }),
+    getLogs: () => ipcRenderer.invoke('preview:getLogs'),
+    clearLogs: () => ipcRenderer.invoke('preview:clearLogs'),
+    capture: (opts) => ipcRenderer.invoke('preview:capture', opts),
+    openDevTools: (webContentsId) => ipcRenderer.invoke('preview:openDevTools', { webContentsId }),
+    onEvent: (cb) => { const h = (_e, p) => cb(p || {}); ipcRenderer.on('preview:event', h); return () => ipcRenderer.removeListener('preview:event', h); },
+  },
+
+  agents: {
+    reportMeta: (meta) => ipcRenderer.send('agents:reportMeta', meta),
+    subscribe: () => ipcRenderer.invoke('agents:subscribe'),
+    unsubscribe: () => ipcRenderer.invoke('agents:unsubscribe'),
+    snapshot: () => ipcRenderer.invoke('agents:snapshot'),
+    quickReply: (opts) => ipcRenderer.invoke('agents:quickReply', opts),
+    jumpToSession: (projId, sid) => ipcRenderer.invoke('agents:jumpToSession', { projId, sid }),
+    stats: () => ipcRenderer.invoke('agents:stats'),
+    resetToday: () => ipcRenderer.invoke('agents:resetToday'),
+    onUpdate: (cb) => { const h = (_e, p) => cb(p || {}); ipcRenderer.on('agents:update', h); return () => ipcRenderer.removeListener('agents:update', h); },
+    onQuickReply: (cb) => { const h = (_e, p) => cb(p || {}); ipcRenderer.on('agents:quickReply', h); return () => ipcRenderer.removeListener('agents:quickReply', h); },
   },
 });

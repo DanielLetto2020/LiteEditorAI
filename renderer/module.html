@@ -417,6 +417,19 @@
         <div id="storage-body" class="st-body"></div>
       </section>
 
+      <!-- HTTP-клиент (REST / GraphQL · коллекции · cURL · OpenAPI): следует за активным проектом -->
+      <div id="gutter-rest" class="gutter hidden" data-resize="rest"></div>
+      <section id="rest-pane" class="hidden">
+        <div class="pane-head">
+          <span id="rest-title">HTTP-клиент</span>
+          <div class="drag-space-static"></div>
+          <button id="rest-discover" class="icon-btn" title="Найти локальные порты и OpenAPI" data-icon="locate"></button>
+          <button id="rest-import" class="icon-btn" title="Импорт (cURL / .http / OpenAPI)" data-icon="upload"></button>
+          <button id="rest-env-btn" class="icon-btn" title="Переменные окружения" data-icon="sliders"></button>
+        </div>
+        <div id="rest-body" class="rest-body"></div>
+      </section>
+
       <!-- RabbitMQ module (management HTTP API): system-wide -->
       <div id="gutter-rmq" class="gutter hidden" data-resize="rmq"></div>
       <section id="rmq-pane" class="hidden">
@@ -496,6 +509,17 @@
           <button id="servers-refresh" class="icon-btn" title="Опросить все серверы" data-icon="refresh"></button>
         </div>
         <div id="servers-body" class="srv-body"></div>
+      </section>
+
+      <!-- «Центр агентов» (Mission Control): живая сетка сессий, быстрые ответы и дневная статистика -->
+      <div id="gutter-agents" class="gutter hidden" data-resize="agents"></div>
+      <section id="agents-pane" class="hidden">
+        <div class="pane-head">
+          <span>Центр агентов</span>
+          <div class="drag-space-static"></div>
+          <button id="agents-refresh" class="icon-btn" title="Обновить снимок" data-icon="refresh"></button>
+        </div>
+        <div id="agents-body" class="agents-body"></div>
       </section>
 
       <!-- «Граф Git»: ветки и коммиты схемой на канве (следует за активным проектом редактора, только просмотр) -->

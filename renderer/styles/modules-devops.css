@@ -1458,3 +1458,56 @@ textarea.sm-hdr { font-family: var(--mono, ui-monospace, monospace); font-size: 
 .srv-ev-x { color: var(--text2); min-width: 0; word-break: break-word; }
 .srv-status-row > .srv-cstate { flex: 0 0 auto; min-width: 96px; }
 .srv-status-row > .srv-link { flex: 1; }
+
+/* ── HTTP-клиент (rest) ── */
+#rest-pane { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }
+.rest-body { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
+.rest-layout { flex: 1 1 auto; min-height: 0; display: grid; grid-template-columns: 240px 1fr; }
+.rest-side { border-right: 1px solid var(--border); display: flex; flex-direction: column; min-height: 0; background: var(--bg-soft, var(--bg)); }
+.rest-side-body { flex: 1 1 auto; overflow-y: auto; padding: 8px; display: flex; flex-direction: column; gap: 6px; }
+.rest-main { flex: 1 1 auto; min-width: 0; min-height: 0; display: flex; flex-direction: column; padding: 10px 12px; gap: 8px; }
+.rest-tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); padding: 4px 6px 0; }
+.rest-tab { background: none; border: none; border-bottom: 2px solid transparent; padding: 5px 8px; font-size: 12px; color: var(--text-dim); cursor: pointer; }
+.rest-tab.on { color: var(--text-hi); border-bottom-color: var(--accent); font-weight: 600; }
+.rest-urlbar { display: flex; gap: 6px; align-items: center; }
+.rest-method, .rest-sel, .rest-env-sel { background: var(--bg-input); color: var(--text); border: 1px solid var(--border); border-radius: var(--r2); padding: 6px 8px; font-size: 12px; }
+.rest-url-in { flex: 1 1 auto; min-width: 0; background: var(--bg-input); color: var(--text); border: 1px solid var(--border); border-radius: var(--r2); padding: 6px 10px; font-family: "JetBrains Mono", monospace; font-size: 12.5px; }
+.rest-req-pane { border: 1px solid var(--border); border-radius: var(--r2); padding: 8px; background: var(--bg-input); min-height: 110px; max-height: 240px; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; }
+.rest-kv { display: flex; flex-direction: column; gap: 4px; }
+.rest-kv-row { display: flex; gap: 6px; align-items: center; }
+.rest-kv-row input[type="text"], .rest-kv-row input[type="password"] { flex: 1 1 0; min-width: 0; background: var(--bg); border: 1px solid var(--border); border-radius: var(--r3); padding: 4px 7px; font-size: 12px; color: var(--text); }
+.rest-mini-btn { padding: 3px 8px; font-size: 11.5px; align-self: flex-start; }
+.rest-body-modes { display: flex; gap: 6px; }
+.rest-chip { border: 1px solid var(--border); background: var(--bg); color: var(--text2); border-radius: 10px; padding: 2px 9px; font-size: 11px; cursor: pointer; }
+.rest-chip.on { border-color: var(--accent); color: var(--text-hi); background: var(--accent-soft); }
+.rest-ta { width: 100%; min-height: 110px; resize: vertical; background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: var(--r3); padding: 7px; font-family: "JetBrains Mono", monospace; font-size: 12px; }
+.rest-ta-sm { min-height: 60px; }
+.rest-res-box { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; border: 1px solid var(--border); border-radius: var(--r2); background: var(--bg-input); }
+.rest-res-head { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-bottom: 1px solid var(--border); }
+.rest-st { font-size: 12px; font-weight: 700; padding: 2px 8px; border-radius: 8px; background: var(--surface-2); }
+.rest-st.ok { color: var(--add, #4ad08a); }
+.rest-st.warn { color: var(--warn, #e5a93b); }
+.rest-st.err { color: var(--danger, #e5534b); }
+.rest-meta { font-size: 11.5px; color: var(--text-dim); font-variant-numeric: tabular-nums; }
+.rest-res-body { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 8px 10px; }
+.rest-pre { margin: 0; font-family: "JetBrains Mono", monospace; font-size: 12px; line-height: 1.45; white-space: pre-wrap; word-break: break-word; color: var(--text); }
+.rest-hdr-tbl, .rest-timing { display: flex; flex-direction: column; gap: 4px; font-size: 12px; }
+.rest-hdr-row { display: grid; grid-template-columns: 180px 1fr; gap: 8px; padding: 3px 0; border-bottom: 1px solid var(--border); }
+.rest-col { display: flex; flex-direction: column; gap: 2px; border: 1px solid var(--border); border-radius: var(--r2); padding: 5px 6px; }
+.rest-col-head { display: flex; align-items: center; justify-content: space-between; font-size: 12px; font-weight: 600; color: var(--text-hi); }
+.rest-item { display: flex; align-items: center; gap: 6px; background: none; border: none; padding: 4px 5px; border-radius: var(--r3); color: var(--text2); font-size: 12px; cursor: pointer; text-align: left; }
+.rest-item:hover { background: var(--hover); }
+.rest-item.on { background: var(--accent-soft); color: var(--text-hi); }
+.rest-item-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rest-m { font-size: 10px; font-weight: 700; font-family: "JetBrains Mono", monospace; padding: 1px 4px; border-radius: 4px; background: var(--surface-2); }
+.rest-m.get { color: #56c288; } .rest-m.post { color: #e5a93b; } .rest-m.put, .rest-m.patch { color: #6ea8fe; } .rest-m.delete { color: #e5534b; }
+.rest-empty { font-size: 12px; color: var(--text-mute); padding: 14px; text-align: center; }
+.rest-auth { display: flex; flex-direction: column; gap: 6px; }
+.rest-auth-top { display: flex; gap: 6px; align-items: center; }
+.rest-auth input { background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: var(--r3); padding: 5px 8px; font-size: 12px; }
+.rest-sec-chk { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text2); white-space: nowrap; }
+.modal.rest-modal { width: 640px; max-width: 94vw; }
+.rest-imp-ta { width: 100%; min-height: 220px; background: var(--bg-input); color: var(--text); border: 1px solid var(--border); border-radius: var(--r2); padding: 8px; font-family: "JetBrains Mono", monospace; font-size: 12px; }
+.rest-local-card { border: 1px solid var(--border); border-radius: var(--r2); padding: 6px 8px; display: flex; flex-direction: column; gap: 5px; }
+.rest-local-url { font-family: "JetBrains Mono", monospace; font-size: 11.5px; color: var(--text); }
+.rest-local-acts { display: flex; gap: 6px; }
