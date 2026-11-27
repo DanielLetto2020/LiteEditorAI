@@ -135,6 +135,28 @@ for (const d of [undefined, 'postgres', 'mysql', 'sqlite']) {
   rod("SELECT 'pg_terminate_backend(1)' AS s", d, true, 'имя функции в строке');
 }
 
+// --- Критические обходы из аудита безопасности ---
+rod('SET "default_transaction_read_only" = off', 'postgres', false, 'Postgres: экранированный GUC');
+rod('SET "role" = \'postgres\'', 'postgres', false, 'Postgres: экранированная роль');
+rod('SET @@session.`transaction_read_only` = 0', 'mysql', false, 'MySQL: экранированный transaction_read_only');
+rod('SET `tx_read_only` = 0', 'mysql', false, 'MySQL: экранированный tx_read_only');
+rod('PRAGMA query_only = 0', 'sqlite', false, 'SQLite: снятие query_only');
+rod('PRAGMA writable_schema = ON', 'sqlite', false, 'SQLite: writable_schema');
+rod('PRAGMA "user_version" = 99', 'sqlite', false, 'SQLite: экранированный PRAGMA =');
+rod("PRAGMA table_info('users')", 'sqlite', true, 'SQLite: безопасный PRAGMA table_info');
+rod('PRAGMA foreign_keys', 'sqlite', true, 'SQLite: чтение PRAGMA без =');
+rod('EXPLAIN ANALYZE EXECUTE s', 'postgres', false, 'EXPLAIN EXECUTE');
+rod("NOTIFY ch, 'x'", 'postgres', false, 'Postgres NOTIFY');
+rod('LISTEN ch', 'postgres', false, 'Postgres LISTEN');
+rod('DECLARE c CURSOR WITH HOLD FOR SELECT 1', 'postgres', false, 'Postgres CURSOR');
+rod("XA START 'x'", 'mysql', false, 'MySQL XA START');
+rod('USE mysql', 'mysql', false, 'MySQL USE');
+rod("SELECT pg_notify('ch', 'x')", 'postgres', false, 'pg_notify');
+rod('SELECT pg_advisory_lock(1)', 'postgres', false, 'pg_advisory_lock');
+rod("SELECT pg_read_file('/etc/passwd')", 'postgres', false, 'pg_read_file');
+rod("SELECT GET_LOCK('k', 5)", 'mysql', false, 'MySQL GET_LOCK');
+rod("SELECT LOAD_FILE('/etc/passwd')", 'mysql', false, 'MySQL LOAD_FILE');
+
 // --- Число операторов (db:queryRo — ровно один; фильтр WHERE таблицы — одно условие) ---
 const { sqlStatementCount } = require('../lib/sqlro');
 const cnt = (sql, dialect, want, msg) => { assert.strictEqual(sqlStatementCount(sql, dialect), want, msg + ' [' + (dialect || 'все') + '] :: ' + sql); passed++; };

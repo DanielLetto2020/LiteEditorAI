@@ -33,6 +33,31 @@ jobs:
       - name: Install deps (rebuilds node-pty for this OS)
         run: npm ci
 
+      - name: Preflight (version sync, i18n, build.files whitelist)
+        shell: bash
+        run: |
+          node -e "
+            const fs = require('fs');
+            const tag = (process.env.GITHUB_REF_NAME || '').replace(/^v/, '');
+            const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+            const pkgVer = pkg.version.replace(/-alpha$/, '');
+            if (tag && tag !== pkgVer) throw new Error('Tag ' + tag + ' != package.json ' + pkgVer);
+            const rend = fs.readFileSync('renderer/renderer.js', 'utf8');
+            const m = /APP_VERSION\s*=\s*'alpha v([^']+)'/.exec(rend);
+            if (!m || m[1] !== pkgVer) throw new Error('APP_VERSION != package.json ' + pkgVer);
+            const notes = fs.readFileSync('RELEASE_NOTES.md', 'utf8');
+            if (tag && !notes.includes('v' + tag)) throw new Error('RELEASE_NOTES.md missing v' + tag);
+            for (const f of ['main.js', 'preload.js', 'logger.js', 'errledger.js']) {
+              const src = fs.readFileSync(f, 'utf8');
+              for (const mm of src.matchAll(/require\((['\"])\.\/([^'\"]+)\1\)/g)) {
+                const mod = mm[2].endsWith('.js') ? mm[2] : mm[2] + '.js';
+                if (!fs.existsSync(mod)) throw new Error('Missing require target: ' + mod);
+              }
+            }
+            console.log('Preflight OK: v' + pkgVer);
+          "
+          node scripts/i18n-extract.js --check
+
       - name: Lint, typecheck and unit tests
         run: |
           npm run lint

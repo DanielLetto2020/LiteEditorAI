@@ -1,6 +1,6 @@
-// Organise built artifacts from dist-release/ into release/{ubuntu,windows}/ with
+// Organise built Linux artifacts from dist-release/ into release/ubuntu/ with
 // the naming <Name>_<version>_<YYYYMMDDHHMM> and a per-OS readme.
-// Build first:  npm run dist:linux   and/or   npm run dist:win
+// Build first:  npm run dist:linux
 const fs = require('fs');
 const path = require('path');
 
@@ -58,4 +58,5 @@ sudo apt remove liteeditor-ai
 
 console.log(`release ${NAME} v${version} (${stamp}):`);
 place(newest(/\.deb$/), 'ubuntu', '.deb', ubuntuReadme);
+place(newest(/\.tar\.gz$/), 'ubuntu', '-linux-x64.tar.gz', ubuntuReadme);
 console.log('готово.');

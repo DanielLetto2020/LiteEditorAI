@@ -1,6 +1,6 @@
 {
   "name": "liteeditor-ai",
-  "version": "1.1.248-alpha",
+  "version": "1.1.249-alpha",
   "description": "Lightweight editor for working with AI coding agents in the terminal",
   "main": "main.js",
   "author": "Максим Кузьминский <i@m-letto.ru>",
@@ -11,12 +11,12 @@
     "url": "https://github.com/DanielLetto2020/LiteEditorAI.git"
   },
   "scripts": {
-    "test": "node test/safe-name.test.js && node test/shell.test.js && node test/portparse.test.js && node test/dbdetect.test.js && node test/fsmeta.test.js && node test/i18n.test.js && node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON test/renderer-i18n.test.js && node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON test/ui-icons.test.js && node test/storage-path.test.js && node test/sql-readonly.test.js && node test/db-queue.test.js && node test/errledger.test.js && node test/updater.test.js && node test/ttsnorm.test.js && node test/tts-download.test.js && node test/tree-watch.test.js && node test/git-watch.test.js && node test/gitignore.test.js && node test/fast-search.test.js && node test/logger.test.js && node test/logger-level.test.js && node test/history.test.js && node test/ptybatch.test.js && node test/ptyring.test.js && node test/store.test.js && node test/projterm-state.test.js && node test/module-router.test.js && node test/proctree.test.js && node test/agentstate.test.js && node test/osc7501.test.js && node test/termlink.test.js && node test/ports.test.js && node test/hotkeys.test.js && node test/proc-service.test.js && node test/quit-guard.test.js && node test/zipwrite.test.js && node test/styles-split.test.js && node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON test/settings-sync.test.js && node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON test/proj-tabs.test.js && node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON test/viewer-ide.test.js",
+    "test": "node test/safe-name.test.js && node test/shell.test.js && node test/portparse.test.js && node test/dbdetect.test.js && node test/fsmeta.test.js && node test/i18n.test.js && node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON test/renderer-i18n.test.js && node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON test/ui-icons.test.js && node test/storage-path.test.js && node test/sql-readonly.test.js && node test/db-queue.test.js && node test/dbai-agy.test.js && node test/errledger.test.js && node test/updater.test.js && node test/ttsnorm.test.js && node test/tts-download.test.js && node test/tree-watch.test.js && node test/git-watch.test.js && node test/gitignore.test.js && node test/fast-search.test.js && node test/logger.test.js && node test/logger-level.test.js && node test/history.test.js && node test/ptybatch.test.js && node test/ptyring.test.js && node test/store.test.js && node test/projterm-state.test.js && node test/module-router.test.js && node test/proctree.test.js && node test/agentstate.test.js && node test/osc7501.test.js && node test/termlink.test.js && node test/ports.test.js && node test/hotkeys.test.js && node test/proc-service.test.js && node test/quit-guard.test.js && node test/zipwrite.test.js && node test/styles-split.test.js && node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON test/settings-sync.test.js && node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON test/proj-tabs.test.js && node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON test/viewer-ide.test.js && node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON test/notes-model.test.js && node test/mcp-redact.test.js && node test/mcp-policy.test.js && node test/mcp-hub.test.js",
     "lint": "eslint .",
     "typecheck": "tsc -p tsconfig.check.json",
     "mutation": "node scripts/stryker-gate.js",
     "build": "node build.js",
-    "start": "node build.js && electron --no-sandbox --class=LiteEditorAI .",
+    "start": "node build.js && electron --no-sandbox --class=liteeditor-ai .",
     "watch": "node build.js --watch",
     "rebuild": "electron-rebuild -f -o node-pty",
     "postinstall": "electron-rebuild -f -o node-pty || echo 'node-pty rebuild skipped — run: npm run rebuild'",
@@ -143,11 +143,13 @@
         "tar.gz"
       ],
       "artifactName": "${productName}-${version}-linux-${arch}.${ext}",
-      "category": "Development",
+      "category": "Development;Utility;TextEditor",
       "icon": "assets/icon.png",
       "maintainer": "Максим Кузьминский <i@m-letto.ru>",
       "desktop": {
         "entry": {
+          "GenericName": "AI Agent Editor",
+          "StartupNotify": "true",
           "StartupWMClass": "liteeditor-ai"
         }
       }

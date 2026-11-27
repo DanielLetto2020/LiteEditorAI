@@ -122,7 +122,20 @@ export interface LiteBridge {
   };
   openrouter: Record<string, (...args: any[]) => any>;
   tp: Record<string, (...args: any[]) => any>;
-  dbai: Record<string, (...args: any[]) => any>;
+  dbai: {
+    run(reqId: string, agent: string, prompt: string, opts?: { model?: string; effort?: string }): void;
+    apiRun(reqId: string, opts: { baseUrl: string; key?: string; model: string; messages?: Array<{ role: string; content: string }>; usage?: boolean; prompt?: string }): void;
+    apiModels(opts: { baseUrl: string; key?: string }): Promise<{ models?: Array<{ id: string; name: string }>; error?: string }>;
+    agyModels(opts?: { force?: boolean }): Promise<{ models?: Array<{ id: string; name: string; family?: string; effort?: string }>; error?: string }>;
+    abort(reqId: string): void;
+    onData(cb: (p: { reqId: string; chunk?: string }) => void): Unsubscribe;
+    onDone(cb: (p: { reqId: string; aborted?: boolean }) => void): Unsubscribe;
+    onError(cb: (p: { reqId: string; error?: string }) => void): Unsubscribe;
+    onUsage(cb: (p: { reqId: string; model?: string; usage?: Record<string, any> }) => void): Unsubscribe;
+    sessionsGet(connId: string): Promise<any>;
+    sessionsSet(connId: string, data: any): Promise<{ ok: boolean; error?: string }>;
+    sessionsDelete(connId: string): Promise<{ ok: boolean; error?: string }>;
+  };
   ctxmine: Record<string, (...args: any[]) => any>;
   ctxmem: Record<string, (...args: any[]) => any>;
   ctxfs: Record<string, (...args: any[]) => any>;
@@ -149,7 +162,6 @@ export interface LiteBridge {
     activity(): void;
     onSet(cb: (p: { on?: boolean }) => void): Unsubscribe;
   };
-  company: Record<string, (...args: any[]) => any>;
   iterflow: Record<string, (...args: any[]) => any>;
   seo: Record<string, (...args: any[]) => any>;
   git: Record<string, (...args: any[]) => any>;
@@ -235,6 +247,23 @@ export interface LiteBridge {
     onFocusSession(cb: (p: { sid?: string }) => void): Unsubscribe;
     onSendText(cb: (p: { projId?: string; text?: string }) => void): Unsubscribe;
     onSearchBuffers(cb: (p: { reqId?: string; query?: string; isRe?: boolean; caseSens?: boolean }) => void): Unsubscribe;
+  };
+
+  mcp: {
+    status(projectId?: string): Promise<Record<string, any>>;
+    packs(): Promise<{ ok: boolean; packs: any[] }>;
+    setConfig(config: Record<string, any>): Promise<{ ok: boolean; config: any }>;
+    resources(): Promise<{ ok: boolean; resources: { db: any[]; server: any[]; rh: any[]; container: any[] } }>;
+    getBinding(projectId?: string): Promise<{ ok: boolean; binding: any }>;
+    setBinding(projectId: string, binding: Record<string, any>): Promise<{ ok: boolean; binding: any }>;
+    applyPreset(projectId: string, preset: 'strict' | 'dev_safe' | 'custom'): Promise<{ ok: boolean; binding: any }>;
+    audit(filter?: Record<string, any>): Promise<{ ok: boolean; entries: any[]; pending: any[]; stats: any }>;
+    auditClear(): Promise<{ ok: boolean }>;
+    approve(approvalId: string, decision: 'once' | 'session' | 'bind' | 'deny'): Promise<{ ok: boolean; error?: string }>;
+    agentSnippets(opts?: { projectId?: string; projectName?: string; agentKind?: string }): Promise<{ ok: boolean; snippet: any; agents: any[] }>;
+    connectAgent(opts?: { agentKind?: string; projectId?: string; projectName?: string; projectPath?: string }): Promise<{ ok: boolean; out?: string; error?: string; command?: string }>;
+    revokeTokens(projectId?: string): Promise<{ ok: boolean }>;
+    onEvent(cb: (payload: Record<string, any>) => void): Unsubscribe;
   };
 }
 
