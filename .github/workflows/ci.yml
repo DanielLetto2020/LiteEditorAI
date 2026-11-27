@@ -7,7 +7,7 @@ on:
 
 jobs:
   verify:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
@@ -27,6 +27,9 @@ jobs:
 
       - name: Unit tests
         run: npm test
+
+      - name: Check i18n coverage
+        run: node scripts/i18n-extract.js --check
 
       - name: Bundle renderer
         run: npm run build

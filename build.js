@@ -71,6 +71,7 @@ function newestSource() {
     }
   };
   walk(path.join(__dirname, 'renderer'));
+  walk(path.join(__dirname, 'lib'));
   for (const f of ['build.js', 'package-lock.json', 'package.json']) {
     try { newest = Math.max(newest, fs.statSync(path.join(__dirname, f)).mtimeMs); } catch (_) {}
   }

@@ -150,7 +150,7 @@ function isJunk(s) {
   // подмена по точному совпадению задела бы любую такую букву в интерфейсе.
   if (t.length < 2) return true;
   if (t.length > 400) return true;                        // портянки-инструкции агенту: не UI
-  if (/\[[А-Яа-яЁё]-[А-Яа-яЁё]\]/.test(t)) return true;   // класс регулярки [А-Яа-я]
+  if (/\[[^\]]*[А-Яа-яЁё]-[А-Яа-яЁё][^\]]*\]/.test(t)) return true;   // класс регулярки [А-Яа-я] / [\w$А-Яа-яЁё]
   if (/^\{\d+\}$/.test(t)) return true;
   if (looksLikeCode(t)) return true;
   if (/^[\s\p{P}\p{S}]+$/u.test(t)) return true;          // одни знаки

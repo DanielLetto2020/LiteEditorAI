@@ -42,8 +42,6 @@ module.exports = [
       'release/**',
       'reports/**',           // отчёт Stryker
       '.stryker-tmp/**',
-      'landing/**',
-      'ansible/**',
     ],
   },
 

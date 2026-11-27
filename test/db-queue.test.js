@@ -4,7 +4,7 @@
 
 const assert = require('assert');
 const { _test } = require('../lib/db.js');
-const { exclusive, runTransaction, readOnlyQuery, conns } = _test;
+const { exclusive, runTransaction, readOnlyQuery, rawQuery, tableData, conns, sameDbEndpoint, sameSshEndpoint } = _test;
 
 let passed = 0;
 function ok(v, msg) { assert.ok(v, msg); passed++; }
@@ -85,6 +85,45 @@ function fakePg(failOn = []) {
     eq(await exclusive(h, (x) => runTransaction(x, ['UPDATE ok'])), { ok: true, count: 1 }, 'успех');
     ok(conns.get('t6') === h && !pg.ended && !h.broken, 'соединение живо');
     conns.delete('t6');
+  }
+  // 7. MySQL multi-statement с первым не-SELECT оператором (fields[0] === undefined) не роняет rawQuery.
+  {
+    const h1 = {
+      type: 'mysql',
+      my: { async query() { return [[{ affectedRows: 0 }, [[42]]], [undefined, [{ name: '@a', type: 3 }]]]; } },
+    };
+    eq(await rawQuery(h1, 'SET @a = 1; SELECT @a;'), { columns: ['@a'], colTypes: ['number'], rows: [[42]], rowCount: 1 }, 'multi SET+SELECT');
+    const h2 = {
+      type: 'mysql',
+      my: { async query() { return [[{ affectedRows: 1 }, { affectedRows: 2 }], [undefined, undefined]]; } },
+    };
+    eq(await rawQuery(h2, 'INSERT INTO t VALUES (1); INSERT INTO t VALUES (2);'), { columns: [], rows: [], rowCount: 2 }, 'multi INSERT+INSERT');
+  }
+  // 8. tableData оборачивает WHERE в скобки + \n и нормализует limit/offset.
+  {
+    const seen = [];
+    const h = {
+      type: 'postgres',
+      config: { readOnly: true },
+      pg: {
+        async query(q) {
+          seen.push(typeof q === 'string' ? q : q.text);
+          return { fields: [], rows: [[3]], rowCount: 1 };
+        },
+      },
+    };
+    const res = await tableData(h, 'public', 'items', { limit: 2.7, offset: Infinity, where: 'id > 0 -- comment' });
+    eq(res.limit, 2, 'limit обрезан до int');
+    eq(res.offset, 0, 'Infinity offset → 0');
+    ok(seen[0].includes('WHERE (id > 0 -- comment\n) LIMIT 2 OFFSET 0'), 'комментарий -- не съедает LIMIT');
+    await assert.rejects(tableData(h, 'public', 'items', { where: '1=1; DROP TABLE items' }), /одно условие/); passed++;
+    await assert.rejects(tableData(h, 'public', 'items', { where: 'nextval(\'s\') > 0' }), /читающие/); passed++;
+  }
+  // 9. Политика сопоставления endpoint для секретов.
+  {
+    ok(sameDbEndpoint({ type: 'postgres', host: 'db.local', port: 5432, user: 'u' }, { type: 'postgres', host: 'DB.LOCAL', user: 'u' }), 'совпадает endpoint с дефолтным портом');
+    ok(!sameDbEndpoint({ type: 'postgres', host: 'db.local', port: 5432, user: 'u' }, { type: 'postgres', host: 'evil.host', port: 5432, user: 'u' }), 'смена хоста сбрасывает совпадение');
+    ok(!sameSshEndpoint({ sshHost: 'bastion', sshPort: 22, sshUser: 'root' }, { sshHost: 'bastion', sshPort: 2222, sshUser: 'root' }), 'смена SSH-порта сбрасывает совпадение');
   }
   console.log(`✓ db-queue: ${passed} проверок пройдено`);
 })().catch((e) => { console.error(e); process.exit(1); });

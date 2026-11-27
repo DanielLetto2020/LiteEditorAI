@@ -26,9 +26,10 @@ import {
 // initOpenRouter — чат мигрирован в отдельное окно (renderer/module-entry.js).
 import { openGlobalSearch } from './gsearch.js';
 import { initExtensions } from './modules/extensions.js';
+import { initMcp } from './modules/mcp.js';
 // initFiles — вивер+дерево мигрированы в отдельное окно (renderer/module-entry.js).
 
-const APP_VERSION = 'alpha v1.1.248';
+const APP_VERSION = 'alpha v1.1.249';
 const GUTTER = 8; // зазор между карточками окна — он же разделитель, за который тянется ширина
 // Системный терминал («Система · ~») мигрирован в отдельное окно (renderer/modules/scratch.js):
 // его id `__scratch__::tN` маршрутизируются main'ом в окно-владельца, в ядре их больше не обрабатываем.
@@ -93,7 +94,7 @@ const isExtTerm = (id) => typeof id === 'string' && id.startsWith(EXT_TERM_ID);
 const extTerms = new Map(); // ptyId -> { term, fit, search, container }
 let extTermSeq = 0;
 
-const DEFAULT_LAYOUT = { sidebar: 300, viewer: 520, tree: 240, filesDock: 680, termSplit: 0.5, scratch: 420, ctx: 740, docker: 460, db: 560, rh: 520, ext: 420, notes: 480, audit: 460, iterflow: 480, seo: 480, tools: 560, chat: 600, doc: 640 };
+const DEFAULT_LAYOUT = { sidebar: 300, viewer: 520, tree: 240, filesDock: 680, mcp: 380, mcpOpen: false, termSplit: 0.5, scratch: 420, ctx: 740, docker: 460, db: 560, rh: 520, ext: 420, notes: 480, audit: 460, iterflow: 480, seo: 480, tools: 560, chat: 600, doc: 640 };
 let layout = loadLayout();
 let lastParent = STORE.lastParent || '';
 
@@ -132,10 +133,11 @@ const termEngine = createTermEngine({
     if (pid === activeId) refreshGitChip(500);
     if ((st === 'waiting' || worked) && (sid !== activeSessionId() || !document.hasFocus())) notifyAgent(pid, st, sid, reason);
   },
-  onAfterShowActive: () => syncDetachedHint(),
+  onAfterShowActive: () => { syncDetachedHint(); try { if (Mcp) Mcp.onSessionChange(); } catch (_) {} },
   onHotkey: (e) => runGlobalHotkey(e),
 });
 
+let Mcp = null;
 const {
   BOOT_ID,
   tabsByProj, terms, projState, adoptPtys,
@@ -146,6 +148,19 @@ const {
   switchTab, addTab, clearTerminal, restartTerminal,
   toggleTermSplit, openTermSearch,
 } = termEngine;
+
+Mcp = initMcp({
+  lite,
+  withHk,
+  getActiveId: () => activeId,
+  getActiveProject: () => activeProject(),
+  getActiveSessionId: () => activeSessionId(),
+  getLayout: () => layout,
+  setLayoutProp: (k, v) => { layout[k] = v; },
+  onLayoutChange: () => { applyLayout(); refitActiveTerminal(); saveLayout(); },
+  openSettings: () => showSettings('mcp'),
+  toast,
+});
 
 function applyTheme() {
   applyLook(settings);
@@ -166,10 +181,32 @@ function applyLayout() {
   layout.sidebar = Math.max(SIDEBAR_MIN, Math.min(SIDEBAR_MAX, +layout.sidebar || DEFAULT_LAYOUT.sidebar));
   $('#sidebar').style.flexBasis = layout.sidebar + 'px';
   layout.filesDock = Math.max(360, Math.min(1400, +layout.filesDock || DEFAULT_LAYOUT.filesDock));
-  { const fd = $('#files-dock'); if (fd) fd.style.flexBasis = layout.filesDock + 'px'; }
+  layout.mcp = Math.max(280, Math.min(780, +layout.mcp || DEFAULT_LAYOUT.mcp));
   layout.termSplit = Math.max(0.2, Math.min(0.8, Number.isFinite(+layout.termSplit) ? +layout.termSplit : 0.5));
   { const tb = $('#term-body'); if (tb) tb.style.setProperty('--split-pct', (layout.termSplit * 100).toFixed(2) + '%'); }
-  $('#ext-pane').style.flexBasis = layout.ext + 'px';
+
+  const singleMode = !!($('#app') && $('#app').classList.contains('single'));
+  const sideW = singleMode ? 52 : layout.sidebar;
+  const maxRightTotal = Math.max(280, window.innerWidth - sideW - 320);
+  const fd = $('#files-dock');
+  const ep = $('#ext-pane');
+  const mp = $('#mcp-pane');
+  const openRight = [];
+  if (mp && !mp.classList.contains('hidden')) openRight.push([mp, layout.mcp, 280]);
+  if (fd && !fd.classList.contains('hidden')) openRight.push([fd, layout.filesDock, 360]);
+  if (ep && !ep.classList.contains('hidden')) openRight.push([ep, layout.ext, 280]);
+
+  const sumRight = openRight.reduce((a, x) => a + x[1], 0);
+  if (sumRight > maxRightTotal && openRight.length > 0) {
+    const scale = maxRightTotal / sumRight;
+    for (const [node, w, minW] of openRight) {
+      node.style.flexBasis = Math.max(minW, Math.floor(w * scale)) + 'px';
+    }
+  } else {
+    if (mp) mp.style.flexBasis = layout.mcp + 'px';
+    if (fd) fd.style.flexBasis = layout.filesDock + 'px';
+    if (ep) ep.style.flexBasis = layout.ext + 'px';
+  }
 }
 function loadRecents() { return Array.isArray(STORE.recents) ? STORE.recents : []; }
 function pushRecent(p) {
@@ -551,6 +588,7 @@ function buildCardMenuMain(dd, p) {
   dd.appendChild(menuRow('star', p.favorite ? 'Убрать из избранного' : 'В избранное', () => { closeMenus(); toggleFavorite(p.id); }));
   dd.appendChild(el('div', 'menu-sep'));
   dd.appendChild(menuRow('pencil', 'Переименовать проект…', () => { closeMenus(); renameProject(p.id); }));
+  dd.appendChild(menuRow('plug', 'Ресурсы MCP проекта…', () => { closeMenus(); Mcp.openProjectResourcesModal(p); }));
   dd.appendChild(menuRow('palette', 'Цвет проекта…', () => buildCardMenuColor(dd, p)));
   dd.appendChild(menuRow('arrow-right', 'Переместить в категорию…', () => buildCardMenuMove(dd, p)));
   if (p.category === ARCHIVE)
@@ -1073,8 +1111,22 @@ function syncHotkeyHints() {
   if (tf instanceof HTMLElement) tf.title = withHk('Поиск в терминале', 'termSearch');
   const fd = $('#files-dock-close');
   if (fd instanceof HTMLElement) fd.title = withHk('Скрыть панель', 'openFiles');
+  const bm = $('#btn-mcp');
+  if (bm instanceof HTMLElement) bm.title = withHk('MCP-инструменты', 'toggleMcp');
+  const mc = $('#mcp-close-btn');
+  if (mc instanceof HTMLElement) mc.title = withHk('Скрыть панель', 'toggleMcp');
   const re = $('#rail-expand');
   if (re instanceof HTMLElement) re.title = withHk('Развернуть проекты', 'toggleSingle');
+  const pf = $('#proj-find .nav-k');
+  if (pf instanceof HTMLElement) {
+    pf.textContent = formatComboParts(getHotkey(settings, 'globalSearch'))
+      .map((p) => (p === 'Shift' ? '⇧' : p))
+      .join(' ');
+  }
+  const bset = $('#btn-settings');
+  if (bset instanceof HTMLElement) bset.title = withHk('Настройки', 'openSettings');
+  const tsplit = $('#term-split-btn');
+  if (tsplit instanceof HTMLElement) tsplit.title = withHk('Разделить терминал', 'termSplit');
   termEngine.renderTabBar();
 }
 function applyHotkeysLive() {
@@ -1094,6 +1146,7 @@ function runGlobalHotkey(e) {
   if (matchesAction(e, settings, 'palette')) { e.preventDefault(); showPalette(); return true; }
   if (matchesAction(e, settings, 'globalSearch')) { e.preventDefault(); showGlobalSearch(); return true; }
   if (matchesAction(e, settings, 'openFiles')) { e.preventDefault(); openModule('files'); return true; }
+  if (matchesAction(e, settings, 'toggleMcp')) { e.preventDefault(); Mcp.toggle(); return true; }
   if (matchesAction(e, settings, 'openSettings')) { e.preventDefault(); if (!document.querySelector('.settings-modal')) showSettings(); return true; }
   if (matchesAction(e, settings, 'fontUp')) { e.preventDefault(); bumpFont(1); return true; }
   if (matchesAction(e, settings, 'fontDown')) { e.preventDefault(); bumpFont(-1); return true; }
@@ -1206,6 +1259,7 @@ function doSetActive(id) {
   // вивер живёт в своём окне и следует за проектом через app:activeProject (pushActiveProject ниже)
   try { Ext.notifyActiveProject(activeId); } catch (_) {} // пользовательские модули: ctx.projects.onChange
   pushActiveProject(proj); // окна модулей (git/ctx/notes/audit): следовать за активным проектом редактора
+  try { Mcp.onProjectChange(activeId); } catch (_) {}
   updateNotesBadge();      // бейдж задач — под новый активный проект
   refreshGitChip(0);       // чип ветки под терминалом — под новый активный проект
 }
@@ -1232,7 +1286,7 @@ const panels = new Map(); // id -> { isOpen(), setOpen(open, opts) }
 // Правый слот редактора теперь держит только «Мои модули» (ext); всё остальное — отдельные окна.
 const PANEL_ORDER = [];
 // Модули, мигрированные в отдельные окна (открываются через lite.module.open, не как панель правого слота).
-const WINDOW_MODULES = new Set(['tools', 'iterflow', 'seo', 'audit', 'company', 'notes', 'db', 'rmq', 'kafka', 'chat', 'doc', 'docker', 'rh', 'ctx', 'scratch', 'files', 'pomodoro', 'monitor', 'keepass', 'storage', 'jira', 'voice', 'gitgraph', 'servers']);
+const WINDOW_MODULES = new Set(['tools', 'iterflow', 'seo', 'audit', 'notes', 'db', 'rmq', 'kafka', 'chat', 'doc', 'docker', 'rh', 'ctx', 'scratch', 'files', 'pomodoro', 'monitor', 'keepass', 'storage', 'jira', 'voice', 'gitgraph', 'servers']);
 function registerPanel(id, api) { panels.set(id, api); }
 function closeOtherPanels(selfId) {
   for (const id of PANEL_ORDER) {
@@ -1329,38 +1383,47 @@ function openModule(id) {
   if (p) p.setOpen(true);
 }
 
+// Каталог встроенных модулей: project:true — окно следует за активным проектом редактора
+// (см. MODULES в module-entry.js), остальные — самостоятельные. Используется квикбаром, меню, каталогом и Ctrl+K.
+const BUILTIN_MODS = [
+  { id: 'files',    icon: 'eye',      title: 'Проект',             desc: 'вивер кода, дерево, Git', project: true },
+  { id: 'gitgraph', icon: 'gitgraph', title: 'Граф Git',          desc: 'ветки и коммиты схемой на канве', project: true },
+  { id: 'ctx',      icon: 'graph',    title: 'Контекст',           desc: 'граф контекста агента', project: true },
+  { id: 'notes',    icon: 'note',     title: 'Задачи',             desc: 'заметки, задачи и напоминания проекта', project: true },
+  { id: 'audit',    icon: 'grid',     title: 'Аудит',              desc: 'типы файлов, крупные файлы, медиа', project: true },
+  { id: 'doc',      icon: 'note',     title: 'Обработка текста',   desc: 'документы + AI-правки (вкл. agy)', project: true },
+  { id: 'docker',   icon: 'box',      title: 'Контейнеры',         desc: 'Docker / Podman' },
+  { id: 'db',       icon: 'database', title: 'Базы данных',        desc: 'Postgres · MySQL · SQLite + AI (вкл. agy)' },
+  { id: 'rmq',      icon: 'rabbit',   title: 'RabbitMQ',           desc: 'очереди · сообщения · подключения' },
+  { id: 'kafka',    icon: 'kafka',    title: 'Kafka',              desc: 'топики · группы · live-tail' },
+  { id: 'storage',  icon: 'cloud',    title: 'Внешние хранилища',  desc: 'S3 · бакеты · публичные ссылки', project: true },
+  { id: 'rh',       icon: 'globe',    title: 'Удалённые хосты',    desc: 'SSH-сессии и SFTP к серверам' },
+  { id: 'servers',  icon: 'server',   title: 'Серверы',            desc: 'дашборд: ресурсы · проекты · сеть · контейнеры · сайты' },
+  { id: 'iterflow', icon: 'layers',   title: 'IterFlow',           desc: 'задачи итераций из трекера' },
+  { id: 'jira',     icon: 'jira',     title: 'Jira',               desc: 'свои задачи из нескольких аккаунтов' },
+  { id: 'seo',      icon: 'globe',    title: 'WEB/SEO аудит',      desc: 'сайт: безопасность, SEO, сеть' },
+  { id: 'tools',    icon: 'wrench',   title: 'Инструменты',        desc: 'base64, JSON/YAML, хэши, JWT, regex, diff' },
+  { id: 'chat',     icon: 'chat',     title: 'OpenRouter',         desc: 'чат по своим API-ключам' },
+  { id: 'pomodoro', icon: 'clock',    title: 'Помодоро',           desc: 'таймер работы/отдыха с блокировкой' },
+  { id: 'voice',    icon: 'volume',   title: 'Озвучка',            desc: 'текст из буфера обмена — живым голосом' },
+  { id: 'scratch',  icon: 'terminal', title: 'Системный терминал', desc: 'шелл вне проектов' },
+  { id: 'monitor',  icon: 'graph',    title: 'Монитор ресурсов',   desc: 'память/CPU редактора и агентов' },
+  { id: 'keepass',  icon: 'key',      title: 'Сейф паролей',       desc: 'KeePass .kdbx: пароли и токены' },
+];
+
 // ---------------------------------------------------------------- quickbar (панель быстрого доступа)
 // Полоса кнопок-иконок ПОД терминалом (#quickbar в #terminal-pane): клик открывает модуль.
 // Состав и порядок — STORE.quickbar (массив id; пользовательские модули — 'ext:<id>').
 // Настройка — «Модули → Настройка панели…». Пустой список → полоса скрыта целиком.
 // Спец-элемент '|' — вертикальный разделитель (можно ставить сколько угодно, в любое место).
 const QUICK_SEP = '|';
-const QUICK_BUILTIN = [
-  { id: 'files',   icon: 'eye',      label: 'Проект — вивер, дерево, Git' },
-  { id: 'gitgraph', icon: 'gitgraph', label: 'Граф Git — ветки и коммиты схемой' },
-  { id: 'ctx',     icon: 'graph',    label: 'Контекст — граф контекста агента' },
-  { id: 'docker',  icon: 'box',      label: 'Контейнеры — Docker / Podman' },
-  { id: 'db',      icon: 'database', label: 'Базы данных — Postgres / MySQL / SQLite' },
-  { id: 'rmq',     icon: 'rabbit',   label: 'RabbitMQ — очереди, сообщения, подключения' },
-  { id: 'kafka',   icon: 'kafka',    label: 'Kafka — топики, группы, live-tail' },
-  { id: 'storage', icon: 'cloud',    label: 'Внешние хранилища — S3, бакеты, объекты' },
-  { id: 'rh',      icon: 'globe',    label: 'Удалённые хосты — SSH-сессии' },
-  { id: 'servers', icon: 'server',   label: 'Серверы — дашборд: ресурсы, проекты, сеть, контейнеры, сайты' },
-  { id: 'notes',   icon: 'note',     label: 'Задачи — заметки проекта' },
-  { id: 'audit',   icon: 'grid',     label: 'Аудит — анализ проекта' },
-  { id: 'company', icon: 'users',    label: 'ИИ компания — команда агентов над проектом' },
-  { id: 'iterflow', icon: 'layers',  label: 'IterFlow — задачи итераций (трекер)' },
-  { id: 'jira',    icon: 'jira',     label: 'Jira — свои задачи из нескольких аккаунтов' },
-  { id: 'seo',     icon: 'globe',    label: 'WEB/SEO аудит — анализ сайта' },
-  { id: 'tools',   icon: 'wrench',   label: 'Инструменты — base64, JSON/YAML, хэши, regex…' },
-  { id: 'chat',    icon: 'chat',     label: 'OpenRouter — чат по своим API-ключам' },
-  { id: 'doc',     icon: 'note',     label: 'Обработка текста — документы + AI-правки' },
-  { id: 'pomodoro', icon: 'clock',   label: 'Помодоро — таймер работы/отдыха с блокировкой' },
-  { id: 'voice',   icon: 'volume',   label: 'Озвучка — читать скопированный текст голосом' },
-  { id: 'scratch', icon: 'terminal', label: 'Системный терминал (вне проектов)' },
-];
 function quickAllModules() {
-  const all = QUICK_BUILTIN.map((m) => ({ ...m, open: () => openModule(m.id) }));
+  const all = BUILTIN_MODS.map((m) => ({
+    id: m.id,
+    icon: m.icon,
+    label: `${tt(m.title)} — ${tt(m.desc)}`,
+    open: () => openModule(m.id),
+  }));
   for (const m of Ext.list()) if (m.ok)
     all.push({ id: 'ext:' + m.id, icon: 'layers', label: m.name, open: () => Ext.quickOpen(m.id) });
   return all;
@@ -1528,8 +1591,10 @@ function initGutters() {
       const onMove = (ev) => {
         const dx = ev.clientX - startX;
         let w = target === 'sidebar' ? startW + dx : startW - dx;
-        const maxW = target === 'filesDock' ? Math.max(480, window.innerWidth - 360) : 1000;
-        layout[target] = Math.max(150, Math.min(maxW, w));
+        const minW = target === 'mcp' ? 280 : (target === 'filesDock' ? 360 : 150);
+        const maxW = target === 'filesDock' ? Math.max(480, window.innerWidth - 360)
+          : (target === 'mcp' ? Math.min(780, Math.max(280, window.innerWidth - 360)) : 1000);
+        layout[target] = Math.max(minW, Math.min(maxW, w));
         applyLayout();
         refitActiveTerminalSoon();   // reflow буфера не на каждый кадр (см. term-core)
       };
@@ -1671,9 +1736,10 @@ function showMoreMenu(anchor) {
 
   T(c1, 'Вид и инструменты');
   c1.appendChild(menuRow('panel-left', 'Один терминал', go(toggleSingle), '', { kbd: hkLabel('toggleSingle') }));
+  c1.appendChild(menuRow('plug', 'Панель MCP', go(() => Mcp.toggle()), '', { kbd: hkLabel('toggleMcp') }));
   c1.appendChild(menuRow('cmd', 'Палитра команд', go(showPalette), '', { kbd: hkLabel('palette') }));
   c1.appendChild(menuRow('search', 'Поиск в терминале', go(openTermSearch), '', { kbd: hkLabel('termSearch') }));
-  c1.appendChild(menuRow('search', 'Найти во всех проектах', go(() => showGlobalSearch())));
+  c1.appendChild(menuRow('search', 'Найти во всех проектах', go(() => showGlobalSearch()), '', { kbd: hkLabel('globalSearch') }));
   c1.appendChild(menuRow('sliders', 'Быстрая панель…', go(showPanelSetup)));
   c1.appendChild(menuRow('palette', 'Оформление…', () => { closeMenus(); showLookPanel($('#app').classList.contains('single') ? $('#rail-look') : $('#btn-look')); }));
   c1.appendChild(menuRow('sparkles', 'Заставка «матрица»', go(() => startMatrix())));
@@ -1711,34 +1777,6 @@ function showMoreMenu(anchor) {
   dd.style.top = Math.max(8, Math.min(ar.top - 8, window.innerHeight - h - 8)) + 'px';
 }
 
-// Каталог встроенных модулей для модалки «Встроенные»: project:true — окно следует за активным
-// проектом редактора (см. MODULES в module-entry.js), остальные — самостоятельные.
-const BUILTIN_MODS = [
-  { id: 'files',    icon: 'eye',      title: 'Проект',             desc: 'вивер кода, дерево, Git', project: true },
-  { id: 'gitgraph', icon: 'gitgraph', title: 'Граф Git',          desc: 'ветки и коммиты схемой на канве', project: true },
-  { id: 'ctx',      icon: 'graph',    title: 'Контекст',           desc: 'граф контекста агента', project: true },
-  { id: 'notes',    icon: 'note',     title: 'Задачи',             desc: 'заметки проекта и общие', project: true },
-  { id: 'audit',    icon: 'grid',     title: 'Аудит',              desc: 'типы файлов, крупные файлы, медиа', project: true },
-  { id: 'company',  icon: 'users',    title: 'ИИ компания',        desc: 'директор + сабагенты над проектом', project: true },
-  { id: 'doc',      icon: 'note',     title: 'Обработка текста',   desc: 'документы + AI-правки фрагментов', project: true },
-  { id: 'docker',   icon: 'box',      title: 'Контейнеры',         desc: 'Docker / Podman' },
-  { id: 'db',       icon: 'database', title: 'Базы данных',        desc: 'Postgres · MySQL · SQLite' },
-  { id: 'rmq',      icon: 'rabbit',   title: 'RabbitMQ',           desc: 'очереди · сообщения · подключения' },
-  { id: 'kafka',    icon: 'kafka',    title: 'Kafka',              desc: 'топики · группы · live-tail' },
-  { id: 'storage',  icon: 'cloud',    title: 'Внешние хранилища',  desc: 'S3 · бакеты · публичные ссылки', project: true },
-  { id: 'rh',       icon: 'globe',    title: 'Удалённые хосты',    desc: 'SSH-сессии к серверам' },
-  { id: 'servers',  icon: 'server',   title: 'Серверы',            desc: 'дашборд: ресурсы · проекты · сеть · контейнеры · сайты' },
-  { id: 'iterflow', icon: 'layers',   title: 'IterFlow',           desc: 'задачи итераций из трекера' },
-  { id: 'jira',     icon: 'jira',     title: 'Jira',               desc: 'свои задачи из нескольких аккаунтов' },
-  { id: 'seo',      icon: 'globe',    title: 'WEB/SEO аудит',      desc: 'сайт: безопасность, SEO, сеть' },
-  { id: 'tools',    icon: 'wrench',   title: 'Инструменты',        desc: 'base64, JSON/YAML, хэши, JWT, regex, diff' },
-  { id: 'chat',     icon: 'chat',     title: 'OpenRouter',         desc: 'чат по своим API-ключам' },
-  { id: 'pomodoro', icon: 'clock',    title: 'Помодоро',           desc: 'таймер работы/отдыха с блокировкой' },
-  { id: 'voice',    icon: 'volume',   title: 'Озвучка',            desc: 'текст из буфера обмена — живым голосом' },
-  { id: 'scratch',  icon: 'terminal', title: 'Системный терминал', desc: 'шелл вне проектов' },
-  { id: 'monitor',  icon: 'graph',    title: 'Монитор ресурсов',   desc: 'память/CPU редактора и агентов' },
-  { id: 'keepass',  icon: 'key',      title: 'Сейф паролей',       desc: 'KeePass .kdbx: пароли и токены' },
-];
 // Каталог модулей («Модули» в боковой карточке): плитки с живым поиском и вкладками
 // «Все · Для проекта · Самостоятельные · Мои модули». На плитке — «на быструю панель» и «открывать при запуске».
 // Стрелки выбирают плитку, Enter открывает. Открытие — тот же openModule, что у квикбара и меню.
@@ -2182,7 +2220,7 @@ function showAbout() {
       Маленький проект для себя и тех, кто проводит день в диалоге с ИИ и хочет, чтобы вокруг
       этого диалога было спокойно и удобно.
     </div>
-    <div class="about-meta">Максим Кузьминский · Electron · xterm.js · node-pty · CodeMirror</div>
+    <div class="about-meta">Максим Кузьминский · Electron · xterm.js · node-pty · CodeMirror 6 · Apache-2.0</div>
     <div class="modal-actions">
       <button class="btn" id="ab-check">Проверить обновление</button>
       <button class="btn" id="ab-src">GitHub</button>
@@ -2194,32 +2232,33 @@ function showAbout() {
   m.querySelector('#ab-src').onclick = openRepo;
   const st = m.querySelector('#ab-upd-status');
   const setSt = (txt, cls) => { if (st) { st.textContent = txt; st.className = 'about-upd' + (cls ? ' ' + cls : ''); } };
+  const renderAvailUpdate = (r) => {
+    setSt('— доступна ', 'has');
+    const self = r.install && r.install.canSelfUpdate && r.asset;
+    const dl = el('a', null, (r.tag || 'новая версия') + (self ? ' (обновить)' : ' (скачать)'));
+    dl.href = '#';
+    dl.onclick = async (ev) => {
+      ev.preventDefault();
+      if (!self) return lite.openExternal(r.url || RELEASES_URL);
+      // Уже скачано в фоне — сразу к перезапуску; иначе качаем и предлагаем перезапуск по готовности.
+      if (updPhase.phase === 'ready') return confirmAndInstall();
+      setSt('— загружаю…');
+      // фоновая автозагрузка уже идёт — второй запрос main отклонил бы ошибкой «загрузка уже идёт»
+      if (updPhase.phase === 'downloading') return;
+      const d = await startUpdateDownload({ manual: true });
+      if (d && d.ok) { close(); confirmAndInstall(); } else setSt('— не удалось загрузить', 'err');
+    };
+    st.appendChild(dl);
+  };
   // Reflect a known result immediately; otherwise prompt to check.
-  if (updateInfo) setSt('— доступна ' + updateInfo.tag, 'has');
+  if (updateInfo && updateInfo.newer) renderAvailUpdate(updateInfo);
   m.querySelector('#ab-check').onclick = async (e) => {
     const btn = e.currentTarget; btn.disabled = true; setSt('— проверяю…');
     const r = await checkForUpdate({ manual: true });
     btn.disabled = false;
     if (r && r.error) setSt('— не удалось проверить', 'err');
-    else if (r.newer) {
-      // Build with DOM methods (tag comes from the API) — no innerHTML.
-      setSt('— доступна ', 'has');
-      const self = r.install && r.install.canSelfUpdate && r.asset;
-      const dl = el('a', null, (r.tag || 'новая версия') + (self ? ' (обновить)' : ' (скачать)'));
-      dl.href = '#';
-      dl.onclick = async (ev) => {
-        ev.preventDefault();
-        if (!self) return lite.openExternal(r.url || RELEASES_URL);
-        // Уже скачано в фоне — сразу к перезапуску; иначе качаем и предлагаем перезапуск по готовности.
-        if (updPhase.phase === 'ready') return confirmAndInstall();
-        setSt('— загружаю…');
-        // фоновая автозагрузка уже идёт — второй запрос main отклонил бы ошибкой «загрузка уже идёт»
-        if (updPhase.phase === 'downloading') return;
-        const d = await startUpdateDownload({ manual: true });
-        if (d && d.ok) { close(); confirmAndInstall(); } else setSt('— не удалось загрузить', 'err');
-      };
-      st.appendChild(dl);
-    } else setSt('— у вас последняя версия', 'ok');
+    else if (r && r.newer) renderAvailUpdate(r);
+    else setSt('— у вас последняя версия', 'ok');
   };
 }
 function showCreateFolder() {
@@ -2466,6 +2505,7 @@ const SET_SECTIONS = [
   ['notif', 'bell', 'Уведомления'],
   ['upd', 'refresh', 'Обновления'],
   ['proj', 'folder', 'Проекты и папки'],
+  ['mcp', 'plug', 'MCP Hub'],
   ['ss', 'sparkles', 'Заставка'],
 ];
 function showSettings(start = 'look') {
@@ -2545,8 +2585,11 @@ function showSettings(start = 'look') {
       body.appendChild(row('Цвета и размеры', 'Фон, панели, текст, акцент, состояния, скругление, ширина панели, шрифт терминала — всё настраивается.',
         // stopPropagation — как у кнопки-палитры: иначе клик всплывёт до document и closeMenus() сразу закроет панель
         button('Настроить…', 'palette', (e) => { e.stopPropagation(); close(); showLookPanel($('#app').classList.contains('single') ? $('#rail-look') : $('#btn-look')); })));
-      body.appendChild(row('Размер шрифта терминала', 'На ходу — Ctrl + «+» / «−».', number(settings.fontSize, 9, 24, 1, (v) => { settings.fontSize = v; save(); applyFontSize(); })));
-      body.appendChild(row('Панель «Проект» внутри главного окна', 'Дерево файлов, редактор кода и Git закрепляются справа от терминала вместо отдельного окна (Ctrl+Shift+E).', toggle(!!settings.dockFiles, (v) => {
+      const zUp = hkLabel('fontUp') || 'Ctrl+=';
+      const zDn = hkLabel('fontDown') || 'Ctrl+−';
+      const fHk = hkLabel('openFiles') || 'Ctrl+Shift+E';
+      body.appendChild(row('Размер шрифта терминала', `На ходу — ${zUp} / ${zDn}.`, number(settings.fontSize, 9, 24, 1, (v) => { settings.fontSize = v; save(); applyFontSize(); })));
+      body.appendChild(row('Панель «Проект» внутри главного окна', `Дерево файлов, редактор кода и Git закрепляются справа от терминала вместо отдельного окна (${fHk}).`, toggle(!!settings.dockFiles, (v) => {
         settings.dockFiles = v;
         save();
         if (!v) unmountFilesDock();
@@ -2580,12 +2623,12 @@ function showSettings(start = 'look') {
     term() {
       const pre = el('input', 'set-txt mono'); pre.style.width = '220px'; pre.placeholder = 'claude'; pre.spellcheck = false; pre.value = settings.termPrefill || '';
       pre.addEventListener('change', () => { settings.termPrefill = pre.value.trim(); save(); });
-      body.appendChild(row('Автоввод в новом терминале', 'Слово или команда само пишется в каждый новый терминал проекта — при открытии проекта и новой вкладке, но без Enter. Пусто — терминал открывается пустым.', pre));
+      body.appendChild(row('Автоввод в новом терминале', 'Слово или команда само пишется в каждый новый терминал проекта — при открытии проекта и новой вкладке, но без Enter (например: claude, codex, gemini, agy). Пусто — терминал открывается пустым.', pre));
       // Оболочка Linux ($SHELL / /bin/bash по умолчанию либо пользовательский путь).
       const curShell = settings.shell || '';
       const custom = Boolean(curShell);
       const path = el('input', 'set-txt mono'); path.placeholder = 'путь к исполняемому файлу'; path.spellcheck = false; path.value = custom ? curShell : '';
-      const shell = select([['', 'bash (по умолчанию)'], ['__custom__', 'Свой путь…']],
+      const shell = select([['', 'Системная ($SHELL / bash)'], ['__custom__', 'Свой путь…']],
         custom ? '__custom__' : '', (v) => {
           pathRow.style.display = v === '__custom__' ? '' : 'none';
           if (v !== '__custom__') { settings.shell = v; save(); } else if (path.value.trim()) { settings.shell = path.value.trim(); save(); }
@@ -2827,7 +2870,7 @@ function showSettings(start = 'look') {
         toggle(settings.notifications, (v) => { settings.notifications = v; save(); subs.forEach((r) => r.classList.toggle('off', !v)); })));
       const snd = row('Звук уведомлений', '', toggle(settings.sound, (v) => { settings.sound = v; save(); }), 'sub' + (settings.notifications ? '' : ' off'));
       subs.push(snd); body.appendChild(snd);
-      body.appendChild(row('Тишина до «готов», мс', 'Сколько терминал должен молчать, чтобы агент считался закончившим.',
+      body.appendChild(row('Тишина до «готов», мс', 'Сколько терминал должен молчать без вывода, чтобы агент считался завершившим ответ.',
         number(settings.idleMs, 300, 6000, 100, (v) => { settings.idleMs = v; save(); })));
     },
     upd() {
@@ -2839,7 +2882,6 @@ function showSettings(start = 'look') {
       const wrap = el('div', 'srow col'); wrap.appendChild(box); body.appendChild(wrap);
       const UPD_HINTS = {
         portable: 'Портативная установка — обновление скачивается и применяется в один клик, без пароля: редактор закроется и откроется новой версией.',
-        mac: 'Приложение обновляется подменой бандла .app и перезапускается само.',
         deb: 'Установлено пакетом .deb в системный каталог, поэтому обновление ставится от имени root — система один раз спросит пароль. Портативная сборка (tar.gz со страницы релизов) обновляется без пароля.',
         dev: 'Запуск из исходников: обновляйтесь через git pull — о новой версии редактор сообщит, кнопки обновления не будет.',
       };
@@ -2889,6 +2931,26 @@ function showSettings(start = 'look') {
       r2.append(list, add);
       body.appendChild(r2);
     },
+    mcp() {
+      body.appendChild(el('div', null, 'Загрузка параметров MCP Hub…'));
+      lite.mcp.status(activeId || '__global__').then((st) => {
+        body.replaceChildren();
+        const cfg = (st && st.config) || { enabled: true, auditToDisk: true, defaultPreset: 'strict', autoOpenPaneOnAsk: true, packs: {} };
+        const stats = (st && st.stats) || {};
+        const saveMcp = async () => { await lite.mcp.setConfig(cfg); Mcp.refresh().catch(() => {}); };
+
+        body.appendChild(row('Включить локальный MCP Hub', `Сокет ${stats.socketPath || '~/.LiteEditorAI/run/mcp.sock'} для агентов в терминалах.`, toggle(cfg.enabled !== false, (v) => { cfg.enabled = v; saveMcp(); })));
+        body.appendChild(row('Пресет для новых проектов', 'Политика по умолчанию для проектов без явной привязки ресурсов.', select([
+          ['strict', 'Строгий Zero-Trust'],
+          ['dev_safe', 'Все non-prod БД и локальные контейнеры (RO)'],
+        ], cfg.defaultPreset || 'strict', (v) => { cfg.defaultPreset = v; saveMcp(); })));
+        body.appendChild(row('Сохранять аудит MCP на диск', 'Писать журнал вызовов в ~/.LiteEditorAI/logs/mcp-audit-*.jsonl (без секретов и SQL-паролей).', toggle(cfg.auditToDisk !== false, (v) => { cfg.auditToDisk = v; saveMcp(); })));
+        body.appendChild(row('Открывать панель MCP при запросе доступа', 'Показывать правую колонку «MCP-инструменты» без перехвата фокуса терминала.', toggle(cfg.autoOpenPaneOnAsk !== false, (v) => { cfg.autoOpenPaneOnAsk = v; saveMcp(); })));
+        body.appendChild(row('Каталог модульных паков MCP', 'Включение и настройка отдельных инструментов (БД, Серверы, Контейнеры).', button('Открыть MCP Store…', 'grid', () => { close(); Mcp.openStoreModal(); })));
+        body.appendChild(row('Подключить CLI-агента', 'Регистрация LiteEditor MCP в Claude Code, Antigravity (agy), Codex и Gemini.', button('Подключить агента…', 'terminal', () => { close(); Mcp.openConnectModal(); })));
+        body.appendChild(row('Журнал вызовов MCP', `Записей в памяти: ${stats.total || 0} · активных сессий: ${stats.activeSessions || 0}.`, button('Очистить журнал', 'eraser', async () => { await lite.mcp.auditClear(); Mcp.refresh().catch(() => {}); toast('Журнал MCP очищен'); })));
+      }).catch(() => {});
+    },
     ss() {
       const subs = [];
       body.appendChild(row('Запускать по бездействию', 'Выход — клик, движение мыши или Esc.', toggle(settings.screensaver !== false, (v) => {
@@ -2921,20 +2983,20 @@ function paletteActions() {
   for (const p of projects) acts.push({ label: `Проект: ${p.name}`, hint: p.path, run: () => setActive(p.id) });
   acts.push({ label: 'Открыть папку…', run: openProjectDialog });
   acts.push({ label: 'Создать папку…', run: showCreateFolder });
-  acts.push({ label: 'Проект — вивер, дерево, Git', hint: hkLabel('openFiles'), run: () => openModule('files') });
-  acts.push({ label: 'Граф Git — ветки и коммиты схемой', run: () => openModule('gitgraph') });
-  acts.push({ label: 'Контекст — граф контекста агента', run: () => openModule('ctx') });
-  acts.push({ label: 'Контейнеры (Docker / Podman)', run: () => openModule('docker') });
-  acts.push({ label: 'Базы данных (Postgres / MySQL / SQLite)', run: () => openModule('db') });
-  acts.push({ label: 'Внешние хранилища (S3 — бакеты, объекты)', run: () => openModule('storage') });
-  acts.push({ label: 'Задачи — заметки проекта', run: () => openModule('notes') });
-  acts.push({ label: 'ИИ компания — команда агентов над проектом', run: () => openModule('company') });
-  acts.push({ label: 'Помодоро — таймер работы/отдыха', run: () => openModule('pomodoro') });
-  acts.push({ label: 'Озвучка — читать скопированный текст голосом', run: () => openModule('voice') });
-  acts.push({ label: 'Jira — свои задачи из нескольких аккаунтов', run: () => openModule('jira') });
+  for (const mod of BUILTIN_MODS) {
+    acts.push({
+      label: `${tt(mod.title)} — ${tt(mod.desc)}`,
+      hint: mod.id === 'files' ? hkLabel('openFiles') : undefined,
+      run: () => openModule(mod.id),
+    });
+  }
   acts.push({ label: 'Избранное: только проекты с агентом — вкл/выкл', hint: favAgentsOnly() ? 'сейчас включено' : 'сейчас выключено', run: () => setFavAgentsOnly(!favAgentsOnly()) });
   acts.push({ label: 'Закрыть терминалы без агента', run: async () => { await refreshAgents(); if (idleProjects().length) closeIdleTerms(); else toast('Закрывать нечего — простаивающих терминалов нет'); } });
   acts.push({ label: 'Режим «один терминал»', hint: hkLabel('toggleSingle'), run: toggleSingle });
+  acts.push({ label: 'Панель MCP — показать/скрыть', hint: hkLabel('toggleMcp'), run: () => Mcp.toggle() });
+  acts.push({ label: 'MCP Store — каталог модульных паков', run: () => Mcp.openStoreModal() });
+  acts.push({ label: 'MCP: Ресурсы активного проекта…', run: () => Mcp.openProjectResourcesModal() });
+  acts.push({ label: 'MCP: Подключить CLI-агента…', run: () => Mcp.openConnectModal() });
   acts.push({ label: 'Поиск в терминале', hint: hkLabel('termSearch'), run: openTermSearch });
   acts.push({ label: 'Найти во всех проектах — файлы и терминалы', hint: hkLabel('globalSearch'), run: () => showGlobalSearch() });
   acts.push({ label: 'Поиск по всем терминалам', run: () => showGlobalSearch({ mode: 'terms' }) });
@@ -2944,6 +3006,12 @@ function paletteActions() {
   acts.push({ label: 'Перезапустить терминал', run: () => restartTerminal() });
   acts.push({ label: 'Настройки…', hint: hkLabel('openSettings'), run: () => showSettings() });
   acts.push({ label: 'Настройки: Горячие клавиши…', run: () => showSettings('keys') });
+  acts.push({ label: 'Настройки: MCP Hub…', run: () => showSettings('mcp') });
+  acts.push({ label: 'Экспорт настроек…', run: exportSettings });
+  acts.push({ label: 'Импорт настроек…', run: importSettings });
+  acts.push({ label: 'Логи…', run: showLogs });
+  acts.push({ label: 'О программе', run: showAbout });
+  acts.push({ label: 'Приветствие', run: showOnboarding });
   acts.push({ label: 'Модули — все модули плитками', run: () => showModulesCatalog() });
   acts.push({ label: 'Быстрая панель — состав и порядок', run: showPanelSetup });
   acts.push({ label: 'Оформление — цвета и размеры', run: () => showLookPanel($('#app').classList.contains('single') ? $('#rail-look') : $('#btn-look')) });
@@ -2995,13 +3063,15 @@ function showPalette() {
 // ---------------------------------------------------------------- onboarding (first run)
 function showOnboarding() {
   closeMenus();
+  const palKey = (hkLabel('palette') || 'Ctrl+K').replace(/</g, '&lt;');
+  const sglKey = (hkLabel('toggleSingle') || 'Ctrl+\\').replace(/</g, '&lt;');
   const { m, close } = makeModal(`
     <div class="ob-brand"><span class="ob-mark"></span><span>Добро пожаловать в LiteEditor</span></div>
     <p>Терминал-ориентированное окружение для работы с агентами: у каждого проекта свой живой терминал, а вивер кода и дерево файлов прячутся одной кнопкой.</p>
     <div class="ob-t">С чего начать</div>
     <div class="ob-step"><span class="ob-n" data-icon="folder"></span><div><b>Откройте папку</b><span>проект появится слева, справа поднимется его терминал</span></div></div>
     <div class="ob-step"><span class="ob-n" data-icon="gear"></span><div><b>Загляните в настройки</b><span>рабочая папка и папки для автоскана проектов</span></div></div>
-    <div class="ob-step"><span class="ob-n" data-icon="cmd"></span><div><b><kbd>Ctrl+K</kbd> палитра команд · <kbd>Ctrl+\\</kbd> один терминал</b><span>остальное меню — «Ещё» в боковой панели</span></div></div>
+    <div class="ob-step"><span class="ob-n" data-icon="cmd"></span><div><b><kbd data-no-i18n>${palKey}</kbd> <span>палитра команд</span> · <kbd data-no-i18n>${sglKey}</kbd> <span>один терминал</span></b><span>остальное меню — «Ещё» в боковой панели</span></div></div>
     <div class="modal-actions">
       <button class="btn" id="ob-skip">Позже</button><span class="grow"></span>
       <button class="btn" id="ob-settings">Настройки</button>
@@ -3231,6 +3301,7 @@ function init() {
   renderUpdateBadge(); // номер версии в подвале боковой карточки (+ точка «есть обновление»)
   // вивер живёт в отдельном окне (module.html#files) — в редакторе его DOM/редактор больше нет.
   applyLayout();
+  Mcp.init();
   applyTheme();
   applyFrame(settings);
   initGutters();

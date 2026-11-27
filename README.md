@@ -5,7 +5,7 @@
 ### Your agents write the code. This is where you watch them.
 
 A terminal-first desktop workspace for developers who **supervise AI coding agents**
-(Claude Code, Codex, Gemini CLI, Qwen…) instead of typing every line themselves.
+(Claude Code, Antigravity CLI `agy`, Codex, Gemini CLI, Qwen…) instead of typing every line themselves.
 
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache--2.0-green.svg)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/DanielLetto2020/LiteEditorAI?include_prereleases&sort=semver)](https://github.com/DanielLetto2020/LiteEditorAI/releases)
@@ -13,16 +13,16 @@ A terminal-first desktop workspace for developers who **supervise AI coding agen
 [![Built with Electron](https://img.shields.io/badge/Electron-42-47848F.svg?logo=electron&logoColor=white)](https://www.electronjs.org/)
 [![Status: alpha](https://img.shields.io/badge/status-alpha-orange.svg)](#status)
 
-**English** · [Русский](README.ru.md) · [简体中文](README.zh.md) · [lite-editor-ai.ru](https://lite-editor-ai.ru)
+**English** · [Русский](README.ru.md) · [简体中文](README.zh.md)
 
 </div>
 
 ![LiteEditorAI](assets/screenshots/hero.png)
 
-*Three agents in three projects: the one in `web-shop` has answered, `api-gateway` asked a question, `dashboard`
-is still working. Amber dots mark the agents waiting for you, and the badge up top counts them. The tab named
-itself after the task; under the terminal sit the project folder, its git branch with the number of changed
-files, and the quick bar.*
+*Three agents in three projects: `web-shop` finished and summarized its MCP checks, `api-gateway` is asking a
+question, and `dashboard` is still working. Amber dots mark the agents waiting for you, and the badge up top
+counts them. Tabs name themselves after the running task; under the terminal sit the project folder, git
+branch with changed-file count, and the quick bar.*
 
 > [!NOTE]
 > **Interface language: English, Russian or 简体中文** — switch it in *Settings → Appearance*, applied
@@ -55,9 +55,15 @@ working on right now".
 A traffic light shows the state without switching anywhere: **working** (spinner) · **waiting for your
 answer** (amber) · **done** (green) · **not started yet** (dashed). The project row aggregates all its tabs,
 and the terminal header carries a counter — *how many agents are blocked on you*; click it to jump to the
-next one. Notifications included. For Claude Code and Antigravity CLI the light doesn't guess from the output:
-the agent reports its own state (via hooks for Claude Code and OSC 7501 for `agy`), so status-line redraws and
-typing never start the spinner, and amber means it is asking for permission, asking a question or showing a dialog.
+next one. Notifications included. For Claude Code and Antigravity CLI (`agy`) the light doesn't guess from output
+noise: Claude Code reports via its local session state file (`~/.claude/sessions/<pid>.json`) and terminal title,
+and `agy` uses the OSC 7501 protocol — so status-line redraws and typing never spin the indicator, and amber
+means a real permission prompt, question or dialog.
+
+Built for fast multi-terminal workflows too: paste clipboard screenshots directly into the terminal with `Ctrl+V`
+(saved to `.lite/shots/` with automatic git exclusion), drag and drop files or folders as quoted paths, queue
+follow-up prompts to send once an agent pauses for input, click open TCP port chips (such as `:5173`) to launch
+local dev servers, click OSC 8 hyperlinks / `file:line` references, or pop any tab out into its own window.
 
 Lots of projects, but agents busy in only two or three? The **eye** in the *Favourites* header keeps only the
 projects where an agent (Claude Code, Codex, Gemini, Antigravity CLI, Aider…) is actually running in a terminal, not just an open
@@ -110,7 +116,28 @@ project's `.claude` and `~/.claude` with an editor, copy history and windowed vi
 **Conversation analysis** — mining long-lived rules out of your history with the agent, writing them
 into `CLAUDE.md` or creating skill and command drafts.
 
-### 4. Everything one click away
+### 4. Zero-Trust MCP Hub & MCP Store
+
+![MCP Tools panel with live feed and approval card](assets/screenshots/mcp.png)
+
+Expose databases, servers and containers to terminal agents **only when allowed — never by putting DB passwords in
+shared MCP configs**. A local Unix socket hub (`~/.LiteEditorAI/run/mcp.sock`) runs inside the main process and injects a
+per-tab cryptographic token (`LITEEDITOR_MCP_TOKEN`) into every project PTY:
+
+- **Right-hand MCP Tools column (`Ctrl+Shift+M`)**: resizable feed next to the terminal filtering calls by *Session*,
+  *Project* or *All*, plus interactive Human-in-the-Loop approval cards (*Allow & bind*, *Allow in session*, *Once*,
+  *Deny*) whenever an agent touches an unbound resource or a `PROD` target.
+- **Modular MCP Store**: toggle individual packs and tools across **Databases** (9 read-only schema/table/DDL/query
+  tools), **Servers & SSH** (11 read-only metrics/systemd/journalctl/logs/SFTP tools) and **Containers** (8 read-only
+  Docker/Podman tools).
+- **Project policies & `noCloud` protection**: choose between **Strict Zero-Trust**, the convenient preset
+  **Allow all non-prod DBs & local containers (read-only)**, or **Custom** bindings; flag sensitive databases `noCloud` to
+  block row egress to cloud CLI models (`claude`, `agy`, `codex`, `gemini`, `openrouter`), automatically redact secrets/URIs
+  and inspect sanitized JSONL audit logs. Connect Claude Code, Antigravity (`agy`), Codex or Gemini CLI in one modal.
+
+![MCP Store modular pack catalog](assets/screenshots/mcp-store.png)
+
+### 5. Everything one click away
 
 The sidebar holds your projects and three entries: **Find in all projects**, **Modules** and **More**. More
 slides out beside it with the rest of the menu — folders, recent projects, your own modules, view and tools,
@@ -155,19 +182,18 @@ next launch. Project-bound modules follow the active project.
 | 🧠 **Context** | `CLAUDE.md` by sections, memory, `.claude` files, conversation mining — see [above](#3-keep-the-agents-context-in-order). |
 | ✅ **Tasks** | TODO with statuses and priority, list **and kanban** (drag to change status), search, subtask checklists with progress, Markdown preview, project/global tabs, send a task straight into the terminal, JSON export/import. Plus a **Calendar** tab with due dates, **native reminders** and a month view — and a built-in **MCP server** (`lite-tasks`) so the agent in your terminal can read and set reminders itself. |
 | 🔍 **Audit** | Quick X-ray of a project: file types, largest files by lines/size with anomaly flags, media by weight, hygiene (junk in git, duplicates, minified, orphans), tech debt (TODO/FIXME and possible secrets — click jumps to the line), history (hot files by git churn, stale ones). Source: git-tracked or the whole directory; summary to clipboard, report export. |
-| 🤖 **AI company** | A team of agents on one project: a **director** agent decomposes the goal, "hires" specialists (coder, reviewer, tester…) and keeps a shared task board with progress; live log, role library, dry-run **plan mode**, budget cap, goal queue, run history with cost. |
 | 🌐 **Web/SEO audit** | Standalone site analyzer (local dev server **or** a public domain): security headers with a score, TLS certificate, exposed `.git`/`.env`, SEO meta from the **rendered** page (headless Chromium), Core Web Vitals and page weight, screenshots, tech stack, broken links, robots/sitemap, DNS · SPF/DMARC · WHOIS · geo. Own site list and audit history with deltas. |
 | 🐳 **Containers** | Docker **and** Podman in one panel: containers grouped by compose project (a collapsed group shows each container's state as a dot in its coloured header), pods, images, volumes, disk usage; start / stop / restart / remove one at a time or a whole group; live status refresh, **live logs**, **exec terminal**, container file browser (files open in the viewer). Recognizes **databases, RabbitMQ, Kafka, MinIO and web services** — **one click** opens them in the matching module with the connection pre-filled; containers with a web UI get an "open in browser" button. Works against a **remote host** too: docker/podman over an SSH tunnel to the socket, with a "fix over SSH" button when permissions are missing. |
-| 🗄 **Databases** | Postgres / MySQL · MariaDB / SQLite client: direct or **over an SSH tunnel**, connection tabs (several databases at once), schema tree, paginated table data with cell-level selection, **SQL console** (`Ctrl+Enter`), CSV / JSON / SQL export, read-only mode. Passwords in the system keychain, drivers bundled. |
+| 🗄 **Databases** | Postgres / MySQL · MariaDB / SQLite client: direct or **over an SSH tunnel**, connection tabs, schema tree, paginated table data with cell selection, **SQL console** (`Ctrl+Enter`), CSV / JSON / SQL export, AST-checked read-only mode, `isProd` / `noCloud` guards and built-in **AI SQL chat** (Claude Code / Codex / Gemini / Antigravity `agy` / OpenRouter) plus Zero-Trust MCP tools. Passwords in OS `safeStorage`. |
 | 🐰 **RabbitMQ** | Broker client over the management API: server profiles with a **PRODUCTION** guard, tabs for several brokers, overview with **live charts** (queued messages, publish / deliver rates), queues with depth sparklines and a "no consumers" badge, **peek messages without consuming**, publish with a routing check, **live tail of an exchange** (keeps working in a background tab); purge / delete behind a confirmation. |
 | 📨 **Kafka** | Cluster client on kafkajs: profiles with a PRODUCTION guard (SASL / TLS), tabs for several clusters, live throughput and **total consumer-group lag** charts, topics with **ISR health** (create / delete / DeleteRecords / partitions / retention / configs), **peek without traces** (ephemeral group), produce with key and headers, **consumer groups with lag and trend**, offset reset, **live tail**. |
-| 🔌 **Remote hosts** | **SSH / SFTP / FTP** profiles by category, one-click login and several live sessions as tabs (password or a key from the system, keepalive), an **SFTP/FTP file tree** with per-type icons, permissions (`rwxr-xr-x` and octal), owner:group, size and date, plus resolved symlinks; a file opens in a **code editor with line numbers and syntax highlighting** and **saves straight back to the host** (`Ctrl+S`), with copy and **download** (binaries too), and **any folder downloads as a single ZIP archive** with progress and cancel — or open it in the viewer, where every save uploads it back. **"Services"** scans the host's ports and opens Postgres / MySQL / RabbitMQ / Kafka in their modules **through an SSH tunnel**, even when the service only listens on the server's localhost; web ports go to the site monitor, a docker/podman socket to Containers. Passwords never leave the backend. |
+| 🔌 **Remote hosts** | **SSH / SFTP / FTP** profiles by category, one-click login and several live sessions as tabs (password or a key from the system, keepalive), an **SFTP/FTP file tree** with per-type icons, permissions (`rwxr-xr-x` and octal), owner:group, size and date, plus resolved symlinks; a file opens in a **code editor with line numbers and syntax highlighting** and **saves straight back to the host** (`Ctrl+S`), with copy and **download** (binaries too), and **any folder downloads as a single ZIP archive** with progress and cancel — or open it in the viewer, where every save uploads it back. **"Services"** scans the host's ports and opens Postgres / MySQL / RabbitMQ / Kafka in their modules **through an SSH tunnel**. Passwords never leave the backend. |
+| 🖥 **Servers** | Real-time infrastructure dashboard over pooled SSH (nothing installed on remote hosts): CPU / RAM / disk / load charts, active projects & compose stacks, open network ports, live Docker/Podman containers, systemd units & `journalctl`, TLS certificate checks and an embedded **Sites** uptime & rule monitor (including agent-authored checks that keep running even when the window is closed). Jumps straight to Remote hosts / Containers by target. |
 | ☁️ **Object storage** | S3 browser with **presets for 11 providers** (AWS, MinIO, Cloudflare R2, Yandex, Backblaze B2, DO Spaces, Wasabi, GCS, Selectel, VK, Timeweb): project and global connections, bucket and folder tree, object table with sorting, filtering and multi-select (batch download / delete), **preview a file straight from the bucket**, "open in the editor's viewer", drag-and-drop upload, downloads of files **and whole folders** with progress and cancel (multipart for big ones), folders / rename / copy / move / delete. **Privacy under control**: anonymous mode for other people's public buckets, per-object public/private toggle and **pre-signed links** with a chosen lifetime. Keys in the system keychain; read-only mode enforced in the backend. |
 | 🔑 **Password vault** | A KeePass `.kdbx` database unlocked by master password: search, copy a password / token / any field, **clipboard auto-clear after 20 s**. Connection forms in Databases / RabbitMQ / Kafka / Remote hosts / Object storage get **"from vault" / "to vault"** buttons. Decryption is entirely local — the master password never leaves the machine. |
-| 📡 **Site monitor** | Any number of checks per URL: availability, a **JSON field** by path, text on the page, a number against a threshold, "it changed" — or a **custom check an agent writes for that URL from your plain-language description** (it sees the live response, is refined in dialogue, runs sandboxed). Four colour statuses with notifications, history blocks or **month charts** (uptime %, average latency, days with alerts). Checks keep running **with the window closed**. |
 | 🧩 **Jira** | Your own issues from several Jira accounts at once (Cloud and Server/DC alike): aggregated list with JQL presets or your own JQL, accordion by status, favourites with drag-and-drop, auto-refresh from 1 to 60 minutes with unread highlighting and an "appeared in the last 8 hours" counter, filters by board, sprint, status and issue type. An issue card carries status transitions and time tracking over three tabs — description, links and comments, people and fields — with wiki markup cleaned up (code blocks kept). Someone else's Jira schema is **discovered, not hardcoded**: statuses via `statusCategory`, transitions from the server's own answer, custom fields (sprint, issue type) via `/field`. The token is encrypted through `safeStorage` and never reaches the renderer. |
 | 📋 **IterFlow** | The [IterFlow](https://iter-flow.ru) tracker inside the editor: create and edit iterations and tasks, deadlines, kanban status changes, iteration stage transitions (submit / approve / accept), project notes. Handy for freelancers and studios who agree scope with a client. |
-| ✍️ **Text processing** | An Obsidian-style AI document editor: sidebar with the project's document tree, tabs, **rich-text ⇄ Markdown** modes, **KaTeX formulas**, formatting bar. Select a fragment and ask for a rewrite — handled by a **local agent with no API keys** (Claude Code / Codex / Gemini), streamed live; agent roles come from the project's `Roles/*.md`, autosave included. |
+| ✍️ **Text processing** | An Obsidian-style AI document editor: sidebar with the project's document tree, tabs, **rich-text ⇄ Markdown** modes, **KaTeX formulas**, formatting bar. Select a fragment and ask for a rewrite — handled by a **local agent with no API keys** (Claude Code / Codex / Gemini / Antigravity `agy`), streamed live; agent roles come from the project's `Roles/*.md`, autosave included. |
 | 💬 **OpenRouter chat** | Bring your own key: any model with its price and context size, **streamed** answers with Markdown and code highlighting, several sessions per key, images, key balance. Keys stay local. |
 | 🍅 **Pomodoro** | A work/rest timer for a workspace where agents keep working on their own: during a break a translucent overlay covers the terminals — input is blocked, **agents keep running**, output stays visible. Classic 25/5, 52/17, ultradian 90/20 or your own technique, habit stats with a day streak, a timer pill in the terminal header with pause and break controls. The countdown lives in the background. |
 | 🔊 **Voice** | Listen to the agent's answers instead of reading them: select terminal output and pick **Read aloud** in the context menu (or turn on clipboard capture), and a natural Russian voice reads it sentence by sentence — pause, skip by sentence, the current sentence highlighted, click a sentence to read from there. Terminal junk (box drawing, ANSI leftovers, spinners, Markdown) is stripped, numbers and versions are spoken as words, stress in homographs is placed automatically. The voice is **Silero v5** in a separate Python process and is **not bundled** (CC BY-NC-SA licence): you need Python with `torch`, the model (145 MB) downloads with one button. Russian only. |
@@ -184,7 +210,7 @@ with the app; the spec for authors is in [`module-kit/`](module-kit/).
 
 ## Languages
 
-The interface ships in **English, Russian and Simplified Chinese**; pick one in *Settings → Interface language*
+The interface ships in **English, Russian and Simplified Chinese**; pick one in *Settings → Appearance*
 and it applies immediately — no restart, no reopening of module windows.
 
 Every language is a plain JSON file where the key is the original string:
@@ -221,14 +247,15 @@ text to share it.
 | `Ctrl+\` | single-terminal mode |
 | `Ctrl+Shift+D` | toggle vertical terminal split |
 | `Ctrl+Shift+E` | toggle Project dock inside the main window |
+| `Ctrl+Shift+M` | toggle right-hand MCP Tools panel |
 | `Ctrl+K` | command palette |
 | `Ctrl+P` / `Ctrl+Shift+P` | Quick Open (files, `#symbols`, `@outline`, `:line`) / editor command palette (Project) |
 | `Ctrl+F` / `Ctrl+Shift+F` | search in the terminal or file / find in all projects (files and terminal output) |
 | `Ctrl+S` | save file |
 | `Ctrl+Shift+R` | project-wide replace (Project window) |
-| `Ctrl+1..9` / `Ctrl+Tab` | switch projects |
+| `Ctrl+1..9` / `Ctrl+Tab` / `Ctrl+Shift+Tab` | switch projects |
 | `Ctrl+,` | settings |
-| `Ctrl + +/−` · `F11` | font size · fullscreen |
+| `Ctrl + =/−` · `F11` | font size · fullscreen |
 
 Every shortcut can be remapped live or disabled in **Settings → Hotkeys**.
 
@@ -280,6 +307,10 @@ The project grows in no small part thanks to the community — thank you to ever
 
 **For ideas and suggestions**
 - [@Eurgen](https://github.com/Eurgen) — terminal shell selection ([#2](https://github.com/DanielLetto2020/LiteEditorAI/issues/2)), `Ctrl+Enter` newline ([#4](https://github.com/DanielLetto2020/LiteEditorAI/issues/4)) and other proposals ([#3](https://github.com/DanielLetto2020/LiteEditorAI/issues/3))
+
+## Security & Privacy
+
+LiteEditorAI runs locally without telemetry, user accounts or cloud sync. Stored credentials stay isolated in the main process (OS `safeStorage`), SSH connections verify host keys (`known_hosts` TOFU), read-only database tools use AST SQL checks + `noCloud` protection, and the Zero-Trust MCP Hub isolates access per project and terminal session. See [SECURITY.md](SECURITY.md) for vulnerability reporting and security architecture details.
 
 ## License
 

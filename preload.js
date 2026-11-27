@@ -212,9 +212,10 @@ if (canExposeLiteBridge()) contextBridge.exposeInMainWorld('lite', {
 
   // AI-DB chat (streaming, read-only SQL author) for the «Базы данных» module.
   dbai: {
-    run: (reqId, agent, prompt) => ipcRenderer.send('dbai:run', { reqId, agent, prompt }),
-    apiRun: (reqId, opts) => ipcRenderer.send('dbai:apiRun', { reqId, ...(opts || {}) }),
+    run: (reqId, agent, prompt, opts) => ipcRenderer.send('dbai:run', { ...(opts || {}), reqId, agent, prompt }),
+    apiRun: (reqId, opts) => ipcRenderer.send('dbai:apiRun', { ...(opts || {}), reqId }),
     apiModels: (opts) => ipcRenderer.invoke('dbai:apiModels', opts || {}),
+    agyModels: (opts) => ipcRenderer.invoke('dbai:agyModels', opts || {}),
     abort: (reqId) => ipcRenderer.send('dbai:abort', { reqId }),
     onData: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('dbai:data', h); return () => ipcRenderer.removeListener('dbai:data', h); },
     onDone: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('dbai:done', h); return () => ipcRenderer.removeListener('dbai:done', h); },
@@ -373,23 +374,6 @@ if (canExposeLiteBridge()) contextBridge.exposeInMainWorld('lite', {
   screensaver: {
     activity: () => ipcRenderer.send('screensaver:activity'),
     onSet: (cb) => { const h = (_e, p) => cb(p || {}); ipcRenderer.on('screensaver:set', h); return () => ipcRenderer.removeListener('screensaver:set', h); },
-  },
-
-  // «ИИ компания» — директор-агент + сабагенты над проектом (renderer/modules/company.js).
-  company: {
-    getData: (projId) => ipcRenderer.invoke('company:getData', { projId }),               // → data | null
-    setData: (projId, data) => ipcRenderer.invoke('company:setData', { projId, data }),    // → {ok}|{ok:false,error}
-    listRoles: (projPath) => ipcRenderer.invoke('company:listRoles', { projPath }),        // → {roles:[…]} (с диска)
-    boardGet: (projPath) => ipcRenderer.invoke('company:boardGet', { projPath }),          // → {text}
-    notesGet: (projPath) => ipcRenderer.invoke('company:notesGet', { projPath }),          // → {text}|{text,error} (память компании)
-    // expect — текст, который окно показало; изменился на диске (директор дописал) → {ok:false, stale:true}
-    notesSet: (projPath, text, expect) => ipcRenderer.invoke('company:notesSet', { projPath, text, expect }), // → {ok}|{ok:false,error}
-    diff: (projPath) => ipcRenderer.invoke('company:diff', { projPath }),                  // → {ok,stat,files}|{ok:false,error}
-    run: (opts) => ipcRenderer.send('company:run', opts),                                   // {reqId,projPath,goal,roles,director,limitUsd,permission}
-    stop: (reqId) => ipcRenderer.send('company:stop', { reqId }),
-    onEvent: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('company:event', h); return () => ipcRenderer.removeListener('company:event', h); }, // {reqId,ev}
-    onDone: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('company:done', h); return () => ipcRenderer.removeListener('company:done', h); },    // {reqId,code,error}
-    onError: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('company:error', h); return () => ipcRenderer.removeListener('company:error', h); }, // {reqId,error}
   },
 
   // IterFlow — таск-трекер исполнителя через /api/editor/* (см. renderer/modules/iterflow.js).
@@ -801,5 +785,22 @@ if (canExposeLiteBridge()) contextBridge.exposeInMainWorld('lite', {
     onFocusSession: (cb) => { const h = (_e, p) => cb(p || {}); ipcRenderer.on('projTerm:focusSession', h); return () => ipcRenderer.removeListener('projTerm:focusSession', h); },
     onSendText: (cb) => { const h = (_e, p) => cb(p || {}); ipcRenderer.on('projTerm:sendText', h); return () => ipcRenderer.removeListener('projTerm:sendText', h); },
     onSearchBuffers: (cb) => { const h = (_e, p) => cb(p || {}); ipcRenderer.on('projTerm:searchBuffers', h); return () => ipcRenderer.removeListener('projTerm:searchBuffers', h); },
+  },
+
+  mcp: {
+    status: (projectId) => ipcRenderer.invoke('mcp:status', { projectId }),
+    packs: () => ipcRenderer.invoke('mcp:packs'),
+    setConfig: (config) => ipcRenderer.invoke('mcp:setConfig', { config }),
+    resources: () => ipcRenderer.invoke('mcp:resources'),
+    getBinding: (projectId) => ipcRenderer.invoke('mcp:getBinding', { projectId }),
+    setBinding: (projectId, binding) => ipcRenderer.invoke('mcp:setBinding', { projectId, binding }),
+    applyPreset: (projectId, preset) => ipcRenderer.invoke('mcp:applyPreset', { projectId, preset }),
+    audit: (filter) => ipcRenderer.invoke('mcp:audit', filter),
+    auditClear: () => ipcRenderer.invoke('mcp:auditClear'),
+    approve: (approvalId, decision) => ipcRenderer.invoke('mcp:approve', { approvalId, decision }),
+    agentSnippets: (opts) => ipcRenderer.invoke('mcp:agentSnippets', opts),
+    connectAgent: (opts) => ipcRenderer.invoke('mcp:connectAgent', opts),
+    revokeTokens: (projectId) => ipcRenderer.invoke('mcp:revokeTokens', { projectId }),
+    onEvent: (cb) => { const h = (_e, p) => cb(p || {}); ipcRenderer.on('mcp:event', h); return () => ipcRenderer.removeListener('mcp:event', h); },
   },
 });

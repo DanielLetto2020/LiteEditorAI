@@ -1,14 +1,15 @@
 # LiteEditor — руководство по созданию модулей (API v1)
 
 Этот документ — полная самодостаточная спецификация для разработки пользовательского модуля
-LiteEditor. Он написан в первую очередь для ИИ-агентов (Claude Code, Codex и др.): здесь есть
+LiteEditor. Он написан в первую очередь для ИИ-агентов (`claude`, `codex`, `gemini`, `agy` и др.): здесь есть
 всё необходимое — схема манифеста, точные сигнатуры API, правила оформления и полный рабочий
 пример. Ходить за дополнительной информацией никуда не нужно.
 
 ## Что такое модуль
 
-Модуль — это панель, открывающаяся в правом слоте редактора (как встроенные Git, Базы данных,
-Контейнеры). В правом слоте одновременно открыта **одна** панель — это закон UX редактора,
+Пользовательский модуль — это панель, открывающаяся в правом слоте главного окна редактора
+(«Мои модули», рядом с панелями «Проект» и «MCP-инструменты»; встроенные модули открываются отдельными
+окнами). В правом слоте одновременно открыта **одна** панель — это закон UX редактора,
 модуль его не обходит. Модуль может быть привязан к активному проекту (через подписку), а может
 быть полностью независимым (калькулятор, заметки, интеграция со сторонним сервисом).
 
@@ -30,8 +31,7 @@ LiteEditor. Он написан в первую очередь для ИИ-аг�
   index.js          ← обязательный (имя можно сменить полем main)
 ```
 
-Путь одинаков на всех ОС: Linux/macOS — `~/.LiteEditorAI/modules/`,
-Windows — `C:\Users\<имя>\.LiteEditorAI\modules\`.
+Путь расположения (Linux): `~/.LiteEditorAI/modules/`.
 **Имя папки обязано совпадать с `id` из манифеста.**
 
 После добавления/правки файлов модуль подхватывается через меню
@@ -116,10 +116,11 @@ ctx.ui.makeModal(innerHtml, onClose) // → { overlay, m, close } — модал
 ctx.ui.showConfirm(title, text, yesLabel, onYes, altLabel?, onAlt?) // диалог подтверждения
 ctx.ui.showPrompt(title, label, initial, onOk) // ввод строки; onOk(v) может вернуть
                                      //   { error: 'текст' }, чтобы не закрывать диалог
-// Имена встроенных иконок (ctx.ui.icon / iconBtn): star pencil eye note git folder palette
-// archive x plus refresh save diff maximize terminal columns eraser trash search check
-// download upload sliders grid copy play warning file globe clipboard chat key stop pause
-// box layers database power flag
+// Имена встроенных иконок (ctx.ui.icon / iconBtn): star users pencil eye eye-off note git gitgraph
+// tag folder palette arrow-right archive x logout lock unlock plus refresh save diff maximize
+// terminal columns columns-2 eraser trash search check download upload sliders grid copy play
+// warning file globe cloud clipboard chat key stop pause volume box layers database rabbit kafka
+// jira power flag graph wrench info sparkles gear plug shield bell server laptop cmd keyboard
 
 // ---- Хранилище (персист между запусками) -----------------------------------
 ctx.storage.get(key, def)   // прочитать значение (или def, если нет)
