@@ -128,8 +128,9 @@ per-tab cryptographic token (`LITEEDITOR_MCP_TOKEN`) into every project PTY:
   *Project* or *All*, plus interactive Human-in-the-Loop approval cards (*Allow & bind*, *Allow in session*, *Once*,
   *Deny*) whenever an agent touches an unbound resource or a `PROD` target.
 - **Modular MCP Store**: toggle individual packs and tools across **Databases** (9 read-only schema/table/DDL/query
-  tools), **Servers & SSH** (11 read-only metrics/systemd/journalctl/logs/SFTP tools) and **Containers** (8 read-only
-  Docker/Podman tools).
+  tools), **Servers & SSH** (11 read-only metrics/systemd/journalctl/logs/SFTP tools), **Containers** (8 read-only
+  Docker/Podman tools), **RabbitMQ** (7), **Kafka** (7), **S3 Object Storage** (6), **Jira** (6), **Notes & Tasks** (2)
+  and **Cross-project code & Git** (5 read-only tools with symlink, `.gitignore` and secret guards).
 - **Project policies & `noCloud` protection**: choose between **Strict Zero-Trust**, the convenient preset
   **Allow all non-prod DBs & local containers (read-only)**, or **Custom** bindings; flag sensitive databases `noCloud` to
   block row egress to cloud CLI models (`claude`, `agy`, `codex`, `gemini`, `openrouter`), automatically redact secrets/URIs
@@ -200,6 +201,8 @@ next launch. Project-bound modules follow the active project.
 | 📈 **Resource monitor** | How much RAM and CPU the editor eats — per process (windows, GPU, core) **and per agent in the terminals** (PTY process trees), memory sparkline, summary snapshot to clipboard. |
 | 🖳 **System terminal** | Standalone shells outside projects (home directory), several tabs, for one-off system commands next to your working terminal. |
 | 🔧 **Dev tools** | An offline swiss knife: **Base64 ↔ image** (drop a file in, get a data-URI with preview and dimensions, and back), **JSON viewer**, Base64 / URL / Hex / HTML entities, **JSON ↔ YAML**, query ↔ JSON, CSV ↔ JSON, JSONPath, hashes (MD5 / SHA-1/256/512), **JWT decoder**, Unix **timestamp** and **cron** (explained, with next runs), **line rejoin** (text mangled by terminal wrapping stitched back into paragraphs, keeping lists, tables and code), case / translit, string ops, regex tester, text diff, Lorem and fake-data generator, colour converter. |
+| 🚀 **HTTP client** | Built-in REST / GraphQL client: project & global collections, encrypted `{{var}}` environments + KeePass vault fill, detailed phase timings, **cURL**, **`.http`** and **OpenAPI 3 / Swagger 2** import/export, local port & OpenAPI auto-discovery, one-click send to agent terminal or viewer. |
+| 🤖 **Agent hub** | Mission Control for all active terminal agents: live card grid (project, Git branch, status, output tail), quick permission replies (`Yes`/`No`/`Enter` + inline text) without leaving the view, jump straight to any session and local 30-day work/wait telemetry. |
 
 </details>
 
@@ -248,6 +251,7 @@ text to share it.
 | `Ctrl+Shift+D` | toggle vertical terminal split |
 | `Ctrl+Shift+E` | toggle Project dock inside the main window |
 | `Ctrl+Shift+M` | toggle right-hand MCP Tools panel |
+| `Ctrl+Shift+B` | toggle right-hand Live Preview panel |
 | `Ctrl+K` | command palette |
 | `Ctrl+P` / `Ctrl+Shift+P` | Quick Open (files, `#symbols`, `@outline`, `:line`) / editor command palette (Project) |
 | `Ctrl+F` / `Ctrl+Shift+F` | search in the terminal or file / find in all projects (files and terminal output) |

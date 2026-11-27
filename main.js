@@ -1,6 +1,6 @@
 // LiteEditor — Electron main process.
 // Thin backend: project picker, PTY lifecycle, file ops, window controls.
-const { app, BrowserWindow, ipcMain, dialog, shell, Menu, clipboard, screen, Tray, nativeImage, crashReporter, safeStorage, Notification } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, Menu, clipboard, screen, Tray, nativeImage, crashReporter, safeStorage, Notification, session, webContents } = require('electron');
 const i18n = require('./lib/i18n');   // локализация: словари — подключаемые файлы locales/*.json
 const rhBackend = require('./lib/remotehost');
 const path = require('path');
@@ -230,7 +230,7 @@ const dbLazy = createLazyIpc(ipcMain, {
   }),
 });
 
-createLazyIpc(ipcMain, {
+const kafkaLazy = createLazyIpc(ipcMain, {
   handles: [
     'kafka:list', 'kafka:save', 'kafka:delete', 'kafka:test', 'kafka:overview', 'kafka:topics',
     'kafka:topicDetail', 'kafka:createTopic', 'kafka:deleteTopic', 'kafka:addPartitions',
@@ -245,7 +245,7 @@ createLazyIpc(ipcMain, {
   }),
 });
 
-createLazyIpc(ipcMain, {
+const rmqLazy = createLazyIpc(ipcMain, {
   handles: [
     'rmq:list', 'rmq:save', 'rmq:delete', 'rmq:test', 'rmq:overview', 'rmq:vhosts',
     'rmq:queues', 'rmq:exchanges', 'rmq:connections', 'rmq:peek', 'rmq:publish',
@@ -259,7 +259,7 @@ createLazyIpc(ipcMain, {
   }),
 });
 
-createLazyIpc(ipcMain, {
+const storageLazy = createLazyIpc(ipcMain, {
   handles: [
     'st:list', 'st:save', 'st:delete', 'st:setScope', 'st:test', 'st:buckets', 'st:ls',
     'st:read', 'st:exists', 'st:presign', 'st:publicUrl', 'st:aclGet', 'st:aclSet',
@@ -275,7 +275,7 @@ createLazyIpc(ipcMain, {
   }),
 });
 
-createLazyIpc(ipcMain, {
+const jiraLazy = createLazyIpc(ipcMain, {
   handles: [
     'jira:list', 'jira:save', 'jira:delete', 'jira:test', 'jira:searchAll', 'jira:issue',
     'jira:fields', 'jira:meta', 'jira:boards', 'jira:transition', 'jira:comment',
@@ -285,6 +285,34 @@ createLazyIpc(ipcMain, {
     ipcMain: ipc, safeStorage, storeDir,
     getAccounts: () => readStoreKey('jiraAccounts'),
     setAccounts: (v) => writeStoreKey('jiraAccounts', v),
+  }),
+});
+
+const restLazy = createLazyIpc(ipcMain, {
+  handles: [
+    'rest:load', 'rest:saveCollection', 'rest:deleteCollection', 'rest:saveEnv', 'rest:deleteEnv',
+    'rest:send', 'rest:abort', 'rest:clearHistory', 'rest:importText', 'rest:importFile',
+    'rest:exportText', 'rest:discoverLocal',
+  ],
+  load: (ipc) => require('./lib/rest').registerRestIpc({
+    ipcMain: ipc,
+    safeStorage,
+    dialog,
+    getData: () => readStoreKey('restData'),
+    setData: (v) => writeStoreKey('restData', v),
+    getProjectPorts: (projectId) => {
+      const pid = projectId ? String(projectId) : '';
+      const out = [];
+      for (const [sid, p] of ptys) {
+        if (!p || !p.pid) continue;
+        if (pid && pid !== '__global__' && !String(sid).startsWith(pid + '::')) continue;
+        try {
+          const list = portsLib().listeningPorts(p.pid, { excludePids: [process.pid] });
+          if (Array.isArray(list)) out.push(...list);
+        } catch (_) {}
+      }
+      return out;
+    },
   }),
 });
 
@@ -380,6 +408,19 @@ const mcpHub = createMcpHub({
   serversApi,
   rhApi,
   getContainersApi: () => containersLazy.ensure(),
+  getRmqApi: () => rmqLazy.ensure(),
+  getKafkaApi: () => kafkaLazy.ensure(),
+  getStorageApi: () => storageLazy.ensure(),
+  getJiraApi: () => jiraLazy.ensure(),
+  tasksApi: {
+    getNotes: (id) => appStore.notesGet(id),
+    getAgenda: (id) => appStore.agendaGet(id),
+    listProjectIds: () => (Array.isArray(readStoreKey('projects')) ? readStoreKey('projects') : []).map((p) => p && p.id).filter(Boolean),
+  },
+  gitHelpers: {
+    git: require('./lib/ipc/git').git,
+    gitWorkBase: require('./lib/ipc/git').gitWorkBase,
+  },
   getProjects: () => (Array.isArray(readStoreKey('projects')) ? readStoreKey('projects') : []),
   broadcast: (ch, payload) => { sendTo(mainWindow, ch, payload); },
   hasUi: () => !!(mainWindow && !mainWindow.isDestroyed()),
@@ -796,6 +837,8 @@ function updHardExit() {
   try { mcpHub.shutdown(); } catch (_) {}
   killReqMap(tpReqs); killReqMap(dbaiReqs); killReqMap(orReqs); killReqMap(ctxmineReqs);
   try { const api = dbLazy.getApi(); if (api) api.closeAll(); } catch (_) {}
+  try { const rApi = restLazy.getApi(); if (rApi) rApi.abortAll(); } catch (_) {}
+  try { if (agentsApi) agentsApi.flush(); } catch (_) {}
   app.exit(0);
 }
 
@@ -2872,6 +2915,8 @@ ipcMain.handle('settings:import', async () => {
     if (data.windowState && typeof data.windowState === 'object') saveState(data.windowState);
     saveState({ lastOpenDir: path.dirname(file) });
     try { const api = dbLazy.getApi(); if (api) api.closeAll(); } catch (_) {}
+  try { const rApi = restLazy.getApi(); if (rApi) rApi.abortAll(); } catch (_) {}
+  try { if (agentsApi) agentsApi.flush(); } catch (_) {}
     for (const w of moduleWindows.values()) { try { if (!w.isDestroyed()) w.webContents.reload(); } catch (_) {} }
     // Surface partial failure instead of a false "success" so the renderer can warn the user.
     if (failedKeys.length || failedNotes) return { ok: true, partial: true, failedKeys, failedNotes, file };
@@ -2914,6 +2959,7 @@ function createWindow() {
       contextIsolation: true,
       nodeIntegration: false,
       nodeIntegrationInSubFrames: true, // запускает preload в iframe встроенного дока (?embed=1); сам preload проверяет URL
+      webviewTag: true, // только в главном окне — жёстко ограничивается через will-attach-webview в lib/ipc/preview.js
     },
   };
   if (Number.isInteger(st.x) && Number.isInteger(st.y)) { opts.x = st.x; opts.y = st.y; }
@@ -3772,6 +3818,8 @@ app.on('before-quit', () => { logger.log('info', 'app', 'before-quit'); });
 app.on('will-quit', () => {
   killReqMap(tpReqs); killReqMap(dbaiReqs); killReqMap(orReqs); killReqMap(ctxmineReqs);
   try { const api = dbLazy.getApi(); if (api) api.closeAll(); } catch (_) {}
+  try { const rApi = restLazy.getApi(); if (rApi) rApi.abortAll(); } catch (_) {}
+  try { if (agentsApi) agentsApi.flush(); } catch (_) {}
   try { appStore.flushAllSync(); } catch (_) {}
   try { errledger.flush(); } catch (_) {}
   try { procService.shutdown(); } catch (_) {}
@@ -3815,6 +3863,8 @@ app.on('window-all-closed', () => {
   // не успев послать *:abort → не оставляем claude/codex/запрос сиротами после выхода (B3).
   killReqMap(tpReqs); killReqMap(dbaiReqs); killReqMap(orReqs); killReqMap(ctxmineReqs); // + анализ диалогов «Контекста»
   try { const api = dbLazy.getApi(); if (api) api.closeAll(); } catch (_) {}
+  try { const rApi = restLazy.getApi(); if (rApi) rApi.abortAll(); } catch (_) {}
+  try { if (agentsApi) agentsApi.flush(); } catch (_) {}
   try { rhApi.closeAll(); } catch (_) {}
   for (const w of watchers.values()) { clearTimeout(w.timer); try { w.watcher.close(); } catch (_) {} }
   watchers.clear();
@@ -4375,6 +4425,7 @@ function spawnPtyFor(id, cwd, cols, rows, owner) {
   // под потоком — пачкой раз в 5 мс (lib/ptybatch.js) с паузой PTY при переполнении очереди xterm.
   const out = createBatcher((data) => {
     ptyRings.push(id, data);
+    try { if (agentsApi) agentsApi.markTailDirty(id); } catch (_) {}
     if (sendToOwner(id, 'pty:data', { id, data })) {
       gate.sent(data.length);
     }
@@ -4387,6 +4438,7 @@ function spawnPtyFor(id, cwd, cols, rows, owner) {
     ptyFlows.delete(id);
     ptys.delete(id);
     ptyRings.delete(id);
+    try { if (agentsApi) agentsApi.removeSession(id); } catch (_) {}
     sendToOwner(id, 'pty:exit', { id });
     ownerBySession.delete(id); // сессия закрылась — не копим мёртвые id в карте маршрутизации (B4-LOW)
     dropOrphan(id);
@@ -4428,6 +4480,7 @@ ipcMain.on('pty:kill', (_e, { id }) => {
   const g = ptyFlows.get(id); if (g) g.reset();
   ptyFlows.delete(id);
   ptyRings.delete(id);
+  try { if (agentsApi) agentsApi.removeSession(id); } catch (_) {}
   try { mcpHub.revokeByPty(id); } catch (_) {}
   const p = ptys.get(id);
   if (p) { try { p.kill(); } catch (_) {} ptys.delete(id); }
@@ -4483,7 +4536,7 @@ const MODULE_TITLES = {
   tools: 'Инструменты', iterflow: 'IterFlow', seo: 'WEB/SEO аудит', audit: 'Аудит',
   pomodoro: 'Помодоро', notes: 'Задачи', db: 'Базы данных',
   chat: 'OpenRouter', doc: 'Обработка текста', docker: 'Контейнеры', rh: 'Удалённые хосты',
-  ctx: 'Контекст', scratch: 'Система · ~', files: 'Проект', monitor: 'Монитор', gitgraph: 'Граф Git', servers: 'Серверы',
+  ctx: 'Контекст', scratch: 'Система · ~', files: 'Проект', monitor: 'Монитор', gitgraph: 'Граф Git', servers: 'Серверы', rest: 'HTTP-клиент', agents: 'Центр агентов',
 };
 function monitorSessionLabel(sid) {
   const s = String(sid);
@@ -5209,23 +5262,25 @@ ipcMain.handle('clipboard:read', () => clipboard.readText());
 // не нужно разрешение на чтение чужого каталога; каталог сам себя исключает из git (.gitignore «*»).
 // Без проекта (терминал «Система») или без прав на запись — в ~/.LiteEditorAI/shots. Старше 14 дней — удаляем.
 const SHOTS_TTL_MS = 14 * 24 * 3600 * 1000;
+const { ensureGitInfoExclude } = require('./lib/preview-url');
+const { registerPreviewIpc } = require('./lib/ipc/preview');
+const { registerAgentsIpc } = require('./lib/ipc/agents');
+
 function pruneShots(dir) {
   try {
     const now = Date.now();
     for (const f of fs.readdirSync(dir)) {
-      if (!/^shot-.*\.png$/.test(f)) continue;
+      if (!/^(?:shot|preview)-.*\.png$/.test(f)) continue;
       const p = path.join(dir, f);
       try { if (now - fs.statSync(p).mtimeMs > SHOTS_TTL_MS) fs.unlinkSync(p); } catch (_) {}
     }
   } catch (_) {}
 }
-ipcMain.handle('clipboard:saveImage', (_e, { dir } = {}) => {
-  const img = clipboard.readImage();
-  if (!img || img.isEmpty()) return { empty: true };
-  const png = img.toPNG();
+function saveShotPng(png, /** @type {any} */ { dir, prefix = 'shot' } = {}) {
   const d = new Date();
   const p2 = (n) => String(n).padStart(2, '0');
-  const name = `shot-${d.getFullYear()}${p2(d.getMonth() + 1)}${p2(d.getDate())}-${p2(d.getHours())}${p2(d.getMinutes())}${p2(d.getSeconds())}-${Math.random().toString(36).slice(2, 6)}.png`;
+  const safePrefix = prefix === 'preview' ? 'preview' : 'shot';
+  const name = `${safePrefix}-${d.getFullYear()}${p2(d.getMonth() + 1)}${p2(d.getDate())}-${p2(d.getHours())}${p2(d.getMinutes())}${p2(d.getSeconds())}-${Math.random().toString(36).slice(2, 6)}.png`;
   const targets = [];
   const base = typeof dir === 'string' && path.isAbsolute(dir) ? dir : '';
   try { if (base && fs.statSync(base).isDirectory()) targets.push(path.join(base, '.lite', 'shots')); } catch (_) {}
@@ -5234,14 +5289,61 @@ ipcMain.handle('clipboard:saveImage', (_e, { dir } = {}) => {
     try {
       fs.mkdirSync(t, { recursive: true });
       const gi = path.join(t, '.gitignore');
-      if (t !== targets[targets.length - 1] && !fs.existsSync(gi)) fs.writeFileSync(gi, '*\n');
+      if (t !== targets[targets.length - 1]) {
+        if (!fs.existsSync(gi)) fs.writeFileSync(gi, '*\n');
+        ensureGitInfoExclude(base, '.lite/');
+      }
       const file = path.join(t, name);
       fs.writeFileSync(file, png);
       pruneShots(t);
       return { ok: true, path: file };
     } catch (_) { /* следующий вариант */ }
   }
-  return { ok: false, error: 'Не удалось сохранить изображение из буфера' };
+  return { ok: false, error: 'Не удалось сохранить скриншот' };
+}
+ipcMain.handle('clipboard:saveImage', (_e, { dir } = {}) => {
+  const img = clipboard.readImage();
+  if (!img || img.isEmpty()) return { empty: true };
+  return saveShotPng(img.toPNG(), { dir, prefix: 'shot' });
+});
+
+registerPreviewIpc({
+  ipcMain, app, session, webContents, saveShotPng,
+  getMainWindow: () => mainWindow,
+  safeSend,
+  log: (lvl, srcName, msg) => logger.log(lvl, srcName, msg),
+});
+
+const agentsApi = registerAgentsIpc({
+  ipcMain,
+  ptyRings,
+  getProjects: () => (Array.isArray(readStoreKey('projects')) ? readStoreKey('projects') : []),
+  getStatsData: () => readStoreKey('agentStats'),
+  setStatsData: (v) => writeStoreKey('agentStats', v),
+  writeQuickReply: (sid, text, enter) => {
+    const p = ptys.get(sid);
+    if (!p) return false;
+    if (sendToOwner(sid, 'agents:quickReply', { sid, text, enter })) return true;
+    if (text) p.write(text);
+    if (enter) setTimeout(() => { try { const p2 = ptys.get(sid); if (p2) p2.write('\r'); } catch (_) {} }, text ? 120 : 0);
+    return true;
+  },
+  jumpToSession: (projId, sid) => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.show();
+      mainWindow.focus();
+      sendTo(mainWindow, 'editor:jumpToSession', { projId, sid });
+    }
+    const dw = detachedTermWindows.get(projId);
+    if (dw && !dw.isDestroyed()) {
+      if (dw.isMinimized()) dw.restore();
+      dw.focus();
+      sendTo(dw, 'projTerm:focusSession', { sid });
+    }
+  },
+  safeSend,
+  log: (lvl, srcName, msg) => logger.log(lvl, srcName, msg),
 });
 
 // ---------------------------------------------------------------- «Озвучка» (lib/ipc/voice.js, сайдкар TTS грузится лениво)

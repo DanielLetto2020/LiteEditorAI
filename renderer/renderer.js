@@ -27,9 +27,10 @@ import {
 import { openGlobalSearch } from './gsearch.js';
 import { initExtensions } from './modules/extensions.js';
 import { initMcp } from './modules/mcp.js';
+import { initPreview } from './modules/preview.js';
 // initFiles — вивер+дерево мигрированы в отдельное окно (renderer/module-entry.js).
 
-const APP_VERSION = 'alpha v1.1.250';
+const APP_VERSION = 'alpha v1.1.251';
 const GUTTER = 8; // зазор между карточками окна — он же разделитель, за который тянется ширина
 // Системный терминал («Система · ~») мигрирован в отдельное окно (renderer/modules/scratch.js):
 // его id `__scratch__::tN` маршрутизируются main'ом в окно-владельца, в ядре их больше не обрабатываем.
@@ -94,7 +95,7 @@ const isExtTerm = (id) => typeof id === 'string' && id.startsWith(EXT_TERM_ID);
 const extTerms = new Map(); // ptyId -> { term, fit, search, container }
 let extTermSeq = 0;
 
-const DEFAULT_LAYOUT = { sidebar: 300, viewer: 520, tree: 240, filesDock: 680, mcp: 380, mcpOpen: false, termSplit: 0.5, scratch: 420, ctx: 740, docker: 460, db: 560, rh: 520, ext: 420, notes: 480, audit: 460, iterflow: 480, seo: 480, tools: 560, chat: 600, doc: 640 };
+const DEFAULT_LAYOUT = { sidebar: 300, viewer: 520, tree: 240, filesDock: 680, mcp: 380, mcpOpen: false, preview: 480, previewOpen: false, termSplit: 0.5, scratch: 420, ctx: 740, docker: 460, db: 560, rh: 520, ext: 420, notes: 480, audit: 460, iterflow: 480, seo: 480, tools: 560, chat: 600, doc: 640 };
 let layout = loadLayout();
 let lastParent = STORE.lastParent || '';
 
@@ -134,16 +135,18 @@ const termEngine = createTermEngine({
     if ((st === 'waiting' || worked) && (sid !== activeSessionId() || !document.hasFocus())) notifyAgent(pid, st, sid, reason);
   },
   onAfterShowActive: () => { syncDetachedHint(); try { if (Mcp) Mcp.onSessionChange(); } catch (_) {} },
+  openPreviewUrl: (url) => { if (Preview) Preview.openUrl(url); },
   onHotkey: (e) => runGlobalHotkey(e),
 });
 
 let Mcp = null;
+let Preview = null;
 const {
   BOOT_ID,
   tabsByProj, terms, projState, adoptPtys,
   activeSessionId, projSessions, tabMeta,
   buildXterm, createSession, ensureProjectTabs, disposeSession, unloadProjectTerms,
-  materializeSession, refreshAgents, scheduleAgentScan,
+  refreshAgents, scheduleAgentScan,
   showActiveTerminal, refitActiveTerminal, refitActiveTerminalSoon, applyTimeline,
   switchTab, addTab, clearTerminal, restartTerminal,
   toggleTermSplit, openTermSearch,
@@ -159,6 +162,17 @@ Mcp = initMcp({
   setLayoutProp: (k, v) => { layout[k] = v; },
   onLayoutChange: () => { applyLayout(); refitActiveTerminal(); saveLayout(); },
   openSettings: () => showSettings('mcp'),
+  toast,
+});
+
+Preview = initPreview({
+  lite,
+  withHk,
+  getActiveProject: () => activeProject(),
+  getLayout: () => layout,
+  setLayoutProp: (k, v) => { layout[k] = v; },
+  onLayoutChange: () => { applyLayout(); refitActiveTerminal(); saveLayout(); },
+  sendToActiveTerminal: (t) => { const p = activeProject(); if (p) sendNoteToTerminal(p, t); },
   toast,
 });
 
@@ -182,6 +196,7 @@ function applyLayout() {
   $('#sidebar').style.flexBasis = layout.sidebar + 'px';
   layout.filesDock = Math.max(360, Math.min(1400, +layout.filesDock || DEFAULT_LAYOUT.filesDock));
   layout.mcp = Math.max(280, Math.min(780, +layout.mcp || DEFAULT_LAYOUT.mcp));
+  layout.preview = Math.max(320, Math.min(1100, +layout.preview || DEFAULT_LAYOUT.preview));
   layout.termSplit = Math.max(0.2, Math.min(0.8, Number.isFinite(+layout.termSplit) ? +layout.termSplit : 0.5));
   { const tb = $('#term-body'); if (tb) tb.style.setProperty('--split-pct', (layout.termSplit * 100).toFixed(2) + '%'); }
 
@@ -191,8 +206,10 @@ function applyLayout() {
   const fd = $('#files-dock');
   const ep = $('#ext-pane');
   const mp = $('#mcp-pane');
+  const pp = $('#preview-pane');
   const openRight = [];
   if (mp && !mp.classList.contains('hidden')) openRight.push([mp, layout.mcp, 280]);
+  if (pp && !pp.classList.contains('hidden')) openRight.push([pp, layout.preview, 320]);
   if (fd && !fd.classList.contains('hidden')) openRight.push([fd, layout.filesDock, 360]);
   if (ep && !ep.classList.contains('hidden')) openRight.push([ep, layout.ext, 280]);
 
@@ -204,6 +221,7 @@ function applyLayout() {
     }
   } else {
     if (mp) mp.style.flexBasis = layout.mcp + 'px';
+    if (pp) pp.style.flexBasis = layout.preview + 'px';
     if (fd) fd.style.flexBasis = layout.filesDock + 'px';
     if (ep) ep.style.flexBasis = layout.ext + 'px';
   }
@@ -1115,6 +1133,10 @@ function syncHotkeyHints() {
   if (bm instanceof HTMLElement) bm.title = withHk('MCP-инструменты', 'toggleMcp');
   const mc = $('#mcp-close-btn');
   if (mc instanceof HTMLElement) mc.title = withHk('Скрыть панель', 'toggleMcp');
+  const bp = $('#btn-preview');
+  if (bp instanceof HTMLElement) bp.title = withHk('Предпросмотр', 'togglePreview');
+  const pc = $('#preview-close-btn');
+  if (pc instanceof HTMLElement) pc.title = withHk('Скрыть предпросмотр', 'togglePreview');
   const re = $('#rail-expand');
   if (re instanceof HTMLElement) re.title = withHk('Развернуть проекты', 'toggleSingle');
   const pf = $('#proj-find .nav-k');
@@ -1147,6 +1169,7 @@ function runGlobalHotkey(e) {
   if (matchesAction(e, settings, 'globalSearch')) { e.preventDefault(); showGlobalSearch(); return true; }
   if (matchesAction(e, settings, 'openFiles')) { e.preventDefault(); openModule('files'); return true; }
   if (matchesAction(e, settings, 'toggleMcp')) { e.preventDefault(); Mcp.toggle(); return true; }
+  if (matchesAction(e, settings, 'togglePreview')) { e.preventDefault(); Preview.toggle(); return true; }
   if (matchesAction(e, settings, 'openSettings')) { e.preventDefault(); if (!document.querySelector('.settings-modal')) showSettings(); return true; }
   if (matchesAction(e, settings, 'fontUp')) { e.preventDefault(); bumpFont(1); return true; }
   if (matchesAction(e, settings, 'fontDown')) { e.preventDefault(); bumpFont(-1); return true; }
@@ -1208,8 +1231,8 @@ function jumpToSession(projId, sid) {
     return;
   }
   const t = tabsByProj.get(projId);
-  if (t && t.sessions.includes(sid)) { materializeSession(sid); t.active = sid; saveProjTabs(); }
-  showActiveTerminal();
+  if (t && t.sessions.includes(sid)) switchTab(sid);
+  else showActiveTerminal();
 }
 
 // Окно «Найти во всех проектах» (renderer/gsearch.js): содержимое и имена файлов через стриминговый
@@ -1286,7 +1309,7 @@ const panels = new Map(); // id -> { isOpen(), setOpen(open, opts) }
 // Правый слот редактора теперь держит только «Мои модули» (ext); всё остальное — отдельные окна.
 const PANEL_ORDER = [];
 // Модули, мигрированные в отдельные окна (открываются через lite.module.open, не как панель правого слота).
-const WINDOW_MODULES = new Set(['tools', 'iterflow', 'seo', 'audit', 'notes', 'db', 'rmq', 'kafka', 'chat', 'doc', 'docker', 'rh', 'ctx', 'scratch', 'files', 'pomodoro', 'monitor', 'keepass', 'storage', 'jira', 'voice', 'gitgraph', 'servers']);
+const WINDOW_MODULES = new Set(['tools', 'iterflow', 'seo', 'audit', 'notes', 'db', 'rmq', 'kafka', 'chat', 'doc', 'docker', 'rh', 'ctx', 'scratch', 'files', 'pomodoro', 'monitor', 'keepass', 'storage', 'jira', 'voice', 'gitgraph', 'servers', 'rest', 'agents']);
 function registerPanel(id, api) { panels.set(id, api); }
 function closeOtherPanels(selfId) {
   for (const id of PANEL_ORDER) {
@@ -1399,6 +1422,7 @@ const BUILTIN_MODS = [
   { id: 'storage',  icon: 'cloud',    title: 'Внешние хранилища',  desc: 'S3 · бакеты · публичные ссылки', project: true },
   { id: 'rh',       icon: 'globe',    title: 'Удалённые хосты',    desc: 'SSH-сессии и SFTP к серверам' },
   { id: 'servers',  icon: 'server',   title: 'Серверы',            desc: 'дашборд: ресурсы · проекты · сеть · контейнеры · сайты' },
+  { id: 'rest',     icon: 'send',     title: 'HTTP-клиент',        desc: 'REST / GraphQL · коллекции · cURL · OpenAPI', project: true },
   { id: 'iterflow', icon: 'layers',   title: 'IterFlow',           desc: 'задачи итераций из трекера' },
   { id: 'jira',     icon: 'jira',     title: 'Jira',               desc: 'свои задачи из нескольких аккаунтов' },
   { id: 'seo',      icon: 'globe',    title: 'WEB/SEO аудит',      desc: 'сайт: безопасность, SEO, сеть' },
@@ -1408,6 +1432,7 @@ const BUILTIN_MODS = [
   { id: 'voice',    icon: 'volume',   title: 'Озвучка',            desc: 'текст из буфера обмена — живым голосом' },
   { id: 'scratch',  icon: 'terminal', title: 'Системный терминал', desc: 'шелл вне проектов' },
   { id: 'monitor',  icon: 'graph',    title: 'Монитор ресурсов',   desc: 'память/CPU редактора и агентов' },
+  { id: 'agents',   icon: 'layers',   title: 'Центр агентов',      desc: 'все активные агенты · быстрые ответы · статистика дня' },
   { id: 'keepass',  icon: 'key',      title: 'Сейф паролей',       desc: 'KeePass .kdbx: пароли и токены' },
 ];
 
@@ -1591,9 +1616,10 @@ function initGutters() {
       const onMove = (ev) => {
         const dx = ev.clientX - startX;
         let w = target === 'sidebar' ? startW + dx : startW - dx;
-        const minW = target === 'mcp' ? 280 : (target === 'filesDock' ? 360 : 150);
+        const minW = target === 'mcp' ? 280 : (target === 'preview' ? 320 : (target === 'filesDock' ? 360 : 150));
         const maxW = target === 'filesDock' ? Math.max(480, window.innerWidth - 360)
-          : (target === 'mcp' ? Math.min(780, Math.max(280, window.innerWidth - 360)) : 1000);
+          : (target === 'preview' ? Math.min(1100, Math.max(320, window.innerWidth - 360))
+            : (target === 'mcp' ? Math.min(780, Math.max(280, window.innerWidth - 360)) : 1000));
         layout[target] = Math.max(minW, Math.min(maxW, w));
         applyLayout();
         refitActiveTerminalSoon();   // reflow буфера не на каждый кадр (см. term-core)
@@ -1737,6 +1763,7 @@ function showMoreMenu(anchor) {
   T(c1, 'Вид и инструменты');
   c1.appendChild(menuRow('panel-left', 'Один терминал', go(toggleSingle), '', { kbd: hkLabel('toggleSingle') }));
   c1.appendChild(menuRow('plug', 'Панель MCP', go(() => Mcp.toggle()), '', { kbd: hkLabel('toggleMcp') }));
+  c1.appendChild(menuRow('globe', 'Предпросмотр', go(() => Preview.toggle()), '', { kbd: hkLabel('togglePreview') }));
   c1.appendChild(menuRow('cmd', 'Палитра команд', go(showPalette), '', { kbd: hkLabel('palette') }));
   c1.appendChild(menuRow('search', 'Поиск в терминале', go(openTermSearch), '', { kbd: hkLabel('termSearch') }));
   c1.appendChild(menuRow('search', 'Найти во всех проектах', go(() => showGlobalSearch()), '', { kbd: hkLabel('globalSearch') }));
@@ -2994,6 +3021,7 @@ function paletteActions() {
   acts.push({ label: 'Закрыть терминалы без агента', run: async () => { await refreshAgents(); if (idleProjects().length) closeIdleTerms(); else toast('Закрывать нечего — простаивающих терминалов нет'); } });
   acts.push({ label: 'Режим «один терминал»', hint: hkLabel('toggleSingle'), run: toggleSingle });
   acts.push({ label: 'Панель MCP — показать/скрыть', hint: hkLabel('toggleMcp'), run: () => Mcp.toggle() });
+  acts.push({ label: 'Предпросмотр (Live Preview) — показать/скрыть', hint: hkLabel('togglePreview'), run: () => Preview.toggle() });
   acts.push({ label: 'MCP Store — каталог модульных паков', run: () => Mcp.openStoreModal() });
   acts.push({ label: 'MCP: Ресурсы активного проекта…', run: () => Mcp.openProjectResourcesModal() });
   acts.push({ label: 'MCP: Подключить CLI-агента…', run: () => Mcp.openConnectModal() });
@@ -3302,6 +3330,7 @@ function init() {
   // вивер живёт в отдельном окне (module.html#files) — в редакторе его DOM/редактор больше нет.
   applyLayout();
   Mcp.init();
+  Preview.init();
   applyTheme();
   applyFrame(settings);
   initGutters();
@@ -3445,6 +3474,9 @@ function init() {
   // файл в вивере»/«обновить дерево» main маршрутизирует в окно вивера (не сюда).
   lite.editorBus.onSendToTerminal((text) => { const p = activeProject(); if (p) sendNoteToTerminal(p, text); });
   lite.editorBus.onSendNoteToTerminal((projId, text) => { const proj = projects.find((x) => x.id === projId) || activeProject(); if (proj) sendNoteToTerminal(proj, text); });
+  if (lite.editorBus.onJumpToSession) {
+    lite.editorBus.onJumpToSession((projId, sid) => { if (projId && sid) jumpToSession(projId, sid); });
+  }
   lite.editorBus.onRefreshProjects(() => { try { renderProjects(); } catch (_) {} }); // git в окне вивера сделал commit/checkout → освежить бейджи
   lite.editorBus.onRestGuard((s) => { try { applyRestGuard(s); } catch (e) { console.error(e); } }); // Помодоро: оверлей отдыха над терминалами
   if (lite.editorBus.onEnsureFilesDock) {

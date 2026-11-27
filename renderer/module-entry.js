@@ -41,6 +41,8 @@ const initOpenRouter = () => import('./modules/openrouter.js').then((m) => m.ini
 const initTextProc = () => import('./modules/textproc.js').then((m) => m.initTextProc);
 const initContainers = () => import('./modules/containers.js').then((m) => m.initContainers);
 const initRh = () => import('./modules/remotehost.js').then((m) => m.initRh);
+const initRest = () => import('./modules/rest.js').then((m) => m.initRest);
+const initAgents = () => import('./modules/agents.js').then((m) => m.initAgents);
 const initCtx = () => import('./modules/contextgraph.js').then((m) => m.initCtx);
 const initScratch = () => import('./modules/scratch.js').then((m) => m.initScratch);
 const initFiles = () => import('./modules/files.js').then((m) => m.initFiles);
@@ -118,6 +120,10 @@ const MODULES = {
     title: 'Серверы', load: initServers, project: false,
     wire: (mod) => { bind('#servers-add', () => mod.addServer()); bind('#servers-refresh', () => mod.refreshAll()); },
   },
+  agents: {
+    title: 'Центр агентов', load: initAgents, project: false,
+    wire: (mod) => { bind('#agents-refresh', () => mod.refresh()); },
+  },
 
   pomodoro: {
     title: 'Помодоро', load: initPomodoro, project: false,
@@ -191,6 +197,14 @@ const MODULES = {
   jira: {
     title: 'Jira', load: initJira, project: false,
     wire: (mod) => { bind('#jira-refresh', () => mod.refresh()); },
+  },
+  rest: {
+    title: 'HTTP-клиент', load: initRest, project: true, highlight: true,
+    wire: (mod) => {
+      bind('#rest-discover', () => mod.discoverLocal());
+      bind('#rest-import', () => mod.openImportModal());
+      bind('#rest-env-btn', () => mod.openEnvModal());
+    },
   },
   chat: {
     title: 'OpenRouter', load: initOpenRouter, project: false,
