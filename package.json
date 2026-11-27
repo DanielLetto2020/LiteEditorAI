@@ -1,6 +1,6 @@
 {
   "name": "liteeditor-ai",
-  "version": "1.1.249-alpha",
+  "version": "1.1.250-alpha",
   "description": "Lightweight editor for working with AI coding agents in the terminal",
   "main": "main.js",
   "author": "Максим Кузьминский <i@m-letto.ru>",
@@ -57,13 +57,13 @@
     "@xterm/addon-webgl": "0.18.0",
     "@xterm/xterm": "^5.5.0",
     "amqplib": "^2.0.1",
-    "basic-ftp": "^6.0.1",
+    "basic-ftp": "^6.2.6",
     "chart.js": "^4.5.1",
-    "dompurify": "^3.4.12",
+    "dompurify": "^3.5.0",
     "highlight.js": "^11.11.1",
     "js-yaml": "^4.3.2",
     "kafkajs": "^2.2.4",
-    "katex": "^0.16.21",
+    "katex": "^0.19.1",
     "kdbxweb": "^2.1.1",
     "marked": "^18.0.4",
     "mysql2": "^3.24.4",
@@ -77,25 +77,29 @@
     "@eslint/js": "^10.0.1",
     "@stryker-mutator/core": "^9.6.1",
     "@types/node": "^26.1.1",
-    "electron": "^42.4.0",
-    "electron-builder": "^26.15.3",
+    "electron": "^42.11.18",
+    "electron-builder": "^26.18.0",
     "esbuild": "^0.28.1",
-    "eslint": "^10.8.0",
+    "eslint": "^10.15.0",
     "globals": "^17.8.0",
-    "sharp": "^0.35.4",
+    "sharp": "^0.35.5",
     "typescript": "^7.0.2"
   },
   "overrides": {
     "@electron/get": {
-      "undici": "^7.28.0"
+      "undici": "^7.30.2"
     },
     "node-gyp": {
-      "undici": "^6.27.0"
+      "undici": "^6.29.1"
     },
+    "minimatch@^9.0.0": "^11.0.9",
+    "minimatch@^10.0.0": "^11.0.9",
     "@xmldom/xmldom": "0.8.15",
-    "brace-expansion": "^5.0.8",
+    "brace-expansion": "^5.1.0",
+    "fast-uri": "^3.1.9",
     "tar": "^7.5.22",
-    "qs": "^6.16.0",
+    "qs": "^6.17.1",
+    "zod": "^4.6.7",
     "fflate": "0.7.5"
   },
   "build": {

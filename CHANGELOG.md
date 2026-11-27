@@ -3,6 +3,17 @@
 Все заметные изменения LiteEditorAI. Формат — [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/),
 нумерация — [SemVer](https://semver.org/lang/ru/). Проект в стадии **alpha**.
 
+## [1.1.250] — 2026-11-27
+
+**Обновление зависимостей для устранения всех 43 предупреждений GitHub Security / Dependabot (`npm audit` — 0 уязвимостей) и ужесточение прав CI workflow.**
+
+### 🔒 Безопасность
+
+- **Закрыты все 43 уязвимости зависимостей (13 high, 15 moderate, 15 low):**
+  - обновлены прямые зависимости: `electron` (`^42.11.18`), `basic-ftp` (`^6.2.6`), `dompurify` (`^3.5.0`), `katex` (`^0.19.1`), `sharp` (`^0.35.5`), `eslint` (`^10.15.0`) и `electron-builder` (`^26.18.0`);
+  - обновлены транзитивные зависимости через scoped `overrides`: `undici` (`^7.30.2` / `^6.29.1`), `brace-expansion` (`^5.1.0`), `fast-uri` (`^3.1.9`), `qs` (`^6.17.1`), `zod` (`^4.6.7`) и `minimatch@^9`/`^10` (`^11.0.9`, с сохранением совместимых `minimatch@3/5` для `@electron/asar` и `filelist`).
+- **CI workflow (`.github/workflows/ci.yml`):** добавлены минимально необходимые права доступа `permissions: { contents: read }`.
+
 ## [1.1.249] — 2026-11-27
 
 **Встроенный Zero-Trust MCP Hub с правой колонкой инструментов, каталогом модульных паков и пресетом для локальной разработки; поддержка Antigravity CLI (`agy`) в AI-чате базы данных и усиление защиты SQL/контейнеров.**
@@ -3321,6 +3332,7 @@ AGENTS.md как граф на канве), и **цветной пульт** —
 [1.1.206]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.1.206
 [1.1.205]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.1.205
 [1.1.204]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.1.204
+[1.1.250]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.1.250
 [1.1.249]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.1.249
 [1.1.203]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.1.203
 [1.1.202]: https://github.com/DanielLetto2020/LiteEditorAI/releases/tag/v1.1.202
