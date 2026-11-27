@@ -446,11 +446,21 @@ export function initMcp(host) {
       }
       body.appendChild(presets);
 
-      const renderSection = (title, items, kind) => {
+      const KIND_FIELD = {
+        server: 'serverIds',
+        rh: 'rhIds',
+        rmq: 'rmqIds',
+        kafka: 'kafkaIds',
+        storage: 'storageIds',
+        jira: 'jiraIds',
+        project: 'projectIds',
+      };
+
+      const renderSection = (title, items, kind, emptyMsg = 'Нет настроенных подключений') => {
         const sec = el('div', 'mcp-res-sec');
         sec.appendChild(el('div', 'mcp-res-title', title));
         if (!items.length) {
-          sec.appendChild(el('div', null, 'Нет настроенных подключений'));
+          sec.appendChild(el('div', null, emptyMsg));
           body.appendChild(sec);
           return;
         }
@@ -464,9 +474,8 @@ export function initMcp(host) {
           if (kind === 'container' && binding.allowAllLocalContainers && it.isLocal && !(binding.denyContainerTargets || []).includes(it.id)) autoByPreset = true;
 
           const explicit = kind === 'db' ? (binding.dbIds || []).includes(it.id)
-            : kind === 'server' ? (binding.serverIds || []).includes(it.id)
-              : kind === 'rh' ? (binding.rhIds || []).includes(it.id)
-                : (binding.containerTargets || []).includes(it.id);
+            : kind === 'container' ? (binding.containerTargets || []).includes(it.id)
+              : (binding[KIND_FIELD[kind]] || []).includes(it.id);
 
           cb.checked = explicit || autoByPreset;
           cb.onchange = () => {
@@ -481,14 +490,6 @@ export function initMcp(host) {
                 next.dbIds = next.dbIds.filter((x) => x !== it.id);
                 if (next.allowAllNonProdDbs && !it.isProd && !next.denyDbIds.includes(it.id)) next.denyDbIds.push(it.id);
               }
-            } else if (kind === 'server') {
-              const arr = new Set(next.serverIds || []);
-              if (cb.checked) arr.add(it.id); else arr.delete(it.id);
-              next.serverIds = [...arr];
-            } else if (kind === 'rh') {
-              const arr = new Set(next.rhIds || []);
-              if (cb.checked) arr.add(it.id); else arr.delete(it.id);
-              next.rhIds = [...arr];
             } else if (kind === 'container') {
               next.containerTargets = [...(next.containerTargets || [])];
               next.denyContainerTargets = [...(next.denyContainerTargets || [])];
@@ -499,6 +500,11 @@ export function initMcp(host) {
                 next.containerTargets = next.containerTargets.filter((x) => x !== it.id);
                 if (next.allowAllLocalContainers && it.isLocal && !next.denyContainerTargets.includes(it.id)) next.denyContainerTargets.push(it.id);
               }
+            } else if (KIND_FIELD[kind]) {
+              const fk = KIND_FIELD[kind];
+              const arr = new Set(next[fk] || []);
+              if (cb.checked) arr.add(it.id); else arr.delete(it.id);
+              next[fk] = [...arr];
             }
             saveBinding(next);
           };
@@ -529,6 +535,12 @@ export function initMcp(host) {
       renderSection('Контейнеры (Docker / Podman)', resources.container || [], 'container');
       renderSection('Серверы', resources.server || [], 'server');
       renderSection('SSH-профили (Удалённые хосты)', resources.rh || [], 'rh');
+      renderSection('RabbitMQ', resources.rmq || [], 'rmq');
+      renderSection('Kafka', resources.kafka || [], 'kafka');
+      renderSection('Хранилища (S3 / MinIO)', resources.storage || [], 'storage');
+      renderSection('Jira', resources.jira || [], 'jira', 'Нет настроенных аккаунтов');
+      const otherProjects = (resources.project || []).filter((p) => p.id !== pid);
+      renderSection('Другие проекты (read-only)', otherProjects, 'project', 'Нет других проектов');
     };
 
     draw();

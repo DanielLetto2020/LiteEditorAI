@@ -84,4 +84,15 @@ function eq(a, b, msg) { assert.strictEqual(a, b, msg); passed++; }
   eq(store.size('p2::t1'), 0, 'clear очищает все сессии');
 }
 
+// 7. readTail возвращает выровненный хвост без полного склеивания
+{
+  const store = createRingStore(1024);
+  for (let i = 0; i < 10; i++) store.push('t', `line-${i}:\x1b[32mOK\x1b[0m\n`);
+  const tail = store.readTail('t', 70);
+  assert(tail.length > 0 && tail.length <= 75, 'readTail соблюдает лимит хвоста');
+  assert(tail.includes('line-9:'), 'readTail содержит самый свежий вывод');
+  assert(!tail.startsWith('[32m'), 'readTail не рвёт ESC-последовательность');
+  eq(store.readTail('missing', 70), '', 'readTail для отсутствующей сессии пуст');
+}
+
 console.log(`✓ ptyring: ${passed} проверок пройдено`);

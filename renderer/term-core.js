@@ -174,6 +174,7 @@ export function createRestGuardController({ lite, onRestored }) {
  *   onTurnEnd?: (projId: string, state: string, sid: string, reason?: string, worked?: boolean) => void,
  *   onAfterShowActive?: () => void,
  *   onHotkey?: (e: KeyboardEvent) => boolean,
+ *   openPreviewUrl?: (url: string) => void,
  *   onSessionExit?: (sid: string, projId: string) => void,
  * }} host
  */
@@ -231,11 +232,45 @@ export function createTermEngine(host) {
   }
 
   // ---- статус сессий, Claude Code и агенты ----
+  function extractXtermScreenTail(term, maxLines = 5) {
+    if (!term || !term.buffer || !term.buffer.active) return [];
+    const b = term.buffer.active;
+    const out = [];
+    const end = b.baseY + term.rows - 1;
+    for (let y = end; y >= Math.max(0, end - 30) && out.length < maxLines; y--) {
+      const line = b.getLine(y);
+      if (!line) continue;
+      const txt = line.translateToString(true).trim();
+      if (txt) out.unshift(txt.slice(0, 160));
+    }
+    return out;
+  }
+
+  function reportAgentMeta(sid, state, includeScreenTail = false) {
+    if (!lite.agents || typeof lite.agents.reportMeta !== 'function') return;
+    const rec = terms.get(sid);
+    if (!rec) return;
+    const projs = host.getProjects ? host.getProjects() : [];
+    const proj = (Array.isArray(projs) ? projs : []).find((p) => p && p.id === rec.projId);
+    const kind = sessionAgent(sid);
+    lite.agents.reportMeta({
+      sid,
+      projId: rec.projId,
+      projName: (proj && proj.name) || rec.projId,
+      projPath: (proj && proj.path) || '',
+      title: rec.customName || rec.title || '',
+      agentKind: kind || null,
+      status: state || projState.get(sid) || 'quiet',
+      ...(includeScreenTail ? { screenTail: extractXtermScreenTail(rec.term, 5) } : {}),
+    });
+  }
+
   function setProjState(sid, state) {
     projState.set(sid, state);
     const rec = terms.get(sid);
     document.querySelectorAll(`.tab[data-sid="${sid}"] .tab-dot`).forEach((d) => { d.className = 'tab-dot pind ' + state; });
     if (host.onStatusChange && rec) host.onStatusChange(rec.projId, sid);
+    if (rec) reportAgentMeta(sid, state, state === 'waiting');
     scheduleAgentScan();
   }
 
@@ -482,13 +517,13 @@ export function createTermEngine(host) {
     if (seq !== agentScanSeq) return null;
     agentScan = new Map(Object.entries(res));
     for (const [sid, rec] of terms) {
-      if (!rec.osc7501) continue;
       const scan = agentScan.get(sid);
-      if (scan && scan.fg === 'shell') {
+      if (rec.osc7501 && scan && scan.fg === 'shell') {
         rec.osc7501 = null;
         clearTimeout(rec.idleTimer);
         if (projState.get(sid) !== 'quiet') setProjState(sid, 'quiet');
       }
+      reportAgentMeta(sid, projState.get(sid) || 'quiet', false);
     }
     if (host.onStatusChange) {
       // Дёргаем общий апдейт после завершения опроса (renderer обновит фильтр, вынесенное окно пошлёт статус)
@@ -724,8 +759,25 @@ export function createTermEngine(host) {
       const b = el('button', 'chip chip-port');
       b.dataset.noI18n = '';
       b.append(icon('globe', 14), el('span', 'ct', ':' + p.port));
-      b.title = `${p.comm || tt('процесс')} · ${url}`;
-      b.addEventListener('click', () => lite.openExternal(url));
+      b.title = `${p.comm || tt('процесс')} · ${url} (${tt('клик — предпросмотр, Ctrl+клик — браузер')})`;
+      b.addEventListener('click', (e) => {
+        if (e.ctrlKey || e.metaKey || typeof host.openPreviewUrl !== 'function') lite.openExternal(url);
+        else host.openPreviewUrl(url);
+      });
+      b.addEventListener('contextmenu', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        closeMenus();
+        const dd = el('div', 'menu-dropdown');
+        dd.addEventListener('click', (ev) => ev.stopPropagation());
+        if (typeof host.openPreviewUrl === 'function') {
+          dd.appendChild(menuRow('globe', 'Открыть в предпросмотре', () => { closeMenus(); host.openPreviewUrl(url); }));
+        }
+        dd.appendChild(menuRow('external-link', 'Открыть в браузере', () => { closeMenus(); lite.openExternal(url); }));
+        dd.appendChild(menuRow('send', 'Открыть в HTTP-клиенте', () => { closeMenus(); lite.module.open('rest', { url }); }));
+        dd.appendChild(menuRow('copy', 'Копировать URL', () => { closeMenus(); lite.copyText(url); toast('URL скопирован'); }));
+        placeMenu(dd, e.clientX, e.clientY);
+      });
       return b;
     }));
     box.classList.toggle('hidden', !list.length);
@@ -1908,6 +1960,13 @@ export function createTermEngine(host) {
       sg.addEventListener('dblclick', () => {
         applySplitCss(0.5, true);
         refitActiveTerminal();
+      });
+    }
+    if (lite.agents && typeof lite.agents.onQuickReply === 'function') {
+      lite.agents.onQuickReply(({ sid, text, enter }) => {
+        if (!sid || !terms.has(sid)) return;
+        if (text) writeAsPaste(sid, text);
+        if (enter) setTimeout(() => lite.pty.write(sid, '\r'), text ? 120 : 0);
       });
     }
   }

@@ -2473,3 +2473,37 @@ body.pomo-compact .pomo-btn { padding: 6px 11px; font-size: 12px; }
 .modal.gg-diff-modal { width: 980px; max-width: 94vw; height: 82vh; display: flex; flex-direction: column; overflow: hidden; }
 .gg-diff { flex: 1; min-height: 0; overflow: auto; padding: 6px 0; border: 1px solid var(--border); border-radius: var(--r2); background: var(--bg-input);
   font-family: "JetBrains Mono", monospace; font-size: 12.5px; line-height: 1.45; }
+
+/* ── «Центр агентов» (Mission Control) ── */
+#agents-pane { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }
+.agents-body { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; padding: 10px 14px; gap: 10px; overflow-y: auto; }
+.agents-top { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.agents-tabs { display: inline-flex; gap: 4px; background: var(--bg-input); padding: 3px; border-radius: var(--r2); border: 1px solid var(--border); }
+.agents-tab { border: none; background: none; color: var(--text-dim); padding: 4px 10px; border-radius: var(--r3); font-size: 12px; cursor: pointer; }
+.agents-tab.on { background: var(--accent-soft); color: var(--text-hi); font-weight: 600; }
+.agents-filter-grp { display: inline-flex; gap: 4px; }
+.agents-fbtn { border: 1px solid var(--border); background: var(--bg-input); color: var(--text2); padding: 3px 9px; border-radius: 10px; font-size: 11.5px; cursor: pointer; }
+.agents-fbtn.on { border-color: var(--accent); color: var(--text-hi); background: var(--accent-soft); }
+.agents-search { background: var(--bg-input); border: 1px solid var(--border); border-radius: var(--r2); padding: 4px 9px; color: var(--text); font-size: 12px; min-width: 180px; }
+.agents-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 10px; }
+.agents-card { background: var(--bg-input); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; }
+.agents-card.st-waiting { border-color: var(--warn, #e5a93b); box-shadow: 0 0 0 1px rgba(229, 169, 59, 0.25); }
+.agents-card.st-busy { border-color: var(--border-accent); }
+.agents-chead { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.agents-proj { font-size: 13px; font-weight: 650; color: var(--text-hi); }
+.agents-branch { font-size: 11px; color: var(--text-dim); background: var(--surface-2); padding: 1px 6px; border-radius: 6px; font-family: "JetBrains Mono", monospace; }
+.agents-pill { font-size: 10.5px; font-weight: 600; padding: 1px 7px; border-radius: 9px; margin-left: auto; background: var(--surface-2); color: var(--text2); }
+.agents-pill.busy { color: var(--green-bright, #4ad08a); }
+.agents-pill.waiting { color: var(--warn, #e5a93b); }
+.agents-meta { display: flex; align-items: center; gap: 8px; font-size: 11.5px; color: var(--text-dim); }
+.agents-tail { margin: 0; background: var(--bg); border: 1px solid var(--border); border-radius: var(--r3); padding: 6px 8px; font-family: "JetBrains Mono", monospace; font-size: 11px; line-height: 1.4; color: var(--text2); white-space: pre-wrap; word-break: break-word; min-height: 54px; max-height: 92px; overflow: hidden; }
+.agents-reply-bar { display: flex; gap: 5px; align-items: center; flex-wrap: wrap; }
+.agents-reply-in { flex: 1 1 120px; min-width: 0; background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: var(--r3); padding: 4px 8px; font-size: 12px; }
+.agents-kpi-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
+.agents-kpi { background: var(--bg-input); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 12px; display: flex; flex-direction: column; gap: 4px; }
+.agents-kpi b { font-size: 18px; color: var(--text-hi); font-variant-numeric: tabular-nums; }
+.agents-kpi span { font-size: 11.5px; color: var(--text-dim); }
+.agents-bars { display: flex; align-items: flex-end; gap: 6px; height: 110px; padding: 10px; background: var(--bg-input); border: 1px solid var(--border); border-radius: var(--radius); }
+.agents-bar-col { flex: 1 1 0; display: flex; flex-direction: column; align-items: center; gap: 4px; height: 100%; justify-content: flex-end; }
+.agents-bar-fill { width: 100%; max-width: 24px; border-radius: 4px 4px 0 0; background: var(--accent); min-height: 2px; }
+.agents-bar-lbl { font-size: 10px; color: var(--text-mute); font-variant-numeric: tabular-nums; }

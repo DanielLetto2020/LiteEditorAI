@@ -59,6 +59,7 @@
           <button id="attention-badge" class="attention-badge" title="Перейти к агенту, который ждёт ответа">0</button>
           <button id="pomo-mini" class="pomo-mini" title="Помодоро — открыть пульт" hidden></button>
           <button id="btn-mcp" class="icon-btn mcp-hdr-btn" title="MCP-инструменты (Ctrl+Shift+M)" aria-label="MCP-инструменты"><span data-icon="plug" data-icon-size="16"></span><span id="mcp-btn-badge" class="mcp-btn-badge" data-no-i18n></span></button>
+          <button id="btn-preview" class="icon-btn preview-hdr-btn" title="Предпросмотр (Ctrl+Shift+B)" aria-label="Предпросмотр"><span data-icon="globe" data-icon-size="16"></span><span id="preview-btn-badge" class="mcp-btn-badge" data-no-i18n></span></button>
           <button id="btn-matrix" class="icon-btn" title="Заставка «матрица»" aria-label="Заставка «матрица»" data-icon="sparkles"></button>
           <span class="win-sep"></span>
           <button id="win-min" class="win-btn min" title="Свернуть" aria-label="Свернуть"></button>
@@ -117,6 +118,10 @@
     <!-- Правая колонка MCP-инструментов (живой поток вызовов, ресурсы проекта, подтверждения HITL) -->
     <div id="gutter-mcp" class="gutter hidden" data-resize="mcp"></div>
     <aside id="mcp-pane" class="hidden" aria-label="MCP-инструменты"></aside>
+
+    <!-- Правая колонка Live Preview (встроенный предпросмотр localhost / веб-приложения) -->
+    <div id="gutter-preview" class="gutter hidden" data-resize="preview"></div>
+    <aside id="preview-pane" class="hidden" aria-label="Предпросмотр"></aside>
 
     <!-- Встроенный док «Проект» (вивер кода, дерево, Git): по желанию закрепляется справа вместо отдельного окна -->
     <div id="gutter-files" class="gutter hidden" data-resize="filesDock"></div>

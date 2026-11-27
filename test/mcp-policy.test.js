@@ -154,4 +154,19 @@ check('validateInput checks required, enum, integer bounds, additionalProperties
   assert.strictEqual(validateInput(schema, { sql: 'SELECT 1', extra: 1 }).ok, false);
 });
 
+check('extended Zero-Trust bindings (rmq, kafka, storage, jira, project self vs cross-project)', () => {
+  const b = applyPreset({ rmqIds: ['r1'], kafkaIds: ['k1'], storageIds: ['s1'], jiraIds: ['j1'], projectIds: ['p2'] }, 'dev_safe');
+  assert.strictEqual(isResourceBound(b, 'rmq', 'r1'), true);
+  assert.strictEqual(isResourceBound(b, 'rmq', 'r2'), false);
+  assert.strictEqual(isResourceBound(b, 'kafka', 'k1'), true);
+  assert.strictEqual(isResourceBound(b, 'kafka', 'k2'), false);
+  assert.strictEqual(isResourceBound(b, 'storage', 's1'), true);
+  assert.strictEqual(isResourceBound(b, 'storage', 's2'), false);
+  assert.strictEqual(isResourceBound(b, 'jira', 'j1'), true);
+  assert.strictEqual(isResourceBound(b, 'jira', 'j2'), false);
+  assert.strictEqual(isResourceBound(b, 'project', 'p1', { isSelf: true }), true);
+  assert.strictEqual(isResourceBound(b, 'project', 'p2', { isSelf: false }), true);
+  assert.strictEqual(isResourceBound(b, 'project', 'p3', { isSelf: false }), false);
+});
+
 console.log(`mcp-policy.test.js: ${passed} checks passed`);

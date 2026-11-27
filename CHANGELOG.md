@@ -3,6 +3,37 @@
 Все заметные изменения LiteEditorAI. Формат — [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/),
 нумерация — [SemVer](https://semver.org/lang/ru/). Проект в стадии **alpha**.
 
+## [1.1.251] — 2026-11-27
+
+**Расширение MCP Store (+6 read-only паков с кросс-проектным чтением), встроенный HTTP-клиент (`rest`), правая колонка живого предпросмотра (`#preview-pane`) и Mission Control для ИИ-агентов (`agents`).**
+
+### ✨ Добавлено
+
+- **6 новых read-only MCP-паков в MCP Store (всего 9 паков):**
+  - **RabbitMQ (`rmq`, 7 инструментов):** обзор узла, vhosts, очереди, обменники, подключения и неразрушающий `rmq_peek` (`ack_requeue_true`);
+  - **Kafka (`kafka`, 7 инструментов):** кластер, топики, партиции, consumer groups с lag и безопасный `kafka_peek`;
+  - **Хранилища S3/MinIO (`storage`, 6 инструментов):** бакеты, листинг префиксов, HEAD-метаданные, Range-GET чтение текстовых объектов (до 128 КБ, защита от секретов) и ACL (без синхронной загрузки `@aws-sdk/client-s3` при открытии списка ресурсов);
+  - **Jira (`jira`, 6 инструментов):** аккаунты, поиск JQL/пресетами, полная карточка задачи, Agile-доски, справочники и структура инсталляции;
+  - **Заметки и задачи (`tasks`, 2 инструмента):** чтение заметок и чеклистов проекта LiteEditor;
+  - **Проекты и код (`projects`, 5 инструментов):** кросс-проектный read-only доступ к дереву, файлам, поиску и Git-статусу явно привязанных проектов (`isResourceBound`) с проверкой `fs.realpathSync` против выхода по симлинкам, фильтрацией `.gitignore`, блокировкой `.env`/приватных ключей и HITL-подтверждением;
+  - расширена модалка «Ресурсы MCP проекта» в `renderer/modules/mcp.js`, усилена защита `isSensitivePath` (`id_rsa`, `id_ed25519`, `id_ecdsa`, `id_dsa`, `service-account*.json`, `*.tfstate`, `*.tfvars`, Windows-слеши).
+- **24-й встроенный модуль `rest` («HTTP-клиент»):**
+  - REST и GraphQL запросы (`lib/rest-http.js` на `http`/`https`/`zlib`) с таймингами фаз (`DNS`, `TCP`, `TLS`, `TTFB`, `Download`, `Total`), авто-распаковкой `gzip`/`deflate`/`br`, лимитом ответа 10 МБ, отменой через `AbortController` и принудительной очисткой `Authorization`/`Cookie`/`Proxy-Authorization` при cross-origin редиректах;
+  - коллекции (проектные и общие), история (до 50 запросов), переменные окружения `{{var}}`, шифрование секретов через `safeStorage` и кнопка «Из сейфа» (`kpicker.js`), импорт/экспорт **cURL**, **`.http`** и **OpenAPI 3 / Swagger 2** (JSON/YAML через `js-yaml`), автопоиск локальных HTTP-портов и OpenAPI-схем (`probeLocalEndpoints`), отправка запроса/ответа в терминал агенту или в вивер (`openTextInViewer`).
+- **Встроенная правая колонка предпросмотра (`#preview-pane`, `Ctrl+Shift+B`):**
+  - изолированный `<webview partition="persist:lite-preview">` (только в главном окне) с жёстким `will-attach-webview` и блокировкой разрешений/навигации (`lib/preview-url.js`, `lib/ipc/preview.js`: по умолчанию только `localhost`/`127.0.0.1`/`::1`, опциональный переключатель для внешних `http`/`https`, запрет `file:`/`javascript:`/`data:`/`chrome:`);
+  - переключение вьюпортов Desktop / Tablet (768px) / Mobile (390px), перехват `console-message` (warn/error) и сетевых сбоев `webRequest`, снятие скриншотов `capturePage()` в `<проект>/.lite/shots/preview-*.png` с автодобавлением `.lite/` в `.git/info/exclude`, откреплённый DevTools и отправка отчёта со скриншотом активному агенту в один клик;
+  - клик по чипу порта в нижней строке терминала открывает предпросмотр (ЛКМ), внешний браузер (`Ctrl+клик`) или контекстное меню (в т.ч. «Открыть в HTTP-клиенте»).
+- **25-й встроенный модуль `agents` («Центр агентов»):**
+  - событийный реестр активных PTY-сессий в main (`lib/ipc/agents.js`), чтение хвоста из 128 КБ кольцевого буфера (`lib/ptyring.js` `readTail`, `lib/agent-tail.js`), коалесируемая рассылка `agents:update` (50 мс статусы / 250 мс хвосты, **0 нагрузки при закрытом окне**);
+  - сетка живых карточек (`renderer/modules/agents.js`) с фильтрами («Все / Ждут ответа / Работают»), веткой Git, таймером состояния, кнопками быстрого ответа при ожидании (`Да (y)` / `Нет (n)` / `Enter` + текстовая реплика с `writeAsPaste`) и переходом к сессии (исправлена работа `jumpToSession` в split-режиме);
+  - локальная 30-дневная дневная статистика времени работы/ожидания и завершённых циклов по агентам и проектам (`lib/agent-stats.js`, защита от сна > 120с, разбивка через полночь).
+
+### 🌐 Локализация и тесты
+
+- Переводы `locales/en.json` и `locales/zh.json` доведены до 100% (`5681/5681` строк).
+- Добавлены 6 новых тестовых наборов (`test/mcp-packs-ext.test.js`, `test/rest-formats.test.js`, `test/rest-http.test.js`, `test/preview-url.test.js`, `test/agent-tail.test.js`, `test/agent-stats.test.js`) и проверки `readTail` / `isSensitivePath` / `isResourceBound`.
+
 ## [1.1.250] — 2026-11-27
 
 **Обновление зависимостей для устранения всех 43 предупреждений GitHub Security / Dependabot (`npm audit` — 0 уязвимостей) и ужесточение прав CI workflow.**

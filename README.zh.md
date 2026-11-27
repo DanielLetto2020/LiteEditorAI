@@ -104,7 +104,9 @@ amend、commit / push / pull / fetch）与底部的 Git 面板（带**彩色 SVG
 - **右侧「MCP 工具」栏（`Ctrl+Shift+M`）**：可调节宽度的面板紧邻终端，支持按*会话 / 项目 / 全部*筛选调用记录；
   当智能体访问未绑定资源或 `PROD` 目标时，实时弹出人工审批卡片（*允许并绑定*、*本会话允许*、*仅此一次*、*拒绝*）。
 - **模块化 MCP Store**：自由开关各模块套件与单个工具 —— **数据库**（9 个只读结构/表/DDL/查询工具）、**服务器与 SSH**
-  （11 个只读指标/systemd/日志/SFTP 工具）与**容器**（8 个只读 Docker/Podman 工具）。
+  （11 个只读指标/systemd/日志/SFTP 工具）、**容器**（8 个只读 Docker/Podman 工具）、**RabbitMQ**（7）、
+  **Kafka**（7）、**对象存储 S3/MinIO**（6）、**Jira**（6）、**笔记与任务**（2）以及**跨项目代码与 Git**
+  （5 个只读工具，内置符号链接、`.gitignore` 与敏感文件保护）。
 - **项目策略与 `noCloud` 保护**：支持**严格 Zero-Trust**、**允许所有非生产数据库与本地容器（只读）**预设或**自定义**绑定；
   标记 `noCloud` 的敏感库禁止向云端 CLI 模型（`claude`、`agy`、`codex`、`gemini`、`openrouter`）返回行数据，输出自动脱敏并记入
   `logs/mcp-audit-*.jsonl` 审计日志。一站式配置向导支持 Claude Code、`agy`、Codex 与 Gemini CLI。
@@ -169,6 +171,8 @@ amend、commit / push / pull / fetch）与底部的 Git 面板（带**彩色 SVG
 | 📈 **资源监视器** | 编辑器吃掉多少内存和 CPU —— 按进程（窗口、GPU、内核）**以及按终端里的智能体**（PTY 进程树）分别显示，带内存迷你图，可把摘要复制到剪贴板。 |
 | 🖳 **系统终端** | 项目之外的独立 shell（家目录），支持多标签页，用来跑一次性的系统命令。 |
 | 🔧 **开发工具** | 一把离线瑞士军刀：**Base64 ↔ 图片**（拖入文件即可）、**JSON 查看器**、Base64 / URL / Hex / HTML 实体、**JSON ↔ YAML**、query ↔ JSON、CSV ↔ JSON、JSONPath、哈希（MD5 / SHA-1/256/512）、**JWT 解码**、Unix **时间戳**与 **cron**（带解释和下次运行时间）、**行拼接**（被终端换行撕碎的文本重新拼回段落，保留列表、表格和代码）、大小写 / 转写、字符串操作、正则测试、文本差异、Lorem 与假数据生成、颜色转换。 |
+| 🚀 **HTTP 客户端** | 内置 REST / GraphQL 客户端：项目/全局集合、`safeStorage` 加密的 `{{var}}` 环境与保险箱填充、详细阶段耗时、**cURL** / **`.http`** / **OpenAPI 3 & Swagger 2** 导入导出、本地端口与 OpenAPI 自动发现，并支持一键发送结果给终端智能体或查看器。 |
+| 🤖 **智能体中心** | 所有活跃终端智能体的任务总控台：实时卡片网格（项目、Git 分支、状态、输出尾部）、无需切换标签的快速回复（`是`/`否`/`Enter` + 文本输入）、一键跳转对应会话及本地 30 天工作/等待统计。 |
 
 </details>
 
@@ -197,6 +201,7 @@ amend、commit / push / pull / fetch）与底部的 Git 面板（带**彩色 SVG
 | `Ctrl+Shift+D` | 切换终端垂直分屏 |
 | `Ctrl+Shift+E` | 在主窗口中固定/隐藏右侧「项目」面板 |
 | `Ctrl+Shift+M` | 显示/隐藏右侧「MCP 工具」面板 |
+| `Ctrl+Shift+B` | 显示/隐藏右侧实时预览面板（Live Preview） |
 | `Ctrl+K` | 命令面板 |
 | `Ctrl+P` / `Ctrl+Shift+P` | 快速跳转（文件、`#符号`、`@大纲`、`:行号`）/ 项目编辑器命令面板 |
 | `Ctrl+F` / `Ctrl+Shift+F` | 在终端或文件中搜索 / 在所有项目中查找（文件与终端输出） |

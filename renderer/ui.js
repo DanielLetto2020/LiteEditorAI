@@ -253,6 +253,8 @@ export const ICONS = {
   bug: '<rect x="7.5" y="8" width="9" height="12" rx="4.5"/><path d="M9.5 8V6.5a2.5 2.5 0 0 1 5 0V8M12 12v8M4 13h3.5M16.5 13H20M5 8.5l2.8 1.8M19 8.5l-2.8 1.8M5 18.5l2.8-1.8M19 18.5l-2.8-1.8"/>',
   plug: '<path d="M12 22v-5"/><path d="M9 8V2M15 8V2"/><path d="M18 8v5a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V8Z"/>',
   shield: '<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>',
+  tablet: '<rect x="4" y="2.5" width="16" height="19" rx="2"/><path d="M12 18h.01"/>',
+  smartphone: '<rect x="6" y="2.5" width="12" height="19" rx="2"/><path d="M12 18h.01"/>',
 };
 /** @type {Map<string, SVGSVGElement>} */
 const _iconProto = new Map();
